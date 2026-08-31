@@ -21,6 +21,7 @@
   import {
     buildSuggestions,
     flattenRows,
+    resolveTypedRecipient,
     type ContactLike,
     type CompanyInfo,
     type SelectedRecipient,
@@ -45,6 +46,9 @@
     // parent so it can clear the picker after a send.
     selected: SelectedRecipient | null;
     onselect: (recipient: SelectedRecipient | null) => void;
+    /** ⌘/Ctrl+↵ pressed while the input is focused — lets the compose sheet
+     * send without the user tabbing to the body first. */
+    onsubmit?: () => void;
     placeholder?: string;
     disabled?: boolean;
   }
@@ -52,6 +56,7 @@
   let {
     selected = $bindable(),
     onselect,
+    onsubmit,
     placeholder = 'Type a name or email…',
     disabled = false,
   }: Props = $props();
@@ -182,7 +187,30 @@
     onselect(row.recipient);
   }
 
+  /** Resolve the currently typed query to a recipient without an explicit
+   * click — called by the compose sheet at send time (instance method via
+   * bind:this). Mirrors choose() when it resolves so the input, dropdown, and
+   * parent selection all reflect the resolved recipient. Conservative rules
+   * live in resolveTypedRecipient(); null means "ambiguous or no match". */
+  export function resolveTyped(): SelectedRecipient | null {
+    if (selected) return selected;
+    const resolved = resolveTypedRecipient(flatRows, query);
+    if (resolved) {
+      selected = resolved;
+      query = resolved.displayName || resolved.email;
+      open = false;
+      onselect(resolved);
+    }
+    return resolved;
+  }
+
   function onKeydown(e: KeyboardEvent): void {
+    // ⌘/Ctrl+↵ from the To field means "send" regardless of dropdown state.
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      onsubmit?.();
+      return;
+    }
     if (!open || flatRows.length === 0) {
       if (e.key === 'ArrowDown') {
         open = true;

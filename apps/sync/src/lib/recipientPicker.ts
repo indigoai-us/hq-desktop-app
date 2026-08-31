@@ -206,3 +206,41 @@ export function buildSuggestions(input: BuildSuggestionsInput): SuggestionGroup[
 export function flattenRows(groups: SuggestionGroup[]): SuggestionRow[] {
   return groups.flatMap((g) => g.rows);
 }
+
+/**
+ * Resolve a typed-but-never-clicked "To" value to a recipient at send time.
+ *
+ * The compose modal calls this when the user typed a query and hit Send/⌘↵
+ * without explicitly choosing a suggestion. Resolution is deliberately
+ * conservative — a wrong guess would DM the wrong person:
+ *   1. A unique exact match on display name or email (case-insensitive) wins,
+ *      even among several partial matches.
+ *   2. Otherwise, exactly one non-freeText suggestion → that suggestion.
+ *   3. Otherwise, no non-freeText rows but exactly one freeText row (the
+ *      "Send to {email}" affordance for a validly typed email) → that row.
+ *   4. Anything else (empty query, no rows, ambiguous matches) → null; the
+ *      caller surfaces an inline "choose a recipient" error.
+ */
+export function resolveTypedRecipient(
+  rows: SuggestionRow[],
+  query: string,
+): SelectedRecipient | null {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+
+  const exact = rows.filter((r) => {
+    const name = r.recipient.displayName?.trim().toLowerCase();
+    const email = r.recipient.email?.trim().toLowerCase();
+    return name === q || email === q;
+  });
+  if (exact.length === 1) return exact[0].recipient;
+  if (exact.length > 1) return null;
+
+  const real = rows.filter((r) => !r.freeText);
+  if (real.length === 1) return real[0].recipient;
+  if (real.length === 0) {
+    const free = rows.filter((r) => r.freeText);
+    if (free.length === 1) return free[0].recipient;
+  }
+  return null;
+}
