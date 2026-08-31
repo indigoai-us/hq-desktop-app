@@ -42,6 +42,7 @@
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
   import ChannelView from './ChannelView.svelte';
+  import SetupChannelView from './SetupChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
   import IdentityMark from './IdentityMark.svelte';
@@ -76,6 +77,7 @@
     bumpChannelUnread,
     clearChannelUnread,
   } from '../../lib/channels';
+  import { SETUP_CHANNEL, SETUP_CHANNEL_ID, isSetupChannel } from '../../lib/setup-channel';
   import { type ReactionEvent, dmScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
   import { ShareReactionController } from '../../lib/shareReactionController.svelte';
@@ -1915,6 +1917,7 @@
             <button type="button" onclick={() => openCreateChannel(null)} aria-label="New channel" aria-haspopup="dialog">+</button>
           </div>
           <ul class="contact-list compact-list">
+            {#if (!railQuery.trim() || 'setup'.includes(railQuery.trim().toLocaleLowerCase())) && !channels.some((c) => c.channelId === SETUP_CHANNEL_ID)}{@render channelRow(SETUP_CHANNEL)}{/if}
             {#each visibleChannelItems as item (item.key)}
               {#if item.kind === 'channel'}{@render channelRow(item.channel)}{/if}
             {/each}
@@ -1967,6 +1970,9 @@
       </header>
       <ShareMainPane events={selectedShareEvents} />
     {:else if selectedChannel}
+      {#if isSetupChannel(selectedChannel.channelId)}
+        <SetupChannelView hqFolderPath={hqFolderPath} />
+      {:else}
       <ChannelView
         channel={selectedChannel}
         {selfPersonUid}
@@ -1975,6 +1981,7 @@
         onopenthread={handleOpenChannelThread}
         activeRootEventId={openThread?.scope === 'channel' ? openThread.rootEventId : null}
       />
+      {/if}
     {:else if !selected}
       <div class="pane-empty">
         <p>Select a conversation to start messaging.</p>
