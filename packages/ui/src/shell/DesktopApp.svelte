@@ -1534,7 +1534,7 @@
       }
       const channelId = row.channelId?.trim() ?? "";
       if (!channelId) throw new Error("No channel to send to");
-      if (!channelId.startsWith("chn_")) {
+      if (!channelId.startsWith("chn_") && !isSetupChannel(channelId)) {
         throw new Error(
           "Couldn't send — this channel isn't linked yet. Try reopening it.",
         );
@@ -2251,17 +2251,14 @@
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
             >
-              {#if isSetupChannel(selectedRow.channelId)}
-                <!-- Synthetic #setup support channel: getting-started intro
-                     above the standard live thread + composer (channelId
-                     "setup" rides the normal pipeline below). -->
-                <SetupChannelIntro
-                  settings={adapter.settings}
-                  shell={adapter.shell}
-                  {onopenurl}
-                />
-              {/if}
               {#key selectedRow.id}
+                {#snippet setupHeader()}
+                  <SetupChannelIntro
+                    settings={adapter.settings}
+                    shell={adapter.shell}
+                    {onopenurl}
+                  />
+                {/snippet}
                 <ChannelConversation
                   messages={timeline}
                   reactions={rowReactions}
@@ -2283,6 +2280,9 @@
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
                   loading={timelineHydrating && timeline.length === 0}
+                  header={isSetupChannel(selectedRow.channelId)
+                    ? setupHeader
+                    : undefined}
                 />
                 <AgentThinkingRow entries={agentThinking} />
               {/key}

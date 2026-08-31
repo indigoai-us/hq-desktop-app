@@ -11,7 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { untrack } from "svelte";
+  import { untrack, type Snippet } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
@@ -119,6 +119,12 @@
     /** personUid → live roster display name (profile override), preferred over
      *  the name baked into each message at send time. */
     displayNameByUid?: Record<string, string>;
+    /**
+     * Optional header rendered at the very top of the `.dm-thread` scroller
+     * (before empty-state / load-earlier). Used for Slack-style channel intros
+     * that scroll away with history.
+     */
+    header?: Snippet;
   }
 
   let {
@@ -142,6 +148,7 @@
     onopenprofile,
     avatarByUid = {},
     displayNameByUid = {},
+    header,
   }: Props = $props();
 
   /** Real avatar for a message's author, when the roster carried one. */
@@ -699,6 +706,7 @@
         bind:this={scroller}
         data-testid="conversation-thread"
       >
+        {#if header}{@render header()}{/if}
         {#if timeline.length === 0 && !loading}
           <div
             class="dm-thread-empty"

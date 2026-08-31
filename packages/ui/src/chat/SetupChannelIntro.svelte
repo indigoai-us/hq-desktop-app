@@ -269,9 +269,8 @@
 
 <style>
   .setup-intro {
-    flex: 0 1 auto;
-    min-height: 0;
-    overflow-y: auto;
+    flex: 0 0 auto;
+    overflow: visible;
     padding: var(--space-4, 1rem) var(--space-4, 1.25rem)
       var(--space-3, 0.75rem);
     display: flex;
