@@ -1725,8 +1725,10 @@
     border: 1px solid transparent;
     border-radius: 8px;
     background: transparent;
-    color: var(--link, #36c5f0);
-    font: 700 13px/1.3 var(--font-ui);
+    /* Neutral text tokens, not link blue: primary weight for the count, the
+       trailing preview stays muted (--t3 below). */
+    color: var(--t1);
+    font: 600 13px/1.3 var(--font-ui);
     cursor: pointer;
   }
 
