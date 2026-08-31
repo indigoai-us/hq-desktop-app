@@ -69,6 +69,7 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: None,
+            claude_projects_dir: None,
             widget_enabled: None,
             widget_display: None,
             dock_icon: None,
@@ -104,6 +105,7 @@ mod tests {
             default_recording_company_uid: prefs.default_recording_company_uid,
             // Telemetry is opt-out — defaults ON when absent from disk (#159).
             telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
+            claude_projects_dir: prefs.claude_projects_dir,
             // Widget defaults ON when absent (ships default-enabled after update).
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
@@ -189,6 +191,7 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
             telemetry_enabled: Some(false),
+            claude_projects_dir: Some("/Users/test/.claude-ridge/projects".to_string()),
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
             dock_icon: Some(false),
@@ -211,6 +214,10 @@ mod tests {
         assert_eq!(result.staging_channel, Some(false));
         // explicit telemetry opt-out survives the default-on coercion
         assert_eq!(result.telemetry_enabled, Some(false));
+        assert_eq!(
+            result.claude_projects_dir.as_deref(),
+            Some("/Users/test/.claude-ridge/projects")
+        );
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -248,6 +255,7 @@ mod tests {
             meeting_detect_notify: None,
             default_recording_company_uid: None,
             telemetry_enabled: Some(true),
+            claude_projects_dir: None,
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
             dock_icon: Some(true),
@@ -271,6 +279,20 @@ mod tests {
             json.contains("\"releaseChannel\":"),
             "expected camelCase key 'releaseChannel' in serialized output, got: {json}"
         );
+    }
+
+    #[test]
+    fn test_claude_projects_dir_roundtrips() {
+        let json = r#"{"claudeProjectsDir":"/Users/test/.claude-ridge/projects"}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            prefs.claude_projects_dir.as_deref(),
+            Some("/Users/test/.claude-ridge/projects")
+        );
+        assert!(serde_json::to_string(&prefs)
+            .unwrap()
+            .contains("\"claudeProjectsDir\":\"/Users/test/.claude-ridge/projects\""));
     }
 
     #[test]

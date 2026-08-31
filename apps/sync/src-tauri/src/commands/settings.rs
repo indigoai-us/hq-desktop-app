@@ -62,6 +62,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             // and provenance-gated, resolving a missing answer to no-collection
             // rather than defaulting on.
             telemetry_enabled: Some(true),
+            claude_projects_dir: None,
             // Windows defaults to the tray popup; macOS keeps the widget.
             widget_enabled: Some(default_widget_enabled()),
             // None = primary display.
@@ -149,6 +150,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
         telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
+        // Preserve a previously saved exact activity folder as a hidden fallback.
+        // No default is persisted because active profiles are discovered automatically.
+        claude_projects_dir: prefs.claude_projects_dir,
         // Platform default when absent; explicit user choices are preserved.
         // widget.rs also reads widgetEnabled untyped on every notification
         // dispatch so toggling takes effect without restart.

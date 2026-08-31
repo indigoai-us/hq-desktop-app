@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use hq_desktop_core::sessions::claude::resolve_claude_projects_dirs;
 use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
 
 use crate::commands::sync::resolve_vault_api_url;
@@ -1442,12 +1443,30 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut newly_committed: HashMap<String, CursorEntry> = HashMap::new();
     let mut rotation_resets: HashMap<String, CursorEntry> = HashMap::new();
 
-    // 4. Enumerate ~/.claude/projects/**/*.jsonl
-    let pattern = format!("{}/.claude/projects/**/*.jsonl", home.display());
-    let file_paths: Vec<_> = match glob::glob(&pattern) {
-        Ok(g) => g.flatten().filter(|p| p.is_file()).collect(),
-        Err(_) => return Ok(()),
-    };
+    // 4. Enumerate standard and named Claude activity folders.
+    let claude_projects_roots = resolve_claude_projects_dirs(
+        &home,
+        &home.join(".hq/menubar.json"),
+        std::env::var("CLAUDE_PROJECTS_DIR").ok().as_deref(),
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+    );
+    let mut file_paths: Vec<_> = claude_projects_roots
+        .into_iter()
+        .flat_map(|root| {
+            let pattern = format!(
+                "{}/**/*.jsonl",
+                glob::Pattern::escape(&root.to_string_lossy())
+            );
+            glob::glob(&pattern)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|path| path.is_file())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    file_paths.sort();
+    file_paths.dedup();
 
     let machine_id = read_machine_id();
     let installer_version = env!("CARGO_PKG_VERSION").to_string();
