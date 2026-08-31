@@ -121,8 +121,8 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
         adapter.messaging.listDmRequests(),
       ),
     }),
-    listChannels: async () => {
-      const channels = await call<unknown>(adapter.messaging.listChannels());
+    listChannels: async (args) => {
+      const channels = await call<unknown>(adapter.messaging.listChannels(args));
       if (Array.isArray(channels)) {
         return { channels: channels as Channel[] } satisfies ChannelsResponse;
       }
@@ -136,13 +136,20 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
       call<void>(adapter.messaging.markDmThreadRead(withPersonUid)),
     markChannelRead: (channelId) =>
       call<void>(adapter.messaging.markChannelRead(channelId)),
-    searchMessages: (args) =>
-      call<MessageSearchResult>(
+    searchMessages: async (args) => ({
+      results: await call<MessageSearchResult['results']>(
         adapter.messaging.searchMessages(args.q, {
           ...(args.companyUid ? { companyUid: args.companyUid } : {}),
           ...(args.limit != null ? { limit: args.limit } : {}),
         }),
       ),
+    }),
+    sendChannelMessage: async ({ channelId, body }) => {
+      await call<unknown>(adapter.messaging.sendChannelMessage(channelId, body));
+    },
+    sendDm: async ({ toPersonUid, body }) => {
+      await call<unknown>(adapter.messaging.sendDm(toPersonUid, body));
+    },
     createChannel: async (args) => {
       const value = await call<Record<string, unknown>>(
         adapter.messaging.createChannel(args as never),

@@ -58,6 +58,7 @@ interface Options {
   workspaceFailure?: boolean;
   identityFailure?: boolean;
   directoryResponse?: Promise<unknown>;
+  sendChannelResponse?: Promise<unknown>;
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -94,6 +95,8 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
             { channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering', scope: 'company' },
           ],
         };
+      case 'send_channel_message':
+        return options.sendChannelResponse ?? { eventId: 'evt_sent' };
       case 'list_contacts':
         return {
           contacts: [
@@ -170,6 +173,14 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
 async function flush(times = 16): Promise<void> {
   for (let i = 0; i < times; i += 1) await Promise.resolve();
   flushSync();
+}
+
+function setInput(testId: string, value: string): void {
+  const input = document.querySelector(`[data-testid="${testId}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 let host: HTMLElement;
@@ -420,6 +431,67 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
+  });
+
+  it('keeps automatic Inbox hydration and a replacement compose draft intact across a delayed send', async () => {
+    let releaseDirectory: ((value: unknown) => void) | undefined;
+    const directoryResponse = new Promise<unknown>((resolve) => {
+      releaseDirectory = resolve;
+    });
+    let releaseSend: ((value: unknown) => void) | undefined;
+    const sendChannelResponse = new Promise<unknown>((resolve) => {
+      releaseSend = resolve;
+    });
+    await mountShell({ pendingRoute: 'inbox', directoryResponse, sendChannelResponse });
+
+    releaseDirectory?.({
+      channels: [{ channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering' }],
+    });
+    await flush(64);
+
+    // The channel directory's automatic first-row selection must not pull a
+    // host-selected Inbox back to Messages.
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+
+    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    setInput('chat-compose-to', 'engineering');
+    setInput('chat-compose-body', 'old delayed draft');
+    await flush();
+    (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+    await flush();
+
+    // Start a newer compose instance while the old host send is still in
+    // flight. Its completion must not close or clear this replacement draft.
+    (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
+    await flush();
+    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    setInput('chat-compose-to', 'engineering');
+    setInput('chat-compose-body', 'new replacement draft');
+    await flush();
+
+    releaseSend?.({ eventId: 'evt_old' });
+    await flush(64);
+
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+    expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
+    expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe(
+      'engineering',
+    );
+    expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe(
+      'new replacement draft',
+    );
   });
 
   it('rehydrates the compact embedded shell from the native OAuth completion event', async () => {

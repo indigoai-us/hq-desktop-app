@@ -27,7 +27,7 @@ function makeWebAdapter() {
     const respond = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200 });
     if (path === "/v1/identity/whoami") return respond(WHOAMI);
-    if (path === "/v1/messaging/channels" && method === "GET")
+    if (path === "/v1/notify/channels" && method === "GET")
       return respond(CHANNELS);
     if (path === "/v1/notify/notifications") return respond(NOTIFICATIONS);
     if (path === "/v1/notify/notifications/ack" && method === "POST") {
@@ -151,6 +151,52 @@ describe("PlatformAdapter contract", () => {
     });
     const r = await adapter.identity.whoami();
     expect(r).toMatchObject({ ok: false, reason: "error", code: "http-500" });
+  });
+
+  it("preserves owner-scoped project listing options in both web and Tauri adapters", async () => {
+    const webRequests: string[] = [];
+    const web = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async (input) => {
+        webRequests.push(String(input));
+        return new Response(JSON.stringify([]), { status: 200 });
+      },
+    });
+    const tauriCalls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    const tauri = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        tauriCalls.push({ cmd, args });
+        return [];
+      },
+    });
+
+    const options = {
+      companyUid: "cmp_indigo",
+      includeCompanyProjects: true,
+    };
+    expectOk(await web.messaging.listChannels(options));
+    expectOk(await tauri.messaging.listChannels(options));
+
+    expect(webRequests).toEqual([
+      "https://api.test/v1/notify/channels?companyUid=cmp_indigo&includeCompanyProjects=1",
+    ]);
+    expect(tauriCalls).toEqual([
+      { cmd: "list_channels", args: options },
+    ]);
+  });
+
+  it("uses the canonical channel-directory endpoint for unscoped web listings", async () => {
+    const requests: string[] = [];
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify([]), { status: 200 });
+      },
+    });
+
+    expectOk(await adapter.messaging.listChannels());
+    expect(requests).toEqual(["https://api.test/v1/notify/channels"]);
   });
 
   it("web adapter notifies onUnauthorized on HTTP 401 so the host can re-login", async () => {

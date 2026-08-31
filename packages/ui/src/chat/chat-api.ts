@@ -60,12 +60,10 @@ export interface ChatSidebarApi {
   }): Promise<{ channelId: string }>;
   /** POST /v1/notify/channels/{id}/members — add a participant. */
   addChannelMember?(channelId: string, toPersonUid: string): Promise<void>;
-  /**
-   * Send a message into a channel. Optional — used by the compose modal's
-   * create-channel flow so the drafted body lands as the new channel's first
-   * message; hosts without it still create the channel and open it empty.
-   */
-  sendChannelMessage?(args: { channelId: string; body: string }): Promise<void>;
+  /** Send a message into a channel before closing or navigating compose. */
+  sendChannelMessage(args: { channelId: string; body: string }): Promise<void>;
+  /** Send a one-to-one DM before closing or navigating compose. */
+  sendDm(args: { toPersonUid: string; body: string }): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
