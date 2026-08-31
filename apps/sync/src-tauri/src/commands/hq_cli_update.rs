@@ -249,34 +249,18 @@ pub async fn check_hq_cli_update(app: AppHandle) -> Result<Option<HqCliUpdateInf
 /// current and when it is missing, so it cannot power an always-visible
 /// version row by itself. Keep identity separate from update availability,
 /// exactly like the desktop app and HQ Core rows.
-const CLI_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-async fn bounded_cli_version_probe<F>(timeout: Duration, probe: F) -> Option<String>
-where
-    F: FnOnce() -> Option<String> + Send + 'static,
-{
-    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(probe)).await {
-        Ok(Ok(version)) => version,
-        Ok(Err(error)) => {
+#[tauri::command]
+pub async fn get_hq_cli_version() -> Option<String> {
+    match tokio::task::spawn_blocking(get_local_version).await {
+        Ok(version) => version,
+        Err(error) => {
             log(
                 "hq-cli-update",
                 &format!("installed-version probe task failed: {error}"),
             );
             None
         }
-        Err(_) => {
-            log(
-                "hq-cli-update",
-                "installed-version probe timed out; leaving CLI version unknown",
-            );
-            None
-        }
     }
-}
-
-#[tauri::command]
-pub async fn get_hq_cli_version() -> Option<String> {
-    bounded_cli_version_probe(CLI_VERSION_PROBE_TIMEOUT, get_local_version).await
 }
 
 /// Tauri command — record that the user dismissed the "CLI update available"
@@ -3174,31 +3158,6 @@ mod tests {
     // concurrent `dirs::home_dir()` reader from observing the poisoned home.
     #[cfg(unix)]
     static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    #[tokio::test]
-    async fn installed_cli_version_probe_returns_a_fast_result() {
-        let version =
-            bounded_cli_version_probe(Duration::from_secs(1), || Some("5.103.34".to_string()))
-                .await;
-
-        assert_eq!(version.as_deref(), Some("5.103.34"));
-    }
-
-    #[tokio::test]
-    async fn installed_cli_version_probe_is_bounded_when_the_executable_hangs() {
-        let started = std::time::Instant::now();
-        let version = bounded_cli_version_probe(Duration::from_millis(10), || {
-            std::thread::sleep(Duration::from_millis(250));
-            Some("never-observed".to_string())
-        })
-        .await;
-
-        assert_eq!(version, None);
-        assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "the caller must not wait for the hung probe"
-        );
-    }
 
     #[cfg(unix)]
     struct HomeEnvRestore(Option<OsString>);

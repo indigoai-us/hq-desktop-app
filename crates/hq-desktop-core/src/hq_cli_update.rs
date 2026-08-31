@@ -2,9 +2,12 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,6 +85,49 @@ pub enum VersionProbeOutcome {
     NonzeroExit,
     InvalidUtf8,
     EmptyOutput,
+    /// The child exceeded the bounded version-probe deadline and was killed.
+    TimedOut,
+}
+
+const VERSION_PROCESS_TIMEOUT: Duration = Duration::from_secs(1);
+const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Run a tiny version command with a hard process boundary. `Command::output`
+/// has no timeout and can strand both the process and its blocking worker; this
+/// helper kills and reaps the child before returning `None` on timeout.
+fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(VERSION_PROCESS_POLL_INTERVAL);
+    };
+
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)?;
+    }
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr)?;
+    }
+
+    Ok(status.map(|status| Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 /// Windows `ERROR_BAD_EXE_FORMAT`: `CreateProcessW` was handed a file that is
@@ -407,8 +453,12 @@ pub fn hq_version_string(bin: &Path) -> Option<String> {
 fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
-    let out = match cmd.arg("--version").env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(
+        cmd.arg("--version").env("PATH", path),
+        VERSION_PROCESS_TIMEOUT,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -529,8 +579,9 @@ fn hq_version_via_node(
     let node = node.to_string_lossy();
     let program = program.to_string_lossy();
     let mut cmd = paths::spawn_command(node.as_ref(), &[program.as_ref(), "--version"]);
-    let out = match cmd.env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -6228,8 +6279,12 @@ fn read_installed_version_probe(
     path: &str,
 ) -> (Option<String>, VersionProbeOutcome) {
     let mut cmd = paths::spawn_command(npm_bin, &[]);
-    let out = match cmd.args(["root", "-g"]).env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(
+        cmd.args(["root", "-g"]).env("PATH", path),
+        VERSION_PROCESS_TIMEOUT,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -6279,6 +6334,37 @@ fn read_installed_version_probe(
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn version_command_timeout_kills_and_reaps_the_child() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "while :; do :; done"]);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
+            command
+        };
+
+        let started = Instant::now();
+        let output = output_with_timeout(&mut command, Duration::from_millis(50))
+            .expect("the timeout path is not an I/O failure");
+
+        assert!(output.is_none(), "the hung command must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "kill + reap must complete without waiting for natural exit"
+        );
+    }
 
     #[test]
     fn cmp_semver_compares_numerically_not_lexically() {
