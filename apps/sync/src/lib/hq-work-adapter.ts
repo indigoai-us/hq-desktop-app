@@ -464,12 +464,13 @@ export function createSyncPlatformAdapter(
       sendReply: async (args) => {
         const invalid = validateSendReply(args);
         if (invalid) return invalid;
-        const extra = args as { attachments?: Json[] };
-        if (extra.attachments && extra.attachments.length > 0) {
-          const req = buildSendReplyRequest({
-            ...args,
-            attachments: extra.attachments,
-          });
+        const mentions = args.mentions;
+        const attachments = args.attachments;
+        if (
+          (mentions && mentions.length > 0) ||
+          (attachments && attachments.length > 0)
+        ) {
+          const req = buildSendReplyRequest(args);
           return hqProJson('POST', req.path, req.body);
         }
         return call('send_thread_reply', {

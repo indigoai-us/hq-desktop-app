@@ -162,6 +162,12 @@ export interface SendReplyArgs {
   body: string;
   withPersonUid?: string;
   channelId?: string;
+  mentions?: Array<{
+    participantUid: string;
+    participantType: "human" | "agent";
+    displayName: string;
+    email?: string;
+  }>;
   attachments?: Array<{
     vaultPath: string;
     name: string;

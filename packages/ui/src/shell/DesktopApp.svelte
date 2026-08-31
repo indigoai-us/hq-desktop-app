@@ -2100,6 +2100,7 @@
                     {avatarByUid}
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
+                    mentionCandidates={mentionRoster}
                   />
                 </div>
               {/if}

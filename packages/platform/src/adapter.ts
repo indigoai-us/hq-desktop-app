@@ -171,6 +171,12 @@ export interface SendReplyArgs {
   body: string;
   withPersonUid?: string;
   channelId?: string;
+  mentions?: Array<{
+    participantUid: string;
+    participantType: "human" | "agent";
+    displayName: string;
+    email?: string;
+  }>;
   attachments?: Json[];
 }
 
@@ -283,6 +289,9 @@ export function buildSendReplyRequest(args: SendReplyArgs): {
     body: args.body,
     rootEventId: trimText(args.rootEventId),
   };
+  if (args.mentions && args.mentions.length > 0) {
+    body.mentions = args.mentions;
+  }
   if (args.attachments && args.attachments.length > 0) {
     body.attachments = args.attachments;
   }
@@ -399,13 +408,7 @@ export interface MessagingApi {
     withPersonUid?: string;
     channelId?: string;
   }): AdapterPromise<ReplyThreadValue>;
-  sendReply(args: {
-    scope: "dm" | "channel";
-    rootEventId: string;
-    body: string;
-    withPersonUid?: string;
-    channelId?: string;
-  }): AdapterPromise<Json>;
+  sendReply(args: SendReplyArgs): AdapterPromise<Json>;
   /** GET /v1/notify/reactions — envelope `{ reactions }` or a bare list. */
   fetchReactions(messageScope: string, messageId: string): AdapterPromise<Json>;
   /** POST (add) or DELETE (remove) /v1/notify/reactions. */

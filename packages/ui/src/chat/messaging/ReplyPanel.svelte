@@ -14,8 +14,15 @@
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import MentionPicker from "./MentionPicker.svelte";
   import {
+    activeMentionQuery,
     applyMentionMarkup,
+    filterMentionCandidates,
+    mentionPayloadTargets,
+    mentionTextForTarget,
+    mergeMentionTargets,
+    replaceActiveMention,
     storedMentionType,
     type MentionTarget,
   } from "../mentions.js";
@@ -100,6 +107,8 @@
       personUid: string;
       displayName: string;
     }) => void;
+    /** Company/contacts roster for @ completion. Empty = no picker. */
+    mentionCandidates?: MentionTarget[];
   }
 
   let {
@@ -122,6 +131,7 @@
     avatarByUid = {},
     displayNameByUid = {},
     onopenprofile,
+    mentionCandidates = [],
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -183,6 +193,27 @@
   let pendingFiles = $state<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
+  let composerEl = $state<HTMLTextAreaElement | null>(null);
+  let selectedMentions = $state<MentionTarget[]>([]);
+  let mentionHighlight = $state(0);
+
+  const mentionQuery = $derived(activeMentionQuery(draft));
+  const mentionHits = $derived(
+    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+  );
+  const showMentionPicker = $derived(mentionQuery !== null);
+
+  $effect(() => {
+    void mentionQuery;
+    mentionHighlight = 0;
+  });
+
+  function applyMention(target: MentionTarget): void {
+    draft = replaceActiveMention(draft, mentionTextForTarget(target));
+    selectedMentions = mergeMentionTargets(selectedMentions, target);
+    mentionHighlight = 0;
+    composerEl?.focus();
+  }
 
   $effect(() => {
     localReactions = { ...reactions };
@@ -343,6 +374,7 @@
   async function deliver(
     body: string,
     attachments?: ChatAttachmentWire[],
+    mentions?: MentionTarget[],
   ): Promise<void> {
     await api.sendReply({
       scope,
@@ -351,6 +383,7 @@
       ...(scope === "channel" && channelId ? { channelId } : {}),
       ...(scope === "dm" && withPersonUid ? { withPersonUid } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(mentions && mentions.length > 0 ? { mentions } : {}),
     });
   }
 
@@ -371,6 +404,7 @@
         return;
       }
     }
+    const mentions = mentionPayloadTargets(selectedMentions);
     const localId = `local-${rootEventId}-${++localSeq}`;
     const optimistic: LocalReply = {
       eventId: localId,
@@ -380,15 +414,18 @@
       direction: "out",
       rootEventId,
       sendStatus: "sending",
+      mentions,
       ...(attachments ? { attachments } : {}),
     };
     seenIds.add(localId);
     replies = [...replies, optimistic];
     draft = "";
+    selectedMentions = [];
+    mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
     try {
-      await deliver(text, attachments);
+      await deliver(text, attachments, mentions);
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
@@ -411,10 +448,18 @@
     replies = replies.map((row) =>
       row.eventId === eventId ? { ...row, sendStatus: "sending" } : row,
     );
+    const retryMentions = mentionPayloadTargets(
+      (failed.mentions ?? []).map((row) => ({
+        participantUid: row.participantUid,
+        participantType: storedMentionType(row),
+        displayName: row.displayName,
+      })),
+    );
     try {
       await deliver(
         failed.body ?? "",
         (failed.attachments ?? undefined) as ChatAttachmentWire[] | undefined,
+        retryMentions,
       );
       replies = replies.map((row) =>
         row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
@@ -430,6 +475,33 @@
   }
 
   function onComposerKey(e: KeyboardEvent): void {
+    if (showMentionPicker) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        mentionHighlight = (mentionHighlight + 1) % mentionHits.length;
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        mentionHighlight =
+          (mentionHighlight - 1 + mentionHits.length) % mentionHits.length;
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        const hit = mentionHits[mentionHighlight] ?? mentionHits[0];
+        if (hit) {
+          e.preventDefault();
+          applyMention(hit);
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        draft = draft.replace(/(^|\s)@([^\s@]*)$/, "$1");
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send(draft);
@@ -750,6 +822,13 @@
     </div>
 
     <div class="reply-composer">
+      {#if showMentionPicker}
+        <MentionPicker
+          hits={mentionHits}
+          highlight={mentionHighlight}
+          onpick={applyMention}
+        />
+      {/if}
       {#if pendingFiles.length > 0 || attachError}
         <div class="reply-pending" data-testid="reply-panel-pending">
           {#each pendingFiles as file, i (file.name + file.size + i)}
@@ -776,6 +855,7 @@
         placeholder="Reply…"
         aria-label="Reply"
         data-testid="reply-panel-composer"
+        bind:this={composerEl}
         bind:value={draft}
         onkeydown={onComposerKey}
         onpaste={onComposerPaste}

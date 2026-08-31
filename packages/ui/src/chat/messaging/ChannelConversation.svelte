@@ -18,6 +18,7 @@
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import MentionPicker from "./MentionPicker.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
@@ -931,43 +932,11 @@
   <div class="dm-reply">
     <div class="dm-reply-composer">
       {#if showMentionPicker}
-        <div
-          class="mention-picker"
-          role="listbox"
-          aria-label="Mention someone"
-          data-testid="mention-picker"
-        >
-          {#if mentionHits.length === 0}
-            <div class="mention-empty">No one matches</div>
-          {:else}
-            {#each mentionHits as hit, index (hit.participantUid)}
-              <button
-                type="button"
-                class="mention-row"
-                class:selected={index === mentionHighlight}
-                role="option"
-                aria-selected={index === mentionHighlight}
-                onclick={() => applyMention(hit)}
-              >
-                <span
-                  class="mention-ava"
-                  class:agent={hit.participantType === "agent"}
-                  aria-hidden="true"
-                  >{hit.displayName.trim().slice(0, 1).toUpperCase() ||
-                    "?"}</span
-                >
-                <span class="mention-copy">
-                  <span class="mention-name">{hit.displayName}</span>
-                  <span class="mention-sub"
-                    >{hit.participantType === "agent"
-                      ? "Agent"
-                      : hit.email || "Teammate"}</span
-                  >
-                </span>
-              </button>
-            {/each}
-          {/if}
-        </div>
+        <MentionPicker
+          hits={mentionHits}
+          highlight={mentionHighlight}
+          onpick={applyMention}
+        />
       {:else if showAgentMenu}
         <div
           class="agent-menu"
@@ -1875,83 +1844,6 @@
     position: relative;
     display: flex;
     flex-direction: column;
-  }
-
-  .mention-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-height: 238px;
-    margin: 0 0 8px;
-    overflow-y: auto;
-    padding: 6px;
-    border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: #141418;
-    box-shadow: var(--pop-shadow);
-  }
-
-  .mention-empty {
-    padding: 10px 12px;
-    color: var(--t3);
-    font-size: 12px;
-  }
-
-  .mention-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    min-height: 46px;
-    padding: 6px 8px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .mention-row.selected,
-  .mention-row:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .mention-ava {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 14px;
-    background: #27272f;
-    color: #f4f4f5;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .mention-ava.agent {
-    background: #312e81;
-  }
-
-  .mention-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .mention-name {
-    color: #f4f4f5;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .mention-sub {
-    color: #8b8b95;
-    font-size: 11px;
   }
 
   .mention-input-frame {

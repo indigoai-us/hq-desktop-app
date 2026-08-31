@@ -404,6 +404,32 @@ describe('US-105 embedded feature-parity QA', () => {
       expect(expectedDm.path).toBe('/v1/notify/dm');
     });
 
+    it('sendReply with mentions uses the WebPlatformAdapter POST contract', async () => {
+      const { adapter, calls } = makeAdapter();
+      const mentions = [
+        {
+          participantUid: 'prs_stefan',
+          participantType: 'human' as const,
+          displayName: 'Stefan Johnson',
+        },
+      ];
+      const channelArgs = {
+        scope: 'channel' as const,
+        rootEventId: 'evt_root',
+        body: 'hey @Stefan Johnson',
+        channelId: 'chn_1',
+        mentions,
+      };
+      expectOk(await adapter.messaging.sendReply(channelArgs));
+      const expectedChannel = buildSendReplyRequest(channelArgs);
+      expect(hqProJson(calls[0]?.args)).toEqual({
+        method: 'POST',
+        path: expectedChannel.path,
+        body: expectedChannel.body,
+      });
+      expect(expectedChannel.body.mentions).toEqual(mentions);
+    });
+
     it('sendChannelMessage / sendDm with attachments match WebPlatformAdapter bodies', async () => {
       const { adapter, calls } = makeAdapter();
       expectOk(
