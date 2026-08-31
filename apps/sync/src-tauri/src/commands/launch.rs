@@ -176,24 +176,68 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Open the Codex DESKTOP app with `path` loaded as the workspace, via
-/// `codex app <path>` in a login shell.
+/// Where the ChatGPT app carries its embedded Codex CLI. Codex desktop is
+/// distributed inside ChatGPT.app, and the bundle ships the full CLI at
+/// Contents/Resources/codex — so a machine with the app needs NOTHING
+/// installed for a workspace launch.
+#[cfg(target_os = "macos")]
+pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
+    let candidates = [
+        std::path::PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
+        std::path::PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
+    ];
+    let home = dirs::home_dir();
+    candidates
+        .into_iter()
+        .chain(home.into_iter().flat_map(|h| {
+            [
+                h.join("Applications/ChatGPT.app/Contents/Resources/codex"),
+                h.join("Applications/Codex.app/Contents/Resources/codex"),
+            ]
+        }))
+        .find(|p| p.is_file())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// The new-thread deep link that pre-fills the composer. The app parses the
+/// `prompt` parameter (verified against its persisted state); `cwd` on this
+/// URL is IGNORED by current builds — the workspace only opens via
+/// `codex app <path>` — which is why this link is fired AFTER the workspace
+/// launch, never instead of it.
+pub fn codex_thread_url(prompt: &str) -> String {
+    let mut encoded = String::new();
+    for byte in prompt.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    format!("codex://threads/new?prompt={encoded}")
+}
+
+/// Open the Codex DESKTOP app with `path` loaded as the workspace, and
+/// optionally pre-fill the composer with `prompt` (e.g. "/setup" during
+/// onboarding — parity with the Claude deep link).
 ///
-/// This is the only launch that lands the desktop app in a folder. Verified
-/// empirically before this existed: the app's `codex://` scheme has no folder
-/// route usable from outside (`codex://threads/new?cwd=…` is dispatched by
-/// the CLI but does not open the workspace when fired bare), and a folder
-/// passed as an open-document (`open -a Codex <dir>`) is ignored — the app
-/// sits on "Choose project". The CLI's `app` subcommand is the sanctioned
-/// bridge, and it even opens the app installer when the desktop app is
-/// missing.
+/// Evidence trail, verified on real machines:
+/// - `codex app <path>` (the CLI subcommand) is the ONLY route that opens
+///   the desktop app IN a folder;
+/// - the bare `codex://threads/new?cwd=…` link does NOT open the workspace
+///   (the app never parses `cwd`), but DOES parse `prompt`;
+/// - a folder passed as an open-document (`open -a Codex <dir>`) is ignored.
 ///
-/// Login shell (`$SHELL -lc`) for the same reason the detection probe uses
-/// one: GUI apps inherit launchd's minimal PATH, and codex commonly lives in
-/// a shell-profile-managed prefix (pnpm home, homebrew, ~/.local/bin).
+/// Binary resolution: the ChatGPT-bundled CLI first (present on every
+/// desktop-app machine, needs nothing installed), then a login-shell `codex`
+/// for CLI-only installs (pnpm home / homebrew / npm global).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_codex_workspace(path: String) -> Result<(), String> {
+pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {
     let target = expand_home_path(&path)?;
     if !target.is_dir() {
         return Err(format!(
@@ -201,16 +245,9 @@ pub fn launch_codex_workspace(path: String) -> Result<(), String> {
             target.display()
         ));
     }
-    // Prefer the app-provisioned codex by absolute path — it exists even
-    // when the user's shell profile lacks the managed PATH block. Fall back
-    // to login-shell resolution for user-managed installs (pnpm home,
-    // homebrew, npm global).
-    let output = match crate::commands::ensure_codex::managed_codex_bin()
-        .filter(|bin| bin.exists())
-    {
+    let output = match bundled_codex_bin() {
         Some(bin) => Command::new(bin)
             .args(["app", &target.to_string_lossy()])
-            .env("PATH", crate::commands::install_deps::extended_search_path())
             .output(),
         None => {
             let escaped = target.to_string_lossy().replace('\'', "'\\''");
@@ -229,14 +266,25 @@ pub fn launch_codex_workspace(path: String) -> Result<(), String> {
             stderr.trim()
         ));
     }
+
+    if let Some(prompt) = prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+        // The app needs a beat to finish opening the workspace before it will
+        // route a new-thread link into it. Fire-and-forget: a missed prompt
+        // is a pre-typed convenience lost, never a failed launch.
+        let url = codex_thread_url(prompt);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let _ = Command::new("open").arg(&url).status();
+        });
+    }
     Ok(())
 }
 
-/// Windows counterpart: `cmd /C codex app <path>` through the extended
-/// search path the other CLI probes use.
+/// Windows counterpart. No bundled-binary path is known for the Windows
+/// build, so resolution goes through the extended search path.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_codex_workspace(path: String) -> Result<(), String> {
+pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {
     let target = expand_home_path(&path)?;
     if !target.is_dir() {
         return Err(format!(
@@ -245,7 +293,7 @@ pub fn launch_codex_workspace(path: String) -> Result<(), String> {
         ));
     }
     let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
-    let output = Command::new(comspec)
+    let output = Command::new(&comspec)
         .args(["/C", "codex", "app", &target.to_string_lossy()])
         .env("PATH", crate::commands::install_deps::extended_search_path())
         .output()
@@ -257,6 +305,14 @@ pub fn launch_codex_workspace(path: String) -> Result<(), String> {
             output.status.code().unwrap_or(-1),
             stderr.trim()
         ));
+    }
+    if let Some(prompt) = prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+        let url = codex_thread_url(prompt);
+        let comspec = comspec.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let _ = Command::new(comspec).args(["/C", "start", "", &url]).status();
+        });
     }
     Ok(())
 }
@@ -558,5 +614,24 @@ mod tests {
         for tool in ["", "Claude", "claude.exe", "bash", "claude; rm -rf ~"] {
             assert!(cli_binary_for(tool).is_err(), "should reject: {tool}");
         }
+    }
+}
+
+#[cfg(test)]
+mod codex_workspace_tests {
+    use super::codex_thread_url;
+
+    #[test]
+    fn thread_url_encodes_the_prompt_for_the_composer() {
+        // The onboarding parity case: "/setup" pre-typed, exactly as the
+        // installer's Claude deep link does. Slash must be percent-encoded —
+        // the app's router treats a raw slash as a path segment.
+        assert_eq!(codex_thread_url("/setup"), "codex://threads/new?prompt=%2Fsetup");
+        assert_eq!(
+            codex_thread_url("fix the build & ship"),
+            "codex://threads/new?prompt=fix%20the%20build%20%26%20ship"
+        );
+        // Unreserved characters pass through untouched.
+        assert_eq!(codex_thread_url("hello-world_1.2~x"), "codex://threads/new?prompt=hello-world_1.2~x");
     }
 }
