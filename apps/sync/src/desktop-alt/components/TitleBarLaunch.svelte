@@ -82,13 +82,13 @@
     launching = 'codex';
     try {
       // `codex app <folder>` opens the DESKTOP app with the folder loaded —
-      // the only launch that does (verified: the bare codex:// deep link and
-      // folder-as-open-document both leave the app on "Choose project").
-      // Bare desktop open stays as the no-CLI fallback: an app without your
-      // project beats nothing at all.
-      if (tools?.codex_cli) {
-        await invoke('launch_codex_workspace', { path: folder });
-      } else {
+      // the only launch that does. The CLI ships inside the ChatGPT app
+      // bundle, so this works on desktop-only machines; detect_ai_tools
+      // reports codex_cli accordingly. Bare desktop open is the last-ditch
+      // fallback: an app without your project beats nothing at all.
+      try {
+        await invoke('launch_codex_workspace', { path: folder, prompt: null });
+      } catch {
         await invoke('launch_codex_desktop');
       }
     } catch (err) {

@@ -94,9 +94,9 @@
     launching = 'codex';
     try {
       if (codexAvailable(await ensureAiTools())) {
-        await invoke('launch_cli_in_terminal', {
+        await invoke('launch_codex_workspace', {
           path: status.hqFolderPath,
-          tool: 'codex',
+          prompt: '/setup',
         });
       } else {
         launchError =
