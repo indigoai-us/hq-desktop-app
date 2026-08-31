@@ -12,6 +12,21 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+
 use crate::paths;
 
 /// Re-exported so probe diagnostics and their telemetry tests have a single
@@ -101,6 +116,79 @@ fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+struct VersionProbeContainment {
+    #[cfg(unix)]
+    process_group: Option<i32>,
+    #[cfg(target_os = "windows")]
+    job: Option<HANDLE>,
+}
+
+impl VersionProbeContainment {
+    fn prepare(cmd: &mut std::process::Command) {
+        #[cfg(unix)]
+        cmd.process_group(0);
+        #[cfg(not(unix))]
+        let _ = cmd;
+    }
+
+    fn establish(child: &std::process::Child) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        return Ok(Self {
+            process_group: Some(child.id() as i32),
+        });
+
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let job = CreateJobObjectW(None, PCWSTR::null())
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Err(error) = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) {
+                let _ = CloseHandle(job);
+                return Err(std::io::Error::other(error.to_string()));
+            }
+            if let Err(error) = AssignProcessToJobObject(job, HANDLE(child.as_raw_handle())) {
+                let _ = CloseHandle(job);
+                return Err(std::io::Error::other(error.to_string()));
+            }
+            return Ok(Self { job: Some(job) });
+        }
+
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    fn terminate(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group.take() {
+            unsafe {
+                libc::killpg(process_group, libc::SIGKILL);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(job) = self.job.take() {
+            unsafe {
+                let _ = TerminateJobObject(job, 1);
+                let _ = CloseHandle(job);
+            }
+        }
+    }
+}
+
+impl Drop for VersionProbeContainment {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 /// Run a tiny version command with a hard process boundary. `Command::output`
 /// has no timeout and can strand both the process and its blocking worker; this
 /// helper kills and reaps the child before returning `None` on timeout.
@@ -116,13 +204,24 @@ fn output_with_timeout(
     let stderr = tempfile::tempfile()?;
     cmd.stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
+    VersionProbeContainment::prepare(cmd);
     let mut child = cmd.spawn()?;
+    let mut containment = match VersionProbeContainment::establish(&child) {
+        Ok(containment) => containment,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
+            containment.terminate();
             break Some(status);
         }
         if started.elapsed() >= timeout {
+            containment.terminate();
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -6391,6 +6490,40 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(500),
             "the descendant's inherited handle must not hold the caller open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn continuously_writing_descendant_is_terminated_with_the_probe_group() {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "echo 5.103.34; while :; do printf x; done & echo $! >&2",
+        ]);
+
+        let started = Instant::now();
+        let output = output_with_timeout(&mut command, Duration::from_millis(75))
+            .expect("process-tree containment is not an I/O failure")
+            .expect("the immediate child exits successfully");
+
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("5.103.34\n"));
+        let descendant_pid = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .parse::<i32>()
+            .expect("the fixture reports its writer pid");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a continuous inherited writer must not hold the probe open"
+        );
+        let reaped_by = Instant::now() + Duration::from_millis(500);
+        while unsafe { libc::kill(descendant_pid, 0) } == 0 && Instant::now() < reaped_by {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant_pid, 0) },
+            0,
+            "the continuously writing descendant must be killed"
         );
     }
 
