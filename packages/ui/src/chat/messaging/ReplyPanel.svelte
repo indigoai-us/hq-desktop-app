@@ -7,7 +7,7 @@
    * ZERO extra fetch after send — cache-first; the host must not re-GET the
    * whole reply thread on ack (hq-work-desktop-io-off-main-thread).
    */
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -15,6 +15,13 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
+  import AgentThinkingRow from "./AgentThinkingRow.svelte";
+  import {
+    clearFromMessages,
+    startThinking,
+    tick,
+    type ThinkingEntry,
+  } from "../agent-thinking.js";
   import {
     activeMentionQuery,
     applyMentionMarkup,
@@ -196,6 +203,42 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
+  // Thread-local thinking rows — the panel owns its send + reply merge, so
+  // the indicator stays self-contained (no DesktopApp plumbing).
+  const AGENT_THINKING_TICK_MS = 5_000;
+  let agentThinking = $state<ThinkingEntry[]>([]);
+
+  onMount(() => {
+    const handle = window.setInterval(() => {
+      agentThinking = tick(agentThinking, Date.now());
+    }, AGENT_THINKING_TICK_MS);
+    return () => clearInterval(handle);
+  });
+
+  function startThinkingForMentions(mentions: MentionTarget[]): void {
+    const now = Date.now();
+    for (const mention of mentions) {
+      if (mention.participantType !== "agent") continue;
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: mention.participantUid,
+          agentName: mention.displayName,
+        },
+        now,
+      );
+    }
+  }
+
+  /** Timestamp-aware: `load()` re-fetches the WHOLE thread on every
+   *  reply:new wake, so a historical agent reply must not clear a row that
+   *  started after it. */
+  function clearThinkingFromReplies(
+    list: ConversationMessageWire[],
+  ): void {
+    if (agentThinking.length === 0) return;
+    agentThinking = clearFromMessages(agentThinking, list);
+  }
 
   const mentionQuery = $derived(activeMentionQuery(draft));
   const mentionHits = $derived(
@@ -298,6 +341,7 @@
           (row.sendStatus === "sending" || row.sendStatus === "failed"),
       );
       replies = [...ordered, ...pending];
+      clearThinkingFromReplies(ordered);
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
       if (generation !== loadGeneration || rootEventId !== requested) return;
@@ -430,10 +474,12 @@
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
+      startThinkingForMentions(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
       );
+      agentThinking = [];
     } finally {
       sending = false;
     }
@@ -465,10 +511,12 @@
         row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
+      startThinkingForMentions(retryMentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === eventId ? { ...row, sendStatus: "failed" } : row,
       );
+      agentThinking = [];
     } finally {
       sending = false;
     }
@@ -518,6 +566,7 @@
       replies = [];
       replyCount = 0;
       seenIds = new Set();
+      agentThinking = [];
       void load();
     });
   });
@@ -820,6 +869,8 @@
         {/each}
       {/if}
     </div>
+
+    <AgentThinkingRow entries={agentThinking} />
 
     <div class="reply-composer">
       {#if showMentionPicker}

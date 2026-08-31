@@ -24,6 +24,7 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
@@ -87,6 +88,12 @@
     mergeMentionRosters,
     type MentionTarget,
   } from "../chat/mentions.js";
+  import {
+    clearFromMessages,
+    startThinking,
+    tick,
+    type ThinkingEntry,
+  } from "../chat/agent-thinking.js";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -485,6 +492,36 @@
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
 
+  // Client-side "agent is thinking" rows for the open channel. Local only —
+  // the backend has no typing/ack events. Per-conversation: a row switch
+  // must not keep another channel's optimistic status on screen.
+  const AGENT_THINKING_TICK_MS = 5_000;
+  let agentThinking = $state<ThinkingEntry[]>([]);
+
+  $effect(() => {
+    void selectedRow?.id;
+    agentThinking = [];
+  });
+
+  onMount(() => {
+    const handle = window.setInterval(() => {
+      agentThinking = tick(agentThinking, Date.now());
+    }, AGENT_THINKING_TICK_MS);
+    return () => clearInterval(handle);
+  });
+
+  /** Clear thinking rows when those agents appear in a freshly fetched page
+   *  (recent messages only — not the full merged timeline, or historical
+   *  agent posts would immediately kill a new mention's indicator). */
+  function clearThinkingFromIncoming(
+    messages: ConversationMessageWire[],
+  ): void {
+    if (agentThinking.length === 0) return;
+    // Timestamp-aware so a full-history hydrate or overlapping catch-up page
+    // containing an OLD agent message cannot clear a newer row.
+    agentThinking = clearFromMessages(agentThinking, messages);
+  }
+
   function commitTimeline(
     row: ConversationRow,
     next: ConversationMessageWire[],
@@ -561,7 +598,9 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
-    commitTimeline(row, messagesForDisplay(raw));
+    const incoming = messagesForDisplay(raw);
+    commitTimeline(row, incoming);
+    clearThinkingFromIncoming(incoming);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -573,12 +612,14 @@
     const raw = await fetchTimelineRaw(row, since);
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
+    const incoming = messagesForDisplay(raw);
     commitTimeline(
       row,
       existing.length > 0
         ? mergeFetchedTimeline(existing, raw)
-        : messagesForDisplay(raw),
+        : incoming,
     );
+    clearThinkingFromIncoming(incoming);
   }
 
   $effect(() => {
@@ -1303,7 +1344,9 @@
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(res.value);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    clearThinkingFromIncoming(incoming);
   }
 
   async function catchUpDmInbox(): Promise<void> {
@@ -1419,62 +1462,81 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
-    let attachments:
-      Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
-    if (files.length > 0) {
-      attachments = await uploadFilesForSelectedRow(files);
-    }
-    const extras = {
-      body,
-      fromPersonUid: self?.uid?.trim() || null,
-      fromDisplayName: self?.displayName?.trim() || "You",
-      mentions: mentions.length > 0 ? mentions : undefined,
-      attachments,
-    };
-    if (row.kind === "dm" && row.personUid) {
-      const res = await adapter.messaging.sendDm(row.personUid, body, {
+    try {
+      let attachments:
+        Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
+      if (files.length > 0) {
+        attachments = await uploadFilesForSelectedRow(files);
+      }
+      const extras = {
+        body,
+        fromPersonUid: self?.uid?.trim() || null,
+        fromDisplayName: self?.displayName?.trim() || "You",
+        mentions: mentions.length > 0 ? mentions : undefined,
+        attachments,
+      };
+      if (row.kind === "dm" && row.personUid) {
+        const res = await adapter.messaging.sendDm(row.personUid, body, {
+          attachments,
+        });
+        if (!res.ok) {
+          throw new Error(res.message || "Could not send the message");
+        }
+        const wire = sentMessageFromResult(res.value, extras);
+        if (wire)
+          commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        else {
+          try {
+            await catchUpTimeline(row);
+          } catch (err) {
+            console.warn("[hq-desktop] post-send DM catch-up failed", err);
+          }
+        }
+        return;
+      }
+      const channelId = row.channelId?.trim() ?? "";
+      if (!channelId) throw new Error("No channel to send to");
+      if (!channelId.startsWith("chn_")) {
+        throw new Error(
+          "Couldn't send — this channel isn't linked yet. Try reopening it.",
+        );
+      }
+      const res = await adapter.messaging.sendChannelMessage(channelId, body, {
+        mentions: mentions.length > 0 ? mentions : undefined,
         attachments,
       });
       if (!res.ok) {
         throw new Error(res.message || "Could not send the message");
       }
       const wire = sentMessageFromResult(res.value, extras);
-      if (wire)
-        commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-      else {
-        try {
-          await catchUpTimeline(row);
-        } catch (err) {
-          console.warn("[hq-desktop] post-send DM catch-up failed", err);
-        }
+      if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+      // Channel @agent mentions only — a DM send never starts a thinking row.
+      for (const mention of mentions) {
+        if (mention.participantType !== "agent") continue;
+        agentThinking = startThinking(
+          agentThinking,
+          {
+            agentUid: mention.participantUid,
+            agentName: mention.displayName,
+          },
+          Date.now(),
+        );
       }
-      return;
-    }
-    const channelId = row.channelId?.trim() ?? "";
-    if (!channelId) throw new Error("No channel to send to");
-    if (!channelId.startsWith("chn_")) {
-      throw new Error(
-        "Couldn't send — this channel isn't linked yet. Try reopening it.",
-      );
-    }
-    const res = await adapter.messaging.sendChannelMessage(channelId, body, {
-      mentions: mentions.length > 0 ? mentions : undefined,
-      attachments,
-    });
-    if (!res.ok) {
-      throw new Error(res.message || "Could not send the message");
-    }
-    const wire = sentMessageFromResult(res.value, extras);
-    if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-    // Mention sends write a same-timestamp member_added sibling the POST
-    // echo does not include. Catch-up/roster refresh are best-effort — a
-    // failed follow-up must not surface as "Couldn't send" after the POST
-    // already succeeded (dogfood: CHANNEL_NOT_FOUND after mention send).
-    try {
-      await catchUpTimeline(row);
-      if (mentions.length > 0) await loadChannelRoster(channelId);
+      // Mention sends write a same-timestamp member_added sibling the POST
+      // echo does not include. Catch-up/roster refresh are best-effort — a
+      // failed follow-up must not surface as "Couldn't send" after the POST
+      // already succeeded (dogfood: CHANNEL_NOT_FOUND after mention send).
+      try {
+        await catchUpTimeline(row);
+        if (mentions.length > 0) await loadChannelRoster(channelId);
+      } catch (err) {
+        console.warn("[hq-desktop] post-send catch-up failed", err);
+      }
     } catch (err) {
-      console.warn("[hq-desktop] post-send catch-up failed", err);
+      // Send never left — drop every optimistic thinking row so the status
+      // cannot outlive a failed mention.
+      agentThinking = [];
+      throw err;
     }
   }
 
@@ -2075,6 +2137,7 @@
                   activeRootEventId={openReplyRootId}
                   loading={timelineHydrating && timeline.length === 0}
                 />
+                <AgentThinkingRow entries={agentThinking} />
               {/key}
               {#if openProfileMember}
                 <div

@@ -5,6 +5,7 @@
  */
 export { default as ChannelConversation } from "./ChannelConversation.svelte";
 export { default as ReplyPanel } from "./ReplyPanel.svelte";
+export { default as AgentThinkingRow } from "./AgentThinkingRow.svelte";
 export { default as BoardTab } from "./BoardTab.svelte";
 export { default as ChannelFilesTab } from "./ChannelFilesTab.svelte";
 export { default as RunCompleteCard } from "./RunCompleteCard.svelte";

@@ -7,8 +7,9 @@ import {
   startThinking,
   tick,
   clearForAgents,
+  clearFromMessages,
   labelFor,
-} from './agentThinking';
+} from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
   return { personUid, displayName };
@@ -176,5 +177,56 @@ describe('labelFor', () => {
     expect(
       labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'slow' })),
     ).toBe('Izzy is taking longer than usual…');
+  });
+});
+
+describe('clearFromMessages', () => {
+  const started = 1_000_000_000_000; // arbitrary epoch ms
+  it('clears a row when the agent message is newer than startedAt', () => {
+    const rows = [entry({ agentUid: 'agt_a', startedAt: started })];
+    const out = clearFromMessages(rows, [
+      {
+        fromPersonUid: 'agt_a',
+        createdAt: new Date(started + 5_000).toISOString(),
+      },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it('keeps a row when the only agent message predates the mention (full re-fetch)', () => {
+    const rows = [entry({ agentUid: 'agt_a', startedAt: started })];
+    const out = clearFromMessages(rows, [
+      {
+        fromPersonUid: 'agt_a',
+        createdAt: new Date(started - 600_000).toISOString(),
+      },
+      { fromPersonUid: 'prs_human', createdAt: new Date(started + 1_000).toISOString() },
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('tolerates modest server/client clock skew (reply slightly before startedAt)', () => {
+    const rows = [entry({ agentUid: 'agt_a', startedAt: started })];
+    const out = clearFromMessages(rows, [
+      {
+        fromPersonUid: 'agt_a',
+        createdAt: new Date(started - 60_000).toISOString(),
+      },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it('fails open: a message without a timestamp clears the row', () => {
+    const rows = [entry({ agentUid: 'agt_a', startedAt: started })];
+    expect(clearFromMessages(rows, [{ fromPersonUid: 'agt_a' }])).toEqual([]);
+  });
+
+  it('does not mutate input and ignores unrelated senders', () => {
+    const rows = [entry({ agentUid: 'agt_a', startedAt: started })];
+    const out = clearFromMessages(rows, [
+      { fromPersonUid: 'prs_x', createdAt: new Date(started + 1).toISOString() },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out).not.toBe(rows);
   });
 });

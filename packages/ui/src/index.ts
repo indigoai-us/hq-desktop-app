@@ -22,6 +22,22 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+// Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
+// intentionally NOT re-exported here — the barrel already ships the
+// mesh-overlay `isAgentUid`; import the agent-thinking one from the module
+// path directly if the wider `agent_` prefix matters.
+export {
+  detectAgentMentions,
+  startThinking,
+  tick,
+  clearForAgents,
+  clearFromMessages,
+  labelFor,
+  type MentionCandidate,
+  type ThinkingPhase,
+  type ThinkingEntry,
+  type TickOpts,
+} from "./chat/agent-thinking.js";
 export * from "./chat/dm-requests.js";
 export * from "./chat/workspaces.js";
 export * from "./chat/pending-conversation.js";
