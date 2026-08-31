@@ -127,7 +127,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
-    listChannels: () => this.call("list_channels"),
+    listChannels: (opts) =>
+      this.call("list_channels", {
+        companyUid: opts?.companyUid,
+        includeCompanyProjects: opts?.includeCompanyProjects,
+      }),
     fetchChannelDirectory: (cursor) =>
       this.call("fetch_channel_directory", { cursor }),
     // No create_channel Tauri command exists — route through hq-pro REST like

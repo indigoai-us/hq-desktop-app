@@ -558,6 +558,8 @@ export function createFixtureChatSidebarApi(): ChatSidebarApi {
     listChannels: async () => ({ channels: [] }),
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
+    sendChannelMessage: async () => {},
+    sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
   };
 }

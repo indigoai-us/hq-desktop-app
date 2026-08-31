@@ -232,11 +232,13 @@
   let messageSearchLoading = $state(false);
   let messageSearchError = $state<string | null>(null);
   let messageSearchSeq = 0;
-  /** "New message" compose modal (?view=v2) — display-only, submit is a stub. */
+  /** "New message" compose modal (?view=v2). */
   let newMessageOpen = $state(false);
   let newMessageQuery = $state("");
   let composeBody = $state("");
   let composeRecipient = $state<SwitcherRow | null>(null);
+  let composeSending = $state(false);
+  let composeError = $state<string | null>(null);
   /** "+" header menu + "New channel" modal (name, scope, participants). */
   let plusMenuOpen = $state(false);
   let plusMenuEl = $state<HTMLDivElement | null>(null);
@@ -251,6 +253,13 @@
   /** Compose body carried into the create-channel flow — sent as the new
    *  channel's first message right after creation. */
   let pendingChannelFirstMessage = $state("");
+  /** A channel that exists but whose composed first message still needs sending. */
+  let createdChannel = $state<{
+    channelId: string;
+    name: string;
+    scope: "personal" | "company";
+    companyUid: string | null;
+  } | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
   let searchQuery = $state("");
@@ -595,6 +604,8 @@
     newMessageQuery = "";
     composeBody = "";
     composeRecipient = null;
+    composeSending = false;
+    composeError = null;
   }
 
   function openNewChannel(): void {
@@ -606,6 +617,7 @@
     channelParticipants = [];
     channelError = null;
     pendingChannelFirstMessage = "";
+    createdChannel = null;
   }
 
   function closeNewChannel(): void {
@@ -613,6 +625,7 @@
     channelQuery = "";
     channelError = null;
     pendingChannelFirstMessage = "";
+    createdChannel = null;
   }
 
   /**
@@ -622,7 +635,7 @@
    */
   function startCreateChannelFromCompose(name = composeCreateName): void {
     if (!name) return;
-    const body = composeBody.trim();
+    const body = composeBody;
     closeNewMessage();
     openNewChannel();
     channelName = name;
@@ -646,40 +659,68 @@
   async function submitCreateChannel(): Promise<void> {
     const name = channelName.trim();
     const create = api.createChannel;
-    if (!name || !create || channelCreating) return;
+    if (!name || (!create && !createdChannel) || channelCreating) return;
     channelCreating = true;
     channelError = null;
     try {
-      const scope = channelCompanyUid ? "company" : "personal";
-      const { channelId } = await create({
-        name,
-        scope,
-        ...(channelCompanyUid ? { companyUid: channelCompanyUid } : {}),
-      });
-      for (const p of channelParticipants) {
-        await api.addChannelMember?.(channelId, p.personUid);
+      let created = createdChannel;
+      if (!created) {
+        const scope = channelCompanyUid ? "company" : "personal";
+        const { channelId } = await create!({
+          name,
+          scope,
+          ...(channelCompanyUid ? { companyUid: channelCompanyUid } : {}),
+        });
+        created = {
+          channelId,
+          name,
+          scope,
+          companyUid: channelCompanyUid || null,
+        };
+        for (const p of channelParticipants) {
+          await api.addChannelMember?.(channelId, p.personUid);
+        }
       }
-      // Compose-handoff draft becomes the channel's first message. Best-effort:
-      // the channel exists either way, so a failed send must not strand the
-      // user in the modal — the thread composer still has them covered.
-      const firstMessage = pendingChannelFirstMessage.trim();
-      if (firstMessage) {
+
+      // A composed draft is part of this action: do not close or navigate until
+      // the host acknowledges one send. If the channel exists but the send
+      // fails, keep the exact draft visible and retry against this same id.
+      const firstMessage = pendingChannelFirstMessage;
+      if (firstMessage.trim()) {
         try {
-          await api.sendChannelMessage?.({ channelId, body: firstMessage });
+          await api.sendChannelMessage({
+            channelId: created.channelId,
+            body: firstMessage,
+          });
         } catch (err) {
-          console.error("chat-sidebar: first channel message failed", err);
+          createdChannel = created;
+          channels = upsertChannel(channels, {
+            channelId: created.channelId,
+            name: created.name,
+            scope: created.scope,
+            companyUid: created.companyUid,
+            membership: "joined",
+            unread: 0,
+            lastMessageAt: null,
+          });
+          const detail =
+            err instanceof Error && err.message.trim()
+              ? err.message.trim()
+              : "Could not send the first message";
+          channelError = `Channel created, but your first message was not sent: ${detail}. Your draft is preserved; retry sending it.`;
+          return;
         }
       }
       // Optimistic rail insert so the new channel is visible immediately —
       // the directory reconcile below confirms it from the server.
       const optimistic: Channel = {
-        channelId,
-        name,
-        scope,
-        companyUid: channelCompanyUid || null,
+        channelId: created.channelId,
+        name: created.name,
+        scope: created.scope,
+        companyUid: created.companyUid,
         membership: "joined",
         unread: 0,
-        lastMessageAt: firstMessage ? new Date().toISOString() : null,
+        lastMessageAt: firstMessage.trim() ? new Date().toISOString() : null,
       };
       channels = upsertChannel(channels, optimistic);
       closeNewChannel();
@@ -687,10 +728,10 @@
       // A lagging directory snapshot may not include the just-created channel
       // yet and would have replaced the list — re-assert it so the rail never
       // loses the new channel (idempotent when the server already returned it).
-      if (!channels.some((c) => c.channelId === channelId)) {
+      if (!channels.some((c) => c.channelId === created.channelId)) {
         channels = upsertChannel(channels, optimistic);
       }
-      requestChannelOpen(channelId);
+      requestChannelOpen(created.channelId);
     } catch (err) {
       channelError =
         err instanceof Error && err.message.trim()
@@ -706,19 +747,39 @@
     newMessageQuery = "";
     composeBody = "";
     composeRecipient = null;
+    composeSending = false;
+    composeError = null;
   }
 
-  /** Open the picked (or first matching) conversation. Body send stays
-   *  on the thread composer — this modal only starts the thread. When the
-   *  query names a channel that doesn't exist, route into the create-channel
-   *  flow instead of silently closing (the old behavior looked like a send
-   *  that went nowhere). */
-  function submitCompose(): void {
+  /** Send the draft to a selected conversation before changing the UI state. */
+  async function submitCompose(): Promise<void> {
+    if (composeSending) return;
     const picked =
       composeRecipient ??
       filterSwitcher(liveSwitcherRows, newMessageQuery)[0] ??
       null;
     if (picked) {
+      const body = composeBody;
+      if (body.trim()) {
+        composeSending = true;
+        composeError = null;
+        try {
+          if (picked.kind === "dm") {
+            await api.sendDm({ toPersonUid: picked.id, body });
+          } else {
+            await api.sendChannelMessage({ channelId: picked.id, body });
+          }
+        } catch (err) {
+          const detail =
+            err instanceof Error && err.message.trim()
+              ? err.message.trim()
+              : "Could not send the message";
+          composeError = `${detail}. Your draft is still here; retry sending it.`;
+          return;
+        } finally {
+          composeSending = false;
+        }
+      }
       jumpToSwitcherRow(picked);
       closeNewMessage();
       return;
@@ -730,6 +791,10 @@
       : null;
     if (createName) {
       startCreateChannelFromCompose(createName);
+      return;
+    }
+    if (composeBody.trim()) {
+      composeError = "Choose a recipient before sending. Your draft is still here.";
       return;
     }
     closeNewMessage();
@@ -2237,7 +2302,17 @@
           placeholder="Write your message…"
           bind:value={composeBody}
           aria-label="Message"
+          onkeydown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              void submitCompose();
+            }
+          }}
         ></textarea>
+
+        {#if composeError}
+          <div class="chat-channel-error" role="alert">{composeError}</div>
+        {/if}
 
         <div class="chat-compose-footer">
           <div class="chat-compose-tools">
@@ -2283,7 +2358,9 @@
               class="chat-compose-send-btn"
               data-testid="chat-compose-send"
               aria-label="Send message"
-              onclick={submitCompose}
+              disabled={composeSending}
+              aria-busy={composeSending}
+              onclick={() => void submitCompose()}
             >
               <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path
@@ -2412,6 +2489,12 @@
           <div class="chat-channel-error" role="alert">{channelError}</div>
         {/if}
 
+        {#if createdChannel && pendingChannelFirstMessage.trim()}
+          <div class="chat-channel-first-message-draft" data-testid="chat-channel-first-message-draft">
+            {pendingChannelFirstMessage}
+          </div>
+        {/if}
+
         <div class="chat-compose-footer">
           <div class="chat-compose-send">
             <button
@@ -2422,7 +2505,13 @@
               aria-busy={channelCreating}
               onclick={() => void submitCreateChannel()}
             >
-              {channelCreating ? "Creating…" : "Create channel"}
+              {channelCreating
+                ? createdChannel
+                  ? "Sending…"
+                  : "Creating…"
+                : createdChannel
+                  ? "Retry sending first message"
+                  : "Create channel"}
             </button>
           </div>
         </div>

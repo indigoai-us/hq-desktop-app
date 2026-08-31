@@ -42,6 +42,8 @@ function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
     listChannels: async () => null,
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
+    sendChannelMessage: async () => {},
+    sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
     ...overrides,
   };

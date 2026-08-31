@@ -153,6 +153,38 @@ describe("PlatformAdapter contract", () => {
     expect(r).toMatchObject({ ok: false, reason: "error", code: "http-500" });
   });
 
+  it("preserves owner-scoped project listing options in both web and Tauri adapters", async () => {
+    const webRequests: string[] = [];
+    const web = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async (input) => {
+        webRequests.push(String(input));
+        return new Response(JSON.stringify([]), { status: 200 });
+      },
+    });
+    const tauriCalls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    const tauri = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        tauriCalls.push({ cmd, args });
+        return [];
+      },
+    });
+
+    const options = {
+      companyUid: "cmp_indigo",
+      includeCompanyProjects: true,
+    };
+    expectOk(await web.messaging.listChannels(options));
+    expectOk(await tauri.messaging.listChannels(options));
+
+    expect(webRequests).toEqual([
+      "https://api.test/v1/messaging/channels?companyUid=cmp_indigo&includeCompanyProjects=1",
+    ]);
+    expect(tauriCalls).toEqual([
+      { cmd: "list_channels", args: options },
+    ]);
+  });
+
   it("web adapter notifies onUnauthorized on HTTP 401 so the host can re-login", async () => {
     const seen: number[] = [];
     const adapter = new WebPlatformAdapter({
