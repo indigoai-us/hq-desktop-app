@@ -77,6 +77,8 @@
     ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
+    /** Fallback company for vault presign when a wire attachment omits it. */
+    vaultCompanyUid?: string | null;
     onclose: () => void;
     onreplycount?: (
       rootEventId: string,
@@ -108,6 +110,7 @@
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
+    vaultCompanyUid = null,
     onclose,
     onreplycount,
     avatarByUid = {},
@@ -326,8 +329,9 @@
     item: FileAttachmentModel,
   ): Promise<string | null> {
     if (item.previewUrl) return item.previewUrl;
-    if (!onpresign || !item.companyUid || !item.vaultPath) return null;
-    return onpresign(item.companyUid, item.vaultPath);
+    const companyUid = item.companyUid || vaultCompanyUid || "";
+    if (!onpresign || !companyUid || !item.vaultPath) return null;
+    return onpresign(companyUid, item.vaultPath);
   }
 
   async function deliver(

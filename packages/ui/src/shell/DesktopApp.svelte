@@ -2062,6 +2062,7 @@
                     selfDisplayName={self?.displayName ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
+                    vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     {avatarByUid}

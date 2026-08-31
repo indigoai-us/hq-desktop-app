@@ -34,7 +34,10 @@
       if (!isImage(item)) continue;
       const key = item.id || item.vaultPath;
       if (urls[key] || item.previewUrl) continue;
-      if (!item.companyUid || !item.vaultPath) continue;
+      // The host's resolveUrl owns the companyUid fallback (conversation
+      // vault company) — server-persisted attachments often omit companyUid,
+      // and gating on it here left received images as filename chips.
+      if (!item.vaultPath) continue;
       void resolveUrl(item).then((url) => {
         if (url) urls = { ...urls, [key]: url };
       });
