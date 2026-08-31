@@ -1462,15 +1462,38 @@ where
 }
 
 #[cfg(test)]
-fn run_test_post_spawn_hook(handle: &str, child: &std::process::Child) {
+fn run_test_post_spawn_hook(
+    handle: &str,
+    child: &mut std::process::Child,
+    containment: &mut ChildContainment,
+) {
     let hook = test_post_spawn_hooks().lock().unwrap().remove(handle);
     if let Some(hook) = hook {
-        hook(child);
+        // Hooks deliberately create the test fixture's descendant while this
+        // function still owns both the Child and its private Job Object. A
+        // failed readiness assertion must not escape that ownership boundary:
+        // terminate and reap the complete tree, then preserve the original
+        // panic for the test runner.
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hook(child);
+        })) {
+            if let Err(error) = terminate_stale_spawn(handle, child, containment) {
+                eprintln!(
+                    "[process] failed to reap a post-spawn test fixture after panic for {handle}: {error}"
+                );
+            }
+            std::panic::resume_unwind(payload);
+        }
     }
 }
 
 #[cfg(not(test))]
-fn run_test_post_spawn_hook(_handle: &str, _child: &std::process::Child) {}
+fn run_test_post_spawn_hook(
+    _handle: &str,
+    _child: &mut std::process::Child,
+    _containment: &mut ChildContainment,
+) {
+}
 
 #[cfg(test)]
 fn test_stale_cleanup_failures() -> &'static Mutex<HashMap<String, io::ErrorKind>> {
@@ -2342,7 +2365,7 @@ where
         }
     };
     let mut containment = ChildContainment::establish(handle, &child);
-    run_test_post_spawn_hook(handle, &child);
+    run_test_post_spawn_hook(handle, &mut child, &mut containment);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
@@ -2594,7 +2617,7 @@ where
         }
     };
     let mut containment = ChildContainment::establish(handle, &child);
-    run_test_post_spawn_hook(handle, &child);
+    run_test_post_spawn_hook(handle, &mut child, &mut containment);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
@@ -3528,6 +3551,262 @@ pub fn cancel_process(handle: String) -> bool {
     cancel_process_impl(&handle, Duration::from_secs(5))
 }
 
+/// A file-backed protocol for Windows process-tree fixtures.
+///
+/// The fixture root must first publish that it is waiting, then the test opens
+/// the descendant-start gate, observes the descendant's own readiness PID in
+/// the real Windows process tree, and only then opens the parent PID-publication
+/// gate. This intentionally never treats a sleep or one Toolhelp snapshot as a
+/// lifecycle acknowledgement. Every marker is unique to a `TempDir`, so
+/// concurrent test runners cannot consume one another's state.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_test_fixture {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Instant;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    pub(super) const DEADLINE: Duration = Duration::from_secs(30);
+    const POLL: Duration = Duration::from_millis(20);
+    const STILL_ACTIVE: u32 = 259;
+
+    pub(super) fn await_bounded<F>(what: &str, mut ready: F)
+    where
+        F: FnMut() -> bool,
+    {
+        let started = Instant::now();
+        while started.elapsed() < DEADLINE {
+            if ready() {
+                return;
+            }
+            thread::sleep(POLL);
+        }
+        panic!("timed out after {DEADLINE:?} waiting for {what}");
+    }
+
+    pub(super) fn pid_alive(pid: u32) -> bool {
+        unsafe {
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return false;
+            };
+            let mut code = 0u32;
+            let alive = GetExitCodeProcess(process, &mut code).is_ok() && code == STILL_ACTIVE;
+            let _ = CloseHandle(process);
+            alive
+        }
+    }
+
+    fn powershell_quote(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\'', "''")
+    }
+
+    fn try_read_pid(path: &std::path::Path) -> Option<u32> {
+        std::fs::read_to_string(path)
+            .ok()?
+            .trim()
+            .parse::<u32>()
+            .ok()
+    }
+
+    /// A PID marker is ready only after its complete numeric contents are
+    /// readable. `File::exists` observes the destination before a non-atomic
+    /// writer necessarily completes, so it is not a publication acknowledgement.
+    fn await_pid(path: &std::path::Path, description: &str) -> u32 {
+        let mut pid = None;
+        await_bounded(description, || {
+            pid = try_read_pid(path);
+            pid.is_some()
+        });
+        pid.expect("a successful PID readiness check must retain the parsed PID")
+    }
+
+    /// The fixture has explicit start, descendant-ready, PID-publication, and
+    /// release/exit states. `exit_delay` is deliberately controlled by the
+    /// child itself so a natural delayed exit is testable without timing races.
+    pub(super) struct Protocol {
+        _dir: tempfile::TempDir,
+        start_gate: PathBuf,
+        publish_gate: PathBuf,
+        release_gate: PathBuf,
+        parent_ready: PathBuf,
+        descendant_ready: PathBuf,
+        published_pid: PathBuf,
+        exit_delay_ms: u64,
+    }
+
+    impl Protocol {
+        pub(super) fn new(exit_delay: Duration) -> Self {
+            Self::from_tempdir(
+                tempfile::tempdir().expect("Windows fixture tempdir"),
+                exit_delay,
+            )
+        }
+
+        /// Makes the script path itself contain spaces, exercising the native
+        /// child argument forwarding that `Start-Process` flattens into one
+        /// command line on Windows.
+        pub(super) fn new_in_path_with_spaces(exit_delay: Duration) -> Self {
+            Self::from_tempdir(
+                tempfile::Builder::new()
+                    .prefix("hq fixture path with spaces ")
+                    .tempdir()
+                    .expect("Windows fixture tempdir with spaces"),
+                exit_delay,
+            )
+        }
+
+        fn from_tempdir(dir: tempfile::TempDir, exit_delay: Duration) -> Self {
+            let path = |name: &str| dir.path().join(name);
+            Self {
+                start_gate: path("allow-descendant-start"),
+                publish_gate: path("allow-pid-publication"),
+                release_gate: path("allow-descendant-exit"),
+                parent_ready: path("parent-ready.pid"),
+                descendant_ready: path("descendant-ready.pid"),
+                published_pid: path("descendant-published.pid"),
+                exit_delay_ms: exit_delay.as_millis().min(u128::from(u64::MAX)) as u64,
+                _dir: dir,
+            }
+        }
+
+        pub(super) fn spawn_args(&self) -> SpawnArgs {
+            let child_script = self._dir.path().join("descendant.ps1");
+            let parent_script = self._dir.path().join("parent.ps1");
+            std::fs::write(
+                &child_script,
+                r#"param(
+    [string]$ReadyPath,
+    [string]$ReleasePath,
+    [int]$ExitDelayMs
+)
+function Write-PidAtomically([string]$Path, [uint32]$Value) {
+    $temporaryPath = "$Path.$([System.Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, "$Value")
+        [System.IO.File]::Move($temporaryPath, $Path)
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) {
+            [System.IO.File]::Delete($temporaryPath)
+        }
+    }
+}
+Write-PidAtomically -Path $ReadyPath -Value $PID
+while (-not [System.IO.File]::Exists($ReleasePath)) { Start-Sleep -Milliseconds 10 }
+if ($ExitDelayMs -gt 0) { Start-Sleep -Milliseconds $ExitDelayMs }
+exit 0
+"#,
+            )
+            .expect("write Windows descendant fixture");
+            std::fs::write(
+                &parent_script,
+                format!(
+                    r#"function Write-PidAtomically([string]$Path, [uint32]$Value) {{
+    $temporaryPath = "$Path.$([System.Guid]::NewGuid().ToString('N')).tmp"
+    try {{
+        [System.IO.File]::WriteAllText($temporaryPath, "$Value")
+        [System.IO.File]::Move($temporaryPath, $Path)
+    }} finally {{
+        if ([System.IO.File]::Exists($temporaryPath)) {{
+            [System.IO.File]::Delete($temporaryPath)
+        }}
+    }}
+}}
+Write-PidAtomically -Path '{parent_ready}' -Value $PID
+while (-not [System.IO.File]::Exists('{start_gate}')) {{ Start-Sleep -Milliseconds 10 }}
+$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '"{child_script}"', '-ReadyPath', '"{descendant_ready}"', '-ReleasePath', '"{release_gate}"', '-ExitDelayMs', '{exit_delay_ms}')
+while (-not [System.IO.File]::Exists('{descendant_ready}')) {{ Start-Sleep -Milliseconds 10 }}
+while (-not [System.IO.File]::Exists('{publish_gate}')) {{ Start-Sleep -Milliseconds 10 }}
+Write-PidAtomically -Path '{published_pid}' -Value $child.Id
+$child.WaitForExit()
+exit $child.ExitCode
+"#,
+                    parent_ready = powershell_quote(&self.parent_ready),
+                    start_gate = powershell_quote(&self.start_gate),
+                    child_script = powershell_quote(&child_script),
+                    descendant_ready = powershell_quote(&self.descendant_ready),
+                    release_gate = powershell_quote(&self.release_gate),
+                    exit_delay_ms = self.exit_delay_ms,
+                    publish_gate = powershell_quote(&self.publish_gate),
+                    published_pid = powershell_quote(&self.published_pid),
+                ),
+            )
+            .expect("write Windows parent fixture");
+
+            SpawnArgs {
+                cmd: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoProfile".to_string(),
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-File".to_string(),
+                    parent_script.to_string_lossy().into_owned(),
+                ],
+                cwd: None,
+                env: None,
+            }
+        }
+
+        pub(super) fn await_parent_ready(&self) {
+            await_bounded("the fixture parent to acknowledge its start gate", || {
+                self.parent_ready.exists()
+            });
+        }
+
+        /// Drive the spawn handshake after the production runner registered the
+        /// root. The assertions prove actual parent/child ownership rather than
+        /// accepting a PID file from a process that escaped the private tree.
+        pub(super) fn start_and_publish_descendant(&self, root_pid: u32) -> u32 {
+            self.await_parent_ready();
+            assert!(
+                !self.descendant_ready.exists(),
+                "the descendant must remain blocked until the test opens its start gate"
+            );
+            std::fs::write(&self.start_gate, "go").expect("open descendant start gate");
+            let descendant = await_pid(&self.descendant_ready, "descendant readiness PID");
+            assert!(pid_alive(descendant), "the ready descendant must be live");
+            await_bounded("the ready descendant to belong to the fixture root", || {
+                windows_descendants(root_pid).contains(&descendant)
+            });
+            assert!(
+                !self.published_pid.exists(),
+                "the parent must not publish its descendant PID before the publication gate"
+            );
+            std::fs::write(&self.publish_gate, "go").expect("open PID publication gate");
+            assert_eq!(
+                await_pid(&self.published_pid, "published descendant PID"),
+                descendant,
+                "the parent must publish the same live PID that acknowledged readiness"
+            );
+            descendant
+        }
+
+        pub(super) fn release_descendant(&self) {
+            std::fs::write(&self.release_gate, "go").expect("open descendant release gate");
+        }
+    }
+
+    #[test]
+    fn await_pid_retries_until_a_complete_publication_is_readable() {
+        let dir = tempfile::tempdir().expect("PID readiness tempdir");
+        let path = dir.path().join("ready.pid");
+        std::fs::write(&path, "").expect("publish an incomplete PID marker");
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(POLL * 2);
+            std::fs::write(writer_path, "4242").expect("finish PID publication");
+        });
+
+        assert_eq!(
+            await_pid(&path, "a complete PID after an incomplete marker"),
+            4242
+        );
+        writer.join().expect("PID writer must not panic");
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod windows_spawn_tests {
     use super::*;
@@ -3535,6 +3814,40 @@ mod windows_spawn_tests {
         classify_windows_exit_status, is_windows_console_control_exit,
         termination_fingerprint_token, WindowsTermination, WINDOWS_CONTROL_C_EXIT,
     };
+
+    /// A stale-spawn test deliberately installs a replacement generation that
+    /// must survive the stale child's cleanup. Keep its removal panic-safe so
+    /// repeated focused runs never inherit registry or hook state from a prior
+    /// failed assertion.
+    struct ReplacementGeneration {
+        handle: String,
+        generation: Option<u64>,
+    }
+
+    impl ReplacementGeneration {
+        fn current(&self) -> u64 {
+            self.generation
+                .expect("the replacement generation must remain active")
+        }
+
+        fn finish(&mut self) {
+            test_post_spawn_hooks().lock().unwrap().remove(&self.handle);
+            let generation = self
+                .generation
+                .take()
+                .expect("the replacement generation must be active until test completion");
+            assert!(deregister_generation(&self.handle, generation));
+        }
+    }
+
+    impl Drop for ReplacementGeneration {
+        fn drop(&mut self) {
+            test_post_spawn_hooks().lock().unwrap().remove(&self.handle);
+            if let Some(generation) = self.generation.take() {
+                let _ = deregister_generation(&self.handle, generation);
+            }
+        }
+    }
 
     #[test]
     fn batch_launcher_preserves_metacharacter_arguments() {
@@ -3667,89 +3980,130 @@ mod windows_spawn_tests {
 
     #[test]
     fn stale_spawn_job_contains_descendant_before_ownership_check() {
+        use super::windows_test_fixture::{await_bounded, pid_alive, Protocol};
         use std::sync::atomic::{AtomicU32, Ordering};
 
-        fn powershell_quote(path: &std::path::Path) -> String {
-            path.to_string_lossy().replace('\'', "''")
-        }
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let descendant_script = tmp.path().join("descendant.ps1");
-        let parent_script = tmp.path().join("parent.ps1");
-        let descendant_pid_path = tmp.path().join("descendant.pid");
-        std::fs::write(&descendant_script, "Start-Sleep -Seconds 120\r\n")
-            .expect("write descendant fixture");
-        std::fs::write(
-            &parent_script,
-            format!(
-                "$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{}')\r\nSet-Content -LiteralPath '{}' -Value $child.Id\r\nWait-Process -Id $child.Id\r\n",
-                powershell_quote(&descendant_script),
-                powershell_quote(&descendant_pid_path),
-            ),
-        )
-        .expect("write parent fixture");
+        let protocol = Arc::new(Protocol::new(Duration::ZERO));
+        let spawn = protocol.spawn_args();
 
         let handle = format!("windows-stale-tree-{}", Uuid::new_v4());
         let stale_generation = try_register_handle_gen(&handle).expect("acquire stale generation");
         assert!(deregister_generation(&handle, stale_generation));
-        let replacement_generation =
-            try_register_handle_gen(&handle).expect("acquire replacement generation");
+        let mut replacement = ReplacementGeneration {
+            handle: handle.clone(),
+            generation: Some(
+                try_register_handle_gen(&handle).expect("acquire replacement generation"),
+            ),
+        };
 
         let descendant_pid = Arc::new(AtomicU32::new(0));
         let hook_pid = descendant_pid.clone();
-        let hook_path = descendant_pid_path.clone();
-        set_test_post_spawn_hook(&handle, move |_| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                if let Ok(raw) = std::fs::read_to_string(&hook_path) {
-                    if let Ok(pid) = raw.trim().parse::<u32>() {
-                        hook_pid.store(pid, Ordering::Release);
-                        return;
-                    }
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
+        let hook_protocol = protocol.clone();
+        set_test_post_spawn_hook(&handle, move |child| {
+            // The hook sits between private Job creation and the stale
+            // ownership refusal. It drives the same explicit protocol as the
+            // accounting fixture, proving the Job contains the descendant
+            // before stale cleanup—not merely that a PID file appeared later.
+            let pid = hook_protocol.start_and_publish_descendant(child.id());
+            hook_pid.store(pid, Ordering::Release);
         });
 
-        let result = run_process_impl_for_generation(
-            &handle,
-            stale_generation,
-            &SpawnArgs {
-                cmd: "powershell.exe".to_string(),
-                args: vec![
-                    "-NoProfile".to_string(),
-                    "-ExecutionPolicy".to_string(),
-                    "Bypass".to_string(),
-                    "-File".to_string(),
-                    parent_script.to_string_lossy().into_owned(),
-                ],
-                cwd: None,
-                env: None,
-            },
-            |_| {},
-        );
+        let result = run_process_impl_for_generation(&handle, stale_generation, &spawn, |_| {});
 
         assert!(matches!(result, Err(ProcessError::OwnershipLost { .. })));
         let pid = descendant_pid.load(Ordering::Acquire);
         assert_ne!(pid, 0, "the parent fixture must start its descendant");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while hq_desktop_core::daemon::is_pid_alive(pid) && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(25));
-        }
-        let descendant_survived = hq_desktop_core::daemon::is_pid_alive(pid);
-        if descendant_survived {
-            let pid_arg = pid.to_string();
-            let _ = Command::new("taskkill")
-                .args(["/PID", pid_arg.as_str(), "/T", "/F"])
-                .status();
-        }
-
+        await_bounded("the stale fixture descendant to disappear", || {
+            !pid_alive(pid)
+        });
         assert!(
-            !descendant_survived,
+            !pid_alive(pid),
             "a stale pre-attach child and every descendant must die with its private Job Object"
         );
-        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
-        assert!(deregister_generation(&handle, replacement_generation));
+        assert_eq!(generation_for_handle(&handle), Some(replacement.current()));
+        replacement.finish();
+    }
+
+    #[test]
+    fn process_tree_fixture_forwards_paths_with_spaces_and_waits_for_pid_publication() {
+        use super::windows_test_fixture::{await_bounded, pid_alive, Protocol};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let protocol = Arc::new(Protocol::new_in_path_with_spaces(Duration::ZERO));
+        let spawn = protocol.spawn_args();
+        let handle = format!("windows-spaced-fixture-{}", Uuid::new_v4());
+        let descendant_pid = Arc::new(AtomicU32::new(0));
+        let hook_protocol = protocol.clone();
+        let hook_descendant_pid = descendant_pid.clone();
+        set_test_post_spawn_hook(&handle, move |child| {
+            // This is the real PowerShell parent/child fixture, not a generated
+            // source assertion. It passes every forwarded path through the
+            // Start-Process boundary from a directory whose name contains spaces.
+            let descendant = hook_protocol.start_and_publish_descendant(child.id());
+            hook_descendant_pid.store(descendant, Ordering::Release);
+            hook_protocol.release_descendant();
+        });
+
+        let mut exits = Vec::new();
+        run_process_impl(&handle, &spawn, |event| {
+            if let ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } = event
+            {
+                exits.push((code, signal, success));
+            }
+        })
+        .expect("the spaced-path fixture must complete through the production runner");
+
+        let descendant = descendant_pid.load(Ordering::Acquire);
+        assert_ne!(descendant, 0, "the quoted descendant must publish a PID");
+        await_bounded("the released spaced-path descendant to exit", || {
+            !pid_alive(descendant)
+        });
+        assert_eq!(exits, vec![(Some(0), None, true)]);
+        assert!(
+            !is_registered(&handle),
+            "the completed spaced-path fixture must not leave a registry entry"
+        );
+    }
+
+    #[test]
+    fn post_spawn_fixture_panic_reaps_the_private_tree() {
+        use super::windows_test_fixture::{await_bounded, pid_alive, Protocol};
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let protocol = Arc::new(Protocol::new(Duration::ZERO));
+        let spawn = protocol.spawn_args();
+        let handle = format!("windows-post-spawn-panic-{}", Uuid::new_v4());
+        let root_pid = Arc::new(AtomicU32::new(0));
+        let descendant_pid = Arc::new(AtomicU32::new(0));
+        let hook_protocol = protocol.clone();
+        let hook_root_pid = root_pid.clone();
+        let hook_descendant_pid = descendant_pid.clone();
+        set_test_post_spawn_hook(&handle, move |child| {
+            hook_root_pid.store(child.id(), Ordering::Release);
+            let descendant = hook_protocol.start_and_publish_descendant(child.id());
+            hook_descendant_pid.store(descendant, Ordering::Release);
+            panic!("injected post-spawn fixture panic");
+        });
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _ = run_process_impl(&handle, &spawn, |_| {});
+        }));
+        assert!(panic.is_err(), "the injected fixture panic must reach the test");
+
+        let root = root_pid.load(Ordering::Acquire);
+        let descendant = descendant_pid.load(Ordering::Acquire);
+        assert_ne!(root, 0, "the fixture root must have been observed");
+        assert_ne!(descendant, 0, "the fixture descendant must have been observed");
+        await_bounded("the panicking fixture root to be reaped", || !pid_alive(root));
+        await_bounded("the panicking fixture descendant to be reaped", || {
+            !pid_alive(descendant)
+        });
+        assert!(!is_registered(&handle), "a panicking hook must not register a root");
     }
 }
 
@@ -4776,159 +5130,385 @@ mod exit_teardown_tests {
 /// attachment outcome and the termination that follows is production code.
 #[cfg(all(test, target_os = "windows"))]
 mod windows_job_attachment_failure_tests {
+    use super::windows_test_fixture::{await_bounded, pid_alive, Protocol, DEADLINE};
     use super::*;
     use hq_desktop_core::sync_outcome::{
         classify_runner_exit_disposition_with_cancellation, RunnerExitDisposition,
     };
     use std::time::Instant;
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
 
-    /// Every wait in this module is bounded; expiry fails the test rather than
-    /// hanging CI.
-    const DEADLINE: Duration = Duration::from_secs(30);
-    const POLL: Duration = Duration::from_millis(25);
-    const STILL_ACTIVE: u32 = 259;
+    type Terminal = (Option<i32>, Option<i32>, Option<CancellationRecord>);
 
-    fn pid_alive(pid: u32) -> bool {
-        unsafe {
-            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-                return false;
-            };
-            let mut code = 0u32;
-            let alive = GetExitCodeProcess(process, &mut code).is_ok() && code == STILL_ACTIVE;
-            let _ = CloseHandle(process);
-            alive
-        }
+    /// Holds the runner immediately before it acknowledges terminal teardown.
+    /// Normal fixtures start open; the closed form is a deterministic proof
+    /// that cleanup never treats an absent acknowledgement as a completed join.
+    #[derive(Clone)]
+    struct TerminalAckGate {
+        released: Arc<(Mutex<bool>, Condvar)>,
+        waiting: Arc<(Mutex<bool>, Condvar)>,
     }
 
-    fn await_bounded<F>(what: &str, mut ready: F)
-    where
-        F: FnMut() -> bool,
-    {
-        let started = Instant::now();
-        while started.elapsed() < DEADLINE {
-            if ready() {
-                return;
+    impl TerminalAckGate {
+        fn with_released(released: bool) -> Self {
+            Self {
+                released: Arc::new((Mutex::new(released), Condvar::new())),
+                waiting: Arc::new((Mutex::new(false), Condvar::new())),
             }
-            thread::sleep(POLL);
         }
-        panic!("timed out after {DEADLINE:?} waiting for {what}");
+
+        fn open() -> Self {
+            Self::with_released(true)
+        }
+
+        fn blocked() -> Self {
+            Self::with_released(false)
+        }
+
+        fn wait(&self) {
+            let (waiting, wake) = &*self.waiting;
+            *waiting.lock().unwrap() = true;
+            wake.notify_all();
+            let (released, wake) = &*self.released;
+            let _released = wake
+                .wait_while(released.lock().unwrap(), |released| !*released)
+                .unwrap();
+        }
+
+        fn wait_until_waiting(&self, deadline: Duration) -> bool {
+            let (waiting, wake) = &*self.waiting;
+            let (waiting, timeout) = wake
+                .wait_timeout_while(waiting.lock().unwrap(), deadline, |waiting| !*waiting)
+                .unwrap();
+            !timeout.timed_out() && *waiting
+        }
+
+        fn release(&self) {
+            let (released, wake) = &*self.released;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
     }
 
-    /// A root that spawns one real descendant and then blocks on it: `cmd /c`
-    /// runs `ping.exe` as a genuine child process, so the fallback has a real
-    /// tree to walk rather than a single process.
-    fn nested_fixture() -> SpawnArgs {
-        SpawnArgs {
-            cmd: "cmd.exe".to_string(),
-            args: vec![
-                "/d".to_string(),
-                "/c".to_string(),
-                "ping 127.0.0.1 -n 600 > nul".to_string(),
-            ],
-            cwd: None,
-            env: None,
+    /// Owns the deliberately unrelated sibling through its exact `Child`
+    /// handle. `Child` does not kill on drop, so every exit path (including a
+    /// panic before the scope assertion) must explicitly kill and wait it.
+    struct ExactChildGuard {
+        child: Option<std::process::Child>,
+        pid: u32,
+    }
+
+    impl ExactChildGuard {
+        fn spawn() -> Self {
+            let child = Command::new("cmd.exe")
+                .args(["/d", "/c", "ping 127.0.0.1 -n 600 > nul"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("sibling fixture must spawn");
+            let pid = child.id();
+            Self {
+                child: Some(child),
+                pid,
+            }
+        }
+
+        fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        fn kill_and_wait(&mut self) -> io::Result<()> {
+            let Some(child) = self.child.as_mut() else {
+                return Ok(());
+            };
+            let result = match child.try_wait()? {
+                Some(_) => Ok(()),
+                None => {
+                    child.kill()?;
+                    child.wait().map(|_| ())
+                }
+            };
+            if result.is_ok() {
+                // Keep the exact handle until wait has confirmed reaping. A
+                // failed kill/wait must leave it owned for Drop's retry and
+                // its diagnostic abort path.
+                let _ = self.child.take();
+            }
+            result
         }
     }
 
+    impl Drop for ExactChildGuard {
+        fn drop(&mut self) {
+            if let Err(error) = self.kill_and_wait() {
+                // An unowned ten-minute sibling is worse than aborting this
+                // focused test process. Preserve the exact PID in the failure
+                // before an unwind can discard the only `Child` wait owner.
+                eprintln!(
+                    "[process] failed to kill and reap unrelated sibling fixture pid {}: {error}",
+                    self.pid
+                );
+                // Panicking from Drop would continue unwinding, then drop the
+                // exact `Child` and lose the sole wait owner. Abort keeps the
+                // diagnostic above and fails this test binary without a leak.
+                std::process::abort();
+            }
+        }
+    }
+
+    /// The fixture owns the only `Child` wait owner on a runner thread. A
+    /// terminal channel turns teardown into an acknowledgement protocol rather
+    /// than letting test cleanup race an eventually-finished thread.
     struct RunningFixture {
         handle: String,
         generation: u64,
         root_pid: u32,
-        descendants: Vec<u32>,
-        runner: thread::JoinHandle<Option<(Option<i32>, Option<i32>, Option<CancellationRecord>)>>,
+        descendant_pid: u32,
+        protocol: Protocol,
+        runner: Option<thread::JoinHandle<()>>,
+        terminal_rx: mpsc::Receiver<(Result<(), ProcessError>, Option<Terminal>)>,
     }
 
-    /// Start the production runner with the Job attachment forced to fail, and
-    /// return once a real root and at least one real descendant exist.
-    fn start_fixture_with_forced_attachment_failure(
+    fn start_fixture(
         label: &str,
-        forced: TestJobAssignmentOutcome,
+        forced: Option<TestJobAssignmentOutcome>,
+        exit_delay: Duration,
+    ) -> RunningFixture {
+        start_fixture_with_terminal_ack(label, forced, exit_delay, TerminalAckGate::open())
+    }
+
+    fn start_fixture_with_terminal_ack(
+        label: &str,
+        forced: Option<TestJobAssignmentOutcome>,
+        exit_delay: Duration,
+        terminal_ack: TerminalAckGate,
     ) -> RunningFixture {
         let handle = format!("{label}-{}", Uuid::new_v4());
         let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
-        force_test_job_assignment(&handle, forced);
+        if let Some(forced) = forced {
+            force_test_job_assignment(&handle, forced);
+        }
 
+        let protocol = Protocol::new(exit_delay);
+        let spawn = protocol.spawn_args();
         let runner_handle = handle.clone();
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel(1);
         let runner = thread::spawn(move || {
             let mut terminal = None;
-            let _ = run_process_impl_for_generation(
-                &runner_handle,
-                generation,
-                &nested_fixture(),
-                |event| {
+            let outcome =
+                run_process_impl_for_generation(&runner_handle, generation, &spawn, |event| {
                     if let ProcessEvent::Exit { code, signal, .. } = event {
-                        // Read the record inside the callback: this is exactly
-                        // where the reporting boundary reads it in production,
-                        // and it is released immediately afterwards.
+                        // The reporting boundary consumes cancellation evidence
+                        // here in production. Sending only after the runner
+                        // returns makes this an acknowledgement that the root
+                        // was actually reaped and deregistered.
                         terminal = Some((
                             code,
                             signal,
                             cancellation_record_for_generation(&runner_handle, generation),
                         ));
                     }
-                },
-            );
-            terminal
+                });
+            terminal_ack.wait();
+            let _ = terminal_tx.send((outcome, terminal));
         });
+
+        // Construct the cleanup owner before the first readiness assertion. If
+        // a marker, process query, or accounting assertion panics below, Drop
+        // still owns the runner, the generation, and every PID learned so far.
+        let mut fixture = RunningFixture {
+            handle,
+            generation,
+            root_pid: 0,
+            descendant_pid: 0,
+            protocol,
+            runner: Some(runner),
+            terminal_rx,
+        };
 
         await_bounded("the fixture root to register", || {
-            lookup_pid(&handle).is_some()
+            lookup_pid(&fixture.handle).is_some()
         });
-        let root_pid = lookup_pid(&handle).expect("registered root pid");
-        await_bounded("the fixture root to spawn a descendant", || {
-            !windows_descendants(root_pid).is_empty()
-        });
-        let descendants = windows_descendants(root_pid);
-        assert!(
-            !descendants.is_empty(),
-            "fixture must have a real descendant to prove tree termination"
-        );
+        let root_pid = lookup_pid(&fixture.handle).expect("registered fixture root PID");
+        fixture.root_pid = root_pid;
+        let descendant_pid = fixture.protocol.start_and_publish_descendant(root_pid);
+        fixture.descendant_pid = descendant_pid;
 
-        // The forced outcome must have actually selected the fallback: no Job
-        // Object may be attached to this generation.
         let attached = process_registry()
             .lock()
             .unwrap()
             .active
-            .get(&handle)
+            .get(&fixture.handle)
             .and_then(|entry| entry.job_handle);
-        assert!(
-            attached.is_none(),
-            "forced {forced:?} must leave the generation with no Job Object"
+        assert_eq!(
+            attached.is_some(),
+            forced.is_none(),
+            "the requested attachment mode must match the actual registry entry"
         );
 
-        RunningFixture {
-            handle,
-            generation,
-            root_pid,
-            descendants,
-            runner,
+        if forced.is_none() {
+            await_bounded(
+                "the real Job Object to account for the acknowledged tree",
+                || {
+                    watcher_job_working_set_samples(&fixture.handle, fixture.generation)
+                        .is_some_and(|samples| {
+                            samples.iter().any(|(pid, _)| *pid == root_pid)
+                                && samples.iter().any(|(pid, _)| *pid == descendant_pid)
+                        })
+                },
+            );
+        }
+
+        fixture
+    }
+
+    fn start_fixture_with_forced_attachment_failure(
+        label: &str,
+        forced: TestJobAssignmentOutcome,
+    ) -> RunningFixture {
+        start_fixture(label, Some(forced), Duration::ZERO)
+    }
+
+    fn start_fixture_with_real_job(label: &str) -> RunningFixture {
+        start_fixture(label, None, Duration::ZERO)
+    }
+
+    impl RunningFixture {
+        fn cancel(&self, cause: SyncCancelCause) -> CancellationAttempt {
+            cancel_process_for_generation(&self.handle, self.generation, cause, Duration::ZERO)
+        }
+
+        fn tree_is_gone(&self) -> bool {
+            (self.root_pid == 0 || !pid_alive(self.root_pid))
+                && (self.descendant_pid == 0 || !pid_alive(self.descendant_pid))
+        }
+
+        fn wait_for_tree_to_disappear(&self, deadline: Duration) -> bool {
+            let started = Instant::now();
+            while started.elapsed() < deadline {
+                if self.tree_is_gone() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            self.tree_is_gone()
+        }
+
+        /// Reap only after the runner's terminal acknowledgement. The runner
+        /// owns the exact `Child`; taking its JoinHandle before that proof
+        /// would reintroduce the detached-runner hole this fixture guards.
+        fn receive_and_join_terminal(&mut self, deadline: Duration) -> Result<Terminal, String> {
+            let (outcome, terminal) = self.terminal_rx.recv_timeout(deadline).map_err(|error| {
+                format!("runner did not acknowledge terminal teardown within {deadline:?}: {error}")
+            })?;
+            self.runner
+                .take()
+                .expect("runner must have one wait owner")
+                .join()
+                .map_err(|_| "runner thread panicked during fixture teardown".to_string())?;
+            clear_test_job_assignment(&self.handle);
+            outcome.map_err(|error| {
+                format!("fixture runner failed while reporting teardown: {error}")
+            })?;
+            terminal.ok_or_else(|| "fixture runner exited without a terminal event".to_string())
+        }
+
+        /// Attempt complete teardown without discarding any owner on failure.
+        /// The returned error deliberately leaves the runner, registration, and
+        /// cancellation record in place so a caller can inspect diagnostics or
+        /// retry; `Drop` escalates that failure instead of silently detaching.
+        fn try_teardown(&mut self, deadline: Duration) -> Result<(), String> {
+            if self.runner.is_none() {
+                return Ok(());
+            }
+
+            let attempt = self.cancel(SyncCancelCause::AppQuit);
+            // A successful Job Object termination is the stronger containment
+            // proof. Do not follow it with a later raw-PID sweep (which could
+            // observe a reused PID); raw fallback is reserved for the explicit
+            // failure path and the final liveness wait is authoritative.
+            let fallback_required = !attempt.termination_effected;
+            let root_fallback = fallback_required
+                && self.root_pid != 0
+                && pid_alive(self.root_pid)
+                && terminate_windows_pid_tree(self.root_pid);
+            let descendant_fallback = fallback_required
+                && self.descendant_pid != 0
+                && pid_alive(self.descendant_pid)
+                && terminate_windows_pid_tree(self.descendant_pid);
+            if !self.wait_for_tree_to_disappear(deadline) {
+                return Err(format!(
+                    "fixture teardown left owned processes live (handle={}, generation={}, root_pid={}, descendant_pid={}, cancel_effected={}, root_fallback={}, descendant_fallback={})",
+                    self.handle,
+                    self.generation,
+                    self.root_pid,
+                    self.descendant_pid,
+                    attempt.termination_effected,
+                    root_fallback,
+                    descendant_fallback,
+                ));
+            }
+
+            self.receive_and_join_terminal(deadline).map(|_| ())
+        }
+
+        fn await_terminal(&mut self) -> Terminal {
+            self.receive_and_join_terminal(DEADLINE)
+                .expect("the runner must acknowledge terminal teardown before the deadline")
+        }
+
+        fn assert_tree_gone(&self) {
+            assert_ne!(self.root_pid, 0, "fixture root PID must be acknowledged");
+            assert_ne!(
+                self.descendant_pid, 0,
+                "fixture descendant PID must be acknowledged"
+            );
+            await_bounded("the fixture root to disappear", || {
+                !pid_alive(self.root_pid)
+            });
+            await_bounded("the acknowledged fixture descendant to disappear", || {
+                !pid_alive(self.descendant_pid)
+            });
+        }
+
+        fn finish_cancelled(&mut self, cause: SyncCancelCause) -> Terminal {
+            let attempt = self.cancel(cause);
+            assert!(attempt.executed, "the exact generation must be cancellable");
+            assert!(
+                attempt.termination_effected,
+                "the production tree teardown must report an observed termination"
+            );
+            let terminal = self.await_terminal();
+            self.assert_tree_gone();
+            terminal
+        }
+
+        fn finish_naturally(&mut self) -> Terminal {
+            self.protocol.release_descendant();
+            let terminal = self.await_terminal();
+            self.assert_tree_gone();
+            terminal
         }
     }
 
-    fn assert_tree_gone(fixture: &RunningFixture) {
-        await_bounded("the fixture root to disappear", || {
-            !pid_alive(fixture.root_pid)
-        });
-        for pid in &fixture.descendants {
-            let pid = *pid;
-            await_bounded("a fixture descendant to disappear", || !pid_alive(pid));
+    impl Drop for RunningFixture {
+        fn drop(&mut self) {
+            // Assertion and panic paths must retain the only runner owner
+            // until all fixture processes are gone and the runner is joined.
+            // Never deregister or clear cancellation state after a failed
+            // attempt: that would hide a live child with no cancellation
+            // authority. An unreaped fixture aborts the focused test process
+            // after printing every identity needed to diagnose it.
+            if let Err(error) = self.try_teardown(DEADLINE) {
+                eprintln!(
+                    "[process] unreaped Windows fixture: handle={}, generation={}, root_pid={}, descendant_pid={}: {error}",
+                    self.handle, self.generation, self.root_pid, self.descendant_pid,
+                );
+                // A panic would unwind through `JoinHandle::drop`, silently
+                // detach the exact runner, and recreate the bug. Abort keeps
+                // the emitted diagnostics and makes the fixture failure loud.
+                std::process::abort();
+            }
         }
-    }
-
-    fn join_runner(
-        fixture: RunningFixture,
-    ) -> (Option<i32>, Option<i32>, Option<CancellationRecord>) {
-        let terminal = fixture
-            .runner
-            .join()
-            .expect("runner thread must not panic")
-            .expect("runner must deliver a terminal exit event");
-        clear_test_job_assignment(&fixture.handle);
-        terminal
     }
 
     fn assert_cancelled_by_app(
@@ -4961,119 +5541,37 @@ mod windows_job_attachment_failure_tests {
 
     #[test]
     fn create_job_failure_falls_back_to_the_real_pid_tree() {
-        let fixture = start_fixture_with_forced_attachment_failure(
+        let mut fixture = start_fixture_with_forced_attachment_failure(
             "job-create-failed",
             TestJobAssignmentOutcome::CreateFailed,
         );
-
-        let attempt = cancel_process_for_generation(
-            &fixture.handle,
-            fixture.generation,
-            SyncCancelCause::UserStop,
-            Duration::ZERO,
-        );
-        assert!(attempt.executed, "the exact generation must be cancellable");
-        assert!(
-            attempt.termination_effected,
-            "the pid-tree fallback must report an observed termination"
-        );
-
-        assert_tree_gone(&fixture);
-        let (code, signal, record) = join_runner(fixture);
+        let (code, signal, record) = fixture.finish_cancelled(SyncCancelCause::UserStop);
         assert_cancelled_by_app(code, signal, record, SyncCancelCause::UserStop);
     }
 
     #[test]
     fn assign_job_failure_falls_back_to_the_real_pid_tree() {
-        let fixture = start_fixture_with_forced_attachment_failure(
+        let mut fixture = start_fixture_with_forced_attachment_failure(
             "job-assign-failed",
             TestJobAssignmentOutcome::AssignFailed,
         );
-
-        let attempt = cancel_process_for_generation(
-            &fixture.handle,
-            fixture.generation,
-            SyncCancelCause::TimeoutWatchdog,
-            Duration::ZERO,
-        );
-        assert!(attempt.executed);
-        assert!(attempt.termination_effected);
-
-        assert_tree_gone(&fixture);
-        let (code, signal, record) = join_runner(fixture);
+        let (code, signal, record) = fixture.finish_cancelled(SyncCancelCause::TimeoutWatchdog);
         assert_cancelled_by_app(code, signal, record, SyncCancelCause::TimeoutWatchdog);
-    }
-
-    /// Start the production runner with a REAL Job Object attached (no forced
-    /// attachment failure), returning once a real root and descendant exist.
-    fn start_fixture_with_real_job(label: &str) -> RunningFixture {
-        let handle = format!("{label}-{}", Uuid::new_v4());
-        let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
-
-        let runner_handle = handle.clone();
-        let runner = thread::spawn(move || {
-            let mut terminal = None;
-            let _ = run_process_impl_for_generation(
-                &runner_handle,
-                generation,
-                &nested_fixture(),
-                |event| {
-                    if let ProcessEvent::Exit { code, signal, .. } = event {
-                        terminal = Some((
-                            code,
-                            signal,
-                            cancellation_record_for_generation(&runner_handle, generation),
-                        ));
-                    }
-                },
-            );
-            terminal
-        });
-
-        await_bounded("the real-job fixture root to register", || {
-            lookup_pid(&handle).is_some()
-        });
-        let root_pid = lookup_pid(&handle).expect("registered root pid");
-        await_bounded("the real-job fixture root to spawn a descendant", || {
-            !windows_descendants(root_pid).is_empty()
-        });
-        let descendants = windows_descendants(root_pid);
-
-        // The production spawn path must have attached a real Job Object for the
-        // accounting read to have something to query.
-        let attached = process_registry()
-            .lock()
-            .unwrap()
-            .active
-            .get(&handle)
-            .and_then(|entry| entry.job_handle);
-        assert!(
-            attached.is_some(),
-            "the real-job fixture must have an attached Job Object to query"
-        );
-
-        RunningFixture {
-            handle,
-            generation,
-            root_pid,
-            descendants,
-            runner,
-        }
     }
 
     #[test]
     fn watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped() {
-        let fixture = start_fixture_with_real_job("watcher-job-accounting");
+        let mut fixture = start_fixture_with_real_job("watcher-job-accounting");
 
-        // The job sees the whole watcher tree (the cmd.exe shim and its ping
-        // descendant), so a small-footprint fixture still reports >= 2 processes
-        // even though the registered child is the shim whose own working set
-        // hides the descendant. TotalProcesses is cumulative, so this is stable.
+        // TotalProcesses is cumulative, and the protocol already proved the
+        // exact acknowledged descendant belongs to this root before this
+        // accounting read. A process count of two is therefore a real whole-tree
+        // reading, not a racing Toolhelp snapshot.
         let accounting = watcher_job_accounting_for_generation(&fixture.handle, fixture.generation)
             .expect("a live job must report accounting");
         assert!(
             accounting.total_processes >= 2,
-            "job must count the shim and its descendant, got {}",
+            "job must count the fixture root and its acknowledged descendant, got {}",
             accounting.total_processes
         );
 
@@ -5086,25 +5584,22 @@ mod windows_job_attachment_failure_tests {
             fixture.generation.wrapping_add(4096)
         )
         .is_none());
-        assert!(
-            watcher_job_accounting_for_generation("watcher-job-accounting-absent", fixture.generation)
-                .is_none()
-        );
+        assert!(watcher_job_accounting_for_generation(
+            "watcher-job-accounting-absent",
+            fixture.generation
+        )
+        .is_none());
 
-        let attempt = cancel_process_for_generation(
-            &fixture.handle,
-            fixture.generation,
-            SyncCancelCause::UserStop,
-            Duration::ZERO,
+        let _ = fixture.finish_cancelled(SyncCancelCause::UserStop);
+        assert!(
+            watcher_job_accounting_for_generation(&fixture.handle, fixture.generation).is_none(),
+            "terminal acknowledgement must deregister and close the fixture Job Object"
         );
-        assert!(attempt.executed, "the exact generation must be cancellable");
-        assert_tree_gone(&fixture);
-        let _ = join_runner(fixture);
     }
 
     #[test]
     fn watcher_job_working_set_sums_the_live_tree_and_is_generation_scoped() {
-        let fixture = start_fixture_with_real_job("watcher-job-working-set");
+        let mut fixture = start_fixture_with_real_job("watcher-job-working-set");
 
         let samples = watcher_job_working_set_samples(&fixture.handle, fixture.generation)
             .expect("a live job must yield working-set samples");
@@ -5121,6 +5616,12 @@ mod windows_job_attachment_failure_tests {
         assert!(
             samples.iter().any(|(pid, _)| *pid == fixture.root_pid),
             "the registered root pid must be in the job's live-pid sample"
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|(pid, _)| *pid == fixture.descendant_pid),
+            "the explicitly acknowledged descendant must be in the job's live-pid sample"
         );
         // The summed working set over the whole tree is strictly larger than the
         // registered child's own single-PID working set — the number the shipped
@@ -5154,20 +5655,79 @@ mod windows_job_attachment_failure_tests {
             "the working-set read must not have closed the job handle"
         );
 
-        let attempt = cancel_process_for_generation(
-            &fixture.handle,
-            fixture.generation,
-            SyncCancelCause::UserStop,
-            Duration::ZERO,
+        let _ = fixture.finish_cancelled(SyncCancelCause::UserStop);
+    }
+
+    #[test]
+    fn fixture_protocol_acknowledges_a_delayed_descendant_exit() {
+        // This is an injected child-side delayed exit, not a test sleep. The
+        // runner can finish only after the child consumes the release gate and
+        // the parent has waited for it, so this covers the acknowledgement path
+        // that cancellation tests otherwise reach only by forceful teardown.
+        let mut fixture = start_fixture("fixture-delayed-exit", None, Duration::from_millis(250));
+        let (code, signal, record) = fixture.finish_naturally();
+        assert_eq!(code, Some(0));
+        assert_eq!(signal, None);
+        assert_eq!(
+            record, None,
+            "a natural delayed exit must not gain cancellation evidence"
         );
-        assert!(attempt.executed, "the exact generation must be cancellable");
-        assert_tree_gone(&fixture);
-        let _ = join_runner(fixture);
+    }
+
+    #[test]
+    fn fixture_protocol_isolated_under_repeated_parallel_use() {
+        for cycle in 0..2 {
+            let mut job = start_fixture(&format!("parallel-job-{cycle}"), None, Duration::ZERO);
+            let mut fallback = start_fixture(
+                &format!("parallel-fallback-{cycle}"),
+                Some(TestJobAssignmentOutcome::AssignFailed),
+                Duration::ZERO,
+            );
+            let job_handle = job.handle.clone();
+            let job_generation = job.generation;
+            let fallback_handle = fallback.handle.clone();
+            let fallback_generation = fallback.generation;
+
+            let (job_attempt, fallback_attempt) = thread::scope(|scope| {
+                let job = scope.spawn(|| {
+                    cancel_process_for_generation(
+                        &job_handle,
+                        job_generation,
+                        SyncCancelCause::UserStop,
+                        Duration::ZERO,
+                    )
+                });
+                let fallback = scope.spawn(|| {
+                    cancel_process_for_generation(
+                        &fallback_handle,
+                        fallback_generation,
+                        SyncCancelCause::TimeoutWatchdog,
+                        Duration::ZERO,
+                    )
+                });
+                (
+                    job.join()
+                        .expect("parallel job cancellation must not panic"),
+                    fallback
+                        .join()
+                        .expect("parallel fallback cancellation must not panic"),
+                )
+            });
+            assert!(job_attempt.executed && job_attempt.termination_effected);
+            assert!(fallback_attempt.executed && fallback_attempt.termination_effected);
+
+            let (code, signal, record) = job.await_terminal();
+            job.assert_tree_gone();
+            assert_cancelled_by_app(code, signal, record, SyncCancelCause::UserStop);
+            let (code, signal, record) = fallback.await_terminal();
+            fallback.assert_tree_gone();
+            assert_cancelled_by_app(code, signal, record, SyncCancelCause::TimeoutWatchdog);
+        }
     }
 
     #[test]
     fn failed_root_termination_never_becomes_a_suppression_signal() {
-        let fixture = start_fixture_with_forced_attachment_failure(
+        let mut fixture = start_fixture_with_forced_attachment_failure(
             "job-fallback-ineffective",
             TestJobAssignmentOutcome::CreateFailed,
         );
@@ -5203,9 +5763,8 @@ mod windows_job_attachment_failure_tests {
         // ineffective cancellation still classifies as an alertable exit.
         let root_pid = fixture.root_pid;
         assert!(terminate_windows_pid_tree(root_pid));
-        assert_tree_gone(&fixture);
-
-        let (code, signal, record) = join_runner(fixture);
+        let (code, signal, record) = fixture.await_terminal();
+        fixture.assert_tree_gone();
         assert_eq!(code, Some(1));
         assert_eq!(signal, None);
         let record = record.expect("record must survive to the terminal callback");
@@ -5229,44 +5788,170 @@ mod windows_job_attachment_failure_tests {
     }
 
     #[test]
+    fn fixture_teardown_retains_ownership_when_every_termination_path_fails() {
+        let mut fixture = start_fixture_with_forced_attachment_failure(
+            "job-teardown-failure",
+            TestJobAssignmentOutcome::CreateFailed,
+        );
+
+        // Inject failure into the exact-generation cancellation and both
+        // fixture-only fallback attempts. This must return an error WITHOUT
+        // detaching the runner or erasing the still-live generation's
+        // cancellation evidence; a normal retry below owns the real cleanup.
+        set_test_windows_termination_results(vec![
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+        ]);
+        let cleanup = fixture.try_teardown(Duration::from_millis(100));
+        set_test_windows_termination_results(Vec::new());
+
+        assert!(
+            cleanup.is_err(),
+            "teardown must not report success while either owned process is live"
+        );
+        assert!(
+            fixture.runner.is_some(),
+            "the sole runner owner must be retained"
+        );
+        assert!(
+            pid_alive(fixture.root_pid),
+            "the injected root must still be live"
+        );
+        assert!(
+            pid_alive(fixture.descendant_pid),
+            "the injected descendant must still be live"
+        );
+        assert_eq!(
+            generation_for_handle(&fixture.handle),
+            Some(fixture.generation),
+            "failed teardown must retain the live generation rather than deregistering it"
+        );
+        assert!(
+            cancellation_record_for_generation(&fixture.handle, fixture.generation).is_some(),
+            "failed teardown must retain cancellation diagnostics for the retry"
+        );
+
+        fixture
+            .try_teardown(DEADLINE)
+            .expect("a retry without injected failures must kill, reap, and join");
+        assert!(fixture.runner.is_none());
+        assert!(fixture.tree_is_gone());
+        assert_eq!(generation_for_handle(&fixture.handle), None);
+        assert!(
+            cancellation_record_for_generation(&fixture.handle, fixture.generation).is_none(),
+            "only the acknowledged runner cleanup may release cancellation state"
+        );
+    }
+
+    #[test]
+    fn fixture_teardown_never_accepts_a_missing_runner_acknowledgement() {
+        let terminal_ack = TerminalAckGate::blocked();
+        let mut fixture = start_fixture_with_terminal_ack(
+            "job-terminal-ack-missing",
+            Some(TestJobAssignmentOutcome::AssignFailed),
+            Duration::ZERO,
+            terminal_ack.clone(),
+        );
+
+        // The real fallback kills both processes. The runner has reaped the
+        // exact Child but remains blocked before its terminal send, proving a
+        // missing acknowledgement cannot be mistaken for a joined runner.
+        let (cleanup, gate_reached) = thread::scope(|scope| {
+            let cleanup = scope.spawn(|| fixture.try_teardown(Duration::from_secs(1)));
+            let gate_reached = terminal_ack.wait_until_waiting(DEADLINE);
+            // If startup itself broke before the runner reached the fault
+            // gate, open it before joining so this test reports that original
+            // failure instead of deadlocking in the scoped worker.
+            if !gate_reached {
+                terminal_ack.release();
+            }
+            let cleanup = match cleanup.join() {
+                Ok(cleanup) => cleanup,
+                Err(_) => {
+                    terminal_ack.release();
+                    panic!("acknowledgement fault-injection cleanup must not panic");
+                }
+            };
+            (cleanup, gate_reached)
+        });
+        let tree_is_gone = fixture.tree_is_gone();
+        let runner_is_retained = fixture.runner.is_some();
+
+        // The successful fault-injection path waits for `try_teardown` to
+        // time out first, then opens the gate before any assertion can strand
+        // the deliberately blocked runner in this test process.
+        terminal_ack.release();
+        fixture
+            .try_teardown(DEADLINE)
+            .expect("the released acknowledgement must permit an exact runner join");
+
+        assert!(
+            gate_reached,
+            "runner did not reach the terminal acknowledgement fault gate"
+        );
+        assert!(
+            cleanup.is_err(),
+            "an absent runner acknowledgement must fail cleanup"
+        );
+        assert!(tree_is_gone, "the production fallback must reap the tree");
+        assert!(
+            runner_is_retained,
+            "cleanup must retain the unjoined runner until it acknowledges"
+        );
+        assert!(fixture.runner.is_none());
+    }
+
+    #[test]
+    fn unrelated_sibling_guard_kills_and_waits_during_unwind() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let sibling_pid = Arc::new(AtomicU32::new(0));
+        let panic_pid = sibling_pid.clone();
+        let panic_result = catch_unwind(AssertUnwindSafe(move || {
+            let sibling = ExactChildGuard::spawn();
+            panic_pid.store(sibling.pid(), Ordering::Release);
+            panic!("injected assertion after unrelated sibling startup");
+        }));
+
+        assert!(panic_result.is_err(), "the injected assertion must unwind");
+        let pid = sibling_pid.load(Ordering::Acquire);
+        assert_ne!(pid, 0, "the sibling guard must publish its exact child PID");
+        await_bounded("the unwound sibling guard to reap its exact child", || {
+            !pid_alive(pid)
+        });
+    }
+
+    #[test]
     fn pid_tree_fallback_never_widens_past_the_registered_tree() {
         // A sibling that is NOT part of the registered tree.
-        let mut sibling = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping 127.0.0.1 -n 600 > nul"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("sibling fixture must spawn");
-        let sibling_pid = sibling.id();
+        let mut sibling = ExactChildGuard::spawn();
+        let sibling_pid = sibling.pid();
 
-        let fixture = start_fixture_with_forced_attachment_failure(
+        let mut fixture = start_fixture_with_forced_attachment_failure(
             "job-fallback-scope",
             TestJobAssignmentOutcome::AssignFailed,
         );
         assert!(
-            !fixture.descendants.contains(&sibling_pid),
+            fixture.descendant_pid != sibling_pid,
             "sibling must not be inside the registered tree"
         );
-
-        let attempt = cancel_process_for_generation(
-            &fixture.handle,
-            fixture.generation,
-            SyncCancelCause::UserStop,
-            Duration::ZERO,
-        );
-        assert!(attempt.termination_effected);
-        assert_tree_gone(&fixture);
+        let (code, signal, record) = fixture.finish_cancelled(SyncCancelCause::UserStop);
 
         assert!(
             pid_alive(sibling_pid),
             "the fallback must never terminate a process outside the registered tree"
         );
 
-        let (code, signal, record) = join_runner(fixture);
         assert_cancelled_by_app(code, signal, record, SyncCancelCause::UserStop);
 
-        let _ = sibling.kill();
-        let _ = sibling.wait();
+        sibling
+            .kill_and_wait()
+            .expect("the exact sibling fixture must be reaped on the success path");
     }
 }
 
