@@ -24,6 +24,8 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import { isSetupChannel } from "../chat/setup-channel.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
   import { createHostAttachmentResolver } from "../chat/messaging/attachment-preview.js";
@@ -2035,7 +2037,21 @@
           {/if}
 
           {#if activeTab === "chat"}
-            <div class="chat-stage" data-testid="chat-stage">
+            <div
+              class="chat-stage"
+              class:is-setup={isSetupChannel(selectedRow.channelId)}
+              data-testid="chat-stage"
+            >
+              {#if isSetupChannel(selectedRow.channelId)}
+                <!-- Synthetic #setup support channel: getting-started intro
+                     above the standard live thread + composer (channelId
+                     "setup" rides the normal pipeline below). -->
+                <SetupChannelIntro
+                  settings={adapter.settings}
+                  shell={adapter.shell}
+                  {onopenurl}
+                />
+              {/if}
               {#key selectedRow.id}
                 <ChannelConversation
                   messages={timeline}
@@ -2217,6 +2233,12 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
+  }
+
+  /* Synthetic #setup channel stacks the getting-started intro above the
+     live thread instead of the usual conversation | reply-column row. */
+  .chat-stage.is-setup {
+    flex-direction: column;
   }
 
   .chat-stage :global(.conversation) {

@@ -93,8 +93,16 @@ describe("ChatSidebar right-click context menu", () => {
     expect(
       document.querySelector('[data-testid="chat-context-menu"]'),
     ).toBeTruthy();
-    // No pinned section yet — right-click alone must not pin.
-    expect(host.querySelector("#chat-pinned-label")).toBeNull();
+    // Right-click alone must not pin — the row stays out of the pinned list.
+    // (The pinned section itself always exists: the synthetic #setup channel
+    // is permanently pinned there.)
+    const pinnedRowIds = () =>
+      Array.from(
+        host.querySelectorAll(
+          '[aria-labelledby="chat-pinned-label"] [data-conversation-id]',
+        ),
+      ).map((el) => el.getAttribute("data-conversation-id"));
+    expect(pinnedRowIds()).not.toContain("ch:chn_proj");
 
     // Click "Pin conversation" — now it pins.
     const pinBtn = document.querySelector<HTMLButtonElement>(
@@ -104,7 +112,7 @@ describe("ChatSidebar right-click context menu", () => {
     pinBtn!.click();
     await tick();
 
-    expect(host.querySelector("#chat-pinned-label")).toBeTruthy();
+    expect(pinnedRowIds()).toContain("ch:chn_proj");
     // Menu closes after acting.
     expect(
       document.querySelector('[data-testid="chat-context-menu"]'),

@@ -20,6 +20,11 @@
     applyChannelMessageWake,
     shouldBumpChannelUnread,
   } from "./channels";
+  import {
+    isSetupChannel,
+    withSetupChannel,
+    withSetupPin,
+  } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
@@ -311,9 +316,14 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  // Synthetic pinned #setup support channel (deduped against a real server
+  // `setup` channel) — always at the top of the rail's PINNED section.
+  const channelsWithSetup = $derived(withSetupChannel(channels));
+  const pinsWithSetup = $derived(withSetupPin(pins));
+
   const allRows = $derived(
-    normalizeConversations(channels, contactsWithUnreads, {
-      pinnedIds: pins,
+    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+      pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
     }),
@@ -322,8 +332,8 @@
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   const directoryRows = $derived(
-    normalizeConversations(channels, contactsWithUnreads, {
-      pinnedIds: pins,
+    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+      pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
     }),
@@ -378,7 +388,13 @@
       return;
     }
     if (autoOpenRequestedId) return;
-    const pick = pickAutoOpenConversation(filteredRows, selectedId);
+    // The synthetic #setup row never auto-opens — it exists from first paint,
+    // so it would win the empty-selection race against deep links and real
+    // conversations that hydrate a beat later.
+    const pick = pickAutoOpenConversation(
+      filteredRows.filter((row) => !isSetupChannel(row.channelId)),
+      selectedId,
+    );
     if (!pick) return;
     autoOpenRequestedId = pick.id;
     void openRow(pick);
