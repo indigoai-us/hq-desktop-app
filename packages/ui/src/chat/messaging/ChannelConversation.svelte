@@ -291,6 +291,26 @@
     );
   }
 
+  /**
+   * Work-mesh events carry `event.by`, which may be a person UID rather than
+   * a display name. Resolve it against the live roster map (same source the
+   * message rows use); when the actor is the sender, reuse messageAuthor.
+   * WorkMeshActivityRow itself falls back to "A teammate" for unresolved
+   * raw UIDs, so this never surfaces a UUID.
+   */
+  function resolveWorkActor(
+    actor: string,
+    msg: ConversationMessageWire,
+  ): string {
+    const raw = actor.trim();
+    const live = displayNameByUid[raw]?.trim();
+    if (live) return live;
+    if (raw && raw === (msg.fromPersonUid ?? "").trim()) {
+      return messageAuthor(msg);
+    }
+    return raw;
+  }
+
   function formatTime(iso: string): string {
     const d = new Date(iso);
     return Number.isNaN(d.getTime())
@@ -738,7 +758,10 @@
             </div>
           {:else if workActivity}
             <WorkMeshActivityRow
-              activity={workActivity}
+              activity={{
+                ...workActivity,
+                actor: resolveWorkActor(workActivity.actor, msg),
+              }}
               time={formatTime(msg.createdAt)}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}

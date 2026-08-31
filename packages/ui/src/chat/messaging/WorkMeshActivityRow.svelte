@@ -18,8 +18,16 @@
     return id ? `${row.verb} ${id}` : row.verb;
   }
 
+  /** Raw person/agent UIDs (hex-dash Cognito-style ids or `agt_` prefixes)
+   *  that a host failed to resolve must never render verbatim in the row. */
+  function isRawUid(value: string): boolean {
+    return /^agt_/.test(value) || /^[0-9a-f]{8}-[0-9a-f][0-9a-f-]{10,}$/i.test(value);
+  }
+
+  const actorLabel = $derived(isRawUid(activity.actor) ? 'A teammate' : activity.actor);
+
   const fullLabel = $derived(
-    `${activity.actor} ${verbPhrase(activity)}${activity.title ? ` — ${activity.title}` : ''}`,
+    `${actorLabel} ${verbPhrase(activity)}${activity.title ? ` — ${activity.title}` : ''}`,
   );
 </script>
 
@@ -61,7 +69,7 @@
     {/if}
   </span>
   <p class="text" title={fullLabel}>
-    <span class="actor">{activity.actor}</span><span class="verb"> {verbPhrase(activity)}</span>{#if activity.title}<span class="title"> — {activity.title}</span>{/if}
+    <span class="actor">{actorLabel}</span><span class="verb">{` ${verbPhrase(activity)}`}</span>{#if activity.title}<span class="title">{` — ${activity.title}`}</span>{/if}
   </p>
   {#if time}
     <span class="time">{time}</span>
