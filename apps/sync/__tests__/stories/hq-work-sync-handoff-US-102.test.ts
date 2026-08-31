@@ -215,18 +215,18 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(src).not.toContain('new WebPlatformAdapter');
   });
 
-  it('whoami validates native auth and config identity against the active cloud account', async () => {
+  it('whoami binds the cloud profile to one stable native auth account', async () => {
     const { adapter, calls, fetchCalls } = makeAdapter();
     const whoami = expectOk(await adapter.identity.whoami());
     expect(whoami).toMatchObject(WHOAMI);
     expect(calls.map((c) => c.cmd)).toEqual([
       'get_auth_state',
-      'get_config',
       'hq_pro_fetch',
+      'get_auth_state',
     ]);
-    expect(hqProJson(calls[2]?.args)).toMatchObject({
+    expect(hqProJson(calls[1]?.args)).toMatchObject({
       method: 'GET',
-      path: '/entity/by-type/person',
+      path: '/v1/identity/whoami',
     });
     expect(calls.some((c) => c.cmd === 'start_oauth_login')).toBe(false);
     expect(calls.some((c) => c.cmd === 'oauth_exchange_code')).toBe(false);
@@ -237,7 +237,6 @@ describe('US-102 Sync PlatformAdapter', () => {
   it('whoami fails closed when get_auth_state is unauthenticated', async () => {
     const { adapter, calls } = makeAdapter(async (cmd) => {
       if (cmd === 'get_auth_state') return { authenticated: false };
-      if (cmd === 'get_config') return { configured: true, personUid: 'prs_ada' };
       throw new Error(`unexpected command: ${cmd}`);
     });
     const result = await adapter.identity.whoami();
@@ -246,10 +245,10 @@ describe('US-102 Sync PlatformAdapter', () => {
       reason: 'error',
       code: 'unauthenticated',
     });
-    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state', 'get_config']);
+    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state']);
   });
 
-  it('whoami replaces a stale configured person uid with the active account canonical uid', async () => {
+  it('whoami ignores a stale configured person uid and uses the caller-scoped profile', async () => {
     const { adapter } = makeAdapter(async (cmd, args) => {
       if (cmd === 'get_auth_state') {
         return {
@@ -259,22 +258,11 @@ describe('US-102 Sync PlatformAdapter', () => {
           displayName: WHOAMI.displayName,
         };
       }
-      if (cmd === 'get_config') {
-        return { configured: true, personUid: 'prs_previous_account' };
-      }
       if (cmd === 'hq_pro_fetch') {
-        expect(hqProJson(args).path).toBe('/entity/by-type/person');
+        expect(hqProJson(args).path).toBe('/v1/identity/whoami');
         return {
           status: 200,
-          body: JSON.stringify({
-            entities: [
-              {
-                uid: WHOAMI.personUid,
-                type: 'person',
-                createdAt: '2026-01-01T00:00:00Z',
-              },
-            ],
-          }),
+          body: JSON.stringify(WHOAMI),
         };
       }
       throw new Error(`unexpected command: ${cmd}`);
@@ -285,6 +273,48 @@ describe('US-102 Sync PlatformAdapter', () => {
       email: WHOAMI.email,
       displayName: WHOAMI.displayName,
     });
+  });
+
+  it('whoami fails closed when the active account changes during profile loading', async () => {
+    let authCalls = 0;
+    const { adapter } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        authCalls += 1;
+        return {
+          authenticated: true,
+          accountId: authCalls === 1 ? 'account-a' : 'account-b',
+          email: authCalls === 1 ? 'a@example.com' : 'b@example.com',
+        };
+      }
+      if (cmd === 'hq_pro_fetch') {
+        return { status: 200, body: JSON.stringify(WHOAMI) };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    expect(await adapter.identity.whoami()).toMatchObject({
+      ok: false,
+      code: 'identity-changed',
+    });
+  });
+
+  it('whoami preserves API profile fields when refreshed tokens omit ID-token claims', async () => {
+    const { adapter } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return {
+          authenticated: true,
+          accountId: 'cognito-sub-ada',
+          email: null,
+          displayName: null,
+        };
+      }
+      if (cmd === 'hq_pro_fetch') {
+        return { status: 200, body: JSON.stringify(WHOAMI) };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    expect(expectOk(await adapter.identity.whoami())).toMatchObject(WHOAMI);
   });
 
   it('listWorkspaces maps list_syncable_workspaces.workspaces', async () => {

@@ -2,11 +2,10 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -93,17 +92,13 @@ pub enum VersionProbeOutcome {
 const VERSION_PROCESS_TIMEOUT: Duration = Duration::from_secs(1);
 const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-fn drain_pipe<R>(mut pipe: R) -> mpsc::Receiver<std::io::Result<Vec<u8>>>
-where
-    R: Read + Send + 'static,
-{
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
-        let _ = sender.send(result);
-    });
-    receiver
+const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
+
+fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(VERSION_OUTPUT_LIMIT).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Run a tiny version command with a hard process boundary. `Command::output`
@@ -113,18 +108,15 @@ fn output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: Duration,
 ) -> std::io::Result<Option<Output>> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Regular temporary files make the read independent of descendant handle
+    // lifetime. A background process may inherit the handles, but unlike a
+    // pipe an open regular file still returns EOF at its current length. The
+    // byte cap also bounds a descendant that continuously writes.
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    cmd.stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
     let mut child = cmd.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .map(drain_pipe)
-        .expect("piped stdout is present");
-    let stderr = child
-        .stderr
-        .take()
-        .map(drain_pipe)
-        .expect("piped stderr is present");
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -138,16 +130,8 @@ fn output_with_timeout(
         std::thread::sleep(VERSION_PROCESS_POLL_INTERVAL);
     };
 
-    let remaining = timeout.saturating_sub(started.elapsed());
-    let stdout = match stdout.recv_timeout(remaining) {
-        Ok(result) => result?,
-        Err(_) => return Ok(None),
-    };
-    let remaining = timeout.saturating_sub(started.elapsed());
-    let stderr = match stderr.recv_timeout(remaining) {
-        Ok(result) => result?,
-        Err(_) => return Ok(None),
-    };
+    let stdout = read_probe_output(stdout)?;
+    let stderr = read_probe_output(stderr)?;
 
     Ok(status.map(|status| Output {
         status,
@@ -6394,7 +6378,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn inherited_stdout_from_a_descendant_cannot_hold_the_probe_open() {
+    fn inherited_stdout_from_a_descendant_is_read_without_a_drain_thread() {
         let mut command = std::process::Command::new("sh");
         command.args(["-c", "sleep 1 & echo 5.103.34"]);
 
@@ -6402,13 +6386,11 @@ mod tests {
         let output = output_with_timeout(&mut command, Duration::from_millis(75))
             .expect("the inherited-pipe timeout is not an I/O failure");
 
-        assert!(
-            output.is_none(),
-            "an inherited open pipe must become a bounded unknown result"
-        );
+        let output = output.expect("the immediate child's version output is available");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5.103.34");
         assert!(
             started.elapsed() < Duration::from_millis(500),
-            "the descendant's inherited pipe must not hold the caller open"
+            "the descendant's inherited handle must not hold the caller open"
         );
     }
 

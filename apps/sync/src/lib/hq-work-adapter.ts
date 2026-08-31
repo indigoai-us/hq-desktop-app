@@ -13,6 +13,7 @@ import {
   type Json,
   type NotificationItem,
   type PlatformAdapter,
+  type WhoAmI,
   type VersionInfo,
   TAURI_CAPABILITIES,
   WEB_PATHS,
@@ -92,6 +93,20 @@ function withQuery(
   }
   const qs = search.toString();
   return qs ? `${path}?${qs}` : path;
+}
+
+function asWhoAmI(value: unknown): WhoAmI {
+  const rec = asRecord(value) ?? {};
+  const personUid = String(
+    rec.personUid ?? rec.uid ?? rec.sub ?? rec.person_uid ?? '',
+  ).trim();
+  const email = String(rec.email ?? '').trim();
+  const displayNameRaw = rec.displayName ?? rec.name;
+  const displayName =
+    typeof displayNameRaw === 'string' && displayNameRaw.trim()
+      ? displayNameRaw.trim()
+      : undefined;
+  return { ...rec, personUid, email, displayName };
 }
 
 function asChannelSummary(row: Json): ChannelSummary {
@@ -251,64 +266,46 @@ export function createSyncPlatformAdapter(
 
     identity: {
       whoami: async () => {
-        const [auth, config] = await Promise.all([
-          call<{
-            authenticated?: boolean;
-            accountId?: string | null;
-            email?: string | null;
-            displayName?: string | null;
-          }>('get_auth_state'),
-          call<{ personUid?: string | null }>('get_config'),
-        ]);
+        type ShellAuthState = {
+          authenticated?: boolean;
+          accountId?: string | null;
+          email?: string | null;
+          displayName?: string | null;
+        };
+        const auth = await call<ShellAuthState>('get_auth_state');
         if (!auth.ok) return auth;
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        // `config.json` survives sign-out, so its personUid can belong to a
-        // previous account. Resolve the current token's caller-scoped person
-        // entities and only prefer the configured UID when that endpoint
-        // proves the signed-in account owns it.
-        const peopleResult = await hqProJson<unknown>(
-          'GET',
-          '/entity/by-type/person',
-        );
-        if (!peopleResult.ok) return peopleResult;
-        const people = unwrapNamedArray(peopleResult.value, ['entities'])
-          .map(asRecord)
-          .filter((person): person is Record<string, unknown> => {
-            return (
-              person !== null &&
-              person.deleted !== true &&
-              typeof person.uid === 'string' &&
-              person.uid.trim().length > 0
-            );
-          })
-          .sort((left, right) => {
-            const leftCreated = String(left.createdAt ?? '');
-            const rightCreated = String(right.createdAt ?? '');
-            return (
-              leftCreated.localeCompare(rightCreated) ||
-              String(left.uid).localeCompare(String(right.uid))
-            );
-          });
-        const configuredPersonUid = config.ok
-          ? config.value?.personUid?.trim()
-          : '';
-        const personUid = String(
-          people.find((person) => person.uid === configuredPersonUid)?.uid ??
-            people[0]?.uid ??
-            '',
-        ).trim();
-        if (!personUid) {
+        // The API response binds the person UID and profile fields to the
+        // bearer used for this request. It also preserves the established
+        // profile fallback when a Cognito refresh omits the optional ID token.
+        const meResult = await hqProJson<unknown>('GET', WEB_PATHS.whoami);
+        if (!meResult.ok) return meResult;
+        const currentAuth = await call<ShellAuthState>('get_auth_state');
+        if (!currentAuth.ok) return currentAuth;
+        if (
+          !currentAuth.value?.authenticated ||
+          !auth.value.accountId ||
+          currentAuth.value.accountId !== auth.value.accountId
+        ) {
+          return failure(
+            'identity-changed',
+            'Signed-in account changed while loading the profile.',
+          );
+        }
+        const me = asWhoAmI(meResult.value);
+        if (!me.personUid) {
           return failure(
             'identity-unavailable',
             'Signed-in account has no canonical person identifier.',
           );
         }
         return ok({
-          personUid,
-          email: auth.value.email?.trim() || '',
-          displayName: auth.value.displayName?.trim() || undefined,
+          ...me,
+          email: me.email || auth.value.email?.trim() || '',
+          displayName:
+            me.displayName || auth.value.displayName?.trim() || undefined,
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
