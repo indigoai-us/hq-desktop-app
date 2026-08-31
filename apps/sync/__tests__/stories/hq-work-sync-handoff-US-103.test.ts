@@ -124,7 +124,9 @@ function mockInvoke(): SyncInvokeFn {
   };
 }
 
-async function flush(times = 12): Promise<void> {
+// 32 turns: the identity settle path gained await hops (timeout race +
+// reveal/tick) in the boot-loader change, so 12 no longer drains it.
+async function flush(times = 32): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
   flushSync();
 }
@@ -164,6 +166,37 @@ describe('US-103 embedded desktop window', () => {
       expect(shell).toBe('legacy');
       expect(await resolveDesktopAltShell(async () => false)).toBe('legacy');
       expect(calls).toEqual(['legacy']);
+    });
+
+    it('shows a branded loading mark until identity settles', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      let releaseWhoami: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseWhoami = resolve;
+      });
+      const inner = mockInvoke();
+      const invokeFn: SyncInvokeFn = async (cmd, args) => {
+        if (cmd === 'hq_pro_fetch') {
+          const path = hqProPath(args?.url);
+          if (path.startsWith('/v1/identity/whoami')) {
+            await gate;
+          }
+        }
+        return inner(cmd, args);
+      };
+      component = mount(HqWorkDesktopShell, {
+        target: host,
+        props: { invokeFn },
+      });
+      flushSync();
+      expect(host.querySelector('[data-testid="hq-work-boot"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+      expect(host.textContent).toContain('HQ');
+      releaseWhoami();
+      await flush();
+      expect(host.querySelector('[data-testid="hq-work-boot"]')).toBeNull();
+      expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
     });
 
     it('Given flag on, when the tray desktop-view action is clicked, then the embedded HQ Work shell renders', async () => {

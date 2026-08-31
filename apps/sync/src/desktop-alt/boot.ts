@@ -22,6 +22,12 @@ export async function resolveDesktopAltShell(
  * shell lazily. A static import would pull the whole `@hq/ui` DesktopApp graph
  * into the desktop-alt entry chunk, making the default flag-off population pay
  * its download, parse, and memory cost for code that is never mounted.
+ *
+ * The flag invoke resolves in milliseconds; the HQ Work chunk parses in
+ * seconds. We do **not** start that import in parallel with `getHandoff()` —
+ * the flag is default-off, and overlapping would charge flag-off users for a
+ * bundle they never mount. `mountHqWork` starts the import as soon as the
+ * flag is known truthy (no other awaits in between).
  */
 export async function bootDesktopAltWindow(deps: {
   getHandoff: () => Promise<boolean>;

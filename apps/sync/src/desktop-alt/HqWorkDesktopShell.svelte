@@ -8,7 +8,7 @@
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { listen } from '@tauri-apps/api/event';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     DesktopApp,
     createChatWakeBus,
@@ -26,6 +26,7 @@
   import { applyDesktopAltRoute, createHqWorkSidebarApi } from './hq-work-host';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
+  import { dismissBootLoader } from './boot-loader';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
@@ -54,16 +55,51 @@
    */
   let identitySettled = $state(false);
 
+  /** Hung whoami / listWorkspaces must not shimmer this window forever. */
+  const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
+
   onMount(() => {
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let revealed = false;
+
+    const reveal = async () => {
+      if (cancelled || revealed) return;
+      revealed = true;
+      identitySettled = true;
+      await tick();
+      if (!cancelled) dismissBootLoader();
+    };
 
     void (async () => {
+      const identity = Promise.all([
+        adapter.identity.whoami(),
+        adapter.identity.listWorkspaces(),
+        getVersion().catch(() => '0.0.0'),
+      ]);
+
+      // Race the identity probe with a timeout so a hung invoke cannot
+      // blank/spinner the window forever. On timeout we paint DesktopApp
+      // with whatever identity we have (same settled-not-succeeded rule
+      // as a failed probe). A late response still fills chrome below.
+      const outcome = await Promise.race([
+        identity.then(
+          () => 'ready' as const,
+          () => 'ready' as const,
+        ),
+        new Promise<'timeout'>((resolve) => {
+          timeoutId = setTimeout(() => resolve('timeout'), IDENTITY_SETTLE_TIMEOUT_MS);
+        }),
+      ]);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+      if (cancelled) return;
+      if (outcome === 'timeout') {
+        await reveal();
+      }
+
       try {
-        const [who, workspaces, ver] = await Promise.all([
-          adapter.identity.whoami(),
-          adapter.identity.listWorkspaces(),
-          getVersion().catch(() => '0.0.0'),
-        ]);
+        const [who, workspaces, ver] = await identity;
         if (cancelled) return;
         if (who.ok) {
           self = toSelfIdentity({
@@ -79,7 +115,7 @@
       } catch {
         /* DesktopApp still paints; identity chrome stays empty. */
       } finally {
-        if (!cancelled) identitySettled = true;
+        await reveal();
       }
     })();
 
@@ -96,6 +132,7 @@
 
     return () => {
       cancelled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       // Shared teardown boundary: idempotent, and a throw here can never
       // escape into Svelte's cleanup pass.
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -119,6 +156,15 @@
       putAttachmentObject={putVaultObject}
       getAttachmentObject={getVaultObject}
     />
+  {:else}
+    <div
+      class="hq-work-boot"
+      data-testid="hq-work-boot"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <span class="hq-work-boot-mark">HQ</span>
+    </div>
   {/if}
 </div>
 
@@ -137,5 +183,39 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .hq-work-boot {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hq-work-boot-mark {
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.16em;
+    line-height: 1;
+    color: var(--c-text, var(--v4-text-1, currentColor));
+    animation: hq-work-boot-pulse 1.6s ease-in-out infinite alternate;
+  }
+
+  @keyframes hq-work-boot-pulse {
+    from {
+      opacity: 0.35;
+    }
+    to {
+      opacity: 0.9;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hq-work-boot-mark {
+      animation: none;
+      opacity: 0.85;
+    }
   }
 </style>
