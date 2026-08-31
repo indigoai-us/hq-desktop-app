@@ -129,6 +129,20 @@ function makeAdapter(handler?: SyncInvokeFn) {
         return { ok: true, marked: 1 };
       case 'hq_pro_fetch': {
         const { method, path } = hqProJson(args);
+        if (method === 'GET' && path === '/entity/by-type/person') {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              entities: [
+                {
+                  uid: WHOAMI.personUid,
+                  type: 'person',
+                  createdAt: '2026-01-01T00:00:00Z',
+                },
+              ],
+            }),
+          };
+        }
         if (method === 'GET' && path.startsWith('/v1/identity/whoami')) {
           return { status: 200, body: JSON.stringify(WHOAMI) };
         }
@@ -201,15 +215,19 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(src).not.toContain('new WebPlatformAdapter');
   });
 
-  it('whoami composes the native auth and config identity without calling a nonexistent REST route', async () => {
+  it('whoami validates native auth and config identity against the active cloud account', async () => {
     const { adapter, calls, fetchCalls } = makeAdapter();
     const whoami = expectOk(await adapter.identity.whoami());
     expect(whoami).toMatchObject(WHOAMI);
     expect(calls.map((c) => c.cmd)).toEqual([
       'get_auth_state',
       'get_config',
+      'hq_pro_fetch',
     ]);
-    expect(calls.some((c) => c.cmd === 'hq_pro_fetch')).toBe(false);
+    expect(hqProJson(calls[2]?.args)).toMatchObject({
+      method: 'GET',
+      path: '/entity/by-type/person',
+    });
     expect(calls.some((c) => c.cmd === 'start_oauth_login')).toBe(false);
     expect(calls.some((c) => c.cmd === 'oauth_exchange_code')).toBe(false);
     expect(calls.some((c) => c.cmd === 'begin_reauth')).toBe(false);
@@ -231,8 +249,8 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state', 'get_config']);
   });
 
-  it('whoami falls back to the Cognito subject when local config has no canonical person uid', async () => {
-    const { adapter } = makeAdapter(async (cmd) => {
+  it('whoami replaces a stale configured person uid with the active account canonical uid', async () => {
+    const { adapter } = makeAdapter(async (cmd, args) => {
       if (cmd === 'get_auth_state') {
         return {
           authenticated: true,
@@ -241,12 +259,29 @@ describe('US-102 Sync PlatformAdapter', () => {
           displayName: WHOAMI.displayName,
         };
       }
-      if (cmd === 'get_config') return { configured: false, personUid: null };
+      if (cmd === 'get_config') {
+        return { configured: true, personUid: 'prs_previous_account' };
+      }
+      if (cmd === 'hq_pro_fetch') {
+        expect(hqProJson(args).path).toBe('/entity/by-type/person');
+        return {
+          status: 200,
+          body: JSON.stringify({
+            entities: [
+              {
+                uid: WHOAMI.personUid,
+                type: 'person',
+                createdAt: '2026-01-01T00:00:00Z',
+              },
+            ],
+          }),
+        };
+      }
       throw new Error(`unexpected command: ${cmd}`);
     });
 
     expect(expectOk(await adapter.identity.whoami())).toEqual({
-      personUid: 'cognito-sub-ada',
+      personUid: WHOAMI.personUid,
       email: WHOAMI.email,
       displayName: WHOAMI.displayName,
     });

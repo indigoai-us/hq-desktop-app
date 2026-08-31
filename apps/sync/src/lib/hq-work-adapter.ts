@@ -264,16 +264,45 @@ export function createSyncPlatformAdapter(
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        const personUid =
-          (config.ok ? config.value?.personUid?.trim() : '') ||
-          auth.value.accountId?.trim() ||
-          '';
+        // `config.json` survives sign-out, so its personUid can belong to a
+        // previous account. Resolve the current token's caller-scoped person
+        // entities and only prefer the configured UID when that endpoint
+        // proves the signed-in account owns it.
+        const peopleResult = await hqProJson<unknown>(
+          'GET',
+          '/entity/by-type/person',
+        );
+        if (!peopleResult.ok) return peopleResult;
+        const people = unwrapNamedArray(peopleResult.value, ['entities'])
+          .map(asRecord)
+          .filter((person): person is Record<string, unknown> => {
+            return (
+              person !== null &&
+              person.deleted !== true &&
+              typeof person.uid === 'string' &&
+              person.uid.trim().length > 0
+            );
+          })
+          .sort((left, right) => {
+            const leftCreated = String(left.createdAt ?? '');
+            const rightCreated = String(right.createdAt ?? '');
+            return (
+              leftCreated.localeCompare(rightCreated) ||
+              String(left.uid).localeCompare(String(right.uid))
+            );
+          });
+        const configuredPersonUid = config.ok
+          ? config.value?.personUid?.trim()
+          : '';
+        const personUid = String(
+          people.find((person) => person.uid === configuredPersonUid)?.uid ??
+            people[0]?.uid ??
+            '',
+        ).trim();
         if (!personUid) {
           return failure(
             'identity-unavailable',
-            config.ok
-              ? 'Signed-in identity has no person identifier.'
-              : config.message,
+            'Signed-in account has no canonical person identifier.',
           );
         }
         return ok({
