@@ -4,26 +4,73 @@
    * the hq-sync desktop `components/messaging/ChannelFilesTab.svelte` MARKUP +
    * CSS (full-width row list + dismissable preview overlay).
    *
-   * ZERO NETWORK / platform-pure: the file list is INJECTED as fixture rows and
-   * the preview body renders the row's authored `previewText` — there is no
-   * Tauri invoke, no `fetch_channel_files`, no self-fetching FilePreviewPane.
-   * The host owns the data.
+   * ZERO NETWORK / platform-pure: the file list is INJECTED as fixture rows.
+   * Authored `previewText` renders immediately. Markdown/text rows without a
+   * body can be filled by an optional host `loadPreview` callback — there is
+   * no Tauri invoke inside this component. The host owns the data.
    */
-  import type {
-    ChannelFileIconKind,
-    ChannelFileItemModel,
+  import {
+    CHANNEL_FILE_LOADING_PREVIEW,
+    channelFilePreviewBody,
+    shouldLoadPreview,
+    type ChannelFileIconKind,
+    type ChannelFileItemModel,
   } from "./channelTabModels";
 
   interface Props {
     files: ChannelFileItemModel[];
+    loadPreview?: (item: ChannelFileItemModel) => Promise<string | null>;
   }
 
-  let { files }: Props = $props();
+  let { files, loadPreview }: Props = $props();
 
   let selectedKey = $state<string | null>(null);
   const selected = $derived<ChannelFileItemModel | null>(
     selectedKey ? (files.find((f) => f.key === selectedKey) ?? null) : null,
   );
+
+  let previewCache = $state<Record<string, string | null>>({});
+  const inflight = new Set<string>();
+
+  const hasLoader = $derived(typeof loadPreview === "function");
+  const previewBody = $derived(
+    selected
+      ? channelFilePreviewBody(selected, {
+          hasLoader,
+          cacheHit: selected.key in previewCache,
+          cached: previewCache[selected.key],
+        })
+      : "",
+  );
+  const previewLoading = $derived(
+    previewBody === CHANNEL_FILE_LOADING_PREVIEW,
+  );
+
+  $effect(() => {
+    const item = selected;
+    const loader = loadPreview;
+    if (!item || !loader || !shouldLoadPreview(item, true)) return;
+    const key = item.key;
+    if (key in previewCache || inflight.has(key)) return;
+    let cancelled = false;
+    inflight.add(key);
+    void Promise.resolve()
+      .then(() => loader(item))
+      .then((text) => {
+        if (cancelled) return;
+        previewCache = { ...previewCache, [key]: text ?? null };
+      })
+      .catch(() => {
+        if (cancelled) return;
+        previewCache = { ...previewCache, [key]: null };
+      })
+      .finally(() => {
+        inflight.delete(key);
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   function selectFile(item: ChannelFileItemModel): void {
     selectedKey = item.key;
@@ -178,8 +225,10 @@
             <div class="preview-meta">
               {selected.caption} · {selected.vaultPath}
             </div>
-            <pre class="preview-text">{selected.previewText ??
-                "No preview available."}</pre>
+            <pre
+              class="preview-text"
+              class:loading={previewLoading}
+              data-testid="channel-files-preview-text">{previewBody}</pre>
           {/if}
         </div>
       </div>
@@ -326,7 +375,7 @@
     display: flex;
     align-items: stretch;
     justify-content: flex-end;
-    background: color-mix(in srgb, var(--v4-text-1, #000) 28%, transparent);
+    background: rgba(8, 8, 10, 0.28);
   }
 
   .files-preview-sheet {
@@ -415,6 +464,10 @@
     color: var(--t2);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .preview-text.loading {
+    color: var(--t3);
   }
 
   .preview-denied {

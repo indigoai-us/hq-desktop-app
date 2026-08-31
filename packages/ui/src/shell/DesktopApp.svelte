@@ -814,6 +814,53 @@
     void loadChannelRoster(channelId);
   });
 
+  /** Presign + fetch a vault object as UTF-8 text (live-tab PRDs + previews). */
+  async function fetchVaultText(
+    company: string,
+    keyPath: string,
+  ): Promise<string | null> {
+    try {
+      const api = adapter.files;
+      if (!api?.presignVaultGet) return null;
+      const signed = await api.presignVaultGet(company, keyPath);
+      if (!signed.ok) return null;
+      const url = presignUrlFromResult(signed.value)?.url;
+      if (!url) return null;
+      const res = getAttachmentObject
+        ? await getAttachmentObject(url)
+        : await fetch(url);
+      if (!res.ok) return null;
+      return await res.text();
+    } catch {
+      return null;
+    }
+  }
+
+  /** Company uid for channel-file fetches: item override, else the row's. */
+  function channelFileCompanyUid(item: ChannelFileItemModel): string {
+    return (
+      (item.companyUid ?? "").trim() ||
+      (selectedRow?.companyUid ?? "").trim() ||
+      (companies ?? []).find((c) => c.cloudUid?.trim())?.cloudUid?.trim() ||
+      ""
+    );
+  }
+
+  /** Loader for the Files tab preview sheet (markdown/text rows): the host's
+   *  injected `loadFilePreview` wins; otherwise presign + fetch from vault. */
+  async function loadChannelFilePreview(
+    item: ChannelFileItemModel,
+  ): Promise<string | null> {
+    if (loadFilePreview) {
+      const fromHost = await loadFilePreview(item);
+      if (fromHost != null) return fromHost;
+    }
+    const company = channelFileCompanyUid(item);
+    const keyPath = (item.vaultPath ?? "").trim();
+    if (!company || !keyPath) return null;
+    return fetchVaultText(company, keyPath);
+  }
+
   $effect(() => {
     const row = selectedRow;
     if (!row || !isProjectChannel) {
@@ -860,23 +907,7 @@
           return null;
         }
       },
-      getVaultText: async (company, keyPath) => {
-        try {
-          const api = adapter.files;
-          if (!api?.presignVaultGet) return null;
-          const signed = await api.presignVaultGet(company, keyPath);
-          if (!signed.ok) return null;
-          const url = presignUrlFromResult(signed.value)?.url;
-          if (!url) return null;
-          const res = getAttachmentObject
-            ? await getAttachmentObject(url)
-            : await fetch(url);
-          if (!res.ok) return null;
-          return await res.text();
-        } catch {
-          return null;
-        }
-      },
+      getVaultText: fetchVaultText,
     }).then((tabs) => {
       if (cancelled || !tabs) return;
       liveTabs = tabs;
@@ -2078,7 +2109,7 @@
               onOpenInChannel={() => (tab = "chat")}
             />
           {:else}
-            <ChannelFilesTab {files} />
+            <ChannelFilesTab {files} loadPreview={loadChannelFilePreview} />
           {/if}
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
