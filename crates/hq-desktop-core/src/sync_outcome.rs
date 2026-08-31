@@ -1149,6 +1149,14 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::DanglingSymlinkParent
         | RunnerErrorCause::WindowsSymlinkPrivilege
         | RunnerErrorCause::ChildProcessSyncWorker
+        // … the ~6.16.0 pin's additions — none has an unambiguous class
+        // analogue (realtime-lane outage and Windows rename-block fall back to
+        // the keyword matcher; the two outposts terminal classes are
+        // CLI-surface errors that never appear in runner output) …
+        | RunnerErrorCause::RealtimeUnavailable
+        | RunnerErrorCause::WindowsRenameBlocked
+        | RunnerErrorCause::SessionManagerPluginLaunch
+        | RunnerErrorCause::TerminalSessionTimeout
         // … AWS S3/STS names with no class analogue …
         | RunnerErrorCause::NoSuchKey
         | RunnerErrorCause::NoSuchBucket

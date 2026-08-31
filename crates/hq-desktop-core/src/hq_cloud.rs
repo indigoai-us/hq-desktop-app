@@ -417,11 +417,18 @@
 /// picks up the producer-declared `sizeBytes` fast-lane routing fixes from
 /// 6.15.94 (hq-cloud#453–#455). Raising the floor changes the npx cache key, so
 /// cached older resolutions cannot keep serving the echoing runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.95";
+///
+/// `~6.15.95` -> `~6.16.0`: track the hq-cloud minor line onto 6.16 (the
+/// outposts interactive-terminal release, hq-cloud#468). Rescue/settings
+/// semantics are unchanged from the 6.15 line; the bump keeps the desktop pill
+/// and `hq rescue` on ONE minor line (`RESCUE_CONTRACT_FLOOR` below moves in
+/// lockstep, mirrored in hq-cli's rescue parity test).
+pub const HQ_CLOUD_VERSION: &str = "~6.16.0";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
-/// into `.claude/settings.local.json` semantics (hq-cloud 6.15 line). This is
+/// into `.claude/settings.local.json` semantics (hq-cloud 6.16 line; carried
+/// unchanged from 6.15). This is
 /// the single cross-surface source of truth for rescue-engine parity: the
 /// desktop `HQ_CLOUD_VERSION` pin above must have a lower bound >= this floor
 /// AND stay on its minor line, and the hq-cli `@indigoai-us/hq-cloud` dependency
@@ -432,7 +439,7 @@ pub const HQ_CLOUD_VERSION: &str = "~6.15.95";
 /// `src/commands/rescue.parity.test.ts`; keep the two in lockstep. See
 /// `version_pin_lower_bound_is_at_least_rescue_contract_floor` below for the
 /// desktop guard.
-pub const RESCUE_CONTRACT_FLOOR: &str = "6.15.0";
+pub const RESCUE_CONTRACT_FLOOR: &str = "6.16.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -484,7 +491,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.95");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.0");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
