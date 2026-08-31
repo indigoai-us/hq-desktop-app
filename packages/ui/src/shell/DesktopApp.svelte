@@ -55,7 +55,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onMount, untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -210,6 +210,10 @@
      * shared UI. Null on the unauth / empty path.
      */
     self?: SelfIdentity | null;
+    /** Host-authenticated account key for singleton/cache isolation. */
+    meetingAccountId?: string | null;
+    /** Host lifecycle generation; Settings drops stale profile completions. */
+    authGeneration?: number;
     /**
      * Optional explicit admin/owner flag from a defensive host probe
      * (`identity.isAdmin()`). When omitted, admin is derived from membership
@@ -307,6 +311,8 @@
     wakes = null,
     companies = null,
     self = null,
+    meetingAccountId = null,
+    authGeneration = 0,
     isAdmin = null,
     accountLabel = null,
     accountInitials = null,
@@ -1283,6 +1289,12 @@
     };
   });
 
+  onDestroy(() => {
+    // Account transitions unmount the shared shell; never leave its singleton
+    // cache/snapshot visible until the next identity has finished hydrating.
+    configureMeetingsApi(null);
+  });
+
   const mentionRoster = $derived(
     mergeMentionRosters(
       mentionCandidates,
@@ -1703,6 +1715,7 @@
     // open paints from state instead of a cold fetch. View-active gating
     // (poll + focus refresh) stays owned by MeetingsPage.
     configureMeetingsApi({
+      accountId: meetingAccountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
       settings: adapter.settings,
@@ -1862,6 +1875,7 @@
         consoleBase={HQ_CONSOLE_BASE}
         {updateWakeSeq}
         {refreshAppVersion}
+        {authGeneration}
       />
     </div>
   {:else}
@@ -1911,6 +1925,7 @@
         {#if view === "meetings"}
           <MeetingsPage
             {adapter}
+            accountId={meetingAccountId}
             onback={() => {
               view = "conversation";
               meetingFocusRequest = null;

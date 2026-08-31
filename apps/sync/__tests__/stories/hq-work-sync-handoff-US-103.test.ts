@@ -283,6 +283,33 @@ describe('US-103 embedded desktop window', () => {
       expect(calls.filter((command) => command === 'check_for_updates')).toHaveLength(before + 1);
     });
 
+    it('does not recursively restart an Updates probe when that probe emits core-state:changed', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const baseInvoke = mockInvoke();
+      let coreChecks = 0;
+      const invokeFn: SyncInvokeFn = async (command, args) => {
+        if (command === 'check_core_state') {
+          coreChecks += 1;
+          if (coreChecks === 1) {
+            tauriEvents.listeners.get('core-state:changed')?.({ payload: { versionBehind: false } });
+          }
+          return { versionBehind: false };
+        }
+        return baseInvoke(command, args);
+      };
+      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      await flush(24);
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'updates' },
+        }),
+      );
+      await flush(24);
+
+      expect(coreChecks).toBe(1);
+    });
+
     it('applyDesktopAltRoute emits typed subsection targets instead of flattening them', () => {
       const seen: string[] = [];
       const targets: unknown[] = [];

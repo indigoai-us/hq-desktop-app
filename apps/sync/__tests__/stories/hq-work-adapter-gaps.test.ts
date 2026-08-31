@@ -39,6 +39,8 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
       value: {
         core: '15.0.117',
         cli: '5.103.34',
+        coreProbe: { status: 'available', value: '15.0.117' },
+        cliProbe: { status: 'available', value: '5.103.34' },
       },
     });
     expect(calls).toEqual([
@@ -51,17 +53,28 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
     {
       core: null,
       cli: '5.103.34',
-      expected: { cli: '5.103.34' },
+      expected: {
+        cli: '5.103.34',
+        coreProbe: { status: 'missing', value: null },
+        cliProbe: { status: 'available', value: '5.103.34' },
+      },
     },
     {
       core: '15.0.117',
       cli: null,
-      expected: { core: '15.0.117' },
+      expected: {
+        core: '15.0.117',
+        coreProbe: { status: 'available', value: '15.0.117' },
+        cliProbe: { status: 'missing', value: null },
+      },
     },
     {
       core: null,
       cli: null,
-      expected: {},
+      expected: {
+        coreProbe: { status: 'missing', value: null },
+        cliProbe: { status: 'missing', value: null },
+      },
     },
   ])('keeps independently detected versions when the other is absent', async ({
     core,
@@ -96,8 +109,24 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
         ok: true,
         value:
           failedCommand === 'get_hq_version'
-            ? { cli: '5.103.34' }
-            : { core: '15.0.117' },
+            ? {
+                cli: '5.103.34',
+                coreProbe: {
+                  status: 'failed',
+                  code: 'invoke',
+                  message: 'version probe failed',
+                },
+                cliProbe: { status: 'available', value: '5.103.34' },
+              }
+            : {
+                core: '15.0.117',
+                coreProbe: { status: 'available', value: '15.0.117' },
+                cliProbe: {
+                  status: 'failed',
+                  code: 'invoke',
+                  message: 'version probe failed',
+                },
+              },
       });
       expect(calls).toEqual(['get_hq_version', 'get_hq_cli_version']);
     },

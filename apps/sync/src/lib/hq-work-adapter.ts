@@ -7,12 +7,14 @@
  */
 
 import {
+  type AdapterResult,
   type AdapterPromise,
   type Capability,
   type ChannelSummary,
   type Json,
   type NotificationItem,
   type PlatformAdapter,
+  type VersionProbe,
   type WhoAmI,
   type VersionInfo,
   TAURI_CAPABILITIES,
@@ -167,12 +169,17 @@ export function createSyncPlatformAdapter(
     // Version probes are independent. A missing or failed CLI probe must not
     // erase a successfully read Core version (and vice versa); the Settings UI
     // renders the failed row as unchecked with its own remediation.
+    const toProbe = (result: AdapterResult<string | null>): VersionProbe =>
+      result.ok
+        ? { status: result.value ? 'available' : 'missing', value: result.value }
+        : { status: 'failed', code: result.code, message: result.message };
     const versions: VersionInfo = {
       ...(core.ok && core.value ? { core: core.value } : {}),
       ...(cli.ok && cli.value ? { cli: cli.value } : {}),
+      coreProbe: toProbe(core),
+      cliProbe: toProbe(cli),
     };
-    if (core.ok || cli.ok) return ok(versions);
-    return core;
+    return ok(versions);
   }
 
   async function hqProJson<T>(
@@ -852,6 +859,7 @@ export function createSyncPlatformAdapter(
         call('notification_permission_state'),
       requestNotificationPermission: () =>
         call('notification_request_permission'),
+      openNotificationSettings: () => call('notification_open_settings'),
       setDesktopWidget: (enabled) =>
         persistThenApplyAppShellPreference(
           'widgetEnabled',

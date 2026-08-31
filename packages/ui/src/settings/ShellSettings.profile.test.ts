@@ -101,4 +101,41 @@ describe("ShellSettings profile editing — dirty state", () => {
       host.querySelector('[data-testid="settings-profile-saved"]'),
     ).not.toBeNull();
   });
+
+  it("does not overwrite an unavailable server description when only the name changed", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const update = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const adapter = {
+      isAvailable: () => false,
+      identity: {
+        getProfile: async () => ({
+          ok: false as const,
+          reason: "error" as const,
+          code: "http-503",
+          message: "Profile service unavailable",
+        }),
+        updateProfile: update,
+      },
+    } as unknown as PlatformAdapter;
+    component = mount(ShellSettings, {
+      target: host,
+      props: { profile, adapter },
+    });
+    await tick();
+    await Promise.resolve();
+    flushSync();
+
+    const nameInput = host.querySelector(
+      '[data-testid="settings-display-name-input"]',
+    ) as HTMLInputElement;
+    nameInput.value = "Ada Reloaded";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    saveButton()!.click();
+    await tick();
+    await Promise.resolve();
+
+    expect(update).toHaveBeenCalledWith({ displayName: "Ada Reloaded" });
+  });
 });

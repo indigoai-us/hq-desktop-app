@@ -50,6 +50,7 @@
   const packagesEvents = createHqWorkPackagesEvents(listen);
 
   let self = $state<SelfIdentity | null>(null);
+  let accountId = $state<string | null>(null);
   let companies = $state<Workspace[] | null>(null);
   let version = $state('0.0.0');
   type Lifecycle = 'loading' | 'ready' | 'signed-out' | 'identity-error';
@@ -60,7 +61,7 @@
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
   let reauthError = $state<string | null>(null);
-  let hydration = 0;
+  let hydration = $state(0);
   let detachNavigation: (() => void) | null = null;
   // Incrementing, rather than storing an update payload, guarantees the pane
   // re-reads each authoritative command after every native state edge.
@@ -131,6 +132,7 @@
     reauthError = null;
     // Do not render stale tenant/account data while a new auth probe runs.
     self = null;
+    accountId = null;
     companies = null;
 
     try {
@@ -151,6 +153,10 @@
         email: who.value.email,
         displayName: who.value.displayName,
       });
+      // `adapter.identity.whoami()` has already verified the stable native
+      // account id before returning this canonical person UID. Scope UI state
+      // to that verified identity and the hydration generation together.
+      accountId = who.value.personUid;
       lifecycle = 'ready';
       void refreshWorkspaces(request);
     } catch (error) {
@@ -243,7 +249,8 @@
     const updateEvents = [
       'update:available',
       'update:cleared',
-      'core-state:changed',
+      // `check_core_state` emits this after every successful probe. Treating
+      // that completion as a wake would recursively re-run the same probe.
       'hq-cli-update:available',
       'hq-cli-update:cleared',
     ];
@@ -316,6 +323,8 @@
       {packagesEvents}
       {companies}
       {self}
+      meetingAccountId={accountId}
+      authGeneration={hydration}
       settingsProfile={settingsProfileFromSelf(self)}
       hydrateLiveMessages={true}
       coreFixtures={false}

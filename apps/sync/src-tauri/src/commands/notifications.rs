@@ -15,3 +15,10 @@ pub async fn notification_permission_state(_app: AppHandle) -> Result<String, St
 pub async fn notification_request_permission(_app: AppHandle) -> Result<String, String> {
     Ok(hq_platform::notifications::request_permission())
 }
+
+/// Open the OS-owned notification settings surface. The frontend never carries
+/// a platform URI, so Windows cannot be sent to the macOS preferences route.
+#[tauri::command]
+pub async fn notification_open_settings(_app: AppHandle) -> Result<(), String> {
+    hq_platform::notifications::open_settings()
+}

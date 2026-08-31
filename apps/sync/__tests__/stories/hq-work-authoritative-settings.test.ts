@@ -105,7 +105,7 @@ afterEach(async () => {
 });
 
 describe('embedded HQ Work authoritative settings', () => {
-  it('writes Launch at login through the native host and reloads the persisted value on relaunch', async () => {
+  it('keeps Launch at login through an injected-host component remount', async () => {
     let persisted: Record<string, unknown> = {
       startAtLogin: false,
       dockIcon: true,
@@ -195,7 +195,7 @@ describe('embedded HQ Work authoritative settings', () => {
     expect(persisted().startAtLogin).toBe(false);
   });
 
-  it('persists Dock and desktop-widget controls through native apply commands and hydrates them on relaunch', async () => {
+  it('persists Dock and desktop-widget controls through native apply commands across an injected-host component remount', async () => {
     const { adapter, calls, persisted } = nativeHost({
       startAtLogin: false,
       dockIcon: true,
@@ -228,7 +228,7 @@ describe('embedded HQ Work authoritative settings', () => {
     });
   });
 
-  it('keeps a saved custom HQ root ahead of the general config root after relaunch', async () => {
+  it('keeps a saved custom HQ root ahead of the general config root after an injected-host component remount', async () => {
     const { adapter } = nativeHost(
       { hqPath: '/custom/HQ' },
       { configRoot: '/configured/default-HQ' },
@@ -313,7 +313,7 @@ describe('embedded HQ Work authoritative settings', () => {
     });
     host.querySelector<HTMLButtonElement>('[aria-label="Share notifications"]')?.click();
     await vi.waitFor(() => expect(persisted().shareNotifications).toBe(false));
-    host.querySelector<HTMLButtonElement>('[aria-label="Sync notifications"]')?.click();
+    host.querySelector<HTMLButtonElement>('[aria-label="Meeting notifications"]')?.click();
     await vi.waitFor(() => expect(persisted().notifications).toBe(false));
     host.querySelector<HTMLButtonElement>('[aria-label="DM notifications"]')?.click();
     await vi.waitFor(() => expect(persisted().dmNotifications).toBe(false));
@@ -354,7 +354,7 @@ describe('embedded HQ Work authoritative settings', () => {
     recording.value = 'co_acme';
     recording.dispatchEvent(new Event('change', { bubbles: true }));
     await vi.waitFor(() => expect(persisted().defaultRecordingCompanyUid).toBe('co_acme'));
-    host.querySelector<HTMLButtonElement>('[aria-label="Meeting detection"]')?.click();
+    host.querySelector<HTMLButtonElement>('[aria-label="Detected-meeting alerts"]')?.click();
     await vi.waitFor(() => {
       expect((persisted().meetingDetectNotify as { enabled?: boolean }).enabled).toBe(false);
     });
@@ -382,9 +382,9 @@ describe('embedded HQ Work authoritative settings', () => {
         (row) => row.querySelector('.sn')?.textContent?.trim() === 'HQ CLI',
       );
       expect(coreRow?.textContent).toContain('UP TO DATE');
-      expect(cliRow?.textContent).toContain('NOT CHECKED');
+      expect(cliRow?.textContent).toContain('CHECK FAILED');
       expect(cliRow?.textContent).not.toContain('UP TO DATE');
-      expect(host.querySelector('[data-testid="settings-cli-remediation"]')?.textContent).toContain('.claude/settings.local.json');
+      expect(host.querySelector('[data-testid="settings-cli-remediation"]')).toBeNull();
       expect(host.textContent).toContain('v0.10.170');
     });
     const checksBeforeFocus = calls.filter((call) => call.command === 'check_for_updates').length;

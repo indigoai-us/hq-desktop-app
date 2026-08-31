@@ -7,6 +7,7 @@ import type {
 } from "@hq/platform";
 import { loadMeetingsCache, saveMeetingsCache } from "./meetings-cache";
 import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
+import { isRecordingCompanyMembership } from "./recording-membership";
 import {
   buildRefreshProblemReport,
   botForEvent,
@@ -43,6 +44,8 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface MeetingsStoreApi {
+  /** Stable authenticated account identity; cache and completions are scoped to it. */
+  accountId?: string | null;
   meetings: MeetingsApi;
   feedback: FeedbackApi;
   /** Native settings are injected by the desktop shell. */
@@ -50,10 +53,30 @@ export interface MeetingsStoreApi {
 }
 
 let api: MeetingsStoreApi | null = null;
+let activeAccountId: string | null = null;
+let accountGeneration = 0;
 
 /** Inject the platform backend before startMeetingsStore(). */
 export function configureMeetingsApi(next: MeetingsStoreApi | null): void {
-  api = next;
+  if (!next) {
+    if (activeAccountId !== null || api !== null) {
+      accountGeneration += 1;
+      activeAccountId = null;
+      resetAccountState();
+    }
+    api = null;
+    return;
+  }
+  const requestedAccount = next.accountId?.trim() || activeAccountId;
+  if (requestedAccount !== activeAccountId) {
+    accountGeneration += 1;
+    activeAccountId = requestedAccount ?? null;
+    resetAccountState();
+    // Account B may have a warm snapshot, but it must never inherit A's.
+    // Hydrate only after switching the scoped key and clearing every A field.
+    hydrateFromCache();
+  }
+  api = { ...next, accountId: activeAccountId };
 }
 
 function requireApi(): MeetingsStoreApi {
@@ -165,6 +188,38 @@ let viewActive = false;
 let lastRefreshAt = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Synchronously blank every account-owned surface before a new account paints. */
+function resetAccountState(): void {
+  events = [];
+  accounts = [];
+  calendarsByAccount = new Map();
+  enabledCalIdsByAccount = new Map();
+  botsByEventId = new Map();
+  allBots = [];
+  companyNamesByUid = new Map();
+  accountEmailById = new Map();
+  calendarSummaryByKey = new Map();
+  memberships = [];
+  membershipsError = "";
+  fetchError = "";
+  refreshBlocked = false;
+  refreshFailureCount = 0;
+  lastRefreshErrorRaw = "";
+  loading = false;
+  hydratedFromCache = false;
+  firstRefreshSettled = false;
+  hasLiveSnapshot = false;
+  refreshInFlight = null;
+  forceTrailingRefresh = false;
+  mutationRevision += 1;
+  rowPending = new Map();
+  lastRefreshAt = 0;
+  // These mutations own account-specific optimistic state too. Stop/clear
+  // them before account B paints so no A completion can mutate B's surface.
+  finishCalendarConnect(null);
+  disconnectPendingByAccountId = new Set();
+}
+
 // In-app Google calendar OAuth: pending flag + bounded post-consent account
 // watch (focus + interval, hard-stopped at CONNECT_POLL_MAX_MS).
 let connectPending = $state(false);
@@ -173,6 +228,7 @@ let connectBaselineIds = new Set<string>();
 /** Bumped when a connect watch starts or finishes so in-flight polls cannot
  *  complete against a cleared/replaced baseline. */
 let connectWatchGeneration = 0;
+let connectWatchAccountGeneration = 0;
 let connectPollTimer: ReturnType<typeof setInterval> | null = null;
 let connectDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
 let connectFocusHandler: (() => void) | null = null;
@@ -181,12 +237,13 @@ const CONNECT_POLL_INTERVAL_MS = 3_000;
 const CONNECT_POLL_MAX_MS = 120_000;
 
 function hydrateFromCache() {
+  if (!activeAccountId) return;
   const snapshot = loadMeetingsCache<
     MeetingEvent,
     ScheduledBot,
     GoogleAccount,
     GoogleCalendar
-  >();
+  >(activeAccountId);
   if (!snapshot) return;
   hydratedFromCache = true;
   events = snapshot.events ?? [];
@@ -223,16 +280,19 @@ function refresh(forceAfterMutation = false): Promise<void> {
   }
 
   const run = async (): Promise<void> => {
+    const generation = accountGeneration;
     loading = true;
     try {
       do {
         forceTrailingRefresh = false;
         const refreshRevision = mutationRevision;
-        await refreshOnce(refreshRevision);
+        await refreshOnce(refreshRevision, generation);
       } while (forceTrailingRefresh);
     } finally {
-      loading = false;
-      firstRefreshSettled = true;
+      if (generation === accountGeneration) {
+        loading = false;
+        firstRefreshSettled = true;
+      }
     }
   };
 
@@ -243,7 +303,10 @@ function refresh(forceAfterMutation = false): Promise<void> {
   return operation;
 }
 
-async function refreshOnce(refreshRevision: number): Promise<void> {
+async function refreshOnce(
+  refreshRevision: number,
+  generation: number,
+): Promise<void> {
   const { meetings } = requireApi();
   let nextMembershipsError = "";
   try {
@@ -287,11 +350,11 @@ async function refreshOnce(refreshRevision: number): Promise<void> {
 
     // Calendar fan-out is part of the same snapshot. Holding these values
     // locally prevents a pre-mutation poll from partially repainting the UI.
-    const calendarSnapshot = await loadCalendarsForAccounts(accts ?? []);
+    const calendarSnapshot = await loadCalendarsForAccounts(accts ?? [], meetings);
 
     // A mutation committed while this pass was in flight. Its forced trailing
     // pass owns the next paint; never apply this pre-mutation snapshot.
-    if (refreshRevision !== mutationRevision) return;
+    if (refreshRevision !== mutationRevision || generation !== accountGeneration) return;
 
     const resetGate = meetingsRefreshGate(refreshFailureCount, null);
     refreshFailureCount = resetGate.consecutiveFailures;
@@ -328,11 +391,11 @@ async function refreshOnce(refreshRevision: number): Promise<void> {
 
     // Persist AFTER everything (events + calendars) so the next paint
     // hydrates a complete view.
-    persistSnapshot();
+    persistSnapshot(generation);
     lastRefreshAt = Date.now();
     hasLiveSnapshot = true;
   } catch (err) {
-    if (refreshRevision !== mutationRevision) return;
+    if (refreshRevision !== mutationRevision || generation !== accountGeneration) return;
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error("meetings refresh failed:", err);
     lastRefreshErrorRaw = String(err ?? "");
@@ -371,8 +434,8 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
 
 async function loadCalendarsForAccounts(
   accts: GoogleAccount[],
+  meetingsApi = requireApi().meetings,
 ): Promise<CalendarSnapshot> {
-  const { meetings } = requireApi();
   const nextByAccount = new Map<string, GoogleCalendar[]>();
   const nextEnabled = new Map<string, Set<string>>();
   const nextSummaries = new Map<string, string>();
@@ -380,7 +443,7 @@ async function loadCalendarsForAccounts(
     accts.map(async (a) => {
       try {
         const resp = parseAccountCalendars(
-          unwrap(await meetings.listCalendars(a.accountId)),
+          unwrap(await meetingsApi.listCalendars(a.accountId)),
         );
         nextByAccount.set(a.accountId, resp.calendars ?? []);
         nextEnabled.set(a.accountId, new Set(resp.selectedCalendarIds ?? []));
@@ -401,8 +464,9 @@ async function loadCalendarsForAccounts(
   };
 }
 
-function persistSnapshot(): void {
-  saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
+function persistSnapshot(generation: number): void {
+  if (!activeAccountId || generation !== accountGeneration) return;
+  saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>(activeAccountId, {
     events,
     scheduledBots: allBots,
     botsByEventId: Array.from(botsByEventId.entries()),
@@ -457,45 +521,70 @@ function lockRow(key: string, action: MeetingBotAction): boolean {
   return true;
 }
 
-function unlockRow(key: string): void {
+function unlockRow(key: string, generation = accountGeneration): void {
+  // A completion from account A must not release the same event-id lock that
+  // account B acquired after an account rotation.
+  if (generation !== accountGeneration) return;
   const next = new Map(rowPending);
   next.delete(key);
   rowPending = next;
 }
 
-function markMutationCommitted(): void {
+function markMutationCommitted(generation = accountGeneration): boolean {
+  if (generation !== accountGeneration) return false;
   mutationRevision += 1;
+  return true;
 }
+
+const accountChangedToast: ToastDescriptor = {
+  kind: "warn",
+  text: "Your account changed. Retry this action.",
+};
 
 /** True when `uid` is one of the user's current memberships (cached names or live rows). */
 function isOwnMembershipUid(uid: string): boolean {
   return memberships.some(
     (row) =>
       row.companyUid === uid &&
-      ["active", "accepted"].includes(row.status.trim().toLowerCase()),
+      isRecordingCompanyMembership(row),
   );
 }
 
-async function defaultRecordingCompanyUid(): Promise<string | null> {
-  const settings = requireApi().settings;
+type RecordingDestination =
+  | { kind: "personal" }
+  | { kind: "company"; companyUid: string }
+  | { kind: "unavailable" };
+
+async function defaultRecordingDestination(
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined,
+): Promise<RecordingDestination> {
   // A missing or unreadable host settings seam must never fall back to stale
   // browser storage and silently attribute a recording to another company.
-  if (!settings) return null;
+  if (!settings) return { kind: "unavailable" };
   const result = await settings.getSettings();
-  if (!result.ok) return null;
+  if (!result.ok) return { kind: "unavailable" };
   const value = result.value.defaultRecordingCompanyUid;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  return typeof value === "string" && value.trim()
+    ? { kind: "company", companyUid: value.trim() }
+    : { kind: "personal" };
 }
 
 async function invitePayload(
   meetingUrl: string,
   evt: MeetingEvent | null,
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined = requireApi().settings,
 ): Promise<Json> {
   // Event company wins; settings default fills only when the event has none.
   // Cross-company guard: a stored default must be an active own membership.
+  const destination = evt?.sourceCompanyUid
+    ? { kind: "personal" as const }
+    : await defaultRecordingDestination(settings);
+  if (destination.kind === "unavailable") {
+    throw new Error("Recording destination settings are unavailable. Retry.");
+  }
   const companyId = resolveInviteCompanyId(
     evt?.sourceCompanyUid,
-    evt?.sourceCompanyUid ? null : await defaultRecordingCompanyUid(),
+    destination.kind === "company" ? destination.companyUid : null,
     { has: isOwnMembershipUid },
   );
   return {
@@ -520,14 +609,20 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!url) return { kind: "warn", text: "No meeting URL on this event." };
   const key = evt.id;
   if (!lockRow(key, "invite")) return null;
+  const generation = accountGeneration;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.inviteBot(await invitePayload(url, evt)));
-    markMutationCommitted();
+    const payload = await invitePayload(url, evt, actionApi.settings ?? null);
+    if (generation !== accountGeneration) return accountChangedToast;
+    unwrap(await actionApi.meetings.inviteBot(payload));
+    if (!markMutationCommitted(generation)) return accountChangedToast;
     await refresh(true);
+    if (generation !== accountGeneration) return accountChangedToast;
     return { kind: "info", text: "Bot invited." };
   } catch (err) {
+    if (generation !== accountGeneration) return accountChangedToast;
     if (isAlreadyScheduledError(err)) {
-      markMutationCommitted();
+      markMutationCommitted(generation);
       seedAlreadyInvited(evt, url);
       // Background refresh — do not block the already-invited paint, and do
       // not surface a fetch-error banner for a successful conflict recovery.
@@ -540,7 +635,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       text: friendlyError(err, "Couldn't invite the bot."),
     };
   } finally {
-    unlockRow(key);
+    unlockRow(key, generation);
   }
 }
 
@@ -562,14 +657,18 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!bot) return null;
   const key = evt.id;
   if (!lockRow(key, "uninvite")) return null;
+  const generation = accountGeneration;
+  const actionApi = requireApi();
   try {
     // The adapter's cancelBot resolves void; the richer CancelBotResult
     // (series scope / counts) is not on the wire, so the series-scoped toast
     // falls back to the bot row's own recurring flag.
-    unwrap(await requireApi().meetings.cancelBot(bot.botId));
+    unwrap(await actionApi.meetings.cancelBot(bot.botId));
+    if (generation !== accountGeneration) return accountChangedToast;
     const result: CancelBotResult = { recurringMeeting: bot.recurringMeeting };
-    markMutationCommitted();
+    markMutationCommitted(generation);
     await refresh(true);
+    if (generation !== accountGeneration) return accountChangedToast;
     if (
       result.scope === "series" ||
       result.recurringMeeting ||
@@ -579,12 +678,13 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     }
     return { kind: "info", text: "Bot uninvited." };
   } catch (err) {
+    if (generation !== accountGeneration) return accountChangedToast;
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't remove the bot."),
     };
   } finally {
-    unlockRow(key);
+    unlockRow(key, generation);
   }
 }
 
@@ -596,14 +696,20 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!url) return { kind: "warn", text: "No meeting URL on this event." };
   const key = evt.id;
   if (!lockRow(key, "join-now")) return null;
+  const generation = accountGeneration;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.joinBotNow(await invitePayload(url, evt)));
-    markMutationCommitted();
+    const payload = await invitePayload(url, evt, actionApi.settings ?? null);
+    if (generation !== accountGeneration) return accountChangedToast;
+    unwrap(await actionApi.meetings.joinBotNow(payload));
+    if (!markMutationCommitted(generation)) return accountChangedToast;
     await refresh(true);
+    if (generation !== accountGeneration) return accountChangedToast;
     return { kind: "info", text: "Bot's on the way." };
   } catch (err) {
+    if (generation !== accountGeneration) return accountChangedToast;
     if (isAlreadyScheduledError(err)) {
-      markMutationCommitted();
+      markMutationCommitted(generation);
       seedAlreadyInvited(evt, url);
       void refresh(true);
       return { kind: "info", text: "Already invited — joining." };
@@ -614,7 +720,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       text: friendlyError(err, "Couldn't tell the bot to join."),
     };
   } finally {
-    unlockRow(key);
+    unlockRow(key, generation);
   }
 }
 
@@ -630,27 +736,31 @@ async function inviteBotByUrl(
 ): Promise<ToastDescriptor | null> {
   const url = meetingUrl.trim();
   if (!isPlausibleMeetingUrl(url)) return null;
+  const generation = accountGeneration;
+  const actionApi = requireApi();
   try {
     unwrap(
-      await requireApi().meetings.inviteBot({
+      await actionApi.meetings.inviteBot({
         meetingUrl: url,
         calendarEventId: null,
         calendarSeriesId: null,
         companyId,
       }),
     );
-    markMutationCommitted();
+    if (!markMutationCommitted(generation)) return accountChangedToast;
     await refresh(true);
+    if (generation !== accountGeneration) return accountChangedToast;
     const dest = urlInviteDestinationLabel(companyId, companyNamesByUid);
     return {
       kind: "info",
       text: `Bot invited — meeting will save to ${dest}.`,
     };
   } catch (err) {
+    if (generation !== accountGeneration) return accountChangedToast;
     // URL invites have no calendar row to seed; still treat 409 as success +
     // background refresh (no warn toast / error banner).
     if (isAlreadyScheduledError(err)) {
-      markMutationCommitted();
+      markMutationCommitted(generation);
       void refresh(true);
       return { kind: "info", text: "Already invited — refreshing." };
     }
@@ -703,13 +813,20 @@ function finishCalendarConnect(notice: ToastDescriptor | null): void {
 
 async function pollForConnectedAccount(): Promise<void> {
   if (!connectPending) return;
-  const gen = connectWatchGeneration;
+  const watchGeneration = connectWatchGeneration;
+  const generation = connectWatchAccountGeneration;
+  const actionApi = requireApi();
   try {
-    const accts = (await requireApi()
+    const accts = (await actionApi
       .meetings.listAccounts()
       .then((r) => unwrap(r))) as unknown as GoogleAccount[];
     // Discard polls that finished after this watch ended or was replaced.
-    if (!connectPending || gen !== connectWatchGeneration) return;
+    if (
+      !connectPending ||
+      watchGeneration !== connectWatchGeneration ||
+      generation !== accountGeneration
+    )
+      return;
     const hasNew = (accts ?? []).some(
       (a) => a.accountId && !connectBaselineIds.has(a.accountId),
     );
@@ -725,9 +842,13 @@ async function pollForConnectedAccount(): Promise<void> {
   }
 }
 
-function startCalendarConnectWatch(baseline: Iterable<string>): void {
+function startCalendarConnectWatch(
+  baseline: Iterable<string>,
+  generation = accountGeneration,
+): void {
   stopCalendarConnectWatch();
   connectWatchGeneration += 1;
+  connectWatchAccountGeneration = generation;
   connectBaselineIds = new Set(baseline);
   connectPending = true;
   connectNotice = null;
@@ -761,10 +882,15 @@ async function beginCalendarConnect(): Promise<BeginCalendarConnectResult> {
   if (connectPending) {
     return { url: null, toast: null };
   }
+  const generation = accountGeneration;
+  const actionApi = requireApi();
   try {
-    const raw = unwrap(await requireApi().meetings.connectCalendar()) as {
+    const raw = unwrap(await actionApi.meetings.connectCalendar()) as {
       url?: unknown;
     };
+    if (generation !== accountGeneration) {
+      return { url: null, toast: accountChangedToast };
+    }
     const url = typeof raw?.url === "string" ? raw.url.trim() : "";
     if (!url) {
       return {
@@ -780,16 +906,22 @@ async function beginCalendarConnect(): Promise<BeginCalendarConnectResult> {
     // baseline would treat a pre-existing account as "new".
     let baselineIds = accounts.map((a) => a.accountId).filter(Boolean);
     try {
-      const live = (await requireApi()
+      const live = (await actionApi
         .meetings.listAccounts()
         .then((r) => unwrap(r))) as unknown as GoogleAccount[];
+      if (generation !== accountGeneration) {
+        return { url: null, toast: accountChangedToast };
+      }
       baselineIds = (live ?? [])
         .map((a) => a.accountId)
         .filter((id): id is string => Boolean(id));
     } catch (err) {
       console.error("meetings connect baseline listAccounts failed:", err);
     }
-    startCalendarConnectWatch(baselineIds);
+    if (generation !== accountGeneration) {
+      return { url: null, toast: accountChangedToast };
+    }
+    startCalendarConnectWatch(baselineIds, generation);
     return {
       url,
       toast: {
@@ -912,22 +1044,28 @@ async function disconnectCalendar(
   disconnectPendingByAccountId = new Set(disconnectPendingByAccountId).add(id);
   const removed = snapshotAccountSlice(id);
   removeAccountLocally(id);
+  const generation = accountGeneration;
+  const actionApi = requireApi();
 
   try {
-    unwrap(await requireApi().meetings.disconnectCalendar(id));
-    markMutationCommitted();
+    unwrap(await actionApi.meetings.disconnectCalendar(id));
+    if (!markMutationCommitted(generation)) return accountChangedToast;
     await refresh(true);
+    if (generation !== accountGeneration) return accountChangedToast;
     return { kind: "info", text: "Calendar disconnected." };
   } catch (err) {
+    if (generation !== accountGeneration) return accountChangedToast;
     restoreAccountSlice(id, removed);
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't disconnect calendar."),
     };
   } finally {
-    const next = new Set(disconnectPendingByAccountId);
-    next.delete(id);
-    disconnectPendingByAccountId = next;
+    if (generation === accountGeneration) {
+      const next = new Set(disconnectPendingByAccountId);
+      next.delete(id);
+      disconnectPendingByAccountId = next;
+    }
   }
 }
 

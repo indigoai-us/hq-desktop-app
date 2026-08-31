@@ -805,6 +805,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
         );
       }
     },
+    openNotificationSettings: async () =>
+      unavailable(
+        "desktop-only",
+        "Notification settings are opened by the native desktop host.",
+      ),
     // Native banners are desktop-only (US-001). Web stays a no-op.
     showOsNotification: async () => ok(undefined),
   };

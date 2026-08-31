@@ -25,6 +25,20 @@
 #[cfg(target_os = "windows")]
 const NOTIFICATION_AUMID: &str = "ai.indigo.hq-sync-win";
 
+const MACOS_NOTIFICATION_SETTINGS_URI: &str =
+    "x-apple.systempreferences:com.apple.preference.notifications";
+const WINDOWS_NOTIFICATION_SETTINGS_URI: &str = "ms-settings:notifications";
+
+/// Platform-owned remediation target. Kept pure so both target contracts are
+/// covered on every host without trying to spawn a platform settings app.
+fn notification_settings_target(platform: &str) -> Option<&'static str> {
+    match platform {
+        "macos" => Some(MACOS_NOTIFICATION_SETTINGS_URI),
+        "windows" => Some(WINDOWS_NOTIFICATION_SETTINGS_URI),
+        _ => None,
+    }
+}
+
 /// Stable string contract for the frontend:
 /// `"granted" | "denied" | "prompt" | "unknown"`.
 ///
@@ -82,6 +96,50 @@ pub fn request_permission() -> String {
     }
 }
 
+/// Open the platform-owned Notifications settings surface without requesting a
+/// second permission prompt. The host owns OS URIs and remediation behavior.
+pub fn open_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(notification_settings_target("macos").expect("macOS settings target"))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open macOS notification settings: {e}"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(notification_settings_target("windows").expect("Windows settings target"));
+        hq_desktop_core::paths::no_window(&mut cmd);
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open Windows notification settings: {e}"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Notification settings are unavailable on this platform".to_string())
+    }
+}
+
+#[cfg(test)]
+mod remediation_tests {
+    use super::notification_settings_target;
+
+    #[test]
+    fn notification_remediation_is_platform_owned_for_macos_and_windows() {
+        assert_eq!(
+            notification_settings_target("macos"),
+            Some("x-apple.systempreferences:com.apple.preference.notifications")
+        );
+        assert_eq!(
+            notification_settings_target("windows"),
+            Some("ms-settings:notifications")
+        );
+        assert_eq!(notification_settings_target("linux"), None);
+    }
+}
+
 /// Synchronous, side-effect-free read of the current notification authorization
 /// status. Unlike `request_permission`, this never shows the system dialog.
 pub fn permission_state_without_app() -> String {
@@ -130,10 +188,7 @@ mod windows {
     }
 
     pub fn request_permission() -> String {
-        let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg("ms-settings:notifications");
-        hq_desktop_core::paths::no_window(&mut cmd);
-        match cmd.spawn() {
+        match super::open_settings() {
             Ok(_) => log("notifications", "opened ms-settings:notifications"),
             Err(e) => log(
                 "notifications",

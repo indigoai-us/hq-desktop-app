@@ -215,6 +215,77 @@ describe("PlatformAdapter contract", () => {
     ]);
   });
 
+  it("serializes concurrent native settings patches so neither field is lost", async () => {
+    let persisted: Record<string, unknown> = {
+      notifications: true,
+      autoUpdate: true,
+    };
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        if (command === "get_settings") return { ...persisted };
+        if (command === "save_settings") {
+          await Promise.resolve();
+          persisted = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
+          return undefined;
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    });
+
+    const [notifications, updates] = await Promise.all([
+      adapter.settings.updateSettings({ notifications: false }),
+      adapter.settings.updateSettings({ autoUpdate: false }),
+    ]);
+
+    expect(notifications.ok).toBe(true);
+    expect(updates.ok).toBe(true);
+    expect(persisted).toMatchObject({ notifications: false, autoUpdate: false });
+  });
+
+  it("uses the Sync host command names and persists dock/widget preferences before applying them", async () => {
+    let prefs: Record<string, unknown> = { dockIcon: true, widgetEnabled: true };
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "get_settings") return { ...prefs };
+        if (command === "save_settings") {
+          prefs = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
+          return undefined;
+        }
+        if (
+          command === "apply_dock_icon" ||
+          command === "apply_widget_settings" ||
+          command === "set_autostart_enabled" ||
+          command === "notification_request_permission" ||
+          command === "set_hq_cli_update_dismissed"
+        ) {
+          return command === "notification_request_permission" ? "denied" : undefined;
+        }
+        if (command === "check_hq_cli_update") return { latest: "1.2.3" };
+        throw new Error(`unknown Sync command: ${command}`);
+      },
+    });
+
+    expect((await adapter.appShell.setDockVisible(false)).ok).toBe(true);
+    expect((await adapter.appShell.setDesktopWidget(false)).ok).toBe(true);
+    expect((await adapter.appShell.setAutostart(false)).ok).toBe(true);
+    expect(await adapter.appShell.requestNotificationPermission()).toMatchObject({
+      ok: true,
+      value: "denied",
+    });
+    expect((await adapter.updates.dismissCliUpdate()).ok).toBe(true);
+    expect(prefs).toMatchObject({ dockIcon: false, widgetEnabled: false });
+    expect(calls).toContainEqual({ command: "apply_dock_icon", args: undefined });
+    expect(calls).toContainEqual({ command: "apply_widget_settings", args: undefined });
+    expect(calls).toContainEqual({ command: "set_autostart_enabled", args: { enabled: false } });
+    expect(calls).toContainEqual({ command: "notification_request_permission", args: undefined });
+    expect(calls).toContainEqual({
+      command: "set_hq_cli_update_dismissed",
+      args: { version: "1.2.3" },
+    });
+  });
+
   it("desktop toggleReaction routes through hq_pro_fetch (POST add / DELETE remove), never a toggle_reaction command", async () => {
     // Regression: the desktop adapter used to invoke a `toggle_reaction`
     // command that was never registered in Rust, so every toggle threw and the

@@ -6,7 +6,6 @@
    * Two columns: left section nav + right pane. Display language is the
    * preview-v2 / Daybook prototype (set-row cards, toggles, company chips).
    */
-  import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import EmptyState from "../common/EmptyState.svelte";
@@ -73,6 +72,8 @@
     updateWakeSeq?: number;
     /** Reads the running native app version when Updates refreshes. */
     refreshAppVersion?: () => Promise<string>;
+    /** Monotonic host auth generation; stale profile work never repaints it. */
+    authGeneration?: number;
   }
 
   let {
@@ -88,6 +89,7 @@
     consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
+    authGeneration = 0,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -136,6 +138,8 @@
   /** Data-URL preview for the avatar (picked file or persisted avatarUrl). */
   let avatarPreview = $state<string | null>(null);
   let profileLoaded = $state(false);
+  let nameLoaded = $state(false);
+  let descriptionLoaded = $state(false);
   let savingProfile = $state(false);
   let profileError = $state<string | null>(null);
   let profileSavedAt = $state<number | null>(null);
@@ -147,39 +151,68 @@
   // so the prop (derived from the session, never re-pushed) can't strand them.
   let initialName = $state("");
   let initialDescription = $state("");
+  let observedAuthGeneration = $state<number | null>(null);
 
   const profileDirty = $derived(
     profileLoaded &&
       (pendingAvatarBase64 !== null ||
-        editName.trim() !== initialName.trim() ||
-        editDescription.trim() !== initialDescription.trim()),
+        (nameLoaded && editName.trim() !== initialName.trim()) ||
+        (descriptionLoaded && editDescription.trim() !== initialDescription.trim())),
   );
 
   function seedFromProfile(): void {
     editName = profile?.displayName ?? profile?.fullName ?? "";
     initialName = editName;
+    nameLoaded = true;
   }
 
-  onMount(() => {
-    seedFromProfile();
+  async function loadProfile(): Promise<void> {
+    const generation = authGeneration;
     if (typeof adapter?.identity?.getProfile !== "function") {
       profileLoaded = true;
       return;
     }
-    void adapter.identity.getProfile().then((res) => {
-      if (res.ok && res.value) {
+    try {
+      const res = await adapter.identity.getProfile();
+      if (generation !== authGeneration) return;
+      if (!res.ok) {
+        // Keep the server field unavailable: a name-only save cannot erase it.
+        profileError = res.message || "Couldn’t load your About. Name edits are safe.";
+      } else {
         const block = res.value.profile;
         if (block?.displayName) editName = block.displayName;
         else if (res.value.entityName) editName ||= res.value.entityName;
         initialName = editName;
-        if (block?.description) {
-          editDescription = block.description;
-          initialDescription = block.description;
-        }
+        // A successful GET authoritatively establishes even an empty About.
+        editDescription = block?.description ?? "";
+        initialDescription = editDescription;
+        descriptionLoaded = true;
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
       }
       profileLoaded = true;
-    });
+    } catch (error) {
+      if (generation !== authGeneration) return;
+      profileLoaded = true;
+      profileError = error instanceof Error ? error.message : "Couldn’t load your About. Name edits are safe.";
+    }
+  }
+
+  // The settings shell can remain mounted while the desktop session rotates.
+  // Reset field provenance before loading the next account so neither a stale
+  // GET nor an in-flight save can carry A's partial profile into B's form.
+  $effect(() => {
+    if (authGeneration === observedAuthGeneration) return;
+    observedAuthGeneration = authGeneration;
+    savingProfile = false;
+    profileLoaded = false;
+    nameLoaded = false;
+    descriptionLoaded = false;
+    pendingAvatarBase64 = null;
+    avatarPreview = null;
+    profileError = null;
+    profileSavedAt = null;
+    seedFromProfile();
+    void loadProfile();
   });
 
   function pickPhoto(): void {
@@ -210,22 +243,28 @@
     if (!adapter || savingProfile) return;
     const name = editName.trim();
     const description = editDescription.trim();
-    if (description.length > DESCRIPTION_MAX) {
+    if (descriptionLoaded && description.length > DESCRIPTION_MAX) {
       profileError = `About must be ${DESCRIPTION_MAX} characters or fewer.`;
       return;
     }
     savingProfile = true;
     profileError = null;
+    const generation = authGeneration;
+    const input: {
+      displayName?: string;
+      description?: string;
+      avatarBase64?: string;
+    } = {};
+    if (nameLoaded && name !== initialName.trim()) input.displayName = name || undefined;
+    if (descriptionLoaded && description !== initialDescription.trim()) input.description = description;
+    if (pendingAvatarBase64) input.avatarBase64 = pendingAvatarBase64;
     try {
-      const res = await adapter.identity.updateProfile({
-        displayName: name || undefined,
-        description,
-        ...(pendingAvatarBase64 ? { avatarBase64: pendingAvatarBase64 } : {}),
-      });
+      const res = await adapter.identity.updateProfile(input);
+      if (generation !== authGeneration) return;
       if (res.ok) {
         pendingAvatarBase64 = null;
-        initialName = name;
-        initialDescription = description;
+        if (nameLoaded) initialName = name;
+        if (descriptionLoaded) initialDescription = description;
         if (res.value?.profile?.avatarUrl) {
           avatarPreview = res.value.profile.avatarUrl;
         }
@@ -237,7 +276,7 @@
       profileError =
         err instanceof Error ? err.message : "Couldn't save your profile.";
     } finally {
-      savingProfile = false;
+      if (generation === authGeneration) savingProfile = false;
     }
   }
 
@@ -371,6 +410,7 @@
                 <div class="sd">
                   A short line teammates see ({editDescription.trim()
                     .length}/{DESCRIPTION_MAX})
+                  {#if !descriptionLoaded} — unavailable until the profile service recovers{/if}
                 </div>
               </div>
               <input
@@ -380,7 +420,7 @@
                 data-testid="settings-description-input"
                 placeholder="e.g. Founder · building HQ"
                 bind:value={editDescription}
-                disabled={!adapter}
+                disabled={!adapter || !descriptionLoaded}
               />
             </div>
             <div class="set-row">

@@ -41,6 +41,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly capabilities = TAURI_CAPABILITIES;
 
   private readonly invokeFn: InvokeFn;
+  /** Serializes get-settings → merge → save across generic desktop callers. */
+  private settingsMutationTail: Promise<void> = Promise.resolve();
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
@@ -63,6 +65,30 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  private queueSettingsPatch(patch: Json): AdapterPromise<void> {
+    const capturedPatch = { ...(patch as Record<string, unknown>) };
+    const operation = this.settingsMutationTail.then(async () => {
+      const current = await this.call<Json>("get_settings");
+      if (!current.ok) return current;
+      return this.call<void>("save_settings", {
+        prefs: { ...(current.value as Record<string, unknown>), ...capturedPatch },
+      });
+    });
+    // A rejected operation must never strand later settings changes.
+    this.settingsMutationTail = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async persistThenApplyPreference(
+    key: "dockIcon" | "widgetEnabled",
+    value: boolean,
+    command: "apply_dock_icon" | "apply_widget_settings",
+  ): AdapterPromise<void> {
+    const saved = await this.queueSettingsPatch({ [key]: value });
+    if (!saved.ok) return saved;
+    return this.call(command);
   }
 
   /**
@@ -371,10 +397,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     setTrayState: (state) => this.call("set_tray_state", { state }),
     showMainWindow: () => this.call("show_main_window"),
     quitApp: () => this.call("quit_app"),
-    setDockVisible: (visible) => this.call("set_dock_visible", { visible }),
-    setAutostart: (enabled) => this.call("set_autostart", { enabled }),
+    setDockVisible: (visible) =>
+      this.persistThenApplyPreference("dockIcon", visible, "apply_dock_icon"),
+    setAutostart: (enabled) => this.call("set_autostart_enabled", { enabled }),
     setDesktopWidget: (enabled) =>
-      this.call("apply_widget_settings", { enabled }),
+      this.persistThenApplyPreference("widgetEnabled", enabled, "apply_widget_settings"),
     consumePendingRoute: () => this.call("consume_pending_route"),
     takePendingMessagesTarget: () => this.call("take_pending_messages_target"),
     setActiveCompany: (slug) => this.call("set_active_company", { slug }),
@@ -389,26 +416,54 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     notificationPermissionState: () =>
       this.call("notification_permission_state"),
     requestNotificationPermission: () =>
-      this.call("request_notification_permission"),
-    showOsNotification: ({ title, body, route }) =>
-      this.call("show_os_notification", {
-        title,
-        body,
-        route: route ?? null,
-      }),
+      this.call("notification_request_permission"),
+    openNotificationSettings: () => this.call("notification_open_settings"),
+    // Sync owns native notification delivery and there is no generic
+    // `show_os_notification` command in its registered handler.
+    showOsNotification: async () =>
+      unavailable("host-owned", "The Sync host owns OS notification delivery."),
   };
 
   readonly updates: PlatformAdapter["updates"] = {
-    getVersions: () => this.call("get_versions"),
+    getVersions: async () => {
+      const [core, cli] = await Promise.all([
+        this.call<string | null>("get_hq_version"),
+        this.call<string | null>("get_hq_cli_version"),
+      ]);
+      return ok({
+        ...(core.ok && core.value ? { core: core.value } : {}),
+        ...(cli.ok && cli.value ? { cli: cli.value } : {}),
+        coreProbe: core.ok
+          ? { status: core.value ? "available" : "missing", value: core.value }
+          : { status: "failed", code: core.code, message: core.message },
+        cliProbe: cli.ok
+          ? { status: cli.value ? "available" : "missing", value: cli.value }
+          : { status: "failed", code: cli.code, message: cli.message },
+      });
+    },
     checkForUpdates: () => this.call("check_for_updates"),
     installUpdate: () => this.call("install_update"),
     getPendingUpdate: () => this.call("get_pending_update"),
     checkCoreState: () => this.call("check_core_state"),
-    installCoreUpdate: () => this.call("install_core_update"),
-    replaceFromStaging: () => this.call("replace_from_staging"),
-    checkCliUpdate: () => this.call("check_cli_update"),
-    installCliUpdate: () => this.call("install_cli_update"),
-    dismissCliUpdate: () => this.call("dismiss_cli_update"),
+    installCoreUpdate: () => this.call("install_hq_core_update"),
+    replaceFromStaging: () => this.call("run_replace_from_staging"),
+    checkCliUpdate: () => this.call("check_hq_cli_update"),
+    installCliUpdate: () => this.call("install_hq_cli_update"),
+    dismissCliUpdate: async () => {
+      // The registered Sync command persists a concrete release. Resolve it
+      // first rather than invoking the old argument-less, unregistered name.
+      const pending = await this.call<Json | null>("check_hq_cli_update");
+      if (!pending.ok) return pending;
+      const record =
+        pending.value && typeof pending.value === "object"
+          ? (pending.value as Record<string, unknown>)
+          : null;
+      const version = typeof record?.latest === "string" ? record.latest.trim() : "";
+      if (!version) {
+        return failure("no-pending-update", "No CLI update to dismiss.");
+      }
+      return this.call("set_hq_cli_update_dismissed", { version });
+    },
     availableChannels: () => this.call("available_channels"),
   };
 
@@ -432,15 +487,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly settings: PlatformAdapter["settings"] = {
     getConfig: () => this.call("get_config"),
     getSettings: () => this.call("get_settings"),
-    updateSettings: async (patch) => {
-      // The host owns menubar.json. Read immediately before writing so a
-      // minimal UI patch cannot discard unrelated native preferences.
-      const current = await this.call<Json>("get_settings");
-      if (!current.ok) return current;
-      return this.call("save_settings", {
-        prefs: { ...current.value, ...patch },
-      });
-    },
+    updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };

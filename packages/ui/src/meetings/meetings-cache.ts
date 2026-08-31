@@ -24,12 +24,17 @@
 /** Bump on every breaking change to the cached shape so old entries from a
  *  previous app version are treated as a cache miss instead of crashing
  *  the hydration path with a shape mismatch. */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** localStorage key. Namespaced with the schema version so a future bump
  *  doesn't have to manually delete the prior entry — old keys just rot
  *  harmlessly until the browser evicts them. */
-const STORAGE_KEY = `hq-sync:meetings-window:v${SCHEMA_VERSION}`;
+const STORAGE_KEY_PREFIX = `hq-sync:meetings-window:v${SCHEMA_VERSION}`;
+
+function storageKeyFor(accountId: string): string | null {
+  const account = accountId.trim();
+  return account ? `${STORAGE_KEY_PREFIX}:${encodeURIComponent(account)}` : null;
+}
 
 /** Hard upper bound on cache age. Past this we ignore the cache and let
  *  the normal cold-start skeleton render — better than showing meetings
@@ -84,9 +89,11 @@ export function loadMeetingsCache<
   TBot = unknown,
   TAccount = unknown,
   TCalendar = unknown,
->(): MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar> | null {
+>(accountId: string = ""): MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar> | null {
   try {
-    const raw = safeGetItem(STORAGE_KEY);
+    const key = storageKeyFor(accountId);
+    if (!key) return null;
+    const raw = safeGetItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CacheEnvelope<
       MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>
@@ -113,14 +120,16 @@ export function saveMeetingsCache<
   TBot = unknown,
   TAccount = unknown,
   TCalendar = unknown,
->(snapshot: MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>): void {
+>(accountId: string, snapshot: MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>): void {
   try {
+    const key = storageKeyFor(accountId);
+    if (!key) return;
     const envelope: CacheEnvelope<typeof snapshot> = {
       version: SCHEMA_VERSION,
       cachedAt: Date.now(),
       snapshot,
     };
-    safeSetItem(STORAGE_KEY, JSON.stringify(envelope));
+    safeSetItem(key, JSON.stringify(envelope));
   } catch {
     // No-op — see function-level comment.
   }
@@ -128,9 +137,10 @@ export function saveMeetingsCache<
 
 /** Wipe the cached snapshot. Exposed for tests and for any future
  *  "sign out" path that needs to drop user-scoped data. */
-export function clearMeetingsCache(): void {
+export function clearMeetingsCache(accountId: string = ""): void {
   try {
-    safeRemoveItem(STORAGE_KEY);
+    const key = storageKeyFor(accountId);
+    if (key) safeRemoveItem(key);
   } catch {
     // No-op.
   }
@@ -141,9 +151,11 @@ export function clearMeetingsCache(): void {
  * for a debug surface that shows "cache age" in the diagnostics drawer.
  * Returns null when there is no cached entry.
  */
-export function getMeetingsCacheAgeMs(): number | null {
+export function getMeetingsCacheAgeMs(accountId: string = ""): number | null {
   try {
-    const raw = safeGetItem(STORAGE_KEY);
+    const key = storageKeyFor(accountId);
+    if (!key) return null;
+    const raw = safeGetItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { cachedAt?: unknown };
     if (typeof parsed?.cachedAt !== "number") return null;
@@ -180,7 +192,7 @@ function safeRemoveItem(key: string): void {
 /** Exposed for tests — the storage key isn't part of the public API but
  *  tests need to assert on it (and on the schema-version namespacing). */
 export const __INTERNALS__ = {
-  STORAGE_KEY,
+  STORAGE_KEY_PREFIX,
   SCHEMA_VERSION,
   MAX_AGE_MS,
 };
