@@ -71,7 +71,15 @@ function makeAdapter(handler?: SyncInvokeFn) {
     if (handler) return handler(cmd, args);
     switch (cmd) {
       case 'get_auth_state':
-        return { authenticated: true, expiresAt: '2099-01-01T00:00:00Z' };
+        return {
+          authenticated: true,
+          expiresAt: '2099-01-01T00:00:00Z',
+          accountId: 'cognito-sub-ada',
+          email: WHOAMI.email,
+          displayName: WHOAMI.displayName,
+        };
+      case 'get_config':
+        return { configured: true, personUid: WHOAMI.personUid };
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':
@@ -193,18 +201,15 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(src).not.toContain('new WebPlatformAdapter');
   });
 
-  it('whoami reuses get_auth_state and does not start a second sign-in', async () => {
+  it('whoami composes the native auth and config identity without calling a nonexistent REST route', async () => {
     const { adapter, calls, fetchCalls } = makeAdapter();
     const whoami = expectOk(await adapter.identity.whoami());
     expect(whoami).toMatchObject(WHOAMI);
     expect(calls.map((c) => c.cmd)).toEqual([
       'get_auth_state',
-      'hq_pro_fetch',
+      'get_config',
     ]);
-    expect(hqProJson(calls[1]?.args)).toMatchObject({
-      method: 'GET',
-      path: '/v1/identity/whoami',
-    });
+    expect(calls.some((c) => c.cmd === 'hq_pro_fetch')).toBe(false);
     expect(calls.some((c) => c.cmd === 'start_oauth_login')).toBe(false);
     expect(calls.some((c) => c.cmd === 'oauth_exchange_code')).toBe(false);
     expect(calls.some((c) => c.cmd === 'begin_reauth')).toBe(false);
@@ -214,6 +219,7 @@ describe('US-102 Sync PlatformAdapter', () => {
   it('whoami fails closed when get_auth_state is unauthenticated', async () => {
     const { adapter, calls } = makeAdapter(async (cmd) => {
       if (cmd === 'get_auth_state') return { authenticated: false };
+      if (cmd === 'get_config') return { configured: true, personUid: 'prs_ada' };
       throw new Error(`unexpected command: ${cmd}`);
     });
     const result = await adapter.identity.whoami();
@@ -222,7 +228,28 @@ describe('US-102 Sync PlatformAdapter', () => {
       reason: 'error',
       code: 'unauthenticated',
     });
-    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state']);
+    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state', 'get_config']);
+  });
+
+  it('whoami falls back to the Cognito subject when local config has no canonical person uid', async () => {
+    const { adapter } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return {
+          authenticated: true,
+          accountId: 'cognito-sub-ada',
+          email: WHOAMI.email,
+          displayName: WHOAMI.displayName,
+        };
+      }
+      if (cmd === 'get_config') return { configured: false, personUid: null };
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    expect(expectOk(await adapter.identity.whoami())).toEqual({
+      personUid: 'cognito-sub-ada',
+      email: WHOAMI.email,
+      displayName: WHOAMI.displayName,
+    });
   });
 
   it('listWorkspaces maps list_syncable_workspaces.workspaces', async () => {

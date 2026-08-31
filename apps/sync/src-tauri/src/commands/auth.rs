@@ -54,16 +54,43 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
     })
 }
 
+/// Auth state plus the non-secret claims the embedded shell needs to render
+/// the signed-in account. Tokens remain native-only.
+pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthState {
+    let claims = [
+        tokens.id_token.as_deref(),
+        Some(tokens.access_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|token| cognito::decode_id_token_claims(token).ok());
+    let email = claims
+        .as_ref()
+        .and_then(|value| value.email.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let display_name = claims
+        .as_ref()
+        .map(cognito::IdTokenClaims::display_name)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    AuthState {
+        authenticated: true,
+        expires_at: Some(cognito::expires_at_iso(tokens)),
+        account_id: Some(notification_identity_from_tokens(tokens)),
+        email,
+        display_name,
+    }
+}
+
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
     match crate::commands::dm_notify::resolve_notification_credentials(&app).await {
         Ok((tokens, _)) => {
             set_sentry_user_from_tokens(&tokens);
-            Ok(AuthState {
-                authenticated: true,
-                expires_at: Some(cognito::expires_at_iso(&tokens)),
-                account_id: Some(notification_identity_from_tokens(&tokens)),
-            })
+            Ok(authenticated_state_from_tokens(&tokens))
         }
         Err(_) => {
             clear_sentry_user();
@@ -71,6 +98,8 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
                 authenticated: false,
                 expires_at: None,
                 account_id: None,
+                email: None,
+                display_name: None,
             })
         }
     }
@@ -99,14 +128,8 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     let current_tokens = crate::commands::dm_notify::refresh_notification_credentials(&app).await?;
-    let iso = cognito::expires_at_iso(&current_tokens);
     set_sentry_user_from_tokens(&current_tokens);
-
-    Ok(AuthState {
-        authenticated: true,
-        expires_at: Some(iso),
-        account_id: Some(notification_identity_from_tokens(&current_tokens)),
-    })
+    Ok(authenticated_state_from_tokens(&current_tokens))
 }
 
 /// Clear this device's stale session and take the user straight to the
@@ -138,6 +161,18 @@ mod tests {
         format!("header.{payload}.signature")
     }
 
+    fn jwt_with_profile(subject: &str, email: &str, name: &str) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": subject,
+                "email": email,
+                "name": name,
+            }))
+            .expect("claims serialize"),
+        );
+        format!("header.{payload}.signature")
+    }
+
     fn tokens(
         id_token: Option<String>,
         access_token: String,
@@ -160,6 +195,26 @@ mod tests {
         );
 
         assert_eq!(notification_identity_from_tokens(&tokens), "id-subject");
+    }
+
+    #[test]
+    fn authenticated_state_exposes_non_secret_profile_claims_to_the_webview() {
+        let tokens = tokens(
+            Some(jwt_with_profile(
+                "cognito-sub-ada",
+                "ada@getindigo.ai",
+                "Ada Lovelace",
+            )),
+            jwt_with_sub("access-subject"),
+            "refresh-a",
+        );
+
+        let state = authenticated_state_from_tokens(&tokens);
+
+        assert!(state.authenticated);
+        assert_eq!(state.account_id.as_deref(), Some("cognito-sub-ada"));
+        assert_eq!(state.email.as_deref(), Some("ada@getindigo.ai"));
+        assert_eq!(state.display_name.as_deref(), Some("Ada Lovelace"));
     }
 
     #[test]

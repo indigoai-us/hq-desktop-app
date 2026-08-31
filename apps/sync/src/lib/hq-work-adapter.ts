@@ -13,7 +13,7 @@ import {
   type Json,
   type NotificationItem,
   type PlatformAdapter,
-  type WhoAmI,
+  type VersionInfo,
   TAURI_CAPABILITIES,
   WEB_PATHS,
   buildSendReplyRequest,
@@ -94,20 +94,6 @@ function withQuery(
   return qs ? `${path}?${qs}` : path;
 }
 
-function asWhoAmI(value: unknown): WhoAmI {
-  const rec = asRecord(value) ?? {};
-  const personUid = String(
-    rec.personUid ?? rec.uid ?? rec.sub ?? rec.person_uid ?? '',
-  );
-  const email = String(rec.email ?? '');
-  const displayNameRaw = rec.displayName ?? rec.name;
-  const displayName =
-    typeof displayNameRaw === 'string' && displayNameRaw.trim()
-      ? displayNameRaw
-      : undefined;
-  return { ...rec, personUid, email, displayName };
-}
-
 function asChannelSummary(row: Json): ChannelSummary {
   const unread = row.unreadCount ?? row.unread;
   return {
@@ -156,6 +142,19 @@ export function createSyncPlatformAdapter(
     } catch (err) {
       return invokeError(err);
     }
+  }
+
+  async function getVersions(): AdapterPromise<VersionInfo> {
+    const [core, cli] = await Promise.all([
+      call<string | null>('get_hq_version'),
+      call<string | null>('get_hq_cli_version'),
+    ]);
+    if (!core.ok) return core;
+    if (!cli.ok) return cli;
+    return ok({
+      ...(core.value ? { core: core.value } : {}),
+      ...(cli.value ? { cli: cli.value } : {}),
+    });
   }
 
   async function hqProJson<T>(
@@ -252,14 +251,36 @@ export function createSyncPlatformAdapter(
 
     identity: {
       whoami: async () => {
-        const auth = await call<{ authenticated?: boolean }>('get_auth_state');
+        const [auth, config] = await Promise.all([
+          call<{
+            authenticated?: boolean;
+            accountId?: string | null;
+            email?: string | null;
+            displayName?: string | null;
+          }>('get_auth_state'),
+          call<{ personUid?: string | null }>('get_config'),
+        ]);
         if (!auth.ok) return auth;
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        const me = await hqProJson<Json>('GET', WEB_PATHS.whoami);
-        if (!me.ok) return me;
-        return ok(asWhoAmI(me.value));
+        const personUid =
+          (config.ok ? config.value?.personUid?.trim() : '') ||
+          auth.value.accountId?.trim() ||
+          '';
+        if (!personUid) {
+          return failure(
+            'identity-unavailable',
+            config.ok
+              ? 'Signed-in identity has no person identifier.'
+              : config.message,
+          );
+        }
+        return ok({
+          personUid,
+          email: auth.value.email?.trim() || '',
+          displayName: auth.value.displayName?.trim() || undefined,
+        });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: async (flag) => {
@@ -812,7 +833,7 @@ export function createSyncPlatformAdapter(
     },
 
     updates: {
-      getVersions: () => call('get_hq_version'),
+      getVersions,
       checkForUpdates: () => call('check_for_updates'),
       installUpdate: () => call('install_update'),
       getPendingUpdate: () => call('get_pending_update'),
