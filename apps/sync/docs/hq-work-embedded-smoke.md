@@ -2,8 +2,8 @@
 
 Executable checklist for the **combined-app** embed: HQ Work's `@hq/ui`
 DesktopApp inside Sync's desktop-alt window. Run **once on a real macOS
-machine** before flipping `hqWorkHandoff` beyond the alpha cohort
-(`@getindigo.ai`).
+machine** before flipping `hqWorkHandoff` beyond the approved cohort
+(`@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`).
 
 Canonical file: this document. It **supersedes** the two-app
 [hq-work-handoff-qa.md](hq-work-handoff-qa.md) (card / co-install / launch HQ
@@ -17,9 +17,10 @@ Rollout, bake, rollback, updater budget:
 macOS only. Tray popover, widget, and sync engine stay in Sync. No second
 app, no co-install, no account or data migration.
 
-The flag **defaults ON for `@getindigo.ai`** and off for everyone else. For an
-operator running this checklist that inverts Scenario 1: *absent* no longer
-means off, so the flag-off scenario must write an explicit `false`.
+The flag **defaults ON for `@getindigo.ai`, `@vyg.ai`, and
+`@liverecover.com`** and off for everyone else. For a cohort operator running
+this checklist that inverts Scenario 1: *absent* no longer means off, so the
+flag-off scenario must write an explicit `false`.
 
 Executed once on a real machine — see [Results](#results-live-machine).
 Re-record that section from scratch for any later run; it must always describe a
@@ -38,18 +39,18 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 
 **The key is a preference, not an authorisation.** `~/.hq/menubar.json` is a
 plain user-writable file, so `get_hq_work_handoff` resolves
-`is_indigo_user() AND (choice defaulting to true)`. Inside the
-`@getindigo.ai` cohort the embed is on unless the user writes an explicit
+`is_hq_work_cohort_user() AND (choice defaulting to true)`. Inside the
+approved domain cohort the embed is on unless the user writes an explicit
 `false`; outside it, the embed is off no matter what the file says, so writing
 `"hqWorkHandoff": true` there still gets nothing. `set_hq_work_handoff(true)`
-refuses outright rather than writing a key the reader would ignore. Same
-`is_indigo_user` gate the updater uses for pre-release channels, so "who is
-Indigo" has one definition.
+refuses outright rather than writing a key the reader would ignore. The HQ
+Work predicate is deliberately separate, so updater, moderation, admin, and
+staging access remain Indigo-only.
 
-Practical consequence for this checklist: **run it signed in as
-`@getindigo.ai`**. Signed in as anyone else, every scenario below correctly
-shows the legacy shell, and Scenario 2 will look like a failure when it is the
-gate doing its job.
+Practical consequence for this checklist: **run it signed in with an approved
+domain**. Signed in as anyone else, every scenario below correctly shows the
+legacy shell, and Scenario 2 will look like a failure when it is the gate
+doing its job.
 
 Same write path as `set_hq_work_handoff(true)`. Inspect without dumping
 secrets:
@@ -118,8 +119,8 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
 
   Stale `target/release/bundle/macos/HQ.app` from before US-101 is **not**
   valid proof.
-- Signed-in HQ Sync session (canonical `vault-users-*` Cognito). Alpha
-  operator: `@getindigo.ai`.
+- Signed-in HQ Sync session (canonical `vault-users-*` Cognito). Approved
+  operator domain: `@getindigo.ai`, `@vyg.ai`, or `@liverecover.com`.
 - Kill any other `ai.indigo.hq-sync-menubar` process before launching the
   worktree bundle so AX / tray clicks hit this binary.
 - The screen must be **unlocked**. At the macOS lock screen the tray, the
@@ -131,7 +132,7 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
 Merge helper:
 
 Merge helper. Note it writes an explicit `false` rather than deleting the key:
-for an `@getindigo.ai` operator, deleting it means *default on*, so the old
+for an approved-cohort operator, deleting it means *default on*, so the old
 delete-to-disable helper would have silently made Scenario 1 test the wrong
 thing.
 
@@ -167,7 +168,7 @@ No embed, no extra handoff probes.
 
 ### Steps
 
-1. Set `hqWorkHandoff` to an explicit `false` — for an `@getindigo.ai`
+1. Set `hqWorkHandoff` to an explicit `false` — for an approved-cohort
    operator, absent now resolves to ON. Quit HQ fully.
 2. Launch the this-branch bundle. Wait until the tray icon is up.
 3. Open HQ (tray Open HQ / Opt+Shift+O).

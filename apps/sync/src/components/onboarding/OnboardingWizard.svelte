@@ -1266,12 +1266,16 @@
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      // `codex app <folder>` opens the desktop app IN the HQ folder — the
-      // only launch that does (bare deep link and folder-as-open-document
-      // both leave it on "Choose project"). Bare desktop open is the no-CLI
-      // fallback only.
+      // `codex app <folder>` opens the desktop app IN the HQ folder, and the
+      // prompt link pre-types /setup in the composer — full parity with the
+      // Claude deep link. The CLI ships inside the ChatGPT app bundle, so
+      // codex_cli covers desktop-only machines. Bare desktop open is the
+      // last-ditch fallback only.
       if (tools.codex_cli && installPath) {
-        await invoke('launch_codex_workspace', { path: installPath });
+        await invoke('launch_codex_workspace', {
+          path: installPath,
+          prompt: '/setup',
+        });
         launched = true;
       } else if (tools.codex_desktop) {
         await invoke('launch_codex_desktop');

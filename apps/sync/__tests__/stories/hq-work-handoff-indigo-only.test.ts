@@ -1,9 +1,9 @@
 /**
- * The embedded HQ Work window is limited to the `@getindigo.ai` cohort.
+ * The embedded HQ Work window is limited to the approved domain cohort.
  *
  * `~/.hq/menubar.json` is a plain user-writable file, so `hqWorkHandoff: true`
  * is an opt-in and never an authorisation — anyone can type it. The effective
- * answer has to be `flag AND is_indigo_user()`.
+ * answer has to be `choice AND is_hq_work_cohort_user()`.
  *
  * The composition itself is unit-tested in Rust
  * (`commands/config.rs::hq_work_handoff_tests`), which is where the domain
@@ -34,14 +34,15 @@ function rustSources(dir: string): string[] {
   return out;
 }
 
-describe('embedded HQ Work window is Indigo-only', () => {
+describe('embedded HQ Work window domain cohort', () => {
   const config = readRepo('src-tauri/src/commands/config.rs');
+  const featureGate = readRepo('../../crates/hq-desktop-core/src/feature_gate.rs');
 
-  it('gates the flag read on is_indigo_user, not on the file alone', () => {
+  it('gates the flag read on the dedicated HQ Work cohort, not on the file alone', () => {
     expect(config).toContain('pub async fn get_hq_work_handoff()');
     expect(config).toContain('hq_work_handoff_visible(');
     expect(config).toMatch(
-      /hq_desktop_core::feature_gate::is_indigo_user\(\)\s*\.await/,
+      /hq_desktop_core::feature_gate::is_hq_work_cohort_user\(\)\s*\.await/,
     );
   });
 
@@ -50,9 +51,9 @@ describe('embedded HQ Work window is Indigo-only', () => {
       config.indexOf('pub fn hq_work_handoff_visible('),
       config.indexOf('/// On by default for'),
     );
-    // `is_indigo &&` first: default-on applies INSIDE the cohort only. An
-    // `||` here would hand the embed to everyone.
-    expect(body).toContain('is_indigo && choice.unwrap_or(true)');
+    // Cohort membership is a hard AND: default-on applies INSIDE the cohort
+    // only. An `||` here would hand the embed to everyone.
+    expect(body).toContain('is_cohort_member && choice.unwrap_or(true)');
     expect(body).not.toContain('||');
   });
 
@@ -64,19 +65,23 @@ describe('embedded HQ Work window is Indigo-only', () => {
     expect(config).toContain('pub fn hq_work_handoff_choice(');
   });
 
-  it('refuses to persist the flag for a non-Indigo account', () => {
+  it('refuses to persist the flag for an account outside the cohort', () => {
     expect(config).toContain('pub async fn set_hq_work_handoff(');
     const body = config.slice(config.indexOf('pub async fn set_hq_work_handoff('));
     expect(body).toMatch(
-      /if enabled && !hq_desktop_core::feature_gate::is_indigo_user\(\)\s*\.await/,
+      /if enabled && !hq_desktop_core::feature_gate::is_hq_work_cohort_user\(\)\s*\.await/,
     );
     expect(body).toMatch(/@getindigo\.ai/);
+    expect(body).toMatch(/@vyg\.ai/);
+    expect(body).toMatch(/@liverecover\.com/);
   });
 
-  it('uses the canonical feature gate rather than its own domain literal', () => {
-    // One definition of "who is Indigo". A hand-rolled `ends_with("@…")` here
-    // would drift from the updater's cohort and miss the look-alike guard.
-    expect(config).not.toMatch(/ends_with\(\s*"@getindigo\.ai"/);
+  it('keeps the three domains in the canonical feature gate', () => {
+    expect(config).not.toMatch(/ends_with\(\s*"@(getindigo|vyg|liverecover)/);
+    expect(featureGate).toContain('"@getindigo.ai"');
+    expect(featureGate).toContain('"@vyg.ai"');
+    expect(featureGate).toContain('"@liverecover.com"');
+    expect(featureGate).toContain('pub fn is_hq_work_allowed_email(');
   });
 
   it('has no reader that parses hqWorkHandoff outside config.rs', () => {
@@ -93,6 +98,8 @@ describe('embedded HQ Work window is Indigo-only', () => {
   it('documents the cohort limit in the operator checklist', () => {
     const smoke = readRepo('docs/hq-work-embedded-smoke.md');
     expect(smoke).toMatch(/@getindigo\.ai/);
-    expect(smoke).toMatch(/is_indigo_user/);
+    expect(smoke).toMatch(/@vyg\.ai/);
+    expect(smoke).toMatch(/@liverecover\.com/);
+    expect(smoke).toMatch(/is_hq_work_cohort_user/);
   });
 });

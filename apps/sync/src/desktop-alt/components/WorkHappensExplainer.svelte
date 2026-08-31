@@ -109,9 +109,9 @@
     try {
       // `codex app <folder>` — the only launch that opens the desktop app
       // IN the folder (see TitleBarLaunch for the evidence trail).
-      if (tools?.codex_cli) {
-        await invoke('launch_codex_workspace', { path: folder });
-      } else {
+      try {
+        await invoke('launch_codex_workspace', { path: folder, prompt: null });
+      } catch {
         await invoke('launch_codex_desktop');
       }
       dismiss();
