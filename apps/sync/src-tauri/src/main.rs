@@ -833,6 +833,10 @@ fn main() {
         ])
         .setup(|app| {
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            // macOS app menu with "Check for Updates…" under About; replaces
+            // the implicit default menu. See updater::setup_app_menu.
+            #[cfg(target_os = "macos")]
+            updater::setup_app_menu(app)?;
             #[cfg(target_os = "windows")]
             {
                 // Prime the durable session-end latch's monotonic origin before

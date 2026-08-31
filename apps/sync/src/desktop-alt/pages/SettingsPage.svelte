@@ -16,6 +16,7 @@
     type PendingUpdateState,
   } from '../../lib/notificationFeedData';
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
+  import { checkAllUpdates } from '../../lib/update-check';
   import {
     APPEARANCE_CHANGE_EVENT,
     readBrowserAppearancePreferences,
@@ -255,6 +256,11 @@
   let appUpdate = $state<UpdateInfo | null>(null);
   let appUpdateInstalling = $state(false);
   let appUpdateLoadGeneration = 0;
+  // Pane-level "Check for updates" (section header). Runs the shared
+  // three-target orchestration in lib/update-check.ts — the same module the
+  // macOS app-menu "Check for Updates…" path exercises — and maps each
+  // target's result back onto the existing per-row state/busy flags.
+  let checkingAll = $state(false);
 
   // hq CLI update notice — loaded via check_hq_cli_update; null = hide card.
   let hqCliUpdate = $state<{ local: string | null; latest: string } | null>(null);
@@ -1280,6 +1286,85 @@
     }
   }
 
+  async function handleCheckAllUpdates() {
+    if (checkingAll) return;
+    checkingAll = true;
+    // Bump each row's load generation so any in-flight background refresh
+    // drops its result in favor of this explicit user-initiated check.
+    const appGen = ++appUpdateLoadGeneration;
+    const coreGen = ++coreStateLoadGeneration;
+    const cliGen = ++hqCliLoadGeneration;
+    updateChecking = true;
+    updateResult = null;
+    if (updateResultTimeout) {
+      clearTimeout(updateResultTimeout);
+      updateResultTimeout = null;
+    }
+    coreRefreshing = true;
+    coreStateError = false;
+    hqCliChecking = true;
+    // Core version (core.yaml read) is cheap and rides alongside the state
+    // scan, mirroring handleRefreshCore.
+    void refreshCoreVersion();
+    try {
+      await checkAllUpdates(
+        { invoke: (cmd) => invoke(cmd) },
+        {
+          onTargetDone: (r) => {
+            if (r.target === 'app') {
+              if (appGen !== appUpdateLoadGeneration) return;
+              updateChecking = false;
+              if (r.status === 'error') {
+                console.error('check_for_updates failed:', r.error);
+                updateResult = 'Check failed';
+              } else {
+                appUpdate = (r.detail as UpdateInfo | undefined) ?? null;
+                updateResult = r.status === 'up-to-date' ? 'Up to date' : null;
+              }
+              updateResultTimeout = setTimeout(() => {
+                updateResult = null;
+              }, 4000);
+            } else if (r.target === 'core') {
+              if (coreGen !== coreStateLoadGeneration) return;
+              coreRefreshing = false;
+              coreStateLoading = false;
+              if (r.status === 'error') {
+                console.error('check_core_state failed:', r.error);
+                coreState = null;
+                coreStateError = true;
+              } else {
+                coreState = (r.detail as CoreState | null) ?? null;
+                coreStateError = false;
+              }
+            } else {
+              if (cliGen !== hqCliLoadGeneration) return;
+              hqCliChecking = false;
+              if (r.status === 'error') {
+                console.error('check_hq_cli_update failed:', r.error);
+                hqCliUpdate = null;
+                hqCliUpdateError = r.error ?? 'Check failed';
+                hqCliUpdateErrorContext = 'check';
+              } else {
+                hqCliUpdate =
+                  (r.detail as { local: string | null; latest: string } | undefined) ??
+                  null;
+                hqCliUpdateError = null;
+                hqCliUpdateErrorContext = null;
+              }
+            }
+          },
+        },
+      );
+    } finally {
+      checkingAll = false;
+      // Belt-and-braces: never leave a row spinner stuck if its generation
+      // advanced mid-flight (the newer load owns the flag then).
+      if (appGen === appUpdateLoadGeneration) updateChecking = false;
+      if (coreGen === coreStateLoadGeneration) coreRefreshing = false;
+      if (cliGen === hqCliLoadGeneration) hqCliChecking = false;
+    }
+  }
+
   async function handleInstallAppUpdate() {
     if (!appUpdate || appUpdateInstalling) return;
     const generation = ++appUpdateLoadGeneration;
@@ -1795,7 +1880,19 @@
     </section>
 
     <section id="updates" class="settings-section">
-      <h2>Updates</h2>
+      <div class="section-header-row">
+        <h2>Updates</h2>
+        <button
+          type="button"
+          class="row-button"
+          data-testid="settings-check-all-updates"
+          onclick={handleCheckAllUpdates}
+          disabled={checkingAll}
+          aria-busy={checkingAll}
+        >
+          {checkingAll ? 'Checking…' : 'Check for updates'}
+        </button>
+      </div>
       <div class="settings-card">
         <!-- Master automatic-updates switch (default ON). One toggle governs
              silent, no-prompt install of the app itself (self-update +
@@ -2451,6 +2548,15 @@
     display: grid;
     gap: 8px;
     scroll-margin-top: 12px;
+  }
+
+  /* Section heading with a trailing action (Updates → "Check for updates").
+     Tokens only — inherits row-button theming for dark/light. */
+  .section-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .settings-card {

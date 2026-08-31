@@ -611,6 +611,104 @@ pub async fn is_indigo_user() -> bool {
 /// the event) were left with an unexpected manual Install prompt. An active sync
 /// defers the attempt for 30 seconds; an install failure falls back to the
 /// ordinary update notification so the user still has a recovery path.
+/// Menu-item id for the macOS app-menu "Check for Updates…" entry.
+#[cfg(target_os = "macos")]
+pub const MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu:check-for-updates";
+
+/// Build the macOS application menu with a "Check for Updates…" item under
+/// About, keeping the standard app/Edit/Window entries (the app previously
+/// ran on Tauri's implicit default menu). The item drives the exact same
+/// `check_for_updates` command the Settings → Updates pane and the background
+/// checker use — no separate update logic. On "update found" the command's own
+/// `update:available` event drives the existing update UI; on "up to date" we
+/// surface a native notification with the current version.
+#[cfg(target_os = "macos")]
+pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let check_item = MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…")
+        .build(app)?;
+    let app_menu = SubmenuBuilder::new(app, "HQ")
+        .about(Some(AboutMetadata::default()))
+        .separator()
+        .item(&check_item)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    // Standard Edit/Window menus so text fields and window shortcuts keep
+    // working once the implicit default menu is replaced.
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .close_window()
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &edit_menu, &window_menu])
+        .build()?;
+    app.set_menu(menu)?;
+
+    app.on_menu_event(|handle, event| {
+        if event.id().as_ref() != MENU_CHECK_FOR_UPDATES_ID {
+            return;
+        }
+        let handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            match check_for_updates(handle.clone()).await {
+                // Update found: `check_for_updates` already emitted
+                // `update:available`, which every existing surface (Settings
+                // row, banner, version pop-out) listens for.
+                Ok(Some(_)) => {}
+                Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
+                Err(e) => {
+                    log("updater", &format!("menu check_for_updates failed: {e}"));
+                    notify_manual_check(&handle, "Couldn\u{2019}t check for updates. Try again later.");
+                }
+            }
+        });
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn up_to_date_body(app: &AppHandle) -> String {
+    format!(
+        "You\u{2019}re up to date \u{2014} v{}",
+        app.package_info().version
+    )
+}
+
+/// Native confirmation for a user-initiated menu check. Notification (not a
+/// modal) so it works whether or not any app window is frontmost.
+#[cfg(target_os = "macos")]
+fn notify_manual_check(app: &AppHandle, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("HQ")
+        .body(body)
+        .show()
+    {
+        log("updater", &format!("manual update-check notification failed: {e}"));
+    }
+}
+
 pub fn setup_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
