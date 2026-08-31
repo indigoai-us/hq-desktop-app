@@ -4,6 +4,7 @@ import {
   buildChatAttachmentVaultPath,
   conversationPairKey,
   isAllowedChatAttachment,
+  isImageFile,
 } from "./chat-attachments.js";
 import {
   presignUrlFromResult,
@@ -34,6 +35,19 @@ describe("chat attachment helpers", () => {
       type: "application/x-msdownload",
     });
     expect(isAllowedChatAttachment(exe)).toMatch(/supported/);
+  });
+
+  it("classifies composer files as images via mime or extension", () => {
+    const png = new File([new Uint8Array(4)], "shot.png", {
+      type: "image/png",
+    });
+    expect(isImageFile(png)).toBe(true);
+    const noMime = new File([new Uint8Array(4)], "photo.jpeg", { type: "" });
+    expect(isImageFile(noMime)).toBe(true);
+    const pdf = new File([new Uint8Array(4)], "doc.pdf", {
+      type: "application/pdf",
+    });
+    expect(isImageFile(pdf)).toBe(false);
   });
 
   it("puts bytes through the host hop instead of S3", async () => {

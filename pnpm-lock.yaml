@@ -88,6 +88,19 @@ importers:
         specifier: ^4.1.5
         version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
 
+  packages/auth:
+    dependencies:
+      jose:
+        specifier: ^6.2.8
+        version: 6.2.10
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
+
   packages/core:
     dependencies:
       mqtt:
@@ -1241,6 +1254,9 @@ packages:
   istanbul-reports@3.2.0:
     resolution: {integrity: sha512-HGYWWS/ehqTV3xN10i23tkPkpH46MLCIMFNCaaKNavAXTF1RkqxawEPtnjnGZ6XKSInBKkiOA5BKS+aZiY3AvA==}
     engines: {node: '>=8'}
+
+  jose@6.2.10:
+    resolution: {integrity: sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g==}
 
   js-sdsl@4.3.0:
     resolution: {integrity: sha512-mifzlm2+5nZ+lEcLJMoBK0/IH/bDg8XnJfd/Wq6IP+xoCjLZsTOnV2QpxlVbX9bMnkl5PdEjNtBJ9Cj1NjifhQ==}
@@ -2587,6 +2603,8 @@ snapshots:
     dependencies:
       html-escaper: 2.0.2
       istanbul-lib-report: 3.0.1
+
+  jose@6.2.10: {}
 
   js-sdsl@4.3.0: {}
 

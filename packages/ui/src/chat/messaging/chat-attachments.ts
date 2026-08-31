@@ -102,6 +102,11 @@ export function attachmentKindForContentType(
     : "file";
 }
 
+/** True when a pending composer file should render an image thumbnail. */
+export function isImageFile(file: File): boolean {
+  return attachmentKindForContentType(contentTypeForFile(file)) === "image";
+}
+
 export function isAllowedChatAttachment(file: File): string | null {
   if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
     return `${file.name} is larger than 25 MB`;
