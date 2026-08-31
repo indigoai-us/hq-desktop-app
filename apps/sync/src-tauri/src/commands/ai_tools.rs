@@ -59,17 +59,13 @@ pub fn detect_ai_tools() -> AiTools {
         None,
         CLI_PROBE_TIMEOUT,
     );
-    // The login-shell probe misses a codex the app provisioned itself when
-    // the shell profile lacks the managed npm-global PATH block (fresh
-    // machine, custom shell). The managed bin is our own install — its
-    // existence IS codex_cli.
-    if !tools.codex_cli {
-        if let Some(bin) = crate::commands::ensure_codex::managed_codex_bin() {
-            if bin.exists() {
-                tools.codex_cli = true;
-                tools.any = true;
-            }
-        }
+    // The Codex CLI ships INSIDE the ChatGPT app bundle
+    // (Contents/Resources/codex), so a machine with the desktop app has a
+    // full CLI even when nothing is on PATH. Count it: workspace launches
+    // resolve the bundled binary directly.
+    if !tools.codex_cli && crate::commands::launch::bundled_codex_bin().is_some() {
+        tools.codex_cli = true;
+        tools.any = true;
     }
     if let Some(home) = dirs::home_dir() {
         tools.claude_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "claude"));

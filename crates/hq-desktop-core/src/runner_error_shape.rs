@@ -83,7 +83,7 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// rather than silently collapsing to a flat `unknown`. The pin forces
 /// re-derivation on a coarse bump; the signature axis absorbs the fine drift in
 /// between.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.95";
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.0";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -986,6 +986,17 @@ pub enum RunnerErrorCause {
     // `ChildProcessSyncWorkerError` (src/sync/child-process-sync-worker.ts), the
     // one identity the prior vocabulary was missing at the new pin.
     ChildProcessSyncWorker,
+    // Added when the runner pin moved to ~6.16.0 — the four identities hq-cloud
+    // gained between 6.15.95 and 6.16.0: the realtime push-transport outage
+    // class (`RealtimeUnavailableError`, src/sync/push-transport.ts), the
+    // Windows rename-block class (`WindowsRenameBlockedError`, src/s3.ts), and
+    // the two outposts interactive-terminal classes
+    // (`SessionManagerPluginLaunchError` — plugin missing/failed to start;
+    // `TerminalSessionTimeoutError` — the 202-retry budget ran out).
+    RealtimeUnavailable,
+    WindowsRenameBlocked,
+    SessionManagerPluginLaunch,
+    TerminalSessionTimeout,
     // ── AWS S3/STS error names ────────────────────────────────────────────────
     AccessDenied,
     NoSuchKey,
@@ -1068,7 +1079,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 93] = [
+    pub const ALL: [RunnerErrorCause; 97] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1115,6 +1126,10 @@ impl RunnerErrorCause {
         Self::DanglingSymlinkParent,
         Self::WindowsSymlinkPrivilege,
         Self::ChildProcessSyncWorker,
+        Self::RealtimeUnavailable,
+        Self::WindowsRenameBlocked,
+        Self::SessionManagerPluginLaunch,
+        Self::TerminalSessionTimeout,
         Self::AccessDenied,
         Self::NoSuchKey,
         Self::NoSuchBucket,
@@ -1213,6 +1228,13 @@ impl RunnerErrorCause {
             Self::DanglingSymlinkParent => "dangling_symlink_parent",
             Self::WindowsSymlinkPrivilege => "windows_symlink_privilege",
             Self::ChildProcessSyncWorker => "child_process_sync_worker",
+            Self::RealtimeUnavailable => "realtime_unavailable",
+            Self::WindowsRenameBlocked => "windows_rename_blocked",
+            // Scrubber-safe spellings for the terminal classes (the
+            // vault_identity precedent; the egress denylist test enumerates
+            // every emitted value below).
+            Self::SessionManagerPluginLaunch => "terminal_plugin_launch",
+            Self::TerminalSessionTimeout => "terminal_wait_timeout",
             Self::AccessDenied => "access_denied",
             Self::NoSuchKey => "no_such_key",
             Self::NoSuchBucket => "no_such_bucket",
@@ -1327,6 +1349,14 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "WindowsSymlinkPrivilegeError" => RunnerErrorCause::WindowsSymlinkPrivilege,
         // Added at the ~6.15.79 pin (src/sync/child-process-sync-worker.ts).
         "ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker,
+        // Added at the ~6.16.0 pin: the realtime push-transport outage class
+        // (src/sync/push-transport.ts), the Windows rename-block class
+        // (src/s3.ts), and the outposts interactive-terminal launcher/timeout
+        // classes (src/outposts/terminal.ts).
+        "RealtimeUnavailableError" => RunnerErrorCause::RealtimeUnavailable,
+        "WindowsRenameBlockedError" => RunnerErrorCause::WindowsRenameBlocked,
+        "SessionManagerPluginLaunchError" => RunnerErrorCause::SessionManagerPluginLaunch,
+        "TerminalSessionTimeoutError" => RunnerErrorCause::TerminalSessionTimeout,
         // AWS S3/STS error names (surfaced as `e.name` by the SDK, or as a
         // `code=`/`cause=` value by older wrappers). hq-cloud's own
         // `AccessDeniedError` class shares the `access_denied` identity.
@@ -2414,17 +2444,20 @@ mod tests {
         "RateLimited",
         "RealtimeConflictError",
         "RealtimeEnrollmentUnavailableError",
+        "RealtimeUnavailableError",
         "RefreshLockTimeoutError",
         "RescuePathChangedError",
         "ScopeShrinkBlockedError",
         "ScopeShrinkLargePruneError",
         "ServerOwnedPushPathsError",
+        "SessionManagerPluginLaunchError",
         "SnapshotClientError",
         "SourceNotFoundError",
         "StateStoreCorruptionError",
         "StateStoreLockError",
         "StateStoreReducerError",
         "SyncMutationNotEnrolledError",
+        "TerminalSessionTimeoutError",
         "TombstoneFetchError",
         "UnreachablePushPathsError",
         "UnregisteredCompanySkillError",
@@ -2434,6 +2467,7 @@ mod tests {
         "VaultNotFoundError",
         "VaultPermissionDeniedError",
         "VendDeniedError",
+        "WindowsRenameBlockedError",
         "WindowsSymlinkPrivilegeError",
     ];
 
@@ -2441,12 +2475,15 @@ mod tests {
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
         // Completeness over the FULL derived identity set (not a sample): every
         // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 46 identities must map to 46 DISTINCT tokens — the exact property
+        // the 50 identities must map to 50 DISTINCT tokens — the exact property
         // the prior 16-name sample violated, collapsing every out-of-sample
         // company fault to the flat residual and reopening this lane. The set
-        // grew from 45 to 46 when the runner pin moved to ~6.15.79, which added
-        // ChildProcessSyncWorkerError.
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 46);
+        // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
+        // ChildProcessSyncWorkerError), and from 46 to 50 at ~6.16.0 (added
+        // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
+        // outposts terminal classes SessionManagerPluginLaunchError +
+        // TerminalSessionTimeoutError).
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 50);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -2472,7 +2509,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 46, "expected 46 distinct cause tokens");
+        assert_eq!(tokens.len(), 50, "expected 50 distinct cause tokens");
     }
 
     #[test]

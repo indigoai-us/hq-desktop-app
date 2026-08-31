@@ -7,6 +7,7 @@ import {
   conflictFileName,
   conflictHeaderLabel,
   coreNeedsRestore,
+  detectedCoreVersion,
   driftPillLabel,
   hqVersionLabel,
   isSyncNowAllowed,
@@ -14,6 +15,15 @@ import {
 } from "./core-popover-model";
 
 describe("core-popover-model (US-016)", () => {
+  describe("detectedCoreVersion", () => {
+    it("does not report a CLI-only install as HQ Core", () => {
+      expect(detectedCoreVersion({ cli: "0.9.0" })).toBeNull();
+      expect(detectedCoreVersion({ core: "15.0.15", cli: "0.9.0" })).toBe(
+        "15.0.15",
+      );
+    });
+  });
+
   describe("conflicts present / empty", () => {
     it("builds rescue-card rows with filename + company path", () => {
       const vm = buildCorePopoverViewModel({

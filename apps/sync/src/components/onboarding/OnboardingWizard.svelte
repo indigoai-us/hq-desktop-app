@@ -56,6 +56,12 @@
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
+    createOnboardingStepTelemetry,
+    type OnboardingAction,
+    type OnboardingFlow,
+    type RecordOnboardingStep,
+  } from '../../lib/onboarding-step-telemetry';
+  import {
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
@@ -87,6 +93,7 @@
      * so the answer can mark the re-prompt "shown" for exactly this person.
      */
     mode?: 'onboarding' | 'reprompt';
+    onboardingFlow?: OnboardingFlow;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -137,10 +144,12 @@
     initialStep,
     onfinish,
     mode = 'onboarding',
+    onboardingFlow = 'first_install',
     repromptPersonUid = null,
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
+  const onboardingTelemetry = createOnboardingStepTelemetry();
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -227,6 +236,32 @@
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
   let finishError = $state(false);
+
+  type StepTelemetryDetails = Omit<
+    RecordOnboardingStep['properties'],
+    'step' | 'action' | 'flow'
+  >;
+
+  function stepIdFor(step: number) {
+    return WIZARD_STEPS.find((candidate) => candidate.index === step)?.id ?? 'welcome-signin';
+  }
+
+  function recordStep(
+    step: number,
+    action: OnboardingAction,
+    details: StepTelemetryDetails = {},
+    flow?: OnboardingFlow,
+  ): void {
+    if (isReprompt) return;
+    onboardingTelemetry.record({
+      properties: {
+        step: stepIdFor(step),
+        action,
+        ...details,
+        flow: flow ?? onboardingFlow,
+      },
+    });
+  }
 
   const displayPath = $derived(
     resolvedPath ? friendlyPath(resolvedPath, homeDir) : 'Resolving ~/hq...',
@@ -335,6 +370,34 @@
     detectorMounted = true;
     directoryCancelled = false;
 
+    if (!isReprompt) {
+      // Every visible panel has an entry event. A resumed, non-initial panel
+      // records both its ordinary entry and the resume signal used for drop-off
+      // analysis.
+      // ConnectorImportStep owns both its entry and terminal outcomes. This
+      // keeps resumed connector screens to one entered event as well.
+      if (currentStep !== CONNECTOR_IMPORT_STEP_INDEX) {
+        recordStep(currentStep, 'entered', {}, onboardingFlow);
+      }
+      if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
+        recordStep(currentStep, 'resumed', {}, onboardingFlow);
+      }
+      void invokeCommand<boolean>('is_first_run')
+        .then((firstLaunch) => {
+          if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+        })
+        .catch(() => {});
+      // Resume paths can bypass the interactive OAuth panel because a valid
+      // token was restored before the wizard rendered. Bind that account too,
+      // so a buffer left by another person on this device is discarded before
+      // any consent decision can flush it.
+      void invokeCommand<{ authenticated: boolean; accountId?: string | null }>('get_auth_state')
+        .then((auth) => {
+          if (auth?.authenticated) onboardingTelemetry.bindAccount(auth.accountId);
+        })
+        .catch(() => {});
+    }
+
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const updateMotion = () => {
       reducedMotion = media.matches;
@@ -430,6 +493,8 @@
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
+    const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
       const { authorizeUrl, state } = await invokeCommand<{
@@ -453,24 +518,39 @@
       const result = await invokeCommand<{
         authenticated: boolean;
         expiresAt?: string;
+        accountId?: string | null;
       }>('oauth_exchange_code', { code });
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        // Account identity stays local and only partitions the durable
+        // pre-consent buffer. It is never sent as a telemetry property.
+        onboardingTelemetry.bindAccount(result.accountId);
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         // No telemetry is written here. The consent question is asked later, as
         // its own step after setup — before an answer exists we must not opt the
         // person in NOR emit any usage event (a person who later declines must
         // have produced zero events).
-        advanceTo(DIRECTORY_STEP_INDEX);
+        advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
+          provider: telemetryProvider,
+          outcome: 'authenticated',
+        });
       } else {
         signInError = 'Authentication failed. Please try again.';
+        recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
+          provider: telemetryProvider,
+          outcome: 'authentication_rejected',
+        });
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
       console.error('[onboarding-signin] sign-in failed:', err);
       signInError = mapSignInError(errorMessage(err), provider);
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
+        provider: telemetryProvider,
+        outcome: 'oauth_failed',
+      });
     } finally {
       if (isCurrentSignInCall(call)) {
         loadingProvider = null;
@@ -533,6 +613,7 @@
 
       if (!writable) {
         rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'not_writable' });
         return;
       }
 
@@ -541,12 +622,14 @@
           `${friendlyPath(picked, homeDir)} already has files and does not look like an HQ folder.`,
           'warning',
         );
+        recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'invalid_directory' });
         return;
       }
 
       acceptPath(picked);
     } catch (err) {
       rejectPath(`The folder could not be checked. ${errorMessage(err)}`);
+      recordStep(DIRECTORY_STEP_INDEX, 'failed', { outcome: 'directory_check_failed' });
     } finally {
       directoryBusy = false;
     }
@@ -554,7 +637,7 @@
 
   function handleInstall() {
     if (!installPath || directoryBusy) return;
-    advanceTo(SETUP_STEP_INDEX);
+    advanceTo(SETUP_STEP_INDEX, 'completed');
   }
 
   function beginSetupRun(): number {
@@ -721,8 +804,14 @@
 
   type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
 
-  async function runStage(id: StageId, runId: number): Promise<StageRunOutcome> {
+  async function runStage(
+    id: StageId,
+    runId: number,
+    attemptCount: number,
+  ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
+    const startedAt = Date.now();
+    recordStep(SETUP_STEP_INDEX, 'started', { component: id, attemptCount });
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
@@ -731,17 +820,36 @@
       (err) => ({ kind: 'failed' as const, err }),
     );
 
-    if (!isCurrentRun(runId)) return 'cancelled';
+    if (!isCurrentRun(runId)) {
+      recordStep(SETUP_STEP_INDEX, 'skipped', {
+        component: id,
+        attemptCount,
+        durationMs: Date.now() - startedAt,
+        outcome: 'cancelled',
+      });
+      return 'cancelled';
+    }
 
     if (result.kind === 'done') {
       stages = setStageStatus(stages, id, 'ok');
       await journalStageOk(id);
+      recordStep(SETUP_STEP_INDEX, 'completed', {
+        component: id,
+        attemptCount,
+        durationMs: Date.now() - startedAt,
+      });
       return 'ok';
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
       stages = setStageStatus(stages, id, 'failed', message);
       await journalStageFailure(id, message);
+      recordStep(SETUP_STEP_INDEX, 'failed', {
+        component: id,
+        attemptCount,
+        durationMs: Date.now() - startedAt,
+        outcome: 'stage_command_failed',
+      });
       return 'failed';
     }
     return 'cancelled';
@@ -767,7 +875,8 @@
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
-        const outcome = await runStage(id, runId);
+        const attemptCount = (retryCounts.get(id) ?? 0) + 1;
+        const outcome = await runStage(id, runId, attemptCount);
         if (outcome === 'cancelled') return;
         if (outcome === 'ok') break;
 
@@ -807,7 +916,10 @@
           : 0,
       };
       // Consent precedes the optional connector-import step and final handoff.
-      advanceTo(CONSENT_STEP_INDEX);
+      advanceTo(CONSENT_STEP_INDEX, 'completed', {
+        failedStageCount: setupFailures.length,
+        outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+      });
     }
   }
 
@@ -851,6 +963,10 @@
     consentSubmitting = true;
     consentFailure = null;
     const enabled = telemetryChoice === 'share';
+    // A refusal is final for this local trace immediately — even if its
+    // preference upload is offline or rejected, no pre-consent event may
+    // survive to a later account or a later opt-in.
+    if (!enabled) onboardingTelemetry.discard();
     try {
       // AC1 — make the ordering explicit. Ensure the person entity exists
       // before the opt-in POST fires. This resolves from cache instantly on the
@@ -894,6 +1010,17 @@
           message,
         };
         return;
+      }
+
+      // Flush only after the opt-in POST has succeeded. The trace keeps each
+      // event until its individual delivery succeeds, so an offline telemetry
+      // request can be retried without losing the pre-consent funnel.
+      if (enabled) {
+        try {
+          await onboardingTelemetry.acceptConsent();
+        } catch (err) {
+          console.warn('[onboarding-telemetry] buffered event flush deferred:', err);
+        }
       }
 
       if (isReprompt) {
@@ -954,6 +1081,7 @@
       await finishWithRecovery();
       return;
     }
+    if (telemetryChoice === 'decline') onboardingTelemetry.discard();
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
   }
 
@@ -1071,6 +1199,7 @@
     finishError = false;
     try {
       await onfinish?.();
+      recordStep(currentStep, 'completed', { outcome: 'finished' });
       return true;
     } catch (err) {
       console.error('onboarding: finish failed', err);
@@ -1137,12 +1266,16 @@
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      // `codex app <folder>` opens the desktop app IN the HQ folder — the
-      // only launch that does (bare deep link and folder-as-open-document
-      // both leave it on "Choose project"). Bare desktop open is the no-CLI
-      // fallback only.
+      // `codex app <folder>` opens the desktop app IN the HQ folder, and the
+      // prompt link pre-types /setup in the composer — full parity with the
+      // Claude deep link. The CLI ships inside the ChatGPT app bundle, so
+      // codex_cli covers desktop-only machines. Bare desktop open is the
+      // last-ditch fallback only.
       if (tools.codex_cli && installPath) {
-        await invoke('launch_codex_workspace', { path: installPath });
+        await invoke('launch_codex_workspace', {
+          path: installPath,
+          prompt: '/setup',
+        });
         launched = true;
       } else if (tools.codex_desktop) {
         await invoke('launch_codex_desktop');
@@ -1347,14 +1480,18 @@
     return handleLaunchGrok();
   }
 
-  function advanceTo(step: number) {
+  function advanceTo(
+    step: number,
+    exitAction: OnboardingAction | null = 'completed',
+    exitDetails: StepTelemetryDetails = {},
+  ) {
     router.goTo(step);
-    transitionTo(router.currentStep);
+    transitionTo(router.currentStep, exitAction, exitDetails);
   }
 
   function goBackTo(step: number) {
     router.goTo(step);
-    transitionTo(router.currentStep);
+    transitionTo(router.currentStep, 'back');
   }
 
   function resetMorphArtifacts() {
@@ -1448,9 +1585,17 @@
     return true;
   }
 
-  function transitionTo(next: number) {
+  function transitionTo(
+    next: number,
+    exitAction: OnboardingAction | null = 'completed',
+    exitDetails: StepTelemetryDetails = {},
+  ) {
     if (next === currentStep) return;
     const previous = currentStep;
+    if (exitAction) recordStep(previous, exitAction, exitDetails);
+    // ConnectorImportStep owns its entry so it can record detection outcomes
+    // without a duplicate generic entry event.
+    if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
     currentStep = next;
     furthestStep = Math.max(furthestStep, next);
     const token = ++transitionToken;
@@ -1951,7 +2096,16 @@
           aria-labelledby="onboarding-title-connector-import"
         >
           {#if currentStep === CONNECTOR_IMPORT_STEP_INDEX}
-            <ConnectorImportStep oncomplete={() => advanceTo(READY_STEP_INDEX)} />
+            <ConnectorImportStep
+              oncomplete={() => advanceTo(READY_STEP_INDEX, null)}
+              onTelemetry={(event) =>
+                recordStep(CONNECTOR_IMPORT_STEP_INDEX, event.action, {
+                  ...(event.detectedToolCount === undefined
+                    ? {}
+                    : { detectedToolCount: event.detectedToolCount }),
+                  ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+                })}
+            />
           {/if}
         </section>
 

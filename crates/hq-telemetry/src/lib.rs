@@ -415,6 +415,12 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "dangling_symlink_parent",
     "windows_symlink_privilege",
     "child_process_sync_worker",
+    // The ~6.16.0 pin's additions (kept in lockstep with hq-desktop-core's
+    // RunnerErrorCause::as_str; the cross-crate egress test enumerates ALL).
+    "realtime_unavailable",
+    "windows_rename_blocked",
+    "terminal_plugin_launch",
+    "terminal_wait_timeout",
     "access_denied",
     "no_such_key",
     "no_such_bucket",

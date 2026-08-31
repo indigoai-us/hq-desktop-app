@@ -3,6 +3,7 @@
   import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
   import { initialStepForLifecycle, CONSENT_STEP_INDEX } from '../lib/onboarding-wizard';
+  import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
 
   interface Props {
@@ -50,6 +51,7 @@
   }
 
   let initialStep = $state(0);
+  let onboardingFlow = $state<OnboardingFlow>('first_install');
   let activeLifecycleState = $state<string | null>(null);
 
   // The main window carries the frosted popover vibrancy. Onboarding is a
@@ -103,6 +105,10 @@
       mode === 'reprompt'
         ? CONSENT_STEP_INDEX
         : initialStepForLifecycle(lifecycleStateProp);
+    onboardingFlow =
+      lifecycleStateProp === 'InstallResume' || lifecycleStateProp === 'NeedsAuthForInstall'
+        ? 'resume'
+        : 'first_install';
   });
 
   async function handleFinish() {
@@ -124,6 +130,7 @@
 
 <OnboardingWizard
   {initialStep}
+  {onboardingFlow}
   {mode}
   {repromptPersonUid}
   onfinish={handleFinish}

@@ -184,4 +184,15 @@ describe('Sync adapter invokes match the registered command signatures', () => {
       );
     expect(broken, broken.join('\n')).toEqual([]);
   });
+
+  it('only invokes commands registered by the desktop host', () => {
+    const registered = registeredCommands();
+    const broken = sites
+      .filter((site) => !registered.has(site.command))
+      .map(
+        (site) =>
+          `hq-work-adapter.ts:${site.line} invokes unregistered command '${site.command}'`,
+      );
+    expect(broken, broken.join('\n')).toEqual([]);
+  });
 });

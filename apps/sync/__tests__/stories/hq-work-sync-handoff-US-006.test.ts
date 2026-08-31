@@ -55,14 +55,14 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
 
     it('get_hq_work_handoff defaults on inside the cohort, off outside it', () => {
       // Was: "missing file is Ok(false)". The embed is now default-ON for
-      // @getindigo.ai — the alpha cohort should not have to hand-edit
-      // menubar.json, and there is deliberately no Settings toggle. A missing
+      // Approved cohort members should not have to hand-edit menubar.json,
+      // and there is deliberately no Settings toggle. A missing
       // file or missing key is "no explicit choice", not an opt-out.
       const idx = config.indexOf('fn get_hq_work_handoff');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
       // Cohort membership is still required, and still comes from one place.
-      expect(body).toContain('feature_gate::is_indigo_user()');
+      expect(body).toContain('feature_gate::is_hq_work_cohort_user()');
       expect(body).toContain('hq_work_handoff_visible(');
       // An explicit false is still an opt-out, and still short-circuits.
       expect(body).toContain('choice == Some(false)');
@@ -72,7 +72,7 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
         config.indexOf('pub fn hq_work_handoff_visible'),
         config.indexOf('/// On by default for'),
       );
-      expect(visible).toContain('is_indigo && choice.unwrap_or(true)');
+      expect(visible).toContain('is_cohort_member && choice.unwrap_or(true)');
     });
 
     it('MenubarPrefs and core apply_defaults stay default-off', () => {

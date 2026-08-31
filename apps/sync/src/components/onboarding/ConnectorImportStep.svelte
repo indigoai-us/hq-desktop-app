@@ -4,6 +4,11 @@
 
   interface Props {
     oncomplete: () => void;
+    onTelemetry?: (event: {
+      action: 'entered' | 'started' | 'completed' | 'skipped' | 'failed';
+      detectedToolCount?: number;
+      outcome?: string;
+    }) => void;
   }
 
   interface ClaudeDesktopConnectors {
@@ -17,7 +22,7 @@
     message: string;
   }
 
-  let { oncomplete }: Props = $props();
+  let { oncomplete, onTelemetry }: Props = $props();
   let connectorCount = $state(0);
   let status = $state<'detecting' | 'offer' | 'importing' | 'success' | 'failure'>(
     'detecting',
@@ -31,6 +36,7 @@
   }
 
   onMount(() => {
+    onTelemetry?.({ action: 'entered' });
     void (async () => {
       try {
         const result = await invoke<ClaudeDesktopConnectors>(
@@ -38,12 +44,22 @@
         );
         connectorCount = result.count;
         if (result.count === 0) {
+          onTelemetry?.({
+            action: 'skipped',
+            detectedToolCount: 0,
+            outcome: 'none_detected',
+          });
           complete();
           return;
         }
         status = 'offer';
       } catch {
         // Detection is optional. Do not make a probe failure block setup.
+        onTelemetry?.({
+          action: 'skipped',
+          detectedToolCount: 0,
+          outcome: 'detection_unavailable',
+        });
         complete();
       }
     })();
@@ -52,11 +68,22 @@
   async function importConnectors(): Promise<void> {
     if (status === 'importing') return;
     status = 'importing';
+    onTelemetry?.({ action: 'started', detectedToolCount: connectorCount });
     try {
       const result = await invoke<ImportResult>('import_claude_desktop_connectors');
       status = result.ok ? 'success' : 'failure';
+      onTelemetry?.({
+        action: result.ok ? 'completed' : 'failed',
+        detectedToolCount: connectorCount,
+        outcome: result.ok ? 'imported' : 'import_failed',
+      });
     } catch {
       status = 'failure';
+      onTelemetry?.({
+        action: 'failed',
+        detectedToolCount: connectorCount,
+        outcome: 'command_failed',
+      });
     }
   }
 </script>
@@ -81,7 +108,14 @@
       type="button"
       data-testid="connector-import-skip"
       disabled={status === 'importing'}
-      onclick={complete}
+      onclick={() => {
+        onTelemetry?.({
+          action: 'skipped',
+          detectedToolCount: connectorCount,
+          outcome: 'user_skipped',
+        });
+        complete();
+      }}
     >Skip</button>
   </div>
 {:else if status === 'success'}
@@ -94,7 +128,7 @@
       class="btn btn-primary"
       type="button"
       data-testid="connector-import-continue"
-      onclick={complete}
+      onclick={() => complete()}
     >Continue</button>
   </div>
 {:else if status === 'failure'}
@@ -107,7 +141,7 @@
       class="btn btn-primary"
       type="button"
       data-testid="connector-import-continue"
-      onclick={complete}
+      onclick={() => complete()}
     >Continue</button>
   </div>
 {/if}

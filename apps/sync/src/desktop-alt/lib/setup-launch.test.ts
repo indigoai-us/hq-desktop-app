@@ -25,9 +25,12 @@ describe('resolveClaudeLaunchPath', () => {
 });
 
 describe('codexAvailable', () => {
-  it('requires codex_cli', () => {
+  it('accepts the CLI or the desktop app (which bundles the CLI)', () => {
     expect(codexAvailable(tools({ codex_cli: true }))).toBe(true);
-    expect(codexAvailable(tools({ codex_desktop: true }))).toBe(false);
+    // The ChatGPT app carries the codex CLI inside its bundle, so the
+    // desktop app alone is launchable via `codex app <path>`.
+    expect(codexAvailable(tools({ codex_desktop: true }))).toBe(true);
+    expect(codexAvailable(tools({}))).toBe(false);
     expect(codexAvailable(null)).toBe(false);
   });
 });

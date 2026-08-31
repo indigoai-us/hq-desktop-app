@@ -19,5 +19,8 @@ export function resolveClaudeLaunchPath(tools: AiTools | null): ClaudeLaunchPath
 }
 
 export function codexAvailable(tools: AiTools | null): boolean {
-  return Boolean(tools?.codex_cli);
+  // codex_cli covers PATH installs AND the CLI bundled inside the ChatGPT
+  // app (detect_ai_tools folds the bundled binary in), so desktop-only
+  // machines launch too.
+  return Boolean(tools?.codex_cli || tools?.codex_desktop);
 }

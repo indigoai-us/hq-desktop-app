@@ -19,7 +19,8 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { BUILD_STEP_INDEX } from '../../lib/onboarding-wizard';
+import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
+import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 
 const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
 
@@ -101,6 +102,7 @@ beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.open.mockReset();
   tauri.open.mockResolvedValue(undefined);
+  localStorage.clear();
 });
 
 afterEach(async () => {
@@ -446,5 +448,37 @@ describe('onboarding launch handoff', () => {
     expect(
       tauri.invoke.mock.calls.filter(([command]) => command === 'detect_claude_ready'),
     ).toHaveLength(3);
+  });
+});
+
+describe('onboarding connector telemetry', () => {
+  it('records each auto-skip terminal outcome once', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/config' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
+    });
+
+    await flush();
+
+    const stored = JSON.parse(
+      localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{"pending":[]}',
+    ) as { pending: Array<{ properties: { step: string; action: string } }> };
+    expect(
+      stored.pending
+        .filter((event) => event.properties.step === 'connector-import')
+        .map((event) => event.properties.action),
+    ).toEqual(['entered', 'skipped']);
   });
 });

@@ -47,7 +47,10 @@ describe('Finish setting up HQ card', () => {
   it('reuses the installer launch commands rather than reimplementing them', () => {
     expect(card).toContain("invoke('open_claude_code_link'");
     expect(card).toContain("invoke('launch_claude_code'");
-    expect(card).toContain("invoke('launch_cli_in_terminal'");
+    // Codex goes through the workspace launch with /setup pre-typed —
+    // parity with the Claude deep link.
+    expect(card).toContain("invoke('launch_codex_workspace'");
+    expect(card).toContain("prompt: '/setup'");
     expect(card).toContain('buildClaudeCodeUrl');
   });
 

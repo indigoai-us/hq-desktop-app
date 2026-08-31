@@ -2713,6 +2713,7 @@ dependencies = [
  "serde_yaml",
  "sha1 0.10.6",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "url",
  "uuid",
@@ -2737,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.167"
+version = "0.10.168"
 dependencies = [
  "aws-config",
  "aws-credential-types",

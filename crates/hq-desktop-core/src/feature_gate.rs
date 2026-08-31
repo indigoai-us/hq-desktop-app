@@ -11,7 +11,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
-const ALLOWED_DOMAIN: &str = "@getindigo.ai";
+const INDIGO_ALLOWED_DOMAIN: &str = "@getindigo.ai";
+const HQ_WORK_ALLOWED_DOMAINS: [&str; 3] = ["@getindigo.ai", "@vyg.ai", "@liverecover.com"];
 
 /// Future yielding the signed-in user's email claim (None when signed out / on error).
 pub type EmailClaimFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
@@ -36,6 +37,7 @@ async fn current_email_claim() -> Option<String> {
 }
 
 static CACHED_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
+static CACHED_HQ_WORK_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 static CACHED_GA_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 
 fn gate_cache() -> &'static Mutex<Option<bool>> {
@@ -44,6 +46,10 @@ fn gate_cache() -> &'static Mutex<Option<bool>> {
 
 fn ga_gate_cache() -> &'static Mutex<Option<bool>> {
     CACHED_GA_GATE.get_or_init(|| Mutex::new(None))
+}
+
+fn hq_work_gate_cache() -> &'static Mutex<Option<bool>> {
+    CACHED_HQ_WORK_GATE.get_or_init(|| Mutex::new(None))
 }
 
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
@@ -61,6 +67,32 @@ pub async fn is_indigo_user() -> bool {
 
     let enabled = compute_gate().await;
     let mut guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = *guard {
+        return v;
+    }
+    *guard = Some(enabled);
+    enabled
+}
+
+/// Embedded HQ Work rollout gate for the approved company domains.
+///
+/// This is deliberately separate from [`is_indigo_user`]: moderation, admin,
+/// staging, and pre-release channels remain Indigo-only while the embedded HQ
+/// Work window also admits VYG and LiveRecover users.
+pub async fn is_hq_work_cohort_user() -> bool {
+    {
+        let guard = hq_work_gate_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = *guard {
+            return v;
+        }
+    }
+
+    let enabled = compute_hq_work_gate().await;
+    let mut guard = hq_work_gate_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(v) = *guard {
         return v;
     }
@@ -107,16 +139,24 @@ pub async fn desktop_features_enabled() -> bool {
 ///
 /// This keeps the caches process-lifetime for steady-state reads while
 /// allowing the first post-OAuth gate check to use the newly persisted
-/// ID-token claims. Clears both the Indigo gate and the GA gate.
+/// ID-token claims. Clears the Indigo, HQ Work cohort, and GA gates.
 pub fn clear_cached_gate() {
     let mut guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
+    let mut hq_work_guard = hq_work_gate_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *hq_work_guard = None;
     let mut ga_guard = ga_gate_cache().lock().unwrap_or_else(|e| e.into_inner());
     *ga_guard = None;
 }
 
 async fn compute_gate() -> bool {
     is_allowed_email(current_email_claim().await.as_deref())
+}
+
+async fn compute_hq_work_gate() -> bool {
+    is_hq_work_allowed_email(current_email_claim().await.as_deref())
 }
 
 /// GA-gate counterpart to [`compute_gate`] — identical token/claims decode,
@@ -132,7 +172,24 @@ async fn compute_ga_gate() -> bool {
 /// `pub` so command modules can unit-test gating logic directly.
 pub fn is_allowed_email(email: Option<&str>) -> bool {
     match email {
-        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
+        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(INDIGO_ALLOWED_DOMAIN),
+        _ => false,
+    }
+}
+
+/// Pure matcher for the embedded HQ Work cohort.
+///
+/// Each entry includes the leading `@`, so suffix matching admits only the
+/// exact email domain and rejects look-alikes such as `notvyg.ai`, subdomains,
+/// and `liverecover.com.evil`.
+pub fn is_hq_work_allowed_email(email: Option<&str>) -> bool {
+    match email {
+        Some(s) if !s.is_empty() => {
+            let normalized = s.to_ascii_lowercase();
+            HQ_WORK_ALLOWED_DOMAINS
+                .iter()
+                .any(|domain| normalized.ends_with(domain))
+        }
         _ => false,
     }
 }
@@ -167,6 +224,44 @@ mod tests {
         assert!(!is_allowed_email(Some("user@notgetindigo.ai")));
         // bare domain without @
         assert!(!is_allowed_email(Some("getindigo.ai")));
+    }
+
+    #[test]
+    fn hq_work_cohort_admits_only_the_three_exact_domains() {
+        for email in [
+            "builder@getindigo.ai",
+            "operator@vyg.ai",
+            "teammate@liverecover.com",
+            "OPERATOR@VYG.AI",
+            "TEAMMATE@LIVERECOVER.COM",
+        ] {
+            assert!(
+                is_hq_work_allowed_email(Some(email)),
+                "expected cohort: {email}"
+            );
+        }
+
+        for email in [
+            "operator@gmail.com",
+            "attacker@notvyg.ai",
+            "attacker@forgetindigo.ai",
+            "attacker@liverecover.com.evil",
+            "vyg.ai",
+            "liverecover.com",
+            "",
+        ] {
+            assert!(
+                !is_hq_work_allowed_email(Some(email)),
+                "unexpected cohort: {email}"
+            );
+        }
+        assert!(!is_hq_work_allowed_email(None));
+    }
+
+    #[test]
+    fn hq_work_expansion_does_not_expand_the_indigo_admin_gate() {
+        assert!(!is_allowed_email(Some("operator@vyg.ai")));
+        assert!(!is_allowed_email(Some("teammate@liverecover.com")));
     }
 
     /// US-001 AC #5: when the OnceLock cache hasn't been seeded yet (cold
