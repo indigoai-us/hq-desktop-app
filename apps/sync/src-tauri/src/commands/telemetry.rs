@@ -936,7 +936,7 @@ pub async fn emit_desktop_telemetry_if_opted_in(
 /// not belong in another telemetry channel.
 pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: Value) {
     tauri::async_runtime::spawn(async move {
-        if emit_desktop_telemetry_if_opted_in(event_name.to_string(), Some(properties))
+        if emit_desktop_telemetry_if_opted_in(event_name.to_string(), Some(properties), None, None)
             .await
             .is_err()
         {

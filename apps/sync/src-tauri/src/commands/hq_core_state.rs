@@ -1481,6 +1481,15 @@ mod tests {
         drop(retry);
     }
 
+    #[test]
+    fn automatic_target_deduplication_is_scoped_to_the_channel() {
+        let target = "15.0.117-deduplication-contract";
+
+        assert!(mark_automatic_target_attempted(Channel::Release, target));
+        assert!(!mark_automatic_target_attempted(Channel::Release, target));
+        assert!(mark_automatic_target_attempted(Channel::Staging, target));
+    }
+
     #[tokio::test]
     async fn noneligible_release_candidate_executes_the_native_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
