@@ -75,6 +75,14 @@
       companyUid: string,
       vaultPath: string,
     ) => Promise<string | null>;
+    /**
+     * Host-owned URL resolver (desktop: presign + byte hop → blob:).
+     * When set, used instead of the presign-only path so inline thumbs
+     * never load raw S3 URLs.
+     */
+    onresolveattachmenturl?: (
+      item: FileAttachmentModel,
+    ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
     onclose: () => void;
@@ -107,6 +115,7 @@
     selfDisplayName = null,
     onuploadfiles = undefined,
     onpresign = undefined,
+    onresolveattachmenturl = undefined,
     onopenattachment = undefined,
     onclose,
     onreplycount,
@@ -326,6 +335,7 @@
     item: FileAttachmentModel,
   ): Promise<string | null> {
     if (item.previewUrl) return item.previewUrl;
+    if (onresolveattachmenturl) return onresolveattachmenturl(item);
     if (!onpresign || !item.companyUid || !item.vaultPath) return null;
     return onpresign(item.companyUid, item.vaultPath);
   }

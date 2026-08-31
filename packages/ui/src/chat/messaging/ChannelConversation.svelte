@@ -79,6 +79,14 @@
       companyUid: string,
       vaultPath: string,
     ) => Promise<string | null>;
+    /**
+     * Host-owned URL resolver (desktop: presign + byte hop → blob:).
+     * When set, used instead of the presign-only path so inline thumbs
+     * never load raw S3 URLs.
+     */
+    onresolveattachmenturl?: (
+      item: FileAttachmentModel,
+    ) => Promise<string | null>;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
@@ -124,6 +132,7 @@
     ontogglereaction,
     onsend,
     onpresign,
+    onresolveattachmenturl,
     mentionCandidates = [],
     onreply,
     onopenattachment,
@@ -548,6 +557,7 @@
     item: FileAttachmentModel,
   ): Promise<string | null> {
     if (item.previewUrl) return item.previewUrl;
+    if (onresolveattachmenturl) return onresolveattachmenturl(item);
     const companyUid = item.companyUid || vaultCompanyUid || "";
     if (!onpresign || !companyUid || !item.vaultPath) return null;
     return onpresign(companyUid, item.vaultPath);

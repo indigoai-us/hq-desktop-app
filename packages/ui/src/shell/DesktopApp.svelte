@@ -26,6 +26,7 @@
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
+  import { createHostAttachmentResolver } from "../chat/messaging/attachment-preview.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
@@ -1499,19 +1500,18 @@
     };
   }
 
+  const resolveHostAttachmentUrl = $derived(
+    createHostAttachmentResolver({
+      presign: presignAttachment,
+      getObject: getAttachmentObject,
+      fallbackCompanyUid: () => attachmentCompanyUid(selectedRow),
+    }),
+  );
+
   async function resolveTrayUrl(
     item: FileAttachmentModel,
   ): Promise<string | null> {
-    if (item.previewUrl) return item.previewUrl;
-    const companyUid = item.companyUid || attachmentCompanyUid(selectedRow);
-    if (!companyUid || !item.vaultPath) return null;
-    const signed = await presignAttachment(companyUid, item.vaultPath);
-    if (!signed) return null;
-    if (!getAttachmentObject) return signed;
-    const res = await getAttachmentObject(signed);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    return resolveHostAttachmentUrl(item);
   }
 
   function openNotification(item: NotificationItem): void {
@@ -2047,6 +2047,7 @@
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
                   onpresign={presignAttachment}
+                  onresolveattachmenturl={resolveHostAttachmentUrl}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
@@ -2093,6 +2094,7 @@
                     selfDisplayName={self?.displayName ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
+                    onresolveattachmenturl={resolveHostAttachmentUrl}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     {avatarByUid}
