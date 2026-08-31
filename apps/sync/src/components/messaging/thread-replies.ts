@@ -55,6 +55,25 @@ export function partitionThreadReplies<T extends ThreadReplyRef>(
   return { topLevel, replies };
 }
 
+/**
+ * Drop later rows that share a trimmed eventId. First occurrence wins so a
+ * keyed `{#each messages as msg (msg.eventId)}` cannot receive duplicate keys
+ * (server page + optimistic append races, or a reply listed twice).
+ */
+export function dedupeByEventId<T extends { eventId?: string | null }>(
+  messages: T[],
+): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const message of messages) {
+    const id = (message.eventId ?? '').trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(message);
+  }
+  return out;
+}
+
 function laterTimestamp(
   candidate: string | null | undefined,
   current: string | null | undefined,
@@ -76,7 +95,7 @@ function laterTimestamp(
  * replies (the list page may not include every reply).
  */
 export function foldReplies<T extends FoldableMessage>(messages: T[]): T[] {
-  const { topLevel, replies } = partitionThreadReplies(messages);
+  const { topLevel, replies } = partitionThreadReplies(dedupeByEventId(messages));
   const repliesByRoot = new Map<string, T[]>();
   for (const reply of replies) {
     const rootId = (reply.rootEventId ?? '').trim();
@@ -87,7 +106,7 @@ export function foldReplies<T extends FoldableMessage>(messages: T[]): T[] {
   }
 
   return topLevel.map((root) => {
-    const threadReplies = repliesByRoot.get(root.eventId) ?? [];
+    const threadReplies = repliesByRoot.get(root.eventId.trim()) ?? [];
     const replyCount = Math.max(root.replyCount ?? 0, threadReplies.length);
     if (replyCount <= 0) return root;
 

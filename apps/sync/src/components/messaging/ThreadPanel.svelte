@@ -83,6 +83,7 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let sendGeneration = 0;
+  let optimisticSeq = 0;
 
   // Dedupe set so an optimistic append + the live thread:new-reply (or a reload)
   // don't double-render the same reply.
@@ -244,7 +245,7 @@
       // Optimistic append — the durable copy lands server-side and reconciles on
       // the next thread:new-reply / reload.
       const optimistic: ThreadReplyRow = {
-        eventId: `local-${identity.rootEventId}-${replies.length}-${text.length}`,
+        eventId: `local-${Date.now()}-${optimisticSeq++}`,
         fromPersonUid: 'me',
         fromEmail: '',
         fromDisplayName: 'You',
@@ -397,6 +398,10 @@
 
 <style>
   .thread-panel {
+    position: relative;
+    /* Own stacking context so main-pane z-indexed hover chrome cannot paint
+       over this panel (and vice versa). */
+    isolation: isolate;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -442,7 +447,8 @@
     white-space: nowrap;
   }
 
-  /* Pinned root message at the top of the panel. */
+  /* Pinned root message at the top of the panel. isolation + overflow:clip
+     keep the inner overflow:visible hover toolbar from overlaying the reply list. */
   .thread-root {
     flex-shrink: 0;
     display: flex;
@@ -450,9 +456,13 @@
     padding: 0;
     border-bottom: 1px solid var(--border, var(--pop-divider));
     background: transparent;
+    isolation: isolate;
+    overflow: clip;
   }
 
-  /* Shared Conversation uses flex:1; keep this pin sized to content, not a nested scroller. */
+  /* Shared Conversation uses flex:1; keep this pin sized to content, not a nested scroller.
+     overflow:visible lets the hover toolbar (top:-0.625rem) escape the inner scroller;
+     .thread-root clips it so it cannot paint over the reply list. */
   .thread-root :global(.dm-thread-wrap),
   .thread-root :global(.dm-thread) {
     flex: none;

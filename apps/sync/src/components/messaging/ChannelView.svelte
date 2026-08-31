@@ -78,6 +78,7 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let sendGeneration = 0;
+  let optimisticSeq = 0;
 
   let joining = $state(false);
   let joinError = $state<string | null>(null);
@@ -184,7 +185,7 @@
       messages = [
         ...messages,
         {
-          eventId: `local-${messages.length}-${text.length}`,
+          eventId: `local-${Date.now()}-${optimisticSeq++}`,
           fromPersonUid: 'me',
           fromEmail: '',
           fromDisplayName: 'You',

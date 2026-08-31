@@ -678,6 +678,9 @@
 
   .dm-thread-wrap {
     position: relative;
+    /* Own stacking context so absolute/z-indexed hover chrome (copy toolbar,
+       new-messages jump) cannot paint into a sibling pane. */
+    isolation: isolate;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -687,6 +690,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;

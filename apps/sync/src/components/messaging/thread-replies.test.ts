@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyInboundReplies,
+  dedupeByEventId,
   effectiveReplyCount,
   foldReplies,
   partitionThreadReplies,
@@ -88,6 +89,42 @@ describe('foldReplies', () => {
     const folded = foldReplies([msg('root', { replyCount: 2 })]);
     expect(folded[0].rootEventId).toBe('root');
     expect(folded[0].replyCount).toBe(2);
+  });
+
+  it('dedupes duplicate eventIds to one row (first occurrence wins)', () => {
+    const folded = foldReplies([
+      msg('hello', { lastReplyAt: 'first' }),
+      msg('hello', { lastReplyAt: 'second' }),
+      msg(' other ', { lastReplyAt: 'kept' }),
+      msg('other'),
+    ]);
+    expect(folded.map((row) => row.eventId)).toEqual(['hello', ' other ']);
+    expect(folded[0].lastReplyAt).toBe('first');
+    expect(folded[1].lastReplyAt).toBe('kept');
+  });
+
+  it('does not double-count replyCount when a row is both a reply and duplicated', () => {
+    const folded = foldReplies([
+      msg('root'),
+      msg('r1', { rootEventId: 'root', createdAt: '2026-06-05T00:01:00Z' }),
+      msg('r1', { rootEventId: 'root', createdAt: '2026-06-05T00:09:00Z' }),
+      msg('r1'),
+    ]);
+    expect(folded.map((row) => row.eventId)).toEqual(['root']);
+    expect(folded[0].replyCount).toBe(1);
+    expect(folded[0].lastReplyAt).toBe('2026-06-05T00:01:00Z');
+  });
+});
+
+describe('dedupeByEventId', () => {
+  it('keeps the first occurrence of a trimmed eventId', () => {
+    const rows = dedupeByEventId([
+      msg('a', { lastReplyAt: 'first' }),
+      msg(' a ', { lastReplyAt: 'dup' }),
+      msg('b'),
+    ]);
+    expect(rows.map((row) => row.eventId)).toEqual(['a', 'b']);
+    expect(rows[0].lastReplyAt).toBe('first');
   });
 });
 
