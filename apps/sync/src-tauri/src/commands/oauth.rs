@@ -564,6 +564,9 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     Ok(AuthState {
         authenticated: true,
         expires_at: Some(cognito::expires_at_iso(&tokens)),
+        account_id: Some(crate::commands::auth::notification_identity_from_tokens(
+            &tokens,
+        )),
     })
 }
 

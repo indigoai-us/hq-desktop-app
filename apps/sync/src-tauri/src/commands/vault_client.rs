@@ -330,6 +330,8 @@ pub struct RawTelemetryEvent {
     pub schema_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub properties: serde_json::Value,
 }
 

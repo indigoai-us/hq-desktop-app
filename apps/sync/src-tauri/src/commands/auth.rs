@@ -62,6 +62,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
             Ok(AuthState {
                 authenticated: true,
                 expires_at: Some(cognito::expires_at_iso(&tokens)),
+                account_id: Some(notification_identity_from_tokens(&tokens)),
             })
         }
         Err(_) => {
@@ -69,6 +70,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
             Ok(AuthState {
                 authenticated: false,
                 expires_at: None,
+                account_id: None,
             })
         }
     }
@@ -103,6 +105,7 @@ pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     Ok(AuthState {
         authenticated: true,
         expires_at: Some(iso),
+        account_id: Some(notification_identity_from_tokens(&current_tokens)),
     })
 }
 
