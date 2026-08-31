@@ -5135,8 +5135,125 @@ mod windows_job_attachment_failure_tests {
     use hq_desktop_core::sync_outcome::{
         classify_runner_exit_disposition_with_cancellation, RunnerExitDisposition,
     };
+    use std::time::Instant;
 
     type Terminal = (Option<i32>, Option<i32>, Option<CancellationRecord>);
+
+    /// Holds the runner immediately before it acknowledges terminal teardown.
+    /// Normal fixtures start open; the closed form is a deterministic proof
+    /// that cleanup never treats an absent acknowledgement as a completed join.
+    #[derive(Clone)]
+    struct TerminalAckGate {
+        released: Arc<(Mutex<bool>, Condvar)>,
+        waiting: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl TerminalAckGate {
+        fn with_released(released: bool) -> Self {
+            Self {
+                released: Arc::new((Mutex::new(released), Condvar::new())),
+                waiting: Arc::new((Mutex::new(false), Condvar::new())),
+            }
+        }
+
+        fn open() -> Self {
+            Self::with_released(true)
+        }
+
+        fn blocked() -> Self {
+            Self::with_released(false)
+        }
+
+        fn wait(&self) {
+            let (waiting, wake) = &*self.waiting;
+            *waiting.lock().unwrap() = true;
+            wake.notify_all();
+            let (released, wake) = &*self.released;
+            let _released = wake
+                .wait_while(released.lock().unwrap(), |released| !*released)
+                .unwrap();
+        }
+
+        fn wait_until_waiting(&self, deadline: Duration) -> bool {
+            let (waiting, wake) = &*self.waiting;
+            let (waiting, timeout) = wake
+                .wait_timeout_while(waiting.lock().unwrap(), deadline, |waiting| !*waiting)
+                .unwrap();
+            !timeout.timed_out() && *waiting
+        }
+
+        fn release(&self) {
+            let (released, wake) = &*self.released;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+    }
+
+    /// Owns the deliberately unrelated sibling through its exact `Child`
+    /// handle. `Child` does not kill on drop, so every exit path (including a
+    /// panic before the scope assertion) must explicitly kill and wait it.
+    struct ExactChildGuard {
+        child: Option<std::process::Child>,
+        pid: u32,
+    }
+
+    impl ExactChildGuard {
+        fn spawn() -> Self {
+            let child = Command::new("cmd.exe")
+                .args(["/d", "/c", "ping 127.0.0.1 -n 600 > nul"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("sibling fixture must spawn");
+            let pid = child.id();
+            Self {
+                child: Some(child),
+                pid,
+            }
+        }
+
+        fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        fn kill_and_wait(&mut self) -> io::Result<()> {
+            let Some(child) = self.child.as_mut() else {
+                return Ok(());
+            };
+            let result = match child.try_wait()? {
+                Some(_) => Ok(()),
+                None => {
+                    child.kill()?;
+                    child.wait().map(|_| ())
+                }
+            };
+            if result.is_ok() {
+                // Keep the exact handle until wait has confirmed reaping. A
+                // failed kill/wait must leave it owned for Drop's retry and
+                // its diagnostic abort path.
+                let _ = self.child.take();
+            }
+            result
+        }
+    }
+
+    impl Drop for ExactChildGuard {
+        fn drop(&mut self) {
+            if let Err(error) = self.kill_and_wait() {
+                // An unowned ten-minute sibling is worse than aborting this
+                // focused test process. Preserve the exact PID in the failure
+                // before an unwind can discard the only `Child` wait owner.
+                eprintln!(
+                    "[process] failed to kill and reap unrelated sibling fixture pid {}: {error}",
+                    self.pid
+                );
+                // Panicking from Drop would continue unwinding, then drop the
+                // exact `Child` and lose the sole wait owner. Abort keeps the
+                // diagnostic above and fails this test binary without a leak.
+                std::process::abort();
+            }
+        }
+    }
 
     /// The fixture owns the only `Child` wait owner on a runner thread. A
     /// terminal channel turns teardown into an acknowledgement protocol rather
@@ -5155,6 +5272,15 @@ mod windows_job_attachment_failure_tests {
         label: &str,
         forced: Option<TestJobAssignmentOutcome>,
         exit_delay: Duration,
+    ) -> RunningFixture {
+        start_fixture_with_terminal_ack(label, forced, exit_delay, TerminalAckGate::open())
+    }
+
+    fn start_fixture_with_terminal_ack(
+        label: &str,
+        forced: Option<TestJobAssignmentOutcome>,
+        exit_delay: Duration,
+        terminal_ack: TerminalAckGate,
     ) -> RunningFixture {
         let handle = format!("{label}-{}", Uuid::new_v4());
         let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
@@ -5182,6 +5308,7 @@ mod windows_job_attachment_failure_tests {
                         ));
                     }
                 });
+            terminal_ack.wait();
             let _ = terminal_tx.send((outcome, terminal));
         });
 
@@ -5250,19 +5377,83 @@ mod windows_job_attachment_failure_tests {
             cancel_process_for_generation(&self.handle, self.generation, cause, Duration::ZERO)
         }
 
-        fn await_terminal(&mut self) -> Terminal {
-            let (outcome, terminal) = self
-                .terminal_rx
-                .recv_timeout(DEADLINE)
-                .expect("the runner must acknowledge terminal teardown before the deadline");
+        fn tree_is_gone(&self) -> bool {
+            (self.root_pid == 0 || !pid_alive(self.root_pid))
+                && (self.descendant_pid == 0 || !pid_alive(self.descendant_pid))
+        }
+
+        fn wait_for_tree_to_disappear(&self, deadline: Duration) -> bool {
+            let started = Instant::now();
+            while started.elapsed() < deadline {
+                if self.tree_is_gone() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            self.tree_is_gone()
+        }
+
+        /// Reap only after the runner's terminal acknowledgement. The runner
+        /// owns the exact `Child`; taking its JoinHandle before that proof
+        /// would reintroduce the detached-runner hole this fixture guards.
+        fn receive_and_join_terminal(&mut self, deadline: Duration) -> Result<Terminal, String> {
+            let (outcome, terminal) = self.terminal_rx.recv_timeout(deadline).map_err(|error| {
+                format!("runner did not acknowledge terminal teardown within {deadline:?}: {error}")
+            })?;
             self.runner
                 .take()
                 .expect("runner must have one wait owner")
                 .join()
-                .expect("runner thread must not panic");
+                .map_err(|_| "runner thread panicked during fixture teardown".to_string())?;
             clear_test_job_assignment(&self.handle);
-            outcome.expect("fixture runner must not fail while reporting terminal state");
-            terminal.expect("runner must deliver a terminal exit event")
+            outcome.map_err(|error| {
+                format!("fixture runner failed while reporting teardown: {error}")
+            })?;
+            terminal.ok_or_else(|| "fixture runner exited without a terminal event".to_string())
+        }
+
+        /// Attempt complete teardown without discarding any owner on failure.
+        /// The returned error deliberately leaves the runner, registration, and
+        /// cancellation record in place so a caller can inspect diagnostics or
+        /// retry; `Drop` escalates that failure instead of silently detaching.
+        fn try_teardown(&mut self, deadline: Duration) -> Result<(), String> {
+            if self.runner.is_none() {
+                return Ok(());
+            }
+
+            let attempt = self.cancel(SyncCancelCause::AppQuit);
+            // A successful Job Object termination is the stronger containment
+            // proof. Do not follow it with a later raw-PID sweep (which could
+            // observe a reused PID); raw fallback is reserved for the explicit
+            // failure path and the final liveness wait is authoritative.
+            let fallback_required = !attempt.termination_effected;
+            let root_fallback = fallback_required
+                && self.root_pid != 0
+                && pid_alive(self.root_pid)
+                && terminate_windows_pid_tree(self.root_pid);
+            let descendant_fallback = fallback_required
+                && self.descendant_pid != 0
+                && pid_alive(self.descendant_pid)
+                && terminate_windows_pid_tree(self.descendant_pid);
+            if !self.wait_for_tree_to_disappear(deadline) {
+                return Err(format!(
+                    "fixture teardown left owned processes live (handle={}, generation={}, root_pid={}, descendant_pid={}, cancel_effected={}, root_fallback={}, descendant_fallback={})",
+                    self.handle,
+                    self.generation,
+                    self.root_pid,
+                    self.descendant_pid,
+                    attempt.termination_effected,
+                    root_fallback,
+                    descendant_fallback,
+                ));
+            }
+
+            self.receive_and_join_terminal(deadline).map(|_| ())
+        }
+
+        fn await_terminal(&mut self) -> Terminal {
+            self.receive_and_join_terminal(DEADLINE)
+                .expect("the runner must acknowledge terminal teardown before the deadline")
         }
 
         fn assert_tree_gone(&self) {
@@ -5301,26 +5492,22 @@ mod windows_job_attachment_failure_tests {
 
     impl Drop for RunningFixture {
         fn drop(&mut self) {
-            // Assertion and panic paths must still kill the tracked descendant
-            // explicitly. The runner remains the sole root wait owner; once it
-            // acknowledges, joining it proves the root was reaped too.
-            if self.runner.is_some() {
-                let attempt = self.cancel(SyncCancelCause::AppQuit);
-                if !attempt.termination_effected && self.root_pid != 0 {
-                    let _ = terminate_windows_pid_tree(self.root_pid);
-                }
-                if self.descendant_pid != 0 {
-                    let _ = terminate_windows_pid_tree(self.descendant_pid);
-                }
-                if self.terminal_rx.recv_timeout(DEADLINE).is_ok() {
-                    if let Some(runner) = self.runner.take() {
-                        let _ = runner.join();
-                    }
-                }
+            // Assertion and panic paths must retain the only runner owner
+            // until all fixture processes are gone and the runner is joined.
+            // Never deregister or clear cancellation state after a failed
+            // attempt: that would hide a live child with no cancellation
+            // authority. An unreaped fixture aborts the focused test process
+            // after printing every identity needed to diagnose it.
+            if let Err(error) = self.try_teardown(DEADLINE) {
+                eprintln!(
+                    "[process] unreaped Windows fixture: handle={}, generation={}, root_pid={}, descendant_pid={}: {error}",
+                    self.handle, self.generation, self.root_pid, self.descendant_pid,
+                );
+                // A panic would unwind through `JoinHandle::drop`, silently
+                // detach the exact runner, and recreate the bug. Abort keeps
+                // the emitted diagnostics and makes the fixture failure loud.
+                std::process::abort();
             }
-            clear_test_job_assignment(&self.handle);
-            let _ = deregister_generation(&self.handle, self.generation);
-            clear_cancellation_record(&self.handle, self.generation);
         }
     }
 
@@ -5601,15 +5788,149 @@ mod windows_job_attachment_failure_tests {
     }
 
     #[test]
+    fn fixture_teardown_retains_ownership_when_every_termination_path_fails() {
+        let mut fixture = start_fixture_with_forced_attachment_failure(
+            "job-teardown-failure",
+            TestJobAssignmentOutcome::CreateFailed,
+        );
+
+        // Inject failure into the exact-generation cancellation and both
+        // fixture-only fallback attempts. This must return an error WITHOUT
+        // detaching the runner or erasing the still-live generation's
+        // cancellation evidence; a normal retry below owns the real cleanup.
+        set_test_windows_termination_results(vec![
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+            TestWindowsTerminationResult::OpenProcess(true),
+            TestWindowsTerminationResult::TerminateProcess(false),
+        ]);
+        let cleanup = fixture.try_teardown(Duration::from_millis(100));
+        set_test_windows_termination_results(Vec::new());
+
+        assert!(
+            cleanup.is_err(),
+            "teardown must not report success while either owned process is live"
+        );
+        assert!(
+            fixture.runner.is_some(),
+            "the sole runner owner must be retained"
+        );
+        assert!(
+            pid_alive(fixture.root_pid),
+            "the injected root must still be live"
+        );
+        assert!(
+            pid_alive(fixture.descendant_pid),
+            "the injected descendant must still be live"
+        );
+        assert_eq!(
+            generation_for_handle(&fixture.handle),
+            Some(fixture.generation),
+            "failed teardown must retain the live generation rather than deregistering it"
+        );
+        assert!(
+            cancellation_record_for_generation(&fixture.handle, fixture.generation).is_some(),
+            "failed teardown must retain cancellation diagnostics for the retry"
+        );
+
+        fixture
+            .try_teardown(DEADLINE)
+            .expect("a retry without injected failures must kill, reap, and join");
+        assert!(fixture.runner.is_none());
+        assert!(fixture.tree_is_gone());
+        assert_eq!(generation_for_handle(&fixture.handle), None);
+        assert!(
+            cancellation_record_for_generation(&fixture.handle, fixture.generation).is_none(),
+            "only the acknowledged runner cleanup may release cancellation state"
+        );
+    }
+
+    #[test]
+    fn fixture_teardown_never_accepts_a_missing_runner_acknowledgement() {
+        let terminal_ack = TerminalAckGate::blocked();
+        let mut fixture = start_fixture_with_terminal_ack(
+            "job-terminal-ack-missing",
+            Some(TestJobAssignmentOutcome::AssignFailed),
+            Duration::ZERO,
+            terminal_ack.clone(),
+        );
+
+        // The real fallback kills both processes. The runner has reaped the
+        // exact Child but remains blocked before its terminal send, proving a
+        // missing acknowledgement cannot be mistaken for a joined runner.
+        let (cleanup, gate_reached) = thread::scope(|scope| {
+            let cleanup = scope.spawn(|| fixture.try_teardown(Duration::from_secs(1)));
+            let gate_reached = terminal_ack.wait_until_waiting(DEADLINE);
+            // If startup itself broke before the runner reached the fault
+            // gate, open it before joining so this test reports that original
+            // failure instead of deadlocking in the scoped worker.
+            if !gate_reached {
+                terminal_ack.release();
+            }
+            let cleanup = match cleanup.join() {
+                Ok(cleanup) => cleanup,
+                Err(_) => {
+                    terminal_ack.release();
+                    panic!("acknowledgement fault-injection cleanup must not panic");
+                }
+            };
+            (cleanup, gate_reached)
+        });
+        let tree_is_gone = fixture.tree_is_gone();
+        let runner_is_retained = fixture.runner.is_some();
+
+        // The successful fault-injection path waits for `try_teardown` to
+        // time out first, then opens the gate before any assertion can strand
+        // the deliberately blocked runner in this test process.
+        terminal_ack.release();
+        fixture
+            .try_teardown(DEADLINE)
+            .expect("the released acknowledgement must permit an exact runner join");
+
+        assert!(
+            gate_reached,
+            "runner did not reach the terminal acknowledgement fault gate"
+        );
+        assert!(
+            cleanup.is_err(),
+            "an absent runner acknowledgement must fail cleanup"
+        );
+        assert!(tree_is_gone, "the production fallback must reap the tree");
+        assert!(
+            runner_is_retained,
+            "cleanup must retain the unjoined runner until it acknowledges"
+        );
+        assert!(fixture.runner.is_none());
+    }
+
+    #[test]
+    fn unrelated_sibling_guard_kills_and_waits_during_unwind() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let sibling_pid = Arc::new(AtomicU32::new(0));
+        let panic_pid = sibling_pid.clone();
+        let panic_result = catch_unwind(AssertUnwindSafe(move || {
+            let sibling = ExactChildGuard::spawn();
+            panic_pid.store(sibling.pid(), Ordering::Release);
+            panic!("injected assertion after unrelated sibling startup");
+        }));
+
+        assert!(panic_result.is_err(), "the injected assertion must unwind");
+        let pid = sibling_pid.load(Ordering::Acquire);
+        assert_ne!(pid, 0, "the sibling guard must publish its exact child PID");
+        await_bounded("the unwound sibling guard to reap its exact child", || {
+            !pid_alive(pid)
+        });
+    }
+
+    #[test]
     fn pid_tree_fallback_never_widens_past_the_registered_tree() {
         // A sibling that is NOT part of the registered tree.
-        let mut sibling = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping 127.0.0.1 -n 600 > nul"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("sibling fixture must spawn");
-        let sibling_pid = sibling.id();
+        let mut sibling = ExactChildGuard::spawn();
+        let sibling_pid = sibling.pid();
 
         let mut fixture = start_fixture_with_forced_attachment_failure(
             "job-fallback-scope",
@@ -5628,8 +5949,9 @@ mod windows_job_attachment_failure_tests {
 
         assert_cancelled_by_app(code, signal, record, SyncCancelCause::UserStop);
 
-        let _ = sibling.kill();
-        let _ = sibling.wait();
+        sibling
+            .kill_and_wait()
+            .expect("the exact sibling fixture must be reaped on the success path");
     }
 }
 
