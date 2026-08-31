@@ -2,12 +2,40 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as WindowsCommandExt;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
 
 use crate::paths;
 
@@ -82,6 +110,193 @@ pub enum VersionProbeOutcome {
     NonzeroExit,
     InvalidUtf8,
     EmptyOutput,
+    /// The child exceeded the bounded version-probe deadline and was killed.
+    TimedOut,
+}
+
+const VERSION_PROCESS_TIMEOUT: Duration = Duration::from_secs(1);
+const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
+
+fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(VERSION_OUTPUT_LIMIT).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+struct VersionProbeContainment {
+    #[cfg(unix)]
+    process_group: Option<i32>,
+    #[cfg(target_os = "windows")]
+    job: Option<HANDLE>,
+}
+
+impl VersionProbeContainment {
+    fn prepare(cmd: &mut std::process::Command) {
+        #[cfg(unix)]
+        cmd.process_group(0);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(paths::CREATE_NO_WINDOW | CREATE_SUSPENDED.0);
+        #[cfg(not(any(unix, target_os = "windows")))]
+        let _ = cmd;
+    }
+
+    fn establish(child: &std::process::Child) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        return Ok(Self {
+            process_group: Some(child.id() as i32),
+        });
+
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let job = CreateJobObjectW(None, PCWSTR::null())
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Err(error) = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) {
+                let _ = CloseHandle(job);
+                return Err(std::io::Error::other(error.to_string()));
+            }
+            if let Err(error) = AssignProcessToJobObject(job, HANDLE(child.as_raw_handle())) {
+                let _ = CloseHandle(job);
+                return Err(std::io::Error::other(error.to_string()));
+            }
+            if let Err(error) = resume_windows_process(child.id()) {
+                let _ = TerminateJobObject(job, 1);
+                let _ = CloseHandle(job);
+                return Err(error);
+            }
+            return Ok(Self { job: Some(job) });
+        }
+
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    fn terminate(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group.take() {
+            unsafe {
+                libc::killpg(process_group, libc::SIGKILL);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(job) = self.job.take() {
+            unsafe {
+                let _ = TerminateJobObject(job, 1);
+                let _ = CloseHandle(job);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resume_windows_process(process_id: u32) -> std::io::Result<()> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut next = Thread32First(snapshot, &mut entry);
+        while next.is_ok() {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
+                    .map_err(|error| std::io::Error::other(error.to_string()));
+                let result = match thread {
+                    Ok(thread) => {
+                        let resume_result = ResumeThread(thread);
+                        let _ = CloseHandle(thread);
+                        if resume_result == u32::MAX {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                let _ = CloseHandle(snapshot);
+                return result;
+            }
+            entry = THREADENTRY32 {
+                dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            next = Thread32Next(snapshot, &mut entry);
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "suspended version probe thread was not found",
+    ))
+}
+
+impl Drop for VersionProbeContainment {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+/// Run a tiny version command with a hard process boundary. `Command::output`
+/// has no timeout and can strand both the process and its blocking worker; this
+/// helper kills and reaps the child before returning `None` on timeout.
+fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
+    // Regular temporary files make the read independent of descendant handle
+    // lifetime. A background process may inherit the handles, but unlike a
+    // pipe an open regular file still returns EOF at its current length. The
+    // byte cap also bounds a descendant that continuously writes.
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    cmd.stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    VersionProbeContainment::prepare(cmd);
+    let mut child = cmd.spawn()?;
+    let mut containment = match VersionProbeContainment::establish(&child) {
+        Ok(containment) => containment,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            containment.terminate();
+            break Some(status);
+        }
+        if started.elapsed() >= timeout {
+            containment.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(VERSION_PROCESS_POLL_INTERVAL);
+    };
+
+    let stdout = read_probe_output(stdout)?;
+    let stderr = read_probe_output(stderr)?;
+
+    Ok(status.map(|status| Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 /// Windows `ERROR_BAD_EXE_FORMAT`: `CreateProcessW` was handed a file that is
@@ -407,8 +622,12 @@ pub fn hq_version_string(bin: &Path) -> Option<String> {
 fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
-    let out = match cmd.arg("--version").env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(
+        cmd.arg("--version").env("PATH", path),
+        VERSION_PROCESS_TIMEOUT,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -529,8 +748,9 @@ fn hq_version_via_node(
     let node = node.to_string_lossy();
     let program = program.to_string_lossy();
     let mut cmd = paths::spawn_command(node.as_ref(), &[program.as_ref(), "--version"]);
-    let out = match cmd.env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -6228,8 +6448,12 @@ fn read_installed_version_probe(
     path: &str,
 ) -> (Option<String>, VersionProbeOutcome) {
     let mut cmd = paths::spawn_command(npm_bin, &[]);
-    let out = match cmd.args(["root", "-g"]).env("PATH", path).output() {
-        Ok(output) => output,
+    let out = match output_with_timeout(
+        cmd.args(["root", "-g"]).env("PATH", path),
+        VERSION_PROCESS_TIMEOUT,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
@@ -6279,6 +6503,89 @@ fn read_installed_version_probe(
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn version_command_timeout_kills_and_reaps_the_child() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "while :; do :; done"]);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
+            command
+        };
+
+        let started = Instant::now();
+        let output = output_with_timeout(&mut command, Duration::from_millis(50))
+            .expect("the timeout path is not an I/O failure");
+
+        assert!(output.is_none(), "the hung command must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "kill + reap must complete without waiting for natural exit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_stdout_from_a_descendant_is_read_without_a_drain_thread() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 1 & echo 5.103.34"]);
+
+        let started = Instant::now();
+        let output = output_with_timeout(&mut command, Duration::from_millis(75))
+            .expect("the inherited-pipe timeout is not an I/O failure");
+
+        let output = output.expect("the immediate child's version output is available");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5.103.34");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the descendant's inherited handle must not hold the caller open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn continuously_writing_descendant_is_terminated_with_the_probe_group() {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "echo 5.103.34; while :; do printf x; done & echo $! >&2",
+        ]);
+
+        let started = Instant::now();
+        let output = output_with_timeout(&mut command, Duration::from_millis(75))
+            .expect("process-tree containment is not an I/O failure")
+            .expect("the immediate child exits successfully");
+
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("5.103.34\n"));
+        let descendant_pid = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .parse::<i32>()
+            .expect("the fixture reports its writer pid");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a continuous inherited writer must not hold the probe open"
+        );
+        let reaped_by = Instant::now() + Duration::from_millis(500);
+        while unsafe { libc::kill(descendant_pid, 0) } == 0 && Instant::now() < reaped_by {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant_pid, 0) },
+            0,
+            "the continuously writing descendant must be killed"
+        );
+    }
 
     #[test]
     fn cmp_semver_compares_numerically_not_lexically() {

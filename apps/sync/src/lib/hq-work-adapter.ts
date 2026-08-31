@@ -14,6 +14,7 @@ import {
   type NotificationItem,
   type PlatformAdapter,
   type WhoAmI,
+  type VersionInfo,
   TAURI_CAPABILITIES,
   WEB_PATHS,
   buildSendReplyRequest,
@@ -98,12 +99,12 @@ function asWhoAmI(value: unknown): WhoAmI {
   const rec = asRecord(value) ?? {};
   const personUid = String(
     rec.personUid ?? rec.uid ?? rec.sub ?? rec.person_uid ?? '',
-  );
-  const email = String(rec.email ?? '');
+  ).trim();
+  const email = String(rec.email ?? '').trim();
   const displayNameRaw = rec.displayName ?? rec.name;
   const displayName =
     typeof displayNameRaw === 'string' && displayNameRaw.trim()
-      ? displayNameRaw
+      ? displayNameRaw.trim()
       : undefined;
   return { ...rec, personUid, email, displayName };
 }
@@ -156,6 +157,19 @@ export function createSyncPlatformAdapter(
     } catch (err) {
       return invokeError(err);
     }
+  }
+
+  async function getVersions(): AdapterPromise<VersionInfo> {
+    const [core, cli] = await Promise.all([
+      call<string | null>('get_hq_version'),
+      call<string | null>('get_hq_cli_version'),
+    ]);
+    if (!core.ok) return core;
+    if (!cli.ok) return cli;
+    return ok({
+      ...(core.value ? { core: core.value } : {}),
+      ...(cli.value ? { cli: cli.value } : {}),
+    });
   }
 
   async function hqProJson<T>(
@@ -252,14 +266,47 @@ export function createSyncPlatformAdapter(
 
     identity: {
       whoami: async () => {
-        const auth = await call<{ authenticated?: boolean }>('get_auth_state');
+        type ShellAuthState = {
+          authenticated?: boolean;
+          accountId?: string | null;
+          email?: string | null;
+          displayName?: string | null;
+        };
+        const auth = await call<ShellAuthState>('get_auth_state');
         if (!auth.ok) return auth;
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        const me = await hqProJson<Json>('GET', WEB_PATHS.whoami);
-        if (!me.ok) return me;
-        return ok(asWhoAmI(me.value));
+        // The API response binds the person UID and profile fields to the
+        // bearer used for this request. It also preserves the established
+        // profile fallback when a Cognito refresh omits the optional ID token.
+        const meResult = await hqProJson<unknown>('GET', WEB_PATHS.whoami);
+        if (!meResult.ok) return meResult;
+        const currentAuth = await call<ShellAuthState>('get_auth_state');
+        if (!currentAuth.ok) return currentAuth;
+        if (
+          !currentAuth.value?.authenticated ||
+          !auth.value.accountId ||
+          currentAuth.value.accountId !== auth.value.accountId
+        ) {
+          return failure(
+            'identity-changed',
+            'Signed-in account changed while loading the profile.',
+          );
+        }
+        const me = asWhoAmI(meResult.value);
+        if (!me.personUid) {
+          return failure(
+            'identity-unavailable',
+            'Signed-in account has no canonical person identifier.',
+          );
+        }
+        return ok({
+          ...me,
+          email: me.email || auth.value.email?.trim() || '',
+          displayName:
+            me.displayName || auth.value.displayName?.trim() || undefined,
+        });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: async (flag) => {
@@ -812,7 +859,7 @@ export function createSyncPlatformAdapter(
     },
 
     updates: {
-      getVersions: () => call('get_hq_version'),
+      getVersions,
       checkForUpdates: () => call('check_for_updates'),
       installUpdate: () => call('install_update'),
       getPendingUpdate: () => call('get_pending_update'),

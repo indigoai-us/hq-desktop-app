@@ -24,6 +24,84 @@ function expectOk(result: { ok: boolean }): void {
 }
 
 describe('Sync PlatformAdapter mapped HQ Work actions', () => {
+  it('reports Core and CLI versions through the shared versions contract', async () => {
+    const calls: Invocation[] = [];
+    const invoke: SyncInvokeFn = async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'get_hq_version') return '15.0.117';
+      if (command === 'get_hq_cli_version') return '5.103.34';
+      throw new Error(`Unexpected command: ${command}`);
+    };
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.updates.getVersions()).resolves.toEqual({
+      ok: true,
+      value: {
+        core: '15.0.117',
+        cli: '5.103.34',
+      },
+    });
+    expect(calls).toEqual([
+      { command: 'get_hq_version', args: undefined },
+      { command: 'get_hq_cli_version', args: undefined },
+    ]);
+  });
+
+  it.each([
+    {
+      core: null,
+      cli: '5.103.34',
+      expected: { cli: '5.103.34' },
+    },
+    {
+      core: '15.0.117',
+      cli: null,
+      expected: { core: '15.0.117' },
+    },
+    {
+      core: null,
+      cli: null,
+      expected: {},
+    },
+  ])('keeps independently detected versions when the other is absent', async ({
+    core,
+    cli,
+    expected,
+  }) => {
+    const invoke: SyncInvokeFn = async (command) => {
+      if (command === 'get_hq_version') return core;
+      if (command === 'get_hq_cli_version') return cli;
+      throw new Error(`Unexpected command: ${command}`);
+    };
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.updates.getVersions()).resolves.toEqual({
+      ok: true,
+      value: expected,
+    });
+  });
+
+  it.each(['get_hq_version', 'get_hq_cli_version'])(
+    'preserves a structured failure from %s while probing both versions',
+    async (failedCommand) => {
+      const calls: string[] = [];
+      const invoke: SyncInvokeFn = async (command) => {
+        calls.push(command);
+        if (command === failedCommand) throw new Error('version probe failed');
+        return command === 'get_hq_version' ? '15.0.117' : '5.103.34';
+      };
+      const adapter = createSyncPlatformAdapter({ invoke });
+
+      await expect(adapter.updates.getVersions()).resolves.toEqual({
+        ok: false,
+        reason: 'error',
+        code: 'invoke',
+        message: 'version probe failed',
+      });
+      expect(calls).toEqual(['get_hq_version', 'get_hq_cli_version']);
+    },
+  );
+
   it('maps marketplace.installPack with its selected typed scope', async () => {
     const { adapter, calls } = makeAdapter();
 

@@ -250,8 +250,17 @@ pub async fn check_hq_cli_update(app: AppHandle) -> Result<Option<HqCliUpdateInf
 /// version row by itself. Keep identity separate from update availability,
 /// exactly like the desktop app and HQ Core rows.
 #[tauri::command]
-pub fn get_hq_cli_version() -> Option<String> {
-    get_local_version()
+pub async fn get_hq_cli_version() -> Option<String> {
+    match tokio::task::spawn_blocking(get_local_version).await {
+        Ok(version) => version,
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("installed-version probe task failed: {error}"),
+            );
+            None
+        }
+    }
 }
 
 /// Tauri command — record that the user dismissed the "CLI update available"
