@@ -23,8 +23,10 @@
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../../lib/listener-registry';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
+  import AgentThinkingRow from './AgentThinkingRow.svelte';
   import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
 
   // A thread message (root or reply) as returned by fetch_thread / carried on a
@@ -94,6 +96,7 @@
     scope === 'channel' ? channelScope(channelId ?? '') : dmScope(withPersonUid ?? ''),
   );
   let reactionsCtl = $state<ReactionController | null>(null);
+  let thinkingCtl = $state<AgentThinkingController | null>(null);
 
   $effect(() => {
     const s = reactionScope;
@@ -102,6 +105,26 @@
     return () => controller.dispose();
   });
 
+  // Agent-thinking indicator. Channel threads load the channel roster; DM
+  // threads supply an empty loader so a mention can never start a row.
+  $effect(() => {
+    const currentScope = scope;
+    const currentChannelId = channelId;
+    void rootEventId;
+    const controller = new AgentThinkingController(async () => {
+      if (currentScope !== 'channel' || !currentChannelId) return [];
+      const resp = await invoke<{ members: Array<{ personUid: string; displayName: string }> }>(
+        'list_channel_members',
+        { channelId: currentChannelId },
+      );
+      return (resp.members ?? []).map((m) => ({
+        personUid: m.personUid,
+        displayName: m.displayName,
+      }));
+    });
+    thinkingCtl = controller;
+    return () => controller.dispose();
+  });
 
   // Keep the thread's reply ids registered + loaded (skip optimistic local-* ids).
   $effect(() => {
@@ -117,6 +140,7 @@
     if (seenIds.has(r.eventId)) return;
     seenIds.add(r.eventId);
     replies = [...replies, r];
+    thinkingCtl?.noteIncoming([r]);
   }
 
   interface ThreadIdentity {
@@ -164,6 +188,7 @@
       const ordered = [...(view.replies ?? [])].reverse();
       seenIds = new Set(ordered.map((r) => r.eventId));
       replies = ordered;
+      thinkingCtl?.noteIncoming(replies);
       replyCount = view.replyCount ?? ordered.length;
       onreplycount?.(identity.rootEventId, replyCount);
       // Register the open thread (+ already-seen reply ids) so the SINGLE poll
@@ -226,6 +251,7 @@
       appendReply(optimistic);
       replyCount += 1;
       onreplycount?.(identity.rootEventId, replyCount);
+      void thinkingCtl?.noteOutgoing(text);
     } catch (err) {
       if (
         generation !== sendGeneration ||
@@ -233,6 +259,7 @@
       ) return;
       sendError = typeof err === 'string' ? err : 'Failed to send reply';
       console.error('thread-panel: send_thread_reply failed', err);
+      thinkingCtl?.noteSendFailed();
     } finally {
       if (
         generation === sendGeneration &&
@@ -354,7 +381,11 @@
       onsend={sendReply}
       reactions={reactionsCtl?.map ?? {}}
       ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
-    />
+    >
+      {#snippet belowMessages()}
+        <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />
+      {/snippet}
+    </Conversation>
   </div>
 </aside>
 
