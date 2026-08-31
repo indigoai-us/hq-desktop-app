@@ -109,7 +109,10 @@
     }
     const channel = coreState.channel === "staging" ? "Staging" : "Release";
     if (coreState.versionBehind) {
-      return `${channel} · Update available to v${coreState.targetVersion}`;
+      const available = `${channel} · Update available to v${coreState.targetVersion}`;
+      return autoUpdate === false
+        ? `${available} · Automatic updates off`
+        : available;
     }
     const driftCount = coreState.driftReport?.count ?? 0;
     if (driftCount > 0) {
@@ -338,6 +341,7 @@
       await updateSettings({ autoUpdate: next });
       if (generation !== autoUpdateSaveGeneration) return;
       autoUpdate = next;
+      if (next) void refreshCoreInfo();
     } catch (err) {
       if (generation !== autoUpdateSaveGeneration) return;
       console.error("save settings (autoUpdate) failed:", err);

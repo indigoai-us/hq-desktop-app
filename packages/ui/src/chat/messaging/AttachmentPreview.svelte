@@ -3,6 +3,7 @@
    * Typed attachment preview + download. Shared by the message strip tray
    * and the right-side attachments browser.
    */
+  import { onDestroy } from "svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
@@ -17,10 +18,12 @@
   interface Props {
     item: FileAttachmentModel;
     resolveUrl?: (attachment: FileAttachmentModel) => Promise<string | null>;
+    /** Releases a host-created object URL after this preview no longer uses it. */
+    onreleaseurl?: (url: string) => void;
     compact?: boolean;
   }
 
-  let { item, resolveUrl, compact = false }: Props = $props();
+  let { item, resolveUrl, onreleaseurl, compact = false }: Props = $props();
 
   const kind = $derived(
     attachmentPreviewKind({
@@ -37,11 +40,20 @@
   let error = $state<string | null>(null);
   let downloading = $state(false);
   let loadedKey = $state("");
+  let resolvedUrl = $state("");
   /** The record's previewUrl failed to load (expired presign / revoked blob)
    * — ignore it and resolve a fresh URL instead. */
   let previewFailed = $state(false);
   /** A freshly resolved URL also failed — stop retrying, show the error. */
   let resolveFailed = $state(false);
+
+  function releaseResolvedUrl(): void {
+    if (!resolvedUrl) return;
+    onreleaseurl?.(resolvedUrl);
+    resolvedUrl = "";
+  }
+
+  onDestroy(releaseResolvedUrl);
 
   $effect(() => {
     const key = item.id || item.vaultPath;
@@ -53,6 +65,7 @@
     const resolve = resolveUrl;
     const previewDead = previewFailed;
     if (key !== loadedKey) {
+      releaseResolvedUrl();
       loadedKey = key;
       previewFailed = false;
       resolveFailed = false;
@@ -95,7 +108,15 @@
       previewUrl: previewDead ? null : item.previewUrl,
     })
       .then(async (url) => {
-        if (cancelled || !url) return;
+        if (!url) {
+          if (!cancelled) error = "Could not load the file";
+          return;
+        }
+        if (cancelled) {
+          onreleaseurl?.(url);
+          return;
+        }
+        resolvedUrl = url;
         src = url;
         if (preview === "image" || preview === "pdf" || preview === "file") {
           return;

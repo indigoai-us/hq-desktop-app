@@ -29,6 +29,7 @@ let component: ReturnType<typeof mount> | null = null;
 function mountPreview(props: {
   item: FileAttachmentModel;
   resolveUrl?: (a: FileAttachmentModel) => Promise<string | null>;
+  onreleaseurl?: (url: string) => void;
 }): void {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -105,5 +106,25 @@ describe("AttachmentPreview image detail pane", () => {
       ?.dispatchEvent(new Event("error"));
     flushSync();
     expect(host.textContent).toContain("Could not load the file");
+  });
+
+  it("shows an error state when the host cannot load desktop bytes", async () => {
+    mountPreview({ item: item(), resolveUrl: async () => null });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Could not load the file");
+    });
+  });
+
+  it("releases its resolved desktop object URL on unmount", async () => {
+    const onreleaseurl = vi.fn();
+    mountPreview({
+      item: item(),
+      resolveUrl: async () => "blob:desktop-detail",
+      onreleaseurl,
+    });
+    await settle();
+    await unmount(component!);
+    component = null;
+    expect(onreleaseurl).toHaveBeenCalledWith("blob:desktop-detail");
   });
 });

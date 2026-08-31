@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ReplyPanel from "./ReplyPanel.svelte";
@@ -77,5 +77,65 @@ describe("ReplyPanel stored mentions", () => {
     // agt_* has no profile panel, so it must not be rendered as a button.
     expect(mentions[0].getAttribute("data-person-uid")).toBeNull();
     expect(mentions[1].getAttribute("data-person-uid")).toBe("prs_hassaan");
+  });
+
+  it("uses the conversation company fallback for a received image and opens the viewer", async () => {
+    const receivedImageRoot = {
+      ...root,
+      attachments: [
+        {
+          id: "att_reply_photo",
+          vaultPath: "chat/attachments/chn_1/att_reply_photo.png",
+          name: "reply-photo.png",
+          contentType: "image/png",
+          sizeBytes: 128,
+          kind: "image",
+          // Persisted received attachments can omit their per-item company.
+          companyUid: "",
+        },
+      ],
+    };
+    const onpresign = vi.fn(async () => "blob:reply-photo");
+    const onopenattachment = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ReplyPanel, {
+      target: host,
+      props: {
+        api: {
+          ...api(),
+          fetchReplyThread: async () => ({
+            scope: "channel",
+            root: receivedImageRoot,
+            replies: [],
+            replyCount: 0,
+          }),
+        },
+        rootEventId: "evt_root",
+        scope: "channel",
+        channelId: "chn_1",
+        seedRoot: receivedImageRoot,
+        vaultCompanyUid: "cmp_conversation",
+        onpresign,
+        onopenattachment,
+        onclose: () => {},
+      },
+    });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(onpresign).toHaveBeenCalledWith(
+      "cmp_conversation",
+      "chat/attachments/chn_1/att_reply_photo.png",
+    );
+    const thumb = host.querySelector<HTMLButtonElement>(
+      "[data-testid='attachment-thumb']",
+    );
+    expect(thumb).toBeTruthy();
+    thumb?.click();
+    expect(onopenattachment).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "att_reply_photo" }),
+    );
   });
 });
