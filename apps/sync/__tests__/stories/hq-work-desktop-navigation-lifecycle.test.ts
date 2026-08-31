@@ -27,7 +27,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
     nativeListeners.set(name, handler);
-    return () => nativeListeners.delete(name);
+    return () => {
+      if (nativeListeners.get(name) === handler) nativeListeners.delete(name);
+    };
   }),
 }));
 
@@ -58,6 +60,7 @@ interface Options {
   workspaceFailure?: boolean;
   identityFailure?: boolean;
   directoryResponse?: Promise<unknown>;
+  notificationFeed?: { current: unknown };
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -106,8 +109,13 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           ],
         };
       case 'list_dm_requests':
-      case 'fetch_notifications':
         return { notifications: [] };
+      case 'fetch_notifications':
+        return options.notificationFeed?.current ?? {
+          notifications: [],
+          unreadCount: 0,
+          nextCursor: null,
+        };
       case 'fetch_channel':
         return { messages: [{ eventId: 'evt_root', body: 'hello' }] };
       case 'fetch_thread':
@@ -206,6 +214,12 @@ function warmAuthSessionReady(): void {
 function warmPackageUpdates(payload: unknown): void {
   const listener = nativeListeners.get('packages:updates');
   if (!listener) throw new Error('packages:updates listener was not registered');
+  listener({ payload });
+}
+
+function nativeWake(name: string, payload: unknown): void {
+  const listener = nativeListeners.get(name);
+  if (!listener) throw new Error(`${name} listener was not registered`);
   listener({ payload });
 }
 
@@ -354,6 +368,101 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="reply-panel"]')).toBeTruthy();
   });
 
+  it('reconciles scoped native message, reply, and notification wakes without duplicate or foreign delivery', async () => {
+    const calls: string[] = [];
+    const notificationFeed = {
+      current: {
+        notifications: [],
+        unreadCount: 0,
+        nextCursor: null,
+      } as unknown,
+    };
+    await mountShell({ calls, notificationFeed });
+    // Workspace membership resolves after the authenticated shell. Wait until
+    // the native wake bridge has captured that tenant snapshot.
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeNull();
+
+    notificationFeed.current = {
+      notifications: [
+        {
+          id: 'notif-1',
+          type: 'mention',
+          status: 'unread',
+          title: 'mentioned you',
+          companyUid: 'cmp_indigo',
+          createdAt: '2026-09-01T00:00:00.000Z',
+        },
+      ],
+      unreadCount: 1,
+      nextCursor: 'next-page',
+    };
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_indigo',
+      events: [{ eventId: 'share-1' }],
+    });
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+
+    const fetchesAfterFirstWake = calls.filter((command) => command === 'fetch_notifications').length;
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_indigo',
+      events: [{ eventId: 'share-1' }],
+    });
+    await flush(64);
+    expect(calls.filter((command) => command === 'fetch_notifications')).toHaveLength(
+      fetchesAfterFirstWake,
+    );
+
+    notificationFeed.current = {
+      notifications: [
+        {
+          id: 'foreign-notif',
+          type: 'mention',
+          status: 'unread',
+          title: 'must not cross company boundary',
+          companyUid: 'cmp_other',
+        },
+      ],
+      unreadCount: 2,
+      nextCursor: null,
+    };
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_other',
+      events: [{ eventId: 'share-foreign' }],
+    });
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+    expect(calls.filter((command) => command === 'fetch_notifications')).toHaveLength(
+      fetchesAfterFirstWake,
+    );
+
+    warmRoute('hqwork://open?channel=chn_engineering&reply=evt_root');
+    await flush(64);
+    const channelFetches = calls.filter((command) => command === 'fetch_channel').length;
+    const replyFetches = calls.filter((command) => command === 'fetch_thread').length;
+
+    nativeWake('channel:new-message', {
+      channelId: 'chn_engineering',
+      eventId: 'evt-channel-2',
+      companyUid: 'cmp_indigo',
+    });
+    nativeWake('thread:new-reply', {
+      rootEventId: 'evt_root',
+      eventId: 'evt-reply-2',
+      scope: 'channel',
+      channelId: 'chn_engineering',
+      companyUid: 'cmp_indigo',
+    });
+    await flush(64);
+    expect(calls.filter((command) => command === 'fetch_channel').length).toBeGreaterThan(
+      channelFetches,
+    );
+    expect(calls.filter((command) => command === 'fetch_thread').length).toBeGreaterThan(
+      replyFetches,
+    );
+  });
+
   it('consumes a cold meeting focus id and marks the requested agenda row', async () => {
     await mountShell({ pendingRoute: 'meetings', pendingMeetingId: 'mtg_focus' });
     (host.querySelector('[data-testid="meetings-refresh"]') as HTMLButtonElement).click();
@@ -486,7 +595,8 @@ describe('embedded Work navigation and lifecycle', () => {
       target: host,
       props: { invokeFn: invokeFor({ pendingRoute: 'settings', calls }) },
     });
-    await flush();
+    await flush(64);
+    expect(nativeListeners.has('share:new-events')).toBe(true);
 
     (host.querySelector('[data-testid="settings-sign-out"]') as HTMLButtonElement).click();
     await flush();
@@ -496,6 +606,7 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(calls).toContain('sign_out');
     expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+    expect(nativeListeners.has('share:new-events')).toBe(false);
 
     // The old DesktopApp listener is detached while signed out. A new native
     // route must be queued for the next mounted host rather than dispatched

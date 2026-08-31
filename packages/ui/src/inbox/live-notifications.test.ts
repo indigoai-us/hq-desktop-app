@@ -67,7 +67,7 @@ describe("live-notifications", () => {
   });
 
   describe("composeLiveNotifications", () => {
-    it("keeps only dm + file_share store rows and fills from inboxes", () => {
+    it("preserves every store notification type while filling DM and share history", () => {
       const composed = composeLiveNotifications({
         store: {
           notifications: [
@@ -76,6 +76,7 @@ describe("live-notifications", () => {
               type: "mention",
               sourceEventId: "m1",
               status: "unread",
+              actionRef: "story-7",
             },
             {
               id: "n-dm",
@@ -97,6 +98,8 @@ describe("live-notifications", () => {
               actorName: "Priya",
             },
           ],
+          unreadCount: 7,
+          nextCursor: "opaque-next-page",
         },
         inbox: {
           events: [
@@ -138,11 +141,15 @@ describe("live-notifications", () => {
       expect(ids).toContain("n-alias");
       expect(ids).toContain("dm:e-new");
       expect(ids).toContain("share:s-new");
-      expect(ids).not.toContain("n-mention");
-      expect(ids).not.toContain("n-invite");
+      expect(ids).toContain("n-mention");
+      expect(ids).toContain("n-invite");
       expect(ids).not.toContain("dm:e-store");
       expect(ids).not.toContain("dm:e-alias");
-      expect(composed.unreadCount).toBe(1);
+      expect(composed.unreadCount).toBe(7);
+      expect(composed.nextCursor).toBe("opaque-next-page");
+      expect(
+        composed.notifications.find((row) => row.id === "n-mention")?.actionRef,
+      ).toBe("story-7");
       expect(
         composed.notifications.find((row) => row.id === "dm:e-new")?.status,
       ).toBe("read");

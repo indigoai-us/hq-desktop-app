@@ -11,7 +11,6 @@ import {
   type Capability,
   type ChannelSummary,
   type Json,
-  type NotificationItem,
   type PlatformAdapter,
   type WhoAmI,
   type VersionInfo,
@@ -20,6 +19,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -116,21 +116,6 @@ function asChannelSummary(row: Json): ChannelSummary {
     id: String(row.id ?? row.channelId ?? row.channel_id ?? ''),
     name: String(row.name ?? ''),
     ...(typeof unread === 'number' ? { unreadCount: unread } : {}),
-  };
-}
-
-function asNotificationItem(row: Json): NotificationItem {
-  const status = String(row.status ?? '');
-  const readAt = row.readAt ?? row.read_at;
-  const read =
-    row.read === true ||
-    status === 'read' ||
-    (typeof readAt === 'string' && readAt.length > 0);
-  return {
-    ...row,
-    id: String(row.id ?? ''),
-    title: String(row.title ?? row.body ?? ''),
-    read,
   };
 }
 
@@ -498,22 +483,33 @@ export function createSyncPlatformAdapter(
     notifications: {
       fetchNotifications: async (opts) => {
         const rec = asRecord(opts) ?? {};
+        const rawLimit = rec.limit;
+        const limit =
+          typeof rawLimit === 'number'
+            ? rawLimit
+            : typeof rawLimit === 'string' && rawLimit.trim()
+              ? Number(rawLimit)
+              : undefined;
         const result = await call<unknown>('fetch_notifications', {
-          limit: rec.limit,
-          cursor: rec.cursor,
+          ...(typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {}),
+          ...(typeof rec.cursor === 'string' && rec.cursor.trim()
+            ? { cursor: rec.cursor }
+            : {}),
           unreadOnly: rec.unreadOnly ?? rec.unread_only,
         });
         if (!result.ok) return result;
-        return ok(
-          unwrapNamedArray(result.value, ['notifications']).map(
-            asNotificationItem,
-          ),
-        );
+        return ok(normalizeNotificationsFeed(result.value));
       },
       ack: (id) => call('ack_notification', { id }),
       readAll: () => call('read_all_notifications'),
-      runAction: (id, action) =>
-        call('run_notification_action', { id, actionKind: action }),
+      runAction: (id, action, actionRef) =>
+        call('run_notification_action', {
+          id,
+          actionKind: action,
+          ...(typeof actionRef === 'string' && actionRef.trim()
+            ? { actionRef }
+            : {}),
+        }),
       fetchDmInbox: (opts) => {
         const rec = asRecord(opts) ?? {};
         return hqProJson(

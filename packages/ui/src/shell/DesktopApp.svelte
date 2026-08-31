@@ -96,6 +96,7 @@
     ConversationApi,
     ConversationMessageWire,
     NotificationsApi,
+    ReplyThreadScope,
     ReplyThreadResponse,
   } from "../chat/chat-api.js";
   import {
@@ -269,6 +270,18 @@
     packagesEvents?: PackagesEvents | null;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
+    /** Host owns native active-thread registration for realtime reply wakes. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -322,6 +335,7 @@
     onembeddednavigationready,
     packagesEvents = null,
     notificationWakeSeq = 0,
+    onactivethreadchange,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
@@ -2215,6 +2229,7 @@
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
+                    onactivethreadchange={onactivethreadchange}
                     {avatarByUid}
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}

@@ -77,10 +77,11 @@ pub const EVENT_DM_PAIR_UNREADS: &str = "dm:pair-unreads";
 /// thread the user currently has open (US-022). A "thread" wake on the person
 /// topic routes through the same `poll_dm_once` → `do_poll` path as DMs/channels
 /// (the MQTT wake is ids-only); `do_poll` re-fetches the active thread and emits
-/// this for each reply not previously seen. Payload is `{ rootEventId, reply,
-/// replyCount }` — the open ThreadPanel appends `reply` and the root bubble in
-/// the main Conversation bumps to `replyCount`. Listened for in ThreadPanel +
-/// MessagesShell. There is NO parallel thread poller.
+/// this for each reply not previously seen. Payload is `{ rootEventId, eventId,
+/// scope, channelId|withPersonUid, reply, replyCount }` — UI hosts use the ids
+/// and scope to re-fetch their own visible thread; they never payload-apply a
+/// reply from another account or conversation. There is NO parallel thread
+/// poller.
 pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
 
 /// Tauri event emitted by the SINGLE poll path when reactions on a message in
@@ -2154,6 +2155,28 @@ pub fn set_active_thread(
     Ok(())
 }
 
+/// Build the typed wire envelope used by the embedded Work bridge. This keeps
+/// enough routing context for a mounted panel to reconcile its own thread
+/// without treating a native payload as authoritative message state.
+fn thread_reply_wake_payload(
+    root_event_id: &str,
+    scope: &str,
+    channel_id: Option<&str>,
+    with_person_uid: Option<&str>,
+    reply: &ThreadReply,
+    reply_count: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "rootEventId": root_event_id,
+        "eventId": reply.event_id,
+        "scope": normalize_scope(scope),
+        "channelId": channel_id,
+        "withPersonUid": with_person_uid,
+        "reply": reply,
+        "replyCount": reply_count,
+    })
+}
+
 /// Poll the active thread (if any) and emit `thread:new-reply` for replies the
 /// open panel hasn't seen yet. Folded into the SINGLE `do_poll` path (NOT a
 /// parallel poller). Best-effort: any failure logs and returns without disturbing
@@ -2240,11 +2263,14 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &Notification
         // Emit oldest→newest so the panel appends in chronological order. The
         // server returns newest-first, so reverse.
         for reply in fresh.iter().rev() {
-            let payload = serde_json::json!({
-                "rootEventId": root,
-                "reply": reply,
-                "replyCount": view.reply_count,
-            });
+            let payload = thread_reply_wake_payload(
+                &root,
+                &scope,
+                channel_id.as_deref(),
+                with_person_uid.as_deref(),
+                reply,
+                view.reply_count,
+            );
             log(
                 LOG_TAG,
                 &format!(
@@ -3088,6 +3114,38 @@ mod tests {
             created_at: None,
             members: None,
         }
+    }
+
+    #[test]
+    fn thread_reply_wake_carries_reconciliation_scope_and_ids() {
+        let reply = ThreadReply {
+            event_id: "evt_reply".to_string(),
+            from_person_uid: "prs_bryan".to_string(),
+            from_email: String::new(),
+            from_display_name: "Bryan".to_string(),
+            body: "Looks good".to_string(),
+            details: None,
+            prompt: None,
+            created_at: "2026-09-01T00:00:00.000Z".to_string(),
+            direction: "in".to_string(),
+        };
+
+        let payload = thread_reply_wake_payload(
+            "evt_root",
+            "CHANNEL",
+            Some("chn_engineering"),
+            None,
+            &reply,
+            3,
+        );
+
+        assert_eq!(payload["rootEventId"], "evt_root");
+        assert_eq!(payload["eventId"], "evt_reply");
+        assert_eq!(payload["scope"], "channel");
+        assert_eq!(payload["channelId"], "chn_engineering");
+        assert!(payload["withPersonUid"].is_null());
+        assert_eq!(payload["reply"]["eventId"], "evt_reply");
+        assert_eq!(payload["replyCount"], 3);
     }
 
     #[test]

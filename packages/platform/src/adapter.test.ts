@@ -10,10 +10,22 @@ import { TauriPlatformAdapter } from "./tauri/index.js";
 
 const WHOAMI = { personUid: "prs_123", email: "a@b.c" };
 const CHANNELS = [{ id: "ch1", name: "general", unreadCount: 2 }];
-const NOTIFICATIONS = [{ id: "n1", title: "hello", read: false }];
+const NOTIFICATIONS = {
+  notifications: [
+    {
+      id: "n1",
+      title: "hello",
+      status: "unread",
+      actionRef: "story-7",
+    },
+  ],
+  unreadCount: 7,
+  nextCursor: "opaque-next-page",
+};
 
 interface RecordedCall {
   key: string;
+  args?: Record<string, unknown>;
 }
 
 function makeWebAdapter() {
@@ -29,7 +41,7 @@ function makeWebAdapter() {
     if (path === "/v1/identity/whoami") return respond(WHOAMI);
     if (path === "/v1/messaging/channels" && method === "GET")
       return respond(CHANNELS);
-    if (path === "/v1/notify/notifications") return respond(NOTIFICATIONS);
+    if (path.startsWith("/v1/notify/notifications?")) return respond(NOTIFICATIONS);
     if (path === "/v1/notify/notifications/ack" && method === "POST") {
       let id = "";
       try {
@@ -56,7 +68,7 @@ function makeTauriAdapter() {
   const calls: RecordedCall[] = [];
   const acked = new Set<string>();
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
-    calls.push({ key: cmd });
+    calls.push({ key: cmd, args });
     switch (cmd) {
       case "whoami":
         return WHOAMI;
@@ -79,7 +91,11 @@ function makeTauriAdapter() {
 async function runContractSequence(adapter: PlatformAdapter) {
   const whoami = await adapter.identity.whoami();
   const channels = await adapter.messaging.listChannels();
-  const notifications = await adapter.notifications.fetchNotifications();
+  const notifications = await adapter.notifications.fetchNotifications({
+    limit: 25,
+    cursor: "opaque-next-page",
+    unreadOnly: true,
+  });
   const ack = await adapter.notifications.ack("n1");
   return { whoami, channels, notifications, ack };
 }
@@ -109,6 +125,21 @@ describe("PlatformAdapter contract", () => {
     // Equivalent side-effect state on both backends.
     expect(web.acked).toEqual(tauri.acked);
     expect(web.acked.has("n1")).toBe(true);
+    expect(expectOk(webOut.notifications)).toEqual({
+      notifications: [
+        expect.objectContaining({ id: "n1", actionRef: "story-7", read: false }),
+      ],
+      unreadCount: 7,
+      nextCursor: "opaque-next-page",
+    });
+    expect(web.calls.map(({ key }) => key)).toContain(
+      "GET /v1/notify/notifications?limit=25&cursor=opaque-next-page&unreadOnly=true",
+    );
+    expect(tauri.calls.find(({ key }) => key === "fetch_notifications")?.args).toEqual({
+      limit: 25,
+      cursor: "opaque-next-page",
+      unreadOnly: true,
+    });
   });
 
   it("desktop-only capabilities on web return the unavailable state, not a throw", async () => {

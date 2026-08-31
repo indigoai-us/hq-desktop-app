@@ -29,6 +29,7 @@
     createEmbeddedNavigationController,
     createHqWorkPackagesEvents,
     createHqWorkSidebarApi,
+    subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { openApprovedExternalUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -60,6 +61,7 @@
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
   let reauthError = $state<string | null>(null);
+  let notificationWakeSeq = $state(0);
   let hydration = 0;
   let detachNavigation: (() => void) | null = null;
 
@@ -197,6 +199,67 @@
     }
   }
 
+  // Sync owns MQTT credentials and turns wake-only publishes into reconciled,
+  // authenticated native events. Subscribe only for the currently mounted
+  // account/membership snapshot; explicit foreign company payloads fail closed.
+  $effect(() => {
+    const personUid = self?.uid?.trim() ?? '';
+    const scopedCompanies = companies;
+    if (lifecycle !== 'ready' || !personUid) return;
+    const companyUids = new Set(
+      (scopedCompanies ?? [])
+        .map((company) => company.cloudUid?.trim() ?? '')
+        .filter(Boolean),
+    );
+    let closed = false;
+    const subscribed = subscribeHqWorkNativeWakes({
+      listen,
+      wakes,
+      scope: () => {
+        if (closed || lifecycle !== 'ready' || self?.uid !== personUid) return null;
+        return { personUid, companyUids };
+      },
+      onNotificationWake: () => {
+        if (!closed && lifecycle === 'ready' && self?.uid === personUid) {
+          notificationWakeSeq += 1;
+        }
+      },
+    });
+    return () => {
+      closed = true;
+      void subscribed.then((unsubscribe) => unsubscribe());
+    };
+  });
+
+  function setActiveReplyThread(
+    active:
+      | {
+          rootEventId: string;
+          scope: 'channel' | 'dm';
+          channelId?: string | null;
+          withPersonUid?: string | null;
+          seenReplyIds: string[];
+        }
+      | null,
+  ): void {
+    if (lifecycle !== 'ready' || !self?.uid) return;
+    void invokeFn(
+      'set_active_thread',
+      active
+        ? {
+            rootEventId: active.rootEventId,
+            scope: active.scope,
+            channelId: active.channelId ?? null,
+            withPersonUid: active.withPersonUid ?? null,
+            seenReplyIds: active.seenReplyIds,
+          }
+        : { rootEventId: null },
+    ).catch(() => {
+      // Native active-thread registration is a realtime optimization. The
+      // shared UI retains its bounded disconnected-state fallback when absent.
+    });
+  }
+
   onMount(() => {
     let cancelled = false;
 
@@ -292,6 +355,7 @@
       {sidebarApi}
       {notificationsApi}
       {wakes}
+      {notificationWakeSeq}
       {packagesEvents}
       {companies}
       {self}
@@ -303,6 +367,7 @@
       onsignout={signOut}
       onOpenConsole={openApprovedExternalUrl}
       onopenurl={openApprovedExternalUrl}
+      onactivethreadchange={setActiveReplyThread}
       onembeddednavigationready={() => {
         detachNavigation?.();
         const detach = navigation.attach((target) => {
