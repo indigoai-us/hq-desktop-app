@@ -711,7 +711,13 @@ pub(crate) async fn resolve_notification_credentials<R: Runtime>(
     let tokens = match cognito::get_valid_tokens().await {
         Ok(tokens) => tokens,
         Err(error) => {
-            let _ = clear_notification_session_if_generation(app, started_generation).await;
+            // A refresh transport failure is recoverable and must keep its
+            // existing tenant partition. Cognito removes invalid credentials
+            // before returning, so clear notification ownership only when no
+            // credential remains for this generation.
+            if cognito::get_tokens().await.ok().flatten().is_none() {
+                let _ = clear_notification_session_if_generation(app, started_generation).await;
+            }
             return Err(error);
         }
     };

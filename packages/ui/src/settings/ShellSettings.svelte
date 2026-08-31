@@ -62,6 +62,10 @@
     version?: string;
     /** Host-routed subsection; null preserves Profile-first normal entry. */
     initialSection?: ShellSettingsSection | null;
+    /** Monotonic native auth generation; stale profile loads/saves are rejected. */
+    sessionGeneration?: number;
+    /** Account/company-scoped renderer persistence supplied by the host. */
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     onback?: () => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
@@ -77,6 +81,8 @@
     adapter = null,
     version = "0.0.0",
     initialSection = null,
+    sessionGeneration = 0,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
     onback,
     onsignout,
     onopenconsole,
@@ -133,6 +139,10 @@
   let savingProfile = $state(false);
   let profileError = $state<string | null>(null);
   let profileSavedAt = $state<number | null>(null);
+  let profileLoading = $state(false);
+  let descriptionLoaded = $state(false);
+  let profileRequest = 0;
+  let observedSessionGeneration = $state<number | null>(null);
   let avatarBusy = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
 
@@ -142,11 +152,12 @@
   let initialName = $state("");
   let initialDescription = $state("");
 
+  const nameDirty = $derived(editName.trim() !== initialName.trim());
+  const descriptionDirty = $derived(
+    descriptionLoaded && editDescription.trim() !== initialDescription.trim(),
+  );
   const profileDirty = $derived(
-    profileLoaded &&
-      (pendingAvatarBase64 !== null ||
-        editName.trim() !== initialName.trim() ||
-        editDescription.trim() !== initialDescription.trim()),
+    profileLoaded && (pendingAvatarBase64 !== null || nameDirty || descriptionDirty),
   );
 
   function seedFromProfile(): void {
@@ -154,26 +165,80 @@
     initialName = editName;
   }
 
-  onMount(() => {
+  async function loadProfile(): Promise<void> {
+    const request = ++profileRequest;
+    const generation = sessionGeneration;
+    profileLoading = true;
+    profileError = null;
     seedFromProfile();
     if (typeof adapter?.identity?.getProfile !== "function") {
       profileLoaded = true;
+      profileLoading = false;
       return;
     }
-    void adapter.identity.getProfile().then((res) => {
+    try {
+      const res = await adapter.identity.getProfile();
+      if (request !== profileRequest || generation !== sessionGeneration) return;
       if (res.ok && res.value) {
         const block = res.value.profile;
         if (block?.displayName) editName = block.displayName;
         else if (res.value.entityName) editName ||= res.value.entityName;
         initialName = editName;
-        if (block?.description) {
-          editDescription = block.description;
-          initialDescription = block.description;
+        if (block && Object.prototype.hasOwnProperty.call(block, "description")) {
+          editDescription = typeof block.description === "string" ? block.description : "";
+          initialDescription = editDescription;
+          descriptionLoaded = true;
         }
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
+      } else {
+        // A failed profile result is not an empty profile. Keep only the
+        // session-backed name editable and do not manufacture a blank About
+        // value that a later Save could send back to the server.
+        descriptionLoaded = false;
+        profileError = !res.ok
+          ? res.message || "Couldn’t load all profile fields."
+          : "Couldn’t load all profile fields.";
       }
       profileLoaded = true;
-    });
+    } catch (error) {
+      if (request !== profileRequest || generation !== sessionGeneration) return;
+      descriptionLoaded = false;
+      profileLoaded = true;
+      profileError = error instanceof Error ? error.message : "Couldn’t load all profile fields.";
+    } finally {
+      if (request === profileRequest && generation === sessionGeneration) {
+        profileLoading = false;
+      }
+    }
+  }
+
+  onMount(() => {
+    void loadProfile();
+  });
+
+  // DesktopApp re-keys on every native session generation, but keep this
+  // component correct when a host updates the prop in place as well. A save
+  // started for A must neither settle B's UI nor leave its controls wedged.
+  $effect(() => {
+    if (observedSessionGeneration === null) {
+      observedSessionGeneration = sessionGeneration;
+      return;
+    }
+    if (sessionGeneration === observedSessionGeneration) return;
+    observedSessionGeneration = sessionGeneration;
+    profileRequest += 1;
+    savingProfile = false;
+    profileSavedAt = null;
+    profileError = null;
+    profileLoaded = false;
+    descriptionLoaded = false;
+    pendingAvatarBase64 = null;
+    editName = "";
+    initialName = "";
+    editDescription = "";
+    initialDescription = "";
+    avatarPreview = null;
+    void loadProfile();
   });
 
   function pickPhoto(): void {
@@ -204,22 +269,32 @@
     if (!adapter || savingProfile) return;
     const name = editName.trim();
     const description = editDescription.trim();
-    if (description.length > DESCRIPTION_MAX) {
+    if (descriptionLoaded && description.length > DESCRIPTION_MAX) {
       profileError = `About must be ${DESCRIPTION_MAX} characters or fewer.`;
       return;
     }
     savingProfile = true;
     profileError = null;
+    const generation = sessionGeneration;
+    const update: {
+      displayName?: string;
+      description?: string;
+      avatarBase64?: string;
+    } = {};
+    if (nameDirty && name) update.displayName = name;
+    if (descriptionDirty) update.description = description;
+    if (pendingAvatarBase64) update.avatarBase64 = pendingAvatarBase64;
+    if (Object.keys(update).length === 0) {
+      savingProfile = false;
+      return;
+    }
     try {
-      const res = await adapter.identity.updateProfile({
-        displayName: name || undefined,
-        description,
-        ...(pendingAvatarBase64 ? { avatarBase64: pendingAvatarBase64 } : {}),
-      });
+      const res = await adapter.identity.updateProfile(update);
+      if (generation !== sessionGeneration) return;
       if (res.ok) {
         pendingAvatarBase64 = null;
-        initialName = name;
-        initialDescription = description;
+        if (nameDirty) initialName = name;
+        if (descriptionDirty) initialDescription = description;
         if (res.value?.profile?.avatarUrl) {
           avatarPreview = res.value.profile.avatarUrl;
         }
@@ -228,10 +303,11 @@
         profileError = res.message || "Couldn't save your profile.";
       }
     } catch (err) {
+      if (generation !== sessionGeneration) return;
       profileError =
         err instanceof Error ? err.message : "Couldn't save your profile.";
     } finally {
-      savingProfile = false;
+      if (generation === sessionGeneration) savingProfile = false;
     }
   }
 
@@ -374,8 +450,19 @@
                 data-testid="settings-description-input"
                 placeholder="e.g. Founder · building HQ"
                 bind:value={editDescription}
-                disabled={!adapter}
+                disabled={!adapter || !descriptionLoaded}
               />
+              {#if !descriptionLoaded}
+                <button
+                  type="button"
+                  class="chip"
+                  data-testid="settings-profile-retry"
+                  disabled={profileLoading}
+                  onclick={() => void loadProfile()}
+                >
+                  {profileLoading ? "Loading…" : "Retry About"}
+                </button>
+              {/if}
             </div>
             <div class="set-row">
               <div>
@@ -457,6 +544,7 @@
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {companies}
+          {storage}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
@@ -473,6 +561,8 @@
             | "updates"}
           {version}
           {adapter}
+          {storage}
+          {sessionGeneration}
           {companies}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}

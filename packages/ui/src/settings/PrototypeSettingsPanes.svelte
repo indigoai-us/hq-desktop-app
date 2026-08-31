@@ -53,6 +53,8 @@
     section: Section;
     version?: string;
     adapter?: PlatformAdapter | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+    sessionGeneration?: number;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
@@ -63,13 +65,15 @@
     section,
     version = "0.0.0",
     adapter = null,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
+    sessionGeneration = 0,
     companies = [],
     personalLabel = null,
     onopenconsole,
     consoleBase: _consoleBase = HQ_CONSOLE_BASE,
   }: Props = $props();
 
-  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs());
+  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs(storage));
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -123,7 +127,7 @@
   );
 
   function patch(next: Partial<ShellSettingsPrefs>): void {
-    prefs = writeSettingsPrefs(next);
+    prefs = writeSettingsPrefs(next, storage);
   }
 
   function setTheme(next: ColorTheme): void {
@@ -329,6 +333,8 @@
     configureMeetingsApi({
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      storage,
+      sessionGeneration,
     });
     return true;
   }
