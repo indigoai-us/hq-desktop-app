@@ -177,23 +177,30 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
-      # The two historically flaky process-tree contracts run twice in one
-      # isolated Windows step. These are independent fresh test processes: each
-      # must complete the fixture's startup/PID-publication/teardown handshake,
-      # so a pass cannot borrow registry state or a lingering descendant from a
-      # previous iteration. The normal full Windows suite above remains intact.
-      - name: Windows process fixture repeatability regression
+      # The two historically flaky process-tree contracts run twice as
+      # independent fresh test processes. Keeping each native invocation as a
+      # direct `run: cargo …` step is intentional: the desktop E2E contract
+      # verifies that native Windows gates fail fast rather than letting a
+      # shell loop or later test mask a nonzero cargo exit.
+      - name: Windows stale process fixture regression (repeat 1)
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          1..2 | ForEach-Object {
-            cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_spawn_tests::stale_spawn_job_contains_descendant_before_ownership_check -- --nocapture
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_spawn_tests::stale_spawn_job_contains_descendant_before_ownership_check -- --nocapture
+
+      - name: Windows job-accounting fixture regression (repeat 1)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
+
+      - name: Windows stale process fixture regression (repeat 2)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_spawn_tests::stale_spawn_job_contains_descendant_before_ownership_check -- --nocapture
+
+      - name: Windows job-accounting fixture regression (repeat 2)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
       # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
       # allow-list, the WER Application Error 1000 XML parse, the pid/window/
