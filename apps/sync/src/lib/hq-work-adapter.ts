@@ -804,6 +804,8 @@ export function createSyncPlatformAdapter(
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
       launchClaudeCode: (path) => call('launch_claude_code', { path }),
+      launchCodexWorkspace: (path, prompt) =>
+        call('launch_codex_workspace', { path, prompt: prompt ?? null }),
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');

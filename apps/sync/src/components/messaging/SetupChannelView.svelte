@@ -16,8 +16,8 @@
     SETUP_WELCOME_MESSAGES,
   } from '../../lib/setup-channel';
   import {
-    codexAvailable,
     resolveClaudeLaunchPath,
+    resolveCodexLaunchPath,
     SETUP_PROMPT,
   } from '../../desktop-alt/lib/setup-launch';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
@@ -127,18 +127,48 @@
     setLaunchError('codex', null);
     launching = 'codex';
     try {
-      if (codexAvailable(await ensureAiTools())) {
-        await invoke('launch_codex_workspace', {
+      const tools = await ensureAiTools();
+      const path = resolveCodexLaunchPath(tools);
+      // Cascade: ChatGPT desktop app's Codex surface (workspace + /setup
+      // pre-typed via launch_codex_workspace) → codex CLI in a terminal →
+      // clipboard copy of the prompt as last resort.
+      if (path === 'desktop') {
+        try {
+          await invoke('launch_codex_workspace', {
+            path: hqFolderPath,
+            prompt: SETUP_LAUNCH_COMMANDS.codex.prompt,
+          });
+          markOpened('codex');
+          return;
+        } catch (err) {
+          if (!tools?.codex_cli) {
+            setLaunchError('codex', `Could not open Codex: ${errorMessage(err)}`);
+            return;
+          }
+          // Fall through to the terminal CLI.
+        }
+      }
+      if (path !== 'none') {
+        await invoke('launch_cli_in_terminal', {
           path: hqFolderPath,
-          prompt: SETUP_LAUNCH_COMMANDS.codex.prompt,
+          tool: SETUP_LAUNCH_COMMANDS.codex.kind,
         });
         markOpened('codex');
-      } else {
-        setLaunchError(
-          'codex',
-          'Codex CLI was not detected. Open your HQ folder in Codex and run /setup.',
-        );
+        return;
       }
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(SETUP_PROMPT);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+      setLaunchError(
+        'codex',
+        copied
+          ? "Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run /setup — the prompt was copied to your clipboard."
+          : "Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run /setup.",
+      );
     } catch (err) {
       setLaunchError('codex', `Could not open Codex: ${errorMessage(err)}`);
     } finally {

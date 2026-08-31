@@ -7,7 +7,10 @@
    * REUSE, do not reimplement: launch paths mirror SetupIncompleteCard —
    * Claude Code goes desktop deep link (`buildClaudeCodeUrl` →
    * `shell.openClaudeCodeLink`) then CLI (`shell.launchClaudeCode`); Codex
-   * and Grok go through `shell.launchCliInTerminal`. The HQ folder path
+   * goes ChatGPT desktop app first (`shell.launchCodexWorkspace` — workspace
+   * loaded + `/setup` pre-typed) then CLI terminal
+   * (`shell.launchCliInTerminal`), clipboard copy as last resort; Grok goes
+   * through `shell.launchCliInTerminal`. The HQ folder path
    * comes from `settings.getSetupStatus`. The live message thread + composer
    * below this header are the shell's standard ChannelConversation pipeline
    * with channelId "setup" — this component owns only the intro.
@@ -16,8 +19,8 @@
   import type { SettingsApi, ShellApi } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../settings/claude-code-link";
   import {
-    codexAvailable,
     resolveClaudeLaunchPath,
+    resolveCodexLaunchPath,
     SETUP_PROMPT,
     type AiTools,
   } from "../settings/setup-launch";
@@ -34,6 +37,7 @@
       | "detectAiTools"
       | "openClaudeCodeLink"
       | "launchClaudeCode"
+      | "launchCodexWorkspace"
       | "launchCliInTerminal"
     >;
     /** Open an external URL via the host (system browser). */
@@ -113,18 +117,44 @@
     setLaunchError("codex", null);
     launching = "codex";
     try {
-      if (codexAvailable(await ensureAiTools())) {
+      const tools = await ensureAiTools();
+      const path = resolveCodexLaunchPath(tools);
+      // Cascade: ChatGPT desktop app's Codex surface (workspace + /setup
+      // pre-typed) → codex CLI in a terminal → clipboard copy of the prompt.
+      if (path === "desktop") {
+        const res = await shell.launchCodexWorkspace(
+          hqFolderPath,
+          SETUP_LAUNCH_COMMANDS.codex.prompt,
+        );
+        if (res.ok) return;
+        // Desktop launch failed — fall through to the terminal CLI if one
+        // is on PATH, otherwise surface the failure.
+        if (!tools?.codex_cli) {
+          setLaunchError("codex", failureMessage(res, "Codex"));
+          return;
+        }
+      }
+      if (path !== "none") {
         const res = await shell.launchCliInTerminal({
           path: hqFolderPath,
           tool: SETUP_LAUNCH_COMMANDS.codex.kind,
         });
         if (!res.ok) setLaunchError("codex", failureMessage(res, "Codex"));
-      } else {
-        setLaunchError(
-          "codex",
-          `Codex CLI was not detected. Open your HQ folder in Codex and run ${SETUP_PROMPT}.`,
-        );
+        return;
       }
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(SETUP_PROMPT);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+      setLaunchError(
+        "codex",
+        copied
+          ? `Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run ${SETUP_PROMPT} — the prompt was copied to your clipboard.`
+          : `Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run ${SETUP_PROMPT}.`,
+      );
     } finally {
       launching = null;
     }

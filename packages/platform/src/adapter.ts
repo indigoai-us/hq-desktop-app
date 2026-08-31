@@ -559,6 +559,11 @@ export interface ShellApi {
   openClaudeCodeLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
   launchClaudeCode(path: string): AdapterPromise<void>;
+  /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
+   *  folder loaded as the workspace and an optional pre-typed composer prompt.
+   *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
+   *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
+  launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
   launchCliInTerminal(args: Json): AdapterPromise<void>;
   detectAiTools(): AdapterPromise<Json>;
   pickFolder(): AdapterPromise<string | null>;

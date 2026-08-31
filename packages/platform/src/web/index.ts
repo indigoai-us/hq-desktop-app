@@ -762,6 +762,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     openClaudeCodeLink: async () => DESKTOP_ONLY,
     openFileInClaude: async () => DESKTOP_ONLY,
     launchClaudeCode: async () => DESKTOP_ONLY,
+    launchCodexWorkspace: async () => DESKTOP_ONLY,
     launchCliInTerminal: async () => DESKTOP_ONLY,
     detectAiTools: async () => DESKTOP_ONLY,
     pickFolder: async () => DESKTOP_ONLY,
