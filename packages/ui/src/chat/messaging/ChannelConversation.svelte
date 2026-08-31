@@ -88,6 +88,8 @@
       item: FileAttachmentModel,
       items: FileAttachmentModel[],
     ) => void;
+    /** Releases host-created object URLs when an attachment consumer closes. */
+    onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
     /**
@@ -127,6 +129,7 @@
     mentionCandidates = [],
     onreply,
     onopenattachment,
+    onreleaseurl,
     vaultCompanyUid = null,
     replyPreviewByRoot = {},
     activeRootEventId = null,
@@ -823,6 +826,7 @@
                     attachments={parseMessageAttachments(msg)}
                     onopen={openAttachment}
                     resolveUrl={resolveAttachmentUrl}
+                    {onreleaseurl}
                   />
                 </div>
                 {#if (msg.replyCount ?? 0) > 0}
@@ -1150,6 +1154,7 @@
       onselect={(id) => (traySelectedId = id)}
       onclose={() => (trayOpen = false)}
       resolveUrl={resolveAttachmentUrl}
+      {onreleaseurl}
       {onopenurl}
     />
   {/if}

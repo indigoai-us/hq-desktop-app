@@ -1448,22 +1448,30 @@
     companyUid: string,
     vaultPath: string,
   ): Promise<string | null> {
-    const signed = await adapter.files.presignVaultGet(companyUid, vaultPath);
-    if (!signed.ok) return null;
-    const url = presignUrlFromResult(signed.value)?.url ?? null;
-    if (!url || !getAttachmentObject) return url;
-    // Desktop: the packaged CSP deliberately blocks remote img-src (no
-    // tracking pixels), so <img> can never load the presigned https URL.
-    // Pull the bytes over the host's S3 hop and hand back a blob: URL.
-    const res = await getAttachmentObject(url);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    try {
+      const signed = await adapter.files.presignVaultGet(companyUid, vaultPath);
+      if (!signed.ok) return null;
+      const url = presignUrlFromResult(signed.value)?.url ?? null;
+      if (!url || !getAttachmentObject) return url;
+      // Desktop: the packaged CSP deliberately blocks remote img-src (no
+      // tracking pixels), so <img> can never load the presigned https URL.
+      // Pull the bytes over the host's S3 hop and hand back a blob: URL.
+      const res = await getAttachmentObject(url);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  }
+
+  function releaseAttachmentUrl(url: string): void {
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
   }
 
   function openAttachmentTray(
     item: FileAttachmentModel,
-    items: FileAttachmentModel[],
+    items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
     const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
@@ -2023,6 +2031,7 @@
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
+                  onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                   {replyPreviewByRoot}
                   {avatarByUid}
@@ -2065,6 +2074,8 @@
                     selfDisplayName={self?.displayName ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
+                    onopenattachment={openAttachmentTray}
+                    onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
@@ -2117,6 +2128,7 @@
       }}
       onclose={() => (attachTray = null)}
       resolveUrl={resolveTrayUrl}
+      onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
     />
   {/if}

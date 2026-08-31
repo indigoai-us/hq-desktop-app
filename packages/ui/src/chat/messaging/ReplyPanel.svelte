@@ -77,6 +77,8 @@
     ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
+    /** Releases host-created object URLs when inline reply images unmount. */
+    onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
     onclose: () => void;
@@ -110,6 +112,7 @@
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
+    onreleaseurl = undefined,
     vaultCompanyUid = null,
     onclose,
     onreplycount,
@@ -552,6 +555,7 @@
             attachments={parseMessageAttachments(root)}
             onopen={onopenattachment}
             resolveUrl={resolveAttachmentUrl}
+            {onreleaseurl}
           />
         </div>
         {#if reactionsFor(rootId).length > 0}
@@ -674,6 +678,7 @@
                 attachments={parseMessageAttachments(msg)}
                 onopen={onopenattachment}
                 resolveUrl={resolveAttachmentUrl}
+                {onreleaseurl}
               />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar

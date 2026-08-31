@@ -3,6 +3,7 @@
    * Inline attachment strip on a chat message: image thumbs + file cards.
    * Clicking opens the host's attachments tray (zero network here).
    */
+  import { onDestroy } from "svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { attachmentPreviewKind } from "./attachment-preview";
   import { fileTypeLabel } from "./chat-attachments";
@@ -11,12 +12,21 @@
     attachments: FileAttachmentModel[];
     onopen?: (attachment: FileAttachmentModel) => void;
     resolveUrl?: (attachment: FileAttachmentModel) => Promise<string | null>;
+    /** Releases host-created object URLs when this strip leaves the DOM. */
+    onreleaseurl?: (url: string) => void;
   }
 
-  let { attachments, onopen, resolveUrl }: Props = $props();
+  let { attachments, onopen, resolveUrl, onreleaseurl }: Props = $props();
 
   let urls = $state<Record<string, string>>({});
   let broken = $state<Record<string, boolean>>({});
+  const resolving = new Set<string>();
+  let mounted = true;
+
+  onDestroy(() => {
+    mounted = false;
+    for (const url of Object.values(urls)) onreleaseurl?.(url);
+  });
 
   function isImage(item: FileAttachmentModel): boolean {
     return (
@@ -33,14 +43,27 @@
     for (const item of attachments) {
       if (!isImage(item)) continue;
       const key = item.id || item.vaultPath;
-      if (urls[key] || item.previewUrl) continue;
+      if (urls[key] || broken[key] || item.previewUrl || resolving.has(key)) {
+        continue;
+      }
       // The host's resolveUrl owns the companyUid fallback (conversation
       // vault company) — server-persisted attachments often omit companyUid,
       // and gating on it here left received images as filename chips.
       if (!item.vaultPath) continue;
-      void resolveUrl(item).then((url) => {
-        if (url) urls = { ...urls, [key]: url };
-      });
+      resolving.add(key);
+      void resolveUrl(item)
+        .then((url) => {
+          if (!url) return;
+          if (!mounted) {
+            onreleaseurl?.(url);
+            return;
+          }
+          urls = { ...urls, [key]: url };
+        })
+        .catch(() => {
+          if (mounted) broken = { ...broken, [key]: true };
+        })
+        .finally(() => resolving.delete(key));
     }
   });
 

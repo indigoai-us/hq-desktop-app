@@ -31,6 +31,7 @@ function mountStrip(props: {
   attachments: FileAttachmentModel[];
   onopen?: (a: FileAttachmentModel) => void;
   resolveUrl?: (a: FileAttachmentModel) => Promise<string | null>;
+  onreleaseurl?: (url: string) => void;
 }): void {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -105,5 +106,18 @@ describe("MessageAttachments inline images", () => {
       .querySelector<HTMLButtonElement>("[data-testid='attachment-thumb']")
       ?.click();
     expect(onopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases resolved desktop bytes when the strip unmounts", async () => {
+    const onreleaseurl = vi.fn();
+    mountStrip({
+      attachments: [item()],
+      resolveUrl: async () => "blob:desktop-photo",
+      onreleaseurl,
+    });
+    await settle();
+    await unmount(component!);
+    component = null;
+    expect(onreleaseurl).toHaveBeenCalledWith("blob:desktop-photo");
   });
 });
