@@ -184,6 +184,36 @@ describe('VersionPopout restored updater behavior', () => {
     expect(host.textContent).toContain('HQ Core');
   });
 
+  it('explains when an available Core update is not automatic because the master toggle is off', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pending_update') return null;
+      if (command === 'get_settings') return { autoUpdate: false };
+      if (command === 'get_hq_version') return '15.0.4';
+      if (command === 'check_core_state') {
+        return {
+          channel: 'release',
+          targetVersion: '15.0.117',
+          localVersion: '15.0.4',
+          versionBehind: true,
+          driftReport: { count: 0 },
+        };
+      }
+      throw new Error(`Unexpected invoke: ${command}`);
+    });
+
+    mountPopout();
+    await waitForHydration();
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="version-popout-core-status"]')?.textContent,
+      ).toContain('Automatic updates off');
+    });
+    expect(
+      host.querySelector('[data-testid="version-popout-core-status"]')?.textContent,
+    ).toContain('v15.0.117');
+  });
+
   it('hydrates the pending updater result and the saved automatic-update preference', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_pending_update') return { version: '0.10.34' };
@@ -563,6 +593,37 @@ describe('VersionPopout restored updater behavior', () => {
     );
     await vi.waitFor(() => expect(toggle().disabled).toBe(false));
     expect(toggle().checked).toBe(false);
+  });
+
+  it('checks Core immediately after automatic updates are enabled', async () => {
+    let coreChecks = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pending_update') return null;
+      if (command === 'get_settings') return { autoUpdate: false };
+      if (command === 'get_hq_version') return '15.0.4';
+      if (command === 'check_core_state') {
+        coreChecks += 1;
+        return {
+          channel: 'release',
+          targetVersion: '15.0.117',
+          localVersion: '15.0.4',
+          versionBehind: true,
+          driftReport: { count: 0 },
+        };
+      }
+      throw new Error(`Unexpected invoke: ${command}`);
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(coreChecks).toBe(1));
+
+    toggle().click();
+
+    await vi.waitFor(() => {
+      expect(settings.update).toHaveBeenCalledWith({ autoUpdate: true });
+      expect(coreChecks).toBe(2);
+    });
   });
 
   it('does not invent an automatic-update default when hydration fails and recovers on Retry', async () => {

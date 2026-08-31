@@ -144,7 +144,10 @@ fn background_update_action(
     sync_in_progress: bool,
     silent_install_supported: bool,
 ) -> BackgroundUpdateAction {
-    match (automatic_updates && silent_install_supported, sync_in_progress) {
+    match (
+        automatic_updates && silent_install_supported,
+        sync_in_progress,
+    ) {
         (true, false) => BackgroundUpdateAction::Install,
         (true, true) => BackgroundUpdateAction::DeferForSync,
         (false, _) => BackgroundUpdateAction::Announce,
@@ -166,7 +169,7 @@ pub(crate) fn silent_install_supported() -> bool {
     !cfg!(target_os = "windows")
 }
 
-fn sync_in_progress() -> bool {
+pub(crate) fn sync_in_progress() -> bool {
     hq_desktop_core::sync_progress::read_fresh_snapshot()
         .is_some_and(|snapshot| snapshot.status == "syncing")
 }
