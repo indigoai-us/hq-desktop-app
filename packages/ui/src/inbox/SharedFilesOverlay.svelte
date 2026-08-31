@@ -25,6 +25,9 @@
   let loading = $state(true);
   let events = $state<ShareEvent[]>([]);
   let error = $state<string | null>(null);
+  let nextCursor = $state<string | null>(null);
+  let loadingMore = $state(false);
+  let loadMoreError = $state<string | null>(null);
 
   function record(value: unknown): Record<string, unknown> | null {
     return value && typeof value === "object" && !Array.isArray(value)
@@ -38,10 +41,10 @@
       : [];
   }
 
-  function parseEvents(value: unknown): ShareEvent[] {
+  function parsePage(value: unknown): { events: ShareEvent[]; nextCursor: string | null } {
     const body = record(value);
     const rawEvents = Array.isArray(body?.events) ? body.events : [];
-    return rawEvents.flatMap((entry) => {
+    const events = rawEvents.flatMap((entry) => {
       const row = record(entry);
       const id = typeof row?.eventId === "string" ? row.eventId.trim() : "";
       if (!id) return [];
@@ -55,6 +58,16 @@
         createdAt: typeof row?.createdAt === "string" ? row.createdAt : "",
       }];
     });
+    const cursor = body?.nextCursor ?? body?.next_cursor;
+    return {
+      events,
+      nextCursor: typeof cursor === "string" && cursor.trim() ? cursor : null,
+    };
+  }
+
+  function appendEvents(current: ShareEvent[], next: ShareEvent[]): ShareEvent[] {
+    const ids = new Set(current.map((event) => event.id));
+    return [...current, ...next.filter((event) => !ids.has(event.id))];
   }
 
   function fileName(path: string): string {
@@ -64,6 +77,8 @@
   async function load(): Promise<void> {
     loading = true;
     error = null;
+    loadMoreError = null;
+    nextCursor = null;
     try {
       const result = await adapter.notifications.fetchSharedWithMe({ limit: 50 });
       if (!result.ok) {
@@ -71,12 +86,35 @@
         events = [];
         return;
       }
-      events = parseEvents(result.value);
+      const page = parsePage(result.value);
+      events = page.events;
+      nextCursor = page.nextCursor;
     } catch {
       error = "Couldn't load shared files. Check your connection and try again.";
       events = [];
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadMore(): Promise<void> {
+    const cursor = nextCursor;
+    if (!cursor || loadingMore) return;
+    loadingMore = true;
+    loadMoreError = null;
+    try {
+      const result = await adapter.notifications.fetchSharedWithMe({ limit: 50, cursor });
+      if (!result.ok) {
+        loadMoreError = "Couldn't load more shared files. Check your connection and try again.";
+        return;
+      }
+      const page = parsePage(result.value);
+      events = appendEvents(events, page.events);
+      nextCursor = page.nextCursor;
+    } catch {
+      loadMoreError = "Couldn't load more shared files. Check your connection and try again.";
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -122,6 +160,22 @@
         </li>
       {/each}
     </ul>
+    {#if loadMoreError}
+      <p class="shared-files-status" data-testid="shared-files-load-more-error" role="alert">
+        {loadMoreError}
+      </p>
+    {/if}
+    {#if nextCursor}
+      <div class="shared-files-status">
+        <button
+          type="button"
+          data-testid="shared-files-load-more"
+          disabled={loadingMore}
+          aria-busy={loadingMore}
+          onclick={() => void loadMore()}
+        >{loadingMore ? "Loading…" : "Load more"}</button>
+      </div>
+    {/if}
   {/if}
 </section>
 

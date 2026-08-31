@@ -122,7 +122,11 @@
     ChannelFileItemModel,
     ChannelFilePreview,
   } from "../chat/messaging/channelTabModels.js";
-  import { loadVaultFilePreview } from "../chat/messaging/channel-file-preview.js";
+  import {
+    MAX_CHANNEL_FILE_PREVIEW_BYTES,
+    fileCompanyScope,
+    loadVaultFilePreview,
+  } from "../chat/messaging/channel-file-preview.js";
   import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
@@ -287,7 +291,11 @@
     onselectrow?: (row: ConversationRow) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
-    /** Desktop: GET attachment bytes outside the webview (no S3 CORS). */
+    /**
+     * Host-owned bounded byte transport for presigned Vault GETs. Desktop
+     * supplies a native hop. Web uses the Work app's same-origin proxy because
+     * Vault buckets do not grant browser CORS to raw presigned URLs.
+     */
     getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
   }
 
@@ -342,6 +350,28 @@
   const resolvedSettingsProfile = $derived(
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
   );
+
+  /**
+   * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
+   * CORS policy for browser clients. The Work web app owns this authenticated
+   * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
+   * host.
+   */
+  async function getVaultBytesForHost(
+    url: string,
+    maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
+  ): Promise<Response> {
+    if (getAttachmentObject) return getAttachmentObject(url, maxBytes);
+    if (adapter.kind === "web") {
+      return fetch("/api/chat-attachment-bytes", {
+        headers: {
+          "x-hq-source-url": url,
+          "x-hq-max-bytes": String(maxBytes),
+        },
+      });
+    }
+    throw new Error("No authorized Vault byte transport is available.");
+  }
 
   type ChannelTab = "chat" | "board" | "files";
   const CHANNEL_TABS: ReadonlyArray<{ id: ChannelTab; label: string }> = [
@@ -900,9 +930,10 @@
           if (!signed.ok) return null;
           const url = presignUrlFromResult(signed.value)?.url;
           if (!url) return null;
-          const res = getAttachmentObject
-            ? await getAttachmentObject(url)
-            : await fetch(url);
+          const res = await getVaultBytesForHost(
+            url,
+            MAX_CHANNEL_FILE_PREVIEW_BYTES,
+          );
           if (!res.ok) return null;
           return await res.text();
         } catch {
@@ -1387,6 +1418,14 @@
     return first?.cloudUid?.trim() || null;
   }
 
+  const channelFilePreviewContext = $derived(
+    JSON.stringify({
+      account: self?.uid?.trim() || null,
+      companyUid: attachmentCompanyUid(selectedRow),
+      conversationId: selectedRow?.id ?? null,
+    }),
+  );
+
   /** Upload files for the selected row — shared by the main composer send and
       the ReplyPanel attach seam. */
   async function uploadFilesForSelectedRow(
@@ -1600,17 +1639,35 @@
     item: ChannelFileItemModel,
   ): Promise<ChannelFilePreview> {
     if (loadFilePreview) return loadFilePreview(item);
+    const selectedCompanyUid = attachmentCompanyUid(selectedRow);
+    if (!fileCompanyScope(item, selectedCompanyUid)) {
+      return {
+        kind: "unavailable",
+        state: "denied",
+        message: "This file is not available in the current company.",
+      };
+    }
     if (item.localPath?.trim()) return loadLocalFilePreview(item);
     return loadVaultFilePreview({
       item,
-      selectedCompanyUid: selectedRow?.companyUid ?? null,
+      selectedCompanyUid,
       presign: (companyUid, key) => adapter.files.presignVaultGet(companyUid, key),
-      get: (url, maxBytes) =>
-        getAttachmentObject ? getAttachmentObject(url, maxBytes) : fetch(url),
+      get: getVaultBytesForHost,
     });
   }
 
+  function canPerformChannelFileAction(item: ChannelFileItemModel): boolean {
+    return Boolean(
+      !item.accessDenied &&
+        item.localPath?.trim() &&
+        fileCompanyScope(item, attachmentCompanyUid(selectedRow)),
+    );
+  }
+
   async function revealChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
     const localPath = item.localPath?.trim();
     if (!localPath) throw new Error("No authorized local mirror is available.");
     const result = await adapter.files.revealInFinder(localPath);
@@ -1618,6 +1675,9 @@
   }
 
   async function openChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
     const localPath = item.localPath?.trim();
     if (!localPath) throw new Error("No authorized local mirror is available.");
     const result = await adapter.shell.openFileInClaude(localPath);
@@ -2331,7 +2391,9 @@
           {:else}
             <ChannelFilesTab
               {files}
+              previewContext={channelFilePreviewContext}
               onloadpreview={loadChannelFilePreview}
+              onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
             />

@@ -3,7 +3,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import ChannelFilesTab from "./ChannelFilesTab.svelte";
-import type { ChannelFileItemModel } from "./channelTabModels";
+import ChannelFilesTabHarness from "./ChannelFilesTabHarness.svelte";
+import type { ChannelFileItemModel, ChannelFilePreview } from "./channelTabModels";
 
 const files: ChannelFileItemModel[] = [
   {
@@ -74,6 +75,8 @@ describe("ChannelFilesTab", () => {
 
   it("shows a truthful denied state without requesting a preview", async () => {
     const loadPreview = vi.fn(async () => ({ kind: "text" as const, text: "must not load" }));
+    const reveal = vi.fn(async () => ({ ok: true }));
+    const open = vi.fn(async () => ({ ok: true }));
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(ChannelFilesTab, {
@@ -81,6 +84,8 @@ describe("ChannelFilesTab", () => {
       props: {
         files: [{ ...files[0]!, accessDenied: true }],
         onloadpreview: loadPreview,
+        onreveal: reveal,
+        onopen: open,
       },
     });
 
@@ -91,6 +96,36 @@ describe("ChannelFilesTab", () => {
 
     expect(loadPreview).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="channel-file-preview-denied"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="channel-file-reveal"]')).toBeNull();
+    expect(host.querySelector('[data-testid="channel-file-open"]')).toBeNull();
+  });
+
+  it("does not offer local actions when the host rejects the file in the current context", async () => {
+    const loadPreview = vi.fn(async () => ({ kind: "text" as const, text: "must not load" }));
+    const reveal = vi.fn(async () => ({ ok: true }));
+    const open = vi.fn(async () => ({ ok: true }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelFilesTab, {
+      target: host,
+      props: {
+        files,
+        onloadpreview: loadPreview,
+        onreveal: reveal,
+        onopen: open,
+        onauthorizeaction: () => false,
+      },
+    });
+
+    flushSync(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+    );
+    await flush();
+
+    expect(host.querySelector('[data-testid="channel-file-reveal"]')).toBeNull();
+    expect(host.querySelector('[data-testid="channel-file-open"]')).toBeNull();
+    expect(reveal).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("releases a generated media blob URL when the preview closes", async () => {
@@ -117,6 +152,146 @@ describe("ChannelFilesTab", () => {
       );
 
       expect(revoke).toHaveBeenCalledWith("blob:preview-image");
+    } finally {
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
+  it("invalidates and releases a late preview when a live refresh removes its file", async () => {
+    const originalRevoke = URL.revokeObjectURL;
+    const revoke = vi.fn();
+    URL.revokeObjectURL = revoke;
+    const deferredPreview: {
+      resolve: ((preview: ChannelFilePreview) => void) | null;
+    } = { resolve: null };
+    try {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      const harness = mount(ChannelFilesTabHarness, {
+        target: host,
+        props: {
+          onloadpreview: () =>
+            new Promise<ChannelFilePreview>((resolve) => {
+              deferredPreview.resolve = resolve;
+            }),
+        },
+      });
+      flushSync(() => harness.replaceFiles(files));
+      await flush();
+
+      flushSync(() =>
+        host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+      );
+      await flush();
+      expect(host.querySelector('[data-testid="channel-file-preview-loading"]')).not.toBeNull();
+
+      flushSync(() => harness.replaceFiles([]));
+      await flush();
+      expect(host.querySelector('[data-testid="channel-files-preview"]')).toBeNull();
+
+      const resolvePreview = deferredPreview.resolve;
+      if (!resolvePreview) throw new Error("Preview request did not start.");
+      resolvePreview({ kind: "image", url: "blob:stale-preview" });
+      await flush();
+      expect(revoke).toHaveBeenCalledWith("blob:stale-preview");
+      await unmount(harness);
+    } finally {
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
+  it.each([
+    ["account", "account-a|cmp_member|chn_demo", "account-b|cmp_member|chn_demo", files],
+    ["conversation", "account-a|cmp_member|chn_demo", "account-a|cmp_member|chn_other", files],
+    [
+      "company",
+      "account-a|cmp_member|chn_demo",
+      "account-a|cmp_other|chn_demo",
+      [{ ...files[0]!, companyUid: "cmp_other" }],
+    ],
+  ])(
+    "invalidates a same-key deferred preview when its %s context changes",
+    async (_scope, initialContext, nextContext, nextFiles) => {
+      const originalRevoke = URL.revokeObjectURL;
+      const revoke = vi.fn();
+      URL.revokeObjectURL = revoke;
+      const deferredPreview: {
+        resolve: ((preview: ChannelFilePreview) => void) | null;
+      } = { resolve: null };
+      try {
+        host = document.createElement("div");
+        document.body.appendChild(host);
+        component = mount(ChannelFilesTabHarness, {
+          target: host,
+          props: {
+            onloadpreview: () =>
+              new Promise<ChannelFilePreview>((resolve) => {
+                deferredPreview.resolve = resolve;
+              }),
+          },
+        });
+        flushSync(() => {
+          component?.replaceFiles(files);
+          component?.replacePreviewContext(initialContext);
+        });
+        await flush();
+        flushSync(() =>
+          host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+        );
+        await flush();
+
+        flushSync(() => {
+          component?.replaceFiles(nextFiles);
+          component?.replacePreviewContext(nextContext);
+        });
+        await flush();
+        expect(host.querySelector('[data-testid="channel-files-preview"]')).toBeNull();
+
+        const resolvePreview = deferredPreview.resolve;
+        if (!resolvePreview) throw new Error("Preview request did not start.");
+        resolvePreview({ kind: "image", url: `blob:stale-${_scope}` });
+        await flush();
+        expect(revoke).toHaveBeenCalledWith(`blob:stale-${_scope}`);
+      } finally {
+        URL.revokeObjectURL = originalRevoke;
+      }
+    },
+  );
+
+  it("releases a deferred blob preview that resolves after component teardown", async () => {
+    const originalRevoke = URL.revokeObjectURL;
+    const revoke = vi.fn();
+    URL.revokeObjectURL = revoke;
+    const deferredPreview: {
+      resolve: ((preview: ChannelFilePreview) => void) | null;
+    } = { resolve: null };
+    try {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(ChannelFilesTab, {
+        target: host,
+        props: {
+          files,
+          previewContext: "account-a|cmp_member|chn_demo",
+          onloadpreview: () =>
+            new Promise<ChannelFilePreview>((resolve) => {
+              deferredPreview.resolve = resolve;
+            }),
+        },
+      });
+      flushSync(() =>
+        host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+      );
+      await flush();
+
+      const mounted = component;
+      component = null;
+      if (mounted) await unmount(mounted);
+      const resolvePreview = deferredPreview.resolve;
+      if (!resolvePreview) throw new Error("Preview request did not start.");
+      resolvePreview({ kind: "pdf", url: "blob:late-after-unmount" });
+      await flush();
+      expect(revoke).toHaveBeenCalledWith("blob:late-after-unmount");
     } finally {
       URL.revokeObjectURL = originalRevoke;
     }

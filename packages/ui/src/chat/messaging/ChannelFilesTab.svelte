@@ -18,19 +18,31 @@
 
   interface Props {
     files: ChannelFileItemModel[];
+    /** Identity of the account/company/conversation that owns this file list. */
+    previewContext?: string | null;
     /** Host-owned bounded preview; it performs all remote/native I/O. */
     onloadpreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Native actions are only rendered for an authorized local mirror. */
     onreveal?: (item: ChannelFileItemModel) => Promise<unknown>;
     onopen?: (item: ChannelFileItemModel) => Promise<unknown>;
+    /** Host re-check before rendering or executing a native local-file action. */
+    onauthorizeaction?: (item: ChannelFileItemModel) => boolean;
   }
 
-  let { files, onloadpreview, onreveal, onopen }: Props = $props();
+  let {
+    files,
+    previewContext = null,
+    onloadpreview,
+    onreveal,
+    onopen,
+    onauthorizeaction,
+  }: Props = $props();
 
   let selectedKey = $state<string | null>(null);
   let preview = $state<ChannelFilePreview | null>(null);
   let previewLoading = $state(false);
   let previewSequence = 0;
+  let previewTarget = $state<ChannelFileItemModel | null>(null);
   let actionPending = $state<"reveal" | "open" | null>(null);
   let actionError = $state<string | null>(null);
   const selected = $derived<ChannelFileItemModel | null>(
@@ -51,11 +63,94 @@
     preview = next;
   }
 
-  onDestroy(() => releasePreviewUrl(preview));
+  onDestroy(() => {
+    // A pending host request can resolve after Svelte removes this component.
+    // Invalidate before releasing the current preview so its late blob is
+    // released by the completion branch instead of becoming detached state.
+    previewSequence += 1;
+    selectedKey = null;
+    previewTarget = null;
+    setPreview(null);
+  });
+
+  function samePreviewTarget(
+    current: ChannelFileItemModel,
+    requested: ChannelFileItemModel,
+  ): boolean {
+    return (
+      current.key === requested.key &&
+      current.vaultPath === requested.vaultPath &&
+      current.localPath === requested.localPath &&
+      current.companyUid === requested.companyUid &&
+      current.name === requested.name &&
+      current.caption === requested.caption &&
+      current.iconKind === requested.iconKind &&
+      current.accessDenied === requested.accessDenied &&
+      current.previewText === requested.previewText
+    );
+  }
+
+  function invalidatePreviewSelection(): void {
+    previewSequence += 1;
+    selectedKey = null;
+    previewTarget = null;
+    setPreview(null);
+    previewLoading = false;
+    actionPending = null;
+    actionError = null;
+  }
+
+  let observedPreviewContext: string | null | undefined = undefined;
+
+  // A stable account/company/conversation token is required even when two
+  // contexts happen to expose the same vault key. The file row alone cannot
+  // prove an in-flight response still belongs to the rendered conversation.
+  $effect(() => {
+    const nextContext = previewContext ?? null;
+    if (observedPreviewContext === undefined) {
+      observedPreviewContext = nextContext;
+      return;
+    }
+    if (nextContext === observedPreviewContext) return;
+    observedPreviewContext = nextContext;
+    invalidatePreviewSelection();
+  });
+
+  // A live files refresh can remove or replace a selected row while its
+  // asynchronous preview is in flight. Invalidate first so a late completion
+  // cannot retain stale bytes or a generated blob URL for a vanished file.
+  $effect(() => {
+    const current = selected;
+    const requested = previewTarget;
+    if (!selectedKey || !requested) return;
+    if (!current || !samePreviewTarget(current, requested)) {
+      invalidatePreviewSelection();
+    }
+  });
+
+  function requestStillCurrent(
+    item: ChannelFileItemModel,
+    context: string | null,
+    sequence: number,
+  ): boolean {
+    const current = selected;
+    const requested = previewTarget;
+    return (
+      sequence === previewSequence &&
+      context === (previewContext ?? null) &&
+      selectedKey === item.key &&
+      current !== null &&
+      requested !== null &&
+      samePreviewTarget(current, item) &&
+      samePreviewTarget(requested, item)
+    );
+  }
 
   async function selectFile(item: ChannelFileItemModel): Promise<void> {
     selectedKey = item.key;
+    previewTarget = item;
     const sequence = ++previewSequence;
+    const context = previewContext ?? null;
     setPreview(null);
     previewLoading = false;
     actionError = null;
@@ -83,10 +178,10 @@
     previewLoading = true;
     try {
       const next = await onloadpreview(item);
-      if (sequence === previewSequence && selectedKey === item.key) setPreview(next);
+      if (requestStillCurrent(item, context, sequence)) setPreview(next);
       else releasePreviewUrl(next);
     } catch {
-      if (sequence === previewSequence && selectedKey === item.key) {
+      if (requestStillCurrent(item, context, sequence)) {
         setPreview({
           kind: "unavailable",
           state: "offline",
@@ -94,24 +189,29 @@
         });
       }
     } finally {
-      if (sequence === previewSequence) previewLoading = false;
+      if (sequence === previewSequence && context === (previewContext ?? null)) {
+        previewLoading = false;
+      }
     }
   }
 
   function closePreview(): void {
-    previewSequence += 1;
-    selectedKey = null;
-    setPreview(null);
-    previewLoading = false;
-    actionPending = null;
-    actionError = null;
+    invalidatePreviewSelection();
+  }
+
+  function nativeActionAllowed(item: ChannelFileItemModel): boolean {
+    return (
+      !item.accessDenied &&
+      Boolean(item.localPath?.trim()) &&
+      (onauthorizeaction?.(item) ?? true)
+    );
   }
 
   async function runAction(
     kind: "reveal" | "open",
     action: ((item: ChannelFileItemModel) => Promise<unknown>) | undefined,
   ): Promise<void> {
-    if (!selected || !action || actionPending) return;
+    if (!selected || !nativeActionAllowed(selected) || !action || actionPending) return;
     actionPending = kind;
     actionError = null;
     try {
@@ -261,7 +361,7 @@
           </button>
         </header>
         <div class="files-preview-body">
-          {#if selected.localPath && (onreveal || onopen)}
+          {#if nativeActionAllowed(selected) && (onreveal || onopen)}
             <div class="files-preview-actions">
               {#if onreveal}
                 <button

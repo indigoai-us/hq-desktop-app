@@ -20,6 +20,7 @@ import {
   type MarketplaceListing,
 } from "../marketplace/marketplace.js";
 import { packIdentity } from "./packages-model.js";
+import type { Capabilities } from "@hq/platform";
 /**
  * Route tab values (PORT NOTE: mirrored from desktop-alt `route.ts`, which is
  * app-shell-owned; the host passes/receives these as plain strings).
@@ -40,6 +41,22 @@ export type LibraryOverlayTab =
   | "marketplace"
   | "submit"
   | "profile";
+
+/**
+ * The desktop host can read local workers and their details. The web host
+ * deliberately cannot: its cloud shelf returns skills only.
+ */
+export function libraryOverlayCapabilities(
+  capabilities: Pick<Capabilities, "canSpawnSessions" | "canInstallLocally">,
+): {
+  workers: boolean;
+  marketplace: boolean;
+} {
+  return {
+    workers: capabilities.canSpawnSessions,
+    marketplace: capabilities.canInstallLocally,
+  };
+}
 
 export type MarketplaceBadge = "installed" | "update" | "get";
 

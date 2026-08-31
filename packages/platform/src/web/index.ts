@@ -611,7 +611,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     updateCreatorProfile: (p) =>
       this.request("PUT", WEB_PATHS.myCreatorProfile, p),
     uploadCreatorAvatar: (data) => this.post(WEB_PATHS.creatorAvatar, { data }),
-    requestCreatorAccess: () => this.post(WEB_PATHS.creatorAccess),
+    requestCreatorAccess: (payload) => this.post(WEB_PATHS.creatorAccess, payload),
     listCreatorApplications: () => this.get(WEB_PATHS.creatorApplications),
     decideCreatorApplication: (id, decision) =>
       this.post(WEB_PATHS.creatorApplication(id), { decision }),

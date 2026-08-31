@@ -5,6 +5,7 @@ import {
   filterWorkerCards,
   formatNavLabel,
   indexInstalledPacks,
+  libraryOverlayCapabilities,
   libraryNavCounts,
   marketplaceBadgeForListing,
   overlayTabToLibraryTab,
@@ -18,6 +19,7 @@ import {
 } from "./library-overlay-model";
 import type { LibraryItems, LibrarySkill, LibraryWorker } from "./library.js";
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
+import { TAURI_CAPABILITIES, WEB_CAPABILITIES } from "@hq/platform";
 
 const sampleItems: LibraryItems = {
   skills: [
@@ -66,6 +68,19 @@ function listing(
 }
 
 describe("library-overlay-model (US-017)", () => {
+  describe("host capabilities", () => {
+    it("only advertises workers when the host provides local worker details", () => {
+      expect(libraryOverlayCapabilities(WEB_CAPABILITIES)).toEqual({
+        workers: false,
+        marketplace: false,
+      });
+      expect(libraryOverlayCapabilities(TAURI_CAPABILITIES)).toEqual({
+        workers: true,
+        marketplace: true,
+      });
+    });
+  });
+
   describe("nav counts + rows", () => {
     it("counts skills and workers from loadLibraryRoot payload", () => {
       expect(libraryNavCounts(sampleItems)).toEqual({ skills: 2, workers: 1 });

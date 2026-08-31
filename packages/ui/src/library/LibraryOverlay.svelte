@@ -28,6 +28,7 @@
     buildLibraryNavRows,
     filterSkillCards,
     filterWorkerCards,
+    libraryOverlayCapabilities,
     overlayTabToLibraryTab,
     resolveOverlayTab,
     toSkillCards,
@@ -65,9 +66,11 @@
   $effect(() => {
     currentTab = tab;
   });
-  // The Sync host supplies real worker rows and worker-detail commands.
-  const showWorkers = $derived(true);
-  const showMarketplace = $derived(adapter.kind !== "web");
+  // Local Workers are meaningful only where the adapter can open their local
+  // detail/session seam; the host capability, not its name, owns that contract.
+  const hostCapabilities = $derived(libraryOverlayCapabilities(adapter.capabilities));
+  const showWorkers = $derived(hostCapabilities.workers);
+  const showMarketplace = $derived(hostCapabilities.marketplace);
   const activeTab = $derived(
     resolveOverlayTab(currentTab, {
       workers: showWorkers,

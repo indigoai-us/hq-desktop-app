@@ -461,15 +461,28 @@ export interface MarketplaceApi {
   getCreatorProfile(handle: string): AdapterPromise<Json>;
   getMyCreator(): AdapterPromise<Json>;
   claimHandle(handle: string): AdapterPromise<Json>;
-  updateCreatorProfile(p: Json): AdapterPromise<Json>;
+  updateCreatorProfile(p: CreatorProfileUpdate): AdapterPromise<Json>;
   uploadCreatorAvatar(data: Uint8Array | string): AdapterPromise<Json>;
-  requestCreatorAccess(): AdapterPromise<Json>;
+  requestCreatorAccess(p: CreatorAccessRequest): AdapterPromise<Json>;
   listCreatorApplications(): AdapterPromise<Json[]>;
   decideCreatorApplication(id: string, decision: string): AdapterPromise<Json>;
   listModerationQueue(): AdapterPromise<Json[]>;
   decideModerationListing(id: string, decision: string): AdapterPromise<Json>;
   /** Desktop-only capability: canInstallLocally. */
   installPack(listing: Json): AdapterPromise<Json>;
+}
+
+/** The exact request body accepted by the creator-access command. */
+export interface CreatorAccessRequest {
+  reason: string | null;
+  handle: string | null;
+}
+
+/** The exact camel-case body accepted by the creator-profile Tauri command. */
+export interface CreatorProfileUpdate {
+  bio: string | null;
+  socialLinks: Array<{ label: string; url: string }> | null;
+  tipUrl: string | null;
 }
 
 export interface CompanyApi {
