@@ -62,6 +62,9 @@
   let reauthError = $state<string | null>(null);
   let hydration = 0;
   let detachNavigation: (() => void) | null = null;
+  // Incrementing, rather than storing an update payload, guarantees the pane
+  // re-reads each authoritative command after every native state edge.
+  let updateWakeSeq = $state(0);
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -237,6 +240,19 @@
       if (!cancelled) void hydrateSession();
     }).catch(() => () => {});
 
+    const updateEvents = [
+      'update:available',
+      'update:cleared',
+      'core-state:changed',
+      'hq-cli-update:available',
+      'hq-cli-update:cleared',
+    ];
+    const unlistenUpdatePromises = updateEvents.map((eventName) =>
+      listen(eventName, () => {
+        if (!cancelled) updateWakeSeq += 1;
+      }).catch(() => () => {}),
+    );
+
     return () => {
       cancelled = true;
       hydration += 1;
@@ -247,6 +263,9 @@
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
+      for (const unlistenPromise of unlistenUpdatePromises) {
+        void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
+      }
     };
   });
 </script>
@@ -289,6 +308,8 @@
     <DesktopApp
       {adapter}
       {version}
+      {updateWakeSeq}
+      refreshAppVersion={getVersion}
       {sidebarApi}
       {notificationsApi}
       {wakes}

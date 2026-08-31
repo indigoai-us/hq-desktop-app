@@ -436,6 +436,7 @@
     configureMeetingsApi({
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
     });
     startMeetingsStore();
     setMeetingsViewActive(true);

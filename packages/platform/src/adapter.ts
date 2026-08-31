@@ -629,6 +629,8 @@ export interface SessionsApi {
 export interface SettingsApi {
   getConfig(): AdapterPromise<Json>;
   getSettings(): AdapterPromise<Json>;
+  /** Persist a minimal patch over the latest host settings. */
+  updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }

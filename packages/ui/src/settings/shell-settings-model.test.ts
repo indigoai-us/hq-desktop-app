@@ -69,6 +69,19 @@ describe("settingsCompanyLists", () => {
     expect(lists.personal?.role).toBe("Owner");
   });
 
+  it("does not expose revoked memberships as active company rows", () => {
+    const lists = settingsCompanyLists([
+      ws({ slug: "active", displayName: "Active" }),
+      ws({
+        slug: "removed",
+        displayName: "Removed",
+        cloudUid: "co_removed",
+        membershipStatus: "revoked",
+      }),
+    ]);
+    expect(lists.active.map((row) => row.slug)).toEqual(["active"]);
+  });
+
   it("is empty-safe and still offers Personal", () => {
     const lists = settingsCompanyLists(null);
     expect(lists.active).toEqual([]);

@@ -8,6 +8,10 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const tauriEvents = vi.hoisted(() => ({
+  listeners: new Map<string, (event: { payload?: unknown }) => void>(),
+}));
+
 vi.mock('svelte', async () => {
   // @ts-expect-error client entry has no public type export.
   return await import('../../node_modules/svelte/src/index-client.js');
@@ -20,7 +24,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (event: string, handler: (payload: { payload?: unknown }) => void) => {
+    tauriEvents.listeners.set(event, handler);
+    return () => tauriEvents.listeners.delete(event);
+  }),
 }));
 
 vi.mock('@tauri-apps/api/app', () => ({
@@ -142,6 +149,7 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });
 
@@ -243,6 +251,36 @@ describe('US-103 embedded desktop window', () => {
       flushSync();
       await flush();
       expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+    });
+
+    it('rechecks authoritative version state when the native host emits an update edge', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const calls: string[] = [];
+      const baseInvoke = mockInvoke();
+      const invokeFn: SyncInvokeFn = async (command, args) => {
+        calls.push(command);
+        return baseInvoke(command, args);
+      };
+      component = mount(HqWorkDesktopShell, {
+        target: host,
+        props: { invokeFn },
+      });
+      await flush(24);
+
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'updates' },
+        }),
+      );
+      await flush(24);
+      expect(host.querySelector('[data-testid="settings-updates-pane"]')).toBeTruthy();
+      const before = calls.filter((command) => command === 'check_for_updates').length;
+      const listener = tauriEvents.listeners.get('hq-cli-update:available');
+      expect(listener).toBeTypeOf('function');
+      listener?.({ payload: { latest: '5.104.0' } });
+      await flush(24);
+      expect(calls.filter((command) => command === 'check_for_updates')).toHaveLength(before + 1);
     });
 
     it('applyDesktopAltRoute emits typed subsection targets instead of flattening them', () => {

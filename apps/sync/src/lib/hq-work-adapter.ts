@@ -164,12 +164,15 @@ export function createSyncPlatformAdapter(
       call<string | null>('get_hq_version'),
       call<string | null>('get_hq_cli_version'),
     ]);
-    if (!core.ok) return core;
-    if (!cli.ok) return cli;
-    return ok({
-      ...(core.value ? { core: core.value } : {}),
-      ...(cli.value ? { cli: cli.value } : {}),
-    });
+    // Version probes are independent. A missing or failed CLI probe must not
+    // erase a successfully read Core version (and vice versa); the Settings UI
+    // renders the failed row as unchecked with its own remediation.
+    const versions: VersionInfo = {
+      ...(core.ok && core.value ? { core: core.value } : {}),
+      ...(cli.ok && cli.value ? { cli: cli.value } : {}),
+    };
+    if (core.ok || cli.ok) return ok(versions);
+    return core;
   }
 
   async function hqProJson<T>(
@@ -903,6 +906,18 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      updateSettings: async (patch) => {
+        const settingsInvoker: SettingsInvoker = <T>(
+          command: string,
+          args?: Record<string, unknown>,
+        ) => invokeFn(command, args) as Promise<T>;
+        try {
+          await updateSettings(patch, settingsInvoker);
+          return ok(undefined);
+        } catch (err) {
+          return invokeError(err);
+        }
+      },
       getSetupStatus: () => call('get_setup_status'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },

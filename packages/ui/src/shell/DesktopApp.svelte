@@ -267,6 +267,10 @@
     onembeddednavigationready?: () => void | (() => void);
     /** Optional desktop package-operation stream for Library → Installed. */
     packagesEvents?: PackagesEvents | null;
+    /** Native app/Core/CLI update event edge for Settings → Updates. */
+    updateWakeSeq?: number;
+    /** Read the current native app version during an Updates refresh. */
+    refreshAppVersion?: () => Promise<string>;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
     /**
@@ -321,6 +325,8 @@
     onOpenConsole,
     onembeddednavigationready,
     packagesEvents = null,
+    updateWakeSeq = 0,
+    refreshAppVersion,
     notificationWakeSeq = 0,
     hydrateLiveMessages = false,
     onlivemessages,
@@ -1699,6 +1705,7 @@
     configureMeetingsApi({
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
     });
     startMeetingsStore();
     void prefetchMeetings();
@@ -1853,6 +1860,8 @@
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
         consoleBase={HQ_CONSOLE_BASE}
+        {updateWakeSeq}
+        {refreshAppVersion}
       />
     </div>
   {:else}

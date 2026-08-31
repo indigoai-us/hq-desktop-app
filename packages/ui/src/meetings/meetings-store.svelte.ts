@@ -3,8 +3,8 @@ import type {
   FeedbackApi,
   Json,
   MeetingsApi,
+  SettingsApi,
 } from "@hq/platform";
-import { readSettingsPrefs } from "../settings/settings-prefs";
 import { loadMeetingsCache, saveMeetingsCache } from "./meetings-cache";
 import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
 import {
@@ -45,6 +45,8 @@ import type {
 export interface MeetingsStoreApi {
   meetings: MeetingsApi;
   feedback: FeedbackApi;
+  /** Native settings are injected by the desktop shell. */
+  settings?: Pick<SettingsApi, "getSettings">;
 }
 
 let api: MeetingsStoreApi | null = null;
@@ -467,16 +469,33 @@ function markMutationCommitted(): void {
 
 /** True when `uid` is one of the user's current memberships (cached names or live rows). */
 function isOwnMembershipUid(uid: string): boolean {
-  if (companyNamesByUid.has(uid)) return true;
-  return memberships.some((row) => row.companyUid === uid);
+  return memberships.some(
+    (row) =>
+      row.companyUid === uid &&
+      ["active", "accepted"].includes(row.status.trim().toLowerCase()),
+  );
 }
 
-function invitePayload(meetingUrl: string, evt: MeetingEvent | null): Json {
+async function defaultRecordingCompanyUid(): Promise<string | null> {
+  const settings = requireApi().settings;
+  // A missing or unreadable host settings seam must never fall back to stale
+  // browser storage and silently attribute a recording to another company.
+  if (!settings) return null;
+  const result = await settings.getSettings();
+  if (!result.ok) return null;
+  const value = result.value.defaultRecordingCompanyUid;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function invitePayload(
+  meetingUrl: string,
+  evt: MeetingEvent | null,
+): Promise<Json> {
   // Event company wins; settings default fills only when the event has none.
-  // Cross-company guard: default must be an own membership uid.
+  // Cross-company guard: a stored default must be an active own membership.
   const companyId = resolveInviteCompanyId(
     evt?.sourceCompanyUid,
-    readSettingsPrefs().recordingCompanyId,
+    evt?.sourceCompanyUid ? null : await defaultRecordingCompanyUid(),
     { has: isOwnMembershipUid },
   );
   return {
@@ -502,7 +521,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const key = evt.id;
   if (!lockRow(key, "invite")) return null;
   try {
-    unwrap(await requireApi().meetings.inviteBot(invitePayload(url, evt)));
+    unwrap(await requireApi().meetings.inviteBot(await invitePayload(url, evt)));
     markMutationCommitted();
     await refresh(true);
     return { kind: "info", text: "Bot invited." };
@@ -578,7 +597,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const key = evt.id;
   if (!lockRow(key, "join-now")) return null;
   try {
-    unwrap(await requireApi().meetings.joinBotNow(invitePayload(url, evt)));
+    unwrap(await requireApi().meetings.joinBotNow(await invitePayload(url, evt)));
     markMutationCommitted();
     await refresh(true);
     return { kind: "info", text: "Bot's on the way." };

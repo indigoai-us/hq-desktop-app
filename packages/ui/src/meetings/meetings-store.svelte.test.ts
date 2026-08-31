@@ -25,10 +25,7 @@ import {
 } from "./meetings-store.svelte";
 import { loadMeetingsCache } from "./meetings-cache";
 import type { GoogleAccount } from "./meetings-model";
-import {
-  SETTINGS_PREFS_KEY,
-  writeSettingsPrefs,
-} from "../settings/settings-prefs";
+import { SETTINGS_PREFS_KEY } from "../settings/settings-prefs";
 
 // Fake-adapter dispatch: one mock, keyed by method name, so the assertions
 // mirror the original invoke-keyed Tauri test.
@@ -37,7 +34,9 @@ const call =
     (method: string, payload?: unknown) => Promise<AdapterResult<unknown>>
   >();
 
-function wireApi() {
+function wireApi(
+  nativeSettings: Record<string, unknown> | null = null,
+) {
   configureMeetingsApi({
     meetings: {
       listMemberships: () => call("listMemberships") as never,
@@ -57,6 +56,9 @@ function wireApi() {
       submitBugReport: (title: string, body: string) =>
         call("submitBugReport", { title, body }) as never,
     },
+    ...(nativeSettings
+      ? { settings: { getSettings: async () => ok(nativeSettings) } }
+      : {}),
   });
 }
 
@@ -238,7 +240,27 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
+
+    await meetingsStore.inviteBot(baseEvent);
+
+    expect(call).toHaveBeenCalledWith("inviteBot", {
+      meetingUrl: baseEvent.meetingUrl,
+      calendarEventId: baseEvent.id,
+      calendarSeriesId: null,
+      companyId: memberUid,
+    });
+  });
+
+  it("uses the injected native recording-company setting over stale local storage", async () => {
+    await seedMemberships([
+      { companyUid: memberUid, companyName: "Mine", status: "active" },
+    ]);
+    localStorage.setItem(
+      SETTINGS_PREFS_KEY,
+      JSON.stringify({ recordingCompanyId: foreignUid }),
+    );
+    wireApi({ defaultRecordingCompanyUid: memberUid });
 
     await meetingsStore.inviteBot(baseEvent);
 
@@ -254,7 +276,7 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
     const withCompany: MeetingEvent = {
       ...baseEvent,
       sourceCompanyUid: "co_event",
@@ -270,11 +292,11 @@ describe("meetings store recording-company attribution", () => {
     });
   });
 
-  it("does not leak a foreign/stale recordingCompanyId into the invite payload", async () => {
+  it("does not leak a foreign/stale native recording default into the invite payload", async () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: foreignUid });
+    wireApi({ defaultRecordingCompanyUid: foreignUid });
 
     await meetingsStore.inviteBot(baseEvent);
 
@@ -290,7 +312,7 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
 
     await meetingsStore.joinBotNow(baseEvent);
 

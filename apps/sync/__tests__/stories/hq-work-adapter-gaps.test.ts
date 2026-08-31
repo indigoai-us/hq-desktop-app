@@ -82,7 +82,7 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
   });
 
   it.each(['get_hq_version', 'get_hq_cli_version'])(
-    'preserves a structured failure from %s while probing both versions',
+    'preserves the other detected version when %s fails',
     async (failedCommand) => {
       const calls: string[] = [];
       const invoke: SyncInvokeFn = async (command) => {
@@ -93,14 +93,32 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
       const adapter = createSyncPlatformAdapter({ invoke });
 
       await expect(adapter.updates.getVersions()).resolves.toEqual({
-        ok: false,
-        reason: 'error',
-        code: 'invoke',
-        message: 'version probe failed',
+        ok: true,
+        value:
+          failedCommand === 'get_hq_version'
+            ? { cli: '5.103.34' }
+            : { core: '15.0.117' },
       });
       expect(calls).toEqual(['get_hq_version', 'get_hq_cli_version']);
     },
   );
+
+  it('writes the master automatic-update preference through the native settings command', async () => {
+    const { adapter, calls } = makeAdapter({
+      untouched: true,
+      autoUpdate: false,
+    });
+
+    expectOk(await adapter.settings.updateSettings({ autoUpdate: true }));
+
+    expect(calls).toEqual([
+      { command: 'get_settings', args: undefined },
+      {
+        command: 'save_settings',
+        args: { prefs: { untouched: true, autoUpdate: true } },
+      },
+    ]);
+  });
 
   it('maps marketplace.installPack with its selected typed scope', async () => {
     const { adapter, calls } = makeAdapter();

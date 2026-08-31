@@ -190,6 +190,31 @@ describe("PlatformAdapter contract", () => {
     });
   });
 
+  it("merges an authoritative desktop settings patch instead of replacing native preferences", async () => {
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "get_settings") {
+          return { hqPath: "/custom/HQ", autoUpdate: false, untouched: true };
+        }
+        if (command === "save_settings") return undefined;
+        throw new Error(`unexpected command: ${command}`);
+      },
+    });
+
+    expect((await adapter.settings.updateSettings({ autoUpdate: true })).ok).toBe(true);
+    expect(calls).toEqual([
+      { command: "get_settings", args: undefined },
+      {
+        command: "save_settings",
+        args: {
+          prefs: { hqPath: "/custom/HQ", autoUpdate: true, untouched: true },
+        },
+      },
+    ]);
+  });
+
   it("desktop toggleReaction routes through hq_pro_fetch (POST add / DELETE remove), never a toggle_reaction command", async () => {
     // Regression: the desktop adapter used to invoke a `toggle_reaction`
     // command that was never registered in Rust, so every toggle threw and the
