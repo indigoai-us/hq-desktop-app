@@ -229,6 +229,10 @@ pub struct MenubarPrefs {
     /// through get/save_settings and isn't wiped on the next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_enabled: Option<bool>,
+    /// Exact Claude Code projects folder scanned for usage activity. Absent
+    /// keeps the standard `~/.claude/projects` behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_projects_dir: Option<String>,
     /// Desktop widget on/off (US-004); defaults ON when absent so the widget
     /// ships default-enabled after update; widget.rs also reads this key
     /// untyped on every notification dispatch so toggling takes effect

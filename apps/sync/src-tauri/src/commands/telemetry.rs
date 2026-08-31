@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use hq_desktop_core::sessions::claude::resolve_claude_projects_dir;
 use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
 
 use crate::commands::sync::resolve_vault_api_url;
@@ -1442,8 +1443,17 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     let mut newly_committed: HashMap<String, CursorEntry> = HashMap::new();
     let mut rotation_resets: HashMap<String, CursorEntry> = HashMap::new();
 
-    // 4. Enumerate ~/.claude/projects/**/*.jsonl
-    let pattern = format!("{}/.claude/projects/**/*.jsonl", home.display());
+    // 4. Enumerate the configured Claude activity folder.
+    let claude_projects_root = resolve_claude_projects_dir(
+        &home,
+        &home.join(".hq/menubar.json"),
+        std::env::var("CLAUDE_PROJECTS_DIR").ok().as_deref(),
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+    );
+    let pattern = format!(
+        "{}/**/*.jsonl",
+        glob::Pattern::escape(&claude_projects_root.to_string_lossy())
+    );
     let file_paths: Vec<_> = match glob::glob(&pattern) {
         Ok(g) => g.flatten().filter(|p| p.is_file()).collect(),
         Err(_) => return Ok(()),

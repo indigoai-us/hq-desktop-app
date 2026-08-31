@@ -622,6 +622,7 @@ export interface SessionsApi {
 export interface SettingsApi {
   getConfig(): AdapterPromise<Json>;
   getSettings(): AdapterPromise<Json>;
+  updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }

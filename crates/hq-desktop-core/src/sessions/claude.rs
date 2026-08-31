@@ -152,12 +152,41 @@ struct SessionMeta {
 // Path resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `~/.claude/projects` — the root of Claude Code's per-project transcript dirs.
+/// Resolve the Claude Code transcript root from explicit runtime overrides,
+/// the desktop setting, or the standard location, in that order.
+pub fn resolve_claude_projects_dir(
+    home: &Path,
+    menubar_path: &Path,
+    projects_override: Option<&str>,
+    config_override: Option<&str>,
+) -> PathBuf {
+    if let Some(value) = projects_override.filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(value.trim());
+    }
+    let saved = std::fs::read_to_string(menubar_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<MenubarPrefs>(&raw).ok())
+        .and_then(|prefs| prefs.claude_projects_dir)
+        .filter(|value| !value.trim().is_empty());
+    if let Some(value) = saved {
+        return PathBuf::from(value.trim());
+    }
+    if let Some(value) = config_override.filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(value.trim()).join("projects");
+    }
+    home.join(".claude").join("projects")
+}
+
+/// Claude Code's configured per-project transcript directory.
 pub fn claude_projects_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/"))
-        .join(".claude")
-        .join("projects")
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let menubar_path = home.join(".hq").join("menubar.json");
+    resolve_claude_projects_dir(
+        &home,
+        &menubar_path,
+        std::env::var("CLAUDE_PROJECTS_DIR").ok().as_deref(),
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+    )
 }
 
 /// Resolve the user's HQ folder via the standard 4-tier resolver (mirrors
@@ -487,6 +516,39 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn resolves_saved_custom_projects_directory() {
+        let root = make_fixture_root();
+        let menubar = root.join("menubar.json");
+        let custom = root.join(".claude-ridge/projects");
+        fs::write(
+            &menubar,
+            serde_json::json!({ "claudeProjectsDir": custom }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_claude_projects_dir(&root, &menubar, None, None),
+            root.join(".claude-ridge/projects")
+        );
+    }
+
+    #[test]
+    fn explicit_projects_override_wins_over_saved_setting() {
+        let root = make_fixture_root();
+        let menubar = root.join("menubar.json");
+        fs::write(
+            &menubar,
+            serde_json::json!({ "claudeProjectsDir": root.join("saved") }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_claude_projects_dir(&root, &menubar, Some("/tmp/explicit"), None),
+            PathBuf::from("/tmp/explicit")
+        );
+    }
 
     /// Build a throwaway tree under a unique temp dir (pid + monotonic time +
     /// atomic counter so concurrent tests never collide) and return its root.
