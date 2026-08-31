@@ -1230,9 +1230,9 @@ impl RunnerErrorCause {
             Self::ChildProcessSyncWorker => "child_process_sync_worker",
             Self::RealtimeUnavailable => "realtime_unavailable",
             Self::WindowsRenameBlocked => "windows_rename_blocked",
-            // The terminal classes are spelled WITHOUT the "session" substring —
-            // it is on the Sentry scrubber denylist (same reason VaultAuthError
-            // emits `vault_identity`, never `*_auth`).
+            // Scrubber-safe spellings for the terminal classes (the
+            // vault_identity precedent; the egress denylist test enumerates
+            // every emitted value below).
             Self::SessionManagerPluginLaunch => "terminal_plugin_launch",
             Self::TerminalSessionTimeout => "terminal_wait_timeout",
             Self::AccessDenied => "access_denied",
