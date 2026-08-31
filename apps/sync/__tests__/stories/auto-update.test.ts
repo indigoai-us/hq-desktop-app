@@ -66,8 +66,8 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('fn silent_install_supported()');
     expect(appUpdater).toContain('!cfg!(target_os = "windows")');
     expect(appUpdater).toContain('silent_install_supported(),');
-    expect(appUpdater).toContain(
-      'match (automatic_updates && silent_install_supported, sync_in_progress)',
+    expect(normalize(appUpdater)).toContain(
+      'automatic_updates && silent_install_supported, sync_in_progress,',
     );
     // The hard version gate is a second background install path and must
     // respect the same platform gate: on Windows the blocking modal stays up
@@ -81,18 +81,12 @@ describe('master automatic-updates switch', () => {
     );
   });
 
-  it('App keeps the shared preference hydrated for Core updates', () => {
-    const a = normalize(app);
-    // Reads the pref (default on) + refreshes it on focus.
-    expect(a).toContain('async function loadAutoUpdatePref()');
-    expect(a).toContain('autoUpdate = s?.autoUpdate ?? true');
-    expect(a).not.toContain('autoAppUpdatedVersion');
-    // Core update effect: only on a genuine version bump for eligible users,
-    // deduped by target version, deferred while syncing.
-    expect(a).toContain('if (!s || !s.isEligible || !s.versionBehind) return;');
-    expect(a).toContain('if (autoCoreUpdatedVersion === s.targetVersion) return;');
-    expect(a).toContain('void handleInstallCore();');
-    expect(app).toContain("if (syncState === 'syncing') return;");
+  it('the mounted App no longer owns Core automatic updates', () => {
+    // Native Rust exercises the updater behavior directly; this architecture
+    // contract prevents the old WebView-gated owner from returning.
+    expect(app).not.toContain('loadAutoUpdatePref');
+    expect(app).not.toContain('autoCoreUpdatedVersion');
+    expect(app).not.toContain('if (!s || !s.isEligible || !s.versionBehind) return;');
   });
 
   it('the CLI background auto-installer gates on the master switch', () => {

@@ -3,7 +3,7 @@
    * Attachment preview modal. Click a file in the timeline to browse the
    * conversation's assets without taking a sidebar column.
    */
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import AttachmentPreview from "./AttachmentPreview.svelte";
@@ -14,10 +14,12 @@
     onselect: (id: string) => void;
     onclose: () => void;
     resolveUrl?: (attachment: FileAttachmentModel) => Promise<string | null>;
+    /** Releases host-created object URLs used for browser-strip thumbnails. */
+    onreleaseurl?: (url: string) => void;
     onopenurl?: (url: string) => void;
   }
 
-  let { items, selectedId, onselect, onclose, resolveUrl }: Props = $props();
+  let { items, selectedId, onselect, onclose, resolveUrl, onreleaseurl }: Props = $props();
 
   const selected = $derived(
     items.find((item) => (item.id || item.vaultPath) === selectedId) ??
@@ -26,18 +28,36 @@
   );
 
   let urls = $state<Record<string, string>>({});
+  const resolving = new Set<string>();
   let modalEl = $state<HTMLDivElement | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
+  let mounted = true;
+
+  onDestroy(() => {
+    mounted = false;
+    for (const url of Object.values(urls)) onreleaseurl?.(url);
+  });
 
   $effect(() => {
     const item = selected;
     if (!item) return;
     const key = item.id || item.vaultPath;
-    if (item.previewUrl || urls[key]) return;
+    if (item.previewUrl || urls[key] || resolving.has(key)) return;
     if (!resolveUrl) return;
-    void resolveUrl(item).then((url) => {
-      if (url) urls = { ...urls, [key]: url };
-    });
+    resolving.add(key);
+    void resolveUrl(item)
+      .then((url) => {
+        if (!url) return;
+        if (!mounted) {
+          onreleaseurl?.(url);
+          return;
+        }
+        urls = { ...urls, [key]: url };
+      })
+      .catch(() => {
+        // The preview pane renders the actionable error state for this item.
+      })
+      .finally(() => resolving.delete(key));
   });
 
   function srcFor(item: FileAttachmentModel): string {
@@ -107,7 +127,7 @@
         <p class="att-tray-empty">No attachments in this conversation.</p>
       {:else}
         {#key selected.id || selected.vaultPath}
-          <AttachmentPreview item={selected} {resolveUrl} />
+          <AttachmentPreview item={selected} {resolveUrl} {onreleaseurl} />
         {/key}
       {/if}
     </div>

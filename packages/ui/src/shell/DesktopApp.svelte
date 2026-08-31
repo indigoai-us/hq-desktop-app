@@ -29,7 +29,6 @@
   import { isSetupChannel } from "../chat/setup-channel.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
-  import { createHostAttachmentResolver } from "../chat/messaging/attachment-preview.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
@@ -1544,14 +1543,30 @@
     companyUid: string,
     vaultPath: string,
   ): Promise<string | null> {
-    const signed = await adapter.files.presignVaultGet(companyUid, vaultPath);
-    if (!signed.ok) return null;
-    return presignUrlFromResult(signed.value)?.url ?? null;
+    try {
+      const signed = await adapter.files.presignVaultGet(companyUid, vaultPath);
+      if (!signed.ok) return null;
+      const url = presignUrlFromResult(signed.value)?.url ?? null;
+      if (!url || !getAttachmentObject) return url;
+      // Desktop: the packaged CSP deliberately blocks remote img-src (no
+      // tracking pixels), so <img> can never load the presigned https URL.
+      // Pull the bytes over the host's S3 hop and hand back a blob: URL.
+      const res = await getAttachmentObject(url);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  }
+
+  function releaseAttachmentUrl(url: string): void {
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
   }
 
   function openAttachmentTray(
     item: FileAttachmentModel,
-    items: FileAttachmentModel[],
+    items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
     const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
@@ -1564,18 +1579,14 @@
     };
   }
 
-  const resolveHostAttachmentUrl = $derived(
-    createHostAttachmentResolver({
-      presign: presignAttachment,
-      getObject: getAttachmentObject,
-      fallbackCompanyUid: () => attachmentCompanyUid(selectedRow),
-    }),
-  );
-
   async function resolveTrayUrl(
     item: FileAttachmentModel,
   ): Promise<string | null> {
-    return resolveHostAttachmentUrl(item);
+    if (item.previewUrl) return item.previewUrl;
+    const companyUid = item.companyUid || attachmentCompanyUid(selectedRow);
+    if (!companyUid || !item.vaultPath) return null;
+    // presignAttachment already returns blob: bytes on desktop hosts.
+    return presignAttachment(companyUid, item.vaultPath);
   }
 
   function openNotification(item: NotificationItem): void {
@@ -2125,11 +2136,11 @@
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
                   onpresign={presignAttachment}
-                  onresolveattachmenturl={resolveHostAttachmentUrl}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
+                  onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                   {replyPreviewByRoot}
                   {avatarByUid}
@@ -2173,7 +2184,9 @@
                     selfDisplayName={self?.displayName ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
-                    onresolveattachmenturl={resolveHostAttachmentUrl}
+                    onopenattachment={openAttachmentTray}
+                    onreleaseurl={releaseAttachmentUrl}
+                    vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     {avatarByUid}
@@ -2226,6 +2239,7 @@
       }}
       onclose={() => (attachTray = null)}
       resolveUrl={resolveTrayUrl}
+      onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
     />
   {/if}

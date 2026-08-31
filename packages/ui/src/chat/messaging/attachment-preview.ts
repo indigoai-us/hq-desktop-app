@@ -121,32 +121,6 @@ export function canUseWebAttachmentProxy(origin: string): boolean {
   }
 }
 
-/** Host-owned attachment URL resolver (presign, optional byte hop → blob:). */
-export function createHostAttachmentResolver(opts: {
-  presign: (
-    companyUid: string,
-    vaultPath: string,
-  ) => Promise<string | null>;
-  getObject?: (url: string) => Promise<Response>;
-  fallbackCompanyUid?: () => string | null;
-}): (item: {
-  previewUrl?: string | null;
-  companyUid: string;
-  vaultPath: string;
-}) => Promise<string | null> {
-  return async (item) => {
-    if (item.previewUrl) return item.previewUrl;
-    const companyUid = item.companyUid || opts.fallbackCompanyUid?.() || "";
-    if (!companyUid || !item.vaultPath) return null;
-    const url = await opts.presign(companyUid, item.vaultPath);
-    if (!url) return null;
-    if (!opts.getObject) return url;
-    const res = await opts.getObject(url);
-    if (!res.ok) return null;
-    return URL.createObjectURL(await res.blob());
-  };
-}
-
 export async function readAttachmentResponse(url: string): Promise<Response> {
   try {
     const direct = await fetch(url);
