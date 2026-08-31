@@ -36,7 +36,7 @@ const call =
 
 function wireApi(
   nativeSettings: Record<string, unknown> | null = {},
-  accountId = "test-account",
+  accountId: string | null = "test-account",
 ) {
   configureMeetingsApi({
     accountId,
@@ -277,6 +277,26 @@ describe("meetings store refresh coordination", () => {
       text: "Your account changed. Retry this action.",
     });
     expect(meetingsStore.pendingActionsByEventId.size).toBe(0);
+  });
+
+  it("clears account A instead of inheriting it when the next shell has no verified id", async () => {
+    const accountAEvent = { ...event, id: "event-account-a", summary: "A only" };
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming") return Promise.resolve(ok([accountAEvent]));
+      if (method === "listMemberships" || method === "listAccounts") {
+        return Promise.resolve(ok([]));
+      }
+      if (method === "listScheduledBots") return Promise.resolve(ok([]));
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi(null, "account-a");
+    await meetingsStore.refresh();
+    expect(meetingsStore.events).toEqual([accountAEvent]);
+
+    wireApi(null, null);
+    expect(meetingsStore.events).toEqual([]);
+    expect(meetingsStore.accounts).toEqual([]);
   });
 
   it("does not let an account-A calendar disconnect completion change account B", async () => {

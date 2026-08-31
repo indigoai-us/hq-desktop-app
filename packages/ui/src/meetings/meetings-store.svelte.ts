@@ -67,7 +67,10 @@ export function configureMeetingsApi(next: MeetingsStoreApi | null): void {
     api = null;
     return;
   }
-  const requestedAccount = next.accountId?.trim() || activeAccountId;
+  // Never inherit an old account merely because an incoming shell has not
+  // supplied identity yet. A missing id is an unauthenticated boundary and
+  // must clear the singleton/cache rather than briefly expose account A.
+  const requestedAccount = next.accountId?.trim() || null;
   if (requestedAccount !== activeAccountId) {
     accountGeneration += 1;
     activeAccountId = requestedAccount ?? null;
