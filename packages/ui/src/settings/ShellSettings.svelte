@@ -16,6 +16,11 @@
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import { avatarBase64FromFile } from "./avatar-image.js";
+  import {
+    PROFILE_SKELETON_DELAY_MS,
+    profileFromMemberProfile,
+    profilePanePhase,
+  } from "./shell-settings-model.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "./settings-chrome.css";
@@ -135,6 +140,15 @@
   let profileSavedAt = $state<number | null>(null);
   let avatarBusy = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let profileFetchPending = $state(
+    typeof adapter?.identity?.getProfile === "function",
+  );
+  let profileFetchError = $state<string | null>(null);
+  let fetchedDisplayName = $state<string | null>(null);
+  let fetchedEntityName = $state<string | null>(null);
+  let fetchedEmail = $state<string | null>(null);
+  let skeletonVisible = $state(false);
+  let skeletonTimer: ReturnType<typeof setTimeout> | null = null;
 
   const DESCRIPTION_MAX = 140;
   // Baselines that "dirty" is measured against — reset on load and after a save
@@ -154,13 +168,55 @@
     initialName = editName;
   }
 
-  onMount(() => {
-    seedFromProfile();
+  const fallbackProfile = $derived(
+    profile
+      ? null
+      : profileFromMemberProfile({
+          displayName: fetchedDisplayName || fetchedEntityName,
+          email: fetchedEmail || null,
+        }),
+  );
+  const resolvedProfile = $derived(profile ?? fallbackProfile);
+  const phase = $derived(
+    profilePanePhase({
+      hasProfile: Boolean(resolvedProfile),
+      fetching: profileFetchPending,
+      error: profileFetchError,
+    }),
+  );
+
+  function clearSkeletonTimer(): void {
+    if (skeletonTimer === null) return;
+    clearTimeout(skeletonTimer);
+    skeletonTimer = null;
+  }
+
+  function startSkeletonDelay(): void {
+    clearSkeletonTimer();
+    skeletonVisible = false;
+    skeletonTimer = setTimeout(() => {
+      skeletonTimer = null;
+      skeletonVisible = true;
+    }, PROFILE_SKELETON_DELAY_MS);
+  }
+
+  /** GetProfileResult carries no typed email; read it loosely off the wire. */
+  function memberEmailFromValue(value: unknown): string | null {
+    const email = (value as { email?: unknown } | null)?.email;
+    return typeof email === "string" && email.trim() ? email.trim() : null;
+  }
+
+  async function loadMemberProfile(): Promise<void> {
     if (typeof adapter?.identity?.getProfile !== "function") {
+      profileFetchPending = false;
       profileLoaded = true;
       return;
     }
-    void adapter.identity.getProfile().then((res) => {
+    profileFetchPending = true;
+    profileFetchError = null;
+    startSkeletonDelay();
+    try {
+      const res = await adapter.identity.getProfile();
       if (res.ok && res.value) {
         const block = res.value.profile;
         if (block?.displayName) editName = block.displayName;
@@ -171,9 +227,35 @@
           initialDescription = block.description;
         }
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
+        fetchedDisplayName = block?.displayName ?? null;
+        fetchedEntityName = res.value.entityName ?? null;
+        fetchedEmail = memberEmailFromValue(res.value);
+        profileFetchError = null;
+      } else if (!res.ok) {
+        profileFetchError = res.message || "Couldn't load your profile.";
       }
+    } catch (err) {
+      profileFetchError =
+        err instanceof Error ? err.message : "Couldn't load your profile.";
+    } finally {
+      profileFetchPending = false;
       profileLoaded = true;
-    });
+      clearSkeletonTimer();
+      skeletonVisible = false;
+    }
+  }
+
+  onMount(() => {
+    seedFromProfile();
+    if (typeof adapter?.identity?.getProfile !== "function") {
+      profileLoaded = true;
+      profileFetchPending = false;
+      return;
+    }
+    void loadMemberProfile();
+    return () => {
+      clearSkeletonTimer();
+    };
   });
 
   function pickPhoto(): void {
@@ -299,13 +381,7 @@
         </p>
       {/if}
       {#if active === "profile"}
-        {#if !profile}
-          <EmptyState
-            testid="settings-profile-empty"
-            title="No data"
-            copy="No profile data yet."
-          />
-        {:else}
+        {#if phase === "ready" && resolvedProfile}
           <div
             class="ss-profile proto-stack"
             data-testid="settings-profile-pane"
@@ -328,12 +404,12 @@
                 />
               {:else}
                 <div class="ss-avatar" aria-hidden="true">
-                  {profile.initial}
+                  {resolvedProfile.initial}
                 </div>
               {/if}
               <div class="ss-identity-meta">
-                <span class="ss-name">{editName || profile.fullName}</span>
-                <span class="ss-email">{profile.email}</span>
+                <span class="ss-name">{editName || resolvedProfile.fullName}</span>
+                <span class="ss-email">{resolvedProfile.email}</span>
               </div>
               <button
                 type="button"
@@ -383,8 +459,8 @@
                 <div class="sd">Signed-in account</div>
               </div>
               <span class="ss-field-inline">
-                <span class="mono">{profile.email}</span>
-                {#if profile.verified}
+                <span class="mono">{resolvedProfile.email}</span>
+                {#if resolvedProfile.verified}
                   <span class="ss-badge" data-testid="settings-email-verified"
                     >Verified</span
                   >
@@ -453,6 +529,40 @@
               </button>
             </div>
           </div>
+        {:else if phase === "loading"}
+          {#if skeletonVisible}
+            <div
+              class="ss-profile-skeleton"
+              data-testid="settings-profile-skeleton"
+              aria-hidden="true"
+            >
+              <div class="ss-skel-row ss-skel-identity"></div>
+              <div class="ss-skel-row"></div>
+              <div class="ss-skel-row"></div>
+              <div class="ss-skel-row"></div>
+            </div>
+          {/if}
+        {:else if phase === "error"}
+          <div
+            class="ss-profile-retry"
+            data-testid="settings-profile-retry-state"
+          >
+            <span>Couldn't load your profile.</span>
+            <button
+              type="button"
+              class="chip"
+              data-testid="settings-profile-retry"
+              onclick={() => void loadMemberProfile()}
+            >
+              Retry
+            </button>
+          </div>
+        {:else}
+          <EmptyState
+            testid="settings-profile-empty"
+            title="No data"
+            copy="No profile data yet."
+          />
         {/if}
       {:else if active === "companies"}
         <CompaniesSettingsPane
@@ -874,5 +984,57 @@
 
   .ss-btn.danger {
     color: var(--warn-ink, #d9584a);
+  }
+
+  .ss-profile-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 640px;
+  }
+
+  .ss-skel-row {
+    height: 56px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--t1, #fff) 8%, transparent);
+  }
+
+  .ss-skel-identity {
+    height: 76px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .ss-skel-row {
+      background: linear-gradient(
+        100deg,
+        color-mix(in srgb, var(--t1, #fff) 6%, transparent) 40%,
+        color-mix(in srgb, var(--t1, #fff) 11%, transparent) 50%,
+        color-mix(in srgb, var(--t1, #fff) 6%, transparent) 60%
+      );
+      background-size: 200% 100%;
+      animation: ss-skel-shimmer 1.4s ease-in-out infinite;
+    }
+  }
+
+  @keyframes ss-skel-shimmer {
+    from {
+      background-position: 120% 0;
+    }
+    to {
+      background-position: -80% 0;
+    }
+  }
+
+  .ss-profile-retry {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 640px;
+    color: var(--t2);
+    font-size: 13px;
+  }
+
+  .ss-profile-retry .chip {
+    margin-left: 0;
   }
 </style>
