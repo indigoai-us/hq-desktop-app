@@ -21,6 +21,7 @@ export * from "./chat/live-messages.js";
 export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
+export * from "./chat/setup-channel.js";
 export * from "./chat/dm-requests.js";
 export * from "./chat/workspaces.js";
 export * from "./chat/pending-conversation.js";
