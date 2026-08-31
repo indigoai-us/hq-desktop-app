@@ -94,6 +94,7 @@ export {
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
+export * from "./shell/embedded-navigation.js";
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";
@@ -135,6 +136,8 @@ export {
 export * as agency from "./agency/index.js";
 export * as files from "./files/index.js";
 export * as library from "./library/index.js";
+export * from "./library/packages-events.js";
+export * from "./library/packages-model.js";
 export * as marketplace from "./marketplace/index.js";
 export * as projects from "./projects/index.js";
 export * as home from "./home/index.js";

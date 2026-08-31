@@ -100,6 +100,7 @@ describe("requestChannelOpen replyRootEventId", () => {
         messageId: "evt_root",
         createdAt: null,
         replyRootEventId: "evt_root",
+        automatic: false,
       },
     ]);
     expect(takePendingChannelOpen()).toEqual({
@@ -107,8 +108,28 @@ describe("requestChannelOpen replyRootEventId", () => {
       messageId: "evt_root",
       createdAt: null,
       replyRootEventId: "evt_root",
+      automatic: false,
     });
     expect(takePendingChannel()).toBeNull();
+  });
+
+  it("preserves the automatic-selection intent for both the event and a later mount", () => {
+    const seen: unknown[] = [];
+    const onOpen = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    requestChannelOpen("chn_auto", { automatic: true });
+    window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+
+    expect(seen).toEqual([
+      {
+        channelId: "chn_auto",
+        messageId: null,
+        createdAt: null,
+        replyRootEventId: null,
+        automatic: true,
+      },
+    ]);
+    expect(takePendingChannelOpen()?.automatic).toBe(true);
   });
 });
 

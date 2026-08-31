@@ -211,7 +211,7 @@ describe("US-005: Deep-link a reply thread from a URL", () => {
     expect(host.textContent).not.toContain("evt_secret");
   });
 
-  it.skip("open-target / pending-conversation can carry replyRootEventId", async () => {
+  it("open-target / pending-conversation can carry replyRootEventId", async () => {
     await mountShell({ initialReplyRootEventId: null });
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="channel-name"]')).not.toBeNull();
