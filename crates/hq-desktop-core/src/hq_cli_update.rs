@@ -17,14 +17,24 @@ use std::os::unix::process::CommandExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as WindowsCommandExt;
+#[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
 };
 
 use crate::paths;
@@ -127,7 +137,9 @@ impl VersionProbeContainment {
     fn prepare(cmd: &mut std::process::Command) {
         #[cfg(unix)]
         cmd.process_group(0);
-        #[cfg(not(unix))]
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_SUSPENDED.0);
+        #[cfg(not(any(unix, target_os = "windows")))]
         let _ = cmd;
     }
 
@@ -156,6 +168,11 @@ impl VersionProbeContainment {
                 let _ = CloseHandle(job);
                 return Err(std::io::Error::other(error.to_string()));
             }
+            if let Err(error) = resume_windows_process(child.id()) {
+                let _ = TerminateJobObject(job, 1);
+                let _ = CloseHandle(job);
+                return Err(error);
+            }
             return Ok(Self { job: Some(job) });
         }
 
@@ -181,6 +198,49 @@ impl VersionProbeContainment {
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn resume_windows_process(process_id: u32) -> std::io::Result<()> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut next = Thread32First(snapshot, &mut entry);
+        while next.is_ok() {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
+                    .map_err(|error| std::io::Error::other(error.to_string()));
+                let result = match thread {
+                    Ok(thread) => {
+                        let resume_result = ResumeThread(thread);
+                        let _ = CloseHandle(thread);
+                        if resume_result == u32::MAX {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                let _ = CloseHandle(snapshot);
+                return result;
+            }
+            entry = THREADENTRY32 {
+                dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            next = Thread32Next(snapshot, &mut entry);
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "suspended version probe thread was not found",
+    ))
 }
 
 impl Drop for VersionProbeContainment {
