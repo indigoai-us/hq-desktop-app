@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AdapterResult, PlatformAdapter } from "./adapter.js";
+import {
+  normalizeNotificationsFeed,
+  type AdapterResult,
+  type PlatformAdapter,
+} from "./adapter.js";
 import { WebPlatformAdapter } from "./web/index.js";
 import { TauriPlatformAdapter } from "./tauri/index.js";
 
@@ -107,6 +111,19 @@ function expectOk<T>(result: AdapterResult<T>): T {
 }
 
 describe("PlatformAdapter contract", () => {
+  it("canonicalizes legacy read markers into the status consumed by the inbox", () => {
+    const feed = normalizeNotificationsFeed([
+      { id: "legacy-read", title: "already seen", readAt: "2026-09-01T00:00:00.000Z" },
+      { id: "legacy-unread", title: "still new" },
+    ]);
+
+    expect(feed.unreadCount).toBe(1);
+    expect(feed.notifications).toEqual([
+      expect.objectContaining({ id: "legacy-read", read: true, status: "read" }),
+      expect.objectContaining({ id: "legacy-unread", read: false, status: "unread" }),
+    ]);
+  });
+
   it("same call sequence produces equivalent state on web and tauri", async () => {
     const web = makeWebAdapter();
     const tauri = makeTauriAdapter();

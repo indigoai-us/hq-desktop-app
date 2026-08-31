@@ -1094,13 +1094,14 @@
             fromPersonUid: payload.fromPersonUid,
             selfUid: self?.uid,
           });
+          const absoluteUnread = payload.absoluteUnread === true;
           // One-row cache patch from the wake specifics. Do not refetch the
           // directory (or the DM inbox) for a single channel message.
           channels = applyChannelMessageWake(channels, {
             channelId,
             createdAt: payload.createdAt,
-            unread: bump ? undefined : payload.unread,
-            unreadDelta: bump ? 1 : 0,
+            unread: absoluteUnread ? payload.unread : bump ? undefined : payload.unread,
+            unreadDelta: absoluteUnread ? 0 : bump ? 1 : 0,
           });
         }),
       );
@@ -1135,7 +1136,9 @@
           ) {
             return;
           }
-          pairUnreads = incrementPairUnread(pairUnreads, payload.fromPersonUid);
+          if (payload.absoluteUnread !== true) {
+            pairUnreads = incrementPairUnread(pairUnreads, payload.fromPersonUid);
+          }
           const stamp = payload.createdAt;
           contacts = contacts.map((contact) =>
             contact.personUid === payload.fromPersonUid

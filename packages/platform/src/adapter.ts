@@ -107,14 +107,18 @@ function notificationItem(value: unknown): NotificationItem | null {
         : "";
   const status = typeof row.status === "string" ? row.status.toLowerCase() : "";
   const readAt = row.readAt ?? row.read_at;
+  const read =
+    row.read === true ||
+    status === "read" ||
+    (typeof readAt === "string" && readAt.trim().length > 0);
   return {
     ...row,
     id,
     title,
-    read:
-      row.read === true ||
-      status === "read" ||
-      (typeof readAt === "string" && readAt.trim().length > 0),
+    // Consumers use the durable status field, so legacy read/readAt rows must
+    // be normalized into the same state rather than only exposing a side flag.
+    status: status || (read ? "read" : "unread"),
+    read,
   };
 }
 

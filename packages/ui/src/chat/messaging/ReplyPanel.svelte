@@ -466,7 +466,6 @@
       replies = [];
       replyCount = 0;
       seenIds = new Set();
-      reportActiveThread();
       void load();
     });
     return () => onactivethreadchange?.(null);

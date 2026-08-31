@@ -461,6 +461,7 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(calls.filter((command) => command === 'fetch_thread').length).toBeGreaterThan(
       replyFetches,
     );
+
   });
 
   it('consumes a cold meeting focus id and marks the requested agenda row', async () => {

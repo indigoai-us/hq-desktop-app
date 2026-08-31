@@ -116,7 +116,8 @@ function scopedNativePayload(
   return true;
 }
 
-function nativeWakeKey(name: string, payload: unknown): string | null {
+/** Only stable backend event IDs are safe dedupe identities. */
+function nativeWakeKey(payload: unknown): string | null {
   const records = nativeRecords(payload);
   const ids = records
     .map((record) => {
@@ -126,15 +127,12 @@ function nativeWakeKey(name: string, payload: unknown): string | null {
           record.event_id ??
           record.id ??
           reply?.eventId ??
-          reply?.event_id ??
-          (name === 'channel:new-message'
-            ? `${nativeString(record.channelId)}:${String(record.unread ?? '')}`
-            : ''),
+          reply?.event_id,
       );
     })
     .filter(Boolean)
     .sort();
-  return ids.length > 0 ? `${name}:${ids.join(',')}` : null;
+  return ids.length > 0 ? `event:${ids.join(',')}` : null;
 }
 
 function asPairUnreads(payload: unknown): {
@@ -176,7 +174,7 @@ export async function subscribeHqWorkNativeWakes(
     if (disposed) return false;
     const scope = config.scope();
     if (!scope || !scopedNativePayload(payload, scope)) return false;
-    const key = nativeWakeKey(name, payload);
+    const key = nativeWakeKey(payload);
     if (!key) return true;
     const now = Date.now();
     for (const [seen, at] of delivered) {
@@ -217,6 +215,9 @@ export async function subscribeHqWorkNativeWakes(
             ? { createdAt: nativeString(row.createdAt ?? row.created_at) }
             : {}),
           direction: 'in',
+          // Rust emits the exact per-pair counts before these fresh rows. Keep
+          // this event as a timeline/contact wake, never a second badge delta.
+          absoluteUnread: true,
         });
       }
       config.onNotificationWake();
@@ -235,6 +236,9 @@ export async function subscribeHqWorkNativeWakes(
           ? { createdAt: nativeString(row?.createdAt ?? row?.created_at) }
           : {}),
         ...(typeof row?.unread === 'number' ? { unread: row.unread } : {}),
+        // The native channel poll coalesces multiple messages into the current
+        // absolute unread total; it is not a single-message increment.
+        ...(typeof row?.unread === 'number' ? { absoluteUnread: true } : {}),
       });
       config.onNotificationWake();
     }),
