@@ -48,7 +48,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// True while a browser OAuth attempt is outstanding. The tray blur-hide
 /// handler consults this so opening the system browser does not dismiss the
@@ -561,9 +561,13 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     crate::commands::dm_notify::replace_notification_credentials(&app, &tokens).await?;
     eprintln!("[oauth] token exchange completed");
 
-    Ok(crate::commands::auth::authenticated_state_from_tokens(
-        &tokens,
-    ))
+    let state = crate::commands::auth::authenticated_state_from_tokens(&tokens);
+    // Native credentials are durable before this event goes out. Embedded HQ
+    // Work uses this completion edge to re-hydrate account and memberships;
+    // the payload contains only the existing non-secret auth state.
+    app.emit("auth:session-ready", &state)
+        .map_err(|err| err.to_string())?;
+    Ok(state)
 }
 
 /// Wait on the loopback listener bound by `start_oauth_login` for the OAuth

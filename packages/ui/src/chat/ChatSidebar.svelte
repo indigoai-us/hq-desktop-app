@@ -119,7 +119,8 @@
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
-    onselect?: (row: ConversationRow) => void;
+    /** `automatic` distinguishes the initial rail selection from a user click. */
+    onselect?: (row: ConversationRow, options?: { automatic?: boolean }) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => void;
   }
@@ -410,7 +411,7 @@
     const pick = pickAutoOpenConversation(filteredRows, selectedId);
     if (!pick) return;
     autoOpenRequestedId = pick.id;
-    void openRow(pick);
+    void openRow(pick, undefined, true);
   });
   const grouped = $derived(
     sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
@@ -1400,6 +1401,7 @@
   async function openRow(
     row: ConversationRow,
     focus?: { messageId?: string | null; createdAt?: string | null },
+    automatic = false,
   ) {
     const started = performance.now();
     sidebarLog("open-row", {
@@ -1410,8 +1412,8 @@
       filter: showFilter,
     });
     activeId = row.id;
-    onselect?.(row);
-    onnavigateMessages?.();
+    onselect?.(row, { automatic });
+    if (!automatic) onnavigateMessages?.();
 
     // G4: stash the open target SYNCHRONOUSLY, before any awaited IPC. The
     // previous ordering awaited mark-read first, so the mounting MessagesShell
@@ -1422,6 +1424,7 @@
         personUid: row.personUid,
         email: row.email ?? "",
         displayName: row.title,
+        automatic,
       });
       recentDms = rememberRecentDm(recentDms, row.personUid);
       saveRecentDms(recentDms, storage);
@@ -1463,6 +1466,7 @@
       requestChannelOpen(row.channelId, {
         messageId: focus?.messageId,
         createdAt: focus?.createdAt,
+        automatic,
       });
       channels = clearChannelUnread(channels, row.channelId);
       try {

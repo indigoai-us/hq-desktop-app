@@ -611,10 +611,17 @@ export interface UpdatesApi {
   availableChannels(): AdapterPromise<string[]>;
 }
 
+/** Explicit native install intent. Registry installs use a different CLI path. */
+export interface PackageInstallRequest {
+  source: string;
+  /** Route an entitlement-gated registry slug to `hq packages install`. */
+  registry?: boolean;
+}
+
 /** Desktop-only group (capability: canManagePackages). */
 export interface PackagesApi {
   listPackages(): AdapterPromise<Json[]>;
-  install(source: string): AdapterPromise<Json>;
+  install(request: PackageInstallRequest): AdapterPromise<Json>;
   update(name: string): AdapterPromise<Json>;
   uninstall(name: string): AdapterPromise<void>;
   checkUpdates(): AdapterPromise<Json>;

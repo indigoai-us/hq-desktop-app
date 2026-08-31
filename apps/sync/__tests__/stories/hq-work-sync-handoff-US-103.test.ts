@@ -30,7 +30,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 
 import { flushSync, mount, unmount } from 'svelte';
 import { failure, ok, type PlatformAdapter } from '@hq/platform';
-import { ChatSidebar, OPEN_SETTINGS_EVENT } from '@hq/ui';
+import { ChatSidebar, EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
 import {
   bootDesktopAltWindow,
   resolveDesktopAltShell,
@@ -69,7 +69,11 @@ function mockInvoke(): SyncInvokeFn {
   return async (cmd, args) => {
     switch (cmd) {
       case 'get_auth_state':
-        return { authenticated: true, expiresAt: '2099-01-01T00:00:00Z' };
+        return {
+          authenticated: true,
+          accountId: 'acct_ada',
+          expiresAt: '2099-01-01T00:00:00Z',
+        };
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':
@@ -374,23 +378,53 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
     });
 
-    it('applyDesktopAltRoute maps settings and settings:updates onto OPEN_SETTINGS_EVENT', () => {
+    it('applyDesktopAltRoute emits typed subsection targets instead of flattening them', () => {
       const seen: string[] = [];
+      const targets: unknown[] = [];
       const onSettings = () => {
         seen.push('settings');
       };
+      const onEmbedded = (event: Event) => {
+        targets.push((event as CustomEvent).detail);
+      };
       window.addEventListener(OPEN_SETTINGS_EVENT, onSettings);
+      window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbedded);
       applyDesktopAltRoute(null);
       applyDesktopAltRoute('meetings');
       applyDesktopAltRoute('settings');
       applyDesktopAltRoute('settings:updates');
       applyDesktopAltRoute('settings/general');
       window.removeEventListener(OPEN_SETTINGS_EVENT, onSettings);
-      expect(seen).toEqual(['settings', 'settings', 'settings']);
+      window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbedded);
+      expect(seen).toEqual(['settings']);
+      expect(targets).toEqual([
+        { kind: 'meetings' },
+        { kind: 'settings', section: 'updates' },
+        { kind: 'settings', section: 'general' },
+      ]);
     });
   });
 
   describe('sidebar host bridge', () => {
+    it('maps typed registry installation to the native registry command arguments', async () => {
+      const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+      const adapter = createSyncPlatformAdapter({
+        invoke: async (command, args) => {
+          calls.push({ command, args });
+          return null;
+        },
+      });
+
+      await adapter.packages.install({ source: 'hq-pack-engineering', registry: true });
+
+      expect(calls).toEqual([
+        {
+          command: 'install_package',
+          args: { source: 'hq-pack-engineering', registry: true },
+        },
+      ]);
+    });
+
     it('maps list_channels payloads onto a directory snapshot', async () => {
       const adapter = createSyncPlatformAdapter({
         invoke: async (cmd) => {

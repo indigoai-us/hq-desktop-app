@@ -574,6 +574,7 @@ pub enum DesktopDestination {
     CoreDrift,
     Library,
     LibraryInstalled,
+    LibraryMarketplace,
     Settings,
     /// Free-form route already in the pending-route grammar (company tabs, etc.).
     Custom(String),
@@ -589,6 +590,7 @@ impl DesktopDestination {
             Self::Meetings => "meetings",
             Self::Library => "library",
             Self::LibraryInstalled => "library:installed",
+            Self::LibraryMarketplace => "library:marketplace",
             Self::Settings => "settings",
             Self::Custom(s) => s.as_str(),
         }
@@ -609,6 +611,7 @@ impl DesktopDestination {
             "meetings" => Self::Meetings,
             "library" => Self::Library,
             "library:installed" => Self::LibraryInstalled,
+            "library:marketplace" => Self::LibraryMarketplace,
             "settings" => Self::Settings,
             other => Self::Custom(other.to_string()),
         })
@@ -1562,6 +1565,10 @@ mod window_router_tests {
             DesktopDestination::LibraryInstalled.route_str(),
             "library:installed"
         );
+        assert_eq!(
+            DesktopDestination::LibraryMarketplace.route_str(),
+            "library:marketplace"
+        );
         assert_eq!(DesktopDestination::Settings.route_str(), "settings");
         assert_eq!(
             DesktopDestination::Custom("company:indigo:activity".into()).route_str(),
@@ -1594,6 +1601,10 @@ mod window_router_tests {
         assert_eq!(
             DesktopDestination::from_route_name("library:installed"),
             Some(DesktopDestination::LibraryInstalled)
+        );
+        assert_eq!(
+            DesktopDestination::from_route_name("library:marketplace"),
+            Some(DesktopDestination::LibraryMarketplace)
         );
         assert_eq!(DesktopDestination::from_route_name(""), None);
         assert_eq!(DesktopDestination::from_route_name("   "), None);

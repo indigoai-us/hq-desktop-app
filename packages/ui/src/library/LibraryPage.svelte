@@ -49,6 +49,7 @@
     skills: "Skills",
     workers: "Workers",
     installed: "Installed",
+    marketplace: "Marketplace",
     submit: "Publish a pack",
     profile: "Profile",
   };
@@ -61,6 +62,8 @@
         ? `${items.workers.length} ${items.workers.length === 1 ? "worker" : "workers"} available to you`
         : tab === "installed"
           ? "Marketplace packs installed in your HQ"
+          : tab === "marketplace"
+            ? "Browse approved packs for your HQ"
           : tab === "submit"
             ? "Submit a local skill or worker for marketplace review"
             : "Your HQ profile and published work",
