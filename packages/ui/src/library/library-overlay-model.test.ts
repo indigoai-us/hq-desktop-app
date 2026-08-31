@@ -72,11 +72,12 @@ describe("library-overlay-model (US-017)", () => {
       expect(libraryNavCounts(null)).toEqual({ skills: 0, workers: 0 });
     });
 
-    it("builds left-nav rows with Skills N / Workers N / Marketplace", () => {
+    it("keeps Installed distinct from Marketplace discovery in the left nav", () => {
       const rows = buildLibraryNavRows(sampleItems);
       expect(rows.map((r) => formatNavLabel(r))).toEqual([
         "Skills 2",
         "Workers 1",
+        "Installed",
         "Marketplace",
       ]);
     });
@@ -94,18 +95,17 @@ describe("library-overlay-model (US-017)", () => {
     it("maps library route tabs onto overlay tabs", () => {
       expect(resolveOverlayTab("skills")).toBe("skills");
       expect(resolveOverlayTab("workers")).toBe("workers");
-      expect(resolveOverlayTab("installed")).toBe("marketplace");
+      expect(resolveOverlayTab("installed")).toBe("installed");
       expect(resolveOverlayTab("submit")).toBe("marketplace");
       expect(resolveOverlayTab("profile")).toBe("marketplace");
       expect(resolveOverlayTab(undefined)).toBe("skills");
-      expect(resolveOverlayTab("installed", { marketplace: false })).toBe(
-        "skills",
-      );
+      expect(resolveOverlayTab("installed", { marketplace: false })).toBe("installed");
     });
 
     it("maps overlay tabs back to route LibraryTab", () => {
       expect(overlayTabToLibraryTab("skills")).toBe("skills");
       expect(overlayTabToLibraryTab("workers")).toBe("workers");
+      expect(overlayTabToLibraryTab("installed")).toBe("installed");
       expect(overlayTabToLibraryTab("marketplace")).toBe("installed");
     });
   });

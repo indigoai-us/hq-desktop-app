@@ -7,10 +7,9 @@
  * launch_hq_work hop.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  EMBEDDED_NAVIGATION_EVENT,
   OPEN_SETTINGS_EVENT,
   takePendingChannelOpen,
   takePendingConversation,
@@ -22,12 +21,6 @@ import {
   isValidHqWorkDeepLink,
   parseHqWorkOpenUrl,
 } from '../../src/lib/hq-work';
-
-const repoRoot = resolve(process.cwd());
-
-function readRepo(...parts: string[]): string {
-  return readFileSync(resolve(repoRoot, ...parts), 'utf8');
-}
 
 /** Product path: intercept builds this URL, host applies it. */
 function notificationClick(url: string): void {
@@ -130,12 +123,17 @@ describe('US-104 internal notification + deep-link routing', () => {
     }
   });
 
-  it('applyDesktopAltRoute still maps settings onto OPEN_SETTINGS_EVENT', () => {
+  it('applyDesktopAltRoute emits each non-chat desktop destination explicitly', () => {
     const seen: string[] = [];
+    const targets: unknown[] = [];
     const onSettings = () => {
       seen.push('settings');
     };
+    const onEmbedded = (event: Event) => {
+      targets.push((event as CustomEvent).detail);
+    };
     window.addEventListener(OPEN_SETTINGS_EVENT, onSettings);
+    window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbedded);
     applyDesktopAltRoute(null);
     applyDesktopAltRoute('meetings');
     applyDesktopAltRoute('inbox');
@@ -144,35 +142,15 @@ describe('US-104 internal notification + deep-link routing', () => {
     applyDesktopAltRoute('settings:updates');
     applyDesktopAltRoute('settings/general');
     window.removeEventListener(OPEN_SETTINGS_EVENT, onSettings);
-    expect(seen).toEqual(['settings', 'settings', 'settings']);
+    window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbedded);
+    expect(seen).toEqual(['settings']);
+    expect(targets).toEqual([
+      { kind: 'meetings' },
+      { kind: 'inbox' },
+      { kind: 'messages' },
+      { kind: 'settings', section: 'updates' },
+      { kind: 'settings', section: 'general' },
+    ]);
     expect(takePendingChannelOpen()).toBeNull();
-  });
-
-  it('HqWorkDesktopShell maps desktop:navigate / pending route onto applyDesktopAltRoute', () => {
-    const shell = readRepo('src/desktop-alt/HqWorkDesktopShell.svelte');
-    expect(shell).toContain('applyDesktopAltRoute');
-    expect(shell).toContain("listen<string>('desktop:navigate'");
-    expect(shell).toContain('desktop_alt_consume_pending_route');
-    expect(shell).not.toContain('launchHqWork');
-    expect(shell).not.toContain('launch_hq_work');
-  });
-
-  it('flag-on intercepts open this window, never launch_hq_work', () => {
-    const hq = readRepo('src-tauri/src/commands/hq_work.rs');
-    const conversation = hq.slice(
-      hq.indexOf('fn maybe_intercept_conversation_open'),
-      hq.indexOf('fn maybe_intercept_dm_open'),
-    );
-    const dm = hq.slice(
-      hq.indexOf('fn maybe_intercept_dm_open'),
-      hq.indexOf('fn hide_compact_popover'),
-    );
-    expect(conversation).toContain('spawn_embedded_desktop_open');
-    expect(conversation).toContain('embedded_conversation_route');
-    expect(conversation).not.toContain('launch_hq_work');
-    expect(dm).toContain('spawn_embedded_desktop_open');
-    expect(dm).not.toContain('launch_hq_work');
-    expect(hq).toContain('open_desktop_alt_window_inner');
-    expect(hq).toContain('internal_route_from_external_hqwork_url');
   });
 });

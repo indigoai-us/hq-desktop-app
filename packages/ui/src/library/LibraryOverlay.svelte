@@ -20,6 +20,7 @@
     type UnlistenFn,
   } from "./library-refresh.js";
   import MarketplacePanel from "../marketplace/MarketplacePanel.svelte";
+  import InstalledPacksPanel from "../marketplace/InstalledPacksPanel.svelte";
   import {
     type LibraryTab,
     buildLibraryNavRows,
@@ -428,6 +429,10 @@
               {/each}
             </div>
           {/if}
+        </div>
+      {:else if activeTab === "installed"}
+        <div class="lo-panel" data-testid="library-installed-panel">
+          <InstalledPacksPanel {adapter} />
         </div>
       {:else}
         <div class="lo-panel lo-market" data-testid="library-marketplace-panel">

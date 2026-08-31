@@ -55,7 +55,7 @@
     adapter?: PlatformAdapter | null;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
-    onopenconsole?: (url: string) => void;
+    onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
   }
 
@@ -240,7 +240,7 @@
     // Denied: do not flip notifRequesting into "Requesting…" — open Settings.
     if (notifPermission === "denied") {
       try {
-        openExternalUrl(
+        await openExternalUrl(
           "x-apple.systempreferences:com.apple.preference.notifications",
         );
       } catch (err) {
@@ -333,9 +333,9 @@
     return true;
   }
 
-  function openExternalUrl(url: string): void {
+  async function openExternalUrl(url: string): Promise<void> {
     if (onopenconsole) {
-      onopenconsole(url);
+      await onopenconsole(url);
       return;
     }
     const opened = window.open(url, "_blank", "noopener,noreferrer");
@@ -343,6 +343,14 @@
       throw new Error(
         "Popup blocked — allow popups for this site and try again.",
       );
+    }
+  }
+
+  async function openIntegrationsConsole(): Promise<void> {
+    try {
+      await openExternalUrl(HQ_CONSOLE_INTEGRATIONS_URL);
+    } catch (error) {
+      setCalendarConnectMessage(`Couldn’t open HQ Console: ${String(error)}`, true);
     }
   }
 
@@ -371,7 +379,7 @@
       }
       if (result.url) {
         try {
-          openExternalUrl(result.url);
+          await openExternalUrl(result.url);
         } catch (err) {
           meetingsStore.stopCalendarConnectWatch();
           setCalendarConnectMessage(
@@ -1036,7 +1044,7 @@
           type="button"
           class="chip quiet"
           data-testid="settings-manage-console"
-          onclick={() => openExternalUrl(HQ_CONSOLE_INTEGRATIONS_URL)}
+          onclick={() => void openIntegrationsConsole()}
         >
           Manage in console
         </button>

@@ -9,6 +9,8 @@
 import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
   normalizeDirectoryFeed,
+  dispatchEmbeddedNavigation,
+  isEmbeddedSettingsSection,
   OPEN_SETTINGS_EVENT,
   requestChannelOpen,
   requestConversation,
@@ -18,6 +20,7 @@ import {
   type ContactsResponse,
   type MessageSearchResult,
   type RequestsResponse,
+  type EmbeddedNavigationTarget,
 } from '@hq/ui';
 import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
 
@@ -129,20 +132,161 @@ export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
   }
 }
 
-/** Map a desktop-alt pending route onto the embedded DesktopApp. */
-export function applyDesktopAltRoute(route: string | null | undefined): void {
-  const trimmed = route?.trim() ?? '';
-  if (!trimmed) return;
+/**
+ * Stateful delivery boundary between native desktop routes and the mounted
+ * shared shell. `attach` is called by `DesktopApp` only after its listeners
+ * exist, so a cold pending route cannot disappear in the mount gap.
+ */
+export class EmbeddedNavigationController {
+  #pending: EmbeddedNavigationTarget | null = null;
+  #deliver: ((target: EmbeddedNavigationTarget) => void) | null = null;
+  #pendingMeetingId: string | null = null;
+
+  navigate(target: EmbeddedNavigationTarget): void {
+    if (target.kind === 'meetings') {
+      const meetingId = target.meetingId?.trim() || null;
+      if (meetingId) this.#pendingMeetingId = meetingId;
+      else if (this.#pendingMeetingId) {
+        target = { ...target, meetingId: this.#pendingMeetingId };
+      }
+    }
+    if (this.#deliver) {
+      this.#deliver(target);
+      if (target.kind === 'meetings' && target.meetingId) {
+        this.#pendingMeetingId = null;
+      }
+      return;
+    }
+    this.#pending = target;
+  }
+
+  attach(deliver: (target: EmbeddedNavigationTarget) => void): () => void {
+    this.#deliver = deliver;
+    const pending = this.#pending;
+    this.#pending = null;
+    if (pending) {
+      deliver(pending);
+      if (pending.kind === 'meetings' && pending.meetingId) {
+        this.#pendingMeetingId = null;
+      }
+    }
+    return () => {
+      if (this.#deliver === deliver) this.#deliver = null;
+    };
+  }
+
+  clear(): void {
+    this.#pending = null;
+    this.#pendingMeetingId = null;
+  }
+}
+
+export function createEmbeddedNavigationController(): EmbeddedNavigationController {
+  return new EmbeddedNavigationController();
+}
+
+function routeTarget(route: string): EmbeddedNavigationTarget {
   // hqwork:// must be handled before slash→colon (otherwise `://` becomes `:::`).
-  if (trimmed.startsWith('hqwork://')) {
-    const target = parseHqWorkOpenUrl(trimmed);
-    if (!target) return;
-    requestDeepLinkOpen(target);
+  if (route.startsWith('hqwork://')) {
+    const target = parseHqWorkOpenUrl(route);
+    if (!target) {
+      return {
+        kind: 'unsupported',
+        route,
+        reason: 'Invalid HQ Work deep link',
+      };
+    }
+    if (target.channelId) {
+      return {
+        kind: 'channel',
+        channelId: target.channelId,
+        replyRootEventId: target.replyRootEventId,
+      };
+    }
+    return {
+      kind: 'dm',
+      personUid: target.personUid!,
+      replyRootEventId: target.replyRootEventId,
+    };
+  }
+
+  const normalized = route.replace(/\//g, ':');
+  const [kind, detail, ...rest] = normalized.split(':');
+  const hasExtraSegments = rest.length > 0;
+  switch (kind) {
+    case 'home':
+    case 'sync':
+    case 'activity':
+    case 'core-drift':
+    case 'drift':
+      if (!detail) return { kind: 'home' };
+      break;
+    case 'inbox':
+    case 'notifications':
+      if (!detail) return { kind: 'inbox' };
+      break;
+    case 'messages':
+      if (!detail) return { kind: 'messages' };
+      break;
+    case 'meetings':
+      if (!detail) return { kind: 'meetings' };
+      break;
+    case 'library':
+      if (!hasExtraSegments && (!detail || detail === 'skills')) {
+        return { kind: 'library', tab: 'skills' };
+      }
+      if (!hasExtraSegments && detail === 'installed') {
+        return { kind: 'library', tab: 'installed' };
+      }
+      break;
+    case 'settings':
+      if (!detail) return { kind: 'settings' };
+      if (!hasExtraSegments && isEmbeddedSettingsSection(detail)) {
+        return { kind: 'settings', section: detail };
+      }
+      break;
+  }
+  return {
+    kind: 'unsupported',
+    route,
+    reason: 'Unsupported embedded destination',
+  };
+}
+
+function deliverImmediately(target: EmbeddedNavigationTarget): void {
+  // Preserve the public helper's existing unit-test seam. The real embedded
+  // shell supplies a controller and therefore only delivers after mount.
+  if (target.kind === 'channel') {
+    requestDeepLinkOpen({
+      channelId: target.channelId,
+      personUid: null,
+      replyRootEventId: target.replyRootEventId ?? null,
+    });
     return;
   }
-  const normalized = trimmed.replace(/\//g, ':');
-  const kind = normalized.split(':')[0] ?? '';
-  if (kind === 'settings') {
-    window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
+  if (target.kind === 'dm') {
+    requestDeepLinkOpen({
+      channelId: null,
+      personUid: target.personUid,
+      replyRootEventId: target.replyRootEventId ?? null,
+    });
+    return;
   }
+  if (target.kind === 'settings' && !target.section) {
+    window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
+    return;
+  }
+  dispatchEmbeddedNavigation(target);
+}
+
+/** Map a native pending/live route onto the embedded DesktopApp. */
+export function applyDesktopAltRoute(
+  route: string | null | undefined,
+  controller?: EmbeddedNavigationController,
+): void {
+  const trimmed = route?.trim() ?? '';
+  if (!trimmed) return;
+  const target = routeTarget(trimmed);
+  if (controller) controller.navigate(target);
+  else deliverImmediately(target);
 }

@@ -49,6 +49,11 @@
   } from "../meetings/meetings-store.svelte";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { LibraryTab } from "../library/library-overlay-model.js";
+  import {
+    EMBEDDED_NAVIGATION_EVENT,
+    type EmbeddedNavigationTarget,
+    type EmbeddedSettingsSection,
+  } from "./embedded-navigation.js";
   import { onMount, untrack } from "svelte";
   import {
     applyColorTheme,
@@ -142,6 +147,7 @@
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
+    requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
     type ConversationDeepLink,
@@ -149,6 +155,7 @@
   } from "../chat/open-target.js";
   import {
     MESSAGE_PERSON_EVENT,
+    requestConversation,
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
@@ -248,10 +255,15 @@
      * card / packs / update). MUST stay false on real-data paths.
      */
     coreFixtures?: boolean;
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
     onOpenSettings?: () => void;
     /** Open HQ Console externally (Settings → Manage account). */
-    onOpenConsole?: (url: string) => void;
+    onOpenConsole?: (url: string) => Promise<void> | void;
+    /**
+     * Called once the mounted app can receive embedded host navigation.
+     * A returned cleanup detaches the host while lifecycle changes unmount it.
+     */
+    onembeddednavigationready?: () => void | (() => void);
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
     /**
@@ -304,6 +316,7 @@
     onsignout,
     onOpenSettings,
     onOpenConsole,
+    onembeddednavigationready,
     notificationWakeSeq = 0,
     hydrateLiveMessages = false,
     onlivemessages,
@@ -334,6 +347,9 @@
     "conversation" | "notifications" | "settings" | "meetings" | "library"
   >("conversation");
   let libraryTab = $state<LibraryTab>("skills");
+  let settingsSection = $state<EmbeddedSettingsSection | null>(null);
+  let meetingFocusRequest = $state<string | null>(null);
+  let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
   let openReplyRootId = $state<string | null>(null);
   let attachTray = $state<{
@@ -1129,10 +1145,10 @@
 
   function handleSelect(
     row: ConversationRow,
-    options?: { replyRootEventId?: string | null },
+    options?: { replyRootEventId?: string | null; preserveView?: boolean },
   ): void {
     selectedRow = row;
-    view = "conversation";
+    if (!options?.preserveView) view = "conversation";
     tab = "chat";
     paletteOpen = false;
     membersOpen = false;
@@ -1524,8 +1540,9 @@
     view = view === "notifications" ? "conversation" : "notifications";
   }
 
-  function openSettings(): void {
+  function openSettings(section: EmbeddedSettingsSection | null = null): void {
     view = "settings";
+    settingsSection = section;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -1534,6 +1551,57 @@
 
   function closeSettings(): void {
     view = "conversation";
+    settingsSection = null;
+  }
+
+  /** Apply a host route after DesktopApp's event listeners have mounted. */
+  function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
+    embeddedNavigationError = null;
+    switch (target.kind) {
+      case "home":
+      case "messages":
+        view = "conversation";
+        settingsSection = null;
+        meetingFocusRequest = null;
+        return;
+      case "inbox":
+        view = "notifications";
+        settingsSection = null;
+        meetingFocusRequest = null;
+        return;
+      case "meetings":
+        view = "meetings";
+        settingsSection = null;
+        if (target.meetingId?.trim()) meetingFocusRequest = target.meetingId.trim();
+        return;
+      case "library":
+        openLibrary(target.tab);
+        settingsSection = null;
+        meetingFocusRequest = null;
+        return;
+      case "settings":
+        meetingFocusRequest = null;
+        openSettings(target.section ?? null);
+        return;
+      case "channel":
+        meetingFocusRequest = null;
+        requestChannelOpen(target.channelId, {
+          replyRootEventId: target.replyRootEventId,
+        });
+        return;
+      case "dm":
+        meetingFocusRequest = null;
+        requestConversation({
+          personUid: target.personUid,
+          email: "",
+          displayName: "",
+          replyRootEventId: target.replyRootEventId,
+        });
+        return;
+      case "unsupported":
+        embeddedNavigationError = `${target.reason}: ${target.route}`;
+        return;
+    }
   }
 
   function sweepStaleAttachmentTrays(reason: string): void {
@@ -1659,23 +1727,32 @@
     function onOpenSettingsEvent(): void {
       openSettings();
     }
+    function onEmbeddedNavigation(event: Event): void {
+      const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
+      if (!target || typeof target !== "object" || !("kind" in target)) return;
+      applyEmbeddedNavigation(target);
+    }
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
     const pendingChannel = takePendingChannelOpen();
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
+      detachEmbeddedNavigation?.();
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
+      window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   });
@@ -1705,6 +1782,16 @@
     onopenMarketplace={isWeb ? undefined : () => openLibrary("installed")}
   />
 
+  {#if embeddedNavigationError}
+    <div
+      class="embedded-navigation-error"
+      data-testid="embedded-navigation-error"
+      role="alert"
+    >
+      Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
   {#if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
@@ -1715,9 +1802,12 @@
         {companies}
         {adapter}
         {version}
+        initialSection={settingsSection}
         onback={closeSettings}
-        onsignout={() => onsignout?.()}
-        onopenconsole={(url) => onOpenConsole?.(url ?? HQ_CONSOLE_BASE)}
+        onsignout={onsignout}
+        onopenconsole={onOpenConsole
+          ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
+          : undefined}
         consoleBase={HQ_CONSOLE_BASE}
       />
     </div>
@@ -1734,11 +1824,14 @@
           accountInitials={resolvedAccountInitials}
           selectedId={selectedRow?.id ?? null}
           {seedDirectory}
-          onselect={handleSelect}
+          onselect={(row, options) =>
+            handleSelect(row, {
+              preserveView: options?.automatic === true && view !== "conversation",
+            })}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => (view = "conversation")}
           onopenSettings={() => openSettings()}
-          onsignout={() => onsignout?.()}
+          onsignout={onsignout}
         />
       {/if}
 
@@ -1760,7 +1853,8 @@
           <MeetingsPage
             {adapter}
             onback={() => (view = "conversation")}
-            openExternal={(url) => onopenurl?.(url)}
+            openExternal={onopenurl}
+            focusRequest={meetingFocusRequest}
           />
         {:else if view === "conversation" && selectedRow}
           <header

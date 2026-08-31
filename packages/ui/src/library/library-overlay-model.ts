@@ -27,8 +27,8 @@ import { packIdentity } from "./packages-model.js";
 export type LibraryTab =
   "skills" | "workers" | "installed" | "submit" | "profile";
 
-/** Overlay left-nav destinations (Skills / Workers / Marketplace). */
-export type LibraryOverlayTab = "skills" | "workers" | "marketplace";
+/** Overlay left-nav destinations. Installed packs stay distinct from discovery. */
+export type LibraryOverlayTab = "skills" | "workers" | "installed" | "marketplace";
 
 export type MarketplaceBadge = "installed" | "update" | "get";
 
@@ -54,15 +54,17 @@ export interface LibraryNavRow {
 }
 
 /**
- * Map a routed LibraryTab onto the overlay's three tabs.
- * `installed` / `submit` / `profile` land on Marketplace (packs surface).
+ * Map a routed LibraryTab onto the overlay's visible tabs.
+ * Installed packs are an account-management surface, never an alias for
+ * Marketplace discovery. `submit` / `profile` remain Marketplace-owned.
  */
 export function resolveOverlayTab(
   tab: LibraryTab | undefined | null,
   opts?: { workers?: boolean; marketplace?: boolean },
 ): LibraryOverlayTab {
   if (tab === "workers") return opts?.workers === false ? "skills" : "workers";
-  if (tab === "installed" || tab === "submit" || tab === "profile") {
+  if (tab === "installed") return "installed";
+  if (tab === "submit" || tab === "profile") {
     return opts?.marketplace === false ? "skills" : "marketplace";
   }
   return "skills";
@@ -71,6 +73,7 @@ export function resolveOverlayTab(
 /** Inverse: overlay tab → route LibraryTab for navigation. */
 export function overlayTabToLibraryTab(tab: LibraryOverlayTab): LibraryTab {
   if (tab === "workers") return "workers";
+  if (tab === "installed") return "installed";
   if (tab === "marketplace") return "installed";
   return "skills";
 }
@@ -97,6 +100,7 @@ export function buildLibraryNavRows(
     rows.push({ id: "workers", label: "Workers", count: counts.workers });
   }
   if (opts?.marketplace !== false) {
+    rows.push({ id: "installed", label: "Installed", count: null });
     rows.push({ id: "marketplace", label: "Marketplace", count: null });
   }
   return rows;
