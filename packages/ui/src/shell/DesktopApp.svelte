@@ -1450,7 +1450,15 @@
   ): Promise<string | null> {
     const signed = await adapter.files.presignVaultGet(companyUid, vaultPath);
     if (!signed.ok) return null;
-    return presignUrlFromResult(signed.value)?.url ?? null;
+    const url = presignUrlFromResult(signed.value)?.url ?? null;
+    if (!url || !getAttachmentObject) return url;
+    // Desktop: the packaged CSP deliberately blocks remote img-src (no
+    // tracking pixels), so <img> can never load the presigned https URL.
+    // Pull the bytes over the host's S3 hop and hand back a blob: URL.
+    const res = await getAttachmentObject(url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   }
 
   function openAttachmentTray(
@@ -1474,13 +1482,8 @@
     if (item.previewUrl) return item.previewUrl;
     const companyUid = item.companyUid || attachmentCompanyUid(selectedRow);
     if (!companyUid || !item.vaultPath) return null;
-    const signed = await presignAttachment(companyUid, item.vaultPath);
-    if (!signed) return null;
-    if (!getAttachmentObject) return signed;
-    const res = await getAttachmentObject(signed);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    // presignAttachment already returns blob: bytes on desktop hosts.
+    return presignAttachment(companyUid, item.vaultPath);
   }
 
   function openNotification(item: NotificationItem): void {
