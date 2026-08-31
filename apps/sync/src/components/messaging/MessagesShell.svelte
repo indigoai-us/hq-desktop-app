@@ -73,6 +73,7 @@
     type CompanyLabel,
     channelDisplayName,
     companyNameFor,
+    dedupeChannelsById,
     upsertChannel,
     bumpChannelUnread,
     clearChannelUnread,
@@ -1128,7 +1129,7 @@
     try {
       const resp = await invoke<ChannelsResponse | null>('list_channels');
       if (generation !== channelsLoadGeneration) return;
-      channels = mergeChannelMutations(resp?.channels ?? [], mutationRevision);
+      channels = mergeChannelMutations(dedupeChannelsById(resp?.channels ?? []), mutationRevision);
     } catch (err) {
       if (generation !== channelsLoadGeneration) return;
       channelsError = typeof err === 'string' ? err : 'Could not load channels';

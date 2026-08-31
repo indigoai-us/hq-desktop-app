@@ -17,6 +17,7 @@
   import {
     channelDisplayName,
     companyNameFor,
+    dedupeChannelsById,
     type Channel,
   } from '../lib/channels';
   import IdentityMark from './messaging/IdentityMark.svelte';
@@ -182,7 +183,7 @@
     try {
       const response = await invoke<ChannelsResponse | null>('list_channels');
       if (generation !== channelLoadGeneration) return;
-      channels = Array.isArray(response?.channels) ? response.channels : [];
+      channels = Array.isArray(response?.channels) ? dedupeChannelsById(response.channels) : [];
       channelLoadError = null;
     } catch (err) {
       if (generation !== channelLoadGeneration) return;
