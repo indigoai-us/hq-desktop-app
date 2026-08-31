@@ -27,7 +27,7 @@ function makeWebAdapter() {
     const respond = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200 });
     if (path === "/v1/identity/whoami") return respond(WHOAMI);
-    if (path === "/v1/messaging/channels" && method === "GET")
+    if (path === "/v1/notify/channels" && method === "GET")
       return respond(CHANNELS);
     if (path === "/v1/notify/notifications") return respond(NOTIFICATIONS);
     if (path === "/v1/notify/notifications/ack" && method === "POST") {
@@ -178,11 +178,25 @@ describe("PlatformAdapter contract", () => {
     expectOk(await tauri.messaging.listChannels(options));
 
     expect(webRequests).toEqual([
-      "https://api.test/v1/messaging/channels?companyUid=cmp_indigo&includeCompanyProjects=1",
+      "https://api.test/v1/notify/channels?companyUid=cmp_indigo&includeCompanyProjects=1",
     ]);
     expect(tauriCalls).toEqual([
       { cmd: "list_channels", args: options },
     ]);
+  });
+
+  it("uses the canonical channel-directory endpoint for unscoped web listings", async () => {
+    const requests: string[] = [];
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify([]), { status: 200 });
+      },
+    });
+
+    expectOk(await adapter.messaging.listChannels());
+    expect(requests).toEqual(["https://api.test/v1/notify/channels"]);
   });
 
   it("web adapter notifies onUnauthorized on HTTP 401 so the host can re-login", async () => {

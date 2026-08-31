@@ -239,6 +239,9 @@
   let composeRecipient = $state<SwitcherRow | null>(null);
   let composeSending = $state(false);
   let composeError = $state<string | null>(null);
+  /** Changes whenever a compose instance is opened or dismissed. A completion
+   *  from an earlier instance must never mutate the draft now on screen. */
+  let composeGeneration = 0;
   /** "+" header menu + "New channel" modal (name, scope, participants). */
   let plusMenuOpen = $state(false);
   let plusMenuEl = $state<HTMLDivElement | null>(null);
@@ -253,13 +256,30 @@
   /** Compose body carried into the create-channel flow — sent as the new
    *  channel's first message right after creation. */
   let pendingChannelFirstMessage = $state("");
-  /** A channel that exists but whose composed first message still needs sending. */
-  let createdChannel = $state<{
+  interface ChannelInvitee {
+    personUid: string;
+    label: string;
+  }
+  /**
+   * The durable result of the create call. Keeping it before the first invite
+   * means an invite retry always resumes this channel, never creates another.
+   */
+  interface CreatedChannel {
     channelId: string;
     name: string;
     scope: "personal" | "company";
     companyUid: string | null;
-  } | null>(null);
+    completedInvitees: ChannelInvitee[];
+    pendingInvitees: ChannelInvitee[];
+    /** The notify API has no idempotency key for posts. Once its response is
+     *  lost, another POST could duplicate the first message. */
+    firstMessageDelivery: "ready" | "unconfirmed";
+  }
+  let createdChannel = $state<CreatedChannel | null>(null);
+  /** A create request may have committed before a dropped response. The named
+   *  channel endpoint has no idempotency contract, so do not offer a duplicate
+   *  create as a misleading retry. */
+  let channelCreationUnconfirmed = $state(false);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
   let searchQuery = $state("");
@@ -582,7 +602,7 @@
     filterOpen = false;
     scopeMenuOpen = false;
     footerMenuOpen = false;
-    newMessageOpen = false;
+    if (newMessageOpen) closeNewMessage();
     searchOpen = false;
   }
 
@@ -600,6 +620,7 @@
 
   function openNewMessage(): void {
     closeAllOverlays();
+    composeGeneration += 1;
     newMessageOpen = true;
     newMessageQuery = "";
     composeBody = "";
@@ -618,6 +639,7 @@
     channelError = null;
     pendingChannelFirstMessage = "";
     createdChannel = null;
+    channelCreationUnconfirmed = false;
   }
 
   function closeNewChannel(): void {
@@ -626,6 +648,7 @@
     channelError = null;
     pendingChannelFirstMessage = "";
     createdChannel = null;
+    channelCreationUnconfirmed = false;
   }
 
   /**
@@ -656,10 +679,41 @@
     );
   }
 
+  function upsertCreatedChannel(
+    created: CreatedChannel,
+    hasFirstMessage: boolean,
+  ): Channel {
+    const optimistic: Channel = {
+      channelId: created.channelId,
+      name: created.name,
+      scope: created.scope,
+      companyUid: created.companyUid,
+      membership: "joined",
+      unread: 0,
+      lastMessageAt: hasFirstMessage ? new Date().toISOString() : null,
+    };
+    channels = upsertChannel(channels, optimistic);
+    return optimistic;
+  }
+
+  function createErrorDetail(err: unknown, fallback: string): string {
+    return err instanceof Error && err.message.trim()
+      ? err.message.trim()
+      : fallback;
+  }
+
   async function submitCreateChannel(): Promise<void> {
     const name = channelName.trim();
     const create = api.createChannel;
-    if (!name || (!create && !createdChannel) || channelCreating) return;
+    if (
+      !name ||
+      (!create && !createdChannel) ||
+      channelCreating ||
+      channelCreationUnconfirmed ||
+      createdChannel?.firstMessageDelivery === "unconfirmed"
+    ) {
+      return;
+    }
     channelCreating = true;
     channelError = null;
     try {
@@ -676,15 +730,41 @@
           name,
           scope,
           companyUid: channelCompanyUid || null,
+          completedInvitees: [],
+          pendingInvitees: channelParticipants.map((participant) => ({
+            ...participant,
+          })),
+          firstMessageDelivery: "ready",
         };
-        for (const p of channelParticipants) {
-          await api.addChannelMember?.(channelId, p.personUid);
+        // Persist the returned id BEFORE invoking invite N. From this moment,
+        // every retry is pinned to this already-created channel.
+        createdChannel = created;
+        upsertCreatedChannel(created, false);
+      }
+
+      if (created.pendingInvitees.length > 0) {
+        if (!api.addChannelMember) {
+          throw new Error(
+            "This host cannot add the remaining channel participants",
+          );
+        }
+        for (const invitee of created.pendingInvitees) {
+          await api.addChannelMember(created.channelId, invitee.personUid);
+          created = {
+            ...created,
+            completedInvitees: [...created.completedInvitees, invitee],
+            pendingInvitees: created.pendingInvitees.filter(
+              (candidate) => candidate.personUid !== invitee.personUid,
+            ),
+          };
+          createdChannel = created;
         }
       }
 
       // A composed draft is part of this action: do not close or navigate until
-      // the host acknowledges one send. If the channel exists but the send
-      // fails, keep the exact draft visible and retry against this same id.
+      // the host acknowledges one send. The current notify contract does not
+      // accept an idempotency key, so a rejected response is ambiguous: it may
+      // have committed. Keep the draft but never POST it a second time.
       const firstMessage = pendingChannelFirstMessage;
       if (firstMessage.trim()) {
         try {
@@ -693,36 +773,17 @@
             body: firstMessage,
           });
         } catch (err) {
+          created = { ...created, firstMessageDelivery: "unconfirmed" };
           createdChannel = created;
-          channels = upsertChannel(channels, {
-            channelId: created.channelId,
-            name: created.name,
-            scope: created.scope,
-            companyUid: created.companyUid,
-            membership: "joined",
-            unread: 0,
-            lastMessageAt: null,
-          });
-          const detail =
-            err instanceof Error && err.message.trim()
-              ? err.message.trim()
-              : "Could not send the first message";
-          channelError = `Channel created, but your first message was not sent: ${detail}. Your draft is preserved; retry sending it.`;
+          upsertCreatedChannel(created, false);
+          const detail = createErrorDetail(err, "Could not confirm the first message");
+          channelError = `Channel created, but delivery of the first message could not be confirmed: ${detail}. Your draft is preserved, but retry is disabled to prevent a duplicate message. Open the channel to verify delivery.`;
           return;
         }
       }
       // Optimistic rail insert so the new channel is visible immediately —
       // the directory reconcile below confirms it from the server.
-      const optimistic: Channel = {
-        channelId: created.channelId,
-        name: created.name,
-        scope: created.scope,
-        companyUid: created.companyUid,
-        membership: "joined",
-        unread: 0,
-        lastMessageAt: firstMessage.trim() ? new Date().toISOString() : null,
-      };
-      channels = upsertChannel(channels, optimistic);
+      const optimistic = upsertCreatedChannel(created, Boolean(firstMessage.trim()));
       closeNewChannel();
       await refreshLists();
       // A lagging directory snapshot may not include the just-created channel
@@ -733,16 +794,23 @@
       }
       requestChannelOpen(created.channelId);
     } catch (err) {
-      channelError =
-        err instanceof Error && err.message.trim()
-          ? err.message.trim()
-          : "Could not create the channel";
+      const detail = createErrorDetail(err, "Could not create the channel");
+      if (createdChannel) {
+        const pending = createdChannel.pendingInvitees;
+        channelError = pending.length
+          ? `Channel created, but ${pending.length} invitation${pending.length === 1 ? " is" : "s are"} incomplete (${pending.map((invitee) => invitee.label).join(", ")}): ${detail}. Retry to resume the same channel.`
+          : detail;
+      } else {
+        channelCreationUnconfirmed = true;
+        channelError = `Channel creation could not be confirmed: ${detail}. Retry is disabled to prevent creating a duplicate channel; check your channel list before trying again.`;
+      }
     } finally {
       channelCreating = false;
     }
   }
 
   function closeNewMessage(): void {
+    composeGeneration += 1;
     newMessageOpen = false;
     newMessageQuery = "";
     composeBody = "";
@@ -754,6 +822,7 @@
   /** Send the draft to a selected conversation before changing the UI state. */
   async function submitCompose(): Promise<void> {
     if (composeSending) return;
+    const generation = composeGeneration;
     const picked =
       composeRecipient ??
       filterSwitcher(liveSwitcherRows, newMessageQuery)[0] ??
@@ -770,6 +839,7 @@
             await api.sendChannelMessage({ channelId: picked.id, body });
           }
         } catch (err) {
+          if (generation !== composeGeneration || !newMessageOpen) return;
           const detail =
             err instanceof Error && err.message.trim()
               ? err.message.trim()
@@ -777,9 +847,12 @@
           composeError = `${detail}. Your draft is still here; retry sending it.`;
           return;
         } finally {
-          composeSending = false;
+          if (generation === composeGeneration && newMessageOpen) {
+            composeSending = false;
+          }
         }
       }
+      if (generation !== composeGeneration || !newMessageOpen) return;
       jumpToSwitcherRow(picked);
       closeNewMessage();
       return;
@@ -830,6 +903,12 @@
   function pickComposeRecipient(row: SwitcherRow): void {
     composeRecipient = row;
     newMessageQuery = row.name;
+  }
+
+  /** A typed edit is a new recipient intent; never retain a prior selection. */
+  function updateComposeRecipientQuery(value: string): void {
+    newMessageQuery = value;
+    composeRecipient = null;
   }
 
   function openFooterMenu(): void {
@@ -2249,8 +2328,10 @@
             type="text"
             data-testid="chat-compose-to"
             placeholder="Type a name or channel…"
-            bind:value={newMessageQuery}
+            value={newMessageQuery}
             aria-label="Recipient"
+            oninput={(event) =>
+              updateComposeRecipientQuery(event.currentTarget.value)}
           />
         </div>
 
@@ -2419,6 +2500,7 @@
             placeholder="e.g. launch-week"
             bind:value={channelName}
             aria-label="Channel name"
+            disabled={createdChannel !== null}
           />
         </div>
 
@@ -2429,6 +2511,7 @@
             data-testid="chat-channel-scope"
             bind:value={channelCompanyUid}
             aria-label="Channel workspace"
+            disabled={createdChannel !== null}
           >
             {#each scopeCompanies as company (company.companyUid)}
               <option value={company.companyUid}>{company.label}</option>
@@ -2448,6 +2531,7 @@
                   class="chat-channel-chip-remove"
                   aria-label={`Remove ${p.label}`}
                   onclick={() => removeChannelParticipant(p.personUid)}
+                  disabled={createdChannel !== null}
                 >
                   ×
                 </button>
@@ -2462,6 +2546,7 @@
                 : ""}
               bind:value={channelQuery}
               aria-label="Add participants"
+              disabled={createdChannel !== null}
             />
           </div>
         </div>
@@ -2501,7 +2586,12 @@
               type="button"
               class="chat-compose-send-btn chat-channel-create"
               data-testid="chat-channel-create"
-              disabled={channelCreating || !channelName.trim()}
+              disabled={
+                channelCreating ||
+                !channelName.trim() ||
+                channelCreationUnconfirmed ||
+                createdChannel?.firstMessageDelivery === "unconfirmed"
+              }
               aria-busy={channelCreating}
               onclick={() => void submitCreateChannel()}
             >
@@ -2509,9 +2599,13 @@
                 ? createdChannel
                   ? "Sending…"
                   : "Creating…"
-                : createdChannel
-                  ? "Retry sending first message"
-                  : "Create channel"}
+                : channelCreationUnconfirmed
+                  ? "Creation unconfirmed"
+                  : createdChannel?.firstMessageDelivery === "unconfirmed"
+                    ? "Delivery unconfirmed"
+                    : createdChannel
+                      ? "Retry invitations"
+                      : "Create channel"}
             </button>
           </div>
         </div>

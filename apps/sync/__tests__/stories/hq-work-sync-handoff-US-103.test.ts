@@ -174,15 +174,17 @@ function messagingInvoke(
       case 'create_channel':
         return { channelId: 'chn_created', name: 'release', scope: 'company' };
       case 'search_messages':
-        return [
-          {
-            messageId: 'evt_known',
-            channelId: 'chn_existing',
-            scope: 'channel',
-            body: 'known audit result',
-            createdAt: '2026-08-31T09:00:00.000Z',
-          },
-        ];
+        return {
+          results: [
+            {
+              messageId: 'evt_known',
+              channelId: 'chn_existing',
+              scope: 'channel',
+              body: 'known audit result',
+              createdAt: '2026-08-31T09:00:00.000Z',
+            },
+          ],
+        };
       case 'send_channel_message':
       case 'send_dm':
       case 'mark_channel_read':
@@ -247,6 +249,20 @@ function setInput(testId: string, value: string): void {
     | HTMLTextAreaElement;
   input.value = value;
   input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 afterEach(async () => {
@@ -425,6 +441,26 @@ describe('US-103 embedded desktop window', () => {
       const feed = await api.fetchChannelDirectory(null);
       expect(feed.rows?.[0]?.channelId).toBe('chn_2');
     });
+
+    it('normalizes the native search_messages envelope before the sidebar host wraps it', async () => {
+      const hit = {
+        messageId: 'evt_native',
+        channelId: 'chn_existing',
+        scope: 'channel',
+        body: 'native result',
+        createdAt: '2026-08-31T09:00:00.000Z',
+      };
+      const adapter = createSyncPlatformAdapter({
+        invoke: async (cmd) => {
+          if (cmd === 'search_messages') return { results: [hit] };
+          throw new Error(`unexpected ${cmd}`);
+        },
+      });
+
+      await expect(
+        createHqWorkSidebarApi(adapter).searchMessages({ q: 'native' }),
+      ).resolves.toEqual({ results: [hit] });
+    });
   });
 
   describe('F-04 embedded messaging semantics', () => {
@@ -473,6 +509,98 @@ describe('US-103 embedded desktop window', () => {
       expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeNull();
     });
 
+    it('does not send to a stale recipient after the visible To input changes', async () => {
+      const calls: MessagingCall[] = [];
+      mountMessagingSidebar(messagingInvoke(calls));
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', 'existing');
+      setInput('chat-compose-body', 'send to Bob instead');
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+      await flush();
+
+      setInput('chat-compose-to', 'Bob');
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([]);
+      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([
+        {
+          cmd: 'send_dm',
+          args: { toPersonUid: 'prs_bob', body: 'send to Bob instead' },
+        },
+      ]);
+    });
+
+    it('keeps a reopened compose draft after an obsolete send succeeds', async () => {
+      const calls: MessagingCall[] = [];
+      const pending = deferred<{ eventId: string }>();
+      mountMessagingSidebar(
+        messagingInvoke(calls, {
+          send_channel_message: () => pending.promise,
+        }),
+      );
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', 'existing');
+      setInput('chat-compose-body', 'old draft');
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+      await flush();
+
+      (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', 'Bob');
+      setInput('chat-compose-body', 'new draft');
+      await flush();
+
+      pending.resolve({ eventId: 'evt_old' });
+      await flush();
+
+      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
+      expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe('Bob');
+      expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe('new draft');
+    });
+
+    it('keeps a reopened compose draft free of errors from an obsolete failed send', async () => {
+      const calls: MessagingCall[] = [];
+      const pending = deferred<{ eventId: string }>();
+      mountMessagingSidebar(
+        messagingInvoke(calls, {
+          send_channel_message: () => pending.promise,
+        }),
+      );
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', 'existing');
+      setInput('chat-compose-body', 'old draft');
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+      await flush();
+
+      (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', 'Bob');
+      setInput('chat-compose-body', 'new draft');
+      await flush();
+
+      pending.reject(new Error('old send failed'));
+      await flush();
+
+      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
+      expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe('Bob');
+      expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe('new draft');
+      expect(document.querySelector('[role="alert"]')?.textContent ?? '').not.toContain('old send failed');
+    });
+
     it('retains a failed existing-message draft and shows a retryable error', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(
@@ -511,6 +639,8 @@ describe('US-103 embedded desktop window', () => {
       await flush();
       (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
       await flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
 
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([
@@ -521,15 +651,16 @@ describe('US-103 embedded desktop window', () => {
       ]);
     });
 
-    it('keeps the first-message draft actionable when channel creation succeeds but send fails', async () => {
+    it('does not duplicate the first message when the server accepted it but its response was lost', async () => {
       const calls: MessagingCall[] = [];
       let sendAttempts = 0;
       mountMessagingSidebar(
         messagingInvoke(calls, {
           send_channel_message: () => {
             sendAttempts += 1;
-            if (sendAttempts === 1) throw new Error('send failed');
-            return { eventId: 'evt_sent' };
+            // Model a write that reached the server followed by a dropped
+            // response: a client retry would create a second message.
+            throw new Error('response lost after accepted write');
           },
         }),
       );
@@ -543,29 +674,101 @@ describe('US-103 embedded desktop window', () => {
       await flush();
       (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
       await flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
 
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeTruthy();
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain('send failed');
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('delivery of the first message could not be confirmed');
       expect(document.body.textContent).toContain('keep this first post');
+      expect(sendAttempts).toBe(1);
+
+      const retry = document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement;
+      expect(retry.disabled).toBe(true);
+      retry.click();
+      await flush();
+      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
+      expect(sendAttempts).toBe(1);
+      expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeTruthy();
+    });
+
+    it('persists the created channel before invite N and retries only incomplete invitations', async () => {
+      const calls: MessagingCall[] = [];
+      let eveAttempts = 0;
+      mountMessagingSidebar(
+        messagingInvoke(calls, {
+          list_contacts: () => ({
+            contacts: [
+              {
+                personUid: 'prs_bob',
+                displayName: 'Bob',
+                email: 'bob@example.test',
+                lastActivityAt: '2026-08-31T09:00:00.000Z',
+              },
+              {
+                personUid: 'prs_eve',
+                displayName: 'Eve',
+                email: 'eve@example.test',
+                lastActivityAt: '2026-08-31T09:00:00.000Z',
+              },
+            ],
+          }),
+          invite_to_channel: ({ personUids }) => {
+            if (personUids[0] === 'prs_eve' && eveAttempts++ === 0) {
+              return Promise.reject(new Error('Eve invite timed out'));
+            }
+            return { members: [] };
+          },
+        }),
+      );
+      await flush();
+      await openNewMessage();
+      setInput('chat-compose-to', '#release');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await flush();
+      (document.querySelector('[data-testid="chat-compose-create-channel"]') as HTMLButtonElement).click();
+      await flush();
+
+      setInput('chat-channel-participants', 'Bob');
+      await flush();
+      (document.querySelector('[data-testid="chat-channel-suggestion"]') as HTMLButtonElement).click();
+      await flush();
+      setInput('chat-channel-participants', 'Eve');
+      await flush();
+      (document.querySelector('[data-testid="chat-channel-suggestion"]') as HTMLButtonElement).click();
+      await flush();
 
       (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
       await flush();
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
+
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
-      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([
-        {
-          cmd: 'send_channel_message',
-          args: { channelId: 'chn_created', body: 'keep this first post' },
-        },
-        {
-          cmd: 'send_channel_message',
-          args: { channelId: 'chn_created', body: 'keep this first post' },
-        },
+      expect(calls.filter((call) => call.cmd === 'invite_to_channel')).toEqual([
+        { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_bob'] } },
+        { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_eve'] } },
       ]);
+      expect(eveAttempts).toBe(1);
+      expect(document.querySelector('[role="alert"]')?.textContent ?? '').toContain('Retry to resume the same channel');
+
+      (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
+      await flush();
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
+      expect(calls.filter((call) => call.cmd === 'invite_to_channel')).toEqual([
+        { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_bob'] } },
+        { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_eve'] } },
+        { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_eve'] } },
+      ]);
+      expect(eveAttempts).toBe(2);
       expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeNull();
     });
 
-    it('renders a real Sync search result instead of treating its array as an envelope', async () => {
+    it('renders the native Sync search result envelope exactly once', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();

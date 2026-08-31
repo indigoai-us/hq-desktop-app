@@ -427,13 +427,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly messaging: PlatformAdapter["messaging"] = {
     listChannels: (opts) => {
       if (!opts?.includeCompanyProjects || !opts.companyUid?.trim()) {
-        return this.get(WEB_PATHS.channels);
+        return this.get(WEB_PATHS.channelDirectory);
       }
       const params = new URLSearchParams({
         companyUid: opts.companyUid.trim(),
         includeCompanyProjects: "1",
       });
-      return this.get(`${WEB_PATHS.channels}?${params.toString()}`);
+      return this.get(`${WEB_PATHS.channelDirectory}?${params.toString()}`);
     },
     fetchChannelDirectory: (cursor) =>
       this.get(
