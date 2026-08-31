@@ -392,7 +392,8 @@
     overflow-y: auto;
     border-radius: var(--radius-md);
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    /* Nested backdrop-filter is neutered outside the parent sheet's backdrop root, so this surface must be popover-strong (near-opaque) instead of relying on glass. */
+    background: var(--v4-popover-strong, var(--v4-popover, var(--pop-bg)));
     backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
     -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
