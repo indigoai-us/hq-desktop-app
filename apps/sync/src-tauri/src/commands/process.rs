@@ -3602,12 +3602,24 @@ mod windows_test_fixture {
         path.to_string_lossy().replace('\'', "''")
     }
 
-    fn read_pid(path: &std::path::Path, description: &str) -> u32 {
+    fn try_read_pid(path: &std::path::Path) -> Option<u32> {
         std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("{description} must be readable: {error}"))
+            .ok()?
             .trim()
             .parse::<u32>()
-            .unwrap_or_else(|error| panic!("{description} must contain a numeric PID: {error}"))
+            .ok()
+    }
+
+    /// A PID marker is ready only after its complete numeric contents are
+    /// readable. `File::exists` observes the destination before a non-atomic
+    /// writer necessarily completes, so it is not a publication acknowledgement.
+    fn await_pid(path: &std::path::Path, description: &str) -> u32 {
+        let mut pid = None;
+        await_bounded(description, || {
+            pid = try_read_pid(path);
+            pid.is_some()
+        });
+        pid.expect("a successful PID readiness check must retain the parsed PID")
     }
 
     /// The fixture has explicit start, descendant-ready, PID-publication, and
@@ -3626,7 +3638,26 @@ mod windows_test_fixture {
 
     impl Protocol {
         pub(super) fn new(exit_delay: Duration) -> Self {
-            let dir = tempfile::tempdir().expect("Windows fixture tempdir");
+            Self::from_tempdir(
+                tempfile::tempdir().expect("Windows fixture tempdir"),
+                exit_delay,
+            )
+        }
+
+        /// Makes the script path itself contain spaces, exercising the native
+        /// child argument forwarding that `Start-Process` flattens into one
+        /// command line on Windows.
+        pub(super) fn new_in_path_with_spaces(exit_delay: Duration) -> Self {
+            Self::from_tempdir(
+                tempfile::Builder::new()
+                    .prefix("hq fixture path with spaces ")
+                    .tempdir()
+                    .expect("Windows fixture tempdir with spaces"),
+                exit_delay,
+            )
+        }
+
+        fn from_tempdir(dir: tempfile::TempDir, exit_delay: Duration) -> Self {
             let path = |name: &str| dir.path().join(name);
             Self {
                 start_gate: path("allow-descendant-start"),
@@ -3650,7 +3681,18 @@ mod windows_test_fixture {
     [string]$ReleasePath,
     [int]$ExitDelayMs
 )
-[System.IO.File]::WriteAllText($ReadyPath, "$PID")
+function Write-PidAtomically([string]$Path, [uint32]$Value) {
+    $temporaryPath = "$Path.$([System.Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, "$Value")
+        [System.IO.File]::Move($temporaryPath, $Path)
+    } finally {
+        if ([System.IO.File]::Exists($temporaryPath)) {
+            [System.IO.File]::Delete($temporaryPath)
+        }
+    }
+}
+Write-PidAtomically -Path $ReadyPath -Value $PID
 while (-not [System.IO.File]::Exists($ReleasePath)) { Start-Sleep -Milliseconds 10 }
 if ($ExitDelayMs -gt 0) { Start-Sleep -Milliseconds $ExitDelayMs }
 exit 0
@@ -3660,12 +3702,23 @@ exit 0
             std::fs::write(
                 &parent_script,
                 format!(
-                    r#"[System.IO.File]::WriteAllText('{parent_ready}', "$PID")
+                    r#"function Write-PidAtomically([string]$Path, [uint32]$Value) {{
+    $temporaryPath = "$Path.$([System.Guid]::NewGuid().ToString('N')).tmp"
+    try {{
+        [System.IO.File]::WriteAllText($temporaryPath, "$Value")
+        [System.IO.File]::Move($temporaryPath, $Path)
+    }} finally {{
+        if ([System.IO.File]::Exists($temporaryPath)) {{
+            [System.IO.File]::Delete($temporaryPath)
+        }}
+    }}
+}}
+Write-PidAtomically -Path '{parent_ready}' -Value $PID
 while (-not [System.IO.File]::Exists('{start_gate}')) {{ Start-Sleep -Milliseconds 10 }}
-$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{child_script}', '-ReadyPath', '{descendant_ready}', '-ReleasePath', '{release_gate}', '-ExitDelayMs', '{exit_delay_ms}')
+$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '"{child_script}"', '-ReadyPath', '"{descendant_ready}"', '-ReleasePath', '"{release_gate}"', '-ExitDelayMs', '{exit_delay_ms}')
 while (-not [System.IO.File]::Exists('{descendant_ready}')) {{ Start-Sleep -Milliseconds 10 }}
 while (-not [System.IO.File]::Exists('{publish_gate}')) {{ Start-Sleep -Milliseconds 10 }}
-[System.IO.File]::WriteAllText('{published_pid}', "$($child.Id)")
+Write-PidAtomically -Path '{published_pid}' -Value $child.Id
 $child.WaitForExit()
 exit $child.ExitCode
 "#,
@@ -3711,10 +3764,7 @@ exit $child.ExitCode
                 "the descendant must remain blocked until the test opens its start gate"
             );
             std::fs::write(&self.start_gate, "go").expect("open descendant start gate");
-            await_bounded("the descendant to publish readiness", || {
-                self.descendant_ready.exists()
-            });
-            let descendant = read_pid(&self.descendant_ready, "descendant readiness PID");
+            let descendant = await_pid(&self.descendant_ready, "descendant readiness PID");
             assert!(pid_alive(descendant), "the ready descendant must be live");
             await_bounded("the ready descendant to belong to the fixture root", || {
                 windows_descendants(root_pid).contains(&descendant)
@@ -3724,11 +3774,8 @@ exit $child.ExitCode
                 "the parent must not publish its descendant PID before the publication gate"
             );
             std::fs::write(&self.publish_gate, "go").expect("open PID publication gate");
-            await_bounded("the parent to publish the descendant PID", || {
-                self.published_pid.exists()
-            });
             assert_eq!(
-                read_pid(&self.published_pid, "published descendant PID"),
+                await_pid(&self.published_pid, "published descendant PID"),
                 descendant,
                 "the parent must publish the same live PID that acknowledged readiness"
             );
@@ -3738,6 +3785,25 @@ exit $child.ExitCode
         pub(super) fn release_descendant(&self) {
             std::fs::write(&self.release_gate, "go").expect("open descendant release gate");
         }
+    }
+
+    #[test]
+    fn await_pid_retries_until_a_complete_publication_is_readable() {
+        let dir = tempfile::tempdir().expect("PID readiness tempdir");
+        let path = dir.path().join("ready.pid");
+        std::fs::write(&path, "").expect("publish an incomplete PID marker");
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(POLL * 2);
+            std::fs::write(writer_path, "4242").expect("finish PID publication");
+        });
+
+        assert_eq!(
+            await_pid(&path, "a complete PID after an incomplete marker"),
+            4242
+        );
+        writer.join().expect("PID writer must not panic");
     }
 }
 
@@ -3956,6 +4022,51 @@ mod windows_spawn_tests {
         );
         assert_eq!(generation_for_handle(&handle), Some(replacement.current()));
         replacement.finish();
+    }
+
+    #[test]
+    fn process_tree_fixture_forwards_paths_with_spaces_and_waits_for_pid_publication() {
+        use super::windows_test_fixture::{await_bounded, pid_alive, Protocol};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let protocol = Arc::new(Protocol::new_in_path_with_spaces(Duration::ZERO));
+        let spawn = protocol.spawn_args();
+        let handle = format!("windows-spaced-fixture-{}", Uuid::new_v4());
+        let descendant_pid = Arc::new(AtomicU32::new(0));
+        let hook_protocol = protocol.clone();
+        let hook_descendant_pid = descendant_pid.clone();
+        set_test_post_spawn_hook(&handle, move |child| {
+            // This is the real PowerShell parent/child fixture, not a generated
+            // source assertion. It passes every forwarded path through the
+            // Start-Process boundary from a directory whose name contains spaces.
+            let descendant = hook_protocol.start_and_publish_descendant(child.id());
+            hook_descendant_pid.store(descendant, Ordering::Release);
+            hook_protocol.release_descendant();
+        });
+
+        let mut exits = Vec::new();
+        run_process_impl(&handle, &spawn, |event| {
+            if let ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } = event
+            {
+                exits.push((code, signal, success));
+            }
+        })
+        .expect("the spaced-path fixture must complete through the production runner");
+
+        let descendant = descendant_pid.load(Ordering::Acquire);
+        assert_ne!(descendant, 0, "the quoted descendant must publish a PID");
+        await_bounded("the released spaced-path descendant to exit", || {
+            !pid_alive(descendant)
+        });
+        assert_eq!(exits, vec![(Some(0), None, true)]);
+        assert!(
+            !is_registered(&handle),
+            "the completed spaced-path fixture must not leave a registry entry"
+        );
     }
 
     #[test]
