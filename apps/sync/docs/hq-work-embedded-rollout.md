@@ -9,16 +9,17 @@ This file is the source of truth for the combined-app rollout
 (launch HQ Work / co-install / card) is superseded and kept only because
 existing tests source-contract it.
 
-**Default is ON for `@getindigo.ai`, OFF for everyone else.** Going wider than
-the cohort is still a config change, not a leap — do not touch the compiled
-defaults until this doc's bake checklist is done.
+**Default is ON for `@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`, OFF
+for everyone else.** Going wider than the cohort is still a config change,
+not a leap — do not touch the compiled defaults until this doc's bake
+checklist is done.
 
 ONE flag only. JSON key `hqWorkHandoff` in `~/.hq/menubar.json`. Rust field
 `hq_work_handoff`. No Settings toggle — do not add one. Do not invent a second
 flag.
 
 `config::get_hq_work_handoff` resolves
-`is_indigo_user() AND (choice defaulting to true)`, where "choice" is the
+`is_hq_work_cohort_user() AND (choice defaulting to true)`, where "choice" is the
 tri-state `hq_work_handoff_choice`: missing file, missing key, and parse
 failure all mean *no explicit choice*, not an opt-out. An explicit `false` is
 the opt-out, and it is the only thing that turns the embed off for a cohort
@@ -38,26 +39,26 @@ does not launch HQ Work, does not show `HqWorkHandoffCard`, does not
 co-install. Auth is the same Cognito vault-users session already in Sync.
 No migration, no second sign-in, no token sharing.
 
-## Alpha enable (`@getindigo.ai`)
+## Approved cohort enable
 
-Internal team is the alpha cohort (`@getindigo.ai`). There is no Settings
-toggle for this flag — do not add one.
+The approved cohort is `@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`.
+There is no Settings toggle for this flag — do not add one.
 
 The cohort is **enforced**, not conventional. `menubar.json` is user-writable,
 so the flag alone is an opt-in and never an authorisation:
 `config::get_hq_work_handoff` resolves
-`flag AND hq_desktop_core::feature_gate::is_indigo_user()`, and
+`flag AND hq_desktop_core::feature_gate::is_hq_work_cohort_user()`, and
 `set_hq_work_handoff(true)` refuses outside the cohort rather than persisting a
 flag the reader would ignore. Every consumer — desktop-alt boot, the
 `hqwork://` internal route, and the notification/DM intercepts — reads through
-that one command, so there is a single chokepoint. It reuses the same
-`is_indigo_user` the updater uses for pre-release channels; do not hand-roll a
-second domain check.
+that one command, so there is a single chokepoint. The HQ Work predicate is
+deliberately separate from `is_indigo_user`; updater, moderation, admin, and
+staging access remain Indigo-only.
 
-**The embed is ON by default for the cohort.** An `@getindigo.ai` user gets it
-with no setup: `hqWorkHandoff` absent means "no explicit choice", and that
-resolves to on inside the cohort. Everyone else is off no matter what the file
-says. Nothing to distribute, and no Terminal step for the alpha team — which
+**The embed is ON by default for the cohort.** A user on any approved domain
+gets it with no setup: `hqWorkHandoff` absent means "no explicit choice", and
+that resolves to on inside the cohort. Everyone else is off no matter what the
+file says. Nothing to distribute, and no Terminal step for the cohort — which
 was the practical problem with an opt-in that has no Settings toggle.
 
 To opt a machine back out (this is what Scenario 1 of the smoke checklist
