@@ -14,6 +14,7 @@
   import {
     buildCorePopoverViewModel,
     coreNeedsRestore,
+    detectedCoreVersion,
     CORE_POPOVER_FIXTURE_PACKS,
     CORE_POPOVER_FIXTURE_CORE,
     CORE_POPOVER_FIXTURE_CONFLICTS,
@@ -201,8 +202,7 @@
       updatesUnavailable =
         !versionsResult.ok && versionsResult.reason === "unavailable";
       const version = versionsResult.ok
-        ? ((versionsResult.value.core ?? versionsResult.value.cli ?? null) as
-            string | null)
+        ? detectedCoreVersion(versionsResult.value)
         : null;
       const state = stateResult.ok
         ? (stateResult.value as unknown as CoreStateWire | null)

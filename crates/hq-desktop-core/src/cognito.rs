@@ -156,6 +156,11 @@ pub struct AuthState {
     pub expires_at: Option<String>,
     /// Stable local account partition for client-side state. Never telemetry.
     pub account_id: Option<String>,
+    /// Non-secret identity claims used by the embedded Profile surface.
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1028,11 +1033,15 @@ mod tests {
             authenticated: true,
             expires_at: Some("2024-01-15T12:30:45.123Z".to_string()),
             account_id: Some("sub-a".to_string()),
+            email: Some("a@b.c".to_string()),
+            display_name: Some("Ada".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
         assert!(json.contains("\"expiresAt\""));
         assert!(json.contains("\"accountId\":\"sub-a\""));
+        assert!(json.contains("\"email\":\"a@b.c\""));
+        assert!(json.contains("\"displayName\":\"Ada\""));
     }
 
     #[test]
@@ -1041,6 +1050,8 @@ mod tests {
             authenticated: false,
             expires_at: None,
             account_id: None,
+            email: None,
+            display_name: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));

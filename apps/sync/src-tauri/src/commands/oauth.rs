@@ -37,7 +37,7 @@
 //   a plain string, so the frontend can pattern-match on `code` instead of
 //   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`.
 
-use super::cognito::{self, AuthState, CognitoTokens};
+use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
     build_authorize_url, cognito_identity_provider, cognito_token_url, compute_code_challenge,
     generate_code_verifier, parse_callback, COGNITO_CLIENT_ID, REDIRECT_URI,
@@ -561,13 +561,9 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     crate::commands::dm_notify::replace_notification_credentials(&app, &tokens).await?;
     eprintln!("[oauth] token exchange completed");
 
-    Ok(AuthState {
-        authenticated: true,
-        expires_at: Some(cognito::expires_at_iso(&tokens)),
-        account_id: Some(crate::commands::auth::notification_identity_from_tokens(
-            &tokens,
-        )),
-    })
+    Ok(crate::commands::auth::authenticated_state_from_tokens(
+        &tokens,
+    ))
 }
 
 /// Wait on the loopback listener bound by `start_oauth_login` for the OAuth

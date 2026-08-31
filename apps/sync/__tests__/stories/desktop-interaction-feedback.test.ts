@@ -104,7 +104,7 @@ describe('desktop interaction feedback and render budgets', () => {
     expect(settings).toContain('data-testid="settings-cli-version"');
     expect(settings).toContain('data-testid="settings-cli-status"');
     expect(settings).toContain('data-testid="settings-check-cli-updates"');
-    expect(cliUpdate).toContain('pub fn get_hq_cli_version()');
+    expect(cliUpdate).toContain('pub async fn get_hq_cli_version()');
     expect(tauriMain).toContain('commands::hq_cli_update::get_hq_cli_version');
   });
 
