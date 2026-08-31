@@ -192,6 +192,16 @@ export function hqVersionLabel(version: string | null | undefined): string {
   return "HQ core not detected";
 }
 
+/** Keep the independently detected CLI version out of Core health UI. */
+export function detectedCoreVersion(versions: {
+  core?: unknown;
+  cli?: unknown;
+}): string | null {
+  return typeof versions.core === "string" && versions.core.trim()
+    ? versions.core
+    : null;
+}
+
 export function appVersionLabel(version: string | null | undefined): string {
   if (version && version.trim()) return `Desktop app v${version.trim()}`;
   return "Desktop app";

@@ -138,7 +138,7 @@ impl VersionProbeContainment {
         #[cfg(unix)]
         cmd.process_group(0);
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_SUSPENDED.0);
+        cmd.creation_flags(paths::CREATE_NO_WINDOW | CREATE_SUSPENDED.0);
         #[cfg(not(any(unix, target_os = "windows")))]
         let _ = cmd;
     }
