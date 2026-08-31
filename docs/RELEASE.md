@@ -14,6 +14,36 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## Install Window (macOS DMG)
+
+The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the
+layout in `apps/sync/scripts/dmg/`.
+
+| File | What it is |
+|---|---|
+| `dmg/settings.py` | Window geometry, icon size, icon coordinates, volume icon — the dmgbuild spec |
+| `dmg/background.html` | Source artwork, implementing Figma "Installer" node `3133:57` |
+| `dmg/background.tiff` | The committed render, `@1x` + `@2x` in one file |
+| `dmg/render-background.sh` | Re-renders the TIFF from the HTML |
+
+Change the artwork by editing `background.html`, then:
+
+```bash
+bash apps/sync/scripts/dmg/render-background.sh
+```
+
+and commit the regenerated `background.tiff`. It needs Google Chrome and a
+network connection; the page pulls Fraunces and Geist from Google Fonts.
+
+**Do not reintroduce Finder/AppleScript styling.** The usual recipe tells
+Finder to open the volume and arrange the icons, which needs a logged-in GUI
+session — a headless release runner has none, so it passes locally and fails in
+CI. dmgbuild writes the `.DS_Store` directly and never talks to Finder.
+`scripts/dmg-layout-contract.test.ts` fails the build if `osascript` or a
+`tell application "Finder"` reappears in the packaging path, if the layout
+drifts from the coordinates the artwork was drawn for, or if the background
+loses either representation.
+
 ## Cut a Release
 
 Push a tag. That is the whole release:
