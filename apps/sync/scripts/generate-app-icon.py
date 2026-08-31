@@ -4,8 +4,21 @@
     python3 scripts/generate-app-icon.py
     pnpm tauri icon src-tauri/icons/app-icon.png -o src-tauri/icons
 
-Input   src-tauri/icons/source/app-icon-master.png  (1024x1024, full-bleed art)
+Input   src-tauri/icons/source/app-icon-master.png  (1024x1024)
 Output  src-tauri/icons/app-icon.png                (1024x1024, on the grid)
+
+The master may be either kind of artwork and the script handles both:
+
+  * **Dock-ready** — already on the grid, with its own squircle and shadow, as
+    exported from the design file. Passed through unchanged; the script only
+    verifies the geometry. This is what HQ ships today.
+  * **Full-bleed** — a flat square with opaque corners, e.g.
+    `source/app-icon-flat.png`. Shrunk to the body and masked with the grid
+    squircle, which is what this script originally existed to do.
+
+Passing dock-ready art through rather than re-masking matters: re-running the
+mask over art that is already inset would shrink it a second time and clip the
+shadow.
 
 ## Why this exists
 
@@ -65,6 +78,11 @@ ICONS = Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
 MASTER = ICONS / "source" / "app-icon-master.png"
 OUTPUT = ICONS / "app-icon.png"
 
+# Alpha at or above this counts as the icon body. Below it is the soft drop
+# shadow, which legitimately extends past the grid and must not be mistaken for
+# the body when measuring.
+SOLID_ALPHA = 250
+
 
 def squircle_mask(size: int, body: int, radius: float, margin: int) -> Image.Image:
     """Antialiased alpha mask: a rounded rect of `body` inset by `margin`."""
@@ -85,6 +103,15 @@ def squircle_mask(size: int, body: int, radius: float, margin: int) -> Image.Ima
     return mask.resize((size, size), Image.BOX)
 
 
+def solid_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
+    """Bounding box of the icon body, ignoring the soft shadow around it."""
+    solid = image.getchannel("A").point(lambda v: 255 if v >= SOLID_ALPHA else 0)
+    return solid.getbbox()
+
+
+GRID_BBOX = (MARGIN, MARGIN, MARGIN + BODY, MARGIN + BODY)
+
+
 def main() -> int:
     if not MASTER.exists():
         print(f"missing master artwork: {MASTER}", file=sys.stderr)
@@ -98,25 +125,35 @@ def main() -> int:
         )
         return 1
 
-    # Shrink the full-bleed art to the body, then inset it by the margin.
-    body = master.resize((BODY, BODY), Image.LANCZOS)
-    canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    canvas.paste(body, (MARGIN, MARGIN))
+    if solid_bbox(master) == GRID_BBOX:
+        # Dock-ready master: the design file already applied Apple's grid, its
+        # squircle and a shadow. Re-masking would inset it a second time and
+        # clip the shadow, so pass it through untouched.
+        print("master is already on the grid — passing through unchanged")
+        canvas = master
+    else:
+        # Full-bleed master: shrink to the body, then inset by the margin.
+        print("master is full-bleed — applying the grid")
+        body = master.resize((BODY, BODY), Image.LANCZOS)
+        canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+        canvas.paste(body, (MARGIN, MARGIN))
 
-    # Replace alpha wholesale rather than compositing: the master's own corners
-    # are opaque, so multiplying would leave them opaque outside the squircle.
-    canvas.putalpha(squircle_mask(CANVAS, BODY, RADIUS, MARGIN))
+        # Replace alpha wholesale rather than compositing: the master's own
+        # corners are opaque, so multiplying would leave them opaque outside
+        # the squircle.
+        canvas.putalpha(squircle_mask(CANVAS, BODY, RADIUS, MARGIN))
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(OUTPUT, "PNG")
 
     corners = [canvas.getpixel(p)[3] for p in [(0, 0), (CANVAS - 1, 0), (0, CANVAS - 1), (CANVAS - 1, CANVAS - 1)]]
-    bbox = canvas.getchannel("A").getbbox()
+    body_bbox = solid_bbox(canvas)
     print(f"wrote {OUTPUT.relative_to(ICONS.parent.parent)}  {canvas.size}")
-    print(f"  opaque bbox {bbox}  (expected ({MARGIN}, {MARGIN}, {MARGIN + BODY}, {MARGIN + BODY}))")
+    print(f"  body bbox {body_bbox}  (expected {GRID_BBOX})")
+    print(f"  full bbox {canvas.getchannel('A').getbbox()}  (body plus any shadow)")
     print(f"  corner alpha {corners}  (expected all 0)")
     assert corners == [0, 0, 0, 0], "corners must be transparent"
-    assert bbox == (MARGIN, MARGIN, MARGIN + BODY, MARGIN + BODY), "body must sit on the grid"
+    assert body_bbox == GRID_BBOX, "body must sit on the grid"
     return 0
 
 
