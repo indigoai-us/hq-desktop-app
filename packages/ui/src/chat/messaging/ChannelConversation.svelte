@@ -26,6 +26,8 @@
     systemModelForMessage,
     type FileAttachmentModel,
   } from "./channelMessageModels";
+  import { parseWorkSessionEvent } from "./workSessionEvent";
+  import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
@@ -693,6 +695,7 @@
         {/if}
         {#each timeline as msg, index (msg.eventId)}
           {@const systemModel = systemModelForMessage(msg)}
+          {@const workActivity = parseWorkSessionEvent(msg.body ?? "")}
           {@const groupStart = startsGroup(index)}
           {#if startsNewDay(index)}
             <div
@@ -739,6 +742,11 @@
                 {/if}
               </div>
             </div>
+          {:else if workActivity}
+            <WorkMeshActivityRow
+              activity={workActivity}
+              time={formatTime(msg.createdAt)}
+            />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"

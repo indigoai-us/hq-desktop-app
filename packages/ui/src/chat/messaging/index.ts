@@ -12,6 +12,8 @@ export { default as ReactionBar } from "./ReactionBar.svelte";
 export { default as EmojiPicker } from "./EmojiPicker.svelte";
 export { default as IdentityMark } from "./IdentityMark.svelte";
 export { default as SystemEventLine } from "./SystemEventLine.svelte";
+export { default as WorkMeshActivityRow } from "./WorkMeshActivityRow.svelte";
+export * from "./workSessionEvent";
 export * from "./channelMessageModels";
 export * from "./channelTabModels";
 export * from "./reactions";
