@@ -9,6 +9,8 @@
   import { tick } from 'svelte';
   import ReactionBar from './ReactionBar.svelte';
   import IdentityMark from './IdentityMark.svelte';
+  import WorkMeshActivityRow from './WorkMeshActivityRow.svelte';
+  import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
@@ -413,6 +415,13 @@
         <span>{formatDateSeparator(msg.createdAt)}</span>
       </div>
     {/if}
+    {@const activity = parseWorkSessionEvent(msg.body)}
+    {#if activity}
+      <!-- Work-mesh session event: render a compact activity row instead of a
+           raw JSON bubble. Malformed/unknown payloads fall through to the
+           normal bubble (parseWorkSessionEvent returns null, never throws). -->
+      <WorkMeshActivityRow {activity} time={formatTime(msg.createdAt)} />
+    {:else}
       <div
         class="dm-msg dm-msg-{msg.direction}"
         class:dm-msg-group-start={groupStart}
@@ -601,6 +610,7 @@
       {/if}
       </div>
       </div>
+    {/if}
     {/each}
   </div>
 
