@@ -32,8 +32,14 @@ export type LibraryTab =
   | "submit"
   | "profile";
 
-/** Overlay left-nav destinations. Installed packs stay distinct from discovery. */
-export type LibraryOverlayTab = "skills" | "workers" | "installed" | "marketplace";
+/** Every supported Library destination has its own overlay tab. */
+export type LibraryOverlayTab =
+  | "skills"
+  | "workers"
+  | "installed"
+  | "marketplace"
+  | "submit"
+  | "profile";
 
 export type MarketplaceBadge = "installed" | "update" | "get";
 
@@ -60,8 +66,8 @@ export interface LibraryNavRow {
 
 /**
  * Map a routed LibraryTab onto the overlay's visible tabs.
- * Installed packs are an account-management surface, never an alias for
- * Marketplace discovery. `submit` / `profile` remain Marketplace-owned.
+ * Installed packs, publishing, and creator profile are account-management
+ * surfaces, never aliases for Marketplace discovery.
  */
 export function resolveOverlayTab(
   tab: LibraryTab | undefined | null,
@@ -69,7 +75,9 @@ export function resolveOverlayTab(
 ): LibraryOverlayTab {
   if (tab === "workers") return opts?.workers === false ? "skills" : "workers";
   if (tab === "installed") return "installed";
-  if (tab === "marketplace" || tab === "submit" || tab === "profile") {
+  if (tab === "submit") return "submit";
+  if (tab === "profile") return "profile";
+  if (tab === "marketplace") {
     return opts?.marketplace === false ? "skills" : "marketplace";
   }
   return "skills";
@@ -80,6 +88,8 @@ export function overlayTabToLibraryTab(tab: LibraryOverlayTab): LibraryTab {
   if (tab === "workers") return "workers";
   if (tab === "installed") return "installed";
   if (tab === "marketplace") return "marketplace";
+  if (tab === "submit") return "submit";
+  if (tab === "profile") return "profile";
   return "skills";
 }
 
@@ -107,6 +117,8 @@ export function buildLibraryNavRows(
   if (opts?.marketplace !== false) {
     rows.push({ id: "installed", label: "Installed", count: null });
     rows.push({ id: "marketplace", label: "Marketplace", count: null });
+    rows.push({ id: "submit", label: "Submit", count: null });
+    rows.push({ id: "profile", label: "Profile", count: null });
   }
   return rows;
 }

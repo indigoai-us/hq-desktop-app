@@ -72,13 +72,15 @@ describe("library-overlay-model (US-017)", () => {
       expect(libraryNavCounts(null)).toEqual({ skills: 0, workers: 0 });
     });
 
-    it("keeps Installed distinct from Marketplace discovery in the left nav", () => {
+    it("keeps every advertised Library destination distinct in the left nav", () => {
       const rows = buildLibraryNavRows(sampleItems);
       expect(rows.map((r) => formatNavLabel(r))).toEqual([
         "Skills 2",
         "Workers 1",
         "Installed",
         "Marketplace",
+        "Submit",
+        "Profile",
       ]);
     });
 
@@ -97,7 +99,7 @@ describe("library-overlay-model (US-017)", () => {
         ["skills", "workers", "installed", "marketplace", "submit", "profile"].map(
           (tab) => resolveOverlayTab(tab as Parameters<typeof resolveOverlayTab>[0]),
         ),
-      ).toEqual(["skills", "workers", "installed", "marketplace", "marketplace", "marketplace"]);
+      ).toEqual(["skills", "workers", "installed", "marketplace", "submit", "profile"]);
       expect(resolveOverlayTab(undefined)).toBe("skills");
       expect(resolveOverlayTab("installed", { marketplace: false })).toBe("installed");
     });
@@ -107,6 +109,8 @@ describe("library-overlay-model (US-017)", () => {
       expect(overlayTabToLibraryTab("workers")).toBe("workers");
       expect(overlayTabToLibraryTab("installed")).toBe("installed");
       expect(overlayTabToLibraryTab("marketplace")).toBe("marketplace");
+      expect(overlayTabToLibraryTab("submit")).toBe("submit");
+      expect(overlayTabToLibraryTab("profile")).toBe("profile");
     });
   });
 

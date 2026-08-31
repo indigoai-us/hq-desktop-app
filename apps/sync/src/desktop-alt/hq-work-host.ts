@@ -298,7 +298,14 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
         return { kind: 'library', tab: 'skills' };
       }
-      if (!hasExtraSegments && (detail === 'installed' || detail === 'marketplace')) {
+      if (
+        !hasExtraSegments &&
+        (detail === 'workers' ||
+          detail === 'installed' ||
+          detail === 'marketplace' ||
+          detail === 'submit' ||
+          detail === 'profile')
+      ) {
         return { kind: 'library', tab: detail };
       }
       break;

@@ -58,6 +58,8 @@ interface Options {
   workspaceFailure?: boolean;
   identityFailure?: boolean;
   directoryResponse?: Promise<unknown>;
+  shareEvents?: unknown[];
+  hqProPaths?: string[];
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -142,6 +144,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         return null;
       case 'hq_pro_fetch': {
         const path = String(args?.url ?? '');
+        options.hqProPaths?.push(path);
         if (path.startsWith('/v1/identity/whoami')) {
           if (options.identityFailure) {
             return {
@@ -157,6 +160,12 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
             body: JSON.stringify({
               url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=hq',
             }),
+          };
+        }
+        if (path.startsWith('/v1/files/shared-with-me')) {
+          return {
+            status: 200,
+            body: JSON.stringify({ events: options.shareEvents ?? [] }),
           };
         }
         return { status: 200, body: JSON.stringify({}) };
@@ -270,12 +279,33 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
     ).toBe('page');
 
+    warmRoute('library:workers');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-workers"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeTruthy();
+
     warmRoute('library:marketplace');
     await flush();
     expect(
       host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-marketplace-panel"]')).toBeTruthy();
+
+    warmRoute('library:submit');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-submit"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-submit-panel"]')).toBeTruthy();
+
+    warmRoute('library:profile');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-profile"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-profile-panel"]')).toBeTruthy();
 
     warmRoute('library');
     await flush();
@@ -334,6 +364,32 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-installed-panel"]')).toBeNull();
+  });
+
+  it('routes a real Sync-host file-share notification to its scoped file surface', async () => {
+    const hqProPaths: string[] = [];
+    await mountShell({
+      hqProPaths,
+      shareEvents: [
+        {
+          eventId: 'shr_1',
+          issuerDisplayName: 'Grace',
+          paths: ['projects/alpha/brief.md'],
+          createdAt: MEETING_START,
+        },
+      ],
+    });
+
+    warmRoute('inbox');
+    await flush(64);
+    (host.querySelector('[data-testid="notifications-row"]') as HTMLDivElement).click();
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="shared-files-event"]')?.textContent).toContain(
+      'brief.md',
+    );
+    expect(hqProPaths.some((path) => path.startsWith('/v1/files/shared-with-me'))).toBe(true);
   });
 
   it('carries a warm hqwork reply target through the mounted host into ReplyPanel', async () => {
