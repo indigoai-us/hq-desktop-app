@@ -910,7 +910,7 @@ async fn hydrated_file_context() -> Result<(PathBuf, Vec<Workspace>), String> {
 }
 
 /// Bounded bytes returned to the renderer for passive file previews.
-const MAX_AUTHORIZED_FILE_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_MEDIA_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 struct ResolvedFileTarget {
@@ -1178,7 +1178,7 @@ pub async fn get_authorized_file_preview(
     let bytes = read_file_bytes_capped(
         &target.hq_root,
         &target.relative_path,
-        MAX_AUTHORIZED_FILE_PREVIEW_BYTES,
+        MAX_MEDIA_PREVIEW_BYTES,
     )?;
     Ok(AuthorizedFilePreview {
         mime_type: mime_type.to_string(),
