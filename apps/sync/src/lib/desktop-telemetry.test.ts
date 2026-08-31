@@ -27,4 +27,23 @@ describe('emitDesktopTelemetry', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it('forwards envelope session and product-seam timestamps', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    await emitDesktopTelemetry({
+      eventName: 'desktop_onboarding_step',
+      properties: { step: 'welcome-signin', action: 'entered' },
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-08-31T10:00:00.000Z',
+      invokeCommand,
+    });
+
+    expect(invokeCommand).toHaveBeenCalledWith('emit_desktop_telemetry_if_opted_in', {
+      eventName: 'desktop_onboarding_step',
+      properties: { step: 'welcome-signin', action: 'entered' },
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-08-31T10:00:00.000Z',
+    });
+  });
 });

@@ -812,6 +812,14 @@ fn allowed_desktop_property_key(key: &str) -> bool {
             | "stageCount"
             | "failedStageCount"
             | "detectedToolCount"
+            | "step"
+            | "component"
+            | "action"
+            | "flow"
+            | "outcome"
+            | "platform"
+            | "durationMs"
+            | "attemptCount"
     )
 }
 
@@ -844,16 +852,28 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
 ) -> RawTelemetryEvent {
     let properties = sanitize_desktop_properties(properties);
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
         source: "desktop".to_string(),
-        occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        occurred_at: occurred_at
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| {
+                value
+                    .with_timezone(&chrono::Utc)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            })
+            .unwrap_or_else(|| {
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            }),
         consent_basis: "desktop-opt-in".to_string(),
         schema_version: 1,
         idempotency_key: None,
+        session_id: session_id.filter(|value| is_safe_label_value(value)),
         properties,
     }
 }
@@ -862,6 +882,8 @@ async fn emit_desktop_telemetry_with_vault(
     vault: &VaultClient,
     event_name: String,
     properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
 ) -> Result<(), String> {
     if !is_safe_event_name(&event_name) {
         return Err(format!("invalid telemetry event name: {event_name}"));
@@ -871,7 +893,7 @@ async fn emit_desktop_telemetry_with_vault(
         return Ok(());
     }
 
-    let event = build_desktop_telemetry_event(event_name, properties);
+    let event = build_desktop_telemetry_event(event_name, properties, session_id, occurred_at);
     let batch = TelemetryEventsBatch {
         events: vec![event],
     };
@@ -886,11 +908,13 @@ async fn emit_desktop_telemetry_with_vault(
 pub async fn emit_desktop_telemetry_if_opted_in(
     event_name: String,
     properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
 ) -> Result<(), String> {
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
-    emit_desktop_telemetry_with_vault(&vault, event_name, properties).await
+    emit_desktop_telemetry_with_vault(&vault, event_name, properties, session_id, occurred_at).await
 }
 
 fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
@@ -909,6 +933,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         consent_basis: "desktop-opt-in".to_string(),
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
+        session_id: None,
         properties: Value::Object(Map::new()),
     }
 }
@@ -2134,6 +2159,8 @@ mod codex_telemetry_tests {
             &vault,
             "manual_sync_completed".to_string(),
             Some(json!({"filesDownloaded": 3})),
+            None,
+            None,
         )
         .await;
 
@@ -2174,16 +2201,21 @@ mod codex_telemetry_tests {
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_telemetry_with_vault(
             &vault,
-            "telemetry_preference_changed".to_string(),
+            "desktop_onboarding_step".to_string(),
             Some(json!({
-                "enabled": true,
-                "surface": "settings-popover",
-                "filesDownloaded": 2,
+                "step": "welcome-signin",
+                "action": "entered",
+                "surface": "desktop_installer",
+                "flow": "first_install",
+                "platform": "macos",
+                "durationMs": 2,
                 "companyUid": "cmp_private-company",
                 "path": "/Users/alice/HQ",
                 "email": "alice@example.com",
                 "message": "free text should not leave the client"
             })),
+            Some("11111111-1111-4111-8111-111111111111".to_string()),
+            Some("2026-08-31T10:00:00.000Z".to_string()),
         )
         .await;
 
@@ -2198,12 +2230,13 @@ mod codex_telemetry_tests {
         assert_eq!(posts.len(), 1, "one event POST expected");
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
         let event = &body["events"][0];
-        assert_eq!(event["eventName"], "telemetry_preference_changed");
+        assert_eq!(event["eventName"], "desktop_onboarding_step");
         assert_eq!(event["app"], "hq-desktop-app");
         assert_eq!(event["source"], "desktop");
         assert_eq!(event["consentBasis"], "desktop-opt-in");
         assert_eq!(event["schemaVersion"], 1);
-        assert!(event["occurredAt"].as_str().is_some());
+        assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
+        assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
 
         let allowed_event_keys = [
             "eventName",
@@ -2213,6 +2246,7 @@ mod codex_telemetry_tests {
             "consentBasis",
             "schemaVersion",
             "idempotencyKey",
+            "sessionId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
@@ -2227,15 +2261,15 @@ mod codex_telemetry_tests {
         }
 
         let props = event["properties"].as_object().unwrap();
-        assert_eq!(props.get("enabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            props.get("step").and_then(|v| v.as_str()),
+            Some("welcome-signin")
+        );
         assert_eq!(
             props.get("surface").and_then(|v| v.as_str()),
-            Some("settings-popover")
+            Some("desktop_installer")
         );
-        assert_eq!(
-            props.get("filesDownloaded").and_then(|v| v.as_u64()),
-            Some(2)
-        );
+        assert_eq!(props.get("durationMs").and_then(|v| v.as_u64()), Some(2));
         assert!(!props.contains_key("path"));
         assert!(!props.contains_key("email"));
         assert!(!props.contains_key("message"));
