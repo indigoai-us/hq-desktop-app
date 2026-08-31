@@ -295,10 +295,11 @@
   }
 
   function requestRevalidation(options: { automatic?: boolean } = {}): void {
-    // Credentials that native has already declared absent/invalid are a
-    // fail-closed state. A browser wake must not turn that into background
-    // sign-in attempts; OAuth completion and explicit Retry remain allowed.
-    if (options.automatic && lifecycle === 'signed-out') return;
+    // Browser wakeups are recovery probes only. Revalidating a ready session
+    // forces `hydrateSession()` through loading and remounts DesktopApp,
+    // which discards the user's current destination for no auth transition.
+    // OAuth completion and explicit Retry remain allowed outside recovery.
+    if (options.automatic && lifecycle !== 'recovery') return;
     if (revalidationPending) return;
     revalidationPending = true;
     void hydrateSession(authGeneration).finally(() => {

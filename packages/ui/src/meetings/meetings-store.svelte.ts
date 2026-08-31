@@ -1033,6 +1033,7 @@ export function stopMeetingsStore(): void {
  */
 function resetTenantSession(): void {
   stopMeetingsStore();
+  clearConnectNotice();
   refreshInFlight = null;
   forceTrailingRefresh = false;
   mutationRevision += 1;

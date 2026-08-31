@@ -821,6 +821,31 @@ describe("meetings store in-app calendar connect", () => {
       vi.useRealTimers();
     }
   });
+
+  it("clears a queued calendar-connect notice when the tenant session changes", async () => {
+    vi.useFakeTimers();
+    try {
+      mockConnectHappyPath({
+        listAccountsImpl: () => Promise.resolve(ok([])),
+      });
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(meetingsStore.connectNotice).toEqual({
+        kind: "warn",
+        text: "No new calendar connected — try again if you cancelled.",
+      });
+
+      wireApi({
+        sessionGeneration: 2,
+        storage: localStorage,
+      });
+
+      expect(meetingsStore.connectNotice).toBeNull();
+    } finally {
+      meetingsStore.stopCalendarConnectWatch();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("meetings store per-account calendar disconnect", () => {

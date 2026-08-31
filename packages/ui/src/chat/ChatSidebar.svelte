@@ -201,8 +201,11 @@
   let pendingRequests = $state<DmRequest[]>([]);
 
   let scope = $state<CompanyScope>("all");
-  $effect(() => {
-    if (scopeUid) selectScope(scopeUid);
+  // DesktopApp re-keys this sidebar when its company tenant changes. Apply the
+  // host-owned scope before rendering so a company-partitioned cache cannot
+  // briefly be treated as the all-company rail.
+  $effect.pre(() => {
+    scope = scopeUid ?? "all";
   });
   let sortMode = $state<SortMode>("recent");
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));

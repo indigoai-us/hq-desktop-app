@@ -184,11 +184,13 @@
         if (block?.displayName) editName = block.displayName;
         else if (res.value.entityName) editName ||= res.value.entityName;
         initialName = editName;
-        if (block && Object.prototype.hasOwnProperty.call(block, "description")) {
-          editDescription = typeof block.description === "string" ? block.description : "";
-          initialDescription = editDescription;
-          descriptionLoaded = true;
-        }
+        // A successful profile response is authoritative even when this is a
+        // first-time profile (`profile: null`) or its optional description is
+        // absent. Keep failures distinct so only a confirmed empty value is
+        // editable and eligible to save.
+        editDescription = typeof block?.description === "string" ? block.description : "";
+        initialDescription = editDescription;
+        descriptionLoaded = true;
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
       } else {
         // A failed profile result is not an empty profile. Keep only the

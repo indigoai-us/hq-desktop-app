@@ -145,6 +145,45 @@ describe("ShellSettings profile editing — dirty state", () => {
     expect(update).toHaveBeenCalledWith({ displayName: "Ada L" });
   });
 
+  it.each([
+    ["an empty profile", null],
+    ["a profile without a description", { displayName: "Ada Lovelace" }],
+  ])("loads an editable empty description for %s", async (_case, responseProfile) => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const update = vi.fn(async () => ({ ok: true as const, value: { profile: {} } }));
+    component = mount(ShellSettings, {
+      target: host,
+      props: {
+        profile,
+        adapter: adapterWith(update, async () => ({
+          ok: true as const,
+          value: { profile: responseProfile, entityName: "Ada Lovelace" },
+        })),
+      },
+    });
+    await tick();
+    await Promise.resolve();
+    flushSync();
+
+    const description = host.querySelector(
+      '[data-testid="settings-description-input"]',
+    ) as HTMLInputElement;
+    expect(description.disabled).toBe(false);
+    expect(host.querySelector('[data-testid="settings-profile-retry"]')).toBeNull();
+
+    description.value = "Building HQ";
+    description.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(saveButton()?.disabled).toBe(false);
+    saveButton()!.click();
+    await tick();
+    await Promise.resolve();
+    flushSync();
+
+    expect(update).toHaveBeenCalledWith({ description: "Building HQ" });
+  });
+
   it("rejects a save completion after the auth generation changes", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);

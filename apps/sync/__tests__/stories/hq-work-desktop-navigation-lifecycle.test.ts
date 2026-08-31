@@ -745,6 +745,30 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before + 2);
   });
 
+  it('keeps a ready shell mounted and on its destination during ordinary browser wakeups', async () => {
+    const calls: string[] = [];
+    await mountShell({ calls });
+    warmRoute('settings:appearance');
+    await flush();
+    const before = calls.filter((command) => command === 'get_auth_session').length;
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush(64);
+
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before);
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="settings-nav-appearance"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
   it('keeps invalid credentials fail closed until the user explicitly retries', async () => {
     const calls: string[] = [];
     const auth: Options = {

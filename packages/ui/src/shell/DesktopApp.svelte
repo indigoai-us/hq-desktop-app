@@ -1715,7 +1715,7 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
-    const prefs = readSettingsPrefs();
+    const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
@@ -1922,6 +1922,7 @@
           accountLabel={resolvedAccountLabel}
           accountInitials={resolvedAccountInitials}
           selectedId={selectedRow?.id ?? null}
+          scopeUid={tenantCompanyId}
           {tenantAccountId}
           {tenantCompanyId}
           {seedDirectory}
