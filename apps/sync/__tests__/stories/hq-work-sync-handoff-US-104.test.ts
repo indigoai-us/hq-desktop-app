@@ -48,6 +48,7 @@ describe('US-104 internal notification + deep-link routing', () => {
         messageId: null,
         createdAt: null,
         replyRootEventId: null,
+        automatic: false,
       });
       expect(takePendingConversation()).toBeNull();
     });
@@ -59,6 +60,7 @@ describe('US-104 internal notification + deep-link routing', () => {
         messageId: null,
         createdAt: null,
         replyRootEventId: 'evt_root',
+        automatic: false,
       });
       expect(takePendingConversation()).toBeNull();
     });
@@ -70,11 +72,13 @@ describe('US-104 internal notification + deep-link routing', () => {
     expect(takePendingConversation()).toMatchObject({
       personUid: 'prs_ada',
       replyRootEventId: null,
+      automatic: false,
     });
     notificationClick('hqwork://open?person=prs_ada&reply=evt_dm');
     expect(takePendingConversation()).toMatchObject({
       personUid: 'prs_ada',
       replyRootEventId: 'evt_dm',
+      automatic: false,
     });
   });
 
