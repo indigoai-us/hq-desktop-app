@@ -63,9 +63,10 @@
     /**
      * Deep-link focus target (former `meetings:focus-meeting` Tauri event +
      * `meetings_take_pending_focus` invoke — the host resolves both and passes
-     * the meeting id here; each change flashes that agenda row).
+     * the meeting id + sequence here; every sequence is a consumable focus
+     * event, including repeated requests for the same meeting.
      */
-    focusRequest?: string | null;
+    focusRequest?: { meetingId: string; sequence: number } | null;
   }
   let {
     adapter,
@@ -448,7 +449,7 @@
   // Host-driven deep-link focus (replaces the Tauri meetings:focus-meeting
   // listener + meetings_take_pending_focus cold-mount stash).
   $effect(() => {
-    if (focusRequest) focusMeetingRow(focusRequest);
+    if (focusRequest) focusMeetingRow(focusRequest.meetingId);
   });
 </script>
 

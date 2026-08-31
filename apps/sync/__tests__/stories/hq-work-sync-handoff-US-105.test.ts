@@ -127,7 +127,13 @@ function makeAdapter(handler?: SyncInvokeFn) {
     if (handler) return handler(cmd, args);
     switch (cmd) {
       case 'get_auth_state':
-        return { authenticated: true, expiresAt: '2099-01-01T00:00:00Z' };
+        // The adapter deliberately fails closed without an account id. This
+        // mounted shell fixture represents a valid signed-in desktop session.
+        return {
+          authenticated: true,
+          accountId: 'acct_ada',
+          expiresAt: '2099-01-01T00:00:00Z',
+        };
       case 'fetch_reactions':
         return [{ emoji: '👍', count: 1, reactedByMe: true }];
       case 'toggle_reaction':
@@ -207,7 +213,11 @@ function mockInvoke(): SyncInvokeFn {
   return async (cmd, args) => {
     switch (cmd) {
       case 'get_auth_state':
-        return { authenticated: true, expiresAt: '2099-01-01T00:00:00Z' };
+        return {
+          authenticated: true,
+          accountId: 'acct_ada',
+          expiresAt: '2099-01-01T00:00:00Z',
+        };
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':

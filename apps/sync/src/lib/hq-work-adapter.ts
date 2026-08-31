@@ -885,7 +885,11 @@ export function createSyncPlatformAdapter(
 
     packages: {
       listPackages: () => call('list_packages'),
-      install: (source) => call('install_package', { source }),
+      install: ({ source, registry }) =>
+        call('install_package', {
+          source,
+          ...(registry ? { registry: true } : {}),
+        }),
       update: (name) => call('update_package', { name }),
       uninstall: (name) => call('uninstall_package', { name }),
       checkUpdates: () => call('check_package_updates'),

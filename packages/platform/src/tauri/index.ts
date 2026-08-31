@@ -414,7 +414,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly packages: PlatformAdapter["packages"] = {
     listPackages: () => this.call("list_packages"),
-    install: (source) => this.call("install_package", { source }),
+    install: ({ source, registry }) =>
+      this.call("install_package", {
+        source,
+        ...(registry ? { registry: true } : {}),
+      }),
     update: (name) => this.call("update_package", { name }),
     uninstall: (name) => this.call("uninstall_package", { name }),
     checkUpdates: () => this.call("check_package_updates"),

@@ -31,7 +31,7 @@
     verified: boolean;
   }
 
-  type SectionId =
+  export type ShellSettingsSection =
     | "profile"
     | "companies"
     | "general"
@@ -41,7 +41,7 @@
     | "meetings"
     | "updates";
 
-  const ALL_SECTIONS: ReadonlyArray<{ id: SectionId | "sep"; label: string }> =
+  const ALL_SECTIONS: ReadonlyArray<{ id: ShellSettingsSection | "sep"; label: string }> =
     [
       { id: "profile", label: "Profile" },
       { id: "companies", label: "Companies" },
@@ -60,10 +60,12 @@
     companies?: Workspace[] | null;
     adapter?: PlatformAdapter | null;
     version?: string;
+    /** Host-routed subsection; null preserves Profile-first normal entry. */
+    initialSection?: ShellSettingsSection | null;
     onback?: () => void;
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
-    onopenconsole?: (url?: string) => void;
+    onopenconsole?: (url?: string) => Promise<void> | void;
     /** Change-photo affordance (host seam; display-only default). */
     onchangephoto?: () => void;
     consoleBase?: string;
@@ -74,6 +76,7 @@
     companies = [],
     adapter = null,
     version = "0.0.0",
+    initialSection = null,
     onback,
     onsignout,
     onopenconsole,
@@ -81,11 +84,42 @@
     consoleBase = HQ_CONSOLE_BASE,
   }: Props = $props();
 
-  function openConsole(url: string = consoleBase): void {
-    onopenconsole?.(url);
+  let externalError = $state<string | null>(null);
+
+  async function openConsole(url: string = consoleBase): Promise<void> {
+    externalError = null;
+    if (!onopenconsole) {
+      externalError = "HQ Console is unavailable in this host.";
+      return;
+    }
+    try {
+      await onopenconsole(url);
+    } catch (error) {
+      externalError = `Couldn’t open HQ Console: ${String(error)}`;
+    }
   }
 
-  let active = $state<SectionId>("profile");
+  async function confirmSignOut(): Promise<void> {
+    signOutConfirmOpen = false;
+    externalError = null;
+    if (!onsignout) {
+      externalError = "Sign out is unavailable in this host.";
+      return;
+    }
+    try {
+      await onsignout();
+    } catch (error) {
+      externalError = `Couldn’t sign out: ${String(error)}`;
+    }
+  }
+
+  let active = $state<ShellSettingsSection>("profile");
+  $effect(() => {
+    // A bare Settings destination is an explicit Profile-first request too.
+    // Without this reset a warm `settings` route could leave a previously
+    // selected subsection visible when the settings shell stays mounted.
+    active = initialSection ?? "profile";
+  });
   let signOutConfirmOpen = $state(false);
 
   // ── Editable profile state (US: make profile editable in-app) ───────────────
@@ -259,6 +293,11 @@
     </nav>
 
     <div class="ss-pane" data-testid="settings-pane">
+      {#if externalError}
+        <p class="ss-external-error" data-testid="settings-external-error" role="alert">
+          {externalError}
+        </p>
+      {/if}
       {#if active === "profile"}
         {#if !profile}
           <EmptyState
@@ -394,7 +433,7 @@
                 type="button"
                 class="chip"
                 data-testid="settings-open-console"
-                onclick={() => openConsole()}
+                onclick={() => void openConsole()}
               >
                 Open console
               </button>
@@ -451,10 +490,7 @@
   confirmLabel="Sign out"
   danger
   oncancel={() => (signOutConfirmOpen = false)}
-  onconfirm={() => {
-    signOutConfirmOpen = false;
-    onsignout?.();
-  }}
+  onconfirm={() => void confirmSignOut()}
 />
 
 <style>

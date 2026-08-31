@@ -407,6 +407,16 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
     }
 }
 
+/// Construct exact native CLI arguments for an install intent. Kept separate
+/// from process spawning so registry routing has a direct regression test.
+fn install_package_args(source: &str, registry: bool) -> Vec<String> {
+    if registry {
+        vec!["packages".into(), "install".into(), source.into()]
+    } else {
+        vec!["install".into(), source.into(), "--allow-hooks".into()]
+    }
+}
+
 /// Install a pack. `registry=true` routes to the entitlement-gated registry
 /// flow (`hq packages install <slug>`); otherwise the content-pack flow
 /// (`hq install <source> --allow-hooks`). `--allow-hooks` avoids a blocking
@@ -417,11 +427,7 @@ pub async fn install_package(
     source: String,
     registry: Option<bool>,
 ) -> Result<(), String> {
-    let args: Vec<String> = if registry.unwrap_or(false) {
-        vec!["packages".into(), "install".into(), source.clone()]
-    } else {
-        vec!["install".into(), source.clone(), "--allow-hooks".into()]
-    };
+    let args = install_package_args(&source, registry.unwrap_or(false));
     stream_hq(&app, "install", &source, args).await
 }
 
@@ -565,6 +571,18 @@ mod tests {
         assert_eq!(
             pack_update_summary(&serde_json::json!({ "installed": [] })).count,
             0
+        );
+    }
+
+    #[test]
+    fn registry_install_uses_the_native_packages_command_with_a_plain_slug() {
+        assert_eq!(
+            install_package_args("hq-pack-engineering", true),
+            vec!["packages", "install", "hq-pack-engineering"],
+        );
+        assert_eq!(
+            install_package_args("registry:hq-pack-engineering", false),
+            vec!["install", "registry:hq-pack-engineering", "--allow-hooks"],
         );
     }
 }

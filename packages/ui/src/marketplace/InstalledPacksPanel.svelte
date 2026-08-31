@@ -22,6 +22,7 @@
   import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import { safeUnlisten, type UnlistenFn } from "../library/library-refresh.js";
+  import type { PackagesEvents } from "../library/packages-events.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import {
     shortSource,
@@ -32,19 +33,7 @@
     type PackagesView,
     type InstalledPack,
     type AvailablePack,
-    type PackagesProgress,
-    type PackagesDone,
   } from "../library/packages-model.js";
-
-  /** Optional host stream of the desktop `packages:*` events. */
-  export interface PackagesEvents {
-    subscribe(handlers: {
-      onProgress(progress: PackagesProgress): void;
-      onComplete(done: PackagesDone): void;
-      onError(done: PackagesDone): void;
-      onUpdates(view: PackagesView): void;
-    }): Promise<UnlistenFn>;
-  }
 
   interface Props {
     /** Platform seam — `packages.*` (desktop-only capability:
@@ -175,11 +164,7 @@
     busy = { op: "install", id: source, label: shortSource(source) };
     logLines = [];
     errorMsg = null;
-    // ADAPTER GAP: `packages.install(source)` carries no registry flag; a
-    // registry slug is forwarded with a `registry:` prefix by convention.
-    const res = await adapter.packages.install(
-      registry ? `registry:${source}` : source,
-    );
+    const res = await adapter.packages.install({ source, registry });
     if (!res.ok) {
       errorMsg = res.message ?? "Install failed.";
       errorContext = "mutation";
@@ -228,14 +213,14 @@
 
   onMount(() => {
     const unlisteners: UnlistenFn[] = [];
+    let disposed = false;
     void (async () => {
       if (!canManage) {
         loading = false;
         return;
       }
       if (packagesEvents) {
-        unlisteners.push(
-          await packagesEvents.subscribe({
+        const unlisten = await packagesEvents.subscribe({
             onProgress: (progress) => {
               logLines = [...logLines.slice(-200), progress.line];
             },
@@ -262,8 +247,9 @@
               };
               updateProbeError = null;
             },
-          }),
-        );
+        });
+        if (disposed) safeUnlisten(unlisten)();
+        else unlisteners.push(unlisten);
       }
 
       // No window-ready handshake here (this is an in-Library tab, not a
@@ -275,6 +261,7 @@
     })();
 
     return () => {
+      disposed = true;
       unlisteners.forEach((u) => safeUnlisten(u)());
       if (repairCommandTimer) clearTimeout(repairCommandTimer);
     };

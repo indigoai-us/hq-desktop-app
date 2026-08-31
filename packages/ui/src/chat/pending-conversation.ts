@@ -19,6 +19,8 @@ export interface ConversationTarget {
   displayName: string;
   /** Optional reply-thread root so a later host can open ReplyPanel. */
   replyRootEventId?: string | null;
+  /** True only for the sidebar's initial automatic directory selection. */
+  automatic?: boolean;
 }
 
 /** Window event dispatched alongside the stash so live hosts react. */
@@ -31,7 +33,7 @@ let pending: ConversationTarget | null = null;
  *  open the conversation immediately. */
 export function requestConversation(target: ConversationTarget): void {
   const replyRootEventId = target.replyRootEventId?.trim() || null;
-  pending = { ...target, replyRootEventId };
+  pending = { ...target, replyRootEventId, automatic: target.automatic === true };
   try {
     window.dispatchEvent(
       new CustomEvent(MESSAGE_PERSON_EVENT, { detail: pending }),

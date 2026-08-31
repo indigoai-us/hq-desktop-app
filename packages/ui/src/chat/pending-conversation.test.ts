@@ -32,6 +32,7 @@ describe("pending conversation replyRootEventId", () => {
         email: "ada@example.com",
         displayName: "Ada",
         replyRootEventId: "evt_dm_root",
+        automatic: false,
       },
     ]);
     expect(takePendingConversation()).toEqual({
@@ -39,6 +40,7 @@ describe("pending conversation replyRootEventId", () => {
       email: "ada@example.com",
       displayName: "Ada",
       replyRootEventId: "evt_dm_root",
+      automatic: false,
     });
     expect(takePendingConversation()).toBeNull();
   });
@@ -51,5 +53,15 @@ describe("pending conversation replyRootEventId", () => {
       replyRootEventId: "   ",
     });
     expect(takePendingConversation()?.replyRootEventId).toBeNull();
+  });
+
+  it("preserves automatic directory-selection intent for the mounted host", () => {
+    requestConversation({
+      personUid: "prs_auto",
+      email: "auto@example.com",
+      displayName: "Auto",
+      automatic: true,
+    });
+    expect(takePendingConversation()?.automatic).toBe(true);
   });
 });

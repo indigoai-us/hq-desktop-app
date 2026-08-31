@@ -18,7 +18,7 @@
   interface Props {
     companies?: Workspace[] | null;
     personalLabel?: string | null;
-    onopenconsole?: (url: string) => void;
+    onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
     /** Local folder sync per company — desktop only. */
     canSync?: boolean;
@@ -34,6 +34,7 @@
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
   let prefs = $state(readSettingsPrefs());
+  let externalError = $state<string | null>(null);
 
   function isOn(row: SettingsCompanyRow): boolean {
     if (row.id in prefs.companySync) return prefs.companySync[row.id]!;
@@ -51,9 +52,27 @@
     if (base === HQ_CONSOLE_BASE) return companyConsoleUrl(slug);
     return `${base}/companies/${encodeURIComponent(slug)}`;
   }
+
+  async function openCompany(slug: string): Promise<void> {
+    externalError = null;
+    if (!onopenconsole) {
+      externalError = 'HQ Console is unavailable in this host.';
+      return;
+    }
+    try {
+      await onopenconsole(companyUrl(slug));
+    } catch (error) {
+      externalError = `Couldn’t open this company in HQ Console: ${String(error)}`;
+    }
+  }
 </script>
 
 <div class="co-pane" data-testid="settings-companies-pane">
+  {#if externalError}
+    <p class="co-external-error" data-testid="settings-company-open-error" role="alert">
+      {externalError}
+    </p>
+  {/if}
   {#if lists.active.length === 0}
     <p class="co-empty" data-testid="settings-companies-empty">
       No company memberships on this account yet.
@@ -66,7 +85,7 @@
         <button
           type="button"
           class="co-id"
-          onclick={() => onopenconsole?.(companyUrl(row.slug))}
+          onclick={() => void openCompany(row.slug)}
         >
           <span
             class="co-av"
