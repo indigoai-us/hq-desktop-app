@@ -92,7 +92,7 @@ describe('US-022: ThreadPanel right-side panel', () => {
       'e.payload.rootEventId !== identity.rootEventId || !identityIsCurrent(identity)',
     );
     expect(p).toContain('appendReply(e.payload.reply);');
-    expect(p).toContain('onreplycount?.(identity.rootEventId, replyCount);');
+    expect(p).toContain('onreplycount?.( identity.rootEventId, replyCount, e.payload.reply.createdAt ?? null, );');
   });
 });
 
@@ -123,7 +123,7 @@ describe('US-022: MessagesShell wires onopenthread for DM + channel panes', () =
     expect(s).toContain('class="thread-column"');
     expect(s).toContain('<ThreadPanel');
     expect(s).toContain('onreplycount={handleThreadReplyCount}');
-    expect(s).toContain('function handleThreadReplyCount(rootEventId: string, replyCount: number): void');
+    expect(s).toContain('function handleThreadReplyCount( rootEventId: string, replyCount: number, lastReplyAt?: string | null, ): void');
     // Overlay on narrow widths, third column on wide.
     expect(s).toContain('@media (max-width: 720px)');
   });

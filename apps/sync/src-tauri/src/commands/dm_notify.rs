@@ -52,12 +52,13 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
-    dm_notifications_enabled, esc_thread_seg, normalize_scope, partition_unnotified,
-    read_cursor_entry_for_account, respond_action_path, respond_action_state, try_set_in_flight,
-    write_cursor_entry_for_account, ActiveConversationInner, ActiveConversationState,
-    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, PairUnread,
-    PairUnreadState, PendingDmEvents, RequestsListResponse, SeenChannelState, SeenRequestState,
-    SendDmOutcome, ThreadReply, ThreadResponse, ThreadView, UnreadDmState,
+    dm_notifications_enabled, effective_reply_count, esc_thread_seg, normalize_scope,
+    partition_unnotified, read_cursor_entry_for_account, respond_action_path, respond_action_state,
+    try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
+    ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
+    InboxResponse, PairUnread, PairUnreadState, PendingDmEvents, RequestsListResponse,
+    SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply, ThreadResponse, ThreadView,
+    UnreadDmState,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -2243,7 +2244,7 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &Notification
             let payload = serde_json::json!({
                 "rootEventId": root,
                 "reply": reply,
-                "replyCount": view.reply_count,
+                "replyCount": effective_reply_count(&view),
             });
             log(
                 LOG_TAG,

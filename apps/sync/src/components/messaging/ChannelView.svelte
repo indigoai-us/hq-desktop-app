@@ -24,6 +24,7 @@
     isInvitedNotJoined,
   } from '../../lib/channels';
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
+  import { foldReplies } from './thread-replies';
   import { ReactionController } from '../../lib/reactionController.svelte';
 
   interface Props {
@@ -123,12 +124,15 @@
         generation !== loadGeneration ||
         current.channelId !== requestedChannelId
       ) return;
-      // Server returns newest-first; render oldest → newest.
+      // Server returns newest-first; render oldest → newest. Thread-reply rows
+      // are folded onto their roots (count + lastReplyAt) so the reply
+      // indicator renders in the channel list; replies stay in the thread pane.
       const previousIds = new Set(messages.map((m) => m.eventId));
-      messages = [...(detail.messages ?? [])].reverse();
+      const fetched = [...(detail.messages ?? [])].reverse();
+      messages = foldReplies(fetched);
       // Only newly arrived senders can dismiss a thinking row — a full reload
       // would otherwise clear on historical agent messages in the thread.
-      thinkingCtl?.noteIncoming(messages.filter((m) => !previousIds.has(m.eventId)));
+      thinkingCtl?.noteIncoming(fetched.filter((m) => !previousIds.has(m.eventId)));
       if (detail.channel) {
         current = { ...current, ...detail.channel };
         memberCount = current.memberCount ?? memberCount;

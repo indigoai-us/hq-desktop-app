@@ -38,6 +38,11 @@
   import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt';
   import { appendInboundBatch } from '../../lib/dmThread';
   import { shareTitle } from '../../lib/share-path';
+  import {
+    applyInboundReplies,
+    foldReplies,
+    partitionThreadReplies,
+  } from './thread-replies';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
@@ -133,6 +138,9 @@
     details?: string | null;
     prompt?: string | null;
     createdAt: string;
+    // Present when this inbox event is a thread reply (US-022) — routed into
+    // the root message's reply indicator instead of the main list.
+    rootEventId?: string | null;
   }
 
   interface ContactsResponse {
@@ -427,10 +435,19 @@
 
   // A reply landed (or the thread loaded) — bump the matching root message's
   // live reply-count in the DM message list so its affordance stays current.
-  function handleThreadReplyCount(rootEventId: string, replyCount: number): void {
+  function handleThreadReplyCount(
+    rootEventId: string,
+    replyCount: number,
+    lastReplyAt?: string | null,
+  ): void {
     messages = messages.map((m) =>
       m.rootEventId === rootEventId || m.eventId === rootEventId
-        ? { ...m, rootEventId: m.rootEventId ?? m.eventId, replyCount }
+        ? {
+            ...m,
+            rootEventId: m.rootEventId ?? m.eventId,
+            replyCount,
+            ...(lastReplyAt ? { lastReplyAt } : {}),
+          }
         : m,
     );
   }
@@ -929,13 +946,23 @@
     );
   }
 
+  // Reply eventIds already counted onto a root's indicator, so a re-delivered
+  // live event can't double-bump the count.
+  const countedReplyIds = new Set<string>();
+
   function applyLiveInbound(dms: DmEvent[]): void {
     if (dms.length === 0) return;
-    rememberLiveInbound(dms);
+    // Thread replies (rootEventId set) never join the main conversation list —
+    // they bump the root message's reply indicator instead (US-022).
+    const { topLevel, replies } = partitionThreadReplies(dms);
+    rememberLiveInbound(topLevel);
     updateContactPreviewsFromInbound(dms);
 
     if (!selected || selected.source === 'agent') return;
-    const next = appendLiveInbound(messages, selected.personUid);
+    let next = appendLiveInbound(messages, selected.personUid);
+    if (replies.length > 0) {
+      next = applyInboundReplies(next, replies, countedReplyIds);
+    }
     if (next !== messages) {
       messages = next;
     }
@@ -1318,7 +1345,12 @@
         selected?.personUid !== c.personUid
       ) return;
       // Server returns newest-first; render chronologically (oldest → newest).
-      messages = appendLiveInbound([...(resp.messages ?? [])].reverse(), c.personUid);
+      // Fold thread-reply rows onto their roots (count + lastReplyAt) so the
+      // reply indicator renders on load; replies never join the main list.
+      messages = appendLiveInbound(
+        foldReplies([...(resp.messages ?? [])].reverse()),
+        c.personUid,
+      );
       const preview = previewFromMessages(resp.messages ?? []);
       if (preview) applyContactPreview(c.personUid, preview);
     } catch (err) {

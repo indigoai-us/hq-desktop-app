@@ -28,6 +28,7 @@
   import { ReactionController } from '../../lib/reactionController.svelte';
   import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
+  import { effectiveReplyCount } from './thread-replies';
 
   // A thread message (root or reply) as returned by fetch_thread / carried on a
   // thread:new-reply event. Mirrors the Rust `ThreadReply` (camelCase).
@@ -38,7 +39,7 @@
   interface ThreadView {
     root: ThreadReplyRow;
     replies: ThreadReplyRow[];
-    replyCount: number;
+    replyCount?: number | null;
   }
 
   interface Props {
@@ -58,7 +59,7 @@
     onclose: () => void;
     // Bubbled up so the parent can bump the root bubble's live reply-count in the
     // main conversation as replies land here.
-    onreplycount?: (rootEventId: string, replyCount: number) => void;
+    onreplycount?: (rootEventId: string, replyCount: number, lastReplyAt?: string | null) => void;
   }
 
   let {
@@ -189,8 +190,13 @@
       seenIds = new Set(ordered.map((r) => r.eventId));
       replies = ordered;
       thinkingCtl?.noteIncoming(replies);
-      replyCount = view.replyCount ?? ordered.length;
-      onreplycount?.(identity.rootEventId, replyCount);
+      replyCount = effectiveReplyCount(
+        view.replyCount,
+        view.root?.replyCount,
+        ordered.length,
+      );
+      const lastReplyAt = ordered.at(-1)?.createdAt ?? null;
+      onreplycount?.(identity.rootEventId, replyCount, lastReplyAt);
       // Register the open thread (+ already-seen reply ids) so the SINGLE poll
       // path emits thread:new-reply only for genuinely new replies.
       void invoke('set_active_thread', {
@@ -250,7 +256,7 @@
       };
       appendReply(optimistic);
       replyCount += 1;
-      onreplycount?.(identity.rootEventId, replyCount);
+      onreplycount?.(identity.rootEventId, replyCount, optimistic.createdAt);
       void thinkingCtl?.noteOutgoing(text);
     } catch (err) {
       if (
@@ -319,12 +325,12 @@
           !identityIsCurrent(identity)
         ) return;
         appendReply(e.payload.reply);
-        if (typeof e.payload.replyCount === 'number') {
-          replyCount = e.payload.replyCount;
-        } else {
-          replyCount = replies.length;
-        }
-        onreplycount?.(identity.rootEventId, replyCount);
+        replyCount = Math.max(e.payload.replyCount ?? 0, replies.length);
+        onreplycount?.(
+          identity.rootEventId,
+          replyCount,
+          e.payload.reply.createdAt ?? null,
+        );
       },
     );
 
