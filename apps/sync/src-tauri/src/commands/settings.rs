@@ -150,8 +150,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // Telemetry defaults ON (opt-out). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
         telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(true)),
-        // Exact local activity folder selected by the user. No default is
-        // persisted so older installs keep the standard Claude location.
+        // Preserve a previously saved exact activity folder as a hidden fallback.
+        // No default is persisted because active profiles are discovered automatically.
         claude_projects_dir: prefs.claude_projects_dir,
         // Platform default when absent; explicit user choices are preserved.
         // widget.rs also reads widgetEnabled untyped on every notification

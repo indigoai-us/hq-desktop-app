@@ -163,6 +163,9 @@ pub fn resolve_claude_projects_dir(
     if let Some(value) = projects_override.filter(|value| !value.trim().is_empty()) {
         return PathBuf::from(value.trim());
     }
+    if let Some(value) = config_override.filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from(value.trim()).join("projects");
+    }
     let saved = std::fs::read_to_string(menubar_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<MenubarPrefs>(&raw).ok())
@@ -170,9 +173,6 @@ pub fn resolve_claude_projects_dir(
         .filter(|value| !value.trim().is_empty());
     if let Some(value) = saved {
         return PathBuf::from(value.trim());
-    }
-    if let Some(value) = config_override.filter(|value| !value.trim().is_empty()) {
-        return PathBuf::from(value.trim()).join("projects");
     }
     home.join(".claude").join("projects")
 }
@@ -626,6 +626,22 @@ mod tests {
         assert_eq!(
             resolve_claude_projects_dir(&root, &menubar, Some("/tmp/explicit"), None),
             PathBuf::from("/tmp/explicit")
+        );
+    }
+
+    #[test]
+    fn config_override_wins_over_saved_setting() {
+        let root = make_fixture_root();
+        let menubar = root.join("menubar.json");
+        fs::write(
+            &menubar,
+            serde_json::json!({ "claudeProjectsDir": root.join("saved") }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_claude_projects_dir(&root, &menubar, None, Some("/tmp/runtime")),
+            PathBuf::from("/tmp/runtime/projects")
         );
     }
 
