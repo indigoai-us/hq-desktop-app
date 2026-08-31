@@ -1,0 +1,76 @@
+/*
+ * Global full-bleed foundation for the V2 desktop shell (design source:
+ * hq-sync desktop-alt/styles/desktop-alt.css). This is what makes the app fill
+ * the whole window with NO white border and NO whole-page scroll: html, body,
+ * and the SvelteKit app root are 100% height / zero margin, the body clips, and
+ * the shell (100vh) owns all internal scrolling.
+ *
+ * The chat/home component token layers (chat-tokens.css, home/tokens.css) carry
+ * the palette + light/dark; here we only reset the document and set the dark
+ * ground so there is never a white flash behind the translucent shell.
+ * `data-window="desktop-alt"` is set on <html> in app.html to mirror the
+ * desktop window's attribute.
+ */
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+html {
+  /* Dark is home on the shell — the ground behind the translucent glass. */
+  background: #161618;
+  color-scheme: light dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  /* Single-scroll guarantee: the shell owns internal scrolling; the
+     document itself never scrolls. */
+  background: #121214;
+  font-family:
+    "Geist",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  html {
+    background: #f6f6f8;
+  }
+  body {
+    background: #e7e7ea;
+  }
+}
+
+/*
+ * Explicit in-app theme choice (Appearance → Light/Dark) sets
+ * `data-force-theme` on <html> and MUST override the OS media query above.
+ * The shell panels are translucent, so the document ground has to match the
+ * forced theme — otherwise a Light choice on an OS-dark machine (or a Dark
+ * choice on an OS-light machine) leaves the opposite ground showing through
+ * the glass as an unreadable grey "veil". Attribute selectors out-specify the
+ * bare `html`/`body` media-query rules, so this holds regardless of OS.
+ */
+html[data-force-theme="light"] {
+  background: #f6f6f8;
+}
+html[data-force-theme="light"] body {
+  background: #e7e7ea;
+}
+html[data-force-theme="dark"] {
+  background: #161618;
+}
+html[data-force-theme="dark"] body {
+  background: #121214;
+}
+
+/* The SvelteKit body wrapper is `display: contents` (app.html) so it forms no
+   box; the shell sizes itself to the viewport (100vh/100vw). */
