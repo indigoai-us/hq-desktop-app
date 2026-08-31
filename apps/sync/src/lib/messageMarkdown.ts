@@ -86,6 +86,148 @@ export function normalizeMessageMarkdown(body: string): string {
     .trimEnd();
 }
 
+const FENCE_LINE = /^\s*(`{3,}|~{3,})\s*([a-z0-9_+-]*)\s*$/i;
+
+function fenceOpen(line: string): { marker: string; minimumLength: number } | null {
+  const match = line.match(FENCE_LINE);
+  if (!match) return null;
+  return { marker: match[1][0], minimumLength: match[1].length };
+}
+
+/** True for Markdown block lines we must not rewrite as chat hard-breaks. */
+function isBlockMarkdownLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return false;
+  if (FENCE_LINE.test(line)) return true;
+  if (/^(?: {4}|\t)/.test(line)) return true;
+  if (/^#{1,6}\s/.test(trimmed)) return true;
+  if (/^[-*+]\s+/.test(trimmed)) return true;
+  if (/^\d+[.)]\s+/.test(trimmed)) return true;
+  if (trimmed.startsWith('>')) return true;
+  if (trimmed.includes('|')) return true;
+  if (/^(?:-{3,}|\*{3,}|_{3,}|=+)\s*$/.test(trimmed)) return true;
+  return false;
+}
+
+function isPlainParagraphLine(line: string): boolean {
+  return line.trim().length > 0 && !isBlockMarkdownLine(line);
+}
+
+function withHardBreakSuffix(line: string): string {
+  if (/(?: {2,}|\\)$/.test(line)) return line;
+  return `${line}  `;
+}
+
+/**
+ * Chat convention: a single newline inside a plain paragraph is a line break,
+ * not a space. Append Markdown's two-space hard-break suffix to plain-text
+ * lines that are followed by another plain non-blank line. Fenced code and
+ * other block constructs are left untouched.
+ */
+export function applyChatLineBreaks(markdown: string): string {
+  const lines = markdown.split('\n');
+  const out: string[] = [];
+  let fence: { marker: string; minimumLength: number } | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (fence) {
+      out.push(line);
+      const closing = new RegExp(
+        `^\\s*${fence.marker}{${fence.minimumLength},}\\s*$`,
+      );
+      if (closing.test(line)) fence = null;
+      continue;
+    }
+
+    const opening = fenceOpen(line);
+    if (opening) {
+      fence = opening;
+      out.push(line);
+      continue;
+    }
+
+    const next = lines[index + 1];
+    if (
+      next !== undefined &&
+      isPlainParagraphLine(line) &&
+      isPlainParagraphLine(next)
+    ) {
+      out.push(withHardBreakSuffix(line));
+    } else {
+      out.push(line);
+    }
+  }
+
+  return out.join('\n');
+}
+
+function wrapMentionsInText(text: string): string {
+  if (!text.includes('@')) return text;
+  // Fresh regex each call so a global lastIndex cannot leak across segments.
+  const pattern =
+    /(^|[^A-Za-z0-9_])(@[A-Za-z](?:[A-Za-z0-9._'-]|&#39;)*(?: [A-Z](?:[A-Za-z0-9._'-]|&#39;)*){0,1})/g;
+  return text.replace(
+    pattern,
+    (_match, prefix: string, mention: string) =>
+      `${prefix}<span class="message-mention">${mention}</span>`,
+  );
+}
+
+function tagName(tag: string): { name: string; closing: boolean } | null {
+  const match = tag.match(/^<\/?([A-Za-z][A-Za-z0-9]*)/);
+  if (!match) return null;
+  return { name: match[1].toLowerCase(), closing: tag.startsWith('</') };
+}
+
+/**
+ * Wrap @mentions in already-rendered HTML. Only text outside tags is scanned,
+ * and `<code>` / `<pre>` contents are skipped. Matched text is already escaped;
+ * this only wraps it — it never decodes entities or interpolates raw input.
+ */
+export function wrapMessageMentions(html: string): string {
+  if (!html.includes('@')) return html;
+
+  let out = '';
+  let cursor = 0;
+  let codeDepth = 0;
+  let preDepth = 0;
+
+  while (cursor < html.length) {
+    const tagStart = html.indexOf('<', cursor);
+    const textEnd = tagStart === -1 ? html.length : tagStart;
+    const text = html.slice(cursor, textEnd);
+    out += codeDepth > 0 || preDepth > 0 ? text : wrapMentionsInText(text);
+    if (tagStart === -1) break;
+
+    const tagEnd = html.indexOf('>', tagStart);
+    if (tagEnd === -1) {
+      out += html.slice(tagStart);
+      break;
+    }
+
+    const tag = html.slice(tagStart, tagEnd + 1);
+    const parsed = tagName(tag);
+    out += tag;
+    if (parsed && (parsed.name === 'code' || parsed.name === 'pre')) {
+      const selfClosing = /\/\s*>$/.test(tag);
+      if (!selfClosing) {
+        const delta = parsed.closing ? -1 : 1;
+        if (parsed.name === 'code') {
+          codeDepth = Math.max(0, codeDepth + delta);
+        } else {
+          preDepth = Math.max(0, preDepth + delta);
+        }
+      }
+    }
+    cursor = tagEnd + 1;
+  }
+
+  return out;
+}
+
 export function renderMessageBodyMarkdown(body: string): string {
-  return renderMarkdown(normalizeMessageMarkdown(body));
+  const markdown = applyChatLineBreaks(normalizeMessageMarkdown(body));
+  return wrapMessageMentions(renderMarkdown(markdown));
 }
