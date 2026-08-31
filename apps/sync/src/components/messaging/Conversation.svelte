@@ -92,6 +92,11 @@
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
     readonly?: boolean;
+    /** When false, the component renders NO footer at all — skip both the readonly static-note block and the reply composer block at the bottom of the markup (wrap the whole readonly/composer if-else in "{#if composer}"). */
+    composer?: boolean;
+    // Optional slot rendered after the message list, inside the scrollable
+    // region — used for the agent-thinking indicator (status, not a message).
+    belowMessages?: import('svelte').Snippet;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -112,6 +117,8 @@
     ontogglereaction,
     onopenshareinclaude,
     readonly = false,
+    composer = true,
+    belowMessages,
   }: Props = $props();
 
   const messageAuthor = (msg: ConversationMessage) =>
@@ -612,6 +619,7 @@
       </div>
     {/if}
     {/each}
+    {#if belowMessages}{@render belowMessages()}{/if}
   </div>
 
   {#if newMessagesAvailable}
@@ -627,6 +635,7 @@
   {/if}
 </div>
 
+{#if composer}
 {#if readonly}
   <div class="dm-reply dm-reply-readonly">
     <span class="dm-reply-hint">Replies aren’t available in this preview.</span>
@@ -661,6 +670,7 @@
       </button>
     </div>
   </div>
+{/if}
 {/if}
 
 <style>
@@ -1138,6 +1148,14 @@
 
   .dm-bubble-body :global(.markdown-align-right) {
     text-align: right;
+  }
+
+  .dm-bubble-body :global(.message-mention) {
+    font-weight: 600;
+    color: var(--message-markdown-text);
+    background: var(--message-markdown-surface);
+    border-radius: 5px;
+    padding: 0 3px;
   }
 
   .dm-bubble-details {

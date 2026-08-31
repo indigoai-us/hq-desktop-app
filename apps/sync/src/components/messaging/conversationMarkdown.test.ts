@@ -78,38 +78,32 @@ pnpm test
       'utf8',
     );
 
-    for (const source of [conversation, threadPanel]) {
-      expect(source).toContain(':global(.markdown-table-scroll)');
-      expect(source).toContain(':global(table)');
-      expect(source).toContain(':global(th)');
-      expect(source).toContain(':global(td)');
-      expect(source).toContain(':global(blockquote)');
-      expect(source).toContain(':global(pre)');
-      expect(source).toContain(':global(ul)');
-      expect(source).toContain(':global(ol)');
-      expect(source).toContain(':global(img)');
-      expect(source).toContain(':global(hr)');
-      expect(source).toContain(
-        'font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);',
-      );
-      expect(source).toContain(
-        'font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));',
-      );
-      expect(source).toContain('border-radius: 0;');
-      expect(source).toContain('overflow-x: auto;');
-    }
+    expect(conversation).toContain(':global(.markdown-table-scroll)');
+    expect(conversation).toContain(':global(table)');
+    expect(conversation).toContain(':global(th)');
+    expect(conversation).toContain(':global(td)');
+    expect(conversation).toContain(':global(blockquote)');
+    expect(conversation).toContain(':global(pre)');
+    expect(conversation).toContain(':global(ul)');
+    expect(conversation).toContain(':global(ol)');
+    expect(conversation).toContain(':global(img)');
+    expect(conversation).toContain(':global(hr)');
+    expect(conversation).toContain(
+      'font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);',
+    );
+    expect(conversation).toContain(
+      'font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));',
+    );
+    expect(conversation).toContain('border-radius: 0;');
+    expect(conversation).toContain('overflow-x: auto;');
 
     expect(conversation).toContain(
       '<div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>',
     );
-    expect(threadPanel).toContain(
-      '<div class="thread-root-body selectable-text">{@html renderMessageBodyMarkdown(root.body)}</div>',
-    );
+    expect(threadPanel).toContain('composer={false}');
+    expect(threadPanel).not.toContain('thread-root-bubble');
     expect(threadPanel).toMatch(
       /\.thread-root\s*\{[\s\S]*?background:\s*transparent/,
-    );
-    expect(threadPanel).toMatch(
-      /\.thread-root-bubble\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent/,
     );
   });
 
