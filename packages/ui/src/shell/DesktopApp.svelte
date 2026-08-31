@@ -2325,6 +2325,13 @@
   }
 
   .reply-column {
+    position: relative;
+    /* Stacking context (also covers .profile-column). Side-by-side both
+       panes are isolated with z-index:auto; DOM order puts this column after
+       .conversation so the opaque pane + border-left paint above main-pane
+       hover chrome and message text. .overlay still overrides to
+       position:absolute; z-index:5. */
+    isolation: isolate;
     width: 340px;
     flex-shrink: 0;
     display: flex;

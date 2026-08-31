@@ -211,7 +211,19 @@
   const windowed = $derived(
     takeNewestWindow(rootMessages, { extra: extraOlder }),
   );
-  const timeline = $derived([...windowed.rows, ...localSends]);
+  /** First eventId wins so the keyed each never receives duplicate keys
+   *  (host page + optimistic localSends race). */
+  const timeline = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: ConversationMessageWire[] = [];
+    for (const msg of [...windowed.rows, ...localSends]) {
+      const id = (msg.eventId ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(msg);
+    }
+    return out;
+  });
 
   let replyText = $state("");
   let replyInputEl = $state<HTMLTextAreaElement | null>(null);
@@ -1163,6 +1175,14 @@
 <style>
   .conversation {
     position: relative;
+    /* Own stacking context so z-indexed hover chrome (.dm-quick-react z2,
+       .dm-reply z1, .agent-menu z20, .drop-overlay z40) cannot paint into a
+       sibling pane. Isolation only — no extra overflow clip; EmojiPicker and
+       .agent-menu are inline absolute inside this pane and must stay visible.
+       .dm-msg is position:relative (z-index auto), so without this context its
+       box paints in the ancestor's positioned layer above an unpositioned
+       .reply-column — message text would cross the divider. */
+    isolation: isolate;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;

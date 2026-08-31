@@ -299,6 +299,55 @@
     });
   }
 
+  /** First trimmed eventId wins — keyed `{#each replies as msg (msg.eventId)}`
+   *  cannot receive duplicate keys (API page listed twice, or load + live
+   *  append of the same server row). */
+  function dedupeByEventId<T extends { eventId?: string | null }>(
+    messages: T[],
+  ): T[] {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const message of messages) {
+      const id = (message.eventId ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(message);
+    }
+    return out;
+  }
+
+  /** Fold a server page onto the in-memory list: drop/replace the matching
+   *  optimistic `local-` row (same trimmed body + direction out) and keep
+   *  only still-in-flight sending|failed locals that have no server copy. */
+  function mergeServerReplies(
+    serverRows: ConversationMessageWire[],
+    current: LocalReply[],
+  ): LocalReply[] {
+    const ordered = dedupeByEventId(serverRows);
+    const consumed = new Set<string>();
+    const pending: LocalReply[] = [];
+    for (const row of current) {
+      if (!row.eventId.startsWith("local-")) continue;
+      const match = ordered.find(
+        (server) =>
+          !consumed.has(server.eventId) &&
+          (server.direction ?? "out") === "out" &&
+          (row.direction ?? "out") === "out" &&
+          (server.body ?? "").trim() === (row.body ?? "").trim(),
+      );
+      if (match) {
+        consumed.add(match.eventId);
+        continue;
+      }
+      if (row.sendStatus === "sending" || row.sendStatus === "failed") {
+        pending.push(row);
+      }
+    }
+    return dedupeByEventId([...ordered, ...pending]);
+  }
+
+  const visibleReplies = $derived(dedupeByEventId(replies));
+
   function reactionsFor(id: string): ReactionAggregate[] {
     return localReactions[id] ?? [];
   }
@@ -331,13 +380,8 @@
       if (generation !== loadGeneration || rootEventId !== requested) return;
       root = view.root ?? seedRoot ?? null;
       const ordered = sortOldestFirst(view.replies ?? []);
-      seenIds = new Set(ordered.map((row) => row.eventId));
-      const pending = replies.filter(
-        (row) =>
-          row.eventId.startsWith("local-") &&
-          (row.sendStatus === "sending" || row.sendStatus === "failed"),
-      );
-      replies = [...ordered, ...pending];
+      replies = mergeServerReplies(ordered, replies);
+      seenIds = new Set(replies.map((row) => row.eventId));
       clearThinkingFromReplies(ordered);
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
@@ -578,19 +622,21 @@
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  function onReplyNew(root: string): void {
+  function onReplyNew(root: string, eventId?: string): void {
     if (root !== rootEventId) return;
+    const id = (eventId ?? "").trim();
+    if (id && seenIds.has(id)) return;
     void load();
   }
 
   $effect(() => {
     if (wakes) {
       return wakes.on("reply:new", (payload) => {
-        onReplyNew(payload.rootEventId);
+        onReplyNew(payload.rootEventId, payload.eventId);
       });
     }
     return subscribeReplyNew((payload) => {
-      onReplyNew(payload.rootEventId);
+      onReplyNew(payload.rootEventId, payload.eventId);
     });
   });
 </script>
@@ -744,12 +790,12 @@
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
-      {:else if replies.length === 0}
+      {:else if visibleReplies.length === 0}
         <p class="reply-status" data-testid="reply-panel-empty" role="status">
           No replies yet
         </p>
       {:else}
-        {#each replies as msg (msg.eventId)}
+        {#each visibleReplies as msg (msg.eventId)}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
