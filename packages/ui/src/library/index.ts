@@ -10,3 +10,4 @@ export * from "./library-refresh.js";
 export * from "./library-overlay-model.js";
 export * from "./pack-covers.js";
 export * from "./packages-model.js";
+export * from "./packages-events.js";

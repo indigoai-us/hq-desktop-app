@@ -27,6 +27,7 @@
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
+    createHqWorkPackagesEvents,
     createHqWorkSidebarApi,
   } from './hq-work-host';
   import { openApprovedExternalUrl } from './external-open';
@@ -46,6 +47,7 @@
   const notificationsApi = createLiveNotificationsApi(adapter);
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();
+  const packagesEvents = createHqWorkPackagesEvents(listen);
 
   let self = $state<SelfIdentity | null>(null);
   let companies = $state<Workspace[] | null>(null);
@@ -229,6 +231,12 @@
       },
     ).catch(() => () => {});
 
+    // Emitted only after OAuth tokens have been persisted by native code. This
+    // is an authoritative completion edge, not a timing-based reauth poll.
+    const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
+      if (!cancelled) void hydrateSession();
+    }).catch(() => () => {});
+
     return () => {
       cancelled = true;
       hydration += 1;
@@ -238,6 +246,7 @@
       // escape into Svelte's cleanup pass.
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
     };
   });
 </script>
@@ -283,6 +292,7 @@
       {sidebarApi}
       {notificationsApi}
       {wakes}
+      {packagesEvents}
       {companies}
       {self}
       settingsProfile={settingsProfileFromSelf(self)}

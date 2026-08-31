@@ -1280,6 +1280,7 @@
         personUid: row.personUid,
         email: row.email ?? "",
         displayName: row.title,
+        automatic,
       });
       recentDms = rememberRecentDm(recentDms, row.personUid);
       saveRecentDms(recentDms, storage);
@@ -1321,6 +1322,7 @@
       requestChannelOpen(row.channelId, {
         messageId: focus?.messageId,
         createdAt: focus?.createdAt,
+        automatic,
       });
       channels = clearChannelUnread(channels, row.channelId);
       try {

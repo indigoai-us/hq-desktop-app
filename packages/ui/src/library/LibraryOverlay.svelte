@@ -21,6 +21,7 @@
   } from "./library-refresh.js";
   import MarketplacePanel from "../marketplace/MarketplacePanel.svelte";
   import InstalledPacksPanel from "../marketplace/InstalledPacksPanel.svelte";
+  import type { PackagesEvents } from "./packages-events.js";
   import {
     type LibraryTab,
     buildLibraryNavRows,
@@ -46,6 +47,8 @@
     onback?: () => void;
     /** Parent navigation when left-nav tab changes. */
     onnavigatetab?: (tab: LibraryTab) => void;
+    /** Optional desktop package-operation stream for the Installed panel. */
+    packagesEvents?: PackagesEvents | null;
   }
 
   let {
@@ -54,6 +57,7 @@
     tab = "skills",
     onback,
     onnavigatetab,
+    packagesEvents = null,
   }: Props = $props();
 
   let currentTab = $state(tab);
@@ -432,7 +436,7 @@
         </div>
       {:else if activeTab === "installed"}
         <div class="lo-panel" data-testid="library-installed-panel">
-          <InstalledPacksPanel {adapter} />
+          <InstalledPacksPanel {adapter} {packagesEvents} />
         </div>
       {:else}
         <div class="lo-panel lo-market" data-testid="library-marketplace-panel">

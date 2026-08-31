@@ -57,6 +57,7 @@ interface Options {
   calls?: string[];
   workspaceFailure?: boolean;
   identityFailure?: boolean;
+  directoryResponse?: Promise<unknown>;
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -87,6 +88,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           ],
         };
       case 'list_channels':
+        if (options.directoryResponse) return options.directoryResponse;
         return {
           channels: [
             { channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering', scope: 'company' },
@@ -195,6 +197,18 @@ function warmMeetingFocus(meetingId: string): void {
   listener({ payload: { meetingId } });
 }
 
+function warmAuthSessionReady(): void {
+  const listener = nativeListeners.get('auth:session-ready');
+  if (!listener) throw new Error('auth:session-ready listener was not registered');
+  listener({ payload: { authenticated: true } });
+}
+
+function warmPackageUpdates(payload: unknown): void {
+  const listener = nativeListeners.get('packages:updates');
+  if (!listener) throw new Error('packages:updates listener was not registered');
+  listener({ payload });
+}
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
@@ -256,6 +270,13 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
     ).toBe('page');
 
+    warmRoute('library:marketplace');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-marketplace-panel"]')).toBeTruthy();
+
     warmRoute('library');
     await flush();
     expect(
@@ -301,6 +322,18 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent).toContain(
       'settings:appearance:untrusted',
     );
+
+    // Title-bar Marketplace is routed to discovery, never the Installed panel.
+    warmRoute('home');
+    await flush();
+    (host.querySelector('[data-testid="titlebar-core-pill"]') as HTMLButtonElement).click();
+    await flush();
+    (host.querySelector('[data-testid="core-popover-open-marketplace"]') as HTMLButtonElement).click();
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-installed-panel"]')).toBeNull();
   });
 
   it('carries a warm hqwork reply target through the mounted host into ReplyPanel', async () => {
@@ -333,18 +366,116 @@ describe('embedded Work navigation and lifecycle', () => {
   });
 
   it('carries a warm meeting focus id through the mounted host into the agenda', async () => {
-    await mountShell();
-    warmRoute('meetings');
-    await flush();
-    (host.querySelector('[data-testid="meetings-refresh"]') as HTMLButtonElement).click();
+    vi.useFakeTimers();
+    try {
+      await mountShell();
+      warmRoute('meetings');
+      await flush();
+      (host.querySelector('[data-testid="meetings-refresh"]') as HTMLButtonElement).click();
+      await flush(64);
+
+      warmMeetingFocus('mtg_focus');
+      await flush(64);
+      vi.advanceTimersByTime(1700);
+
+      // A repeated id is a new sequenced focus event, not a no-op assignment.
+      warmMeetingFocus('mtg_focus');
+      await flush(64);
+      vi.advanceTimersByTime(200);
+      await flush();
+      expect(host.querySelector('[data-meeting-id="mtg_focus"]')?.classList.contains('focused')).toBe(
+        true,
+      );
+
+      // Leaving through the mounted Meetings UI consumes the request: a later
+      // manual visit does not replay an old notification highlight.
+      (host.querySelector('[data-testid="meetings-back"]') as HTMLButtonElement).click();
+      await flush();
+      warmRoute('meetings');
+      await flush();
+      expect(host.querySelector('[data-meeting-id="mtg_focus"]')?.classList.contains('focused')).toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a cold Inbox route active after delayed directory auto-selection', async () => {
+    let releaseDirectory: ((value: unknown) => void) | undefined;
+    const directoryResponse = new Promise<unknown>((resolve) => {
+      releaseDirectory = resolve;
+    });
+    await mountShell({ pendingRoute: 'inbox', directoryResponse });
+
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+
+    releaseDirectory?.({
+      channels: [{ channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering' }],
+    });
     await flush(64);
 
-    warmMeetingFocus('mtg_focus');
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+  });
+
+  it('rehydrates the compact embedded shell from the native OAuth completion event', async () => {
+    const auth = { signedIn: false, calls: [] as string[] };
+    await mountShell(auth);
+    expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
+    const authProbesBeforeCompletion = auth.calls.filter(
+      (command) => command === 'get_auth_state',
+    ).length;
+
+    auth.signedIn = true;
+    warmAuthSessionReady();
     await flush(64);
 
-    expect(host.querySelector('[data-meeting-id="mtg_focus"]')?.classList.contains('focused')).toBe(
-      true,
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+    expect(auth.calls.filter((command) => command === 'get_auth_state').length).toBeGreaterThan(
+      authProbesBeforeCompletion,
     );
+  });
+
+  it('feeds native package update results to Installed and unregisters on lifecycle teardown', async () => {
+    const calls: string[] = [];
+    await mountShell({ calls });
+    warmRoute('library:installed');
+    await flush(64);
+    expect(nativeListeners.has('packages:updates')).toBe(true);
+    expect(calls).toContain('check_package_updates');
+
+    warmPackageUpdates({
+      packs: {
+        hqRoot: '/tmp/HQ',
+        hqVersion: '1.0.0',
+        installed: [
+          {
+            name: 'hq-pack-engineering',
+            transport: null,
+            contributes: {},
+            links: { live: 1, broken: 0, missing: 0, foreign: 0 },
+            inCatalog: true,
+            updateAvailable: true,
+          },
+        ],
+        available: [],
+        warnings: [],
+      },
+      registry: null,
+      error: null,
+    });
+    await flush();
+    expect(host.querySelector('[data-testid="installed-updates-badge"]')?.textContent).toContain(
+      '1 update',
+    );
+
+    warmRoute('home');
+    await flush();
+    expect(nativeListeners.has('packages:updates')).toBe(false);
   });
 
   it('uses the native sign_out command and reroutes the mounted UI to signed-out', async () => {

@@ -273,6 +273,25 @@ describe('US-103 embedded desktop window', () => {
   });
 
   describe('sidebar host bridge', () => {
+    it('maps typed registry installation to the native registry command arguments', async () => {
+      const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+      const adapter = createSyncPlatformAdapter({
+        invoke: async (command, args) => {
+          calls.push({ command, args });
+          return null;
+        },
+      });
+
+      await adapter.packages.install({ source: 'hq-pack-engineering', registry: true });
+
+      expect(calls).toEqual([
+        {
+          command: 'install_package',
+          args: { source: 'hq-pack-engineering', registry: true },
+        },
+      ]);
+    });
+
     it('maps list_channels payloads onto a directory snapshot', async () => {
       const adapter = createSyncPlatformAdapter({
         invoke: async (cmd) => {

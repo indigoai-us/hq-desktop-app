@@ -48,6 +48,7 @@
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
+  import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
   import {
     EMBEDDED_NAVIGATION_EVENT,
@@ -264,6 +265,8 @@
      * A returned cleanup detaches the host while lifecycle changes unmount it.
      */
     onembeddednavigationready?: () => void | (() => void);
+    /** Optional desktop package-operation stream for Library → Installed. */
+    packagesEvents?: PackagesEvents | null;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
     /**
@@ -317,6 +320,7 @@
     onOpenSettings,
     onOpenConsole,
     onembeddednavigationready,
+    packagesEvents = null,
     notificationWakeSeq = 0,
     hydrateLiveMessages = false,
     onlivemessages,
@@ -348,7 +352,11 @@
   >("conversation");
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
-  let meetingFocusRequest = $state<string | null>(null);
+  let meetingFocusRequest = $state<{
+    meetingId: string;
+    sequence: number;
+  } | null>(null);
+  let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
   let openReplyRootId = $state<string | null>(null);
@@ -435,7 +443,7 @@
         id: "command-go-marketplace",
         label: "Marketplace",
         detail: "Open marketplace in the library",
-        action: () => openLibrary("installed"),
+        action: () => openLibrary("marketplace"),
       });
     }
     const conversations: CommandPaletteItem[] = searchRows.map((row) => ({
@@ -1148,7 +1156,10 @@
     options?: { replyRootEventId?: string | null; preserveView?: boolean },
   ): void {
     selectedRow = row;
-    if (!options?.preserveView) view = "conversation";
+    if (!options?.preserveView) {
+      view = "conversation";
+      meetingFocusRequest = null;
+    }
     tab = "chat";
     paletteOpen = false;
     membersOpen = false;
@@ -1159,7 +1170,10 @@
     onselectrow?.(row);
   }
 
-  function applyConversationDeepLink(link: ConversationDeepLink): void {
+  function applyConversationDeepLink(
+    link: ConversationDeepLink,
+    options?: { preserveView?: boolean },
+  ): void {
     const row =
       conversationRowForDeepLink(link, searchRows) ??
       (link.replyRootEventId ? selectedRow : null);
@@ -1179,23 +1193,32 @@
     ) {
       return;
     }
-    handleSelect(row, { replyRootEventId: reply });
+    handleSelect(row, {
+      replyRootEventId: reply,
+      preserveView: options?.preserveView,
+    });
   }
 
   function applyPendingChannelOpen(pending: PendingChannelOpen): void {
-    applyConversationDeepLink({
-      channelId: pending.channelId,
-      personUid: null,
-      replyRootEventId: pending.replyRootEventId,
-    });
+    applyConversationDeepLink(
+      {
+        channelId: pending.channelId,
+        personUid: null,
+        replyRootEventId: pending.replyRootEventId,
+      },
+      { preserveView: pending.automatic && view !== "conversation" },
+    );
   }
 
   function applyPendingConversation(target: ConversationTarget): void {
-    applyConversationDeepLink({
-      channelId: null,
-      personUid: target.personUid?.trim() || null,
-      replyRootEventId: target.replyRootEventId ?? null,
-    });
+    applyConversationDeepLink(
+      {
+        channelId: null,
+        personUid: target.personUid?.trim() || null,
+        replyRootEventId: target.replyRootEventId ?? null,
+      },
+      { preserveView: target.automatic === true && view !== "conversation" },
+    );
   }
 
   $effect(() => {
@@ -1531,6 +1554,7 @@
   function openLibrary(next: LibraryTab = "skills"): void {
     libraryTab = next;
     view = "library";
+    meetingFocusRequest = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -1538,11 +1562,13 @@
 
   function toggleNotifications(): void {
     view = view === "notifications" ? "conversation" : "notifications";
+    meetingFocusRequest = null;
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
     view = "settings";
     settingsSection = section;
+    meetingFocusRequest = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -1552,6 +1578,7 @@
   function closeSettings(): void {
     view = "conversation";
     settingsSection = null;
+    meetingFocusRequest = null;
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
@@ -1572,7 +1599,9 @@
       case "meetings":
         view = "meetings";
         settingsSection = null;
-        if (target.meetingId?.trim()) meetingFocusRequest = target.meetingId.trim();
+        meetingFocusRequest = target.meetingId?.trim()
+          ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
+          : null;
         return;
       case "library":
         openLibrary(target.tab);
@@ -1677,12 +1706,14 @@
       } else if (key === "1") {
         event.preventDefault();
         view = "notifications";
+        meetingFocusRequest = null;
       } else if (key === "2") {
         event.preventDefault();
         view = "meetings";
+        meetingFocusRequest = null;
       } else if (adapter.kind !== "web" && key === "3") {
         event.preventDefault();
-        openLibrary("installed");
+        openLibrary("marketplace");
       } else if (key === "4") {
         event.preventDefault();
         openLibrary("skills");
@@ -1708,6 +1739,7 @@
         messageId: detail.messageId ?? null,
         createdAt: detail.createdAt ?? null,
         replyRootEventId: reply,
+        automatic: detail.automatic === true,
       });
     }
     function onMessagePerson(event: Event): void {
@@ -1722,7 +1754,7 @@
         view === "conversation"
       )
         return;
-      applyPendingConversation(detail);
+      applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
     function onOpenSettingsEvent(): void {
       openSettings();
@@ -1773,13 +1805,14 @@
     onopenNotifications={toggleNotifications}
     onopenMeetings={() => {
       view = "meetings";
+      meetingFocusRequest = null;
       paletteOpen = false;
       membersOpen = false;
       projectAboutOpen = false;
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
-    onopenMarketplace={isWeb ? undefined : () => openLibrary("installed")}
+    onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
   />
 
   {#if embeddedNavigationError}
@@ -1829,7 +1862,10 @@
               preserveView: options?.automatic === true && view !== "conversation",
             })}
           oncommand={() => (paletteOpen = true)}
-          onnavigateMessages={() => (view = "conversation")}
+          onnavigateMessages={() => {
+            view = "conversation";
+            meetingFocusRequest = null;
+          }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
         />
@@ -1844,7 +1880,10 @@
             api={notificationsApi}
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
-            onback={() => (view = "conversation")}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
           />
@@ -1852,7 +1891,10 @@
         {#if view === "meetings"}
           <MeetingsPage
             {adapter}
-            onback={() => (view = "conversation")}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
           />
@@ -2186,7 +2228,11 @@
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
-      onback={() => (view = "conversation")}
+      {packagesEvents}
+      onback={() => {
+        view = "conversation";
+        meetingFocusRequest = null;
+      }}
       onnavigatetab={(next) => (libraryTab = next)}
     />
   {/if}

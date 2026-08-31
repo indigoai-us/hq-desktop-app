@@ -28,7 +28,7 @@ export type EmbeddedNavigationTarget =
   | { kind: 'inbox' }
   | { kind: 'messages' }
   | { kind: 'meetings'; meetingId?: string | null }
-  | { kind: 'library'; tab: 'skills' | 'installed' }
+  | { kind: 'library'; tab: 'skills' | 'installed' | 'marketplace' }
   | { kind: 'settings'; section?: EmbeddedSettingsSection | null }
   | {
       kind: 'channel';

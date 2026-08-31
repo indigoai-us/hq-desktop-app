@@ -29,6 +29,8 @@ export interface OpenChannelOptions {
   createdAt?: string | null;
   /** Optional reply-thread root so a later host can open ReplyPanel. */
   replyRootEventId?: string | null;
+  /** True only for the sidebar's initial automatic directory selection. */
+  automatic?: boolean;
 }
 
 export interface PendingChannelOpen {
@@ -36,6 +38,7 @@ export interface PendingChannelOpen {
   messageId: string | null;
   createdAt: string | null;
   replyRootEventId: string | null;
+  automatic: boolean;
 }
 
 export interface ConversationDeepLink {
@@ -48,6 +51,7 @@ let pendingChannelId: string | null = null;
 let pendingChannelMessageId: string | null = null;
 let pendingChannelCreatedAt: string | null = null;
 let pendingReplyRootEventId: string | null = null;
+let pendingChannelAutomatic = false;
 let pendingDmRequests = false;
 /** Optional pairKey to open a specific request; null opens the first pending. */
 let pendingDmRequestPairKey: string | null = null;
@@ -65,6 +69,7 @@ export function requestChannelOpen(
   pendingChannelMessageId = trimOrNull(options.messageId);
   pendingChannelCreatedAt = trimOrNull(options.createdAt);
   pendingReplyRootEventId = trimOrNull(options.replyRootEventId);
+  pendingChannelAutomatic = options.automatic === true;
   try {
     window.dispatchEvent(
       new CustomEvent(OPEN_CHANNEL_EVENT, {
@@ -73,6 +78,7 @@ export function requestChannelOpen(
           messageId: pendingChannelMessageId,
           createdAt: pendingChannelCreatedAt,
           replyRootEventId: pendingReplyRootEventId,
+          automatic: pendingChannelAutomatic,
         },
       }),
     );
@@ -90,11 +96,13 @@ export function takePendingChannelOpen(): PendingChannelOpen | null {
     messageId: pendingChannelMessageId,
     createdAt: pendingChannelCreatedAt,
     replyRootEventId: pendingReplyRootEventId,
+    automatic: pendingChannelAutomatic,
   };
   pendingChannelId = null;
   pendingChannelMessageId = null;
   pendingChannelCreatedAt = null;
   pendingReplyRootEventId = null;
+  pendingChannelAutomatic = false;
   return snapshot;
 }
 

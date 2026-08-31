@@ -93,11 +93,11 @@ describe("library-overlay-model (US-017)", () => {
 
   describe("tab resolution", () => {
     it("maps library route tabs onto overlay tabs", () => {
-      expect(resolveOverlayTab("skills")).toBe("skills");
-      expect(resolveOverlayTab("workers")).toBe("workers");
-      expect(resolveOverlayTab("installed")).toBe("installed");
-      expect(resolveOverlayTab("submit")).toBe("marketplace");
-      expect(resolveOverlayTab("profile")).toBe("marketplace");
+      expect(
+        ["skills", "workers", "installed", "marketplace", "submit", "profile"].map(
+          (tab) => resolveOverlayTab(tab as Parameters<typeof resolveOverlayTab>[0]),
+        ),
+      ).toEqual(["skills", "workers", "installed", "marketplace", "marketplace", "marketplace"]);
       expect(resolveOverlayTab(undefined)).toBe("skills");
       expect(resolveOverlayTab("installed", { marketplace: false })).toBe("installed");
     });
@@ -106,7 +106,7 @@ describe("library-overlay-model (US-017)", () => {
       expect(overlayTabToLibraryTab("skills")).toBe("skills");
       expect(overlayTabToLibraryTab("workers")).toBe("workers");
       expect(overlayTabToLibraryTab("installed")).toBe("installed");
-      expect(overlayTabToLibraryTab("marketplace")).toBe("installed");
+      expect(overlayTabToLibraryTab("marketplace")).toBe("marketplace");
     });
   });
 

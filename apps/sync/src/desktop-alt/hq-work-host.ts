@@ -21,6 +21,10 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
   type EmbeddedNavigationTarget,
+  type PackagesDone,
+  type PackagesEvents,
+  type PackagesProgress,
+  type PackagesView,
 } from '@hq/ui';
 import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
 
@@ -38,6 +42,65 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/** Minimal Tauri event seam so the shared UI never imports Tauri directly. */
+export type TauriEventListener = <T>(
+  event: string,
+  handler: (event: { payload: T }) => void,
+) => Promise<() => void>;
+
+/**
+ * Bridge the native package lifecycle onto Library → Installed.
+ *
+ * Every handler is guarded after disposal and every late subscription is
+ * immediately unregistered. That keeps a prior account's package results out
+ * of a replacement DesktopApp during sign-out/reauth hydration.
+ */
+export function createHqWorkPackagesEvents(
+  listen: TauriEventListener,
+): PackagesEvents {
+  return {
+    async subscribe(handlers) {
+      let disposed = false;
+      const unlisteners: Array<() => void> = [];
+      const register = async <T>(
+        event: string,
+        handle: (payload: T) => void,
+      ): Promise<void> => {
+        const unlisten = await listen<T>(event, ({ payload }) => {
+          if (!disposed) handle(payload);
+        });
+        if (disposed) {
+          try {
+            unlisten();
+          } catch {
+            // A native listener teardown must never escape a UI lifecycle.
+          }
+        } else {
+          unlisteners.push(unlisten);
+        }
+      };
+
+      await Promise.all([
+        register<PackagesProgress>('packages:progress', handlers.onProgress),
+        register<PackagesDone>('packages:complete', handlers.onComplete),
+        register<PackagesDone>('packages:error', handlers.onError),
+        register<PackagesView>('packages:updates', handlers.onUpdates),
+      ]);
+
+      return () => {
+        disposed = true;
+        for (const unlisten of unlisteners.splice(0)) {
+          try {
+            unlisten();
+          } catch {
+            // Tauri unlisten is best-effort during component teardown.
+          }
+        }
+      };
+    },
+  };
 }
 
 export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi {
@@ -235,8 +298,8 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
         return { kind: 'library', tab: 'skills' };
       }
-      if (!hasExtraSegments && detail === 'installed') {
-        return { kind: 'library', tab: 'installed' };
+      if (!hasExtraSegments && (detail === 'installed' || detail === 'marketplace')) {
+        return { kind: 'library', tab: detail };
       }
       break;
     case 'settings':

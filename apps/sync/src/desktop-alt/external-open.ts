@@ -18,6 +18,14 @@ const EXACT_HOSTS = new Set([
 
 const SUFFIX_HOSTS = ['.zoom.us', '.webex.com'] as const;
 
+/**
+ * macOS System Settings route used solely by the denied-notifications
+ * recovery action. Keep this exact string separate from browser URL approval:
+ * no caller can use this seam to launch an arbitrary local scheme.
+ */
+export const MACOS_NOTIFICATIONS_SETTINGS_URL =
+  'x-apple.systempreferences:com.apple.preference.notifications';
+
 function approvedHost(hostname: string): boolean {
   return (
     EXACT_HOSTS.has(hostname) ||
@@ -27,6 +35,7 @@ function approvedHost(hostname: string): boolean {
 
 /** Return a normalized approved HTTPS URL, or throw an actionable error. */
 export function approvedExternalUrl(raw: string): string {
+  if (raw === MACOS_NOTIFICATIONS_SETTINGS_URL) return raw;
   let parsed: URL;
   try {
     parsed = new URL(raw);

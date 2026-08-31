@@ -119,6 +119,8 @@ export {
 export * as agency from "./agency/index.js";
 export * as files from "./files/index.js";
 export * as library from "./library/index.js";
+export * from "./library/packages-events.js";
+export * from "./library/packages-model.js";
 export * as marketplace from "./marketplace/index.js";
 export * as projects from "./projects/index.js";
 export * as home from "./home/index.js";

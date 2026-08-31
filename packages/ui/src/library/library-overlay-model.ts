@@ -25,7 +25,12 @@ import { packIdentity } from "./packages-model.js";
  * app-shell-owned; the host passes/receives these as plain strings).
  */
 export type LibraryTab =
-  "skills" | "workers" | "installed" | "submit" | "profile";
+  | "skills"
+  | "workers"
+  | "installed"
+  | "marketplace"
+  | "submit"
+  | "profile";
 
 /** Overlay left-nav destinations. Installed packs stay distinct from discovery. */
 export type LibraryOverlayTab = "skills" | "workers" | "installed" | "marketplace";
@@ -64,7 +69,7 @@ export function resolveOverlayTab(
 ): LibraryOverlayTab {
   if (tab === "workers") return opts?.workers === false ? "skills" : "workers";
   if (tab === "installed") return "installed";
-  if (tab === "submit" || tab === "profile") {
+  if (tab === "marketplace" || tab === "submit" || tab === "profile") {
     return opts?.marketplace === false ? "skills" : "marketplace";
   }
   return "skills";
@@ -74,7 +79,7 @@ export function resolveOverlayTab(
 export function overlayTabToLibraryTab(tab: LibraryOverlayTab): LibraryTab {
   if (tab === "workers") return "workers";
   if (tab === "installed") return "installed";
-  if (tab === "marketplace") return "installed";
+  if (tab === "marketplace") return "marketplace";
   return "skills";
 }
 

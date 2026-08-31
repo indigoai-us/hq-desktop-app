@@ -24,6 +24,19 @@ describe('embedded Work external opener', () => {
     );
   });
 
+  it('allows only the exact macOS notification-settings recovery route', () => {
+    expect(approvedExternalUrl('x-apple.systempreferences:com.apple.preference.notifications')).toBe(
+      'x-apple.systempreferences:com.apple.preference.notifications',
+    );
+    for (const raw of [
+      'x-apple.systempreferences:com.apple.preference.security',
+      'x-apple.systempreferences:com.apple.preference.notifications?x=1',
+      'x-apple.systempreferences:com.apple.preference.notifications/',
+    ]) {
+      expect(() => approvedExternalUrl(raw)).toThrow('not approved');
+    }
+  });
+
   it('rejects untrusted schemes, credentials, and lookalike hosts', () => {
     for (const raw of [
       'http://hq.computer',
