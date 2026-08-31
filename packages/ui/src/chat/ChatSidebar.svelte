@@ -1506,7 +1506,15 @@
           </svg>
         </button>
         {#if plusMenuOpen}
-          <div class="chat-popover chat-plus-menu" role="menu">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="chat-popover chat-plus-menu"
+            role="menu"
+            tabindex="-1"
+            aria-label="New message or channel"
+            use:menuPortal={{ anchor: plusMenuEl, placement: "bottom-start" }}
+            onmousedown={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               class="chat-popover-row"
@@ -3508,9 +3516,7 @@
   }
 
   .chat-plus-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
+    /* Portaled to .desktop-shell via use:menuPortal like the other chat popovers. */
     z-index: 70;
     min-width: 160px;
   }
