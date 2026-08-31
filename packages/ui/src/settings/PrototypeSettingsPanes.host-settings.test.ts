@@ -55,55 +55,6 @@ afterEach(async () => {
 });
 
 describe("PrototypeSettingsPanes host-backed toggles", () => {
-  it("shows and saves a custom Claude activity folder", async () => {
-    const updateSettings = vi.fn(async () => ok(undefined));
-    const pickFolder = vi.fn(async () =>
-      ok<string | null>("/Users/test/.claude-ridge/projects"),
-    );
-    const adapter = {
-      kind: "desktop",
-      isAvailable: (capability: string) => capability === "canSync",
-      shell: { pickFolder },
-      sync: {
-        getSyncStatus: vi.fn(async () => unavailable("sync status")),
-      },
-      appShell: {
-        notificationPermissionState: vi.fn(async () => ok("granted")),
-      },
-      meetings: {
-        listAccounts: vi.fn(async () => ok([])),
-      },
-      settings: {
-        getSettings: vi.fn(async () =>
-          ok({ claudeProjectsDir: "/Users/test/.claude/projects" }),
-        ),
-        getConfig: vi.fn(async () => ok({})),
-        updateSettings,
-      },
-    } as unknown as PlatformAdapter;
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    component = mount(PrototypeSettingsPanes, {
-      target: host,
-      props: { section: "general", adapter },
-    });
-
-    await vi.waitFor(() =>
-      expect(host.textContent).toContain("~/.claude/projects"),
-    );
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="claude-folder-change"]')
-      ?.click();
-
-    await vi.waitFor(() => expect(pickFolder).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() =>
-      expect(updateSettings).toHaveBeenCalledWith({
-        claudeProjectsDir: "/Users/test/.claude-ridge/projects",
-      }),
-    );
-    expect(host.textContent).toContain("~/.claude-ridge/projects");
-  });
-
   it("hydrates Dock and widget toggles from native settings without driving host setters", async () => {
     const getSettings = vi.fn(async () =>
       ok({ dockIcon: false, widgetEnabled: false }),

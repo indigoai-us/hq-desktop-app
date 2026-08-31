@@ -428,11 +428,6 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly settings: PlatformAdapter["settings"] = {
     getConfig: () => this.call("get_config"),
     getSettings: () => this.call("get_settings"),
-    updateSettings: async (patch) => {
-      const current = await this.call<Json>("get_settings");
-      if (!current.ok) return current;
-      return this.call("save_settings", { prefs: { ...current.value, ...patch } });
-    },
     getSetupStatus: () => this.call("get_setup_status"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };

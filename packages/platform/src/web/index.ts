@@ -840,7 +840,6 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Local, browser-scoped stubs until a web settings store lands.
     getConfig: async () => ok({} as Json),
     getSettings: async () => ok({} as Json),
-    updateSettings: async () => DESKTOP_ONLY,
     getSetupStatus: async () => DESKTOP_ONLY,
     getTelemetryConsent: async () => ok<boolean | null>(null),
   };

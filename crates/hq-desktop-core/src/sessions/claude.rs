@@ -177,6 +177,68 @@ pub fn resolve_claude_projects_dir(
     home.join(".claude").join("projects")
 }
 
+/// Resolve every active Claude transcript root. Standard and named profiles
+/// such as `~/.claude-ridge/projects` are discovered automatically.
+pub fn resolve_claude_projects_dirs(
+    home: &Path,
+    menubar_path: &Path,
+    projects_override: Option<&str>,
+    config_override: Option<&str>,
+) -> Vec<PathBuf> {
+    if let Some(value) = projects_override.filter(|value| !value.trim().is_empty()) {
+        return vec![PathBuf::from(value.trim())];
+    }
+    if let Some(value) = config_override.filter(|value| !value.trim().is_empty()) {
+        return vec![PathBuf::from(value.trim()).join("projects")];
+    }
+
+    let mut candidates = vec![home.join(".claude").join("projects")];
+    if let Some(saved) = std::fs::read_to_string(menubar_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<MenubarPrefs>(&raw).ok())
+        .and_then(|prefs| prefs.claude_projects_dir)
+        .filter(|value| !value.trim().is_empty())
+    {
+        candidates.push(PathBuf::from(saved.trim()));
+    }
+    if let Ok(entries) = std::fs::read_dir(home) {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if (name == ".claude" || name.starts_with(".claude-"))
+                && entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+            {
+                candidates.push(entry.path().join("projects"));
+            }
+        }
+    }
+
+    let mut roots = Vec::new();
+    for candidate in candidates {
+        if candidate.is_dir() && !roots.contains(&candidate) {
+            roots.push(candidate);
+        }
+    }
+    if roots.is_empty() {
+        roots.push(home.join(".claude").join("projects"));
+    }
+    roots
+}
+
+/// Every Claude Code transcript directory visible to the desktop app.
+pub fn claude_projects_dirs() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let menubar_path = home.join(".hq").join("menubar.json");
+    resolve_claude_projects_dirs(
+        &home,
+        &menubar_path,
+        std::env::var("CLAUDE_PROJECTS_DIR").ok().as_deref(),
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+    )
+}
+
 /// Claude Code's configured per-project transcript directory.
 pub fn claude_projects_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -531,6 +593,23 @@ mod tests {
         assert_eq!(
             resolve_claude_projects_dir(&root, &menubar, None, None),
             root.join(".claude-ridge/projects")
+        );
+    }
+
+    #[test]
+    fn automatically_discovers_standard_and_named_claude_profiles() {
+        let root = make_fixture_root();
+        let menubar = root.join("menubar.json");
+        fs::create_dir_all(root.join(".claude/projects")).unwrap();
+        fs::create_dir_all(root.join(".claude-ridge/projects")).unwrap();
+        fs::create_dir_all(root.join(".claude-notes")).unwrap();
+
+        assert_eq!(
+            resolve_claude_projects_dirs(&root, &menubar, None, None),
+            vec![
+                root.join(".claude/projects"),
+                root.join(".claude-ridge/projects"),
+            ]
         );
     }
 

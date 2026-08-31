@@ -88,8 +88,6 @@
   let coreVersion = $state<string | null>(null);
   let cliVersion = $state<string | null>(null);
   let hqFolder = $state<string | null>(null);
-  let claudeProjectsDir = $state<string>("~/.claude/projects");
-  let claudeFolderChanging = $state(false);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   let dockVisibilityChanged = false;
   let desktopWidgetChanged = false;
@@ -309,32 +307,6 @@
     return typeof value === "boolean" ? value : undefined;
   }
 
-  function readHostStringSetting(
-    raw: unknown,
-    key: string,
-  ): string | undefined {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-    const value = (raw as Record<string, unknown>)[key];
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-  }
-
-  async function pickClaudeActivityFolder(): Promise<void> {
-    if (!adapter || claudeFolderChanging) return;
-    claudeFolderChanging = true;
-    try {
-      const selected = await adapter.shell.pickFolder();
-      if (!selected.ok || !selected.value) return;
-      const previous = claudeProjectsDir;
-      claudeProjectsDir = selected.value;
-      const saved = await adapter.settings.updateSettings({
-        claudeProjectsDir: selected.value,
-      });
-      if (!saved.ok) claudeProjectsDir = previous;
-    } finally {
-      claudeFolderChanging = false;
-    }
-  }
-
   function hydrateHostBackedToggles(raw: unknown): void {
     const next: Partial<
       Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
@@ -521,9 +493,6 @@
         if (!res.ok) return;
         if (adapter.isAvailable("canSync")) {
           hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
-          claudeProjectsDir =
-            readHostStringSetting(res.value, "claudeProjectsDir") ??
-            claudeProjectsDir;
         }
         if (adapter.isAvailable("trayAndWindow")) {
           hydrateHostBackedToggles(res.value);
@@ -607,19 +576,6 @@
         ></button>
       </div>
     {/if}
-    <div class="set-row">
-      <div>
-        <div class="sn">Claude activity</div>
-        <div class="sd mono-path">{formatHqFolderMeta(claudeProjectsDir)}</div>
-      </div>
-      <button
-        type="button"
-        class="chip"
-        data-testid="claude-folder-change"
-        disabled={claudeFolderChanging}
-        onclick={() => void pickClaudeActivityFolder()}
-      >{claudeFolderChanging ? "Choosing..." : "Change"}</button>
-    </div>
     <div class="set-row">
       <div>
         <div class="sn">Default company</div>

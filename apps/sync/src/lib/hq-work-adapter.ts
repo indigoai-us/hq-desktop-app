@@ -852,18 +852,6 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
-      updateSettings: async (patch) => {
-        const settingsInvoker: SettingsInvoker = <T>(
-          command: string,
-          args?: Record<string, unknown>,
-        ) => invokeFn(command, args) as Promise<T>;
-        try {
-          await updateSettings(patch, settingsInvoker);
-          return ok(undefined);
-        } catch (err) {
-          return invokeError(err);
-        }
-      },
       getSetupStatus: () => call('get_setup_status'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },
