@@ -1455,12 +1455,14 @@ struct WatcherExitCaptureContext {
     runner_stack_redacted_frames: u8,
     runner_stack_input: String,
     /// Retained V8 heap-OOM evidence (HQ-DESKTOP-55), read from the shared
-    /// `RunTotals` at the exit boundary. All four are `None` unless the runner
+    /// `RunTotals` at the exit boundary. All five are `None` unless the runner
     /// aborted on a heap OOM this pass; absence never renders as evidence. The
-    /// banner is a fixed constant, the MB/frame figures bare integers.
+    /// banner is a fixed constant, the MB/frame figures bare integers. The
+    /// used/total pair is the final GC reading; peak-used is independent.
     runner_oom_banner: Option<&'static str>,
     runner_heap_used_mb: Option<u64>,
     runner_heap_total_mb: Option<u64>,
+    runner_heap_peak_used_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
     /// Version from the exact `_npx` cache entry that supplies the watcher
     /// target. The resolver is fail-soft and returns the fixed `unknown` token
@@ -1633,6 +1635,7 @@ impl Default for WatcherExitCaptureContext {
             runner_oom_banner: None,
             runner_heap_used_mb: None,
             runner_heap_total_mb: None,
+            runner_heap_peak_used_mb: None,
             runner_oom_frame_count: None,
             runner_hq_cloud_version: "unknown".to_string(),
             windows_terminator: None,
@@ -1801,6 +1804,7 @@ fn watcher_exit_capture_context(
         runner_oom_banner: totals.runner_heap_oom_banner(),
         runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
+        runner_heap_peak_used_mb: totals.runner_heap_peak_used_mb(),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
         // Replaced in the exit callback with the immutable launch snapshot.
         // Keep this constructor conservative for unit-only callers that have
@@ -3443,6 +3447,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "runner_heap_ceiling_source",
         heap_ceiling.source.as_str().to_string(),
     ));
+    // The exact V8 final pre-OOM heap-used MB stays in an integer extra. Its
+    // fixed-vocabulary tag instead derives from the true pre-banner maximum, so
+    // a later lower GC reading cannot underreport a tag called `peak`.
+    if let Some(peak_used) = context.runner_heap_peak_used_mb {
+        tags.push((
+            "runner_heap_peak_used_bucket",
+            hq_desktop_core::daemon::runner_heap_peak_used_bucket(peak_used).to_string(),
+        ));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
     // fixed constant; absent otherwise so absence never renders as evidence.
     if let Some(banner) = context.runner_oom_banner {
@@ -5049,6 +5062,37 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    #[test]
+    fn hard_footprint_ceiling_preempts_before_the_observed_os_kill_floor() {
+        use hq_desktop_core::daemon::{
+            effective_watcher_footprint_ceiling_mb, OBSERVED_OS_KILL_FLOOR_MB,
+            RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
+            WATCHER_FOOTPRINT_HARD_CEILING_MB,
+        };
+
+        // Pin the deliberate split: the ordinary backstop remains anti-spike,
+        // while the hard ceiling is the single-sample OS-kill safety guard.
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_CONSECUTIVE, 2);
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_MB, 4608);
+        assert_eq!(
+            effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB),
+            5632
+        );
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_MB, 5120);
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
+
+        // A 20 MB/s runaway may go unobserved for one full supervisor interval.
+        // Its next sample remains below the approximately observed OS-kill floor.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC)
+                    * SUPERVISOR_INTERVAL.as_secs()
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+            "the single-sample hard threshold must leave one full sampling interval of runaway growth below the OS-kill floor"
+        );
+    }
 
     // ── Cloud Off gating (V2 US-001 / US-016) ─────────────────────────────
 
@@ -10561,6 +10605,7 @@ mod tests {
         assert_eq!(context.runner_oom_banner, Some("reached_heap_limit"));
         assert_eq!(context.runner_heap_used_mb, Some(48));
         assert_eq!(context.runner_heap_total_mb, Some(81));
+        assert_eq!(context.runner_heap_peak_used_mb, Some(48));
         assert_eq!(context.runner_oom_frame_count, Some(3));
         assert_eq!(
             context.runner_stack_shape,
@@ -10576,6 +10621,9 @@ mod tests {
             runner_oom_banner: Some("reached_heap_limit"),
             runner_heap_used_mb: Some(48),
             runner_heap_total_mb: Some(81),
+            // Proves the tag takes the independently retained true maximum,
+            // while the established numeric extra remains the final GC reading.
+            runner_heap_peak_used_mb: Some(3000),
             runner_oom_frame_count: Some(3),
             runner_stack_shape: "node_oom_handler>v8_report_oom>v8_runtime".to_string(),
             runner_stack_signature: "0123456789abcdef".to_string(),
@@ -10615,8 +10663,8 @@ mod tests {
         let heap_capture = heap_effects.captures.first().expect("heap capture");
         let base_capture = base_effects.captures.first().expect("baseline capture");
 
-        // Heap evidence attaches: banner tag, class-scoped v8_* shape, and the
-        // three integer extras.
+        // Heap evidence attaches: banner and true-peak-used bucket tags, a
+        // class-scoped v8_* shape, and the established three integer extras.
         assert_eq!(
             recorded_tag(heap_capture, "runner_oom_banner"),
             "reached_heap_limit"
@@ -10630,6 +10678,10 @@ mod tests {
             "unknown",
             "every watcher-exit event carries the runner version tag"
         );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_heap_peak_used_bucket"),
+            "2_5gb_to_3gb"
+        );
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
         assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
@@ -10637,6 +10689,10 @@ mod tests {
         // The baseline (no heap evidence) carries none of them — absence never
         // renders as evidence.
         assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_heap_peak_used_bucket"));
         assert!(base_capture
             .extras
             .iter()

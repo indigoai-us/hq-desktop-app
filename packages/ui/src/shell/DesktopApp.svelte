@@ -24,6 +24,7 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
@@ -168,6 +169,11 @@
   import {
     DM_INBOX_SINCE_KEY,
     dmActivityFromInboxPage,
+    dmActivityFromThreadsPage,
+    dmActivityFromTimeline,
+    type InboxDmActivity,
+    isMissingEndpointFailure,
+    mergeDmActivity,
     pairUnreadsFromInboxPage,
     shouldArmDirectorySafety,
     TIMELINE_SAFETY_INTERVAL_MS,
@@ -617,6 +623,13 @@
   let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
+  /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
+  const lastDmTimelineStampByUid = new Map<string, string>();
+  /**
+   * GET /v1/notify/dm-threads answered 404 for this tenant — the server
+   * predates the peer index. Stop asking; the inbox path still runs.
+   */
+  let dmThreadsUnsupported = false;
 
   // Client-side "agent is thinking" rows for the open channel. Local only —
   // the backend has no typing/ack events. Per-conversation: a row switch
@@ -656,6 +669,16 @@
     liveTimelineId = row.id;
     timelineCache.set(row.id, next);
     onlivemessages?.(row, next);
+    if (row.kind === "dm" && row.personUid) {
+      const entry = dmActivityFromTimeline(row.personUid, next);
+      if (entry) {
+        const prev = lastDmTimelineStampByUid.get(entry.personUid);
+        if (!prev || entry.lastMessageAt > prev) {
+          lastDmTimelineStampByUid.set(entry.personUid, entry.lastMessageAt);
+          wakes?.emit?.("dm:pair-unreads", { activity: [entry] });
+        }
+      }
+    }
   }
 
   async function fetchTimelineRaw(
@@ -855,14 +878,15 @@
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
-  /** personUid → presigned avatar URL, sourced from the active channel roster
-   *  plus the signed-in user's own profile. Feeds chat/thread/panel photos. */
+  /** personUid → presigned avatar URL, sourced from every loaded channel
+   *  roster plus the signed-in user's own profile. Feeds chat/thread/panel
+   *  photos — including agent DMs whose photo arrived on a channel roster. */
   const avatarByUid = $derived.by(() => {
     const map: Record<string, string> = {};
-    const roster =
-      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
-    for (const m of roster) {
-      if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
+    for (const roster of Object.values(channelRosterById)) {
+      for (const m of roster) {
+        if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
+      }
     }
     if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
     return map;
@@ -1423,6 +1447,8 @@
     liveTimeline = [];
     liveTimelineId = null;
     timelineHydrating = false;
+    lastDmTimelineStampByUid.clear();
+    dmThreadsUnsupported = false;
     openReplyRootId = null;
     openProfileMember = null;
     attachTray = null;
@@ -1554,24 +1580,55 @@
     if (!notifications || typeof notifications.fetchDmInbox !== "function") {
       return;
     }
-    const res = await notifications.fetchDmInbox({
-      ...(since ? { since } : {}),
-      limit: "50",
-    });
+    // The inbox is a feed of messages RECEIVED, capped to a window: a pair
+    // where the owner sent last, or whose history predates the window, has
+    // no row in it. The backfill pass therefore also reads the per-user DM
+    // peer index (GET /v1/notify/dm-threads), which is stamped for both
+    // directions. Feature-detected: a 404 (older server) or a host without
+    // the method falls back to inbox-only, so old servers keep working.
+    const wantThreads =
+      backfill &&
+      !dmThreadsUnsupported &&
+      typeof notifications.fetchDmThreads === "function";
+    const [res, threadsRes] = await Promise.all([
+      notifications.fetchDmInbox({
+        ...(since ? { since } : {}),
+        limit: "50",
+      }),
+      wantThreads
+        ? notifications.fetchDmThreads!({ limit: 100 }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
     if (
       expectedGeneration !== tenantGeneration ||
       expectedCompanyId !== tenantCompanyId
     ) {
       return;
     }
-    if (!res.ok) return;
+    let threadActivity: InboxDmActivity[] = [];
+    if (threadsRes) {
+      if (threadsRes.ok) {
+        threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
+          selfUid: self?.uid,
+        });
+      } else if (isMissingEndpointFailure(threadsRes)) {
+        dmThreadsUnsupported = true;
+      }
+    }
+    if (!res.ok) {
+      if (threadActivity.length > 0) {
+        bus.emit?.("dm:pair-unreads", { activity: threadActivity });
+      }
+      return;
+    }
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
       selfUid: self?.uid,
     });
-    const activity = dmActivityFromInboxPage(res.value, {
-      selfUid: self?.uid,
-    });
+    const activity = mergeDmActivity(
+      dmActivityFromInboxPage(res.value, { selfUid: self?.uid }),
+      threadActivity,
+    );
     const hasUnreads = Boolean(
       parsed.pairUnreads && parsed.pairUnreads.length > 0,
     );
@@ -1618,9 +1675,11 @@
   // Stamp DM history on a fresh load (and tenant switch), not only after a
   // live wake. untrack so the fetch itself cannot retrigger this effect.
   $effect(() => {
-    if (!wakes) return;
     void tenantGeneration;
     void tenantCompanyId;
+    lastDmTimelineStampByUid.clear();
+    dmThreadsUnsupported = false;
+    if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
     });
@@ -2297,6 +2356,7 @@
           {tenantAccountId}
           {tenantCompanyId}
           {seedDirectory}
+          {avatarByUid}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2361,6 +2421,23 @@
               <div class="channel-title">
                 {#if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
+                {/if}
+                {#if selectedRow.kind === "dm"}
+                  <span
+                    class="channel-header-avatar"
+                    data-testid="channel-header-avatar"
+                  >
+                    <IdentityMark
+                      kind={isAgentUid(selectedRow.personUid ?? "")
+                        ? "agent"
+                        : "person"}
+                      label={headerTitle}
+                      agentUid={selectedRow.personUid}
+                      avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
+                        null}
+                      size="small"
+                    />
+                  </span>
                 {/if}
                 <h2 data-testid="channel-name">{headerTitle}</h2>
                 {#if channelSubtitle}
@@ -2895,6 +2972,13 @@
     align-items: baseline;
     gap: 8px;
     min-width: 0;
+  }
+
+  .channel-header-avatar {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: center;
+    align-items: center;
   }
 
   .channel-hash {

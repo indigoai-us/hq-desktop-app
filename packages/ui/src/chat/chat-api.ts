@@ -65,6 +65,15 @@ export interface ChatSidebarApi {
   sendChannelMessage(args: { channelId: string; body: string }): Promise<void>;
   /** Send a one-to-one DM before closing or navigating compose. */
   sendDm(args: { toPersonUid: string; body: string }): Promise<void>;
+  /**
+   * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
+   * rail uses it only to resolve a display name for a peer the contacts
+   * roster does not carry (the DM peer index returns bare uids).
+   */
+  fetchDmThread?(args: {
+    withPersonUid: string;
+    limit?: number;
+  }): Promise<DmThreadResponse>;
 }
 
 // ---------------------------------------------------------------------------

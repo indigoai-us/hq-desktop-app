@@ -622,6 +622,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
             Some(value.is_empty() || value.parse::<u64>().is_ok())
         }
+        // Bucketed maximum V8 heap-used reading across pre-OOM GC lines. The final
+        // GC reading remains only as a numeric extra; this tag is deliberately
+        // closed vocabulary so it remains content-safe and low-cardinality.
+        "runner_heap_peak_used_bucket" => Some(matches!(
+            value,
+            "under_2gb"
+                | "2gb_to_2_5gb"
+                | "2_5gb_to_3gb"
+                | "3gb_to_3_5gb"
+                | "3_5gb_to_4gb"
+                | "over_4gb"
+        )),
         // Declared runner V8 old-space ceiling (auto-sync watcher unbounded-memory
         // cluster): a bare integer MB, plus the fixed-vocabulary provenance of where
         // the ceiling came from. Registered here so the ceiling in force reaches
@@ -2417,6 +2429,7 @@ mod tests {
             // out-of-vocabulary provenance must degrade to `[Filtered]`.
             ("runner_heap_ceiling_mb", "2048 /Users/Ada"),
             ("runner_heap_ceiling_source", "unbounded"),
+            ("runner_heap_peak_used_bucket", "2gb_to_2_5gb:/Users/Ada"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -2457,6 +2470,12 @@ mod tests {
             ("runner_heap_ceiling_source", "declared_default"),
             ("runner_heap_ceiling_source", "env_override"),
             ("runner_heap_ceiling_source", "user_node_options"),
+            ("runner_heap_peak_used_bucket", "under_2gb"),
+            ("runner_heap_peak_used_bucket", "2gb_to_2_5gb"),
+            ("runner_heap_peak_used_bucket", "2_5gb_to_3gb"),
+            ("runner_heap_peak_used_bucket", "3gb_to_3_5gb"),
+            ("runner_heap_peak_used_bucket", "3_5gb_to_4gb"),
+            ("runner_heap_peak_used_bucket", "over_4gb"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -2673,6 +2692,26 @@ mod tests {
                     "{field} must reject {bad:?}"
                 );
             }
+        }
+        for bucket in [
+            "under_2gb",
+            "2gb_to_2_5gb",
+            "2_5gb_to_3gb",
+            "3gb_to_3_5gb",
+            "3_5gb_to_4gb",
+            "over_4gb",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_peak_used_bucket", bucket),
+                Some(true)
+            );
+        }
+        for bad_bucket in ["", "2gb", "over_4gb:/Users/x"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_peak_used_bucket", bad_bucket),
+                Some(false),
+                "bucket {bad_bucket:?} must be rejected"
+            );
         }
         // The honest tree scope passes; the pre-existing scopes still pass; a new
         // unknown scope string is rejected.
