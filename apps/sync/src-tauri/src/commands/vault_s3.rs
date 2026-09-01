@@ -8,7 +8,7 @@
 //! injects User-Agent / `x-hq-client-*` headers (which break SigV4) and a
 //! 15s timeout (too short for 25 MB chat attachments).
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -111,6 +111,25 @@ pub struct VaultS3GetResult {
     pub body: Vec<u8>,
 }
 
+/// Chat attachments and interactive previews share this byte transport. A
+/// caller may request a smaller bound, but never a larger unbounded read.
+const MAX_VAULT_GET_BYTES: usize = 25 * 1024 * 1024;
+
+fn bounded_get_limit(requested: Option<usize>) -> usize {
+    requested
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_VAULT_GET_BYTES)
+        .min(MAX_VAULT_GET_BYTES)
+}
+
+fn content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|value| value > limit as u64)
+}
+
 #[tauri::command]
 pub async fn vault_s3_put(
     url: String,
@@ -131,26 +150,39 @@ pub async fn vault_s3_put(
 }
 
 #[tauri::command]
-pub async fn vault_s3_get(url: String) -> Result<VaultS3GetResult, String> {
+pub async fn vault_s3_get(
+    url: String,
+    max_bytes: Option<usize>,
+) -> Result<VaultS3GetResult, String> {
     is_allowed_s3_url(&url)?;
+    let limit = bounded_get_limit(max_bytes);
     let client = s3_client()?;
-    let resp = client
+    let mut resp = client
         .get(url.trim())
         .send()
         .await
         .map_err(|e| format!("vault S3 GET failed: {e}"))?;
     let status = resp.status().as_u16();
+    if content_length_exceeds(resp.headers(), limit) {
+        return Err(format!("vault S3 GET exceeds the {limit}-byte read limit"));
+    }
     let content_type = resp
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let body = resp
-        .bytes()
+    let mut body = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
         .map_err(|e| format!("vault S3 GET read failed: {e}"))?
-        .to_vec();
+    {
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(format!("vault S3 GET exceeds the {limit}-byte read limit"));
+        }
+        body.extend_from_slice(&chunk);
+    }
     Ok(VaultS3GetResult {
         status,
         content_type,
@@ -170,6 +202,18 @@ mod tests {
         .is_ok());
         assert!(is_allowed_s3_url("https://bucket.s3.amazonaws.com/key").is_ok());
         assert!(is_allowed_s3_url("https://s3.us-east-1.amazonaws.com/bucket/key").is_ok());
+    }
+
+    #[test]
+    fn vault_get_limit_is_bounded_and_content_length_is_checked_before_reading() {
+        assert_eq!(bounded_get_limit(None), MAX_VAULT_GET_BYTES);
+        assert_eq!(bounded_get_limit(Some(1024)), 1024);
+        assert_eq!(bounded_get_limit(Some(MAX_VAULT_GET_BYTES + 1)), MAX_VAULT_GET_BYTES);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1025"));
+        assert!(content_length_exceeds(&headers, 1024));
+        assert!(!content_length_exceeds(&headers, 1025));
     }
 
     #[test]

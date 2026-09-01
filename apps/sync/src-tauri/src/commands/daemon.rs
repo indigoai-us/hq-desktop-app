@@ -202,9 +202,10 @@ fn current_runner_exec_target_state(
     code: Option<i32>,
     watcher_command: &str,
     runner_phase: &str,
+    target: &hq_desktop_core::runner_target::RunnerSpawnTarget,
 ) -> Option<RunnerTargetState> {
     should_report_exec_provenance(code, watcher_command, runner_phase)
-        .then(hq_desktop_core::runner_target::probe_runner_target)
+        .then(|| hq_desktop_core::runner_target::probe_runner_target_for(target))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -965,26 +966,36 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // never take a healthy machine's auto-sync offline. A refusal is
     // environmental — local diagnosis + Backoff, no Sentry event — exactly like
     // the materialization failure above.
-    let runner_target = hq_desktop_core::runner_target::ensure_runner_target_runnable();
-    note_runner_target_repair_attempted(runner_target.repair.attempted());
-    if runner_target.refuses_spawn() {
+    // Resolve the runner source once before the launch. The target carries npm's
+    // effective cache root only for the npx path; the local override has no
+    // cache provenance and therefore reports `unknown` by construction.
+    let runner_spawn_target = hq_desktop_core::runner_target::runner_spawn_target();
+    let runner_target_outcome =
+        hq_desktop_core::runner_target::ensure_runner_target_runnable_for(&runner_spawn_target);
+    note_runner_target_repair_attempted(runner_target_outcome.repair.attempted());
+    if runner_target_outcome.refuses_spawn() {
         log(
             "daemon",
             &format!(
                 "runner-target preflight refused spawn: state={} repair={}",
-                runner_target.state.class_name(),
-                runner_target.repair.class_name()
+                runner_target_outcome.state.class_name(),
+                runner_target_outcome.repair.class_name()
             ),
         );
         note_environment_preflight_failure();
         release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
         return Err(hq_desktop_core::runner_target::runner_target_diagnosis(
-            runner_target.state,
+            runner_target_outcome.state,
         ));
     }
 
-    let spawn_args = build_watch_runner_args(&hq_folder_path);
+    let spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
+        &hq_folder_path,
+        &runner_spawn_target,
+    );
+    let runner_hq_cloud_version =
+        hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
 
     log("daemon", "spawn: hq-sync-runner --watch");
     // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
@@ -1164,6 +1175,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             code,
                             &watcher_command,
                             runner_phase_at_exit,
+                            &runner_spawn_target,
                         );
                         let mut exit_context = watcher_exit_capture_context(
                             &totals,
@@ -1179,6 +1191,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             watcher_node_major,
                             runner_exec_target,
                         );
+                        // The source and cache root were frozen at this
+                        // generation's launch. Do not re-read npm or the
+                        // environment while reporting a failing process.
+                        exit_context.runner_hq_cloud_version = runner_hq_cloud_version.clone();
                         // Additive per-generation diagnostics, set after the content
                         // snapshot. None of these is consulted by capture policy.
                         exit_context.runner_stderr_line_count = Some(
@@ -1446,6 +1462,10 @@ struct WatcherExitCaptureContext {
     runner_heap_used_mb: Option<u64>,
     runner_heap_total_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
+    /// Version from the exact `_npx` cache entry that supplies the watcher
+    /// target. The resolver is fail-soft and returns the fixed `unknown` token
+    /// for every absent, unreadable, malformed, or unsafe manifest.
+    runner_hq_cloud_version: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
     /// The durable session-end latch read at the exit boundary, consulted ONLY on
     /// the session-terminate/no-signal shape (`Unavailable` otherwise). A
@@ -1614,6 +1634,7 @@ impl Default for WatcherExitCaptureContext {
             runner_heap_used_mb: None,
             runner_heap_total_mb: None,
             runner_oom_frame_count: None,
+            runner_hq_cloud_version: "unknown".to_string(),
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
             cancellation_record_present: false,
@@ -1781,6 +1802,10 @@ fn watcher_exit_capture_context(
         runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
+        // Replaced in the exit callback with the immutable launch snapshot.
+        // Keep this constructor conservative for unit-only callers that have
+        // no spawned watcher provenance to supply.
+        runner_hq_cloud_version: "unknown".to_string(),
         windows_terminator,
         session_end_latch,
         cancellation_record_present: cancellation_record.is_some(),
@@ -3402,6 +3427,13 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", resolved_rss_scope.to_string()));
+    // The resolved runner package version, or the fail-soft fixed `unknown`
+    // sentinel. This makes a watcher crash attributable to the actual npx
+    // cache entry without copying package.json content into telemetry.
+    tags.push((
+        "runner_hq_cloud_version",
+        context.runner_hq_cloud_version.clone(),
+    ));
     // The declared runner heap ceiling's provenance. Carried on EVERY exit —
     // including the Windows shim path where the tree sum is honestly withheld — so
     // a footprint is interpretable against the ceiling that bounded it and a
@@ -10592,6 +10624,11 @@ mod tests {
         assert_eq!(
             recorded_tag(heap_capture, "runner_stack_shape"),
             "node_oom_handler>v8_report_oom>v8_runtime"
+        );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_hq_cloud_version"),
+            "unknown",
+            "every watcher-exit event carries the runner version tag"
         );
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);

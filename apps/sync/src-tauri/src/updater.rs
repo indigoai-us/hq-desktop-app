@@ -120,12 +120,26 @@ const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 /// 30 minutes while stable keeps the 6h cadence.
 const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str = "Update deferred while a sync is active";
+pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
+    "Update deferred while an HQ change is active";
+pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
+    "Update deferred while HQ processes are still stopping";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
     Install,
     DeferForSync,
     Announce,
+}
+
+fn install_failure_is_transient_deferral(error: &str) -> bool {
+    matches!(
+        error,
+        UPDATE_DEFERRED_DURING_SYNC
+            | UPDATE_DEFERRED_DURING_MUTATION
+            | UPDATE_DEFERRED_DURING_PROCESS_EXIT
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,24 +178,19 @@ fn background_update_action(
     }
 }
 
-/// Windows must never install silently in the background: the NSIS installer
-/// cannot overwrite files still held open by the running app, its sidecar, or
-/// watcher processes, and a mid-install failure leaves the machine with a
-/// half-removed install (missing Start-menu entry, broken uninstaller — the
-/// 2026-08-02 field failure, "Error opening file for writing" on
-/// hq-sync-menubar.exe). Until the update path quiesces every HQ process
-/// first, Windows background discovery announces the update instead and the
-/// user installs through the guarded in-app path.
-///
-/// Shared with `commands::version_gate` — the hard-gate force-install is the
-/// same silent NSIS hazard and must respect the same platform gate.
+/// Every supported desktop platform now has a safe silent-install path.
+/// Windows uses `windows_update`: the minisign-verified package is staged, HQ
+/// children are quiesced, and a copied signed helper waits for the parent to
+/// exit before launching NSIS. This is deliberately a function rather than a
+/// constant so platform policy remains explicit at each decision point.
 pub(crate) fn silent_install_supported() -> bool {
-    !cfg!(target_os = "windows")
+    true
 }
 
 pub(crate) fn sync_in_progress() -> bool {
-    hq_desktop_core::sync_progress::read_fresh_snapshot()
-        .is_some_and(|snapshot| snapshot.status == "syncing")
+    crate::commands::process::is_registered("hq-sync")
+        || hq_desktop_core::sync_progress::read_fresh_snapshot()
+            .is_some_and(|snapshot| snapshot.status == "syncing")
 }
 
 /// Process-wide lease preventing separate app surfaces from starting the same
@@ -522,6 +531,43 @@ pub fn get_pending_update(app: AppHandle) -> PendingUpdateStatus {
         .unwrap_or(PendingUpdateStatus::Unchecked)
 }
 
+async fn install_verified_update(
+    app: &AppHandle,
+    update: &tauri_plugin_updater::Update,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_update::install_verified_update(app, update).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::commands::hq_work::spawn_maybe_co_install_hq_work();
+        app.restart();
+    }
+}
+
+/// Install the newest stable release through the same single-flight and
+/// platform-safe lifecycle as the normal updater. The hard version gate uses
+/// this entry point so it cannot drift back to Tauri's abrupt Windows exit.
+pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
+    let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+        .ok_or_else(|| "An update installation is already in progress".to_string())?;
+    let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => install_verified_update(app, &update).await,
+        Ok(None) => Err(
+            "hq-pro hard-gate fired but tauri-updater sees no release; latest.json may be stale"
+                .to_string(),
+        ),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
@@ -555,17 +601,12 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 UpdateAnnouncement::PersistentOnly,
             )
             .await?;
-            // Best-effort HQ Work co-install; do not block the Sync update on it.
+            // Best-effort HQ Work co-install on platforms where it cannot race
+            // the NSIS file swap. Windows performs only the desktop update in
+            // this critical section.
+            #[cfg(not(target_os = "windows"))]
             crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-            // Download and install
-            update
-                .download_and_install(|_, _| {}, || {})
-                .await
-                .map_err(|e| e.to_string())?;
-            // On macOS, download_and_install typically terminates the process before reaching
-            // this line. restart() is retained as a safety net for platforms where it returns.
-            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-            app.restart();
+            install_verified_update(&app, &update).await
         }
         Ok(None) => {
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
@@ -762,19 +803,28 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                             info.version
                                                         ),
                                                     );
-                                                    // Non-blocking: Sync update must not wait on HQ Work download.
+                                                    #[cfg(not(target_os = "windows"))]
                                                     crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-                                                    match update
-                                                        .download_and_install(|_, _| {}, || {})
+                                                    match install_verified_update(&handle, &update)
                                                         .await
                                                     {
                                                         Ok(()) => {
                                                             log(
                                                                 "updater",
-                                                                "automatic update installed — restarting",
+                                                                "automatic update handed off successfully",
                                                             );
-                                                            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-                                                            handle.restart();
+                                                        }
+                                                        Err(error)
+                                                            if install_failure_is_transient_deferral(
+                                                                &error,
+                                                            ) =>
+                                                        {
+                                                            log(
+                                                                "updater",
+                                                                "automatic update deferred during install startup; retrying soon",
+                                                            );
+                                                            next_check =
+                                                                UPDATE_SYNC_RETRY_INTERVAL;
                                                         }
                                                         Err(error) => {
                                                             log(
@@ -1009,6 +1059,18 @@ mod tests {
             BackgroundUpdateAction::DeferForSync
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
+        assert!(install_failure_is_transient_deferral(
+            UPDATE_DEFERRED_DURING_SYNC
+        ));
+        assert!(install_failure_is_transient_deferral(
+            UPDATE_DEFERRED_DURING_MUTATION
+        ));
+        assert!(install_failure_is_transient_deferral(
+            UPDATE_DEFERRED_DURING_PROCESS_EXIT
+        ));
+        assert!(!install_failure_is_transient_deferral(
+            "Windows update helper did not become ready"
+        ));
     }
 
     #[test]
@@ -1043,12 +1105,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_never_supports_silent_background_install() {
-        if cfg!(target_os = "windows") {
-            assert!(!silent_install_supported());
-        } else {
-            assert!(silent_install_supported());
-        }
+    fn every_platform_has_a_safe_silent_install_path() {
+        assert!(silent_install_supported());
     }
 
     #[test]

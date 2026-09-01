@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.169"
+version = "0.10.171"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2805,6 +2805,7 @@ dependencies = [
 name = "hq-telemetry"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "sentry",
  "serde",
  "serde_json",

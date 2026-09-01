@@ -333,6 +333,7 @@ async fn stream_install(
         &format!("install `hq {}` (scope={scope_label})", argv.join(" ")),
     );
 
+    let _update_guard = crate::commands::process::begin_update_sensitive_operation()?;
     let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let mut child = cmd
         .args(&argv)
@@ -471,6 +472,13 @@ pub async fn publish_marketplace_pack(
     let path_str = dir.to_string_lossy().to_string();
     log("marketplace", &format!("publish `hq publish {path_str}`"));
 
+    let _update_guard =
+        crate::commands::process::begin_update_sensitive_operation().map_err(|message| {
+            PublishError {
+                message,
+                not_verified: false,
+            }
+        })?;
     let mut cmd = paths::tokio_spawn_command(&hq, &[]);
     let mut child = cmd
         .args(["publish", &path_str])

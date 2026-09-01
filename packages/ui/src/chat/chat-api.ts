@@ -299,6 +299,8 @@ export interface ChatWakeEvents {
     createdAt?: string;
     fromPersonUid?: string;
     unread?: number;
+    /** `unread` is an authoritative rollup, not a one-message delta. */
+    absoluteUnread?: boolean;
   };
   /** A channel row changed shape. */
   "channel:updated": Channel;
@@ -320,6 +322,8 @@ export interface ChatWakeEvents {
     eventId?: string;
     createdAt?: string;
     direction?: "in" | "out";
+    /** A preceding `dm:pair-unreads` event already set the exact badge count. */
+    absoluteUnread?: boolean;
   };
   /** Incoming connection request. */
   "dm:request-new": DmRequest;

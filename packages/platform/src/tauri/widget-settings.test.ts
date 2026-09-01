@@ -3,7 +3,7 @@ import { TauriPlatformAdapter } from "./index.js";
 import { WebPlatformAdapter } from "../web/index.js";
 
 describe("setDesktopWidget", () => {
-  it("desktop invokes apply_widget_settings with enabled", async () => {
+  it("persists then invokes the Sync host widget apply command without arguments", async () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
     const adapter = new TauriPlatformAdapter({
       invoke: async (cmd, args) => {
@@ -14,11 +14,13 @@ describe("setDesktopWidget", () => {
     const res = await adapter.appShell.setDesktopWidget(false);
     expect(res.ok).toBe(true);
     expect(calls).toEqual([
-      { cmd: "apply_widget_settings", args: { enabled: false } },
+      { cmd: "get_settings", args: undefined },
+      { cmd: "save_settings", args: { prefs: { widgetEnabled: false } } },
+      { cmd: "apply_widget_settings", args: undefined },
     ]);
   });
 
-  it("desktop posts native banners via show_os_notification", async () => {
+  it("reports host-owned native banners instead of invoking an unregistered command", async () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
     const adapter = new TauriPlatformAdapter({
       invoke: async (cmd, args) => {
@@ -31,17 +33,8 @@ describe("setDesktopWidget", () => {
       body: "New message",
       route: '{"kind":"dm","personUid":"prs_corey"}',
     });
-    expect(res.ok).toBe(true);
-    expect(calls).toEqual([
-      {
-        cmd: "show_os_notification",
-        args: {
-          title: "Corey",
-          body: "New message",
-          route: '{"kind":"dm","personUid":"prs_corey"}',
-        },
-      },
-    ]);
+    expect(res).toMatchObject({ ok: false, reason: "unavailable", code: "host-owned" });
+    expect(calls).toEqual([]);
   });
 
   it("web reports desktop-only", async () => {

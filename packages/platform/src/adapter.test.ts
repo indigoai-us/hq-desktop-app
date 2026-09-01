@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSendReplyRequest,
+  normalizeNotificationsFeed,
   type AdapterResult,
   type PlatformAdapter,
 } from "./adapter.js";
@@ -14,10 +15,22 @@ import { TauriPlatformAdapter } from "./tauri/index.js";
 
 const WHOAMI = { personUid: "prs_123", email: "a@b.c" };
 const CHANNELS = [{ id: "ch1", name: "general", unreadCount: 2 }];
-const NOTIFICATIONS = [{ id: "n1", title: "hello", read: false }];
+const NOTIFICATIONS = {
+  notifications: [
+    {
+      id: "n1",
+      title: "hello",
+      status: "unread",
+      actionRef: "story-7",
+    },
+  ],
+  unreadCount: 7,
+  nextCursor: "opaque-next-page",
+};
 
 interface RecordedCall {
   key: string;
+  args?: Record<string, unknown>;
 }
 
 function makeWebAdapter() {
@@ -33,7 +46,7 @@ function makeWebAdapter() {
     if (path === "/v1/identity/whoami") return respond(WHOAMI);
     if (path === "/v1/notify/channels" && method === "GET")
       return respond(CHANNELS);
-    if (path === "/v1/notify/notifications") return respond(NOTIFICATIONS);
+    if (path.startsWith("/v1/notify/notifications?")) return respond(NOTIFICATIONS);
     if (path === "/v1/notify/notifications/ack" && method === "POST") {
       let id = "";
       try {
@@ -60,7 +73,7 @@ function makeTauriAdapter() {
   const calls: RecordedCall[] = [];
   const acked = new Set<string>();
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
-    calls.push({ key: cmd });
+    calls.push({ key: cmd, args });
     switch (cmd) {
       case "whoami":
         return WHOAMI;
@@ -83,7 +96,11 @@ function makeTauriAdapter() {
 async function runContractSequence(adapter: PlatformAdapter) {
   const whoami = await adapter.identity.whoami();
   const channels = await adapter.messaging.listChannels();
-  const notifications = await adapter.notifications.fetchNotifications();
+  const notifications = await adapter.notifications.fetchNotifications({
+    limit: 25,
+    cursor: "opaque-next-page",
+    unreadOnly: true,
+  });
   const ack = await adapter.notifications.ack("n1");
   return { whoami, channels, notifications, ack };
 }
@@ -95,6 +112,19 @@ function expectOk<T>(result: AdapterResult<T>): T {
 }
 
 describe("PlatformAdapter contract", () => {
+  it("canonicalizes legacy read markers into the status consumed by the inbox", () => {
+    const feed = normalizeNotificationsFeed([
+      { id: "legacy-read", title: "already seen", readAt: "2026-09-01T00:00:00.000Z" },
+      { id: "legacy-unread", title: "still new" },
+    ]);
+
+    expect(feed.unreadCount).toBe(1);
+    expect(feed.notifications).toEqual([
+      expect.objectContaining({ id: "legacy-read", read: true, status: "read" }),
+      expect.objectContaining({ id: "legacy-unread", read: false, status: "unread" }),
+    ]);
+  });
+
   it("same call sequence produces equivalent state on web and tauri", async () => {
     const web = makeWebAdapter();
     const tauri = makeTauriAdapter();
@@ -113,6 +143,21 @@ describe("PlatformAdapter contract", () => {
     // Equivalent side-effect state on both backends.
     expect(web.acked).toEqual(tauri.acked);
     expect(web.acked.has("n1")).toBe(true);
+    expect(expectOk(webOut.notifications)).toEqual({
+      notifications: [
+        expect.objectContaining({ id: "n1", actionRef: "story-7", read: false }),
+      ],
+      unreadCount: 7,
+      nextCursor: "opaque-next-page",
+    });
+    expect(web.calls.map(({ key }) => key)).toContain(
+      "GET /v1/notify/notifications?limit=25&cursor=opaque-next-page&unreadOnly=true",
+    );
+    expect(tauri.calls.find(({ key }) => key === "fetch_notifications")?.args).toEqual({
+      limit: 25,
+      cursor: "opaque-next-page",
+      unreadOnly: true,
+    });
   });
 
   it("desktop-only capabilities on web return the unavailable state, not a throw", async () => {
@@ -238,6 +283,102 @@ describe("PlatformAdapter contract", () => {
       reason: "error",
       code: "invoke",
       message: "command failed",
+    });
+  });
+
+  it("merges an authoritative desktop settings patch instead of replacing native preferences", async () => {
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "get_settings") {
+          return { hqPath: "/custom/HQ", autoUpdate: false, untouched: true };
+        }
+        if (command === "save_settings") return undefined;
+        throw new Error(`unexpected command: ${command}`);
+      },
+    });
+
+    expect((await adapter.settings.updateSettings({ autoUpdate: true })).ok).toBe(true);
+    expect(calls).toEqual([
+      { command: "get_settings", args: undefined },
+      {
+        command: "save_settings",
+        args: {
+          prefs: { hqPath: "/custom/HQ", autoUpdate: true, untouched: true },
+        },
+      },
+    ]);
+  });
+
+  it("serializes concurrent native settings patches so neither field is lost", async () => {
+    let persisted: Record<string, unknown> = {
+      notifications: true,
+      autoUpdate: true,
+    };
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        if (command === "get_settings") return { ...persisted };
+        if (command === "save_settings") {
+          await Promise.resolve();
+          persisted = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
+          return undefined;
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    });
+
+    const [notifications, updates] = await Promise.all([
+      adapter.settings.updateSettings({ notifications: false }),
+      adapter.settings.updateSettings({ autoUpdate: false }),
+    ]);
+
+    expect(notifications.ok).toBe(true);
+    expect(updates.ok).toBe(true);
+    expect(persisted).toMatchObject({ notifications: false, autoUpdate: false });
+  });
+
+  it("uses the Sync host command names and persists dock/widget preferences before applying them", async () => {
+    let prefs: Record<string, unknown> = { dockIcon: true, widgetEnabled: true };
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "get_settings") return { ...prefs };
+        if (command === "save_settings") {
+          prefs = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
+          return undefined;
+        }
+        if (
+          command === "apply_dock_icon" ||
+          command === "apply_widget_settings" ||
+          command === "set_autostart_enabled" ||
+          command === "notification_request_permission" ||
+          command === "set_hq_cli_update_dismissed"
+        ) {
+          return command === "notification_request_permission" ? "denied" : undefined;
+        }
+        if (command === "check_hq_cli_update") return { latest: "1.2.3" };
+        throw new Error(`unknown Sync command: ${command}`);
+      },
+    });
+
+    expect((await adapter.appShell.setDockVisible(false)).ok).toBe(true);
+    expect((await adapter.appShell.setDesktopWidget(false)).ok).toBe(true);
+    expect((await adapter.appShell.setAutostart(false)).ok).toBe(true);
+    expect(await adapter.appShell.requestNotificationPermission()).toMatchObject({
+      ok: true,
+      value: "denied",
+    });
+    expect((await adapter.updates.dismissCliUpdate()).ok).toBe(true);
+    expect(prefs).toMatchObject({ dockIcon: false, widgetEnabled: false });
+    expect(calls).toContainEqual({ command: "apply_dock_icon", args: undefined });
+    expect(calls).toContainEqual({ command: "apply_widget_settings", args: undefined });
+    expect(calls).toContainEqual({ command: "set_autostart_enabled", args: { enabled: false } });
+    expect(calls).toContainEqual({ command: "notification_request_permission", args: undefined });
+    expect(calls).toContainEqual({
+      command: "set_hq_cli_update_dismissed",
+      args: { version: "1.2.3" },
     });
   });
 

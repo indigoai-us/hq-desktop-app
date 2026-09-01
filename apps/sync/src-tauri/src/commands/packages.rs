@@ -425,6 +425,7 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
             invocation.label()
         ),
     );
+    let _update_guard = crate::commands::process::begin_update_sensitive_operation()?;
     let mut cmd = invocation.command();
     let mut child = cmd
         .args(&args)
@@ -565,6 +566,7 @@ pub async fn update_packs(app: AppHandle, names: Vec<String>) -> Result<(), Stri
 /// effects (a sync/reindex) on its own cadence.
 #[tauri::command]
 pub async fn uninstall_package(name: String) -> Result<Value, String> {
+    let _update_guard = crate::commands::process::begin_update_sensitive_operation()?;
     let value = run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await?;
     spawn_refresh_packages_cache();
     Ok(value)

@@ -1,52 +1,67 @@
 <script lang="ts">
   /**
    * Settings → Companies — port of hq-desktop-preview-v2 ?view=v2:
-   * colored monogram, name, role pill, SYNCED/LOCAL toggle.
+   * colored monogram, name, and role pill. Memberships are account-owned;
+   * this embedded view does not claim a per-company native sync setting.
    */
+  import { onMount } from "svelte";
+  import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { companyConsoleUrl, HQ_CONSOLE_BASE } from "../common/hq-console.js";
-  import {
-    companyAvatarWash,
-    settingsCompanyLists,
-    type SettingsCompanyRow,
-  } from "./shell-settings-model.js";
+  import { companyAvatarWash, settingsCompanyLists } from "./shell-settings-model.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
-  import { readSettingsPrefs, writeSettingsPrefs } from "./settings-prefs.js";
-
   interface Props {
     companies?: Workspace[] | null;
+    adapter?: PlatformAdapter | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
-    /** Local folder sync per company — desktop only. */
-    canSync?: boolean;
   }
 
   let {
     companies = [],
+    adapter = null,
     personalLabel = null,
     onopenconsole,
     consoleBase = HQ_CONSOLE_BASE,
-    canSync = false,
   }: Props = $props();
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
-  let prefs = $state(readSettingsPrefs());
+  let personalSyncState = $state<
+    "checking" | "synced" | "local" | "unavailable"
+  >("checking");
+  let personalSyncReadGeneration = 0;
   let externalError = $state<string | null>(null);
 
-  function isOn(row: SettingsCompanyRow): boolean {
-    if (row.id in prefs.companySync) return prefs.companySync[row.id]!;
-    return row.statusKey === "active";
+  async function refreshPersonalSyncState(): Promise<void> {
+    const generation = ++personalSyncReadGeneration;
+    if (!adapter?.isAvailable("canSync")) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const result = await adapter.settings.getSettings();
+    if (generation !== personalSyncReadGeneration) return;
+    if (!result.ok) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const settings = result.value as Record<string, unknown>;
+    personalSyncState = settings.personalSyncEnabled === false ? "local" : "synced";
   }
 
-  function toggle(row: SettingsCompanyRow): void {
-    prefs = writeSettingsPrefs({
-      companySync: { [row.id]: !isOn(row) },
-    });
-  }
-
+  onMount(() => {
+    const refresh = () => void refreshPersonalSyncState();
+    window.addEventListener("focus", refresh);
+    window.addEventListener("hq:workspace-sync-enabled-changed", refresh);
+    refresh();
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("hq:workspace-sync-enabled-changed", refresh);
+    };
+  });
   function companyUrl(slug: string): string {
     const base = consoleBase.replace(/\/$/, "");
     if (base === HQ_CONSOLE_BASE) return companyConsoleUrl(slug);
@@ -68,6 +83,11 @@
 </script>
 
 <div class="co-pane" data-testid="settings-companies-pane">
+  <p class="co-note" data-testid="settings-company-sync-unavailable">
+    Company membership comes from your signed-in account. Per-company sync is
+    not configurable in this embedded screen; manage local sync in the native
+    Sync surface.
+  </p>
   {#if externalError}
     <p class="co-external-error" data-testid="settings-company-open-error" role="alert">
       {externalError}
@@ -80,7 +100,6 @@
   {:else}
     {#each lists.active as row (row.id)}
       {@const wash = companyAvatarWash(row.id)}
-      {@const on = isOn(row)}
       <div class="set-row" data-testid="settings-company-row">
         <button
           type="button"
@@ -95,20 +114,7 @@
           <span class="co-name">{row.name}</span>
           <span class="co-role">{row.role}</span>
         </button>
-        {#if canSync}
-          <span class="co-state" class:on>{on ? "Synced" : "Local"}</span>
-          <button
-            type="button"
-            class="toggle"
-            class:on
-            role="switch"
-            aria-checked={on}
-            aria-label={`${row.name} ${on ? "synced" : "local"}`}
-            onclick={() => toggle(row)}
-          ></button>
-        {:else}
-          <span class="co-state on">Member</span>
-        {/if}
+        <span class="co-state on">Member</span>
       </div>
     {/each}
   {/if}
@@ -143,8 +149,19 @@
         <span class="co-name">{lists.personal.name}</span>
         <span class="co-role">Owner</span>
       </div>
-      <span class="co-state">Local</span>
-      <span class="toggle" aria-hidden="true"></span>
+      <span
+        class:on={personalSyncState === "synced"}
+        class="co-state"
+        data-testid="settings-personal-sync-state"
+      >
+        {personalSyncState === "synced"
+          ? "Synced"
+          : personalSyncState === "local"
+            ? "Local"
+            : personalSyncState === "checking"
+              ? "Checking"
+              : "Unavailable"}
+      </span>
     </div>
   {/if}
 </div>
@@ -162,6 +179,13 @@
     margin: 0;
     color: var(--t3);
     font-size: 13px;
+  }
+
+  .co-note {
+    margin: 0;
+    color: var(--t3);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .set-row {
@@ -233,41 +257,6 @@
   .co-state.on {
     color: var(--ok);
   }
-
-  .toggle {
-    margin-left: 0;
-    width: 34px;
-    height: 20px;
-    border: none;
-    border-radius: 10px;
-    background: var(--line2);
-    position: relative;
-    flex-shrink: 0;
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .toggle::after {
-    content: "";
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--t2);
-    transition: all 0.15s;
-  }
-
-  .toggle.on {
-    background: #2a3644;
-  }
-
-  .toggle.on::after {
-    left: 17px;
-    background: var(--ok, #4ade80);
-  }
-
   .co-split {
     height: 1px;
     margin: 6px 4px;

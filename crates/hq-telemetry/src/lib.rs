@@ -544,6 +544,13 @@ fn is_runner_error_cause_signature_rollup(value: &str) -> bool {
         })
 }
 
+fn is_runner_hq_cloud_version(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() <= 128
+            && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            && semver::Version::parse(value).is_ok())
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -625,6 +632,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "declared_default" | "env_override" | "user_node_options"
         )),
+        // The runner package version comes from a local package manifest, not
+        // runner stderr. Accept only bounded plain SemVer (including its optional
+        // prerelease/build suffix) or the fixed `unknown` sentinel.
+        "runner_hq_cloud_version" => Some(is_runner_hq_cloud_version(value)),
         // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
         // fixed vocabulary and bare integers; these independent checks make a
         // future producer bug that shipped a path, product string, or raw record
@@ -2455,6 +2466,25 @@ mod tests {
                 "valid {key}={value} must survive egress"
             );
         }
+    }
+
+    #[test]
+    fn runner_hq_cloud_version_is_structurally_validated_at_egress() {
+        for value in ["6.16.2", "6.16.2-rc.1+build.7", "unknown"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_hq_cloud_version", value),
+                Some(true),
+                "valid runner version {value} must survive egress"
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "runner_hq_cloud_version",
+                "FATAL ERROR: Reached heap limit /Users/Ada/secret"
+            ),
+            Some(false),
+            "runner stderr must never become a diagnostic version tag"
+        );
     }
 
     #[test]

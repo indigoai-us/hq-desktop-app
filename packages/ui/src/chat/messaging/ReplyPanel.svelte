@@ -110,6 +110,18 @@
       replyCount: number,
       preview?: ReplyPreview | null,
     ) => void;
+    /** Host-only active-thread registration for native realtime reconciliation. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
     /** personUid → presigned avatar URL for real profile photos. */
     avatarByUid?: Record<string, string>;
     /** personUid → live roster display name (profile override). */
@@ -141,6 +153,7 @@
     vaultCompanyUid = null,
     onclose,
     onreplycount,
+    onactivethreadchange,
     avatarByUid = {},
     displayNameByUid = {},
     onopenprofile,
@@ -386,6 +399,15 @@
     onreplycount?.(rootEventId, count, previewFrom(list));
   }
 
+  function reportActiveThread(): void {
+    onactivethreadchange?.({
+      rootEventId,
+      scope,
+      ...(scope === "channel" ? { channelId } : { withPersonUid }),
+      seenReplyIds: [...seenIds],
+    });
+  }
+
   async function load(): Promise<void> {
     const generation = ++loadGeneration;
     const requested = rootEventId;
@@ -401,8 +423,12 @@
       if (generation !== loadGeneration || rootEventId !== requested) return;
       root = view.root ?? seedRoot ?? null;
       const ordered = sortOldestFirst(view.replies ?? []);
+      // Branch's mergeServerReplies supersedes the plain pending-filter: it
+      // preserves in-flight/failed local sends AND dedupes server echoes of
+      // already-rendered local replies.
       replies = mergeServerReplies(ordered, replies);
       seenIds = new Set(replies.map((row) => row.eventId));
+      reportActiveThread();
       clearThinkingFromReplies(ordered);
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
@@ -631,6 +657,7 @@
       agentThinking = [];
       void load();
     });
+    return () => onactivethreadchange?.(null);
   });
 
   $effect(() => {

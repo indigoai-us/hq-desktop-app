@@ -21,6 +21,11 @@ const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
+const processRegistry = read('src-tauri/src/commands/process.rs');
+const packages = read('src-tauri/src/commands/packages.rs');
+const marketplace = read('src-tauri/src/commands/marketplace.rs');
+const hqCoreUpdate = read('src-tauri/src/commands/hq_core_update.rs');
+const hqCoreStaging = read('src-tauri/src/commands/hq_core_staging.rs');
 
 describe('master automatic-updates switch', () => {
   it('desktop SettingsPage exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
@@ -58,27 +63,43 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('should_raise_transient_update_surface');
   });
 
-  it('Windows never installs updates silently in the background (2026-08-02 field failure)', () => {
-    // NSIS cannot overwrite files held open by the running app/sidecar, so a
-    // silent background install on Windows can destroy the installation.
-    // Background discovery must route through the platform gate and Windows
-    // must announce instead of install.
+  it('Windows background installs use the safe helper lifecycle', () => {
+    // Windows may install silently only through the out-of-process helper:
+    // verified bytes are staged, app children are quiesced, and NSIS starts
+    // after the parent has exited.
+    const windowsUpdater = read('src-tauri/src/windows_update.rs');
     expect(appUpdater).toContain('fn silent_install_supported()');
-    expect(appUpdater).toContain('!cfg!(target_os = "windows")');
+    expect(normalize(appUpdater)).toContain(
+      'pub(crate) fn silent_install_supported() -> bool { true }',
+    );
     expect(appUpdater).toContain('silent_install_supported(),');
     expect(normalize(appUpdater)).toContain(
       'automatic_updates && silent_install_supported, sync_in_progress,',
     );
-    // The hard version gate is a second background install path and must
-    // respect the same platform gate: on Windows the blocking modal stays up
-    // and the user installs through the guarded manual flow.
+    expect(appUpdater).toContain(
+      'crate::windows_update::install_verified_update(app, update).await',
+    );
+    expect(normalize(windowsUpdater)).toContain('let bytes = update .download(');
+    expect(windowsUpdater).toContain('quiesce_for_update');
+    expect(windowsUpdater).toContain('let parent = open_parent(parent_pid)?;');
+    expect(windowsUpdater).toContain('wait_for_parent(parent)?;');
+    expect(windowsUpdater).toContain('restore_prior_installation');
+    expect(processRegistry).toContain('UPDATE_SENSITIVE_OPERATIONS');
+    expect(processRegistry).toContain('!attempt.termination_effected');
+    expect(packages).toContain('begin_update_sensitive_operation()?');
+    expect(marketplace.match(/begin_update_sensitive_operation/g) ?? []).toHaveLength(2);
+    expect(hqCoreUpdate).toContain('begin_update_sensitive_operation()');
+    expect(hqCoreStaging).toContain('begin_update_sensitive_operation()');
+    expect(appUpdater).toContain('UPDATE_DEFERRED_DURING_MUTATION');
+    expect(appUpdater).toContain('install_failure_is_transient_deferral');
+
+    // The hard version gate must route through that same coordinator rather
+    // than reintroducing a direct Tauri install path.
     const versionGate = read('src-tauri/src/commands/version_gate.rs');
     expect(versionGate).toContain(
-      'if !crate::updater::silent_install_supported() {',
+      'crate::updater::install_stable_update(app).await',
     );
-    expect(versionGate).toContain(
-      'blocking modal stays up for manual install',
-    );
+    expect(versionGate).not.toContain('download_and_install');
   });
 
   it('the mounted App no longer owns Core automatic updates', () => {

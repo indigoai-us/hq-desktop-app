@@ -729,9 +729,9 @@ export function urlInviteDestinationLabel(
  * Company attribution for bot invite/join payloads.
  *
  * Precedence: event `sourceCompanyUid` wins; only when the event carries no
- * company does the settings default fill in. Security: the settings default
- * must be a currently-known membership uid — a stale or foreign
- * `recordingCompanyId` is treated as unset (null), never attributed.
+ * company does the native settings default fill in. Security: the default
+ * must be a current active membership uid — a stale or foreign value is
+ * treated as unset (null), never attributed.
  */
 export function resolveInviteCompanyId(
   eventSourceCompanyUid: string | null | undefined,

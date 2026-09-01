@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ReplyPanel from "./ReplyPanel.svelte";
@@ -67,6 +67,30 @@ function mountPanel(props: Record<string, unknown> = {}): HTMLDivElement {
 }
 
 describe("ReplyPanel thread parity", () => {
+  it("registers only after the initial reply fetch supplies the seen ids", async () => {
+    type ReplyThread = Awaited<ReturnType<ConversationApi["fetchReplyThread"]>>;
+    let resolveFetch!: (value: ReplyThread) => void;
+    const initialFetch = new Promise<ReplyThread>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchReplyThread = vi.fn(() => initialFetch);
+    const onactivethreadchange = vi.fn();
+    mountPanel({
+      api: { fetchReplyThread, sendReply: async () => {} } as unknown as ConversationApi,
+      onactivethreadchange,
+    });
+
+    await tick();
+    expect(onactivethreadchange).not.toHaveBeenCalled();
+
+    resolveFetch({ scope: "channel", root, replies: [reply], replyCount: 1 });
+    await vi.waitFor(() => {
+      expect(onactivethreadchange).toHaveBeenCalledWith(
+        expect.objectContaining({ rootEventId: "evt_root", seenReplyIds: ["evt_reply"] }),
+      );
+    });
+  });
+
   it("does not render a reaction bar for a message with no reactions", async () => {
     const h = mountPanel();
     await tick();

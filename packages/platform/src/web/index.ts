@@ -12,6 +12,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -525,16 +526,24 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly notifications: PlatformAdapter["notifications"] = {
-    fetchNotifications: (opts) =>
-      this.get(
+    fetchNotifications: async (opts) => {
+      const result = await this.get<unknown>(
         opts && Object.keys(opts).length > 0
           ? `${WEB_PATHS.notifications}?${new URLSearchParams(opts as Record<string, string>).toString()}`
           : WEB_PATHS.notifications,
-      ),
+      );
+      if (!result.ok) return result;
+      return ok(normalizeNotificationsFeed(result.value));
+    },
     ack: (id) => this.post(WEB_PATHS.notificationAck, { id }),
     readAll: () => this.post(WEB_PATHS.notificationsReadAll, {}),
-    runAction: (id, action) =>
-      this.post(WEB_PATHS.notificationAction(id, action)),
+    runAction: (id, action, actionRef) =>
+      this.post(
+        WEB_PATHS.notificationAction(id, action),
+        typeof actionRef === "string" && actionRef.trim()
+          ? { actionRef }
+          : undefined,
+      ),
     fetchDmInbox: (opts) =>
       this.get(
         opts && Object.keys(opts).length > 0
@@ -620,7 +629,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     updateCreatorProfile: (p) =>
       this.request("PUT", WEB_PATHS.myCreatorProfile, p),
     uploadCreatorAvatar: (data) => this.post(WEB_PATHS.creatorAvatar, { data }),
-    requestCreatorAccess: () => this.post(WEB_PATHS.creatorAccess),
+    requestCreatorAccess: (payload) => this.post(WEB_PATHS.creatorAccess, payload),
     listCreatorApplications: () => this.get(WEB_PATHS.creatorApplications),
     decideCreatorApplication: (id, decision) =>
       this.post(WEB_PATHS.creatorApplication(id), { decision }),
@@ -815,6 +824,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
         );
       }
     },
+    openNotificationSettings: async () =>
+      unavailable(
+        "desktop-only",
+        "Notification settings are opened by the native desktop host.",
+      ),
     // Native banners are desktop-only (US-001). Web stays a no-op.
     showOsNotification: async () => ok(undefined),
   };
@@ -851,6 +865,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Local, browser-scoped stubs until a web settings store lands.
     getConfig: async () => ok({} as Json),
     getSettings: async () => ok({} as Json),
+    updateSettings: async () =>
+      unavailable(
+        "not-yet-implemented-api",
+        "The web host has no authoritative native settings store.",
+      ),
     getSetupStatus: async () => DESKTOP_ONLY,
     getTelemetryConsent: async () => ok<boolean | null>(null),
   };

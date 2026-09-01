@@ -150,10 +150,24 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo check --target x86_64-pc-windows-msvc
 
-      - name: Windows tests
+      # `cargo check` deliberately does not build cfg(test) code or
+      # dev-dependencies. Compile and link the test binaries in their own
+      # named gate so a cold cache cannot look like a stuck test harness.
+      # This also keeps the execution gate below a genuine five-minute
+      # deadlock detector: the broad suite normally executes in under a minute.
+      - name: Build Windows test binaries
         timeout-minutes: 30
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins
+        run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
+
+      # The runner's outer timeout did not reap a stranded cargo child tree on
+      # live run 33461363416. Keep it as a secondary boundary, but let the
+      # process-level watchdog enforce the real five-minute test deadline.
+      - name: Windows tests (process-tree watchdog)
+        timeout-minutes: 7
+        working-directory: apps/sync/src-tauri
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300'
 
       # These regressions force each Job Object attachment failure and then let
       # the real production pid-tree fallback run: they assert that a real child
@@ -481,7 +495,7 @@ jobs:
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: installer E2E (x64 MSI + NSIS)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: apps/sync
@@ -523,6 +537,28 @@ jobs:
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
+      # Install this PR at one synthetic patch, then build the same PR at the
+      # next patch. The running parent and copied helper therefore contain the
+      # same updater implementation, exactly as they do in production.
+      - name: Prepare bridge and target versions
+        id: versions
+        shell: pwsh
+        run: |
+          $baseVersion = node -p "require('./package.json').version"
+          $parts = $baseVersion.Split('.')
+          if ($parts.Count -ne 3) {
+            throw "Expected stable X.Y.Z base version, got $baseVersion"
+          }
+          $bridgeVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          $targetVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 2)"
+          pnpm -C ../.. version:app --set-version $bridgeVersion
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp bridge version $bridgeVersion"
+          }
+          "base=$baseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "bridge=$bridgeVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "target=$targetVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Install Recall sidecar deps
         run: pnpm run sidecar:install
 
@@ -554,7 +590,7 @@ jobs:
           }
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Build production MSI and NSIS installers
+      - name: Build bridge MSI and NSIS installers
         run: >-
           pnpm tauri build
           --target x86_64-pc-windows-msvc
@@ -602,27 +638,71 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
-      - name: Install production package
-        id: install
+      - name: Install PR bridge NSIS package
+        id: install_bridge
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
-            throw "NSIS installer was not produced"
+            throw "Bridge NSIS installer was not produced"
           }
-
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Installed application: $app"
+          "installer=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Installed PR bridge application: $app"
+
+      - name: Roll back NSIS-installed bridge after an installer failure
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+
+      - name: Build next synthetic NSIS updater
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
+          }
+          pnpm tauri build `
+            --target x86_64-pc-windows-msvc `
+            --bundles nsis `
+            --config src-tauri/tauri.windows.conf.json `
+            --config src-tauri/tauri.windows.release.conf.json `
+            --config src-tauri/tauri.windows.ci.conf.json `
+            --features e2e-automation
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build target NSIS updater"
+          }
+
+      - name: Upgrade running PR bridge through its copied helper
+        id: upgrade
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.target }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          if (-not $installer) {
+            throw "Target NSIS installer was not produced"
+          }
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+
+          "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Upgraded application: $app"
+
+      - name: Roll back NSIS-installed target after an installer failure
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.
       - name: Live pre-auth smoke test of the installed application
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
-          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
@@ -660,4 +740,4 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallDir $installDir
+          & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallerPath "${{ steps.install_bridge.outputs.installer }}" -InstallDir $installDir

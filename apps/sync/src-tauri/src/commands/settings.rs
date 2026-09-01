@@ -1,6 +1,7 @@
 use crate::commands::config::{MeetingDetectNotifyPrefs, MenubarPrefs};
 use crate::util::paths;
 use hq_desktop_core::settings::{default_meeting_detect_notify, merge_prefs_over_existing};
+use std::path::Path;
 
 /// Default platform allow-list (all five) when the field is absent from disk.
 const DEFAULT_PLATFORMS: &[&str] = &["zoom", "meet", "teams", "slack", "webex"];
@@ -26,7 +27,12 @@ const fn default_widget_enabled() -> bool {
 #[tauri::command]
 pub async fn get_settings() -> Result<MenubarPrefs, String> {
     let path = paths::menubar_json_path()?;
+    get_settings_at(&path)
+}
 
+/// The command's durable read seam. Keeping it path-injected lets native tests
+/// exercise a fresh isolated config repository without touching the user's home.
+pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
     if !path.exists() {
         return Ok(MenubarPrefs {
             hq_path: None,
@@ -185,7 +191,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
 #[tauri::command]
 pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
+    save_settings_at(&path, &prefs)
+}
 
+/// The command's durable write seam. A new caller/repository that reads this
+/// path observes the atomically renamed bytes, matching a host restart.
+pub(crate) fn save_settings_at(path: &Path, prefs: &MenubarPrefs) -> Result<(), String> {
     // Ensure ~/.hq/ directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -197,7 +208,7 @@ pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     } else {
         None
     };
-    let json = merge_prefs_over_existing(&prefs, existing.as_deref())?;
+    let json = merge_prefs_over_existing(prefs, existing.as_deref())?;
 
     // Atomic write: stage to a temp file, fsync, rename into place.
     let tmp = path.with_extension("json.tmp");
@@ -206,4 +217,41 @@ pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| format!("Failed to write menubar.json: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolated_config_persists_across_a_fresh_native_settings_repository() {
+        let unique = format!(
+            "hq-settings-isolated-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config = std::env::temp_dir().join(unique);
+        let path = config.join("menubar.json");
+
+        // First native repository/host instance writes a subset of settings.
+        let mut saved = get_settings_at(&path).expect("isolated default settings");
+        saved.auto_update = Some(false);
+        saved.default_recording_company_uid = Some("co_isolated".to_string());
+        save_settings_at(&path, &saved).expect("isolated atomic save");
+
+        // A fresh path-backed repository (the restart seam) reads disk anew.
+        let restarted = get_settings_at(&path).expect("fresh isolated reload");
+        assert_eq!(restarted.auto_update, Some(false));
+        assert_eq!(
+            restarted.default_recording_company_uid.as_deref(),
+            Some("co_isolated")
+        );
+        let raw = std::fs::read_to_string(&path).expect("persisted menubar.json");
+        assert!(raw.contains("co_isolated"));
+
+        std::fs::remove_dir_all(config).expect("remove isolated config");
+    }
 }

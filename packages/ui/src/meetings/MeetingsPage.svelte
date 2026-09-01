@@ -16,6 +16,7 @@
     type MeetingBotAction,
     type ToastDescriptor,
   } from "./meetings-store.svelte";
+  import type { MeetingsStorage } from "./meetings-cache";
   import LiveNowCard from "../common/LiveNowCard.svelte";
   import MeetingsAgenda from "./MeetingsAgenda.svelte";
   import {
@@ -53,6 +54,7 @@
   interface MeetingsPageProps {
     /** Platform backend seam (meetings/feedback/identity slices are used). */
     adapter: PlatformAdapter;
+    accountId?: string | null;
     onback?: () => void;
     /**
      * Open a URL in the host's external browser. Defaults to window.open —
@@ -67,9 +69,14 @@
      * event, including repeated requests for the same meeting.
      */
     focusRequest?: { meetingId: string; sequence: number } | null;
+    /** Account-partitioned cache supplied by the embedded desktop host. */
+    storage?: MeetingsStorage | null;
+    /** Native auth generation that owns any in-flight meeting hydration. */
+    sessionGeneration?: number;
   }
   let {
     adapter,
+    accountId = null,
     onback,
     openExternal = (url: string) => {
       const opened = window.open(url, "_blank", "noopener,noreferrer");
@@ -80,6 +87,8 @@
       }
     },
     focusRequest = null,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
+    sessionGeneration = 0,
   }: MeetingsPageProps = $props();
 
   // Store-backed data. The singleton (started at app launch in
@@ -434,8 +443,12 @@
     // Cache-first singleton. Do not force another refresh on every icon
     // click — that re-downloaded the full calendar and beachballed the app.
     configureMeetingsApi({
+      accountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
+      storage,
+      sessionGeneration,
     });
     startMeetingsStore();
     setMeetingsViewActive(true);

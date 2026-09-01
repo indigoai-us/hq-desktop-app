@@ -143,7 +143,12 @@ export function settingsCompanyLists(
   const pendingIds = new Set(pendingWs.map((w) => w.cloudUid ?? w.slug));
   const active = all
     .filter(
-      (w) => w.kind === "company" && !pendingIds.has(w.cloudUid ?? w.slug),
+      (w) =>
+        w.kind === "company" &&
+        !pendingIds.has(w.cloudUid ?? w.slug) &&
+        ["", "active", "accepted"].includes(
+          (w.membershipStatus ?? "").trim().toLowerCase(),
+        ),
     )
     .map(toRow);
   return {

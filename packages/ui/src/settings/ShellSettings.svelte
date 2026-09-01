@@ -67,6 +67,10 @@
     version?: string;
     /** Host-routed subsection; null preserves Profile-first normal entry. */
     initialSection?: ShellSettingsSection | null;
+    /** Monotonic native auth generation; stale profile loads/saves are rejected. */
+    sessionGeneration?: number;
+    /** Account/company-scoped renderer persistence supplied by the host. */
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     onback?: () => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
@@ -74,6 +78,10 @@
     /** Change-photo affordance (host seam; display-only default). */
     onchangephoto?: () => void;
     consoleBase?: string;
+    /** Native update event edge; wakes the authoritative Updates pane. */
+    updateWakeSeq?: number;
+    /** Reads the running native app version when Updates refreshes. */
+    refreshAppVersion?: () => Promise<string>;
   }
 
   let {
@@ -82,11 +90,15 @@
     adapter = null,
     version = "0.0.0",
     initialSection = null,
+    sessionGeneration = 0,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
     onback,
     onsignout,
     onopenconsole,
     onchangephoto,
     consoleBase = HQ_CONSOLE_BASE,
+    updateWakeSeq = 0,
+    refreshAppVersion,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -135,9 +147,13 @@
   /** Data-URL preview for the avatar (picked file or persisted avatarUrl). */
   let avatarPreview = $state<string | null>(null);
   let profileLoaded = $state(false);
+  let descriptionLoaded = $state(false);
   let savingProfile = $state(false);
   let profileError = $state<string | null>(null);
   let profileSavedAt = $state<number | null>(null);
+  let profileLoading = $state(false);
+  let profileRequest = 0;
+  let observedSessionGeneration = $state<number | null>(null);
   let avatarBusy = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
   let profileFetchPending = $state(
@@ -156,11 +172,12 @@
   let initialName = $state("");
   let initialDescription = $state("");
 
+  const nameDirty = $derived(editName.trim() !== initialName.trim());
+  const descriptionDirty = $derived(
+    descriptionLoaded && editDescription.trim() !== initialDescription.trim(),
+  );
   const profileDirty = $derived(
-    profileLoaded &&
-      (pendingAvatarBase64 !== null ||
-        editName.trim() !== initialName.trim() ||
-        editDescription.trim() !== initialDescription.trim()),
+    profileLoaded && (pendingAvatarBase64 !== null || nameDirty || descriptionDirty),
   );
 
   function seedFromProfile(): void {
@@ -206,10 +223,16 @@
     return typeof email === "string" && email.trim() ? email.trim() : null;
   }
 
-  async function loadMemberProfile(): Promise<void> {
+  async function loadProfile(): Promise<void> {
+    const request = ++profileRequest;
+    const generation = sessionGeneration;
+    profileLoading = true;
+    profileError = null;
+    seedFromProfile();
     if (typeof adapter?.identity?.getProfile !== "function") {
       profileFetchPending = false;
       profileLoaded = true;
+      profileLoading = false;
       return;
     }
     profileFetchPending = true;
@@ -217,45 +240,89 @@
     startSkeletonDelay();
     try {
       const res = await adapter.identity.getProfile();
+      if (request !== profileRequest || generation !== sessionGeneration) return;
       if (res.ok && res.value) {
         const block = res.value.profile;
         if (block?.displayName) editName = block.displayName;
         else if (res.value.entityName) editName ||= res.value.entityName;
         initialName = editName;
-        if (block?.description) {
-          editDescription = block.description;
-          initialDescription = block.description;
-        }
+        // A successful profile response is authoritative even when this is a
+        // first-time profile (`profile: null`) or its optional description is
+        // absent. Keep failures distinct so only a confirmed empty value is
+        // editable and eligible to save.
+        editDescription = typeof block?.description === "string" ? block.description : "";
+        initialDescription = editDescription;
+        descriptionLoaded = true;
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
         fetchedDisplayName = block?.displayName ?? null;
         fetchedEntityName = res.value.entityName ?? null;
         fetchedEmail = memberEmailFromValue(res.value);
         profileFetchError = null;
-      } else if (!res.ok) {
-        profileFetchError = res.message || "Couldn't load your profile.";
+      } else {
+        // A failed profile result is not an empty profile. Keep only the
+        // session-backed name editable and do not manufacture a blank About
+        // value that a later Save could send back to the server.
+        descriptionLoaded = false;
+        const message = !res.ok
+          ? res.message || "Couldn\u2019t load all profile fields."
+          : "Couldn\u2019t load all profile fields.";
+        profileError = message;
+        profileFetchError = message;
       }
-    } catch (err) {
-      profileFetchError =
-        err instanceof Error ? err.message : "Couldn't load your profile.";
-    } finally {
-      profileFetchPending = false;
       profileLoaded = true;
-      clearSkeletonTimer();
-      skeletonVisible = false;
+    } catch (error) {
+      if (request !== profileRequest || generation !== sessionGeneration) return;
+      descriptionLoaded = false;
+      profileLoaded = true;
+      const message =
+        error instanceof Error ? error.message : "Couldn\u2019t load all profile fields.";
+      profileError = message;
+      profileFetchError = message;
+    } finally {
+      if (request === profileRequest && generation === sessionGeneration) {
+        profileLoading = false;
+        profileFetchPending = false;
+        clearSkeletonTimer();
+        skeletonVisible = false;
+      }
     }
   }
 
+
   onMount(() => {
-    seedFromProfile();
-    if (typeof adapter?.identity?.getProfile !== "function") {
-      profileLoaded = true;
-      profileFetchPending = false;
-      return;
-    }
-    void loadMemberProfile();
+    void loadProfile();
     return () => {
       clearSkeletonTimer();
     };
+  });
+
+  // DesktopApp re-keys on every native session generation, but keep this
+  // component correct when a host updates the prop in place as well. A save
+  // started for A must neither settle B's UI nor leave its controls wedged.
+  $effect(() => {
+    if (observedSessionGeneration === null) {
+      observedSessionGeneration = sessionGeneration;
+      return;
+    }
+    if (sessionGeneration === observedSessionGeneration) return;
+    observedSessionGeneration = sessionGeneration;
+    profileRequest += 1;
+    savingProfile = false;
+    profileSavedAt = null;
+    profileError = null;
+    profileLoaded = false;
+    descriptionLoaded = false;
+    pendingAvatarBase64 = null;
+    editName = "";
+    initialName = "";
+    editDescription = "";
+    initialDescription = "";
+    avatarPreview = null;
+    profileFetchError = null;
+    fetchedDisplayName = null;
+    fetchedEntityName = null;
+    fetchedEmail = null;
+    void loadProfile();
   });
 
   function pickPhoto(): void {
@@ -286,22 +353,32 @@
     if (!adapter || savingProfile) return;
     const name = editName.trim();
     const description = editDescription.trim();
-    if (description.length > DESCRIPTION_MAX) {
+    if (descriptionLoaded && description.length > DESCRIPTION_MAX) {
       profileError = `About must be ${DESCRIPTION_MAX} characters or fewer.`;
       return;
     }
     savingProfile = true;
     profileError = null;
+    const generation = sessionGeneration;
+    const update: {
+      displayName?: string;
+      description?: string;
+      avatarBase64?: string;
+    } = {};
+    if (nameDirty && name) update.displayName = name;
+    if (descriptionDirty) update.description = description;
+    if (pendingAvatarBase64) update.avatarBase64 = pendingAvatarBase64;
+    if (Object.keys(update).length === 0) {
+      savingProfile = false;
+      return;
+    }
     try {
-      const res = await adapter.identity.updateProfile({
-        displayName: name || undefined,
-        description,
-        ...(pendingAvatarBase64 ? { avatarBase64: pendingAvatarBase64 } : {}),
-      });
+      const res = await adapter.identity.updateProfile(update);
+      if (generation !== sessionGeneration) return;
       if (res.ok) {
         pendingAvatarBase64 = null;
-        initialName = name;
-        initialDescription = description;
+        if (nameDirty) initialName = name;
+        if (descriptionDirty) initialDescription = description;
         if (res.value?.profile?.avatarUrl) {
           avatarPreview = res.value.profile.avatarUrl;
         }
@@ -310,10 +387,11 @@
         profileError = res.message || "Couldn't save your profile.";
       }
     } catch (err) {
+      if (generation !== sessionGeneration) return;
       profileError =
         err instanceof Error ? err.message : "Couldn't save your profile.";
     } finally {
-      savingProfile = false;
+      if (generation === sessionGeneration) savingProfile = false;
     }
   }
 
@@ -441,6 +519,7 @@
                 <div class="sd">
                   A short line teammates see ({editDescription.trim()
                     .length}/{DESCRIPTION_MAX})
+                  {#if !descriptionLoaded} — unavailable until the profile service recovers{/if}
                 </div>
               </div>
               <input
@@ -450,8 +529,19 @@
                 data-testid="settings-description-input"
                 placeholder="e.g. Founder · building HQ"
                 bind:value={editDescription}
-                disabled={!adapter}
+                disabled={!adapter || !descriptionLoaded}
               />
+              {#if !descriptionLoaded}
+                <button
+                  type="button"
+                  class="chip"
+                  data-testid="settings-profile-retry"
+                  disabled={profileLoading}
+                  onclick={() => void loadProfile()}
+                >
+                  {profileLoading ? "Loading…" : "Retry About"}
+                </button>
+              {/if}
             </div>
             <div class="set-row">
               <div>
@@ -552,7 +642,7 @@
               type="button"
               class="chip"
               data-testid="settings-profile-retry"
-              onclick={() => void loadMemberProfile()}
+              onclick={() => void loadProfile()}
             >
               Retry
             </button>
@@ -567,10 +657,11 @@
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {companies}
+          {adapter}
+          {storage}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
-          canSync={adapter?.isAvailable("canSync") ?? false}
         />
       {:else}
         <PrototypeSettingsPanes
@@ -583,10 +674,14 @@
             | "updates"}
           {version}
           {adapter}
+          {storage}
+          {sessionGeneration}
           {companies}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
+          {updateWakeSeq}
+          {refreshAppVersion}
         />
       {/if}
     </div>

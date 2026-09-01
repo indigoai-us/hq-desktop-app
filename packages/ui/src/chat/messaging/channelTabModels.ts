@@ -103,6 +103,11 @@ export type ChannelFileIconKind =
 export interface ChannelFileItemModel {
   key: string;
   vaultPath: string;
+  /**
+   * Optional HQ-relative local mirror path. It is never an absolute path and
+   * native commands re-authorize it before acting on it.
+   */
+  localPath?: string;
   companyUid?: string;
   name: string;
   /** Uploader · date caption, e.g. "ADA · AUG 10". */
@@ -143,3 +148,19 @@ export function channelFilePreviewBody(
   }
   return CHANNEL_FILE_NO_PREVIEW;
 }
+/** A bounded, passive preview resolved by the host-owned file seam. */
+export type ChannelFilePreview =
+  | { kind: "text"; text: string }
+  | { kind: "image"; url: string }
+  | { kind: "pdf"; url: string }
+  | {
+      kind: "unavailable";
+      state:
+        | "missing"
+        | "denied"
+        | "offline"
+        | "too-large"
+        | "binary"
+        | "unsupported";
+      message: string;
+    };

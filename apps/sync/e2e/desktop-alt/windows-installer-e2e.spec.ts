@@ -25,6 +25,20 @@ const installerHooks = readFileSync(
   appUrl('src-tauri/windows/installer-hooks.nsh'),
   'utf8',
 );
+const updater = readFileSync(appUrl('src-tauri/src/updater.rs'), 'utf8');
+const windowsUpdate = readFileSync(
+  appUrl('src-tauri/src/windows_update.rs'),
+  'utf8',
+);
+const processRegistry = readFileSync(
+  appUrl('src-tauri/src/commands/process.rs'),
+  'utf8',
+);
+const versionGate = readFileSync(
+  appUrl('src-tauri/src/commands/version_gate.rs'),
+  'utf8',
+);
+const main = readFileSync(appUrl('src-tauri/src/main.rs'), 'utf8');
 
 describe('Windows production installer E2E', () => {
   it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
@@ -38,9 +52,14 @@ describe('Windows production installer E2E', () => {
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
   });
 
-  it('tests the installed x64 application and always uninstalls it', () => {
+  it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
-    expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}');
+    expect(workflow).toContain('Install PR bridge NSIS package');
+    expect(workflow).toContain('bundle\\nsis');
+    expect(workflow).toContain('-Action upgrade');
+    expect(workflow).toContain(
+      'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
+    );
     expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_LIVE: "1"');
     expect(workflow).toContain('$installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"');
     expect(workflow).toContain('if: always()');
@@ -49,6 +68,140 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain('-Filter "hq-sync-menubar.exe"');
     expect(installerHarness).toContain('if ($machine -ne 0x8664)');
     expect(installerHarness).toContain('NSIS uninstaller exited with code');
+  });
+
+  it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
+    expect(workflow).toContain('Prepare bridge and target versions');
+    expect(workflow).toContain('Install PR bridge NSIS package');
+    expect(workflow).toContain(
+      'Roll back NSIS-installed bridge after an installer failure',
+    );
+    expect(workflow).toContain('Build next synthetic NSIS updater');
+    expect(workflow).toContain(
+      'Upgrade running PR bridge through its copied helper',
+    );
+    expect(installerHarness).toContain('--hq-update-helper');
+    expect(installerHarness).toContain(
+      'Installer modified the application before the parent exited',
+    );
+    expect(installerHarness).toContain(
+      'Update helper exited while the prior-version parent was still running',
+    );
+    expect(installerHarness).toContain(
+      'Upgrade left the prior-version binary in place',
+    );
+    expect(installerHarness).toContain('.VersionInfo.ProductVersion');
+    expect(installerHarness).toContain(
+      "does not match target '$TargetVersion'",
+    );
+    expect(installerHarness).toContain('$receipt.state -ne "installed"');
+    expect(workflow).toContain(
+      'Roll back NSIS-installed target after an installer failure',
+    );
+    expect(workflow).toContain('-Action rollback');
+    expect(installerHarness).toContain('$receipt.state -ne "rolled-back"');
+    expect(installerHarness).toContain(
+      'Staged helper is not the installed parent binary',
+    );
+    expect(installerHarness).toContain(
+      'Copy-Item -LiteralPath $installedApp -Destination $stagedHelper',
+    );
+    expect(installerHarness).not.toContain('$HelperPath');
+    expect(installerHarness).toContain(
+      'Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup',
+    );
+    expect(installerHarness).toContain(
+      'Dictionary[string,string]',
+    );
+    expect(installerHarness).toContain(
+      '$serializableManifest.GetType()',
+    );
+    expect(installerHarness).toContain(
+      '[System.Text.Json.JsonSerializerOptions]::new()',
+    );
+    expect(installerHarness).toContain(
+      'Snapshot-UninstallRegistry -Path $registryBackup',
+    );
+    expect(installerHarness).toContain(
+      '"--prior-nsis-registry", $registryState',
+    );
+    expect(installerHarness).toContain(
+      'Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force',
+    );
+    expect(installerHarness).toContain(
+      'Rollback did not restore the complete prior installation',
+    );
+    expect(installerHarness).toContain(
+      'Rollback did not restore the exact prior uninstall registry metadata',
+    );
+    expect(installerHarness).toContain(
+      'Rollback left candidate-only registry metadata behind',
+    );
+    expect(windowsUpdate).toContain(
+      'automatic update cannot safely migrate an MSI-installed HQ',
+    );
+    expect(installerHarness).toContain('$global:LASTEXITCODE = 0');
+    expect(installerHarness).toContain('-RedirectStandardError $helperStderr');
+    expect(installerHarness).toContain(
+      'Rollback helper exited before readiness:',
+    );
+    expect(installerHarness).toContain(
+      'Update rollback changed existing HQ shortcuts',
+    );
+  });
+
+  it('routes every Windows update trigger through the guarded helper handoff', () => {
+    expect(updater).toContain(
+      'crate::windows_update::install_verified_update(app, update).await',
+    );
+    expect(updater).toContain('pub(crate) async fn install_stable_update');
+    expect(versionGate).toContain('crate::updater::install_stable_update(app).await');
+    expect(versionGate).not.toContain('download_and_install');
+    expect(main).toContain('windows_update::run_helper_if_requested()');
+    expect(windowsUpdate).toContain('.download(|_, _| {}, || {})');
+    expect(windowsUpdate).toContain('quiesce_for_update(PROCESS_EXIT_TIMEOUT)');
+    expect(windowsUpdate).toContain('app.exit(0)');
+    expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
+    expect(windowsUpdate).toContain('restore_prior_installation(');
+    expect(windowsUpdate).toContain('copy_install_tree(&install_dir, &install_backup)');
+    expect(windowsUpdate).toContain('snapshot_uninstall_registry(&uninstall_registry_backup)');
+    expect(windowsUpdate).toContain('restore_install_tree(');
+    expect(windowsUpdate).toContain('restore_uninstall_registry(');
+    expect(windowsUpdate).toContain(
+      'WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)',
+    );
+    expect(windowsUpdate).toContain(
+      'open HQ parent process {parent_pid} for synchronization',
+    );
+    const parentOpen = windowsUpdate.indexOf('let parent = open_parent(parent_pid)?;');
+    const readyMarker = windowsUpdate.indexOf('write_new_file(&ready, b"ready")?;');
+    expect(parentOpen).toBeGreaterThan(-1);
+    expect(readyMarker).toBeGreaterThan(parentOpen);
+    expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
+    expect(windowsUpdate).toContain(
+      'write_receipt(&receipt, "failed", &version, Some(&error))',
+    );
+    expect(windowsUpdate).toContain('cleanup_rollback_swap_dirs();');
+    expect(windowsUpdate).toContain('FAILED_INSTALL_PREFIX');
+    expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
+    expect(updater).toContain('install_failure_is_transient_deferral');
+    expect(updater).toContain(
+      'automatic update deferred during install startup; retrying soon',
+    );
+    expect(processRegistry).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(processRegistry).toContain('pub fn quiesce_for_update');
+    expect(processRegistry).toContain(
+      'fn windows_pid_alive(pid: u32) -> Result<bool, String>',
+    );
+    expect(processRegistry).toContain(
+      'WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)',
+    );
+    expect(processRegistry).toContain('open HQ process {pid} for exit query');
+    expect(processRegistry).toContain('query HQ process {pid} exit code');
+    expect(processRegistry).toContain('require_update_job_containment(&processes)?');
+    expect(processRegistry).toContain(
+      'cannot safely quiesce an HQ process without Job Object containment',
+    );
   });
 
   it('stops HQ processes before install and uninstall so locked files never break setup', () => {

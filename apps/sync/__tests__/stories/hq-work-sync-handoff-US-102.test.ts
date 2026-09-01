@@ -124,8 +124,15 @@ function makeAdapter(handler?: SyncInvokeFn) {
       case 'fetch_notifications':
         return {
           notifications: [
-            { id: 'n1', title: 'hello', status: 'unread' },
+            {
+              id: 'n1',
+              title: 'hello',
+              status: 'unread',
+              actionRef: 'story-7',
+            },
           ],
+          unreadCount: 7,
+          nextCursor: 'opaque-next-page',
         };
       case 'ack_notification':
         return { ok: true, marked: 1 };
@@ -367,6 +374,61 @@ describe('US-102 Sync PlatformAdapter', () => {
     });
 
     expect(expectOk(await adapter.identity.whoami())).toMatchObject(WHOAMI);
+  });
+
+  it('whoami degrades to native session identity when the account has no person entity', async () => {
+    // Regression: the embedded HQ Work shell hard-gated account load on the
+    // identity probe. A signed-in user must still load using the proven native
+    // session identity instead of "Couldn't load your account" when the vault
+    // account permanently lacks a vault person entity (main a1aab012 intent,
+    // carried onto the native `whoami` command). Transient vault failures
+    // still surface as identity-error with Retry.
+    const { adapter, calls } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return {
+          authenticated: true,
+          accountId: 'cognito-sub-ada',
+          email: WHOAMI.email,
+          displayName: WHOAMI.displayName,
+        };
+      }
+      if (cmd === 'whoami') {
+        throw new Error('person entity lookup failed: no person entity for this account');
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    expect(expectOk(await adapter.identity.whoami())).toEqual({
+      personUid: 'cognito-sub-ada',
+      email: WHOAMI.email,
+      displayName: WHOAMI.displayName,
+    });
+    // No second get_auth_state re-check on the fallback path — it returns
+    // straight from the native snapshot after the failed person lookup.
+    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state', 'whoami']);
+  });
+
+  it('whoami still fails closed when the native session is invalid so the shell re-signs in', async () => {
+    const { adapter } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return {
+          authenticated: true,
+          accountId: 'cognito-sub-ada',
+          email: WHOAMI.email,
+          displayName: WHOAMI.displayName,
+        };
+      }
+      if (cmd === 'whoami') {
+        throw new Error('Not signed in');
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    expect(await adapter.identity.whoami()).toMatchObject({
+      ok: false,
+      code: 'invoke',
+      message: 'Not signed in',
+    });
   });
 
   it('listWorkspaces maps list_syncable_workspaces.workspaces', async () => {
@@ -617,16 +679,37 @@ describe('US-102 Sync PlatformAdapter', () => {
 
   it('notifications fetch + ack map existing feed commands', async () => {
     const { adapter, calls } = makeAdapter();
-    const items = expectOk(await adapter.notifications.fetchNotifications());
-    expect(items).toEqual([
-      { id: 'n1', title: 'hello', status: 'unread', read: false },
-    ]);
+    const feed = expectOk(
+      await adapter.notifications.fetchNotifications({
+        limit: 25,
+        cursor: 'opaque-next-page',
+        unreadOnly: true,
+      }),
+    );
+    expect(feed).toEqual({
+      notifications: [
+        {
+          id: 'n1',
+          title: 'hello',
+          status: 'unread',
+          actionRef: 'story-7',
+          read: false,
+        },
+      ],
+      unreadCount: 7,
+      nextCursor: 'opaque-next-page',
+    });
     expect((await adapter.notifications.ack('n1')).ok).toBe(true);
     expect(calls.map((c) => c.cmd)).toEqual([
       'fetch_notifications',
       'ack_notification',
     ]);
     expect(calls[1]?.args).toEqual({ id: 'n1' });
+    expect(calls[0]?.args).toEqual({
+      limit: 25,
+      cursor: 'opaque-next-page',
+      unreadOnly: true,
+    });
   });
 
   it('files vault list + presign GET/PUT go through hq-pro files endpoints', async () => {

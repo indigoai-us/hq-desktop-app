@@ -3,9 +3,9 @@
    * Unified Notifications feed (US-012).
    *
    * Main-pane view opened from the titlebar bell. Lists hq-pro NOTIF store rows
-   * with day groups, All | Unread filter, Mark all read, inline actionKind
-   * buttons, and optimistic read-state. Pure mapping lives in
-   * notifications-model.ts.
+   * with day groups, All | Unread filter, Mark all read, and optimistic
+   * read-state. Action controls remain hidden until their backend mutations
+   * exist. Pure mapping lives in notifications-model.ts.
    */
   import type { NotificationsApi } from "../chat/chat-api";
   import {
