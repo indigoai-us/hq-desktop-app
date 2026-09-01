@@ -148,20 +148,24 @@ export async function restoreSession(
   return null;
 }
 
-let refreshInFlight: Promise<TokenResponse> | null = null;
-let refreshInFlightKey: string | null = null;
+const refreshesInFlight = new Map<string, Promise<TokenResponse>>();
 
-async function refreshSerialized(
+function refreshSerialized(
   refreshToken: string,
   run: () => Promise<TokenResponse>,
 ): Promise<TokenResponse> {
-  if (refreshInFlight && refreshInFlightKey === refreshToken) {
-    return refreshInFlight;
+  const existing = refreshesInFlight.get(refreshToken);
+  if (existing) {
+    return existing;
   }
-  refreshInFlightKey = refreshToken;
-  refreshInFlight = run().finally(() => {
-    refreshInFlight = null;
-    refreshInFlightKey = null;
-  });
-  return refreshInFlight;
+  const inFlight = run();
+  refreshesInFlight.set(refreshToken, inFlight);
+  void inFlight
+    .finally(() => {
+      if (refreshesInFlight.get(refreshToken) === inFlight) {
+        refreshesInFlight.delete(refreshToken);
+      }
+    })
+    .catch(() => {});
+  return inFlight;
 }

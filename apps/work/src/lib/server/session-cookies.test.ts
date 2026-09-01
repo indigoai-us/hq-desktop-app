@@ -245,6 +245,60 @@ describe("restoreSession", () => {
     expect(right).toEqual(liveSession);
     expect(calls).toBe(1);
   });
+
+  it("keeps B's refresh in flight after A finishes", async () => {
+    let resolveA: (tokens: { id_token: string }) => void;
+    let resolveB: (tokens: { id_token: string }) => void;
+    const aExchange = new Promise<{ id_token: string }>((resolve) => {
+      resolveA = resolve;
+    });
+    const bExchange = new Promise<{ id_token: string }>((resolve) => {
+      resolveB = resolve;
+    });
+    const refresh = vi.fn(
+      async (_config: AuthConfig, { refreshToken }: { refreshToken: string }) =>
+        refreshToken === "rt-a" ? aExchange : bExchange,
+    );
+    const verify = vi.fn(async (_config: AuthConfig, token: string) =>
+      token === "fresh.a" || token === "fresh.b" ? liveSession : null,
+    );
+    const firstA = restoreSession(makeJar({ [REFRESH_TOKEN_COOKIE]: "rt-a" }).jar, {
+      secure: true,
+      fetch: fetchStub,
+      config,
+      now: NOW,
+      verify,
+      refresh,
+    });
+    const firstB = restoreSession(makeJar({ [REFRESH_TOKEN_COOKIE]: "rt-b" }).jar, {
+      secure: true,
+      fetch: fetchStub,
+      config,
+      now: NOW,
+      verify,
+      refresh,
+    });
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    resolveA!({ id_token: "fresh.a" });
+    await expect(firstA).resolves.toEqual(liveSession);
+
+    const secondB = restoreSession(makeJar({ [REFRESH_TOKEN_COOKIE]: "rt-b" }).jar, {
+      secure: true,
+      fetch: fetchStub,
+      config,
+      now: NOW,
+      verify,
+      refresh,
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    resolveB!({ id_token: "fresh.b" });
+    await expect(Promise.all([firstB, secondB])).resolves.toEqual([
+      liveSession,
+      liveSession,
+    ]);
+  });
 });
 
 describe("clearSessionCookies", () => {

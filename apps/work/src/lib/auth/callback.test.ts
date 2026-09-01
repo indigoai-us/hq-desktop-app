@@ -25,6 +25,25 @@ describe("normalizeCallback (same-origin guard)", () => {
     expect(normalizeCallback({ callbackUrl: "evil.com" })).toBe("/");
   });
 
+  it("rejects paths that URL parsing resolves to another origin", () => {
+    const origin = "https://work.hq.computer";
+    expect(normalizeCallback({ callbackUrl: "//evil.com" }, origin)).toBe(
+      "/",
+    );
+    expect(normalizeCallback({ callbackUrl: "/\\evil.com" }, origin)).toBe(
+      "/",
+    );
+    expect(
+      normalizeCallback({ callbackUrl: "https://evil.com" }, origin),
+    ).toBe("/");
+    expect(
+      normalizeCallback({ callbackUrl: "/\t\\evil.com" }, origin),
+    ).toBe("/");
+    expect(normalizeCallback({ callbackUrl: "/projects?tab=files" }, origin)).toBe(
+      "/projects?tab=files",
+    );
+  });
+
   it("prefers callbackUrl, then return, then return-to", () => {
     expect(
       normalizeCallback({ callbackUrl: "/a", return: "/b", "return-to": "/c" }),

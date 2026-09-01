@@ -38,15 +38,27 @@ export const GET: RequestHandler = async ({ url, cookies, fetch }) => {
   if (!isSigninConfigured(config)) return badRequest("auth not configured");
 
   const code = url.searchParams.get("code");
+  const oauthError = url.searchParams.get("error");
   const state = url.searchParams.get("state");
   const expectedState = cookies.get(OAUTH_STATE_COOKIE);
   const verifier = cookies.get(PKCE_VERIFIER_COOKIE);
   cookies.delete(OAUTH_STATE_COOKIE, { path: "/" });
   cookies.delete(PKCE_VERIFIER_COOKIE, { path: "/" });
 
-  if (!code || !state || !expectedState || state !== expectedState) {
+  if (!state || !expectedState || state !== expectedState) {
     return badRequest("invalid state");
   }
+  if (oauthError) {
+    const parked = cookies.get(POST_LOGIN_REDIRECT_COOKIE);
+    cookies.delete(POST_LOGIN_REDIRECT_COOKIE, { path: "/" });
+    const safe = normalizeCallback({ callbackUrl: parked }, url.origin);
+    const params = new URLSearchParams({
+      error: oauthError === "access_denied" ? "AccessDenied" : "OAuthCallback",
+    });
+    if (safe !== "/") params.set("callbackUrl", safe);
+    redirect(303, `/auth/signin?${params}`);
+  }
+  if (!code) return badRequest("invalid state");
   if (!verifier) return badRequest("missing PKCE verifier");
 
   let tokens: { id_token?: string; refresh_token?: string };
@@ -80,6 +92,6 @@ export const GET: RequestHandler = async ({ url, cookies, fetch }) => {
   // to the default home.
   const parked = cookies.get(POST_LOGIN_REDIRECT_COOKIE);
   cookies.delete(POST_LOGIN_REDIRECT_COOKIE, { path: "/" });
-  const safe = normalizeCallback({ callbackUrl: parked });
+  const safe = normalizeCallback({ callbackUrl: parked }, url.origin);
   redirect(303, safe === "/" ? DEFAULT_DESTINATION : safe);
 };

@@ -68,7 +68,7 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
   const config = authConfig({ origin: url.origin });
   const configured = isSigninConfigured(config);
   const params = searchParamsToSignIn(url.searchParams);
-  const callbackUrl = normalizeCallback(params);
+  const callbackUrl = normalizeCallback(params, url.origin);
   const error = errorMessage(params.error);
 
   const idp = params.idp ?? params.provider;

@@ -61,6 +61,7 @@ test.describe("desktop shell: signed-in default surface", () => {
       page,
     }) => {
       await page.goto(path);
+      await expect(page.getByTestId("desktop-shell")).toBeVisible();
       // The old backend-driven chat chrome must NOT mount (it is what produced
       // the "reconnecting" / "Select a conversation" errors).
       await expect(page.getByTestId("chat-page")).toHaveCount(0);

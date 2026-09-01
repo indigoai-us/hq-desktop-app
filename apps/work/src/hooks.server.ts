@@ -29,6 +29,18 @@ function isPublic(pathname: string): boolean {
   );
 }
 
+const LEGACY_PATHS = new Set([
+  "/chat",
+  "/board",
+  "/projects",
+  "/marketplace",
+  "/library",
+  "/files",
+  "/meetings",
+  "/deployments",
+  "/settings",
+]);
+
 export const handle: Handle = async ({ event, resolve }) => {
   event.locals.session = await restoreSession(event.cookies, {
     secure: event.url.protocol === "https:",
@@ -64,10 +76,21 @@ export const handle: Handle = async ({ event, resolve }) => {
         },
       );
     }
+    const callbackUrl = `${event.url.pathname}${event.url.search}`;
     return new Response(null, {
       status: 303,
       headers: {
-        location: "/auth/signin",
+        location: `/auth/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`,
+        "content-security-policy": buildCsp(),
+      },
+    });
+  }
+
+  if (LEGACY_PATHS.has(pathname)) {
+    return new Response(null, {
+      status: 308,
+      headers: {
+        location: `/${event.url.search}`,
         "content-security-policy": buildCsp(),
       },
     });
