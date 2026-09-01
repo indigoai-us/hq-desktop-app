@@ -146,9 +146,28 @@ export function mapShareEventToNotification(
   };
 }
 
-function storeRows(raw: unknown): Record<string, unknown>[] {
-  if (!isRecord(raw) || !Array.isArray(raw.notifications)) return [];
-  return raw.notifications.filter(isRecord);
+function storeFeed(raw: unknown): {
+  rows: Record<string, unknown>[];
+  unreadCount: number | null;
+  nextCursor: string | null;
+} {
+  if (!isRecord(raw)) return { rows: [], unreadCount: null, nextCursor: null };
+  const rows = Array.isArray(raw.notifications)
+    ? raw.notifications.filter(isRecord)
+    : [];
+  const rawUnread = raw.unreadCount ?? raw.unread_count;
+  const unread =
+    typeof rawUnread === "number"
+      ? rawUnread
+      : typeof rawUnread === "string" && rawUnread.trim()
+        ? Number(rawUnread)
+        : NaN;
+  const rawCursor = raw.nextCursor ?? raw.next_cursor;
+  return {
+    rows,
+    unreadCount: Number.isFinite(unread) ? Math.max(0, Math.floor(unread)) : null,
+    nextCursor: typeof rawCursor === "string" && rawCursor.trim() ? rawCursor : null,
+  };
 }
 
 function eventList(raw: unknown): Record<string, unknown>[] {
@@ -188,12 +207,16 @@ export function composeLiveNotifications(args: {
   shares?: unknown;
   unreadOnly?: boolean;
 }): ComposedNotificationsFeed {
+  const store = storeFeed(args.store);
   const bySource = new Map<string, Record<string, unknown>>();
   const extras: Record<string, unknown>[] = [];
 
-  for (const row of storeRows(args.store)) {
+  for (const row of store.rows) {
     const kind = liveSourceKind(asString(row.type));
-    if (!kind) continue;
+    if (!kind) {
+      extras.push(row);
+      continue;
+    }
     const source = asString(row.sourceEventId);
     if (source) bySource.set(`${kind}:${source}`, row);
     else extras.push(row);
@@ -228,10 +251,10 @@ export function composeLiveNotifications(args: {
   }
 
   const merged = [...bySource.values(), ...extras];
-  const unreadCount = merged.filter(isUnreadRow).length;
+  const unreadCount = store.unreadCount ?? merged.filter(isUnreadRow).length;
   const notifications = args.unreadOnly ? merged.filter(isUnreadRow) : merged;
 
-  return { notifications, unreadCount, nextCursor: null };
+  return { notifications, unreadCount, nextCursor: store.nextCursor };
 }
 
 function isAuthFailure(result: AdapterResult<unknown>): boolean {
@@ -306,14 +329,14 @@ export function createLiveNotificationsApi(
   return {
     fetchNotifications: async (args) => {
       const qs = {
-        limit: String(args.limit),
+        limit: args.limit,
         ...(args.cursor ? { cursor: args.cursor } : {}),
-        ...(args.unreadOnly ? { unreadOnly: "true" } : {}),
+        ...(args.unreadOnly ? { unreadOnly: true } : {}),
       };
       const [store, inbox, shares] = await Promise.all([
         adapter.notifications.fetchNotifications(qs),
-        adapter.notifications.fetchDmInbox({ limit: String(args.limit) }),
-        adapter.notifications.fetchSharedWithMe({ limit: String(args.limit) }),
+        adapter.notifications.fetchDmInbox({ limit: args.limit }),
+        adapter.notifications.fetchSharedWithMe({ limit: args.limit }),
       ]);
       if (
         isAuthFailure(store) ||
@@ -379,7 +402,11 @@ export function createLiveNotificationsApi(
       }
     },
     runNotificationAction: async (args) => {
-      const r = await adapter.notifications.runAction(args.id, args.actionKind);
+      const r = await adapter.notifications.runAction(
+        args.id,
+        args.actionKind,
+        args.actionRef,
+      );
       if (!r.ok) throw new Error(unwrapMessage(r));
       return r.value;
     },

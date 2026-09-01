@@ -2,8 +2,9 @@
  * Pure model for the desktop Notifications view (US-012).
  *
  * Maps hq-pro NOTIF store rows into day-grouped view-models, drives the
- * All | Unread filter, optimistic ack / read-all reducers, badge text, and
- * action-button labels. No Svelte / Tauri — unit-tested.
+ * All | Unread filter, optimistic ack / read-all reducers, and badge text.
+ * Action controls remain hidden until their backend mutations exist. No Svelte
+ * / Tauri — unit-tested.
  *
  * Day labels reuse {@link dayKey} / {@link dayLabel} from the shared
  * notificationGroups helper (Today / Yesterday / date).
@@ -279,114 +280,17 @@ export function formatVerbLine(actorName: string, verb: string): string {
 }
 
 /**
- * Action buttons derived from actionKind (+ type for multi-button pairs).
- * Empty when there is no actionable kind.
+ * Inline actions are deliberately disabled until each kind is mapped to a
+ * confirmed backend mutation. The current native command only acknowledges a
+ * row, so rendering Accept/Decline/Approve would falsely claim completion.
  */
 export function actionButtonsFor(
   actionKind: string | null | undefined,
   serverType?: string | null,
 ): NotificationActionButton[] {
-  const kind = (actionKind ?? "").trim();
-  if (!kind) return [];
-
-  const k = kind.toLowerCase();
-  const type = (serverType ?? "").trim().toLowerCase();
-
-  if (k === "connection_accept" || type === "connection_request") {
-    return [
-      {
-        id: "connection_accept",
-        label: "Accept",
-        actionKind: "connection_accept",
-        variant: "primary",
-      },
-      {
-        id: "connection_decline",
-        label: "Decline",
-        actionKind: "connection_decline",
-        variant: "secondary",
-      },
-    ];
-  }
-
-  if (k === "membership_accept" || type === "membership_invite") {
-    return [
-      {
-        id: "membership_accept",
-        label: "Accept",
-        actionKind: "membership_accept",
-        variant: "primary",
-      },
-    ];
-  }
-
-  if (k === "agent_owner_approve") {
-    return [
-      {
-        id: "agent_owner_approve",
-        label: "Approve",
-        actionKind: "agent_owner_approve",
-        variant: "primary",
-      },
-    ];
-  }
-
-  if (k === "sponsorship_approve" || k === "sponsorship_decline") {
-    return [
-      {
-        id: "sponsorship_approve",
-        label: "Approve",
-        actionKind: "sponsorship_approve",
-        variant: "primary",
-      },
-      {
-        id: "sponsorship_decline",
-        label: "Decline",
-        actionKind: "sponsorship_decline",
-        variant: "secondary",
-      },
-    ];
-  }
-
-  if (k === "connection_decline") {
-    return [
-      {
-        id: "connection_decline",
-        label: "Decline",
-        actionKind: "connection_decline",
-        variant: "secondary",
-      },
-    ];
-  }
-
-  if (k === "connection_block") {
-    return [
-      {
-        id: "connection_block",
-        label: "Block",
-        actionKind: "connection_block",
-        variant: "danger",
-      },
-    ];
-  }
-
-  // Generic: Accept / Approve / Decline phrasing from the kind suffix.
-  if (k.endsWith("_approve") || k.includes("approve")) {
-    return [{ id: k, label: "Approve", actionKind: kind, variant: "primary" }];
-  }
-  if (k.endsWith("_accept") || k.includes("accept")) {
-    return [{ id: k, label: "Accept", actionKind: kind, variant: "primary" }];
-  }
-  if (k.endsWith("_decline") || k.includes("decline")) {
-    return [
-      { id: k, label: "Decline", actionKind: kind, variant: "secondary" },
-    ];
-  }
-  if (k.includes("block")) {
-    return [{ id: k, label: "Block", actionKind: kind, variant: "danger" }];
-  }
-
-  return [{ id: k, label: "Open", actionKind: kind, variant: "primary" }];
+  void actionKind;
+  void serverType;
+  return [];
 }
 
 /** Short clock for the row (e.g. "3:42 PM"); empty when unparseable. */
@@ -437,7 +341,9 @@ export function mapNotificationRow(
   const context = asOptionalString(raw.context);
   const contextLine = context ?? body ?? title ?? "";
   const verb = verbForKind(displayKind, serverType, title);
-  const actionKind = asOptionalString(raw.actionKind);
+  const rawActionKind = asOptionalString(raw.actionKind);
+  const actionButtons = actionButtonsFor(rawActionKind, serverType);
+  const actionKind = actionButtons.length > 0 ? rawActionKind : null;
   const createdAt = asOptionalString(raw.createdAt) ?? "";
   const createdAtMs = parseCreatedAtMs(createdAt);
 
@@ -455,8 +361,8 @@ export function mapNotificationRow(
     createdAtMs,
     timestampLabel: formatTimestampLabel(createdAt, now),
     actionKind,
-    actionRef: asOptionalString(raw.actionRef),
-    actionButtons: actionButtonsFor(actionKind, serverType),
+    actionRef: actionButtons.length > 0 ? asOptionalString(raw.actionRef) : null,
+    actionButtons,
     targetRef: asOptionalString(raw.targetRef),
     actorPersonUid: asOptionalString(raw.actorPersonUid),
     sourceEventId: asOptionalString(raw.sourceEventId),

@@ -77,6 +77,83 @@ export interface NotificationItem {
   [k: string]: unknown;
 }
 
+/**
+ * The durable notifications feed returned by hq-pro and Sync's Rust command.
+ * Keep the envelope intact: the unread rollup is global (not page-local), and
+ * `nextCursor` is an opaque server token that callers must pass back verbatim.
+ */
+export interface NotificationsFeed {
+  notifications: NotificationItem[];
+  unreadCount: number;
+  nextCursor: string | null;
+}
+
+function notificationRecord(value: unknown): Json | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Json)
+    : null;
+}
+
+function notificationItem(value: unknown): NotificationItem | null {
+  const row = notificationRecord(value);
+  if (!row) return null;
+  const id = typeof row.id === "string" ? row.id.trim() : "";
+  if (!id) return null;
+  const title =
+    typeof row.title === "string"
+      ? row.title
+      : typeof row.body === "string"
+        ? row.body
+        : "";
+  const status = typeof row.status === "string" ? row.status.toLowerCase() : "";
+  const readAt = row.readAt ?? row.read_at;
+  const read =
+    row.read === true ||
+    status === "read" ||
+    (typeof readAt === "string" && readAt.trim().length > 0);
+  return {
+    ...row,
+    id,
+    title,
+    // Consumers use the durable status field, so legacy read/readAt rows must
+    // be normalized into the same state rather than only exposing a side flag.
+    status: status || (read ? "read" : "unread"),
+    read,
+  };
+}
+
+/**
+ * Normalize legacy bare arrays at the platform edge while making every caller
+ * observe the canonical envelope. New hosts must never flatten this result.
+ */
+export function normalizeNotificationsFeed(value: unknown): NotificationsFeed {
+  const record = notificationRecord(value);
+  const rows = Array.isArray(value)
+    ? value
+    : Array.isArray(record?.notifications)
+      ? record.notifications
+      : [];
+  const notifications = rows
+    .map(notificationItem)
+    .filter((row): row is NotificationItem => row !== null);
+  const rawUnread = record?.unreadCount ?? record?.unread_count;
+  const parsedUnread =
+    typeof rawUnread === "number"
+      ? rawUnread
+      : typeof rawUnread === "string" && rawUnread.trim()
+        ? Number(rawUnread)
+        : NaN;
+  const unreadCount = Number.isFinite(parsedUnread)
+    ? Math.max(0, Math.floor(parsedUnread))
+    : notifications.filter((item) => item.read !== true).length;
+  const rawCursor = record?.nextCursor ?? record?.next_cursor;
+  const nextCursor =
+    typeof rawCursor === "string" && rawCursor.trim().length > 0
+      ? rawCursor
+      : null;
+  return { notifications, unreadCount, nextCursor };
+}
+
 export interface SyncStatus {
   running?: boolean;
   lastSyncAt?: string | null;
@@ -426,10 +503,10 @@ export interface MessagingApi {
 }
 
 export interface NotificationsApi {
-  fetchNotifications(opts?: Json): AdapterPromise<NotificationItem[]>;
+  fetchNotifications(opts?: Json): AdapterPromise<NotificationsFeed>;
   ack(id: string): AdapterPromise<void>;
   readAll(): AdapterPromise<void>;
-  runAction(id: string, action: string): AdapterPromise<Json>;
+  runAction(id: string, action: string, actionRef?: string | null): AdapterPromise<Json>;
   /** v1 DM inbox (GET /v1/notify/inbox) — source for live DM rows. */
   fetchDmInbox(opts?: Json): AdapterPromise<Json>;
   ackDmInbox(eventIds: string[]): AdapterPromise<void>;
