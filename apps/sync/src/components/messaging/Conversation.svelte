@@ -128,6 +128,10 @@
   const messageAuthor = (msg: ConversationMessage) =>
     msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
 
+  function isAgentUid(uid: string | null | undefined): boolean {
+    return (uid ?? '').startsWith('agt_');
+  }
+
   async function onBodyLinkActivate(
     event: MouseEvent | KeyboardEvent,
   ): Promise<void> {
@@ -458,7 +462,12 @@
       >
       {#if groupStart}
         <span class="dm-msg-avatar">
-          <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+          <IdentityMark
+            kind={isAgentUid(msg.fromPersonUid) ? 'agent' : 'person'}
+            label={messageAuthor(msg)}
+            agentUid={msg.fromPersonUid}
+            size="regular"
+          />
         </span>
       {:else}
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
@@ -622,7 +631,12 @@
             <span class="thread-affordance-avatars" data-testid="reply-authors">
               {#each msg.replyAuthors.slice(0, 3) as a (a.personUid || a.displayName)}
                 <span class="thread-affordance-avatar">
-                  <IdentityMark kind="person" label={a.displayName} size="small" />
+                  <IdentityMark
+                    kind={isAgentUid(a.personUid) ? 'agent' : 'person'}
+                    label={a.displayName}
+                    agentUid={a.personUid}
+                    size="small"
+                  />
                 </span>
               {/each}
             </span>

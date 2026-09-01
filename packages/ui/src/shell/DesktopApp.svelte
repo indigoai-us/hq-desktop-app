@@ -24,6 +24,7 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
@@ -851,14 +852,15 @@
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
-  /** personUid → presigned avatar URL, sourced from the active channel roster
-   *  plus the signed-in user's own profile. Feeds chat/thread/panel photos. */
+  /** personUid → presigned avatar URL, sourced from every loaded channel
+   *  roster plus the signed-in user's own profile. Feeds chat/thread/panel
+   *  photos — including agent DMs whose photo arrived on a channel roster. */
   const avatarByUid = $derived.by(() => {
     const map: Record<string, string> = {};
-    const roster =
-      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
-    for (const m of roster) {
-      if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
+    for (const roster of Object.values(channelRosterById)) {
+      for (const m of roster) {
+        if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
+      }
     }
     if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
     return map;
@@ -2326,6 +2328,7 @@
           {tenantAccountId}
           {tenantCompanyId}
           {seedDirectory}
+          {avatarByUid}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2389,6 +2392,23 @@
               <div class="channel-title">
                 {#if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
+                {/if}
+                {#if selectedRow.kind === "dm"}
+                  <span
+                    class="channel-header-avatar"
+                    data-testid="channel-header-avatar"
+                  >
+                    <IdentityMark
+                      kind={isAgentUid(selectedRow.personUid ?? "")
+                        ? "agent"
+                        : "person"}
+                      label={selectedRow.title}
+                      agentUid={selectedRow.personUid}
+                      avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
+                        null}
+                      size="small"
+                    />
+                  </span>
                 {/if}
                 <h2 data-testid="channel-name">{selectedRow.title}</h2>
                 {#if channelSubtitle}
@@ -2923,6 +2943,13 @@
     align-items: baseline;
     gap: 8px;
     min-width: 0;
+  }
+
+  .channel-header-avatar {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: center;
+    align-items: center;
   }
 
   .channel-hash {

@@ -34,6 +34,7 @@ import {
   nextScope,
   rankPaletteConversations,
   resolveSearchHitRow,
+  rowAvatar,
   savePins,
   saveShowFilter,
   scopeFromHotkey,
@@ -52,6 +53,7 @@ import {
   type DmContactInput,
   type MessageSearchHit,
 } from "./sidebar-model";
+import { agentAvatarAssets, agentAvatarFor } from "./messaging/agent-avatars";
 
 // Fixed "now": Wednesday Aug 12, 2026 15:00 local — tests use local day math.
 const NOW = new Date(2026, 7, 12, 15, 0, 0, 0).getTime();
@@ -1780,5 +1782,52 @@ describe("collapseDuplicateGroupRows", () => {
     expect(rows.filter((row) => row.kind === "group")).toHaveLength(1);
     expect(rows.find((row) => row.kind === "group")?.channelId).toBe("g-new");
     expect(rows.find((row) => row.kind === "channel")?.channelId).toBe("ops");
+  });
+});
+
+describe("rowAvatar", () => {
+  const agent = {
+    kind: "dm" as const,
+    personUid: "agt_parker",
+    title: "Parker",
+  };
+  const human = {
+    kind: "dm" as const,
+    personUid: "prs_ada",
+    title: "Ada Lovelace",
+  };
+
+  it("uses a known photo for anyone", () => {
+    expect(
+      rowAvatar(agent, { agt_parker: "https://cdn/parker.jpg" }),
+    ).toEqual({ kind: "photo", src: "https://cdn/parker.jpg" });
+    expect(rowAvatar(human, { prs_ada: "https://cdn/ada.jpg" })).toEqual({
+      kind: "photo",
+      src: "https://cdn/ada.jpg",
+    });
+  });
+
+  it("uses a deterministic generated avatar for a photo-less agent", () => {
+    const avatar = rowAvatar(agent);
+    expect(avatar.kind).toBe("generated");
+    expect(agentAvatarAssets).toContain(avatar.src);
+    expect(avatar.src).toBe(agentAvatarFor("agt_parker"));
+    expect(rowAvatar(agent).src).toBe(avatar.src);
+  });
+
+  it("uses initials for a photo-less human", () => {
+    expect(rowAvatar(human)).toEqual({ kind: "initials", initials: "AL" });
+  });
+
+  it("never shows bare initials for an agent while the set is bundled", () => {
+    expect(rowAvatar(agent, null)).toMatchObject({ kind: "generated" });
+    expect(rowAvatar(agent, {})).toMatchObject({ kind: "generated" });
+  });
+
+  it("only generates for agent DM rows, never for channels or humans", () => {
+    expect(
+      rowAvatar({ kind: "channel", personUid: "agt_parker", title: "ops" }),
+    ).toEqual({ kind: "initials", initials: "OP" });
+    expect(rowAvatar(human, {})).toEqual({ kind: "initials", initials: "AL" });
   });
 });
