@@ -188,12 +188,25 @@ export function hydrateLiveRail(
           inbox.pairUnreads,
           inbox.selfUid,
         );
+        const directory = applyHonestDirectoryActivity(
+          previousDirectory,
+          workItems,
+          previousDirectory,
+        );
+        if (personUid) {
+          writeShallowCache(
+            mergeShallowCache(
+              readShallowCache(personUid),
+              {
+                directory,
+                contacts: contactsResult.ok ? contacts : undefined,
+              },
+              personUid,
+            ),
+          );
+        }
         return {
-          directory: applyHonestDirectoryActivity(
-            previousDirectory,
-            workItems,
-            previousDirectory,
-          ),
+          directory,
           contacts,
         };
       }

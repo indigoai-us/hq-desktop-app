@@ -124,6 +124,89 @@ describe("hydrateLiveRail", () => {
     ]);
   });
 
+  it("persists the successful fallback rail bundle after a directory failure", async () => {
+    const personUid = "prs_me";
+    const previousDirectory = [
+      {
+        channelId: "chn_previous",
+        scope: "company",
+        name: "Previous directory row",
+        lastActivityAt: "2026-08-21T10:00:00.000Z",
+      },
+    ];
+    const freshContacts = [
+      {
+        personUid: "prs_fresh",
+        displayName: "Fresh contact",
+      },
+    ];
+    writeShallowCache(
+      mergeShallowCache(
+        EMPTY_SHALLOW_CACHE,
+        {
+          directory: [
+            {
+              channelId: "chn_stale",
+              scope: "company",
+              name: "Stale directory",
+              lastActivityAt: "2026-08-20T10:00:00.000Z",
+            },
+          ],
+          contacts: [
+            { personUid: "prs_stale", displayName: "Stale contact" },
+          ],
+        },
+        personUid,
+      ),
+    );
+    const adapter = stubAdapter(
+      async () =>
+        failure("http-401", "GET /v1/notify/channels failed"),
+      async () => ok(freshContacts),
+    );
+
+    const rail = await hydrateLiveRail(adapter, previousDirectory, personUid);
+    const cache = readShallowCache(personUid);
+
+    expect(rail.directory).toEqual(previousDirectory);
+    expect(cache.directory).toEqual(rail.directory);
+    expect(cache.contacts).toEqual(freshContacts);
+  });
+
+  it("does not overwrite cached contacts from a failed fallback roster fetch", async () => {
+    const personUid = "prs_me";
+    const cachedContacts = [
+      { personUid: "prs_cached", displayName: "Cached contact" },
+    ];
+    writeShallowCache(
+      mergeShallowCache(
+        EMPTY_SHALLOW_CACHE,
+        { contacts: cachedContacts },
+        personUid,
+      ),
+    );
+    const adapter = stubAdapter(
+      async () =>
+        failure("http-401", "GET /v1/notify/channels failed"),
+      async () => Promise.reject(new Error("GET /v1/notify/contacts failed")),
+    );
+
+    await hydrateLiveRail(
+      adapter,
+      [
+        {
+          channelId: "chn_previous",
+          scope: "company",
+          name: "Previous directory row",
+          lastActivityAt: "2026-08-21T10:00:00.000Z",
+        },
+      ],
+      personUid,
+    );
+
+    expect(readShallowCache(personUid).contacts).toEqual(cachedContacts);
+  });
+
   it("preserves cached contacts when the live roster fetch rejects", async () => {
     const personUid = "prs_me";
     const cachedContact = {
