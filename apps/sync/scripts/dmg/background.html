@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>HQ install window — disk image background</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,100..900,0..100,0..1&family=Geist:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+/* ==========================================================================
+   Source artwork for the disk-image background. Rendered by
+   render-background.sh into background.tiff (@1x + @2x).
+
+   Implements Figma "Installer" (file zKBwNxXUMbypJEXSV01uyq, node 3133:57).
+   That frame is 720 x 504 and includes a mock 34px title bar; the real window
+   gets its title bar from Finder, so this canvas is the CONTENT area only:
+   720 x 470, with every y from the Figma frame shifted up by 34.
+
+   The two icons and their labels are NOT drawn here. Finder renders those
+   itself from the .icns files, at the coordinates create-dmg.sh writes into
+   the disk image. Drawing them into the background would double them.
+   ========================================================================== */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:720px;height:470px;overflow:hidden}
+body{
+  background:#fff;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.canvas{position:relative;width:720px;height:470px;overflow:hidden}
+
+/* ASCII texture — Figma node 3133:58 "Mask group", anchored at (-564, -384)
+   in frame coordinates. Figma exports it as an alpha mask meant to be painted
+   #d9d9d9; that fill is baked into assets/ascii-texture.png so this is a plain
+   image. Do not switch it back to a CSS mask — headless Chrome drops
+   mask-image, which silently renders the texture as blank white. */
+.ascii{
+  position:absolute;left:-564px;top:-418px;
+  width:1670.534px;height:1200px;
+  background-image:url("assets/ascii-texture.png");
+  background-size:100% 100%;
+  background-repeat:no-repeat;
+}
+
+/* Heading — Figma node 3133:75, frame y 98 -> content y 64 */
+.heading{
+  position:absolute;left:50%;top:64px;transform:translateX(-50%);
+  width:355px;display:flex;flex-direction:column;gap:8px;text-align:center;
+}
+.heading h1{
+  margin:0;
+  font-family:"Fraunces",Georgia,serif;
+  font-size:48px;line-height:normal;letter-spacing:-1.92px;color:#17161a;
+  font-weight:300;
+  font-optical-sizing:auto;
+  font-variation-settings:"wght" 300,"SOFT" 0,"WONK" 1;
+}
+.heading p{
+  margin:0;
+  font-family:"Geist",-apple-system,sans-serif;
+  font-weight:400;font-size:14px;line-height:20px;color:rgba(0,0,0,.4);
+}
+
+/* Phosphor caret-right x3 (@phosphor-icons/core 2.1.1, assets/regular).
+   Centred between the two icon cells, on their shared visual centre:
+   frame y 309.5 -> content y 275.5. */
+.chevrons{
+  position:absolute;left:360px;top:275.5px;transform:translate(-50%,-50%);
+  display:flex;align-items:center;gap:2px;color:rgba(23,22,26,.22);
+}
+.chevrons svg{width:22px;height:22px;display:block}
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="ascii"></div>
+
+  <div class="heading">
+    <h1>Welcome to HQ</h1>
+    <p>To install, drag the HQ app into your Applications folder.</p>
+  </div>
+
+  <div class="chevrons">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg>
+  </div>
+</div>
+</body>
+</html>

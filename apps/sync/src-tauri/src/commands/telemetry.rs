@@ -1501,6 +1501,9 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
 
     let machine_id = read_machine_id();
     let installer_version = env!("CARGO_PKG_VERSION").to_string();
+    // Resolved once per collection run — a login-shell probe, not worth
+    // repeating per batch. None (CLI absent/unresolvable) omits the field.
+    let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
 
     let mut batch_events: Vec<Value> = Vec::new();
     let mut batch_sources: Vec<RowSource> = Vec::new();
@@ -1611,6 +1614,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                         jwt,
                         &machine_id,
                         &installer_version,
+                        cli_version.as_deref(),
                         &mut batch_events,
                         &mut batch_sources,
                         &mut newly_committed,
@@ -1729,6 +1733,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                                 jwt,
                                 &machine_id,
                                 &installer_version,
+                                cli_version.as_deref(),
                                 &mut batch_events,
                                 &mut batch_sources,
                                 &mut newly_committed,
@@ -1794,6 +1799,7 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 jwt,
                 &machine_id,
                 &installer_version,
+                cli_version.as_deref(),
                 &mut batch_events,
                 &mut batch_sources,
                 &mut newly_committed,
@@ -1877,6 +1883,7 @@ async fn flush_batch(
     jwt: &str,
     machine_id: &str,
     installer_version: &str,
+    cli_version: Option<&str>,
     batch_events: &mut Vec<Value>,
     batch_sources: &mut Vec<RowSource>,
     newly_committed: &mut HashMap<String, CursorEntry>,
@@ -1893,6 +1900,7 @@ async fn flush_batch(
     let batch = UsageBatch {
         machine_id: machine_id.to_string(),
         installer_version: installer_version.to_string(),
+        cli_version: cli_version.map(str::to_string),
         events: std::mem::take(batch_events),
     };
     let sources = std::mem::take(batch_sources);
@@ -3900,6 +3908,7 @@ mod codex_telemetry_tests {
                 "token",
                 "machine",
                 "version",
+                Some("9.9.9"),
                 &mut events,
                 &mut sources,
                 &mut committed,
@@ -3930,6 +3939,7 @@ mod codex_telemetry_tests {
                 "token",
                 "machine",
                 "version",
+                Some("9.9.9"),
                 &mut retry_events,
                 &mut retry_sources,
                 &mut committed,

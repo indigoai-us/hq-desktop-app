@@ -11,6 +11,13 @@
  * the artwork's colour: `src-tauri/icons/app-icon.svg` is a stale near-black
  * design that does NOT match the shipped pink/violet gradient, and regenerating
  * from it silently rebrands the app — the colour assertion is what catches that.
+ *
+ * The shipped icon carries a soft drop shadow beneath the tile, as Apple's own
+ * template does. That shadow legitimately extends past the grid, so the grid is
+ * measured against the icon BODY — pixels at or above `SOLID_ALPHA` — while the
+ * shadow gets its own bounds check. Measuring the body with "any non-zero
+ * alpha" would read the shadow as part of the tile and report the icon as off
+ * the grid.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -22,6 +29,12 @@ import { describe, expect, it } from 'vitest';
 const CANVAS = 1024;
 const BODY = 824;
 const MARGIN = (CANVAS - BODY) / 2; // 100
+
+/** At or above this alpha is the icon body; below it is the drop shadow. */
+const SOLID_ALPHA = 250;
+
+/** How far the shadow may spread past the body on any side. */
+const MAX_SHADOW_SPREAD = 40;
 
 const repoRoot = join(process.cwd());
 const iconPath = join(repoRoot, 'src-tauri/icons/app-icon.png');
@@ -109,11 +122,17 @@ type Measured = {
   width: number;
   height: number;
   corners: number[];
+  /** Extent of everything drawn, body plus shadow. */
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
-  /** First opaque x on the row just inside the body's top edge — the corner arc. */
+  /** Extent of the body alone — this is what must sit on the grid. */
+  bodyMinX: number;
+  bodyMinY: number;
+  bodyMaxX: number;
+  bodyMaxY: number;
+  /** First body pixel on the row just inside the body's top edge — the corner arc. */
   topEdgeFirstOpaque: number;
   mean: { r: number; g: number; b: number; samples: number };
 };
@@ -137,6 +156,10 @@ function icon(): Measured {
   let minY = d.height;
   let maxX = -1;
   let maxY = -1;
+  let bodyMinX = d.width;
+  let bodyMinY = d.height;
+  let bodyMaxX = -1;
+  let bodyMaxY = -1;
   let r = 0;
   let g = 0;
   let b = 0;
@@ -156,7 +179,13 @@ function icon(): Measured {
       if (x > maxX) maxX = x;
       if (y > maxY) maxY = y;
 
-      if (y === topRow && topEdgeFirstOpaque < 0) topEdgeFirstOpaque = x;
+      if (a >= SOLID_ALPHA) {
+        if (x < bodyMinX) bodyMinX = x;
+        if (y < bodyMinY) bodyMinY = y;
+        if (x > bodyMaxX) bodyMaxX = x;
+        if (y > bodyMaxY) bodyMaxY = y;
+        if (y === topRow && topEdgeFirstOpaque < 0) topEdgeFirstOpaque = x;
+      }
 
       // Sample on a 4px lattice for the mean, matching the generator's check.
       if (a > 200 && (x & 3) === 0 && (y & 3) === 0) {
@@ -181,6 +210,10 @@ function icon(): Measured {
     minY,
     maxX,
     maxY,
+    bodyMinX,
+    bodyMinY,
+    bodyMaxX,
+    bodyMaxY,
     topEdgeFirstOpaque,
     mean: { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n), samples: n },
   };
@@ -201,9 +234,30 @@ describe('app icon: Apple macOS icon grid', () => {
   });
 
   it('insets the body by the grid margin on every side', () => {
-    const { minX, minY, maxX, maxY } = icon();
-    expect({ minX, minY }).toEqual({ minX: MARGIN, minY: MARGIN });
-    expect({ maxX, maxY }).toEqual({ maxX: MARGIN + BODY - 1, maxY: MARGIN + BODY - 1 });
+    const { bodyMinX, bodyMinY, bodyMaxX, bodyMaxY } = icon();
+    expect({ minX: bodyMinX, minY: bodyMinY }).toEqual({ minX: MARGIN, minY: MARGIN });
+    expect({ maxX: bodyMaxX, maxY: bodyMaxY }).toEqual({
+      maxX: MARGIN + BODY - 1,
+      maxY: MARGIN + BODY - 1,
+    });
+  });
+
+  it('keeps the drop shadow soft and beneath the tile', () => {
+    // A shadow is expected — Apple's own template has one — but it must stay
+    // close to the body and fall downward. A shadow that spreads far, or sits
+    // above the tile, means the artwork was exported from the wrong template.
+    const { minX, minY, maxX, maxY, bodyMinX, bodyMinY, bodyMaxX, bodyMaxY } = icon();
+    const spread = {
+      left: bodyMinX - minX,
+      top: bodyMinY - minY,
+      right: maxX - bodyMaxX,
+      bottom: maxY - bodyMaxY,
+    };
+    for (const [side, px] of Object.entries(spread)) {
+      expect(px, `shadow spread on the ${side}`).toBeGreaterThanOrEqual(0);
+      expect(px, `shadow spread on the ${side}`).toBeLessThanOrEqual(MAX_SHADOW_SPREAD);
+    }
+    expect(spread.bottom, 'shadow should fall below the tile').toBeGreaterThan(spread.top);
   });
 
   it('rounds the corners rather than shipping a plain square', () => {
@@ -216,18 +270,35 @@ describe('app icon: Apple macOS icon grid', () => {
   it('still carries HQ artwork, not the stale near-black app-icon.svg design', () => {
     const { r, g, b, samples } = icon().mean;
     expect(samples).toBeGreaterThan(1000);
-    // Shipped brand mark is a light pink/violet gradient (~212,141,227). The
-    // stale SVG rasterises to ~(52,44,50); regenerating from it would rebrand
-    // the app, so assert we are nowhere near that.
-    expect(r).toBeGreaterThan(170);
-    expect(b).toBeGreaterThan(190);
-    expect(r + g + b).toBeGreaterThan(400);
+    // Shipped brand mark is a warm pink/violet gradient — indigo at the top
+    // falling to coral at the bottom, mean ~(194,118,172). The stale SVG
+    // rasterises to ~(52,44,50); regenerating from it would rebrand the app,
+    // so assert we are nowhere near that: bright, and red/blue dominant over
+    // green, which no near-black flat fill can satisfy.
+    expect(r).toBeGreaterThan(150);
+    expect(b).toBeGreaterThan(140);
+    expect(r + g + b).toBeGreaterThan(380);
+    expect(g).toBeLessThan(r);
+    expect(g).toBeLessThan(b);
   });
 });
 
 describe('app icon: pipeline is reproducible and the stale source is defused', () => {
   it('checks in the master artwork the generator reads', () => {
     expect(existsSync(join(repoRoot, 'src-tauri/icons/source/app-icon-master.png'))).toBe(true);
+    // The flat brand mark, kept for surfaces that need art without the grid,
+    // and as the fallback input if the dock-ready master is ever lost.
+    expect(existsSync(join(repoRoot, 'src-tauri/icons/source/app-icon-flat.png'))).toBe(true);
+  });
+
+  it('passes dock-ready art through instead of masking it twice', () => {
+    // The master is now exported already on the grid, with its own squircle
+    // and shadow. Re-running the mask over it would inset it a second time and
+    // clip the shadow, so the generator must detect that and pass it through.
+    const src = readFileSync(join(repoRoot, 'scripts/generate-app-icon.py'), 'utf8');
+    expect(src).toMatch(/SOLID_ALPHA = 250/);
+    expect(src).toMatch(/solid_bbox\(master\) == GRID_BBOX/);
+    expect(src).toMatch(/passing through unchanged/);
   });
 
   it('pins the grid constants in the generator', () => {
