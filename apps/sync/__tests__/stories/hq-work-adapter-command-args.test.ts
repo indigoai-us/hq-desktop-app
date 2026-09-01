@@ -126,7 +126,7 @@ interface CallSite {
 
 function adapterCallSites(): CallSite[] {
   const src = readFileSync(
-    resolve(repoRoot, 'src/lib/hq-work-adapter.ts'),
+    resolve(repoRoot, '../../packages/platform/src/tauri/sync-adapter.ts'),
     'utf8',
   );
   const invoke =

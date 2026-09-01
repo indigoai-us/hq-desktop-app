@@ -10,7 +10,7 @@ vi.mock('svelte', async () => {
 // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
 import { mount, tick, unmount } from 'svelte';
 
-import { createSyncPlatformAdapter, type SyncInvokeFn } from '../../src/lib/hq-work-adapter';
+import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
 import CompaniesSettingsPane from '../../../../packages/ui/src/settings/CompaniesSettingsPane.svelte';
 import PrototypeSettingsPanes from '../../../../packages/ui/src/settings/PrototypeSettingsPanes.svelte';
 
