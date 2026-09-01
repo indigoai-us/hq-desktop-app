@@ -238,10 +238,16 @@ describe('DESKTOP-018: no colored edge rails', () => {
       'utf8',
     );
 
+    // 8d6cc492 dropped ThreadPanel's .thread-root-details rule: the pinned
+    // thread root now renders through the shared <Conversation/> primitive, so
+    // its details use Conversation.svelte's .dm-bubble-details (checked below).
+    expect(thread).not.toMatch(/\.thread-root-details\s*\{/);
+    expect(thread).toContain('import Conversation');
+    expect(thread).toContain('<Conversation');
+
     for (const [source, selector] of [
       [conversation, '.dm-bubble-details'],
       [conversation, '.share-card-note'],
-      [thread, '.thread-root-details'],
     ] as const) {
       const block = rule(source, selector);
       expect(block).toContain('border: 0');

@@ -63,11 +63,15 @@ describe('desktop-alt company work actions are functional', () => {
     expect(companyBoardStore).toContain('function shapeBoard(raw: CompanyBoard | null | undefined)');
     expect(companyBoardStore).toContain('raw?.inbox ?? []');
     expect(messages).toContain("invoke<ChannelsResponse | null>('list_channels')");
-    // Null still normalizes to an empty snapshot, then any realtime mutations
-    // that landed during the request are replayed instead of being erased.
+    // Null still normalizes to an empty snapshot (then realtime mutations that
+    // landed during the request are replayed instead of being erased). The
+    // empty-or-unioned list is deduped by channelId first so a duplicate rail
+    // row cannot sneak in before merge.
     expect(messages).toContain('const mutationRevision = channelMutationRevision');
+    expect(messages).toContain('    dedupeChannelsById,');
+    expect(messages).toContain("from '../../lib/channels'");
     expect(messages).toContain(
-      'channels = mergeChannelMutations(resp?.channels ?? [], mutationRevision)',
+      'channels = mergeChannelMutations(dedupeChannelsById(resp?.channels ?? []), mutationRevision);',
     );
     expect(messages).toContain('if (mutation.revision > afterRevision)');
   });
