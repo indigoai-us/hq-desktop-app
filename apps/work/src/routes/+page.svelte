@@ -211,6 +211,10 @@
   }
 
   function clearTenantState(): void {
+    // This page-scoped cache survives the keyed DesktopApp remount. Clear it
+    // at the auth-generation boundary before any next-tenant request starts.
+    projectMeta.invalidateAll();
+    projectMetaTick += 1;
     self = null;
     shallow = readShallowCache("");
     companies = resolveShellCompanies({ authed: false });

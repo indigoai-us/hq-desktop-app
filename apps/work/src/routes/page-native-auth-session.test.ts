@@ -41,6 +41,8 @@ vi.mock("$lib/mesh-runtime", () => ({
 
 import { mount, tick, unmount } from "svelte";
 import type {
+  BoardTabData,
+  ChannelFileItemModel,
   ChannelStatusModel,
   ConversationRow,
   SelfIdentity,
@@ -66,6 +68,8 @@ type CapturedDesktopAppProps = {
   tenantAccountId: string | null;
   tenantGeneration: number;
   channelStatusByRow: (row: ConversationRow) => ChannelStatusModel | null;
+  boardByRow: (row: ConversationRow) => BoardTabData | null;
+  filesByRow: (row: ConversationRow) => ChannelFileItemModel[];
 };
 
 type Deferred<T> = {
@@ -331,6 +335,72 @@ describe("native desktop auth session transitions", () => {
       ]);
       expect(listWorkspaceCalls).toContain("acct_b");
     });
+  });
+
+  it("does not serve account A project metadata after account B takes over", async () => {
+    const projectRequests: string[] = [];
+    vi.mocked(hqProFetch).mockImplementation(async (input) => {
+      const url = new URL(String(input), "https://hq-pro.test");
+      if (url.pathname.includes("/v1/work-mesh/projects/project_shared")) {
+        const account = accountId ?? "signed_out";
+        projectRequests.push(account);
+        return response({
+          companyUid: "cmp_shared",
+          projectId: "project_shared",
+          name: `Project ${account}`,
+          stories: [
+            {
+              id: `US-${account}`,
+              title: `Story for ${account}`,
+              status: "queued",
+            },
+          ],
+          repos: [],
+          files: [
+            {
+              path: `projects/project_shared/${account}.md`,
+              name: `${account}.md`,
+            },
+          ],
+        });
+      }
+      if (url.pathname.includes("/work-sessions") || url.pathname.includes("/members")) {
+        return response([]);
+      }
+      return response({ threads: [] });
+    });
+
+    await mountDesktop();
+    const sharedRow = projectRow("shared");
+
+    expect(capturedProps().channelStatusByRow(sharedRow)?.stories.total).toBe(0);
+    await vi.waitFor(() => {
+      expect(
+        capturedProps().boardByRow(sharedRow)?.stories["US-acct_a"]?.title,
+      ).toBe("Story for acct_a");
+      expect(capturedProps().filesByRow(sharedRow).map((file) => file.name)).toEqual(
+        ["acct_a.md"],
+      );
+    });
+
+    emitAuthSession({
+      accountId: "acct_b",
+      generation: 2,
+      status: "active",
+    });
+    await tick();
+
+    expect(capturedProps().boardByRow(sharedRow)).toBeNull();
+    expect(capturedProps().filesByRow(sharedRow)).toEqual([]);
+    await vi.waitFor(() => {
+      expect(
+        capturedProps().boardByRow(sharedRow)?.stories["US-acct_b"]?.title,
+      ).toBe("Story for acct_b");
+      expect(capturedProps().filesByRow(sharedRow).map((file) => file.name)).toEqual(
+        ["acct_b.md"],
+      );
+    });
+    expect(projectRequests).toEqual(["acct_a", "acct_b"]);
   });
 
   it("clears state for credentials_absent without starting identity hydration", async () => {
