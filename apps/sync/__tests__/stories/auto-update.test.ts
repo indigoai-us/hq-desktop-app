@@ -24,6 +24,8 @@ const settingsRs = read('src-tauri/src/commands/settings.rs');
 const processRegistry = read('src-tauri/src/commands/process.rs');
 const packages = read('src-tauri/src/commands/packages.rs');
 const marketplace = read('src-tauri/src/commands/marketplace.rs');
+const hqCoreUpdate = read('src-tauri/src/commands/hq_core_update.rs');
+const hqCoreStaging = read('src-tauri/src/commands/hq_core_staging.rs');
 
 describe('master automatic-updates switch', () => {
   it('desktop SettingsPage exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
@@ -86,6 +88,8 @@ describe('master automatic-updates switch', () => {
     expect(processRegistry).toContain('!attempt.termination_effected');
     expect(packages).toContain('begin_update_sensitive_operation()?');
     expect(marketplace.match(/begin_update_sensitive_operation/g) ?? []).toHaveLength(2);
+    expect(hqCoreUpdate).toContain('begin_update_sensitive_operation()');
+    expect(hqCoreStaging).toContain('begin_update_sensitive_operation()');
     expect(appUpdater).toContain('UPDATE_DEFERRED_DURING_MUTATION');
     expect(appUpdater).toContain('install_failure_is_transient_deferral');
 
