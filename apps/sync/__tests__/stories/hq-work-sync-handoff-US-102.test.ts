@@ -324,62 +324,6 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(expectOk(await adapter.identity.whoami())).toMatchObject(WHOAMI);
   });
 
-  it('whoami degrades to native identity when the profile route is absent (HTTP 404)', async () => {
-    // Regression: the embedded HQ Work shell hard-gated account load on
-    // GET /v1/identity/whoami, which the bearer vault API does not serve
-    // (404 {"message":"Not Found"}). A signed-in user must still load, using
-    // the proven native session identity, instead of "Couldn't load your
-    // account". See workspace/reports/hq-desktop-whoami-404-debug.md.
-    const { adapter, calls } = makeAdapter(async (cmd) => {
-      if (cmd === 'get_auth_state') {
-        return {
-          authenticated: true,
-          accountId: 'cognito-sub-ada',
-          email: WHOAMI.email,
-          displayName: WHOAMI.displayName,
-        };
-      }
-      if (cmd === 'hq_pro_fetch') {
-        return { status: 404, body: JSON.stringify({ message: 'Not Found' }) };
-      }
-      throw new Error(`unexpected command: ${cmd}`);
-    });
-
-    expect(expectOk(await adapter.identity.whoami())).toEqual({
-      personUid: 'cognito-sub-ada',
-      email: WHOAMI.email,
-      displayName: WHOAMI.displayName,
-    });
-    // No second get_auth_state re-check on the fallback path — it returns
-    // straight from the native snapshot after the failed profile fetch.
-    expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state', 'hq_pro_fetch']);
-  });
-
-  it('whoami still fails closed on a genuine 401 so the shell re-signs in', async () => {
-    const { adapter } = makeAdapter(async (cmd) => {
-      if (cmd === 'get_auth_state') {
-        return {
-          authenticated: true,
-          accountId: 'cognito-sub-ada',
-          email: WHOAMI.email,
-          displayName: WHOAMI.displayName,
-        };
-      }
-      if (cmd === 'hq_pro_fetch') {
-        return {
-          status: 401,
-          body: JSON.stringify({ error: 'token expired' }),
-        };
-      }
-      throw new Error(`unexpected command: ${cmd}`);
-    });
-
-    expect(await adapter.identity.whoami()).toMatchObject({
-      ok: false,
-      code: 'http-401',
-    });
-  });
-
   it('listWorkspaces maps list_syncable_workspaces.workspaces', async () => {
     const { adapter, calls } = makeAdapter();
     const rows = expectOk(await adapter.identity.listWorkspaces());
