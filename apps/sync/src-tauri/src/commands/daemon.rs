@@ -3443,6 +3443,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "runner_heap_ceiling_source",
         heap_ceiling.source.as_str().to_string(),
     ));
+    // The exact V8 pre-OOM heap-used MB stays in an integer extra. Add its
+    // fixed-vocabulary bucket beside the ceiling provenance so the next heap
+    // abort can be grouped and queried without a high-cardinality tag.
+    if let Some(used) = context.runner_heap_used_mb {
+        tags.push((
+            "runner_heap_peak_used_bucket",
+            hq_desktop_core::daemon::runner_heap_peak_used_bucket(used).to_string(),
+        ));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
     // fixed constant; absent otherwise so absence never renders as evidence.
     if let Some(banner) = context.runner_oom_banner {
@@ -10615,8 +10624,8 @@ mod tests {
         let heap_capture = heap_effects.captures.first().expect("heap capture");
         let base_capture = base_effects.captures.first().expect("baseline capture");
 
-        // Heap evidence attaches: banner tag, class-scoped v8_* shape, and the
-        // three integer extras.
+        // Heap evidence attaches: banner and peak-used bucket tags, a
+        // class-scoped v8_* shape, and the three integer extras.
         assert_eq!(
             recorded_tag(heap_capture, "runner_oom_banner"),
             "reached_heap_limit"
@@ -10630,6 +10639,10 @@ mod tests {
             "unknown",
             "every watcher-exit event carries the runner version tag"
         );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_heap_peak_used_bucket"),
+            "under_2gb"
+        );
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
         assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
@@ -10637,6 +10650,10 @@ mod tests {
         // The baseline (no heap evidence) carries none of them — absence never
         // renders as evidence.
         assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_heap_peak_used_bucket"));
         assert!(base_capture
             .extras
             .iter()
