@@ -34,6 +34,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# rust-cache hashes CARGO_* env vars into the cache key. Must match
+# cache-warm.yml so PRs restore the main-branch cache.
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   # Cheap ubuntu gate that decides whether the two windows-latest jobs below
   # have anything to check. A manual dispatch always runs them.
@@ -104,13 +109,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       # Version comes from the root package.json "packageManager" field;
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -118,19 +125,16 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
-      # actions/cache archived target/ wholesale (several GB for this app), so
-      # entries evicted each other out of the repository's 10 GB cache budget:
-      # the restore step measured 0-1s (a miss) on every run while the save step
-      # still paid 231s to upload. rust-cache prunes to the registry plus
-      # dependency artifacts and cleans stale ones, and covers BOTH workspaces —
-      # the old key hashed only the app Cargo.lock and cached only the app
-      # target/, so root-workspace changes neither invalidated nor reused it.
+      # rust-cache prunes to the registry plus dependency artifacts and covers
+      # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
+      # new PRs restore from main instead of starting cold, and so PRs with an
+      # exact hit do not each save their own copy.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             apps/sync/src-tauri
-          key: windows-check-debug
+          shared-key: windows-check-debug
           # This job is red ~15% of the time and the compile step that fills
           # the cache runs BEFORE the tests that fail. rust-cache defaults to
           # cache-on-failure:false, so those runs discard valid dependency
@@ -507,27 +511,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - uses: pnpm/action-setup@v4
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      # Disjoint from the check job's key: this job builds the release profile
-      # and that one builds debug. The old restore-keys fallback to
-      # `${{ runner.os }}-cargo-` pulled the debug artifacts in here, rebuilt
-      # from scratch anyway, then paid to re-upload the mismatched archive.
+      # Disjoint from the check job's shared-key: this job builds the release
+      # profile and that one builds debug. shared-key is shared with
+      # cache-warm.yml on main so new PRs restore from main instead of starting
+      # cold, and so PRs with an exact hit do not each save their own copy.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             apps/sync/src-tauri
-          key: windows-installer-release
+          shared-key: windows-installer-release
           # This job is red ~15% of the time and the compile step that fills
           # the cache runs BEFORE the tests that fail. rust-cache defaults to
           # cache-on-failure:false, so those runs discard valid dependency

@@ -1,0 +1,334 @@
+# Populate, on the default branch, the exact rust-cache keys that release.yml
+# (tag runs) and windows-check.yml (PR runs) restore.
+#
+# Release builds run on tag pushes. GitHub Actions caches are scoped to the
+# ref that saved them plus the default branch; a cache saved by tag vA is
+# never restorable by tag vB. Without a main-branch writer, every release job
+# logs "No cache found." and compiles all dependencies from scratch: macOS
+# universal ~23 min, Windows x64 ~25 min, Windows arm64 ~24 min.
+#
+# windows-check.yml runs only on pull_request. rust-cache also adds the job
+# id unless shared-key is set, so a brand-new PR always starts cold (cargo
+# check 42 min cold vs 21 min warm; installer E2E 38 min cold vs 28 min
+# warm). Each PR then saves its own 1.7 GB + 0.8 GB copy and blows the 10 GB
+# repo cache budget.
+#
+# The cache key rust-cache computes includes runner OS/arch, the shared-key,
+# a hash of rustc version + CARGO_*/RUST* env vars, and the lockfiles. Each
+# job here must mirror the runner image, toolchain targets, env, and cargo
+# invocation of the job it warms exactly.
+#
+# No secrets: --no-bundle skips bundling, signing, notarization, and updater
+# signing. rust-cache stores only registry sources and dependency artifacts
+# and prunes the workspace crate's own artifacts.
+name: Warm Rust caches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "apps/sync/src-tauri/Cargo.toml"
+      - "apps/sync/src-tauri/Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - ".github/workflows/cache-warm.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/windows-check.yml"
+  schedule:
+    - cron: "17 6 * * 1"   # weekly; caches unused for 7 days are evicted and stable rustc bumps change the key
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-macos:
+    name: Warm release macOS universal
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Put rustup-managed cargo first on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Replace any cargo shim with rustup-managed cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo"
+            exit 1
+          fi
+
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
+          replaced=0
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
+            fi
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was -> '${target:-<regular file>}') -> $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
+          if [ "$replaced" = 0 ]; then
+            echo "No non-rustup cargo entries on PATH."
+          fi
+
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/sync/src-tauri
+          shared-key: release-macos-universal
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Compile release dependencies (universal)
+        run: pnpm tauri build --no-bundle --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
+
+  release-windows:
+    name: Warm release ${{ matrix.target }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    env:
+      RUST_BACKTRACE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/sync/src-tauri
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      - name: Download native ARM64 Node runtime for Recall launcher
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $version = node -p "process.version"
+          $archiveName = "node-$version-win-arm64.zip"
+          $baseUrl = "https://nodejs.org/dist/$version"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
+          $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-arm64"
+
+          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
+          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
+          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "No Node checksum found for $archiveName"
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $nodeExe = Join-Path $extract "node.exe"
+          if (-not (Test-Path $nodeExe)) {
+            throw "ARM64 node.exe was not extracted at $nodeExe"
+          }
+          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Windows recording depends on a real PE sidecar launcher. Tauri's
+      # `bundle.externalBin` now requires this file to exist for each target
+      # triple, so build and assert it before the bundle step rather than
+      # publishing an installer with the Recall bridge resources but no launcher.
+      - name: Build Recall SDK sidecar (${{ matrix.target }})
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
+          }
+
+      - name: Compile release dependencies (${{ matrix.target }})
+        env:
+          # Mirrors release.yml: Tauri runs the release overlay's
+          # beforeBuildCommand, which rebuilds the launcher. Keep that nested
+          # build on the matrix architecture as well.
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: pnpm tauri build --no-bundle --target ${{ matrix.target }} --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json
+
+  windows-check-debug:
+    name: Warm windows-check debug
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Version comes from the root package.json "packageManager" field;
+      # passing an explicit version here too is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-check-debug
+          cache-on-failure: true
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps (build.rs resource)
+        run: pnpm run sidecar:install
+
+      - name: Build Svelte bundle (satisfies tauri frontendDist)
+        run: pnpm run build
+
+      - name: Rust check (Windows target)
+        working-directory: apps/sync/src-tauri
+        run: cargo check --target x86_64-pc-windows-msvc
+
+      - name: Build Windows test binaries
+        timeout-minutes: 30
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
+
+      - name: Install Tauri WebDriver bridge
+        run: cargo install tauri-driver --locked
+
+  windows-installer-release:
+    name: Warm windows-installer release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-installer-release
+          cache-on-failure: true
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
+
+      - name: Install Tauri WebDriver bridge
+        run: cargo install tauri-driver --locked
+
+      - name: Compile release dependencies (x86_64-pc-windows-msvc)
+        run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.windows.ci.conf.json --features e2e-automation
