@@ -9,7 +9,7 @@
    */
   import { onMount } from "svelte";
   import {
-    TauriPlatformAdapter,
+    createSyncPlatformAdapter,
     WebPlatformAdapter,
     type InvokeFn,
     type PlatformAdapter,
@@ -85,7 +85,7 @@
   }
 
   const adapter: PlatformAdapter = isTauriRuntime()
-    ? new TauriPlatformAdapter({ invoke: tauriInvoke })
+    ? createSyncPlatformAdapter({ invoke: tauriInvoke })
     : new WebPlatformAdapter({ baseUrl: hqProApiUrl(), fetch: hqProFetch });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;

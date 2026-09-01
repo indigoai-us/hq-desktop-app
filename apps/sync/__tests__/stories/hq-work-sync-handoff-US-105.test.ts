@@ -40,7 +40,7 @@ import {
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from '../../src/lib/hq-work-adapter';
+} from '@hq/platform';
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
 import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
 import {

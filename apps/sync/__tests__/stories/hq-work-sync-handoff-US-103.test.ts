@@ -51,7 +51,7 @@ import {
   hqWorkHandoffEnabled,
   type HqWorkInvoker,
 } from '../../src/lib/hq-work';
-import { createSyncPlatformAdapter, type SyncInvokeFn } from '../../src/lib/hq-work-adapter';
+import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
   personUid: 'prs_ada',

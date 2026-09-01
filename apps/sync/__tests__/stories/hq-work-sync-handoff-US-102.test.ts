@@ -9,7 +9,7 @@ import { TAURI_CAPABILITIES } from '@hq/platform';
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from '../../src/lib/hq-work-adapter';
+} from '@hq/platform';
 
 const WHOAMI = {
   personUid: 'prs_ada',
@@ -213,7 +213,7 @@ describe('US-102 Sync PlatformAdapter', () => {
 
   it('does not clone createDesktopAdapter / WebPlatformAdapter', () => {
     const src = readFileSync(
-      new URL('../../src/lib/hq-work-adapter.ts', import.meta.url),
+      new URL('../../../../packages/platform/src/tauri/sync-adapter.ts', import.meta.url),
       'utf8',
     );
     expect(src).toContain('export function createSyncPlatformAdapter');

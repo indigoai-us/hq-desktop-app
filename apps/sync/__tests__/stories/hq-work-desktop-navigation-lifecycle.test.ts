@@ -42,7 +42,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: openExternal }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
-import type { SyncInvokeFn } from '../../src/lib/hq-work-adapter';
+import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
   personUid: 'prs_ada',
