@@ -62,7 +62,7 @@ impl TryFrom<String> for StagingStatus {
 
 /// In-memory index of every blob SHA each path carries across the staging
 /// pipeline. Built once per drift scan, queried per drifted file.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StagingIndex {
     /// path -> set of blob SHAs present on staging `main`.
     main: BTreeMap<String, BTreeSet<String>>,

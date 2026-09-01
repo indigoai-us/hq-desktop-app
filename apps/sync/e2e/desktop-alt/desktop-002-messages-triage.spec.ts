@@ -76,7 +76,9 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
 
   it('uses a shared left-aligned authored timeline instead of opposing chat bubbles', () => {
     expect(conversation).toContain("msg.direction === 'out' ? 'You'");
-    expect(conversation).toContain('<IdentityMark kind="person" label={messageAuthor(msg)}');
+    expect(conversation).toContain("kind={isAgentUid(msg.fromPersonUid) ? 'agent' : 'person'}");
+    expect(conversation).toContain('label={messageAuthor(msg)}');
+    expect(conversation).toContain('agentUid={msg.fromPersonUid}');
     expect(conversation).toContain('class="dm-msg-meta"');
     expect(conversation).toContain('grid-template-columns: 28px minmax(0, 720px)');
     expect(conversation).toMatch(/\.dm-msg-out\s*\{[\s\S]*?align-self:\s*stretch/);

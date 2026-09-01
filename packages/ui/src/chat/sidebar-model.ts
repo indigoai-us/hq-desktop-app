@@ -14,6 +14,8 @@ import {
   type ChannelParticipant,
 } from "./channels";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
+import { isAgentUid } from "./agent-thinking";
+import { agentAvatarFor } from "./messaging/agent-avatars";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -1527,6 +1529,32 @@ export function initialsFor(title: string): string {
     );
   }
   return title.trim().slice(0, 2).toUpperCase() || "?";
+}
+
+export type RowAvatarKind = "photo" | "generated" | "initials";
+
+export interface RowAvatar {
+  kind: RowAvatarKind;
+  src?: string;
+  initials?: string;
+}
+
+/**
+ * Rail avatar for a conversation row: real photo when known, else a
+ * deterministic generated avatar for agents, else initials.
+ */
+export function rowAvatar(
+  row: Pick<ConversationRow, "kind" | "personUid" | "title">,
+  avatarByUid?: Record<string, string> | null,
+): RowAvatar {
+  const uid = (row.personUid ?? "").trim();
+  const photo = uid ? avatarByUid?.[uid] : undefined;
+  if (photo) return { kind: "photo", src: photo };
+  if (row.kind === "dm" && uid && isAgentUid(uid)) {
+    const generated = agentAvatarFor(uid);
+    if (generated) return { kind: "generated", src: generated };
+  }
+  return { kind: "initials", initials: initialsFor(row.title) };
 }
 
 // ── Command palette conversation ranking (US-013) ────────────────────────────

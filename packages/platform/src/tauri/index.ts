@@ -295,6 +295,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       }),
     fetchDmInbox: (opts) => this.call("fetch_dm_inbox", { opts }),
     ackDmInbox: (eventIds) => this.call("ack_dm_inbox", { eventIds }),
+    fetchDmThreads: (opts) => this.call("fetch_dm_threads", { opts }),
     fetchSharedWithMe: (opts) => this.call("fetch_shared_with_me", { opts }),
     ackSharedWithMe: (eventIds) =>
       this.call("ack_shared_with_me", { eventIds }),
