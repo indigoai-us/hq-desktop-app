@@ -32,6 +32,7 @@
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import NotificationsView from "../inbox/NotificationsView.svelte";
+  import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -121,7 +122,13 @@
   import type {
     BoardTabData,
     ChannelFileItemModel,
+    ChannelFilePreview,
   } from "../chat/messaging/channelTabModels.js";
+  import {
+    MAX_CHANNEL_FILE_PREVIEW_BYTES,
+    fileCompanyScope,
+    loadVaultFilePreview,
+  } from "../chat/messaging/channel-file-preview.js";
   import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
@@ -200,7 +207,7 @@
     boardByRow?: (row: ConversationRow) => BoardTabData | null;
     /** Resolve the (injected) Files fixture rows for a row. */
     filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
-    loadFilePreview?: (item: ChannelFileItemModel) => Promise<string | null>;
+    loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -303,8 +310,12 @@
     onselectrow?: (row: ConversationRow) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
-    /** Desktop: GET attachment bytes outside the webview (no S3 CORS). */
-    getAttachmentObject?: (url: string) => Promise<Response>;
+    /**
+     * Host-owned bounded byte transport for presigned Vault GETs. Desktop
+     * supplies a native hop. Web uses the Work app's same-origin proxy because
+     * Vault buckets do not grant browser CORS to raw presigned URLs.
+     */
+    getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
   }
 
   let {
@@ -362,6 +373,28 @@
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
   );
 
+  /**
+   * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
+   * CORS policy for browser clients. The Work web app owns this authenticated
+   * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
+   * host.
+   */
+  async function getVaultBytesForHost(
+    url: string,
+    maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
+  ): Promise<Response> {
+    if (getAttachmentObject) return getAttachmentObject(url, maxBytes);
+    if (adapter.kind === "web") {
+      return fetch("/api/chat-attachment-bytes", {
+        headers: {
+          "x-hq-source-url": url,
+          "x-hq-max-bytes": String(maxBytes),
+        },
+      });
+    }
+    throw new Error("No authorized Vault byte transport is available.");
+  }
+
   type ChannelTab = "chat" | "board" | "files";
   const CHANNEL_TABS: ReadonlyArray<{ id: ChannelTab; label: string }> = [
     { id: "chat", label: "Chat" },
@@ -370,7 +403,12 @@
   ];
 
   let view = $state<
-    "conversation" | "notifications" | "settings" | "meetings" | "library"
+    | "conversation"
+    | "notifications"
+    | "settings"
+    | "meetings"
+    | "library"
+    | "shared-files"
   >("conversation");
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
@@ -921,9 +959,10 @@
           if (!signed.ok) return null;
           const url = presignUrlFromResult(signed.value)?.url;
           if (!url) return null;
-          const res = getAttachmentObject
-            ? await getAttachmentObject(url)
-            : await fetch(url);
+          const res = await getVaultBytesForHost(
+            url,
+            MAX_CHANNEL_FILE_PREVIEW_BYTES,
+          );
           if (!res.ok) return null;
           return await res.text();
         } catch {
@@ -1443,6 +1482,14 @@
     return first?.cloudUid?.trim() || null;
   }
 
+  const channelFilePreviewContext = $derived(
+    JSON.stringify({
+      account: self?.uid?.trim() || null,
+      companyUid: attachmentCompanyUid(selectedRow),
+      conversationId: selectedRow?.id ?? null,
+    }),
+  );
+
   /** Upload files for the selected row — shared by the main composer send and
       the ReplyPanel attach seam. */
   async function uploadFilesForSelectedRow(
@@ -1597,6 +1644,110 @@
     return presignAttachment(companyUid, item.vaultPath);
   }
 
+  function previewFailure(message: string | null | undefined): ChannelFilePreview {
+    const detail = (message ?? "").toLowerCase();
+    if (/denied|forbidden|membership|unauth|403/.test(detail)) {
+      return { kind: "unavailable", state: "denied", message: "You don't have access to this file." };
+    }
+    if (/not.?found|missing|404/.test(detail)) {
+      return { kind: "unavailable", state: "missing", message: "This file is no longer available." };
+    }
+    if (/large|limit|size/.test(detail)) {
+      return { kind: "unavailable", state: "too-large", message: "This file is too large to preview safely." };
+    }
+    if (/offline|network|timeout|5\d\d/.test(detail)) {
+      return { kind: "unavailable", state: "offline", message: "Couldn't reach the file service. Try again when you're online." };
+    }
+    return { kind: "unavailable", state: "unsupported", message: "This file can't be previewed safely." };
+  }
+
+  function base64Bytes(raw: string): Uint8Array | null {
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 !== 0) return null;
+    try {
+      const binary = atob(raw);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadLocalFilePreview(
+    item: ChannelFileItemModel,
+  ): Promise<ChannelFilePreview> {
+    const localPath = item.localPath?.trim();
+    if (!localPath) return previewFailure("missing local file path");
+    const result = await adapter.files.getAuthorizedPreview(localPath);
+    if (!result.ok) return previewFailure(result.message ?? result.reason);
+    const payload = result.value as unknown as Record<string, unknown>;
+    const mimeType = typeof payload.mimeType === "string" ? payload.mimeType.toLowerCase() : "";
+    const dataBase64 = typeof payload.dataBase64 === "string" ? payload.dataBase64 : "";
+    const bytes = base64Bytes(dataBase64);
+    if (!bytes) return previewFailure("invalid native preview");
+    if (mimeType === "application/pdf") {
+      return { kind: "pdf", url: `data:${mimeType};base64,${dataBase64}` };
+    }
+    if (new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]).has(mimeType)) {
+      return { kind: "image", url: `data:${mimeType};base64,${dataBase64}` };
+    }
+    if (mimeType.startsWith("text/") || mimeType === "application/json") {
+      try {
+        return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+      } catch {
+        return { kind: "unavailable", state: "binary", message: "This binary file can't be previewed safely." };
+      }
+    }
+    return previewFailure("unsupported preview type");
+  }
+
+  async function loadChannelFilePreview(
+    item: ChannelFileItemModel,
+  ): Promise<ChannelFilePreview> {
+    if (loadFilePreview) return loadFilePreview(item);
+    const selectedCompanyUid = attachmentCompanyUid(selectedRow);
+    if (!fileCompanyScope(item, selectedCompanyUid)) {
+      return {
+        kind: "unavailable",
+        state: "denied",
+        message: "This file is not available in the current company.",
+      };
+    }
+    if (item.localPath?.trim()) return loadLocalFilePreview(item);
+    return loadVaultFilePreview({
+      item,
+      selectedCompanyUid,
+      presign: (companyUid, key) => adapter.files.presignVaultGet(companyUid, key),
+      get: getVaultBytesForHost,
+    });
+  }
+
+  function canPerformChannelFileAction(item: ChannelFileItemModel): boolean {
+    return Boolean(
+      !item.accessDenied &&
+        item.localPath?.trim() &&
+        fileCompanyScope(item, attachmentCompanyUid(selectedRow)),
+    );
+  }
+
+  async function revealChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
+    const localPath = item.localPath?.trim();
+    if (!localPath) throw new Error("No authorized local mirror is available.");
+    const result = await adapter.files.revealInFinder(localPath);
+    if (!result.ok) throw new Error(result.message ?? "Reveal failed");
+  }
+
+  async function openChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
+    const localPath = item.localPath?.trim();
+    if (!localPath) throw new Error("No authorized local mirror is available.");
+    const result = await adapter.shell.openFileInClaude(localPath);
+    if (!result.ok) throw new Error(result.message ?? "Open failed");
+  }
+
   function openNotification(item: NotificationItem): void {
     const dest = notificationDestination(item);
     if (dest.kind === "dm") {
@@ -1618,8 +1769,9 @@
       return;
     }
     if (dest.kind === "files") {
-      // Work has no global /files surface yet. Do not send shares to Skills.
-      view = "conversation";
+      // Share rows do not include a company UID. Route to the bounded,
+      // server-scoped share list rather than guessing a tenant or aliasing it.
+      view = "shared-files";
       paletteOpen = false;
       membersOpen = false;
       projectAboutOpen = false;
@@ -1973,7 +2125,15 @@
             onopen={openNotification}
           />
         </div>
-        {#if view === "meetings"}
+        {#if view === "shared-files"}
+          <SharedFilesOverlay
+            {adapter}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
+          />
+        {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
             storage={tenantStorage}
@@ -2306,7 +2466,14 @@
               onOpenInChannel={() => (tab = "chat")}
             />
           {:else}
-            <ChannelFilesTab {files} />
+            <ChannelFilesTab
+              {files}
+              previewContext={channelFilePreviewContext}
+              onloadpreview={loadChannelFilePreview}
+              onauthorizeaction={canPerformChannelFileAction}
+              onreveal={revealChannelFile}
+              onopen={openChannelFile}
+            />
           {/if}
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->

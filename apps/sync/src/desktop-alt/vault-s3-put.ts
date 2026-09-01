@@ -14,13 +14,19 @@ export async function putVaultObject(
   return new Response(null, { status });
 }
 
-/** Desktop hop for chat-attachment GET. Webview fetch() of S3 has no CORS. */
-export async function getVaultObject(url: string): Promise<Response> {
+/**
+ * Desktop hop for vault GET. An optional preview limit is enforced in Rust
+ * before response bytes are buffered in the webview.
+ */
+export async function getVaultObject(
+  url: string,
+  maxBytes?: number,
+): Promise<Response> {
   const result = await invoke<{
     status: number;
     contentType: string;
     body: number[];
-  }>('vault_s3_get', { url });
+  }>('vault_s3_get', { url, ...(maxBytes ? { maxBytes } : {}) });
   return new Response(Uint8Array.from(result.body), {
     status: result.status,
     headers: {

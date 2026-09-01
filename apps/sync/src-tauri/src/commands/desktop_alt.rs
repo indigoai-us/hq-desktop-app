@@ -909,7 +909,8 @@ async fn hydrated_file_context() -> Result<(PathBuf, Vec<Workspace>), String> {
     Ok((PathBuf::from(result.hq_folder_path), result.workspaces))
 }
 
-const MAX_MEDIA_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
+/// Bounded bytes returned to the renderer for passive file previews.
+const MAX_MEDIA_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 struct ResolvedFileTarget {
@@ -1019,6 +1020,9 @@ fn preview_mime_type(path: &str) -> Option<&'static str> {
         "heic" => Some("image/heic"),
         "heif" => Some("image/heif"),
         "pdf" => Some("application/pdf"),
+        "md" | "markdown" => Some("text/markdown"),
+        "txt" | "log" | "csv" | "yaml" | "yml" => Some("text/plain"),
+        "json" => Some("application/json"),
         _ => None,
     }
 }
@@ -1155,7 +1159,7 @@ pub async fn get_company_file_content(
     read_file_content(&target.hq_root, &target.relative_path)
 }
 
-/// Return a size-capped image/PDF preview after resolving and authorizing the
+/// Return a size-capped supported text/media preview after resolving and authorizing the
 /// HQ-relative path natively. The renderer receives bytes, never a filesystem
 /// path or a wildcard asset-protocol URL.
 #[tauri::command]
@@ -1435,6 +1439,8 @@ mod window_router_tests {
     fn media_preview_allowlist_excludes_active_svg_content() {
         assert_eq!(preview_mime_type("photo.PNG"), Some("image/png"));
         assert_eq!(preview_mime_type("document.pdf"), Some("application/pdf"));
+        assert_eq!(preview_mime_type("brief.md"), Some("text/markdown"));
+        assert_eq!(preview_mime_type("notes.txt"), Some("text/plain"));
         assert_eq!(preview_mime_type("vector.svg"), None);
         assert_eq!(preview_mime_type("script.html"), None);
     }

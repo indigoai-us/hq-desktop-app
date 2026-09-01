@@ -756,11 +756,10 @@ export async function requestCreatorAccess(
   reason?: string | null,
   handle?: string | null,
 ): Promise<AdapterResult<string>> {
-  // ADAPTER GAP: `requestCreatorAccess()` takes no payload on this surface;
-  // the pitch/handle stay in the helper signature for the panel's UX flow.
-  void reason;
-  void handle;
-  const res = await api.requestCreatorAccess();
+  const res = await api.requestCreatorAccess({
+    reason: reason?.trim() || null,
+    handle: handle?.trim() || null,
+  });
   if (!res.ok) return res;
   return { ok: true, value: String(res.value ?? "") };
 }
@@ -1030,7 +1029,7 @@ export async function updateCreatorProfile(
     bio: patch.bio ?? null,
     socialLinks: patch.socialLinks ?? null,
     tipUrl: patch.tipUrl ?? null,
-  } as unknown as Json);
+  });
   if (!res.ok) return res;
   return { ok: true, value: res.value as unknown as CreatorProfile };
 }

@@ -815,7 +815,10 @@ describe("US-013 publish — adapter wiring", () => {
     const msg = unwrap(
       await requestCreatorAccess(api, "  please  ", "  corey  "),
     );
-    expect(api.requestCreatorAccess).toHaveBeenCalledWith();
+    expect(api.requestCreatorAccess).toHaveBeenCalledWith({
+      reason: "please",
+      handle: "corey",
+    });
     expect(msg).toBe("We got your request.");
   });
 
