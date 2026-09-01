@@ -1,54 +1,80 @@
 import { SignJWT, exportJWK, generateKeyPair, type JSONWebKeySet } from "jose";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthConfig } from "./types.js";
-import { verifyIdToken } from "./verify.js";
+import { resetJwksCacheForTests, verifyIdToken } from "./verify.js";
 
 const ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_TESTPOOL";
+const OTHER_ISSUER =
+  "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_OTHERPOOL";
 const CLIENT_ID = "client-123";
 
 // Mint an RS256 id_token + expose its public key as a local JWKS, exactly the
 // shape the host adapter would inject as config.testJwks in CI/E2E.
-async function mintSession(claims: Record<string, unknown>, expOffset = 3600) {
+async function mintSession(
+  claims: Record<string, unknown>,
+  expOffset = 3600,
+  issuer = ISSUER,
+) {
   const { publicKey, privateKey } = await generateKeyPair("RS256");
   const jwk = await exportJWK(publicKey);
   jwk.kid = "test-key";
   jwk.alg = "RS256";
   const jwks: JSONWebKeySet = { keys: [jwk] };
-  const now = Math.floor(Date.now() / 1000);
-  const token = await new SignJWT(claims)
-    .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-    .setIssuer(ISSUER)
-    .setAudience(CLIENT_ID)
-    .setIssuedAt(now)
-    .setExpirationTime(now + expOffset)
-    .sign(privateKey);
-  return { token, jwks };
+  const mintToken = async (
+    tokenClaims: Record<string, unknown>,
+    tokenExpOffset = expOffset,
+  ) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT(tokenClaims)
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer(issuer)
+      .setAudience(CLIENT_ID)
+      .setIssuedAt(now)
+      .setExpirationTime(now + tokenExpOffset)
+      .sign(privateKey);
+  };
+  return { token: await mintToken(claims), jwks, mintToken };
 }
 
-function config(testJwks?: JSONWebKeySet): AuthConfig {
+function config(testJwks?: JSONWebKeySet, issuer = ISSUER): AuthConfig {
   return {
     clientId: CLIENT_ID,
     hostedUiDomain: "vault-test.auth.us-east-1.amazoncognito.com",
-    issuer: ISSUER,
+    issuer,
     appOrigin: "https://work.hq.computer",
     testJwks,
   };
 }
 
 describe("verifyIdToken (data-driven test-JWKS seam)", () => {
+  beforeEach(() => {
+    resetJwksCacheForTests();
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("unexpected global JWKS fetch");
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("verifies a valid token against the injected testJwks and distills the session", async () => {
     const { token, jwks } = await mintSession({
       sub: "user-abc",
       email: "person@example.com",
       name: "Person Example",
     });
-    const session = await verifyIdToken(config(jwks), token);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(jwks)));
+    const session = await verifyIdToken(config(jwks), token, {
+      fetch: fetchMock as unknown as typeof fetch,
+    });
     expect(session).not.toBeNull();
     expect(session!.sub).toBe("user-abc");
     expect(session!.email).toBe("person@example.com");
     expect(session!.name).toBe("Person Example");
     expect(session!.expiresAt).toBeGreaterThan(Date.now());
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("nulls email and name when the claims are absent", async () => {
@@ -84,23 +110,40 @@ describe("verifyIdToken (data-driven test-JWKS seam)", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
-  it("reuses a remote JWKS resolver for repeated verification with one injected fetch", async () => {
-    const { token, jwks } = await mintSession({ sub: "cached-fetch-user" });
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(jwks)));
-    const options = { fetch: fetchMock as unknown as typeof fetch };
+  it("reuses one remote JWKS resolver across two injected request fetches", async () => {
+    const first = await mintSession({ sub: "first-fetch-user" });
+    const secondToken = await first.mintToken({ sub: "second-fetch-user" });
+    const firstFetch = vi.fn(async () =>
+      new Response(JSON.stringify(first.jwks)),
+    );
+    const secondFetch = vi.fn(async () =>
+      new Response(JSON.stringify(first.jwks)),
+    );
 
-    await expect(verifyIdToken(config(), token, options)).resolves.toEqual(
-      expect.objectContaining({ sub: "cached-fetch-user" }),
+    await expect(
+      verifyIdToken(config(), first.token, {
+        fetch: firstFetch as unknown as typeof fetch,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ sub: "first-fetch-user" }));
+    await expect(
+      verifyIdToken(config(), secondToken, {
+        fetch: secondFetch as unknown as typeof fetch,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ sub: "second-fetch-user" }));
+    expect(firstFetch.mock.calls.length + secondFetch.mock.calls.length).toBe(
+      1,
     );
-    await expect(verifyIdToken(config(), token, options)).resolves.toEqual(
-      expect.objectContaining({ sub: "cached-fetch-user" }),
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
   });
 
-  it("keeps remote JWKS resolvers isolated by injected fetch", async () => {
-    const first = await mintSession({ sub: "first-fetch-user" });
-    const second = await mintSession({ sub: "second-fetch-user" });
+  it("keeps remote JWKS resolvers separate for different issuer URLs", async () => {
+    const first = await mintSession({ sub: "first-pool-user" });
+    const second = await mintSession(
+      { sub: "second-pool-user" },
+      3600,
+      OTHER_ISSUER,
+    );
     const firstFetch = vi.fn(async () =>
       new Response(JSON.stringify(first.jwks)),
     );
@@ -112,12 +155,12 @@ describe("verifyIdToken (data-driven test-JWKS seam)", () => {
       verifyIdToken(config(), first.token, {
         fetch: firstFetch as unknown as typeof fetch,
       }),
-    ).resolves.toEqual(expect.objectContaining({ sub: "first-fetch-user" }));
+    ).resolves.toEqual(expect.objectContaining({ sub: "first-pool-user" }));
     await expect(
-      verifyIdToken(config(), second.token, {
+      verifyIdToken(config(undefined, OTHER_ISSUER), second.token, {
         fetch: secondFetch as unknown as typeof fetch,
       }),
-    ).resolves.toEqual(expect.objectContaining({ sub: "second-fetch-user" }));
+    ).resolves.toEqual(expect.objectContaining({ sub: "second-pool-user" }));
     expect(firstFetch).toHaveBeenCalledTimes(1);
     expect(secondFetch).toHaveBeenCalledTimes(1);
   });

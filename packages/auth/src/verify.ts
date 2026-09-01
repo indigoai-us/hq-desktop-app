@@ -24,11 +24,16 @@ export interface VerifyIdTokenOptions {
   fetch?: typeof fetch;
 }
 
-let cachedRemoteJwks: { url: string; getKey: JWTVerifyGetKey } | null = null;
-const cachedInjectedRemoteJwks = new WeakMap<
-  typeof fetch,
-  Map<string, JWTVerifyGetKey>
->();
+const defaultRemoteJwksFetch: typeof fetch = (input, init) =>
+  globalThis.fetch(input, init);
+let currentRemoteJwksFetch: typeof fetch = defaultRemoteJwksFetch;
+const cachedRemoteJwks = new Map<string, JWTVerifyGetKey>();
+
+/** Test-only: clear process-wide remote JWKS state between isolated tests. */
+export function resetJwksCacheForTests(): void {
+  cachedRemoteJwks.clear();
+  currentRemoteJwksFetch = defaultRemoteJwksFetch;
+}
 
 function jwksForConfig(
   config: AuthConfig,
@@ -38,26 +43,22 @@ function jwksForConfig(
     return createLocalJWKSet(config.testJwks);
   }
   const url = `${config.issuer}/.well-known/jwks.json`;
-  if (fetchImpl) {
-    let cachedByUrl = cachedInjectedRemoteJwks.get(fetchImpl);
-    if (!cachedByUrl) {
-      cachedByUrl = new Map();
-      cachedInjectedRemoteJwks.set(fetchImpl, cachedByUrl);
-    }
-    const cached = cachedByUrl.get(url);
-    if (cached) return cached;
-    const getKey = createRemoteJWKSet(new URL(url), {
-      [customFetch]: async (jwksUrl, opts) =>
-        fetchImpl(jwksUrl, opts as RequestInit),
-    });
-    cachedByUrl.set(url, getKey);
-    return getKey;
-  }
-  if (cachedRemoteJwks && cachedRemoteJwks.url === url) {
-    return cachedRemoteJwks.getKey;
-  }
-  const getKey = createRemoteJWKSet(new URL(url));
-  cachedRemoteJwks = { url, getKey };
+  currentRemoteJwksFetch = fetchImpl ?? defaultRemoteJwksFetch;
+  const cached = cachedRemoteJwks.get(url);
+  if (cached) return cached;
+
+  // Concurrent requests can update this slot before either resolver fetches,
+  // so request A's JWKS download may use request B's fetch. That race is
+  // harmless: Cognito JWKS URLs are absolute external URLs, so SvelteKit's
+  // per-request fetch provides neither cookie forwarding nor a same-origin
+  // SSR shortcut beyond what a plain fetch already provides.
+  const getKey = createRemoteJWKSet(new URL(url), {
+    // Dereference at request time so this long-lived resolver does not retain
+    // any individual SvelteKit request's fetch closure.
+    [customFetch]: (jwksUrl, opts) =>
+      currentRemoteJwksFetch(jwksUrl, opts as RequestInit),
+  });
+  cachedRemoteJwks.set(url, getKey);
   return getKey;
 }
 
