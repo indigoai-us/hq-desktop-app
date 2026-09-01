@@ -125,6 +125,7 @@
   );
   let tenantGeneration = $state(0);
   let tenantHydration = 0;
+  let shellEpoch = $state(0);
   const personUid = $derived(self?.uid ?? "");
   let shallow = $state(readShallowCache(personUid));
   $effect(() => {
@@ -291,6 +292,7 @@
     tenantAccountId = next.accountId;
     tenantGeneration = next.generation;
     tenantHydration += 1;
+    shellEpoch += 1;
     clearTenantState();
 
     if (next.status !== "active") return;
@@ -518,40 +520,42 @@
 </script>
 
 <div class="shell-root">
-  <DesktopApp
-    {adapter}
-    version={displayVersion(`v${workPackage.version}`)}
-    sidebarApi={liveSidebarApi}
-    {notificationsApi}
-    {messagesByRow}
-    {reactionsByRow}
-    {boardByRow}
-    {filesByRow}
-    {loadFilePreview}
-    {channelStatusByRow}
-    putAttachmentObject={attachmentHandlers?.putAttachmentObject}
-    getAttachmentObject={attachmentHandlers?.getAttachmentObject}
-    identities={identitiesFromContacts(shallow.contacts)}
-    mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
-    coreFixtures={false}
-    onopenurl={openUrl}
-    {wakes}
-    {companies}
-    {self}
-    {tenantAccountId}
-    {tenantGeneration}
-    {initialRow}
-    {initialReplyRootEventId}
-    {seedDirectory}
-    {notificationWakeSeq}
-    {searchRows}
-    hydrateLiveMessages={true}
-    onlivemessages={cacheLiveMessages}
-    onselectrow={rememberSelectedRow}
-    settingsProfile={settingsProfileFromSelf(self)}
-    onsignout={signOut}
-    onOpenConsole={openUrl}
-  />
+  {#key shellEpoch}
+    <DesktopApp
+      {adapter}
+      version={displayVersion(`v${workPackage.version}`)}
+      sidebarApi={liveSidebarApi}
+      {notificationsApi}
+      {messagesByRow}
+      {reactionsByRow}
+      {boardByRow}
+      {filesByRow}
+      {loadFilePreview}
+      {channelStatusByRow}
+      putAttachmentObject={attachmentHandlers?.putAttachmentObject}
+      getAttachmentObject={attachmentHandlers?.getAttachmentObject}
+      identities={identitiesFromContacts(shallow.contacts)}
+      mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
+      coreFixtures={false}
+      onopenurl={openUrl}
+      {wakes}
+      {companies}
+      {self}
+      {tenantAccountId}
+      {tenantGeneration}
+      {initialRow}
+      {initialReplyRootEventId}
+      {seedDirectory}
+      {notificationWakeSeq}
+      {searchRows}
+      hydrateLiveMessages={true}
+      onlivemessages={cacheLiveMessages}
+      onselectrow={rememberSelectedRow}
+      settingsProfile={settingsProfileFromSelf(self)}
+      onsignout={signOut}
+      onOpenConsole={openUrl}
+    />
+  {/key}
   {#if externalLinkError}
     <div
       class="external-link-notice"

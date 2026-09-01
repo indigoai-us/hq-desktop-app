@@ -9,6 +9,7 @@ const { nativeInvoke, tauriListen } = vi.hoisted(() => ({
 
 const desktopAppProps = vi.hoisted(() => ({
   current: null as Record<string, unknown> | null,
+  mounts: 0,
 }));
 
 vi.mock("svelte", async () => {
@@ -22,6 +23,7 @@ vi.mock("@hq/ui", async (importOriginal) => {
     ...actual,
     DesktopApp: (_anchor: Node, props: Record<string, unknown>) => {
       desktopAppProps.current = props;
+      desktopAppProps.mounts += 1;
     },
   };
 });
@@ -159,6 +161,7 @@ function emitAuthSession(next: AuthSession): void {
 
 beforeEach(() => {
   desktopAppProps.current = null;
+  desktopAppProps.mounts = 0;
   accountId = "acct_a";
   initialSession = {
     accountId: "acct_a",
@@ -234,6 +237,21 @@ afterEach(async () => {
 });
 
 describe("native desktop auth session transitions", () => {
+  it("remounts the desktop shell only for a real auth-session transition", async () => {
+    await mountDesktop();
+    const initialMounts = desktopAppProps.mounts;
+
+    await vi.waitFor(() => expect(capturedProps().self?.uid).toBe("prs_acct_a"));
+    expect(desktopAppProps.mounts).toBe(initialMounts);
+
+    emitAuthSession({
+      accountId: "acct_b",
+      generation: 2,
+      status: "active",
+    });
+    await vi.waitFor(() => expect(desktopAppProps.mounts).toBe(initialMounts + 1));
+  });
+
   it("clears the old tenant synchronously and hydrates the new active tenant", async () => {
     await mountDesktop();
     await vi.waitFor(() => {
