@@ -327,6 +327,58 @@ describe("hydrateLiveRail", () => {
     await hydrateLiveRail(adapter);
     expect(fetchChannelDirectory).toHaveBeenCalledTimes(2);
   });
+
+  it("does not share a deferred rail hydrate across people", async () => {
+    type DirectoryResult = Awaited<
+      ReturnType<PlatformAdapter["messaging"]["fetchChannelDirectory"]>
+    >;
+    let resolveA!: (value: DirectoryResult) => void;
+    let resolveB!: (value: DirectoryResult) => void;
+    const directoryA = new Promise<DirectoryResult>((resolve) => {
+      resolveA = resolve;
+    });
+    const directoryB = new Promise<DirectoryResult>((resolve) => {
+      resolveB = resolve;
+    });
+    const fetchChannelDirectory = vi.fn<
+      PlatformAdapter["messaging"]["fetchChannelDirectory"]
+    >(async (): Promise<DirectoryResult> => {
+      return fetchChannelDirectory.mock.calls.length === 1
+        ? directoryA
+        : directoryB;
+    });
+    const adapter = stubAdapter(fetchChannelDirectory);
+
+    const hydrateA = hydrateLiveRail(adapter, [], "prs_a");
+    const hydrateB = hydrateLiveRail(adapter, [], "prs_b");
+
+    resolveA(
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [{ channelId: "chn_a", name: "account-a" }],
+      }),
+    );
+    await hydrateA;
+
+    resolveB(
+      ok({
+        snapshot: true,
+        cursor: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [{ channelId: "chn_b", name: "account-b" }],
+      }),
+    );
+    const railB = await hydrateB;
+
+    expect(railB.directory[0]?.channelId).toBe("chn_b");
+    expect(railB.directory).not.toContainEqual(
+      expect.objectContaining({ channelId: "chn_a" }),
+    );
+    expect(hydrateB).not.toBe(hydrateA);
+    expect(fetchChannelDirectory).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("createChatSidebarApi", () => {

@@ -71,7 +71,7 @@ export interface HydratedRail {
 }
 
 let workFeedCache: { at: number; items: WorkFeedItem[] } | null = null;
-let railHydrate: Promise<HydratedRail> | null = null;
+let railHydrate: { key: string; promise: Promise<HydratedRail> } | null = null;
 
 /** Reconciler snapshot marker — never send this to GET /v1/notify/channels. */
 const SYNTHETIC_LIVEFEED_PREFIX = "livefeed";
@@ -160,7 +160,7 @@ export function hydrateLiveRail(
   previousDirectory: ChannelDirectoryRow[] = [],
   personUid = "",
 ): Promise<HydratedRail> {
-  if (railHydrate) return railHydrate;
+  if (railHydrate?.key === personUid) return railHydrate.promise;
   const hydrate = (async () => {
     {
       const [dirResult, contactsResult, workItems, inbox] = await Promise.all([
@@ -237,13 +237,14 @@ export function hydrateLiveRail(
       return { directory, contacts };
     }
   })();
-  railHydrate = hydrate;
+  const entry = { key: personUid, promise: hydrate };
+  railHydrate = entry;
   void hydrate.then(
     () => {
-      if (railHydrate === hydrate) railHydrate = null;
+      if (railHydrate === entry) railHydrate = null;
     },
     () => {
-      if (railHydrate === hydrate) railHydrate = null;
+      if (railHydrate === entry) railHydrate = null;
     },
   );
   return hydrate;
