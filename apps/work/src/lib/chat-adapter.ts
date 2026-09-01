@@ -310,6 +310,11 @@ export function createChatSidebarApi(
         adapter.messaging.sendChannelMessage(args.channelId, args.body, {}),
       );
     },
+    sendDm: async (args) => {
+      await call<unknown>(
+        adapter.messaging.sendDm(args.toPersonUid, args.body, {}),
+      );
+    },
   };
 }
 

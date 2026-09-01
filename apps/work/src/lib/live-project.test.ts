@@ -1,6 +1,79 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { metaFromProjectView, parseChannelMembers } from "./live-project.js";
+import type { ChannelFileItemModel } from "@hq/ui";
+import { hqProFetch } from "./hq-pro-client.js";
+import {
+  loadWebVaultFilePreview,
+  metaFromProjectView,
+  parseChannelMembers,
+} from "./live-project.js";
+
+vi.mock("./hq-pro-client.js", () => ({
+  hqProFetch: vi.fn(),
+}));
+
+const previewFile: ChannelFileItemModel = {
+  key: "projects/demo/brief.md",
+  vaultPath: "projects/demo/brief.md",
+  companyUid: "cmp_work",
+  name: "brief.md",
+  caption: "PROJECT",
+  iconKind: "markdown",
+};
+
+describe("work vault file-preview seam", () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.mocked(hqProFetch).mockReset();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the shared text preview arm after web presign and fetch", async () => {
+    vi.mocked(hqProFetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ results: [{ url: "https://vault.test/brief.md" }] }),
+        { status: 200 },
+      ),
+    );
+    fetchMock.mockResolvedValue(
+      new Response("# Approved brief", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      }),
+    );
+
+    await expect(
+      loadWebVaultFilePreview(previewFile, "cmp_work"),
+    ).resolves.toEqual({ kind: "text", text: "# Approved brief" });
+    expect(hqProFetch).toHaveBeenCalledWith("/v1/files/presign", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        company: "cmp_work",
+        op: "get",
+        key: "projects/demo/brief.md",
+      }),
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://vault.test/brief.md");
+  });
+
+  it("returns the shared unavailable arm when presigning fails", async () => {
+    vi.mocked(hqProFetch).mockResolvedValue(
+      new Response("forbidden", { status: 403 }),
+    );
+
+    await expect(
+      loadWebVaultFilePreview(previewFile, "cmp_work"),
+    ).resolves.toMatchObject({ kind: "unavailable", state: "denied" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("parseChannelMembers", () => {
   it("maps notify members into status roster rows", () => {

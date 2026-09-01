@@ -55,7 +55,7 @@
   import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
   import {
     loadLiveProjectMeta,
-    loadVaultFilePreview,
+    loadWebVaultFilePreview,
     type LiveProjectMeta,
   } from "$lib/live-project";
   import { hqProApiUrl, hqProFetch } from "$lib/hq-pro-client";
@@ -291,6 +291,8 @@
       return ensureProjectMeta(row)?.files ?? [];
     },
   );
+  const loadFilePreview = (item: ChannelFileItemModel) =>
+    loadWebVaultFilePreview(item, item.companyUid);
   const channelStatusByRow = $derived(
     (row: ConversationRow): ChannelStatusModel | null => {
       const live = ensureProjectMeta(row);
@@ -358,7 +360,7 @@
     {reactionsByRow}
     {boardByRow}
     {filesByRow}
-    loadFilePreview={loadVaultFilePreview}
+    {loadFilePreview}
     {channelStatusByRow}
     putAttachmentObject={attachmentHandlers?.putAttachmentObject}
     getAttachmentObject={attachmentHandlers?.getAttachmentObject}

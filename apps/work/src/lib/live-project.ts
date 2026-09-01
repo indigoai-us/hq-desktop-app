@@ -15,12 +15,15 @@ import {
 import {
   buildChannelStatusModel,
   parseChannelMembers,
+  loadVaultFilePreview,
   type BoardTabData,
   type ChannelFileItemModel,
+  type ChannelFilePreview,
   type ChannelStatusModel,
   type ConversationRow,
   type ServerWorkSessionInput,
   type StatusMemberInput,
+  type VaultFilePreviewRequest,
 } from "@hq/ui";
 import { hqProFetch } from "./hq-pro-client.js";
 
@@ -84,31 +87,47 @@ export async function listVaultProjectFiles(
   return projectFilesToItems(files, companyUid) as ChannelFileItemModel[];
 }
 
-export async function loadVaultFilePreview(
-  item: ChannelFileItemModel,
-): Promise<string | null> {
-  const companyUid = (item.companyUid ?? "").trim();
-  const key = (item.vaultPath ?? "").trim();
-  if (!companyUid || !key) return item.previewText ?? null;
+type WebVaultPresignResult = Awaited<
+  ReturnType<VaultFilePreviewRequest["presign"]>
+>;
+
+async function presignWebVaultGet(
+  companyUid: string,
+  key: string,
+): Promise<WebVaultPresignResult> {
   try {
-    const res = await hqProFetch("/v1/files/presign", {
+    const response = await hqProFetch("/v1/files/presign", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ company: companyUid, op: "get", key }),
     });
-    if (!res.ok) return null;
-    const body = rec(await res.json());
-    const results = Array.isArray(body?.results) ? body.results : [];
-    const first = rec(results[0]);
-    const url = typeof first?.url === "string" ? first.url : "";
-    if (!url) return null;
-    const file = await fetch(url);
-    if (!file.ok) return null;
-    const text = await file.text();
-    return text.length > 200_000 ? `${text.slice(0, 200_000)}\n…` : text;
-  } catch {
-    return null;
+    if (!response.ok) {
+      return {
+        ok: false,
+        code: `http-${response.status}`,
+        message: response.statusText,
+      };
+    }
+    return { ok: true, value: await response.json() };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "network failure",
+    };
   }
+}
+
+/** Web host transport for the shared, bounded Vault preview policy. */
+export function loadWebVaultFilePreview(
+  item: ChannelFileItemModel,
+  selectedCompanyUid: string | null | undefined,
+): Promise<ChannelFilePreview> {
+  return loadVaultFilePreview({
+    item,
+    selectedCompanyUid,
+    presign: presignWebVaultGet,
+    get: (url) => fetch(url),
+  });
 }
 
 export { parseChannelMembers } from "@hq/ui";

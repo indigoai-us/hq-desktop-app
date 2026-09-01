@@ -24,3 +24,4 @@ export { default as AttachmentPreview } from "./AttachmentPreview.svelte";
 export * from "./chat-attachments";
 export * from "./upload-chat-attachments";
 export * from "./attachment-preview";
+export * from "./channel-file-preview";

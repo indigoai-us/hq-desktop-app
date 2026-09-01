@@ -112,6 +112,32 @@ describe("hydrateLiveRail", () => {
   });
 });
 
+describe("createChatSidebarApi", () => {
+  it("forwards a compose DM's recipient and body to the platform adapter", async () => {
+    const sendDm = vi.fn(async () => ok({}));
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    adapter.messaging.sendDm = sendDm;
+
+    await createChatSidebarApi(adapter).sendDm({
+      toPersonUid: "prs_ada",
+      body: "Please review the rollout.",
+    });
+
+    expect(sendDm).toHaveBeenCalledWith(
+      "prs_ada",
+      "Please review the rollout.",
+      {},
+    );
+  });
+});
+
 interface RecordedHttp {
   method: string;
   path: string;
