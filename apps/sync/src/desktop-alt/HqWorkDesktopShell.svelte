@@ -405,20 +405,37 @@
 
   onMount(() => {
     let cancelled = false;
+    let latestLiveNavigation: 'meetings' | 'other' | null = null;
+    let receivedLiveMeetingFocus = false;
 
     // The route must be restored before its optional meeting-focus payload.
     // Consume them in this order so a specific focus target is the final
-    // navigation request during a slow auth mount.
+    // navigation request during a slow auth mount. A live request received
+    // after this window was created is newer than both cold-start values: still
+    // consume them to clear native state, but never let them navigate backward.
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
-        applyDesktopAltRoute(
-          typeof pending === 'string' ? pending : null,
-          navigation,
-        );
+        if (!latestLiveNavigation) {
+          applyDesktopAltRoute(
+            typeof pending === 'string' ? pending : null,
+            navigation,
+          );
+        }
         const meetingId = await invokeFn('meetings_take_pending_focus');
-        if (cancelled || typeof meetingId !== 'string' || !meetingId.trim()) return;
+        // Native emits a meeting-focus event before its paired live Meetings
+        // route. If listener registration missed only that first event, the
+        // one-shot pending ID still belongs to the latest visible destination.
+        const pendingFocusIsCurrent =
+          latestLiveNavigation === null ||
+          (latestLiveNavigation === 'meetings' && !receivedLiveMeetingFocus);
+        if (
+          cancelled ||
+          !pendingFocusIsCurrent ||
+          typeof meetingId !== 'string' ||
+          !meetingId.trim()
+        ) return;
         navigation.navigate({ kind: 'meetings', meetingId });
       } catch {
         // Pending desktop navigation is best-effort; a mounted route still
@@ -433,14 +450,21 @@
     });
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
-      applyDesktopAltRoute(event.payload, navigation);
+      const target = applyDesktopAltRoute(event.payload, navigation);
+      if (target) {
+        latestLiveNavigation = target.kind === 'meetings' ? 'meetings' : 'other';
+      }
     }).catch(() => () => {});
 
     const unlistenMeetingFocusPromise = listen<{ meetingId?: string }>(
       'meetings:focus-meeting',
       (event) => {
         const meetingId = event.payload?.meetingId?.trim();
-        if (meetingId) navigation.navigate({ kind: 'meetings', meetingId });
+        if (meetingId) {
+          latestLiveNavigation = 'meetings';
+          receivedLiveMeetingFocus = true;
+          navigation.navigate({ kind: 'meetings', meetingId });
+        }
       },
     ).catch(() => () => {});
 

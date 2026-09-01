@@ -305,6 +305,54 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
   });
 
+  it('keeps a newer warm route when startup consumes an older cold route', async () => {
+    let releaseAuthLookup!: (value: null) => void;
+    const authLookup = new Promise<null>((resolve) => {
+      releaseAuthLookup = resolve;
+    });
+
+    await mountShell({
+      pendingRoute: 'inbox',
+      pendingMeetingId: 'mtg_focus',
+      nativeResults: { get_auth_session: authLookup },
+    });
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeTruthy();
+
+    warmRoute('settings:appearance');
+    releaseAuthLookup(null);
+    await flush();
+
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+    expect(
+      host.querySelector('[data-testid="settings-nav-appearance"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('pairs pending meeting focus with a live Meetings route received during startup', async () => {
+    let releaseAuthLookup!: (value: null) => void;
+    const authLookup = new Promise<null>((resolve) => {
+      releaseAuthLookup = resolve;
+    });
+
+    await mountShell({
+      pendingMeetingId: 'mtg_focus',
+      nativeResults: { get_auth_session: authLookup },
+    });
+
+    // Native emits the focus event before opening/focusing the window. The
+    // renderer can miss that event while still receiving its paired route.
+    warmRoute('meetings');
+    releaseAuthLookup(null);
+    await flush();
+    (host.querySelector('[data-testid="meetings-refresh"]') as HTMLButtonElement).click();
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="desktop-alt-meetings"]')).toBeTruthy();
+    expect(host.querySelector('[data-meeting-id="mtg_focus"]')?.classList.contains('focused')).toBe(
+      true,
+    );
+  });
+
   it('maps every warm native destination to a visible embedded surface', async () => {
     await mountShell();
 
