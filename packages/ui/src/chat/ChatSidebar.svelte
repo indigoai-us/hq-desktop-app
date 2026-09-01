@@ -122,7 +122,7 @@
     /** `automatic` distinguishes the initial rail selection from a user click. */
     onselect?: (row: ConversationRow, options?: { automatic?: boolean }) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
   }
 
   let {
@@ -1367,10 +1367,31 @@
   }
 
   let signOutConfirmOpen = $state(false);
+  let signOutError = $state<string | null>(null);
+  let signingOut = $state(false);
 
   function signOut() {
     footerMenuOpen = false;
+    signOutError = null;
     signOutConfirmOpen = true;
+  }
+
+  async function confirmSignOut(): Promise<void> {
+    if (signingOut) return;
+    signOutError = null;
+    if (!onsignout) {
+      signOutError = "Sign out is unavailable in this host.";
+      return;
+    }
+    signingOut = true;
+    try {
+      await onsignout();
+      signOutConfirmOpen = false;
+    } catch (error) {
+      signOutError = `Couldn’t sign out: ${String(error)}`;
+    } finally {
+      signingOut = false;
+    }
   }
 
   function openSettings() {
@@ -2437,15 +2458,15 @@
 
 <ConfirmDialog
   open={signOutConfirmOpen}
-  title="Sign out"
-  message="Sign out of HQ Work on this machine?"
+  title={signOutError ? "Couldn’t sign out" : "Sign out"}
+  message={signOutError ?? "Sign out of HQ Work on this machine?"}
   confirmLabel="Sign out"
   danger
-  oncancel={() => (signOutConfirmOpen = false)}
-  onconfirm={() => {
+  oncancel={() => {
     signOutConfirmOpen = false;
-    onsignout?.();
+    signOutError = null;
   }}
+  onconfirm={() => void confirmSignOut()}
 />
 
 {#snippet conversationRow(row: ConversationRow)}

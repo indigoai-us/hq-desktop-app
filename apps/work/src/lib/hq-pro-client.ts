@@ -120,31 +120,49 @@ export function createHqProFetch(options: {
     options.tokenProvider ?? createBrowserTokenProvider({ fetchImpl });
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const token = await tokenProvider.getToken();
-    if (!token) {
+    let target: string | null = null;
+    const requestWithCurrentToken = async (): Promise<Response | null> => {
+      const token = await tokenProvider.getToken();
+      if (!token) return null;
+      target ??= directUrl(input, options.baseUrl ?? hqProApiUrl());
+      const headers = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
+      headers.set("authorization", `Bearer ${token}`);
+      return fetchImpl(target, {
+        ...init,
+        headers,
+        // The Cognito session belongs to the web origin; hq-pro receives only
+        // its explicit Bearer and must satisfy the configured CORS policy.
+        credentials: "omit",
+      });
+    };
+
+    const response = await requestWithCurrentToken();
+    if (!response) {
       onUnauthorized();
       return new Response(
         JSON.stringify({ error: "Unauthenticated", code: "UNAUTHENTICATED" }),
         { status: 401, headers: { "content-type": "application/json" } },
       );
     }
-    const target = directUrl(input, options.baseUrl ?? hqProApiUrl());
-    const headers = new Headers(
-      init?.headers ?? (input instanceof Request ? input.headers : undefined),
-    );
-    headers.set("authorization", `Bearer ${token}`);
-    const response = await fetchImpl(target, {
-      ...init,
-      headers,
-      // The Cognito session belongs to the web origin; hq-pro receives only
-      // its explicit Bearer and must satisfy the configured CORS policy.
-      credentials: "omit",
-    });
-    if (response.status === 401) {
-      tokenProvider.clear();
-      onUnauthorized();
+    if (response.status !== 401) return response;
+
+    // A 401 can be an expired id token while the same-origin refresh cookie is
+    // still valid. Clear once, obtain a fresh token, and retry this request
+    // exactly once before falling back to the normal sign-in flow.
+    tokenProvider.clear();
+    const retry = await requestWithCurrentToken();
+    if (retry && retry.status !== 401) return retry;
+
+    onUnauthorized();
+    if (retry) {
+      return retry;
     }
-    return response;
+    return new Response(
+      JSON.stringify({ error: "Unauthenticated", code: "UNAUTHENTICATED" }),
+      { status: 401, headers: { "content-type": "application/json" } },
+    );
   };
 }
 

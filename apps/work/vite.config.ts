@@ -1,8 +1,21 @@
 import { sveltekit } from "@sveltejs/kit/vite";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+
+const webTauriCoreFallback = fileURLToPath(
+  new URL("./src/lib/tauri-web-fallback.ts", import.meta.url),
+);
 
 export default defineConfig({
   plugins: [sveltekit()],
+  resolve: {
+    // The Work web build never selects the desktop adapter. Keep the literal
+    // dynamic import in tauri-invoke.ts for the TAURI build, while ensuring
+    // this target does not emit @tauri-apps/api as a lazy browser chunk.
+    alias: process.env.TAURI
+      ? undefined
+      : { "@tauri-apps/api/core": webTauriCoreFallback },
+  },
   // TAURI is intentionally public to the client bundle: the shell selects
   // the injected TauriPlatformAdapter when this static build is launched.
   envPrefix: ["VITE_", "TAURI"],

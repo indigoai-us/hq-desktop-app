@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createTauriAttachmentHandlers,
   hydrateDesktopSelf,
+  signOutFromShell,
 } from "./desktop-shell.js";
 
 function identityAdapter(
@@ -81,6 +82,61 @@ describe("desktop shell identity", () => {
     await expect(
       hydrateDesktopSelf(null, identityAdapter("desktop", whoami)),
     ).resolves.toBeNull();
+  });
+});
+
+describe("shell sign out", () => {
+  it("clears the native desktop session before updating shell state", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const navigate = vi.fn();
+    const onDesktopSignedOut = vi.fn();
+
+    await signOutFromShell({
+      adapter: { kind: "desktop" },
+      invoke,
+      navigate,
+      onDesktopSignedOut,
+    });
+
+    expect(invoke).toHaveBeenCalledWith("sign_out");
+    expect(onDesktopSignedOut).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing web sign-out navigation", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const navigate = vi.fn();
+    const onDesktopSignedOut = vi.fn();
+
+    await signOutFromShell({
+      adapter: { kind: "web" },
+      invoke,
+      navigate,
+      onDesktopSignedOut,
+    });
+
+    expect(navigate).toHaveBeenCalledWith("/auth/signout");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(onDesktopSignedOut).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed native sign out without updating shell state", async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error("native token store unavailable");
+    });
+    const navigate = vi.fn();
+    const onDesktopSignedOut = vi.fn();
+
+    await expect(
+      signOutFromShell({
+        adapter: { kind: "desktop" },
+        invoke,
+        navigate,
+        onDesktopSignedOut,
+      }),
+    ).rejects.toThrow("native token store unavailable");
+    expect(onDesktopSignedOut).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 });
 

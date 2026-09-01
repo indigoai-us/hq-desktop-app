@@ -8,6 +8,7 @@
  */
 
 import { MeshClient, createWebCredentialProvider } from "@hq/core";
+import type { PlatformAdapter } from "@hq/platform";
 import { createChatWakeBus, routeMeshReconcile, routeMeshWake } from "@hq/ui";
 import { hqProFetch } from "./hq-pro-client.js";
 
@@ -84,4 +85,13 @@ export function startWebMesh(opts: {
   return {
     stop: () => client.stop(),
   };
+}
+
+/** The browser token bridge exists only in the hosted web application. */
+export function startWebMeshForAdapter(
+  adapter: Pick<PlatformAdapter, "kind">,
+  opts: Parameters<typeof startWebMesh>[0],
+  start: typeof startWebMesh = startWebMesh,
+): ReturnType<typeof startWebMesh> | null {
+  return adapter.kind === "web" ? start(opts) : null;
 }

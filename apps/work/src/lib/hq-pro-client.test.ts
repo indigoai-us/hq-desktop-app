@@ -58,12 +58,13 @@ describe("direct hq-pro browser transport", () => {
     expect(init.credentials).toBe("omit");
   });
 
-  it("re-enters the existing sign-in flow when hq-pro returns 401", async () => {
+  it("redirects only after the one permitted retry also returns 401", async () => {
     const onUnauthorized = vi.fn();
     const provider = tokenProvider("expired-token");
+    const fetchImpl = vi.fn(async () => new Response("expired", { status: 401 }));
     const direct = createHqProFetch({
       baseUrl: "https://hqapi.example.test",
-      fetchImpl: async () => new Response("expired", { status: 401 }),
+      fetchImpl,
       tokenProvider: provider,
       onUnauthorized,
     });
@@ -74,6 +75,72 @@ describe("direct hq-pro browser transport", () => {
     expect(response.status).toBe(401);
     expect(provider.clear).toHaveBeenCalledTimes(1);
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes an expired browser token once and retries the failed request", async () => {
+    const onUnauthorized = vi.fn();
+    const apiTokens = ["expired-token", "fresh-token"];
+    const apiAuthorization: string[] = [];
+    let requestAttempts = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/auth/token") {
+        return new Response(JSON.stringify({ idToken: apiTokens.shift() }), {
+          status: 200,
+        });
+      }
+      apiAuthorization.push(new Headers(init?.headers).get("authorization") ?? "");
+      requestAttempts += 1;
+      return new Response(requestAttempts === 1 ? "expired" : "{}", {
+        status: requestAttempts === 1 ? 401 : 200,
+      });
+    });
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      onUnauthorized,
+    });
+
+    await expect(direct("/v1/notify/channels")).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(apiAuthorization).toEqual([
+      "Bearer expired-token",
+      "Bearer fresh-token",
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("redirects once when the refresh token cannot mint a replacement", async () => {
+    const onUnauthorized = vi.fn();
+    let tokenCalls = 0;
+    let apiCalls = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (input === "/api/auth/token") {
+        tokenCalls += 1;
+        return tokenCalls === 1
+          ? new Response(JSON.stringify({ idToken: "expired-token" }), {
+              status: 200,
+            })
+          : new Response("", { status: 401 });
+      }
+      apiCalls += 1;
+      return new Response("expired", { status: 401 });
+    });
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      onUnauthorized,
+    });
+
+    await expect(direct("/v1/notify/channels")).resolves.toMatchObject({
+      status: 401,
+    });
+    expect(tokenCalls).toBe(2);
+    expect(apiCalls).toBe(1);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it("re-enters sign-in once when the same-origin token bridge is unauthenticated", async () => {

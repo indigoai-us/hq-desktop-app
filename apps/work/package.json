@@ -19,6 +19,7 @@
     "@hq/core": "workspace:*",
     "@hq/platform": "workspace:*",
     "@hq/ui": "workspace:*",
+    "@tauri-apps/api": "^2.0.0",
     "jose": "^6.2.8"
   },
   "devDependencies": {

@@ -51,7 +51,7 @@
     resolveLastSelectedId,
     seedConversationCacheFromRail,
   } from "$lib/browser-cache";
-  import { startWebMesh } from "$lib/mesh-runtime";
+  import { startWebMeshForAdapter } from "$lib/mesh-runtime";
   import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
   import {
     loadLiveProjectMeta,
@@ -62,7 +62,9 @@
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
+    signOutFromShell,
   } from "$lib/desktop-shell";
+  import { tauriInvoke } from "$lib/tauri-invoke";
 
   let { data } = $props();
 
@@ -81,15 +83,6 @@
         Boolean((window as TauriWindow).__TAURI__))
     );
   }
-
-  const tauriInvoke: InvokeFn = async (command, args) => {
-    const tauri = (window as TauriWindow).__TAURI__;
-    const invoke = tauri?.core?.invoke ?? tauri?.tauri?.invoke;
-    if (!invoke) {
-      throw new Error(`Tauri invoke is unavailable for ${command}`);
-    }
-    return invoke(command, args);
-  };
 
   const adapter: PlatformAdapter = isTauriRuntime()
     ? new TauriPlatformAdapter({ invoke: tauriInvoke })
@@ -173,13 +166,16 @@
 
   $effect(() => {
     if (!self) return;
-    const mesh = startWebMesh({
+    // The browser mesh is web-only because the static desktop build has no
+    // /api/auth/token endpoint for its browser credential transport.
+    const mesh = startWebMeshForAdapter(adapter, {
       wakes,
       fetchImpl: hqProFetch,
       onNotifications: () => {
         notificationWakeSeq += 1;
       },
     });
+    if (!mesh) return;
     return () => mesh.stop();
   });
 
@@ -334,8 +330,17 @@
     persistLastSelected(personUid, row.id);
   }
 
-  function signOut(): void {
-    window.location.assign("/auth/signout");
+  async function signOut(): Promise<void> {
+    await signOutFromShell({
+      adapter,
+      invoke: tauriInvoke,
+      navigate: (url) => window.location.assign(url),
+      onDesktopSignedOut: () => {
+        self = null;
+        companies = resolveShellCompanies({ authed: false });
+        workThreads = [];
+      },
+    });
   }
 
   function openUrl(url: string): void {

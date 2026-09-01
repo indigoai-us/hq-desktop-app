@@ -12,6 +12,32 @@ export interface TauriAttachmentHandlers {
   getAttachmentObject: (url: string) => Promise<Response>;
 }
 
+export interface ShellSignOutOptions {
+  adapter: Pick<PlatformAdapter, "kind">;
+  invoke: InvokeFn;
+  navigate: (url: string) => void;
+  onDesktopSignedOut: () => void;
+}
+
+/**
+ * The desktop owns its persistent Cognito tokens, while the web shell owns a
+ * cookie-backed session route. Do not navigate a static Tauri build to the web
+ * route: it cannot clear the native token store.
+ */
+export async function signOutFromShell({
+  adapter,
+  invoke,
+  navigate,
+  onDesktopSignedOut,
+}: ShellSignOutOptions): Promise<void> {
+  if (adapter.kind === "desktop") {
+    await invoke("sign_out");
+    onDesktopSignedOut();
+    return;
+  }
+  navigate("/auth/signout");
+}
+
 export async function hydrateDesktopSelf(
   hostSelf: SelfIdentity | null,
   adapter: ShellIdentityAdapter,
