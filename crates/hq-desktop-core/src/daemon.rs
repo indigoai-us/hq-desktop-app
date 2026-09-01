@@ -129,6 +129,23 @@ pub fn event_push_eligible() -> bool {
 }
 
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
+    let target = match crate::runner_target::local_runner_override() {
+        Some(script) => crate::runner_target::RunnerSpawnTarget::Local { script },
+        None => crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root(),
+    };
+    build_watch_runner_args_for_target(hq_folder_path, &target)
+}
+
+/// Build the watcher command for a source selected before startup preflight.
+///
+/// The same [`crate::runner_target::RunnerSpawnTarget`] is retained by the
+/// caller for runner-target repair and crash provenance. Only a cache root npm
+/// or the environment positively established is bound into the child; an
+/// assumed default must not change where npx installs packages.
+pub fn build_watch_runner_args_for_target(
+    hq_folder_path: &str,
+    target: &crate::runner_target::RunnerSpawnTarget,
+) -> SpawnArgs {
     use crate::hq_cloud::{
         HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
     };
@@ -197,26 +214,24 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // (e.g. /…/hq/packages/hq-cloud/dist/bin/sync-runner.js). Lets us
     // exercise unreleased runner changes before the version is published
     // to npm; production falls through to the npx-pinned path below.
-    if let Ok(local_runner) = std::env::var("HQ_CLOUD_LOCAL_RUNNER") {
-        if !local_runner.is_empty() {
-            let mut args = Vec::new();
-            // On the path we own (bare `node`), ALSO pass the ceiling in argv so a
-            // NODE_OPTIONS that fails to reach the child (host policy/packaging)
-            // still bounds the heap. A node CLI flag must precede the script path,
-            // and it is withheld when the user set their own `--max-old-space-size`
-            // (argv would override the user's NODE_OPTIONS value, which must win).
-            if let Some(flag) = runner_max_old_space_arg(heap_ceiling) {
-                args.push(flag);
-            }
-            args.push(local_runner);
-            args.extend(runner_args);
-            return SpawnArgs {
-                cmd: paths::resolve_bin("node"),
-                args,
-                cwd: None,
-                env: Some(env),
-            };
+    if let crate::runner_target::RunnerSpawnTarget::Local { script } = target {
+        let mut args = Vec::new();
+        // On the path we own (bare `node`), ALSO pass the ceiling in argv so a
+        // NODE_OPTIONS that fails to reach the child (host policy/packaging)
+        // still bounds the heap. A node CLI flag must precede the script path,
+        // and it is withheld when the user set their own `--max-old-space-size`
+        // (argv would override the user's NODE_OPTIONS value, which must win).
+        if let Some(flag) = runner_max_old_space_arg(heap_ceiling) {
+            args.push(flag);
         }
+        args.push(script.clone());
+        args.extend(runner_args);
+        return SpawnArgs {
+            cmd: paths::resolve_bin("node"),
+            args,
+            cwd: None,
+            env: Some(env),
+        };
     }
 
     let mut args = vec![
@@ -225,6 +240,16 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         RUNNER_BIN.to_string(),
     ];
     args.extend(runner_args);
+
+    if let Some(cache_root) = target.established_npm_cache_root() {
+        // npm config was resolved before the watcher launch. Re-export its
+        // effective value at npm's canonical lowercase spelling so the npx
+        // child is pinned to the cache attribution will inspect.
+        env.insert(
+            "npm_config_cache".to_string(),
+            cache_root.to_string_lossy().into_owned(),
+        );
+    }
 
     SpawnArgs {
         cmd: paths::resolve_bin("npx"),
@@ -1209,6 +1234,38 @@ mod tests {
             actual.eq_ignore_ascii_case(expected),
             "expected resolved {expected} path, got: {}",
             args.cmd
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_binds_the_snapshotted_npx_cache_root() {
+        let cache_root = std::path::PathBuf::from("/tmp/hq-npm-cache");
+        let target = crate::runner_target::RunnerSpawnTarget::Npx {
+            cache_root: crate::runner_target::NpmCacheRoot::Established(cache_root.clone()),
+        };
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let env = args.env.expect("watch runner env");
+
+        assert_eq!(
+            env.get("npm_config_cache"),
+            Some(&cache_root.to_string_lossy().into_owned()),
+            "npx must use the cache root retained for this launch's attribution"
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_does_not_bind_an_assumed_npx_cache_root() {
+        let target = crate::runner_target::RunnerSpawnTarget::Npx {
+            cache_root: crate::runner_target::NpmCacheRoot::Assumed(std::path::PathBuf::from(
+                "/tmp/assumed-npm-cache",
+            )),
+        };
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let env = args.env.expect("watch runner env");
+
+        assert!(
+            !env.contains_key("npm_config_cache"),
+            "an assumed default must not alter npx's cache selection"
         );
     }
 

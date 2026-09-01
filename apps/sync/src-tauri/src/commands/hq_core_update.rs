@@ -414,6 +414,14 @@ async fn install_hq_core_update_inner() -> Result<
             )
         })?;
 
+    let _update_guard =
+        crate::commands::process::begin_update_sensitive_operation().map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+                error,
+            )
+        })?;
+
     let mut cmd = crate::commands::hq_core_staging::rescue_command();
     cmd.args(crate::commands::hq_core_staging::build_rescue_args(
         &hq_folder,

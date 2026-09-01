@@ -3,18 +3,20 @@
 /// Semver range for `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
 ///
 /// Format is npm's `package-spec` — a tilde-prefixed minor floor
-/// (`~MAJOR.MINOR.0`) selects the *minor line* but lets patches flow
-/// automatically: `~5.19.0` resolves to the newest published `5.19.x` at
-/// spawn time. Bumping the minor (e.g. to `~5.20.0`) is the deliberate
-/// "select a new line" lever; patch-only fixes (5.18.1, 5.18.2, …) ship
-/// to users automatically on their next sync without a Rust rebuild.
+/// (`~MAJOR.MINOR.PATCH`) limits a newly created cache entry to that minor
+/// line. The literal spec also identifies the npx cache entry, so raising a
+/// patch floor (or moving the minor line) is the deliberate "select a new
+/// entry" lever when a runner fix must reach already-installed desktops.
 ///
-/// npx resolves the range at each spawn (the resolved version becomes
-/// the on-disk cache key under `~/.npm/_npx/`), so a freshly published
-/// patch causes a single re-fetch then steady-state cache reuse — same
-/// shape as an exact-version bump, just driven by the registry instead
-/// of source. The `commands::prewarm` task fires this same fetch on app
-/// startup so the cost lands in the background rather than during the
+/// npx keys its on-disk cache under `~/.npm/_npx/` from the input package-spec
+/// string, not the version it resolved. In npm's `libnpmexec/lib/index.js`,
+/// `missingFromTree` returns a cached node whose version satisfies a range
+/// before it fetches a manifest. A populated `~MAJOR.MINOR.PATCH` cache entry
+/// therefore keeps running its existing satisfying version indefinitely;
+/// publishing a newer patch does not re-resolve it. Raising this floor changes
+/// the input spec and thus the npx cache key, which is how a patch fix reaches
+/// existing installs. The `commands::prewarm` task materializes that new entry
+/// at app startup so the cost lands in the background rather than during the
 /// user's first click of "Sync Now".
 ///
 /// 5.19.x switches the sync runner's slug resolution to the per-user
@@ -423,7 +425,13 @@
 /// semantics are unchanged from the 6.15 line; the bump keeps the desktop pill
 /// and `hq rescue` on ONE minor line (`RESCUE_CONTRACT_FLOOR` below moves in
 /// lockstep, mirrored in hq-cli's rescue parity test).
-pub const HQ_CLOUD_VERSION: &str = "~6.16.0";
+///
+/// `~6.16.0` -> `~6.16.2`: floor the runner at the sync-runner heap-retention
+/// fix. Although 6.16.2 satisfies `~6.16.0`, npm caches `_npx` entries by the
+/// input spec string and `missingFromTree` reuses a populated range-satisfying
+/// entry without a manifest fetch. Raising the floor changes the cache key, so
+/// existing desktops cannot keep serving a cached 6.16.0 or 6.16.1 runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.2";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -491,7 +499,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.0");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.2");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry

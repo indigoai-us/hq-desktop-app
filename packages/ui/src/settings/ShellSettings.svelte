@@ -553,6 +553,7 @@
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {companies}
+          {adapter}
           {storage}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}

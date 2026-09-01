@@ -103,7 +103,8 @@ describe('Windows Node-backed launcher audit', () => {
     const updater = read('src-tauri/src/updater.rs');
     const versionGate = read('src-tauri/src/commands/version_gate.rs');
     expect(updater).toContain('download_and_install');
-    expect(versionGate).toContain('download_and_install');
+    expect(versionGate).toContain('crate::updater::install_stable_update(app).await');
+    expect(versionGate).not.toContain('download_and_install');
     expect(`${updater}\n${versionGate}`).not.toMatch(/resolve_bin\("(?:node|npm|npx)"\)/);
   });
 });

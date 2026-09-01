@@ -9,9 +9,9 @@
 //!   - `version_gate.rs` (us) — authoritative hq-pro check that can hard-yank
 //!                              a known-bad hq-sync release without waiting
 //!                              for the npm/GitHub `latest` channels to move.
-//!                              On `updateRequired:true` we reuse the Tauri
-//!                              updater's `download_and_install` directly,
-//!                              which then restarts the app.
+//!                              On `updateRequired:true` we use the shared safe
+//!                              update coordinator, including Windows process
+//!                              quiescence and helper handoff.
 //!
 //! Trust model: anonymous. The menubar may be running pre-sign-in (cold
 //! launch, expired tokens) so we never send credentials. Endpoint identifies
@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_updater::UpdaterExt;
 
 use crate::util::client_info::{client_headers, client_version};
 use crate::util::logfile::log;
@@ -150,35 +149,6 @@ pub(crate) async fn fetch_decision(
     Ok(Some(parsed))
 }
 
-/// Force-install the latest hq-sync via the Tauri updater. Mirrors
-/// `updater::install_update` — calls `updater.check().await` again because
-/// the `Update` value isn't `Clone`, then `download_and_install`, then
-/// `app.restart()`. On macOS the process typically terminates inside
-/// `download_and_install`; the explicit restart() is a cross-platform
-/// safety net.
-async fn force_install(app: &AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    match updater.check().await {
-        Ok(Some(update)) => {
-            update
-                .download_and_install(|_, _| {}, || {})
-                .await
-                .map_err(|e| e.to_string())?;
-            app.restart();
-        }
-        Ok(None) => {
-            // hq-pro says we're below min, but the Tauri updater can't see
-            // any newer release. This means the GitHub `latest.json` hasn't
-            // been published yet — surface it loudly so we can debug.
-            return Err("hq-pro hard-gate fired but tauri-updater sees no release; \
-                 latest.json may be stale"
-                .to_string());
-        }
-        Err(e) => return Err(e.to_string()),
-    }
-    Ok(())
-}
-
 /// React to a single decision. Side-effects:
 ///   - `update_required` -> emit `version-gate:update-required` (frontend
 ///      shows blocking modal), then attempt force-install. On force-install
@@ -203,19 +173,8 @@ async fn react_to_decision(app: &AppHandle, decision: &VersionCheckResponse) {
                 decision.current_version, decision.min_version, decision.latest_version
             ),
         );
-        // Windows cannot install silently: NSIS dies on files held open by
-        // the running app/sidecar and leaves a half-removed install (the
-        // 2026-08-02 field failure). Leave the blocking modal up — its
-        // manual install path runs through the guarded in-app flow instead.
-        if !crate::updater::silent_install_supported() {
-            log(
-                "version-gate",
-                "silent install unsupported on this platform — blocking modal stays up for manual install",
-            );
-            return;
-        }
-        if let Err(e) = force_install(app).await {
-            log("version-gate", &format!("force_install failed: {e}"));
+        if let Err(e) = crate::updater::install_stable_update(app).await {
+            log("version-gate", &format!("safe install failed: {e}"));
         }
         return;
     }

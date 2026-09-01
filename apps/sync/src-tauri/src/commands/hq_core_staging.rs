@@ -707,6 +707,14 @@ async fn run_replace_from_staging_inner(
         )
     })?;
 
+    let _update_guard =
+        crate::commands::process::begin_update_sensitive_operation().map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+                error,
+            )
+        })?;
+
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
     // Staging leaves --ref to the engine default (main) and has no floor SHA.
