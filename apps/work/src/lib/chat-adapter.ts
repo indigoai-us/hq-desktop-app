@@ -70,7 +70,11 @@ export interface HydratedRail {
   contacts: DmContactInput[];
 }
 
-let workFeedCache: { at: number; items: WorkFeedItem[] } | null = null;
+let workFeedCache: {
+  key: string;
+  at: number;
+  items: WorkFeedItem[];
+} | null = null;
 let railHydrate: { key: string; promise: Promise<HydratedRail> } | null = null;
 
 /** Reconciler snapshot marker — never send this to GET /v1/notify/channels. */
@@ -84,19 +88,24 @@ function isPagedDirectoryCursor(cursor: string | undefined): cursor is string {
   );
 }
 
-async function loadWorkFeed(): Promise<WorkFeedItem[]> {
+async function loadWorkFeed(personUid: string): Promise<WorkFeedItem[]> {
   const now = Date.now();
-  if (workFeedCache && now - workFeedCache.at < WORK_FEED_TTL_MS) {
+  if (
+    workFeedCache?.key === personUid &&
+    now - workFeedCache.at < WORK_FEED_TTL_MS
+  ) {
     return workFeedCache.items;
   }
   try {
     const res = await hqProFetch("/v1/work-mesh/work");
-    if (!res.ok) return workFeedCache?.items ?? [];
+    if (!res.ok) {
+      return workFeedCache?.key === personUid ? workFeedCache.items : [];
+    }
     const items = parseWorkFeed(await res.json());
-    workFeedCache = { at: now, items };
+    workFeedCache = { key: personUid, at: now, items };
     return items;
   } catch {
-    return workFeedCache?.items ?? [];
+    return workFeedCache?.key === personUid ? workFeedCache.items : [];
   }
 }
 
@@ -172,7 +181,7 @@ export function hydrateLiveRail(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        loadWorkFeed(),
+        loadWorkFeed(personUid),
         loadInboxBundle(adapter),
       ]);
       const contactsBase = contactsResult.ok
@@ -252,6 +261,7 @@ export function hydrateLiveRail(
 
 export function resetLiveRailHydrate(): void {
   railHydrate = null;
+  workFeedCache = null;
 }
 
 export function createChatSidebarApi(
@@ -295,7 +305,7 @@ export function createChatSidebarApi(
       ),
     }),
     listChannels: async (args) => {
-      const items = await loadWorkFeed();
+      const items = await loadWorkFeed(personUid);
       return {
         channels: workItemsAsChannels(items, args.companyUid),
       } as ChannelsResponse;

@@ -22,6 +22,11 @@ import {
   readShallowCache,
   writeShallowCache,
 } from "./browser-cache.js";
+import { hqProFetch } from "./hq-pro-client.js";
+
+const mockedHqProFetch = vi.hoisted(() => vi.fn());
+
+vi.mock("./hq-pro-client.js", () => ({ hqProFetch: mockedHqProFetch }));
 
 function stubAdapter(
   fetchChannelDirectory: PlatformAdapter["messaging"]["fetchChannelDirectory"],
@@ -65,6 +70,10 @@ function shallowStorage(): Storage {
 describe("hydrateLiveRail", () => {
   beforeEach(() => {
     resetLiveRailHydrate();
+    vi.mocked(hqProFetch).mockReset();
+    vi.mocked(hqProFetch).mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), { status: 200 }),
+    );
     vi.stubGlobal("localStorage", shallowStorage());
     vi.stubGlobal(
       "fetch",
@@ -382,6 +391,61 @@ describe("hydrateLiveRail", () => {
 });
 
 describe("createChatSidebarApi", () => {
+  beforeEach(() => {
+    resetLiveRailHydrate();
+    vi.mocked(hqProFetch).mockReset();
+  });
+
+  afterEach(() => {
+    resetLiveRailHydrate();
+  });
+
+  it("partitions the work-feed cache by hydrating identity", async () => {
+    vi.mocked(hqProFetch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [{ projectId: "project_a", companyUid: "cmp_shared" }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [{ projectId: "project_b", companyUid: "cmp_shared" }],
+          }),
+          { status: 200 },
+        ),
+      );
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    const accountA = createChatSidebarApi(adapter, [], "prs_a");
+    const accountB = createChatSidebarApi(adapter, [], "prs_b");
+    const listProjectIds = async (api: typeof accountA) =>
+      (
+        await api.listChannels({
+          companyUid: "cmp_shared",
+          includeCompanyProjects: true,
+        })
+      )?.channels?.map((channel) => channel.channelId) ?? [];
+
+    expect(await listProjectIds(accountA)).toEqual(["project_a"]);
+    expect(hqProFetch).toHaveBeenCalledTimes(1);
+
+    expect(await listProjectIds(accountA)).toEqual(["project_a"]);
+    expect(hqProFetch).toHaveBeenCalledTimes(1);
+
+    expect(await listProjectIds(accountB)).toEqual(["project_b"]);
+    expect(hqProFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("forwards a compose DM's recipient and body to the platform adapter", async () => {
     const sendDm = vi.fn(async () => ok({}));
     const adapter = stubAdapter(async () =>
