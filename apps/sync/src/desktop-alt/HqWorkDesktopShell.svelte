@@ -405,20 +405,30 @@
 
   onMount(() => {
     let cancelled = false;
+    let receivedLiveNavigation = false;
 
     // The route must be restored before its optional meeting-focus payload.
     // Consume them in this order so a specific focus target is the final
-    // navigation request during a slow auth mount.
+    // navigation request during a slow auth mount. A live request received
+    // after this window was created is newer than both cold-start values: still
+    // consume them to clear native state, but never let them navigate backward.
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
-        applyDesktopAltRoute(
-          typeof pending === 'string' ? pending : null,
-          navigation,
-        );
+        if (!receivedLiveNavigation) {
+          applyDesktopAltRoute(
+            typeof pending === 'string' ? pending : null,
+            navigation,
+          );
+        }
         const meetingId = await invokeFn('meetings_take_pending_focus');
-        if (cancelled || typeof meetingId !== 'string' || !meetingId.trim()) return;
+        if (
+          cancelled ||
+          receivedLiveNavigation ||
+          typeof meetingId !== 'string' ||
+          !meetingId.trim()
+        ) return;
         navigation.navigate({ kind: 'meetings', meetingId });
       } catch {
         // Pending desktop navigation is best-effort; a mounted route still
@@ -433,6 +443,7 @@
     });
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
+      receivedLiveNavigation = true;
       applyDesktopAltRoute(event.payload, navigation);
     }).catch(() => () => {});
 
@@ -440,7 +451,10 @@
       'meetings:focus-meeting',
       (event) => {
         const meetingId = event.payload?.meetingId?.trim();
-        if (meetingId) navigation.navigate({ kind: 'meetings', meetingId });
+        if (meetingId) {
+          receivedLiveNavigation = true;
+          navigation.navigate({ kind: 'meetings', meetingId });
+        }
       },
     ).catch(() => () => {});
 

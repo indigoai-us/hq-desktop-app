@@ -305,6 +305,29 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
   });
 
+  it('keeps a newer warm route when startup consumes an older cold route', async () => {
+    let releaseAuthLookup!: (value: null) => void;
+    const authLookup = new Promise<null>((resolve) => {
+      releaseAuthLookup = resolve;
+    });
+
+    await mountShell({
+      pendingRoute: 'inbox',
+      pendingMeetingId: 'mtg_focus',
+      nativeResults: { get_auth_session: authLookup },
+    });
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeTruthy();
+
+    warmRoute('settings:appearance');
+    releaseAuthLookup(null);
+    await flush();
+
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+    expect(
+      host.querySelector('[data-testid="settings-nav-appearance"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
   it('maps every warm native destination to a visible embedded surface', async () => {
     await mountShell();
 
