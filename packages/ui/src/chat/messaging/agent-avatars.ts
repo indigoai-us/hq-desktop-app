@@ -16,7 +16,7 @@
 // vite/client where those types are loaded (apps/sync); packages/ui's own
 // tsconfig has `types: []`, so the call is ts-ignored rather than redeclared
 // (a local ambient declaration would collide with vite/client downstream).
-// Call it unconditionally: a `typeof import.meta.glob === "function"` guard
+// Call it unconditionally: a `typeof` guard on the glob
 // survives Vite's rewrite (Vite only rewrites the *call*) and evaluates to
 // false in the browser, so the production bundle would ship an empty set.
 const modules: Record<string, unknown> =

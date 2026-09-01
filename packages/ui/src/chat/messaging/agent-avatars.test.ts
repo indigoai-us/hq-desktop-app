@@ -50,6 +50,11 @@ describe("agent-avatars", () => {
   it("does not guard import.meta.glob behind typeof", () => {
     // The guard survives bundling (Vite only rewrites the *call*) and
     // disables the set in production, where import.meta.glob is undefined.
-    expect(src).not.toContain("typeof import.meta.glob");
+    const code = src
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("//"))
+      .join("\n");
+    expect(code).not.toMatch(/typeof\s+import\.meta\.glob/);
+    expect(code).toMatch(/import\.meta\.glob\(/);
   });
 });
