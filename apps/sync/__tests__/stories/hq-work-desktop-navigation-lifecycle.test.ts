@@ -54,6 +54,12 @@ interface Options {
   pendingRoute?: string | null;
   pendingMeetingId?: string | null;
   signedIn?: boolean;
+  session?: {
+    accountId: string;
+    whoami: { personUid: string; email: string; displayName: string };
+    workspaces?: Promise<unknown>;
+  };
+  authSession?: unknown;
   calls?: string[];
   workspaceFailure?: boolean;
   identityFailure?: boolean;
@@ -65,8 +71,13 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
   return async (command, args) => {
     options.calls?.push(command);
     switch (command) {
+      case 'get_auth_session':
+        return options.authSession ?? null;
       case 'get_auth_state':
-        return { authenticated: options.signedIn ?? true, accountId: 'acct_ada' };
+        return {
+          authenticated: options.signedIn ?? true,
+          accountId: options.session?.accountId ?? 'acct_ada',
+        };
       case 'desktop_alt_consume_pending_route':
         return options.pendingRoute ?? null;
       case 'meetings_take_pending_focus':
@@ -78,6 +89,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         return false;
       case 'list_syncable_workspaces':
         if (options.workspaceFailure) throw new Error('workspace service unavailable');
+        if (options.session?.workspaces) return options.session.workspaces;
         return {
           workspaces: [
             {
@@ -152,7 +164,10 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
               body: JSON.stringify({ error: 'identity service unavailable' }),
             };
           }
-          return { status: 200, body: JSON.stringify(WHOAMI) };
+          return {
+            status: 200,
+            body: JSON.stringify(options.session?.whoami ?? WHOAMI),
+          };
         }
         if (path.startsWith('/v1/google/connect')) {
           return {
@@ -170,7 +185,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
   };
 }
 
-async function flush(times = 16): Promise<void> {
+async function flush(times = 64): Promise<void> {
   for (let i = 0; i < times; i += 1) await Promise.resolve();
   flushSync();
 }
@@ -212,6 +227,12 @@ function warmAuthSessionReady(): void {
   const listener = nativeListeners.get('auth:session-ready');
   if (!listener) throw new Error('auth:session-ready listener was not registered');
   listener({ payload: { authenticated: true } });
+}
+
+function warmAuthSessionChanged(payload: unknown): void {
+  const listener = nativeListeners.get('auth:session-changed');
+  if (!listener) throw new Error('auth:session-changed listener was not registered');
+  listener({ payload });
 }
 
 function warmPackageUpdates(payload: unknown): void {
@@ -645,5 +666,149 @@ describe('embedded Work navigation and lifecycle', () => {
     (host.querySelector('[data-testid="hq-work-workspace-error"] button') as HTMLButtonElement).click();
     await flush(64);
     expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+  });
+
+  it('synchronously clears account A and rejects its late workspace completion after native switches to B', async () => {
+    let releaseAWorkspaces: ((value: unknown) => void) | undefined;
+    const account: NonNullable<Options['session']> = {
+      accountId: 'acct_ada',
+      whoami: WHOAMI,
+      workspaces: new Promise<unknown>((resolve) => {
+        releaseAWorkspaces = resolve;
+      }),
+    };
+    await mountShell({ session: account });
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+
+    account.accountId = 'acct_grace';
+    account.whoami = {
+      personUid: 'prs_grace',
+      email: 'grace@example.test',
+      displayName: 'Grace Hopper',
+    };
+    warmAuthSessionChanged({
+      accountId: 'acct_grace',
+      generation: 2,
+      status: 'active',
+      reason: 'account changed',
+    });
+
+    // The tenant boundary is synchronous: no A-labelled renderer stays mounted
+    // while the B identity/profile/workspaces loads.
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeTruthy();
+
+    releaseAWorkspaces?.({
+      workspaces: [
+        { slug: 'indigo', cloudUid: 'cmp_indigo', role: 'owner', membershipStatus: 'active' },
+      ],
+    });
+    await flush(64);
+
+    warmRoute('settings');
+    await flush(64);
+    expect(
+      (host.querySelector('[data-testid="settings-display-name-input"]') as HTMLInputElement)
+        .value,
+    ).toBe('Grace');
+  });
+
+  it('retries only the recoverable native refresh state on coalesced online/focus recovery', async () => {
+    const calls: string[] = [];
+    const auth: Options = {
+      calls,
+      authSession: {
+        accountId: 'acct_ada',
+        generation: 1,
+        status: 'refresh_temporarily_unavailable',
+        reason: 'network unavailable',
+      },
+    };
+    await mountShell(auth);
+    expect(host.querySelector('[data-testid="hq-work-auth-recovery"]')).toBeTruthy();
+    const before = calls.filter((command) => command === 'get_auth_session').length;
+
+    auth.authSession = {
+      accountId: 'acct_ada',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    };
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('focus'));
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+    // Both browser recovery signals share one in-flight revalidation. The
+    // second lookup is the nested B-generation hydration, not a second focus
+    // or online request.
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before + 2);
+  });
+
+  it('keeps a ready shell mounted and on its destination during ordinary browser wakeups', async () => {
+    const calls: string[] = [];
+    await mountShell({ calls });
+    warmRoute('settings:appearance');
+    await flush();
+    const before = calls.filter((command) => command === 'get_auth_session').length;
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush(64);
+
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before);
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="settings-nav-appearance"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('keeps invalid credentials fail closed until the user explicitly retries', async () => {
+    const calls: string[] = [];
+    const auth: Options = {
+      calls,
+      authSession: {
+        accountId: 'acct_ada',
+        generation: 1,
+        status: 'credentials_invalid',
+        reason: 'refresh token rejected',
+      },
+    };
+    await mountShell(auth);
+    expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
+    expect(host.textContent).toContain('sign-in is no longer valid');
+    const beforeAutomaticRecovery = calls.filter(
+      (command) => command === 'get_auth_session',
+    ).length;
+
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(
+      beforeAutomaticRecovery,
+    );
+
+    auth.authSession = {
+      accountId: 'acct_ada',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    };
+    const retry = host.querySelector(
+      '[data-testid="hq-work-signed-out"] button.secondary',
+    ) as HTMLButtonElement;
+    retry.click();
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
   });
 });

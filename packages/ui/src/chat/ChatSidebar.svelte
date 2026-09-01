@@ -31,6 +31,7 @@
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
+  import { createTenantStorage } from "../identity/tenant-storage.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     createChannelDirectoryReconciler,
@@ -110,6 +111,10 @@
     selectedId?: string | null;
     /** External company scope (cloud uid). Daybook: picking a company filters the daybook. */
     scopeUid?: string | null;
+    /** Native auth partition for every renderer-side cache/cursor. */
+    tenantAccountId?: string | null;
+    /** Company partition paired with `tenantAccountId`. */
+    tenantCompanyId?: string | null;
     /**
      * Host-owned directory (local mesh overlay). Painted before the async
      * reconciler so a cleared localStorage + empty first fetch cannot wipe
@@ -121,6 +126,8 @@
     onopenSettings?: () => void;
     /** `automatic` distinguishes the initial rail selection from a user click. */
     onselect?: (row: ConversationRow, options?: { automatic?: boolean }) => void;
+    /** Synchronously clears/rekeys the parent when a company tenant changes. */
+    oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => void;
   }
@@ -135,11 +142,14 @@
     accountInitials = null,
     selectedId = null,
     scopeUid = null,
+    tenantAccountId = null,
+    tenantCompanyId = null,
     seedDirectory = null,
     oncommand,
     onnavigateMessages,
     onopenSettings,
     onselect,
+    oncompanyscopechange,
     onsignout,
   }: Props = $props();
 
@@ -153,7 +163,10 @@
     delta?: boolean;
   }
 
-  const storage = typeof window !== "undefined" ? window.localStorage : null;
+  const storage = createTenantStorage(
+    typeof window !== "undefined" ? window.localStorage : null,
+    { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
+  );
 
   let channels = $state<Channel[]>(
     loadConversationCache(storage)?.channels ?? [],
@@ -188,8 +201,11 @@
   let pendingRequests = $state<DmRequest[]>([]);
 
   let scope = $state<CompanyScope>("all");
-  $effect(() => {
-    if (scopeUid) scope = scopeUid;
+  // DesktopApp re-keys this sidebar when its company tenant changes. Apply the
+  // host-owned scope before rendering so a company-partitioned cache cannot
+  // briefly be treated as the all-company rail.
+  $effect.pre(() => {
+    scope = scopeUid ?? "all";
   });
   let sortMode = $state<SortMode>("recent");
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
@@ -921,6 +937,9 @@
   function selectScope(next: CompanyScope): void {
     scope = next;
     scopeMenuOpen = false;
+    oncompanyscopechange?.(
+      next === "all" || next === "personal" ? null : next,
+    );
   }
 
   function scopeShortcutLabel(optionId: string, companyIndex: number): string {
@@ -1373,7 +1392,7 @@
       if (next == null) return;
       event.preventDefault();
       event.stopPropagation();
-      scope = next;
+      selectScope(next);
     }
 
     window.addEventListener("keydown", onKeyDown, true);
