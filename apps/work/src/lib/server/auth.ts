@@ -64,7 +64,7 @@ function resolveTestJwks(): JSONWebKeySet | undefined {
 }
 
 export interface AuthConfigOptions {
-  /** Request origin (`url.origin`). Used when PUBLIC_APP_ORIGIN is unset. */
+  /** Request origin (`url.origin`). Used locally when PUBLIC_APP_ORIGIN is unset. */
   origin?: string;
 }
 
@@ -99,8 +99,7 @@ export function authConfig(opts: AuthConfigOptions = {}): AuthConfig {
     // Locally we fall back to the request origin, then localhost:3000.
     appOrigin:
       publicEnv.PUBLIC_APP_ORIGIN ||
-      opts.origin ||
-      (local ? WEB_DEV_APP_ORIGIN : ""),
+      (local ? opts.origin || WEB_DEV_APP_ORIGIN : ""),
     testJwks: resolveTestJwks(),
   };
 }

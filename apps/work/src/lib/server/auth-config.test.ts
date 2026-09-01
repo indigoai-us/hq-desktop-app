@@ -43,13 +43,15 @@ afterEach(() => {
 });
 
 describe("authConfig / isSigninConfigured", () => {
-  it("is configured with the production-style env set (PUBLIC_APP_ORIGIN is PUBLIC_-prefixed)", () => {
+  it("is configured on Vercel production with a PUBLIC_-prefixed app origin", () => {
     process.env.AWS_REGION = "us-east-1";
     process.env.COGNITO_USER_POOL_ID = "us-east-1_TESTPOOL";
     process.env.COGNITO_CLIENT_ID = "testclientid";
     process.env.COGNITO_HOSTED_UI_DOMAIN =
       "vault-test.auth.us-east-1.amazoncognito.com";
     process.env.PUBLIC_APP_ORIGIN = "https://work.hq.computer";
+    process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "production";
 
     const config = authConfig();
     expect(config.appOrigin).toBe("https://work.hq.computer");
@@ -74,12 +76,14 @@ describe("authConfig / isSigninConfigured", () => {
     expect(isSigninConfigured(config)).toBe(true);
   });
 
-  it("stays unconfigured on Vercel production when PUBLIC_APP_ORIGIN is missing", () => {
+  it("fails closed on Vercel production when PUBLIC_APP_ORIGIN is missing", () => {
     process.env.VERCEL = "1";
     process.env.VERCEL_ENV = "production";
     process.env.COGNITO_CLIENT_ID = "testclientid";
     process.env.COGNITO_HOSTED_UI_DOMAIN =
       "vault-test.auth.us-east-1.amazoncognito.com";
-    expect(isSigninConfigured(authConfig())).toBe(false);
+    const config = authConfig({ origin: "https://some-preview.vercel.app" });
+    expect(config.appOrigin).toBe("");
+    expect(isSigninConfigured(config)).toBe(false);
   });
 });
