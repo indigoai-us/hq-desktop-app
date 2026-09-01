@@ -61,7 +61,11 @@ type AuthSession = {
   generation: number;
   status: AuthStatus;
 };
-type NativeResponse = { status: number; body: string };
+type NativeResponse = {
+  personUid: string;
+  email: string;
+  displayName: string;
+};
 type CapturedDesktopAppProps = {
   self: SelfIdentity | null;
   companies: Workspace[];
@@ -106,12 +110,9 @@ function workspace(account: string): Record<string, string> {
 
 function nativeWhoami(account: string): NativeResponse {
   return {
-    status: 200,
-    body: JSON.stringify({
-      personUid: `prs_${account}`,
-      email: `${account}@example.com`,
-      displayName: `Person ${account}`,
-    }),
+    personUid: `prs_${account}`,
+    email: `${account}@example.com`,
+    displayName: `Person ${account}`,
   };
 }
 
@@ -189,11 +190,17 @@ beforeEach(() => {
         ? { authenticated: true, accountId }
         : { authenticated: false };
     }
+    if (command === "whoami") {
+      if (!accountId) throw new Error("Native whoami requires an active account");
+      identityQueries.push("whoami");
+      return whoamiForAccount(accountId);
+    }
     if (command === "hq_pro_fetch") {
       const url = (args?.url as string | undefined) ?? "";
-      if (url === "/v1/identity/whoami" && accountId) {
-        identityQueries.push("whoami");
-        return whoamiForAccount(accountId);
+      if (url === "/v1/identity/whoami") {
+        throw new Error(
+          "desktop identity must use the native whoami command, not GET /v1/identity/whoami",
+        );
       }
     }
     if (command === "list_syncable_workspaces") {
