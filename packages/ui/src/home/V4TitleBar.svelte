@@ -7,6 +7,10 @@
   import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
   import { corePillDotTone } from "./core-popover-model.js";
+  import {
+    createLaunchActions,
+    type LaunchKey,
+  } from "../settings/launch-actions.js";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -88,6 +92,7 @@
     hydrationRefreshing = false,
     conflictCount = 0,
     conflictCompany = null,
+    hqFolderPath = null,
     onsync,
     oncancel,
     onretry,
@@ -209,6 +214,129 @@
   let coreOpen = $state(false);
   let coreContainer: HTMLDivElement | null = $state(null);
 
+  /**
+   * Launch menu (titlebar): opens the user's HQ folder in Claude Code /
+   * Codex (ChatGPT) / Grok Build. Reuses the exact SetupChannelIntro
+   * cascades via `createLaunchActions`, but with NO prefilled prompt — a
+   * plain workspace launch, not the `/setup` onboarding flow.
+   *
+   * The HQ folder path is lazy-loaded from `settings.getSetupStatus` on
+   * first open (same source SetupChannelIntro uses); the `hqFolderPath`
+   * prop, when provided by the host, wins and skips the fetch.
+   */
+  let launchOpen = $state(false);
+  let launchContainer: HTMLDivElement | null = $state(null);
+  let launchMenuEl: HTMLDivElement | null = $state(null);
+  let launchFolder = $state<string | null>(null);
+  let launching = $state<LaunchKey | null>(null);
+  let launchErrors = $state<Partial<Record<LaunchKey, string>>>({});
+
+  const resolvedLaunchFolder = $derived(
+    (hqFolderPath ?? launchFolder ?? "").trim(),
+  );
+
+  async function ensureLaunchFolder(): Promise<void> {
+    if (resolvedLaunchFolder || launchFolder !== null) return;
+    try {
+      const res = await adapter?.settings?.getSetupStatus?.();
+      const status =
+        res && res.ok ? (res.value as { hqFolderPath?: string } | null) : null;
+      launchFolder = status?.hqFolderPath?.trim() ?? "";
+    } catch {
+      launchFolder = "";
+    }
+  }
+
+  function toggleLaunch(): void {
+    launchOpen = !launchOpen;
+    if (launchOpen) {
+      coreOpen = false;
+      launchErrors = {};
+      void ensureLaunchFolder();
+    }
+  }
+
+  async function runLaunch(key: LaunchKey): Promise<void> {
+    if (launching) return;
+    await ensureLaunchFolder();
+    if (!resolvedLaunchFolder) {
+      launchErrors = {
+        ...launchErrors,
+        [key]: "HQ folder not configured yet — finish setup first.",
+      };
+      return;
+    }
+    launchErrors = { ...launchErrors, [key]: undefined };
+    launching = key;
+    try {
+      // Plain launch: no prompt argument, so Claude's deep link omits `q`
+      // and Codex's workspace opens without pre-typed text.
+      const actions = createLaunchActions({
+        shell: adapter.shell,
+        hqFolderPath: resolvedLaunchFolder,
+      });
+      const error =
+        key === "claude"
+          ? await actions.launchClaude()
+          : key === "codex"
+            ? await actions.launchCodex()
+            : await actions.launchGrok();
+      if (error) {
+        launchErrors = { ...launchErrors, [key]: error };
+      } else {
+        launchOpen = false;
+      }
+    } finally {
+      launching = null;
+    }
+  }
+
+  /** Escape / outside-click close + ArrowUp/ArrowDown item nav (menu a11y). */
+  $effect(() => {
+    if (!launchOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (launchContainer && !launchContainer.contains(event.target)) {
+        launchOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        launchOpen = false;
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      const items = Array.from(
+        launchMenuEl?.querySelectorAll<HTMLButtonElement>(
+          "[role='menuitem']:not(:disabled)",
+        ) ?? [],
+      );
+      if (items.length === 0) return;
+      event.preventDefault();
+      const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        event.key === "ArrowDown"
+          ? items[(idx + 1) % items.length]
+          : items[(idx - 1 + items.length) % items.length];
+      next?.focus();
+    }
+
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  });
+
+  const LAUNCH_ITEMS: ReadonlyArray<{ key: LaunchKey; label: string }> = [
+    { key: "claude", label: "Claude Code" },
+    { key: "codex", label: "Codex (ChatGPT)" },
+    { key: "grok", label: "Grok Build (terminal)" },
+  ];
+
   /** G7: amber dot while a conflict/attention item is pending; green when healthy. */
   const coreDotTone = $derived(
     corePillDotTone({
@@ -221,6 +349,7 @@
 
   function openCore(): void {
     coreOpen = !coreOpen;
+    if (coreOpen) launchOpen = false;
   }
 
   function isDragBlocker(target: EventTarget | null): boolean {
@@ -335,6 +464,52 @@
   ></div>
 
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
+    <div class="v4-launch-wrap" bind:this={launchContainer}>
+      <button
+        type="button"
+        class="v4-core-pill"
+        data-testid="titlebar-launch"
+        title="Launch"
+        aria-haspopup="menu"
+        aria-expanded={launchOpen}
+        aria-label="Open HQ folder in an AI tool"
+        onclick={toggleLaunch}
+      >
+        Launch
+        <span class="v4-core-caret" aria-hidden="true">⌄</span>
+      </button>
+      {#if launchOpen}
+        <div
+          class="v4-launch-menu"
+          role="menu"
+          aria-label="Launch HQ folder in"
+          data-testid="titlebar-launch-menu"
+          bind:this={launchMenuEl}
+        >
+          {#each LAUNCH_ITEMS as item (item.key)}
+            <button
+              type="button"
+              class="v4-launch-item"
+              role="menuitem"
+              data-testid={`titlebar-launch-${item.key}`}
+              disabled={launching !== null && launching !== item.key}
+              onclick={() => void runLaunch(item.key)}
+            >
+              <span class="v4-launch-item-label">
+                {launching === item.key ? `Opening ${item.label}…` : item.label}
+              </span>
+              {#if launchErrors[item.key]}
+                <span
+                  class="v4-launch-item-error"
+                  data-testid={`titlebar-launch-${item.key}-error`}
+                  >{launchErrors[item.key]}</span
+                >
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
     <button
       type="button"
       class="v4-icon-btn"
@@ -507,6 +682,70 @@
   .v4-core-wrap {
     position: relative;
     flex: 0 0 auto;
+  }
+
+  .v4-launch-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  /* Dropdown anchored under the Launch pill. Same stacking story as the Core
+     popover: the titlebar itself is z-index 30, above the channel header, so
+     an absolutely positioned menu needs no portal. Semantic tokens only —
+     dark + light come along for free. */
+  .v4-launch-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    padding: 4px;
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    background: var(--bg2, var(--btn-bg));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .v4-launch-item {
+    appearance: none;
+    -webkit-appearance: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .v4-launch-item:hover:not(:disabled),
+  .v4-launch-item:focus-visible {
+    background: var(--hover);
+  }
+
+  .v4-launch-item:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -2px;
+  }
+
+  .v4-launch-item:disabled {
+    color: var(--t3);
+    cursor: default;
+  }
+
+  .v4-launch-item-error {
+    color: var(--warn);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
   }
 
   .v4-core-pill {

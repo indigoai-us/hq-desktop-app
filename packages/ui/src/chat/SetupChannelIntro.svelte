@@ -4,26 +4,20 @@
    * support channel in the live desktop shell: welcome cards, resource
    * links, and the three launch actions (Claude Code / Codex / Grok Build).
    *
-   * REUSE, do not reimplement: launch paths mirror SetupIncompleteCard —
-   * Claude Code goes desktop deep link (`buildClaudeCodeUrl` →
-   * `shell.openClaudeCodeLink`) then CLI (`shell.launchClaudeCode`); Codex
-   * goes ChatGPT desktop app first (`shell.launchCodexWorkspace` — workspace
-   * loaded + `/setup` pre-typed) then CLI terminal
-   * (`shell.launchCliInTerminal`), clipboard copy as last resort; Grok goes
-   * through `shell.launchCliInTerminal`. The HQ folder path
-   * comes from `settings.getSetupStatus`. The live message thread + composer
-   * below this header are the shell's standard ChannelConversation pipeline
-   * with channelId "setup" — this component owns only the intro.
+   * REUSE, do not reimplement: launch paths live in
+   * `createLaunchActions` (settings/launch-actions.ts) — the same cascade
+   * the title-bar Launch menu uses, with `/setup` prefilled from
+   * `SETUP_LAUNCH_COMMANDS`. The HQ folder path comes from
+   * `settings.getSetupStatus`. The live message thread + composer below this
+   * header are the shell's standard ChannelConversation pipeline with
+   * channelId "setup" — this component owns only the intro.
    */
   import { onMount } from "svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
-  import { buildClaudeCodeUrl } from "../settings/claude-code-link";
   import {
-    resolveClaudeLaunchPath,
-    resolveCodexLaunchPath,
-    SETUP_PROMPT,
-    type AiTools,
-  } from "../settings/setup-launch";
+    createLaunchActions,
+    type LaunchKey,
+  } from "../settings/launch-actions";
   import {
     SETUP_LAUNCH_COMMANDS,
     SETUP_WELCOME_MESSAGES,
@@ -46,14 +40,23 @@
 
   let { settings, shell, onopenurl }: Props = $props();
 
-  type LaunchKey = "claude" | "codex" | "grok";
-
   let hqFolderPath = $state("");
-  let aiTools = $state<AiTools | null>(null);
   let launching = $state<LaunchKey | null>(null);
   let launchErrors = $state<Partial<Record<LaunchKey, string>>>({});
 
   const canLaunch = $derived(hqFolderPath.trim().length > 0);
+
+  /**
+   * Same cascade as the title-bar Launch menu, with `/setup` prefilled.
+   * Recreated when the folder lands so the first click sees a real path.
+   */
+  const launchActions = $derived(
+    createLaunchActions({
+      shell,
+      hqFolderPath,
+      prompt: SETUP_LAUNCH_COMMANDS.claude.prompt,
+    }),
+  );
 
   onMount(async () => {
     const res = await settings.getSetupStatus();
@@ -63,116 +66,37 @@
     }
   });
 
-  async function ensureAiTools(): Promise<AiTools | null> {
-    if (aiTools) return aiTools;
-    const res = await shell.detectAiTools();
-    aiTools = res.ok ? (res.value as unknown as AiTools) : null;
-    return aiTools;
-  }
-
   function setLaunchError(key: LaunchKey, message: string | null): void {
     launchErrors = { ...launchErrors, [key]: message ?? undefined };
   }
 
-  function failureMessage(
-    res: { ok: false; reason: string; message?: string },
-    what: string,
-  ): string {
-    if (res.reason === "unavailable") {
-      return `${what} isn't available in this app. Use the HQ desktop app.`;
-    }
-    return `Could not open ${what}: ${res.message ?? "the command failed."}`;
-  }
-
-  async function launchClaude(): Promise<void> {
+  async function runLaunch(key: LaunchKey): Promise<void> {
     if (!canLaunch || launching) return;
-    setLaunchError("claude", null);
-    launching = "claude";
+    setLaunchError(key, null);
+    launching = key;
     try {
-      const path = resolveClaudeLaunchPath(await ensureAiTools());
-      if (path === "deep-link") {
-        const res = await shell.openClaudeCodeLink(
-          buildClaudeCodeUrl({
-            folder: hqFolderPath,
-            prompt: SETUP_LAUNCH_COMMANDS.claude.prompt,
-          }),
-        );
-        if (!res.ok) setLaunchError("claude", failureMessage(res, "Claude Code"));
-      } else if (path === "cli") {
-        const res = await shell.launchClaudeCode(hqFolderPath);
-        if (!res.ok) setLaunchError("claude", failureMessage(res, "Claude Code"));
-      } else {
-        setLaunchError(
-          "claude",
-          `Claude Code was not detected. Open your HQ folder in Claude Code and run ${SETUP_PROMPT}.`,
-        );
-      }
+      const error =
+        key === "claude"
+          ? await launchActions.launchClaude()
+          : key === "codex"
+            ? await launchActions.launchCodex()
+            : await launchActions.launchGrok();
+      if (error) setLaunchError(key, error);
     } finally {
       launching = null;
     }
   }
 
-  async function launchCodex(): Promise<void> {
-    if (!canLaunch || launching) return;
-    setLaunchError("codex", null);
-    launching = "codex";
-    try {
-      const tools = await ensureAiTools();
-      const path = resolveCodexLaunchPath(tools);
-      // Cascade: ChatGPT desktop app's Codex surface (workspace + /setup
-      // pre-typed) → codex CLI in a terminal → clipboard copy of the prompt.
-      if (path === "desktop") {
-        const res = await shell.launchCodexWorkspace(
-          hqFolderPath,
-          SETUP_LAUNCH_COMMANDS.codex.prompt,
-        );
-        if (res.ok) return;
-        // Desktop launch failed — fall through to the terminal CLI if one
-        // is on PATH, otherwise surface the failure.
-        if (!tools?.codex_cli) {
-          setLaunchError("codex", failureMessage(res, "Codex"));
-          return;
-        }
-      }
-      if (path !== "none") {
-        const res = await shell.launchCliInTerminal({
-          path: hqFolderPath,
-          tool: SETUP_LAUNCH_COMMANDS.codex.kind,
-        });
-        if (!res.ok) setLaunchError("codex", failureMessage(res, "Codex"));
-        return;
-      }
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(SETUP_PROMPT);
-        copied = true;
-      } catch {
-        copied = false;
-      }
-      setLaunchError(
-        "codex",
-        copied
-          ? `Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run ${SETUP_PROMPT} — the prompt was copied to your clipboard.`
-          : `Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI) and run ${SETUP_PROMPT}.`,
-      );
-    } finally {
-      launching = null;
-    }
+  function launchClaude(): Promise<void> {
+    return runLaunch("claude");
   }
 
-  async function launchGrok(): Promise<void> {
-    if (!canLaunch || launching) return;
-    setLaunchError("grok", null);
-    launching = "grok";
-    try {
-      const res = await shell.launchCliInTerminal({
-        path: hqFolderPath,
-        tool: SETUP_LAUNCH_COMMANDS.grok.tool,
-      });
-      if (!res.ok) setLaunchError("grok", failureMessage(res, "Grok Build"));
-    } finally {
-      launching = null;
-    }
+  function launchCodex(): Promise<void> {
+    return runLaunch("codex");
+  }
+
+  function launchGrok(): Promise<void> {
+    return runLaunch("grok");
   }
 
   function openResourceLink(event: MouseEvent, href: string): void {

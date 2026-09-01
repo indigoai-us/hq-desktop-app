@@ -4,7 +4,9 @@
  * The Claude Code desktop app registers `claude://code/new` as a deep link
  * for opening a new session, taking:
  *
- *   * `q`      — prefilled user prompt (the "question" / first message).
+ *   * `q`      — optional prefilled user prompt (the "question" / first
+ *                message). Omitted when the caller wants a plain workspace
+ *                launch with no composer text.
  *   * `folder` — absolute path to the working directory for the session.
  *
  * This is the same shape `Popover::fixHqCliUpdateInHq` already uses for the
@@ -28,25 +30,33 @@ export interface ClaudeCodeLinkInput {
    *  HQ folder root from `get_config`'s `hqFolderPath`. Maps to the
    *  `folder` URL parameter. */
   folder: string;
-  /** Prefilled prompt text. Multi-line is fine — `URLSearchParams`
-   *  handles encoding. Maps to the `q` URL parameter. */
-  prompt: string;
+  /** Optional prefilled prompt text. Multi-line is fine — `URLSearchParams`
+   *  handles encoding. Maps to the `q` URL parameter. Empty / undefined
+   *  omits `q` so Claude Code opens the folder without a first message. */
+  prompt?: string;
 }
 
 /**
- * Build a `claude://code/new?q=…&folder=…` URL. Both values are encoded by
+ * Build a `claude://code/new?q=…&folder=…` URL. Values are encoded by
  * `URLSearchParams` (which is what the existing `fixHqCliUpdateInHq` call
  * site uses — keep the two in sync).
  *
  * `folder` is omitted from the query when empty so the URL still parses
  * cleanly if the caller hasn't loaded `hqFolderPath` yet. The button
  * suppresses itself in that case, but defending the URL builder is cheap.
+ *
+ * `q` is omitted when `prompt` is empty or undefined. Existing call sites
+ * that pass a prompt keep the previous `q=` shape; the title-bar Launch
+ * menu relies on the omit path so a plain session does not pre-type
+ * `/setup`.
  */
 export function buildClaudeCodeUrl({
   folder,
   prompt,
 }: ClaudeCodeLinkInput): string {
-  const params = new URLSearchParams({ q: prompt });
+  const params = new URLSearchParams();
+  if (prompt?.trim()) params.set("q", prompt);
   if (folder) params.set("folder", folder);
-  return `claude://code/new?${params.toString()}`;
+  const query = params.toString();
+  return query ? `claude://code/new?${query}` : "claude://code/new";
 }
