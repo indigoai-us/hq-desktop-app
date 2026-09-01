@@ -98,6 +98,12 @@ describe('Windows production installer E2E', () => {
       'Copy-Item -LiteralPath $installedApp -Destination $stagedHelper',
     );
     expect(installerHarness).toContain(
+      'Remove-Item -LiteralPath $installedApp -Force',
+    );
+    expect(installerHarness).toContain(
+      'Rollback fixture did not remove the installed application',
+    );
+    expect(installerHarness).toContain(
       'Rollback did not restore the prior application binary',
     );
   });

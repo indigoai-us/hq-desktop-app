@@ -185,6 +185,12 @@ if ($Action -eq "rollback") {
   # proves we restored the user's pre-update application.
   Copy-Item -LiteralPath $installedApp -Destination $stagedHelper
   Copy-Item -LiteralPath (Join-Path $env:WINDIR "System32\where.exe") -Destination $failingInstaller
+  # Simulate an installer that removed the application before failing. A
+  # successful rollback must recreate this exact binary from the staged helper.
+  Remove-Item -LiteralPath $installedApp -Force
+  if (Test-Path -LiteralPath $installedApp) {
+    throw "Rollback fixture did not remove the installed application"
+  }
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $failingInstaller).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
