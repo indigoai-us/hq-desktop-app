@@ -29,18 +29,15 @@ const SCHEMA_VERSION = 2;
 /** localStorage key. Namespaced with the schema version so a future bump
  *  doesn't have to manually delete the prior entry — old keys just rot
  *  harmlessly until the browser evicts them. */
-const STORAGE_KEY_PREFIX = `hq-sync:meetings-window:v${SCHEMA_VERSION}`;
-
-function storageKeyFor(accountId: string): string | null {
-  const account = accountId.trim();
-  return account ? `${STORAGE_KEY_PREFIX}:${encodeURIComponent(account)}` : null;
-}
+const STORAGE_KEY = `hq-sync:meetings-window:v${SCHEMA_VERSION}`;
 
 /** Hard upper bound on cache age. Past this we ignore the cache and let
  *  the normal cold-start skeleton render — better than showing meetings
  *  from yesterday when the user opens the window after a weekend. Refresh
  *  still runs in parallel so the user sees fresh data within a beat. */
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export type MeetingsStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** Shape of one snapshot. Mirrors the `$state` variables in
  *  MeetingsWindow.svelte that `refresh()` populates. Maps and Sets are
@@ -89,11 +86,9 @@ export function loadMeetingsCache<
   TBot = unknown,
   TAccount = unknown,
   TCalendar = unknown,
->(accountId: string = ""): MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar> | null {
+>(storage: MeetingsStorage | null | undefined = globalThis.localStorage): MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar> | null {
   try {
-    const key = storageKeyFor(accountId);
-    if (!key) return null;
-    const raw = safeGetItem(key);
+    const raw = safeGetItem(storage, STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CacheEnvelope<
       MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>
@@ -120,16 +115,17 @@ export function saveMeetingsCache<
   TBot = unknown,
   TAccount = unknown,
   TCalendar = unknown,
->(accountId: string, snapshot: MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>): void {
+>(
+  snapshot: MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>,
+  storage: MeetingsStorage | null | undefined = globalThis.localStorage,
+): void {
   try {
-    const key = storageKeyFor(accountId);
-    if (!key) return;
     const envelope: CacheEnvelope<typeof snapshot> = {
       version: SCHEMA_VERSION,
       cachedAt: Date.now(),
       snapshot,
     };
-    safeSetItem(key, JSON.stringify(envelope));
+    safeSetItem(storage, STORAGE_KEY, JSON.stringify(envelope));
   } catch {
     // No-op — see function-level comment.
   }
@@ -137,10 +133,11 @@ export function saveMeetingsCache<
 
 /** Wipe the cached snapshot. Exposed for tests and for any future
  *  "sign out" path that needs to drop user-scoped data. */
-export function clearMeetingsCache(accountId: string = ""): void {
+export function clearMeetingsCache(
+  storage: MeetingsStorage | null | undefined = globalThis.localStorage,
+): void {
   try {
-    const key = storageKeyFor(accountId);
-    if (key) safeRemoveItem(key);
+    safeRemoveItem(storage, STORAGE_KEY);
   } catch {
     // No-op.
   }
@@ -151,11 +148,11 @@ export function clearMeetingsCache(accountId: string = ""): void {
  * for a debug surface that shows "cache age" in the diagnostics drawer.
  * Returns null when there is no cached entry.
  */
-export function getMeetingsCacheAgeMs(accountId: string = ""): number | null {
+export function getMeetingsCacheAgeMs(
+  storage: MeetingsStorage | null | undefined = globalThis.localStorage,
+): number | null {
   try {
-    const key = storageKeyFor(accountId);
-    if (!key) return null;
-    const raw = safeGetItem(key);
+    const raw = safeGetItem(storage, STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { cachedAt?: unknown };
     if (typeof parsed?.cachedAt !== "number") return null;
@@ -174,25 +171,29 @@ export function getMeetingsCacheAgeMs(accountId: string = ""): number | null {
 // — the two common failure modes when running inside a hardened webview.
 // ─────────────────────────────────────────────────────────────────────────
 
-function safeGetItem(key: string): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(key);
+function safeGetItem(storage: MeetingsStorage | null | undefined, key: string): string | null {
+  if (!storage) return null;
+  return storage.getItem(key);
 }
 
-function safeSetItem(key: string, value: string): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(key, value);
+function safeSetItem(
+  storage: MeetingsStorage | null | undefined,
+  key: string,
+  value: string,
+): void {
+  if (!storage) return;
+  storage.setItem(key, value);
 }
 
-function safeRemoveItem(key: string): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.removeItem(key);
+function safeRemoveItem(storage: MeetingsStorage | null | undefined, key: string): void {
+  if (!storage) return;
+  storage.removeItem(key);
 }
 
 /** Exposed for tests — the storage key isn't part of the public API but
  *  tests need to assert on it (and on the schema-version namespacing). */
 export const __INTERNALS__ = {
-  STORAGE_KEY_PREFIX,
+  STORAGE_KEY,
   SCHEMA_VERSION,
   MAX_AGE_MS,
 };

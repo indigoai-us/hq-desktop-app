@@ -7,6 +7,7 @@ import {
   saveMeetingsCache,
   type MeetingsSnapshot,
 } from "./meetings-cache";
+import { createTenantStorage } from "../identity/tenant-storage";
 
 const snapshot: MeetingsSnapshot = {
   events: [{ id: "event-a" }],
@@ -23,22 +24,35 @@ afterEach(() => localStorage.clear());
 
 describe("meetings cache account isolation", () => {
   it("keeps account A's warm snapshot unavailable after an account-B restart", () => {
-    saveMeetingsCache("account-a", snapshot);
+    const accountA = createTenantStorage(localStorage, {
+      accountId: "account-a",
+      companyId: "all",
+    });
+    const accountB = createTenantStorage(localStorage, {
+      accountId: "account-b",
+      companyId: "all",
+    });
+    saveMeetingsCache(snapshot, accountA);
 
-    expect(loadMeetingsCache("account-b")).toBeNull();
-    expect(loadMeetingsCache("account-a")).toEqual(snapshot);
-    // An anonymous/missing identity is intentionally a cache miss rather
-    // than a shared browser-local fallback.
-    expect(loadMeetingsCache()).toBeNull();
+    expect(loadMeetingsCache(accountB)).toBeNull();
+    expect(loadMeetingsCache(accountA)).toEqual(snapshot);
   });
 
   it("clears only the requested account cache key", () => {
-    saveMeetingsCache("account-a", snapshot);
-    saveMeetingsCache("account-b", { ...snapshot, events: [{ id: "event-b" }] });
+    const accountA = createTenantStorage(localStorage, {
+      accountId: "account-a",
+      companyId: "all",
+    });
+    const accountB = createTenantStorage(localStorage, {
+      accountId: "account-b",
+      companyId: "all",
+    });
+    saveMeetingsCache(snapshot, accountA);
+    saveMeetingsCache({ ...snapshot, events: [{ id: "event-b" }] }, accountB);
 
-    clearMeetingsCache("account-a");
+    clearMeetingsCache(accountA);
 
-    expect(loadMeetingsCache("account-a")).toBeNull();
-    expect(loadMeetingsCache("account-b")?.events).toEqual([{ id: "event-b" }]);
+    expect(loadMeetingsCache(accountA)).toBeNull();
+    expect(loadMeetingsCache(accountB)?.events).toEqual([{ id: "event-b" }]);
   });
 });

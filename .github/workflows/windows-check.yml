@@ -150,10 +150,24 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo check --target x86_64-pc-windows-msvc
 
-      - name: Windows tests
+      # `cargo check` deliberately does not build cfg(test) code or
+      # dev-dependencies. Compile and link the test binaries in their own
+      # named gate so a cold cache cannot look like a stuck test harness.
+      # This also keeps the execution gate below a genuine five-minute
+      # deadlock detector: the broad suite normally executes in under a minute.
+      - name: Build Windows test binaries
         timeout-minutes: 30
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins
+        run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
+
+      # The runner's outer timeout did not reap a stranded cargo child tree on
+      # live run 33461363416. Keep it as a secondary boundary, but let the
+      # process-level watchdog enforce the real five-minute test deadline.
+      - name: Windows tests (process-tree watchdog)
+        timeout-minutes: 7
+        working-directory: apps/sync/src-tauri
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300'
 
       # These regressions force each Job Object attachment failure and then let
       # the real production pid-tree fallback run: they assert that a real child
@@ -173,6 +187,31 @@ jobs:
       # deregistered handle degrades to None rather than touching a closed
       # handle. Its own bounded gate so the real-binary proof is a named check.
       - name: Windows Job accounting attribution regression
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
+
+      # The two historically flaky process-tree contracts run twice as
+      # independent fresh test processes. Keeping each native invocation as a
+      # direct `run: cargo …` step is intentional: the desktop E2E contract
+      # verifies that native Windows gates fail fast rather than letting a
+      # shell loop or later test mask a nonzero cargo exit.
+      - name: Windows stale process fixture regression (repeat 1)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_spawn_tests::stale_spawn_job_contains_descendant_before_ownership_check -- --nocapture
+
+      - name: Windows job-accounting fixture regression (repeat 1)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
+
+      - name: Windows stale process fixture regression (repeat 2)
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_spawn_tests::stale_spawn_job_contains_descendant_before_ownership_check -- --nocapture
+
+      - name: Windows job-accounting fixture regression (repeat 2)
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture

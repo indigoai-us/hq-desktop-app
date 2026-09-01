@@ -53,6 +53,8 @@
     section: Section;
     version?: string;
     adapter?: PlatformAdapter | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+    sessionGeneration?: number;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
@@ -67,6 +69,8 @@
     section,
     version = "0.0.0",
     adapter = null,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
+    sessionGeneration = 0,
     companies = null,
     personalLabel = null,
     onopenconsole,
@@ -75,7 +79,7 @@
     refreshAppVersion,
   }: Props = $props();
 
-  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs());
+  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs(storage));
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -173,7 +177,7 @@
   );
 
   function patch(next: Partial<ShellSettingsPrefs>): void {
-    prefs = writeSettingsPrefs(next);
+    prefs = writeSettingsPrefs(next, storage);
   }
 
   function setTheme(next: ColorTheme): void {
@@ -758,6 +762,8 @@
       meetings: adapter.meetings,
       feedback: adapter.feedback,
       settings: adapter.settings,
+      storage,
+      sessionGeneration,
     });
     return true;
   }
@@ -1269,7 +1275,15 @@
       <div>
         <div class="sn">HQ Core</div>
         <div class="sd mono-path">
-          {coreVersion ? `v${coreVersion}` : "Not detected"}
+          {coreVersion
+            ? `v${coreVersion}`
+            : coreUpdateStatus === "checking"
+              ? "Checking installed location…"
+              : coreUpdateStatus === "unlocated"
+                ? "HQ root is required"
+                : coreUpdateStatus === "failed"
+                  ? "Version probe failed"
+                  : "Version unavailable"}
         </div>
         {#if coreUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-core-remediation">Choose the HQ root above (or set hqPath/hqFolderPath), then refresh.</div>
@@ -1285,7 +1299,15 @@
       <div>
         <div class="sn">HQ CLI</div>
         <div class="sd mono-path">
-          {cliVersion ? `v${cliVersion}` : "Not detected"}
+          {cliVersion
+            ? `v${cliVersion}`
+            : cliUpdateStatus === "checking"
+              ? "Checking installed location…"
+              : cliUpdateStatus === "unlocated"
+                ? "CLI path is required"
+                : cliUpdateStatus === "failed"
+                  ? "Version probe failed"
+                  : "Version unavailable"}
         </div>
         {#if cliUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-cli-remediation">Add the CLI directory to this HQ root’s .claude/settings.local.json (or settings.json) env.PATH, then refresh. The host uses that Claude settings PATH before broader PATH locations.</div>

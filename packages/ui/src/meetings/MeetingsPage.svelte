@@ -16,6 +16,7 @@
     type MeetingBotAction,
     type ToastDescriptor,
   } from "./meetings-store.svelte";
+  import type { MeetingsStorage } from "./meetings-cache";
   import LiveNowCard from "../common/LiveNowCard.svelte";
   import MeetingsAgenda from "./MeetingsAgenda.svelte";
   import {
@@ -68,6 +69,10 @@
      * event, including repeated requests for the same meeting.
      */
     focusRequest?: { meetingId: string; sequence: number } | null;
+    /** Account-partitioned cache supplied by the embedded desktop host. */
+    storage?: MeetingsStorage | null;
+    /** Native auth generation that owns any in-flight meeting hydration. */
+    sessionGeneration?: number;
   }
   let {
     adapter,
@@ -82,6 +87,8 @@
       }
     },
     focusRequest = null,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
+    sessionGeneration = 0,
   }: MeetingsPageProps = $props();
 
   // Store-backed data. The singleton (started at app launch in
@@ -440,6 +447,8 @@
       meetings: adapter.meetings,
       feedback: adapter.feedback,
       settings: adapter.settings,
+      storage,
+      sessionGeneration,
     });
     startMeetingsStore();
     setMeetingsViewActive(true);

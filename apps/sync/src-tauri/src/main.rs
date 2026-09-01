@@ -511,6 +511,7 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::auth::get_auth_session,
             commands::hq_pro::hq_pro_fetch,
             commands::vault_s3::vault_s3_put,
             commands::vault_s3::vault_s3_get,

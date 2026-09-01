@@ -34,10 +34,26 @@ const call =
     (method: string, payload?: unknown) => Promise<AdapterResult<unknown>>
   >();
 
+type SessionOptions = { sessionGeneration?: number; storage?: Storage | null };
+
+let lastLegacyAccountId: string | null = null;
+let legacySessionGeneration = 0;
+
 function wireApi(
-  nativeSettings: Record<string, unknown> | null = {},
+  source: SessionOptions | Record<string, unknown> | null = {},
   accountId: string | null = "test-account",
 ) {
+  const isSessionOptions =
+    source !== null &&
+    ("sessionGeneration" in source || "storage" in source);
+  const options: SessionOptions = isSessionOptions
+    ? (source as SessionOptions)
+    : (() => {
+        if (accountId !== lastLegacyAccountId) legacySessionGeneration += 1;
+        lastLegacyAccountId = accountId;
+        return { sessionGeneration: legacySessionGeneration };
+      })();
+  const nativeSettings = isSessionOptions ? {} : source;
   configureMeetingsApi({
     accountId,
     meetings: {
@@ -61,6 +77,7 @@ function wireApi(
     ...(nativeSettings
       ? { settings: { getSettings: async () => ok(nativeSettings) } }
       : {}),
+    ...options,
   });
 }
 
@@ -131,6 +148,8 @@ async function expectPlanGateDoesNotCommitOrRefresh(
 beforeEach(() => {
   call.mockReset();
   saveMeetingsCache.mockReset();
+  lastLegacyAccountId = null;
+  legacySessionGeneration = 0;
   stopMeetingsStore();
   // The production shell explicitly clears the singleton when identity goes
   // away. Mirror that lifecycle between examples so a deferred response from
@@ -143,6 +162,52 @@ beforeEach(() => {
 });
 
 describe("meetings store refresh coordination", () => {
+  it("withdraws a deferred account A agenda before account B can mount", async () => {
+    const accountA = new Map<string, string>();
+    const accountB = new Map<string, string>();
+    const storage = (values: Map<string, string>) => ({
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+      key: () => null,
+      get length() {
+        return values.size;
+      },
+    }) as Storage;
+    const staleUpcoming = deferred<AdapterResult<unknown>>();
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming") return staleUpcoming.promise;
+      if (
+        method === "listMemberships" ||
+        method === "listAccounts" ||
+        method === "listScheduledBots"
+      ) {
+        return Promise.resolve(ok([]));
+      }
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi({ sessionGeneration: 1, storage: storage(accountA) });
+    const inFlight = meetingsStore.refresh();
+    wireApi({ sessionGeneration: 2, storage: storage(accountB) });
+
+    staleUpcoming.resolve(
+      ok([
+        {
+          id: "meeting-a",
+          summary: "Account A private planning",
+          start: { dateTime: "2026-08-01T10:00:00.000Z" },
+          end: { dateTime: "2026-08-01T10:30:00.000Z" },
+        },
+      ]),
+    );
+    await inFlight;
+
+    expect(meetingsStore.events).toEqual([]);
+    expect(saveMeetingsCache).not.toHaveBeenCalled();
+  });
+
   it("shares a poll and queues a post-mutation refresh without committing stale data", async () => {
     const evt: MeetingEvent = {
       id: "event-1",
@@ -238,16 +303,13 @@ describe("meetings store refresh coordination", () => {
     // The identity rotation clears synchronously and stale A is not allowed
     // to repopulate either the rendered singleton or B's persistent key.
     expect(meetingsStore.events).toEqual([]);
-    expect(saveMeetingsCache).not.toHaveBeenCalledWith(
-      "account-b",
-      expect.anything(),
-    );
+    expect(saveMeetingsCache).not.toHaveBeenCalled();
 
     await meetingsStore.refresh();
     expect(meetingsStore.events).toEqual([accountBEvent]);
     expect(saveMeetingsCache).toHaveBeenLastCalledWith(
-      "account-b",
       expect.objectContaining({ events: [accountBEvent] }),
+      expect.anything(),
     );
   });
 
@@ -272,10 +334,7 @@ describe("meetings store refresh coordination", () => {
     wireApi(null, "account-b");
     invitation.resolve(ok({ botId: "bot-a" }));
 
-    await expect(invite).resolves.toEqual({
-      kind: "warn",
-      text: "Your account changed. Retry this action.",
-    });
+    await expect(invite).resolves.toBeNull();
     expect(meetingsStore.pendingActionsByEventId.size).toBe(0);
   });
 
@@ -320,10 +379,7 @@ describe("meetings store refresh coordination", () => {
     wireApi(null, "account-b");
     disconnect.resolve(ok(undefined));
 
-    await expect(pending).resolves.toEqual({
-      kind: "warn",
-      text: "Your account changed. Retry this action.",
-    });
+    await expect(pending).resolves.toBeNull();
     expect(meetingsStore.accounts).toEqual([]);
     expect(meetingsStore.disconnectPendingByAccountId.size).toBe(0);
   });
@@ -944,6 +1000,31 @@ describe("meetings store in-app calendar connect", () => {
       const again = await meetingsStore.beginCalendarConnect();
       expect(again.url).toBe(consentUrl);
       expect(meetingsStore.connectPending).toBe(true);
+    } finally {
+      meetingsStore.stopCalendarConnectWatch();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a queued calendar-connect notice when the tenant session changes", async () => {
+    vi.useFakeTimers();
+    try {
+      mockConnectHappyPath({
+        listAccountsImpl: () => Promise.resolve(ok([])),
+      });
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(meetingsStore.connectNotice).toEqual({
+        kind: "warn",
+        text: "No new calendar connected — try again if you cancelled.",
+      });
+
+      wireApi({
+        sessionGeneration: 2,
+        storage: localStorage,
+      });
+
+      expect(meetingsStore.connectNotice).toBeNull();
     } finally {
       meetingsStore.stopCalendarConnectWatch();
       vi.useRealTimers();

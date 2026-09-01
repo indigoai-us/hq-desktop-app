@@ -11,6 +11,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -153,7 +154,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
-    listChannels: () => this.call("list_channels"),
+    listChannels: (opts) =>
+      this.call("list_channels", {
+        companyUid: opts?.companyUid,
+        includeCompanyProjects: opts?.includeCompanyProjects,
+      }),
     fetchChannelDirectory: (cursor) =>
       this.call("fetch_channel_directory", { cursor }),
     // No create_channel Tauri command exists — route through hq-pro REST like
@@ -245,11 +250,21 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly notifications: PlatformAdapter["notifications"] = {
-    fetchNotifications: (opts) => this.call("fetch_notifications", { opts }),
+    fetchNotifications: async (opts) => {
+      const result = await this.call<unknown>("fetch_notifications", opts);
+      if (!result.ok) return result;
+      return ok(normalizeNotificationsFeed(result.value));
+    },
     ack: (id) => this.call("ack_notification", { id }),
     readAll: () => this.call("read_all_notifications"),
-    runAction: (id, action) =>
-      this.call("run_notification_action", { id, action }),
+    runAction: (id, action, actionRef) =>
+      this.call("run_notification_action", {
+        id,
+        actionKind: action,
+        ...(typeof actionRef === "string" && actionRef.trim()
+          ? { actionRef }
+          : {}),
+      }),
     fetchDmInbox: (opts) => this.call("fetch_dm_inbox", { opts }),
     ackDmInbox: (eventIds) => this.call("ack_dm_inbox", { eventIds }),
     fetchSharedWithMe: (opts) => this.call("fetch_shared_with_me", { opts }),
@@ -282,9 +297,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getCreatorProfile: (handle) => this.call("get_creator_profile", { handle }),
     getMyCreator: () => this.call("get_my_creator"),
     claimHandle: (handle) => this.call("claim_handle", { handle }),
-    updateCreatorProfile: (p) => this.call("update_creator_profile", { p }),
+    updateCreatorProfile: (p) =>
+      this.call("update_creator_profile", {
+        bio: p.bio,
+        socialLinks: p.socialLinks,
+        tipUrl: p.tipUrl,
+      }),
     uploadCreatorAvatar: (data) => this.call("upload_creator_avatar", { data }),
-    requestCreatorAccess: () => this.call("request_creator_access"),
+    requestCreatorAccess: (payload) =>
+      this.call("request_creator_access", {
+        reason: payload.reason,
+        handle: payload.handle,
+      }),
     listCreatorApplications: () => this.call("list_creator_applications"),
     decideCreatorApplication: (id, decision) =>
       this.call("decide_creator_application", { id, decision }),

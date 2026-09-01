@@ -12,6 +12,7 @@
 
   interface Props {
     companies?: Workspace[] | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
@@ -26,7 +27,6 @@
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
   let externalError = $state<string | null>(null);
-
   function companyUrl(slug: string): string {
     const base = consoleBase.replace(/\/$/, "");
     if (base === HQ_CONSOLE_BASE) return companyConsoleUrl(slug);

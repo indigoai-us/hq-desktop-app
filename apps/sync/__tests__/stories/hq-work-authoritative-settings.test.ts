@@ -30,6 +30,8 @@ function nativeHost(
     failCliVersion?: boolean;
     failCliCheck?: boolean;
     configRoot?: string;
+    coreVersion?: string | null;
+    cliVersion?: string | null;
   } = {},
 ): HostHarness {
   let saved = { ...initial };
@@ -56,10 +58,10 @@ function nativeHost(
       case 'get_sync_status':
         return {};
       case 'get_hq_version':
-        return '15.0.117';
+        return 'coreVersion' in options ? options.coreVersion ?? null : '15.0.117';
       case 'get_hq_cli_version':
         if (options.failCliVersion) throw new Error('CLI not on the configured PATH');
-        return '5.103.34';
+        return 'cliVersion' in options ? options.cliVersion ?? null : '5.103.34';
       case 'check_for_updates':
         return null;
       case 'check_core_state':
@@ -396,5 +398,27 @@ describe('embedded HQ Work authoritative settings', () => {
     host.querySelector<HTMLButtonElement>('[aria-label="Automatic updates"]')?.click();
     await vi.waitFor(() => expect(persisted().autoUpdate).toBe(true));
     expect(calls).toContainEqual({ command: 'save_settings', args: { prefs: expect.objectContaining({ autoUpdate: true, hqPath: '/custom/HQ' }) } });
+  });
+
+  it('replaces missing Core and CLI probes with actionable location status', async () => {
+    const { adapter } = nativeHost(
+      { hqPath: '/custom/HQ' },
+      { coreVersion: null, cliVersion: null },
+    );
+    mountPane('updates', adapter);
+
+    await vi.waitFor(() => {
+      const coreRow = Array.from(host.querySelectorAll<HTMLElement>('.set-row')).find(
+        (row) => row.querySelector('.sn')?.textContent?.trim() === 'HQ Core',
+      );
+      const cliRow = Array.from(host.querySelectorAll<HTMLElement>('.set-row')).find(
+        (row) => row.querySelector('.sn')?.textContent?.trim() === 'HQ CLI',
+      );
+      expect(coreRow?.textContent).toContain('ROOT NEEDED');
+      expect(cliRow?.textContent).toContain('CLI NEEDED');
+      expect(coreRow?.textContent).not.toContain('Not detected');
+      expect(cliRow?.textContent).not.toContain('Not checked');
+      expect(cliRow?.textContent).not.toContain('Not detected');
+    });
   });
 });

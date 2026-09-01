@@ -7,6 +7,9 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { createTenantStorage } from "../identity/tenant-storage.js";
+import { writeSettingsPrefs } from "../settings/settings-prefs.js";
+import type { Workspace } from "../chat/workspaces.js";
 
 function webAdapter(): PlatformAdapter {
   return {
@@ -26,7 +29,27 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  localStorage.clear();
+  document.documentElement.removeAttribute("data-ui-size");
+  document.documentElement.style.removeProperty("--hq-window-opacity");
 });
+
+const acmeWorkspace: Workspace = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "synced",
+  cloudUid: "cmp_acme",
+  bucketName: "hq-acme",
+  hasLocalFolder: true,
+  localPath: "/tmp/acme",
+  membershipStatus: "active",
+  role: "member",
+  lastSyncedAt: null,
+  brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
+};
 
 describe("DesktopApp settings on web", () => {
   it("opens the shared Settings destination from the identity footer", async () => {
@@ -75,5 +98,70 @@ describe("DesktopApp settings on web", () => {
     expect(
       settings?.querySelector('[data-testid="settings-nav-updates"]'),
     ).toBeNull();
+  });
+
+  it("keeps the selected company scope when the tenant-keyed sidebar remounts", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: webAdapter(),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: {
+          uid: "prs_test",
+          displayName: "Stefan Johnson",
+          email: "stefan@example.com",
+        },
+        tenantAccountId: "acct_stefan",
+        tenantGeneration: 1,
+        companies: [acmeWorkspace],
+        coreFixtures: false,
+      },
+    });
+    await tick();
+
+    (host.querySelector('[data-testid="chat-scope-pill"]') as HTMLButtonElement).click();
+    await tick();
+    (document.querySelector('[data-testid="chat-scope-option"][data-scope="cmp_acme"]') as HTMLButtonElement).click();
+    await tick();
+    await tick();
+
+    const scope = host.querySelector('[data-testid="chat-scope-pill"]');
+    expect(scope?.textContent).toContain("Acme");
+    expect(scope?.getAttribute("aria-label")).toContain("Acme");
+  });
+
+  it("applies interface preferences from the active tenant storage at startup", async () => {
+    writeSettingsPrefs({ uiSize: "large", windowOpacity: 96 });
+    const storage = createTenantStorage(localStorage, {
+      accountId: "acct_stefan",
+      companyId: "all",
+    });
+    writeSettingsPrefs({ uiSize: "compact", windowOpacity: 64 }, storage);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: webAdapter(),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: {
+          uid: "prs_test",
+          displayName: "Stefan Johnson",
+          email: "stefan@example.com",
+        },
+        tenantAccountId: "acct_stefan",
+        tenantGeneration: 1,
+        coreFixtures: false,
+      },
+    });
+    await tick();
+
+    expect(document.documentElement.getAttribute("data-ui-size")).toBe("compact");
+    expect(document.documentElement.style.getPropertyValue("--hq-window-opacity")).toBe("64%");
   });
 });

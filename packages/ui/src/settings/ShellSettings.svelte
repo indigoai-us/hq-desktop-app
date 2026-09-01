@@ -6,6 +6,7 @@
    * Two columns: left section nav + right pane. Display language is the
    * preview-v2 / Daybook prototype (set-row cards, toggles, company chips).
    */
+  import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import EmptyState from "../common/EmptyState.svelte";
@@ -61,6 +62,10 @@
     version?: string;
     /** Host-routed subsection; null preserves Profile-first normal entry. */
     initialSection?: ShellSettingsSection | null;
+    /** Monotonic native auth generation; stale profile loads/saves are rejected. */
+    sessionGeneration?: number;
+    /** Account/company-scoped renderer persistence supplied by the host. */
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     onback?: () => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
@@ -72,8 +77,6 @@
     updateWakeSeq?: number;
     /** Reads the running native app version when Updates refreshes. */
     refreshAppVersion?: () => Promise<string>;
-    /** Monotonic host auth generation; stale profile work never repaints it. */
-    authGeneration?: number;
   }
 
   let {
@@ -82,6 +85,8 @@
     adapter = null,
     version = "0.0.0",
     initialSection = null,
+    sessionGeneration = 0,
+    storage = typeof window !== "undefined" ? window.localStorage : null,
     onback,
     onsignout,
     onopenconsole,
@@ -89,7 +94,6 @@
     consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
-    authGeneration = 0,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -138,11 +142,13 @@
   /** Data-URL preview for the avatar (picked file or persisted avatarUrl). */
   let avatarPreview = $state<string | null>(null);
   let profileLoaded = $state(false);
-  let nameLoaded = $state(false);
   let descriptionLoaded = $state(false);
   let savingProfile = $state(false);
   let profileError = $state<string | null>(null);
   let profileSavedAt = $state<number | null>(null);
+  let profileLoading = $state(false);
+  let profileRequest = 0;
+  let observedSessionGeneration = $state<number | null>(null);
   let avatarBusy = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
 
@@ -151,67 +157,95 @@
   // so the prop (derived from the session, never re-pushed) can't strand them.
   let initialName = $state("");
   let initialDescription = $state("");
-  let observedAuthGeneration = $state<number | null>(null);
 
+  const nameDirty = $derived(editName.trim() !== initialName.trim());
+  const descriptionDirty = $derived(
+    descriptionLoaded && editDescription.trim() !== initialDescription.trim(),
+  );
   const profileDirty = $derived(
-    profileLoaded &&
-      (pendingAvatarBase64 !== null ||
-        (nameLoaded && editName.trim() !== initialName.trim()) ||
-        (descriptionLoaded && editDescription.trim() !== initialDescription.trim())),
+    profileLoaded && (pendingAvatarBase64 !== null || nameDirty || descriptionDirty),
   );
 
   function seedFromProfile(): void {
     editName = profile?.displayName ?? profile?.fullName ?? "";
     initialName = editName;
-    nameLoaded = true;
   }
 
   async function loadProfile(): Promise<void> {
-    const generation = authGeneration;
+    const request = ++profileRequest;
+    const generation = sessionGeneration;
+    profileLoading = true;
+    profileError = null;
+    seedFromProfile();
     if (typeof adapter?.identity?.getProfile !== "function") {
       profileLoaded = true;
+      profileLoading = false;
       return;
     }
     try {
       const res = await adapter.identity.getProfile();
-      if (generation !== authGeneration) return;
-      if (!res.ok) {
-        // Keep the server field unavailable: a name-only save cannot erase it.
-        profileError = res.message || "Couldn’t load your About. Name edits are safe.";
-      } else {
+      if (request !== profileRequest || generation !== sessionGeneration) return;
+      if (res.ok && res.value) {
         const block = res.value.profile;
         if (block?.displayName) editName = block.displayName;
         else if (res.value.entityName) editName ||= res.value.entityName;
         initialName = editName;
-        // A successful GET authoritatively establishes even an empty About.
-        editDescription = block?.description ?? "";
+        // A successful profile response is authoritative even when this is a
+        // first-time profile (`profile: null`) or its optional description is
+        // absent. Keep failures distinct so only a confirmed empty value is
+        // editable and eligible to save.
+        editDescription = typeof block?.description === "string" ? block.description : "";
         initialDescription = editDescription;
         descriptionLoaded = true;
         if (block?.avatarUrl) avatarPreview = block.avatarUrl;
+      } else {
+        // A failed profile result is not an empty profile. Keep only the
+        // session-backed name editable and do not manufacture a blank About
+        // value that a later Save could send back to the server.
+        descriptionLoaded = false;
+        profileError = !res.ok
+          ? res.message || "Couldn’t load all profile fields."
+          : "Couldn’t load all profile fields.";
       }
       profileLoaded = true;
     } catch (error) {
-      if (generation !== authGeneration) return;
+      if (request !== profileRequest || generation !== sessionGeneration) return;
+      descriptionLoaded = false;
       profileLoaded = true;
-      profileError = error instanceof Error ? error.message : "Couldn’t load your About. Name edits are safe.";
+      profileError = error instanceof Error ? error.message : "Couldn’t load all profile fields.";
+    } finally {
+      if (request === profileRequest && generation === sessionGeneration) {
+        profileLoading = false;
+      }
     }
   }
 
-  // The settings shell can remain mounted while the desktop session rotates.
-  // Reset field provenance before loading the next account so neither a stale
-  // GET nor an in-flight save can carry A's partial profile into B's form.
+  onMount(() => {
+    void loadProfile();
+  });
+
+  // DesktopApp re-keys on every native session generation, but keep this
+  // component correct when a host updates the prop in place as well. A save
+  // started for A must neither settle B's UI nor leave its controls wedged.
   $effect(() => {
-    if (authGeneration === observedAuthGeneration) return;
-    observedAuthGeneration = authGeneration;
+    if (observedSessionGeneration === null) {
+      observedSessionGeneration = sessionGeneration;
+      return;
+    }
+    if (sessionGeneration === observedSessionGeneration) return;
+    observedSessionGeneration = sessionGeneration;
+    profileRequest += 1;
     savingProfile = false;
+    profileSavedAt = null;
+    profileError = null;
     profileLoaded = false;
-    nameLoaded = false;
     descriptionLoaded = false;
     pendingAvatarBase64 = null;
+    editName = "";
+    initialName = "";
+    editDescription = "";
+    initialDescription = "";
     avatarPreview = null;
-    profileError = null;
-    profileSavedAt = null;
-    seedFromProfile();
     void loadProfile();
   });
 
@@ -249,22 +283,26 @@
     }
     savingProfile = true;
     profileError = null;
-    const generation = authGeneration;
-    const input: {
+    const generation = sessionGeneration;
+    const update: {
       displayName?: string;
       description?: string;
       avatarBase64?: string;
     } = {};
-    if (nameLoaded && name !== initialName.trim()) input.displayName = name || undefined;
-    if (descriptionLoaded && description !== initialDescription.trim()) input.description = description;
-    if (pendingAvatarBase64) input.avatarBase64 = pendingAvatarBase64;
+    if (nameDirty && name) update.displayName = name;
+    if (descriptionDirty) update.description = description;
+    if (pendingAvatarBase64) update.avatarBase64 = pendingAvatarBase64;
+    if (Object.keys(update).length === 0) {
+      savingProfile = false;
+      return;
+    }
     try {
-      const res = await adapter.identity.updateProfile(input);
-      if (generation !== authGeneration) return;
+      const res = await adapter.identity.updateProfile(update);
+      if (generation !== sessionGeneration) return;
       if (res.ok) {
         pendingAvatarBase64 = null;
-        if (nameLoaded) initialName = name;
-        if (descriptionLoaded) initialDescription = description;
+        if (nameDirty) initialName = name;
+        if (descriptionDirty) initialDescription = description;
         if (res.value?.profile?.avatarUrl) {
           avatarPreview = res.value.profile.avatarUrl;
         }
@@ -273,10 +311,11 @@
         profileError = res.message || "Couldn't save your profile.";
       }
     } catch (err) {
+      if (generation !== sessionGeneration) return;
       profileError =
         err instanceof Error ? err.message : "Couldn't save your profile.";
     } finally {
-      if (generation === authGeneration) savingProfile = false;
+      if (generation === sessionGeneration) savingProfile = false;
     }
   }
 
@@ -422,6 +461,17 @@
                 bind:value={editDescription}
                 disabled={!adapter || !descriptionLoaded}
               />
+              {#if !descriptionLoaded}
+                <button
+                  type="button"
+                  class="chip"
+                  data-testid="settings-profile-retry"
+                  disabled={profileLoading}
+                  onclick={() => void loadProfile()}
+                >
+                  {profileLoading ? "Loading…" : "Retry About"}
+                </button>
+              {/if}
             </div>
             <div class="set-row">
               <div>
@@ -503,6 +553,7 @@
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {companies}
+          {storage}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
@@ -518,6 +569,8 @@
             | "updates"}
           {version}
           {adapter}
+          {storage}
+          {sessionGeneration}
           {companies}
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}

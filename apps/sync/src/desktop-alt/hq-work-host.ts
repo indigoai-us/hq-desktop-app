@@ -21,6 +21,7 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
   type EmbeddedNavigationTarget,
+  type ChatWakeBus,
   type PackagesDone,
   type PackagesEvents,
   type PackagesProgress,
@@ -49,6 +50,240 @@ export type TauriEventListener = <T>(
   event: string,
   handler: (event: { payload: T }) => void,
 ) => Promise<() => void>;
+
+/**
+ * Native notification-poller events are authenticated by Sync. A host still
+ * rejects explicitly scoped payloads outside the mounted account/company
+ * before forwarding them to shared UI state; unscoped payloads are accepted
+ * only while this authenticated native session is mounted.
+ */
+export interface HqWorkRealtimeScope {
+  personUid: string;
+  companyUids: ReadonlySet<string>;
+}
+
+export interface HqWorkNativeWakesConfig {
+  listen: TauriEventListener;
+  wakes: ChatWakeBus;
+  scope: () => HqWorkRealtimeScope | null;
+  onNotificationWake: () => void;
+}
+
+type NativeRecord = Record<string, unknown>;
+
+const NATIVE_WAKE_DEDUPE_MS = 5_000;
+
+function nativeRecord(value: unknown): NativeRecord | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as NativeRecord)
+    : null;
+}
+
+function nativeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function nativeRecords(payload: unknown): NativeRecord[] {
+  if (Array.isArray(payload)) return payload.map(nativeRecord).filter(Boolean) as NativeRecord[];
+  const record = nativeRecord(payload);
+  if (!record) return [];
+  if (Array.isArray(record.events)) {
+    return record.events.map(nativeRecord).filter(Boolean) as NativeRecord[];
+  }
+  return [record];
+}
+
+function scopedNativePayload(
+  payload: unknown,
+  scope: HqWorkRealtimeScope,
+): boolean {
+  const envelope = nativeRecord(payload);
+  const records = [
+    ...(envelope && Array.isArray(envelope.events) ? [envelope] : []),
+    ...nativeRecords(payload),
+  ];
+  if (records.length === 0) return false;
+  for (const record of records) {
+    const companyUid = nativeString(record.companyUid ?? record.company_uid);
+    if (companyUid && !scope.companyUids.has(companyUid)) return false;
+    // `personUid` on a message identifies its sender, never use it for account
+    // checks. These fields, when present, explicitly identify the recipient.
+    const recipient = nativeString(
+      record.recipientPersonUid ?? record.recipient_person_uid ?? record.ownerPersonUid,
+    );
+    if (recipient && recipient !== scope.personUid) return false;
+  }
+  return true;
+}
+
+/** Only stable backend event IDs are safe dedupe identities. */
+function nativeWakeKey(payload: unknown): string | null {
+  const records = nativeRecords(payload);
+  const ids = records
+    .map((record) => {
+      const reply = nativeRecord(record.reply);
+      return nativeString(
+        record.eventId ??
+          record.event_id ??
+          record.id ??
+          reply?.eventId ??
+          reply?.event_id,
+      );
+    })
+    .filter(Boolean)
+    .sort();
+  return ids.length > 0 ? `event:${ids.join(',')}` : null;
+}
+
+function asPairUnreads(payload: unknown): {
+  pairUnreads?: Array<{ withPersonUid: string; lastReadAt?: string | null; unreadCount: number }>;
+  delta?: boolean;
+} | null {
+  const record = nativeRecord(payload);
+  if (!record || !Array.isArray(record.pairUnreads)) return null;
+  const pairUnreads = record.pairUnreads.flatMap((value) => {
+    const row = nativeRecord(value);
+    const withPersonUid = nativeString(row?.withPersonUid ?? row?.with_person_uid);
+    const unreadCount = row?.unreadCount ?? row?.unread_count;
+    if (!withPersonUid || typeof unreadCount !== 'number') return [];
+    return [{
+      withPersonUid,
+      unreadCount,
+      ...(typeof row?.lastReadAt === 'string' ? { lastReadAt: row.lastReadAt } : {}),
+    }];
+  });
+  return {
+    pairUnreads,
+    ...(record.delta === true ? { delta: true } : {}),
+  };
+}
+
+/**
+ * Bridge Sync's authenticated poll/MQTT results into the platform-pure chat
+ * bus. The MQTT receiver remains a wake-only source; Sync's singleton poller
+ * owns reconciliation, account-epoch checks, and reconnect dedupe.
+ */
+export async function subscribeHqWorkNativeWakes(
+  config: HqWorkNativeWakesConfig,
+): Promise<() => void> {
+  let disposed = false;
+  const unlisteners: Array<() => void> = [];
+  const delivered = new Map<string, number>();
+
+  function accept(name: string, payload: unknown): boolean {
+    if (disposed) return false;
+    const scope = config.scope();
+    if (!scope || !scopedNativePayload(payload, scope)) return false;
+    const key = nativeWakeKey(payload);
+    if (!key) return true;
+    const now = Date.now();
+    for (const [seen, at] of delivered) {
+      if (now - at > NATIVE_WAKE_DEDUPE_MS) delivered.delete(seen);
+    }
+    if (delivered.has(key)) return false;
+    delivered.set(key, now);
+    return true;
+  }
+
+  async function register(
+    name: string,
+    handler: (payload: unknown) => void,
+  ): Promise<void> {
+    try {
+      const unlisten = await config.listen<unknown>(name, ({ payload }) => {
+        if (accept(name, payload)) handler(payload);
+      });
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    } catch {
+      // A missing native event is disconnected-state fallback territory. Do
+      // not install a partial, unauthenticated alternative transport here.
+    }
+  }
+
+  await Promise.all([
+    register('dm:new-events', (payload) => {
+      for (const row of nativeRecords(payload)) {
+        const fromPersonUid = nativeString(row.fromPersonUid ?? row.from_person_uid);
+        if (!fromPersonUid) continue;
+        config.wakes.emit?.('dm:new-message', {
+          fromPersonUid,
+          ...(nativeString(row.eventId ?? row.event_id)
+            ? { eventId: nativeString(row.eventId ?? row.event_id) }
+            : {}),
+          ...(nativeString(row.createdAt ?? row.created_at)
+            ? { createdAt: nativeString(row.createdAt ?? row.created_at) }
+            : {}),
+          direction: 'in',
+          // Rust emits the exact per-pair counts before these fresh rows. Keep
+          // this event as a timeline/contact wake, never a second badge delta.
+          absoluteUnread: true,
+        });
+      }
+      config.onNotificationWake();
+    }),
+    register('share:new-events', () => config.onNotificationWake()),
+    register('channel:new-message', (payload) => {
+      const row = nativeRecords(payload)[0];
+      const channelId = nativeString(row?.channelId ?? row?.channel_id);
+      if (!channelId) return;
+      config.wakes.emit?.('channel:new-message', {
+        channelId,
+        ...(nativeString(row?.eventId ?? row?.event_id)
+          ? { eventId: nativeString(row?.eventId ?? row?.event_id) }
+          : {}),
+        ...(nativeString(row?.createdAt ?? row?.created_at)
+          ? { createdAt: nativeString(row?.createdAt ?? row?.created_at) }
+          : {}),
+        ...(typeof row?.unread === 'number' ? { unread: row.unread } : {}),
+        // The native channel poll coalesces multiple messages into the current
+        // absolute unread total; it is not a single-message increment.
+        ...(typeof row?.unread === 'number' ? { absoluteUnread: true } : {}),
+      });
+      config.onNotificationWake();
+    }),
+    register('thread:new-reply', (payload) => {
+      const row = nativeRecords(payload)[0];
+      const reply = nativeRecord(row?.reply);
+      const rootEventId = nativeString(row?.rootEventId ?? row?.root_event_id);
+      const eventId = nativeString(
+        row?.eventId ?? row?.event_id ?? reply?.eventId ?? reply?.event_id,
+      );
+      const scope = nativeString(row?.scope);
+      if (!rootEventId || !eventId || (scope !== 'channel' && scope !== 'dm')) return;
+      const channelId = nativeString(row?.channelId ?? row?.channel_id);
+      const withPersonUid = nativeString(row?.withPersonUid ?? row?.with_person_uid);
+      if ((scope === 'channel' && !channelId) || (scope === 'dm' && !withPersonUid)) return;
+      config.wakes.emit?.('reply:new', {
+        rootEventId,
+        eventId,
+        scope,
+        ...(channelId ? { channelId } : {}),
+        ...(withPersonUid ? { withPersonUid } : {}),
+      });
+      config.onNotificationWake();
+    }),
+    register('dm:pair-unreads', (payload) => {
+      const pairUnreads = asPairUnreads(payload);
+      if (pairUnreads) config.wakes.emit?.('dm:pair-unreads', pairUnreads);
+    }),
+    register('channel:unread-changed', () => {
+      config.wakes.emit?.('channel:unread-changed', undefined);
+    }),
+  ]);
+
+  return () => {
+    disposed = true;
+    delivered.clear();
+    for (const unlisten of unlisteners.splice(0)) {
+      try {
+        unlisten();
+      } catch {
+        // Tauri listener teardown is best-effort during a session transition.
+      }
+    }
+  };
+}
 
 /**
  * Bridge the native package lifecycle onto Library → Installed.
@@ -121,8 +356,8 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
         adapter.messaging.listDmRequests(),
       ),
     }),
-    listChannels: async () => {
-      const channels = await call<unknown>(adapter.messaging.listChannels());
+    listChannels: async (args) => {
+      const channels = await call<unknown>(adapter.messaging.listChannels(args));
       if (Array.isArray(channels)) {
         return { channels: channels as Channel[] } satisfies ChannelsResponse;
       }
@@ -136,13 +371,20 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
       call<void>(adapter.messaging.markDmThreadRead(withPersonUid)),
     markChannelRead: (channelId) =>
       call<void>(adapter.messaging.markChannelRead(channelId)),
-    searchMessages: (args) =>
-      call<MessageSearchResult>(
+    searchMessages: async (args) => ({
+      results: await call<MessageSearchResult['results']>(
         adapter.messaging.searchMessages(args.q, {
           ...(args.companyUid ? { companyUid: args.companyUid } : {}),
           ...(args.limit != null ? { limit: args.limit } : {}),
         }),
       ),
+    }),
+    sendChannelMessage: async ({ channelId, body }) => {
+      await call<unknown>(adapter.messaging.sendChannelMessage(channelId, body));
+    },
+    sendDm: async ({ toPersonUid, body }) => {
+      await call<unknown>(adapter.messaging.sendDm(toPersonUid, body));
+    },
     createChannel: async (args) => {
       const value = await call<Record<string, unknown>>(
         adapter.messaging.createChannel(args as never),
@@ -298,7 +540,14 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
         return { kind: 'library', tab: 'skills' };
       }
-      if (!hasExtraSegments && (detail === 'installed' || detail === 'marketplace')) {
+      if (
+        !hasExtraSegments &&
+        (detail === 'workers' ||
+          detail === 'installed' ||
+          detail === 'marketplace' ||
+          detail === 'submit' ||
+          detail === 'profile')
+      ) {
         return { kind: 'library', tab: detail };
       }
       break;

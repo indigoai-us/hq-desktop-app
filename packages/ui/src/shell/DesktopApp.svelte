@@ -32,6 +32,7 @@
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import NotificationsView from "../inbox/NotificationsView.svelte";
+  import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -45,6 +46,7 @@
   import {
     configureMeetingsApi,
     prefetchMeetings,
+    setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
@@ -96,6 +98,7 @@
     ConversationApi,
     ConversationMessageWire,
     NotificationsApi,
+    ReplyThreadScope,
     ReplyThreadResponse,
   } from "../chat/chat-api.js";
   import {
@@ -119,7 +122,13 @@
   import type {
     BoardTabData,
     ChannelFileItemModel,
+    ChannelFilePreview,
   } from "../chat/messaging/channelTabModels.js";
+  import {
+    MAX_CHANNEL_FILE_PREVIEW_BYTES,
+    fileCompanyScope,
+    loadVaultFilePreview,
+  } from "../chat/messaging/channel-file-preview.js";
   import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
@@ -172,6 +181,7 @@
     settingsProfileFromSelf,
     type SelfIdentity,
   } from "../identity/self.js";
+  import { createTenantStorage } from "../identity/tenant-storage.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -197,7 +207,7 @@
     boardByRow?: (row: ConversationRow) => BoardTabData | null;
     /** Resolve the (injected) Files fixture rows for a row. */
     filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
-    loadFilePreview?: (item: ChannelFileItemModel) => Promise<string | null>;
+    loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -210,10 +220,10 @@
      * shared UI. Null on the unauth / empty path.
      */
     self?: SelfIdentity | null;
-    /** Host-authenticated account key for singleton/cache isolation. */
-    meetingAccountId?: string | null;
-    /** Host lifecycle generation; Settings drops stale profile completions. */
-    authGeneration?: number;
+    /** Native account partition for renderer persistence and async guards. */
+    tenantAccountId?: string | null;
+    /** Monotonic native auth-session generation. A new value remounts the host. */
+    tenantGeneration?: number;
     /**
      * Optional explicit admin/owner flag from a defensive host probe
      * (`identity.isAdmin()`). When omitted, admin is derived from membership
@@ -277,6 +287,18 @@
     refreshAppVersion?: () => Promise<string>;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
+    /** Host owns native active-thread registration for realtime reply wakes. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -292,8 +314,12 @@
     onselectrow?: (row: ConversationRow) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
-    /** Desktop: GET attachment bytes outside the webview (no S3 CORS). */
-    getAttachmentObject?: (url: string) => Promise<Response>;
+    /**
+     * Host-owned bounded byte transport for presigned Vault GETs. Desktop
+     * supplies a native hop. Web uses the Work app's same-origin proxy because
+     * Vault buckets do not grant browser CORS to raw presigned URLs.
+     */
+    getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
   }
 
   let {
@@ -311,8 +337,8 @@
     wakes = null,
     companies = null,
     self = null,
-    meetingAccountId = null,
-    authGeneration = 0,
+    tenantAccountId = null,
+    tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
     accountInitials = null,
@@ -334,6 +360,7 @@
     updateWakeSeq = 0,
     refreshAppVersion,
     notificationWakeSeq = 0,
+    onactivethreadchange,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
@@ -352,6 +379,28 @@
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
   );
 
+  /**
+   * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
+   * CORS policy for browser clients. The Work web app owns this authenticated
+   * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
+   * host.
+   */
+  async function getVaultBytesForHost(
+    url: string,
+    maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
+  ): Promise<Response> {
+    if (getAttachmentObject) return getAttachmentObject(url, maxBytes);
+    if (adapter.kind === "web") {
+      return fetch("/api/chat-attachment-bytes", {
+        headers: {
+          "x-hq-source-url": url,
+          "x-hq-max-bytes": String(maxBytes),
+        },
+      });
+    }
+    throw new Error("No authorized Vault byte transport is available.");
+  }
+
   type ChannelTab = "chat" | "board" | "files";
   const CHANNEL_TABS: ReadonlyArray<{ id: ChannelTab; label: string }> = [
     { id: "chat", label: "Chat" },
@@ -360,7 +409,12 @@
   ];
 
   let view = $state<
-    "conversation" | "notifications" | "settings" | "meetings" | "library"
+    | "conversation"
+    | "notifications"
+    | "settings"
+    | "meetings"
+    | "library"
+    | "shared-files"
   >("conversation");
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
@@ -397,6 +451,13 @@
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   let meshConnectionState = $state<string>("idle");
+  let tenantCompanyId = $state<string | null>(null);
+  const tenantStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
+    ),
+  );
   const liveSyncState = $derived<SyncState>(syncStateFromLive(liveSync));
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
@@ -904,9 +965,10 @@
           if (!signed.ok) return null;
           const url = presignUrlFromResult(signed.value)?.url;
           if (!url) return null;
-          const res = getAttachmentObject
-            ? await getAttachmentObject(url)
-            : await fetch(url);
+          const res = await getVaultBytesForHost(
+            url,
+            MAX_CHANNEL_FILE_PREVIEW_BYTES,
+          );
           if (!res.ok) return null;
           return await res.text();
         } catch {
@@ -1278,6 +1340,35 @@
 
   let liveMentionTargets = $state<MentionTarget[]>([]);
 
+  function changeTenantCompany(companyUid: string | null): void {
+    if (tenantCompanyId === companyUid) return;
+    // Company scope is a tenant boundary too. Remove every visible selection
+    // before the re-keyed sidebar begins reads in the replacement scope.
+    tenantCompanyId = companyUid;
+    selectedRow = null;
+    liveTimeline = [];
+    liveTimelineId = null;
+    timelineHydrating = false;
+    openReplyRootId = null;
+    openProfileMember = null;
+    attachTray = null;
+    replyPreviewByRoot = {};
+    // Meetings is a module-level warm store. Rotate it with the visible
+    // company boundary as well, otherwise a completed agenda request could
+    // paint metadata from the previously selected workspace.
+    configureMeetingsApi({
+      accountId: tenantAccountId,
+      meetings: adapter.meetings,
+      feedback: adapter.feedback,
+      settings: adapter.settings,
+      storage: tenantStorage,
+      sessionGeneration: tenantGeneration,
+    });
+    startMeetingsStore();
+    if (view === "meetings") setMeetingsViewActive(true);
+    void prefetchMeetings();
+  }
+
   onMount(() => {
     let cancelled = false;
     void adapter.messaging.listContacts().then((res) => {
@@ -1332,12 +1423,20 @@
   async function catchUpDmInbox(): Promise<void> {
     const bus = wakes;
     if (!bus) return;
-    const storage = typeof window !== "undefined" ? window.localStorage : null;
+    const expectedGeneration = tenantGeneration;
+    const expectedCompanyId = tenantCompanyId;
+    const storage = tenantStorage;
     const since = storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
     const res = await adapter.notifications.fetchDmInbox({
       ...(since ? { since } : {}),
       limit: "50",
     });
+    if (
+      expectedGeneration !== tenantGeneration ||
+      expectedCompanyId !== tenantCompanyId
+    ) {
+      return;
+    }
     if (!res.ok) return;
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
@@ -1396,6 +1495,14 @@
     const first = (companies ?? []).find((company) => company.cloudUid?.trim());
     return first?.cloudUid?.trim() || null;
   }
+
+  const channelFilePreviewContext = $derived(
+    JSON.stringify({
+      account: self?.uid?.trim() || null,
+      companyUid: attachmentCompanyUid(selectedRow),
+      conversationId: selectedRow?.id ?? null,
+    }),
+  );
 
   /** Upload files for the selected row — shared by the main composer send and
       the ReplyPanel attach seam. */
@@ -1551,6 +1658,110 @@
     return presignAttachment(companyUid, item.vaultPath);
   }
 
+  function previewFailure(message: string | null | undefined): ChannelFilePreview {
+    const detail = (message ?? "").toLowerCase();
+    if (/denied|forbidden|membership|unauth|403/.test(detail)) {
+      return { kind: "unavailable", state: "denied", message: "You don't have access to this file." };
+    }
+    if (/not.?found|missing|404/.test(detail)) {
+      return { kind: "unavailable", state: "missing", message: "This file is no longer available." };
+    }
+    if (/large|limit|size/.test(detail)) {
+      return { kind: "unavailable", state: "too-large", message: "This file is too large to preview safely." };
+    }
+    if (/offline|network|timeout|5\d\d/.test(detail)) {
+      return { kind: "unavailable", state: "offline", message: "Couldn't reach the file service. Try again when you're online." };
+    }
+    return { kind: "unavailable", state: "unsupported", message: "This file can't be previewed safely." };
+  }
+
+  function base64Bytes(raw: string): Uint8Array | null {
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 !== 0) return null;
+    try {
+      const binary = atob(raw);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadLocalFilePreview(
+    item: ChannelFileItemModel,
+  ): Promise<ChannelFilePreview> {
+    const localPath = item.localPath?.trim();
+    if (!localPath) return previewFailure("missing local file path");
+    const result = await adapter.files.getAuthorizedPreview(localPath);
+    if (!result.ok) return previewFailure(result.message ?? result.reason);
+    const payload = result.value as unknown as Record<string, unknown>;
+    const mimeType = typeof payload.mimeType === "string" ? payload.mimeType.toLowerCase() : "";
+    const dataBase64 = typeof payload.dataBase64 === "string" ? payload.dataBase64 : "";
+    const bytes = base64Bytes(dataBase64);
+    if (!bytes) return previewFailure("invalid native preview");
+    if (mimeType === "application/pdf") {
+      return { kind: "pdf", url: `data:${mimeType};base64,${dataBase64}` };
+    }
+    if (new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]).has(mimeType)) {
+      return { kind: "image", url: `data:${mimeType};base64,${dataBase64}` };
+    }
+    if (mimeType.startsWith("text/") || mimeType === "application/json") {
+      try {
+        return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+      } catch {
+        return { kind: "unavailable", state: "binary", message: "This binary file can't be previewed safely." };
+      }
+    }
+    return previewFailure("unsupported preview type");
+  }
+
+  async function loadChannelFilePreview(
+    item: ChannelFileItemModel,
+  ): Promise<ChannelFilePreview> {
+    if (loadFilePreview) return loadFilePreview(item);
+    const selectedCompanyUid = attachmentCompanyUid(selectedRow);
+    if (!fileCompanyScope(item, selectedCompanyUid)) {
+      return {
+        kind: "unavailable",
+        state: "denied",
+        message: "This file is not available in the current company.",
+      };
+    }
+    if (item.localPath?.trim()) return loadLocalFilePreview(item);
+    return loadVaultFilePreview({
+      item,
+      selectedCompanyUid,
+      presign: (companyUid, key) => adapter.files.presignVaultGet(companyUid, key),
+      get: getVaultBytesForHost,
+    });
+  }
+
+  function canPerformChannelFileAction(item: ChannelFileItemModel): boolean {
+    return Boolean(
+      !item.accessDenied &&
+        item.localPath?.trim() &&
+        fileCompanyScope(item, attachmentCompanyUid(selectedRow)),
+    );
+  }
+
+  async function revealChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
+    const localPath = item.localPath?.trim();
+    if (!localPath) throw new Error("No authorized local mirror is available.");
+    const result = await adapter.files.revealInFinder(localPath);
+    if (!result.ok) throw new Error(result.message ?? "Reveal failed");
+  }
+
+  async function openChannelFile(item: ChannelFileItemModel): Promise<void> {
+    if (!canPerformChannelFileAction(item)) {
+      throw new Error("This file is not authorized for the current conversation.");
+    }
+    const localPath = item.localPath?.trim();
+    if (!localPath) throw new Error("No authorized local mirror is available.");
+    const result = await adapter.shell.openFileInClaude(localPath);
+    if (!result.ok) throw new Error(result.message ?? "Open failed");
+  }
+
   function openNotification(item: NotificationItem): void {
     const dest = notificationDestination(item);
     if (dest.kind === "dm") {
@@ -1572,8 +1783,9 @@
       return;
     }
     if (dest.kind === "files") {
-      // Work has no global /files surface yet. Do not send shares to Skills.
-      view = "conversation";
+      // Share rows do not include a company UID. Route to the bounded,
+      // server-scoped share list rather than guessing a tenant or aliasing it.
+      view = "shared-files";
       paletteOpen = false;
       membersOpen = false;
       projectAboutOpen = false;
@@ -1683,7 +1895,7 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
-    const prefs = readSettingsPrefs();
+    const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
@@ -1715,10 +1927,12 @@
     // open paints from state instead of a cold fetch. View-active gating
     // (poll + focus refresh) stays owned by MeetingsPage.
     configureMeetingsApi({
-      accountId: meetingAccountId,
+      accountId: tenantAccountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
       settings: adapter.settings,
+      storage: tenantStorage,
+      sessionGeneration: tenantGeneration,
     });
     startMeetingsStore();
     void prefetchMeetings();
@@ -1787,7 +2001,7 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-    function onOpenSettingsEvent(): void {
+  function onOpenSettingsEvent(): void {
       openSettings();
     }
     function onEmbeddedNavigation(event: Event): void {
@@ -1865,6 +2079,8 @@
         profile={resolvedSettingsProfile}
         {companies}
         {adapter}
+        sessionGeneration={tenantGeneration}
+        storage={tenantStorage}
         {version}
         initialSection={settingsSection}
         onback={closeSettings}
@@ -1875,12 +2091,12 @@
         consoleBase={HQ_CONSOLE_BASE}
         {updateWakeSeq}
         {refreshAppVersion}
-        {authGeneration}
       />
     </div>
   {:else}
     <div class="desktop-body">
       {#if !sidebarCollapsed}
+        {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
           api={sidebarApi}
           {wakes}
@@ -1890,11 +2106,15 @@
           accountLabel={resolvedAccountLabel}
           accountInitials={resolvedAccountInitials}
           selectedId={selectedRow?.id ?? null}
+          scopeUid={tenantCompanyId}
+          {tenantAccountId}
+          {tenantCompanyId}
           {seedDirectory}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
             })}
+          oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
             view = "conversation";
@@ -1903,6 +2123,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
         />
+        {/key}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -1922,10 +2143,20 @@
             onopen={openNotification}
           />
         </div>
-        {#if view === "meetings"}
+        {#if view === "shared-files"}
+          <SharedFilesOverlay
+            {adapter}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
+          />
+        {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
-            accountId={meetingAccountId}
+            accountId={tenantAccountId}
+            storage={tenantStorage}
+            sessionGeneration={tenantGeneration}
             onback={() => {
               view = "conversation";
               meetingFocusRequest = null;
@@ -2239,6 +2470,7 @@
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
+                    onactivethreadchange={onactivethreadchange}
                     {avatarByUid}
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
@@ -2253,7 +2485,14 @@
               onOpenInChannel={() => (tab = "chat")}
             />
           {:else}
-            <ChannelFilesTab {files} />
+            <ChannelFilesTab
+              {files}
+              previewContext={channelFilePreviewContext}
+              onloadpreview={loadChannelFilePreview}
+              onauthorizeaction={canPerformChannelFileAction}
+              onreveal={revealChannelFile}
+              onopen={openChannelFile}
+            />
           {/if}
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
