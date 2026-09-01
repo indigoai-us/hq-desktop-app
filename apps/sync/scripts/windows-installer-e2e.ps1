@@ -195,6 +195,7 @@ if ($Action -eq "upgrade") {
   $expectedRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $registryBackup).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
+  $helperStderr = Join-Path $stageDir "helper.stderr.log"
 
   $parent = Start-Process -FilePath $installedApp -PassThru
   Start-Sleep -Seconds 2
@@ -219,7 +220,7 @@ if ($Action -eq "upgrade") {
     "--prior-nsis-registry", $registryState,
     "--target-version", $TargetVersion
   )
-  $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
+  $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -RedirectStandardError $helperStderr -PassThru
   Wait-Until -Condition { Test-Path -LiteralPath $readyFile } -TimeoutSeconds 15 -FailureMessage "Update helper did not become ready"
 
   $hashWhileParentRuns = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedApp).Hash
@@ -292,6 +293,7 @@ if ($Action -eq "rollback") {
   $expectedRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $registryBackup).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
+  $helperStderr = Join-Path $stageDir "helper.stderr.log"
 
   # Simulate an installer that destroyed every installed file and rewrote its
   # Add/Remove Programs metadata before exiting non-zero. Rollback must restore
@@ -325,7 +327,17 @@ if ($Action -eq "rollback") {
     "--prior-nsis-registry", $registryState,
     "--target-version", $TargetVersion
   )
-  $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
+  $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -RedirectStandardError $helperStderr -PassThru
+  Wait-Until -Condition {
+    if (Test-Path -LiteralPath $readyFile) {
+      return $true
+    }
+    if ($helper.HasExited) {
+      $detail = if (Test-Path -LiteralPath $helperStderr) { Get-Content -LiteralPath $helperStderr -Raw } else { "no stderr" }
+      throw "Rollback helper exited before readiness: $detail"
+    }
+    return $false
+  } -TimeoutSeconds 15 -FailureMessage "Rollback helper did not become ready"
   if (-not $helper.WaitForExit(30000)) {
     Stop-Process -Id $helper.Id -Force -ErrorAction SilentlyContinue
     throw "Rollback helper did not finish within 30 seconds"
@@ -386,7 +398,11 @@ if ($uninstallers.Count -eq 0 -and $InstallerPath -and [System.IO.Path]::GetExte
   if ($process.ExitCode -ne 0) {
     throw "MSI uninstaller exited with code $($process.ExitCode)"
   }
-  Wait-Until -Condition { -not (Test-Path -LiteralPath $resolvedInstallDir) } -TimeoutSeconds 30 -FailureMessage "MSI uninstaller did not remove $resolvedInstallDir"
+  $installedApp = Join-Path $resolvedInstallDir "hq-sync-menubar.exe"
+  Wait-Until -Condition { -not (Test-Path -LiteralPath $installedApp) } -TimeoutSeconds 30 -FailureMessage "MSI uninstaller did not remove $installedApp"
+  if (Test-Path -LiteralPath $resolvedInstallDir) {
+    Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force
+  }
   return
 }
 if ($uninstallers.Count -ne 1) {

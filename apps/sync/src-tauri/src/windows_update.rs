@@ -922,6 +922,15 @@ pub fn run_helper_if_requested() {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("Windows update helper failed: {error}");
+            if let (Ok(receipt), Ok(version)) = (
+                arg_value(&args, RECEIPT_FILE_ARG),
+                arg_value(&args, "--target-version"),
+            ) {
+                let receipt = PathBuf::from(receipt);
+                if !receipt.is_file() {
+                    write_receipt(&receipt, "failed", &version, Some(&error));
+                }
+            }
             1
         }
     };

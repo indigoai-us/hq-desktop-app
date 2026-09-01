@@ -132,6 +132,10 @@ describe('Windows production installer E2E', () => {
       'Rollback created NSIS uninstall metadata for an MSI-installed bridge',
     );
     expect(installerHarness).toContain('$global:LASTEXITCODE = 0');
+    expect(installerHarness).toContain('-RedirectStandardError $helperStderr');
+    expect(installerHarness).toContain(
+      'Rollback helper exited before readiness:',
+    );
     expect(installerHarness).toContain(
       'Update rollback changed existing HQ shortcuts',
     );
@@ -165,6 +169,9 @@ describe('Windows production installer E2E', () => {
     expect(parentOpen).toBeGreaterThan(-1);
     expect(readyMarker).toBeGreaterThan(parentOpen);
     expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
+    expect(windowsUpdate).toContain(
+      'write_receipt(&receipt, "failed", &version, Some(&error))',
+    );
     expect(windowsUpdate).toContain('cleanup_rollback_swap_dirs();');
     expect(windowsUpdate).toContain('FAILED_INSTALL_PREFIX');
     expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
