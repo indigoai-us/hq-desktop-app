@@ -135,6 +135,14 @@ describe('Windows production installer E2E', () => {
     );
     expect(processRegistry).toContain('UPDATE_QUIESCE_REQUESTED');
     expect(processRegistry).toContain('pub fn quiesce_for_update');
+    expect(processRegistry).toContain(
+      'fn windows_pid_alive(pid: u32) -> Result<bool, String>',
+    );
+    expect(processRegistry).toContain(
+      'WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)',
+    );
+    expect(processRegistry).toContain('open HQ process {pid} for exit query');
+    expect(processRegistry).toContain('query HQ process {pid} exit code');
   });
 
   it('stops HQ processes before install and uninstall so locked files never break setup', () => {

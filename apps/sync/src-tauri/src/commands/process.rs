@@ -35,7 +35,9 @@ use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -3316,16 +3318,44 @@ impl Drop for UpdateQuiescenceGuard {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_pid_alive(pid: u32) -> bool {
+fn windows_process_open_error_means_exited(error: &windows::core::Error) -> bool {
+    WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pid_alive(pid: u32) -> Result<bool, String> {
     const STILL_ACTIVE: u32 = 259;
     unsafe {
-        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
+        let process = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(process) => process,
+            Err(error) if windows_process_open_error_means_exited(&error) => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "open HQ process {pid} for exit query: {error}"
+                ));
+            }
         };
         let mut code = 0u32;
-        let alive = GetExitCodeProcess(process, &mut code).is_ok() && code == STILL_ACTIVE;
+        let result = GetExitCodeProcess(process, &mut code);
         let _ = CloseHandle(process);
-        alive
+        result.map_err(|error| format!("query HQ process {pid} exit code: {error}"))?;
+        Ok(code == STILL_ACTIVE)
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod update_quiescence_tests {
+    use super::*;
+    use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+
+    #[test]
+    fn liveness_query_only_treats_a_missing_pid_as_exited() {
+        let missing_pid = windows::core::Error::from(ERROR_INVALID_PARAMETER);
+        let access_denied = windows::core::Error::from(ERROR_ACCESS_DENIED);
+
+        assert!(windows_process_open_error_means_exited(&missing_pid));
+        assert!(!windows_process_open_error_means_exited(&access_denied));
+        assert_eq!(windows_pid_alive(std::process::id()), Ok(true));
     }
 }
 
@@ -3349,7 +3379,17 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
     terminate_registered_processes_for_exit(&processes, Duration::ZERO);
 
     let started = std::time::Instant::now();
-    while pids.iter().copied().any(windows_pid_alive) {
+    loop {
+        let mut any_alive = false;
+        for pid in &pids {
+            if windows_pid_alive(*pid)? {
+                any_alive = true;
+                break;
+            }
+        }
+        if !any_alive {
+            break;
+        }
         if started.elapsed() >= timeout {
             return Err(format!(
                 "timed out after {}ms waiting for HQ processes to exit",
