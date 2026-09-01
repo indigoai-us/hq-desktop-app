@@ -4,6 +4,8 @@
    * colored monogram, name, and role pill. Memberships are account-owned;
    * this embedded view does not claim a per-company native sync setting.
    */
+  import { onMount } from "svelte";
+  import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { companyConsoleUrl, HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { companyAvatarWash, settingsCompanyLists } from "./shell-settings-model.js";
@@ -12,6 +14,7 @@
 
   interface Props {
     companies?: Workspace[] | null;
+    adapter?: PlatformAdapter | null;
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
@@ -20,13 +23,45 @@
 
   let {
     companies = [],
+    adapter = null,
     personalLabel = null,
     onopenconsole,
     consoleBase = HQ_CONSOLE_BASE,
   }: Props = $props();
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
+  let personalSyncState = $state<
+    "checking" | "synced" | "local" | "unavailable"
+  >("checking");
+  let personalSyncReadGeneration = 0;
   let externalError = $state<string | null>(null);
+
+  async function refreshPersonalSyncState(): Promise<void> {
+    const generation = ++personalSyncReadGeneration;
+    if (!adapter?.isAvailable("canSync")) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const result = await adapter.settings.getSettings();
+    if (generation !== personalSyncReadGeneration) return;
+    if (!result.ok) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const settings = result.value as Record<string, unknown>;
+    personalSyncState = settings.personalSyncEnabled === false ? "local" : "synced";
+  }
+
+  onMount(() => {
+    const refresh = () => void refreshPersonalSyncState();
+    window.addEventListener("focus", refresh);
+    window.addEventListener("hq:workspace-sync-enabled-changed", refresh);
+    refresh();
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("hq:workspace-sync-enabled-changed", refresh);
+    };
+  });
   function companyUrl(slug: string): string {
     const base = consoleBase.replace(/\/$/, "");
     if (base === HQ_CONSOLE_BASE) return companyConsoleUrl(slug);
@@ -114,7 +149,19 @@
         <span class="co-name">{lists.personal.name}</span>
         <span class="co-role">Owner</span>
       </div>
-      <span class="co-state">Local vault</span>
+      <span
+        class:on={personalSyncState === "synced"}
+        class="co-state"
+        data-testid="settings-personal-sync-state"
+      >
+        {personalSyncState === "synced"
+          ? "Synced"
+          : personalSyncState === "local"
+            ? "Local"
+            : personalSyncState === "checking"
+              ? "Checking"
+              : "Unavailable"}
+      </span>
     </div>
   {/if}
 </div>
