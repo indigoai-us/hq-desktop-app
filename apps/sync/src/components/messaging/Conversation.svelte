@@ -44,6 +44,8 @@
     rootEventId?: string | null;
     replyCount?: number | null;
     lastReplyAt?: string | null;
+    /** Distinct reply authors folded onto the root (avatar stack, capped at 3). */
+    replyAuthors?: Array<{ personUid: string; displayName: string }> | null;
     // Share timeline (share history in Messages). When set, the bubble renders
     // as a distinct inline share card (file icon, filename(s), note,
     // permission, timestamp) instead of a plain text body. `prompt` carries
@@ -588,12 +590,21 @@
           onclick={() => openThread(msg.rootEventId)}
           aria-label={`Open thread — ${msg.replyCount} ${(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}`}
         >
+          {#if msg.replyAuthors?.length}
+            <span class="thread-affordance-avatars" data-testid="reply-authors">
+              {#each msg.replyAuthors.slice(0, 3) as a (a.personUid || a.displayName)}
+                <span class="thread-affordance-avatar">
+                  <IdentityMark kind="person" label={a.displayName} size="small" />
+                </span>
+              {/each}
+            </span>
+          {/if}
           <span class="thread-affordance-count">
             {msg.replyCount}
             {(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}
           </span>
           {#if msg.lastReplyAt}
-            <span class="thread-affordance-time">· last {formatRelative(msg.lastReplyAt)}</span>
+            <span class="thread-affordance-time">Last reply {formatRelative(msg.lastReplyAt)}</span>
           {/if}
         </button>
       {/if}
@@ -1258,6 +1269,23 @@
   .thread-affordance-time {
     font-weight: 500;
     color: var(--pop-muted);
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .thread-affordance-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .thread-affordance-avatar {
+    display: inline-flex;
+    margin-left: -5px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--pop-hover);
+  }
+
+  .thread-affordance-avatar:first-child {
+    margin-left: 0;
   }
 
   /* The root bubble of the thread currently open in the ThreadPanel. */

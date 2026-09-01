@@ -159,3 +159,64 @@ describe('applyInboundReplies', () => {
     expect(counted.size).toBe(0);
   });
 });
+
+describe('reply author collection', () => {
+  it('folds distinct reply authors onto the root in first-appearance order', () => {
+    const folded = foldReplies([
+      msg('root'),
+      msg('r1', {
+        rootEventId: 'root',
+        fromPersonUid: 'prs_a',
+        fromDisplayName: 'Ada',
+        createdAt: '2026-06-05T00:01:00Z',
+      }),
+      msg('r2', {
+        rootEventId: 'root',
+        fromPersonUid: 'agt_izzy',
+        fromDisplayName: 'Izzy',
+        createdAt: '2026-06-05T00:02:00Z',
+      }),
+      msg('r3', {
+        rootEventId: 'root',
+        fromPersonUid: 'prs_a',
+        fromDisplayName: 'Ada',
+        createdAt: '2026-06-05T00:03:00Z',
+      }),
+    ]);
+    expect(folded[0].replyAuthors).toEqual([
+      { personUid: 'prs_a', displayName: 'Ada' },
+      { personUid: 'agt_izzy', displayName: 'Izzy' },
+    ]);
+  });
+
+  it('applyInboundReplies appends a live reply author once', () => {
+    const counted = new Set<string>();
+    const reply = {
+      eventId: 'r9',
+      rootEventId: 'root',
+      createdAt: '2026-06-05T00:05:00Z',
+      fromPersonUid: 'agt_izzy',
+      fromDisplayName: 'Izzy',
+    };
+    const next = applyInboundReplies(
+      [msg('root', { replyAuthors: [{ personUid: 'agt_izzy', displayName: 'Izzy' }] })],
+      [reply],
+      counted,
+    );
+    expect(next[0].replyCount).toBe(1);
+    expect(next[0].replyAuthors).toEqual([
+      { personUid: 'agt_izzy', displayName: 'Izzy' },
+    ]);
+  });
+
+  it('keys uid-less authors by display name', () => {
+    const folded = foldReplies([
+      msg('root'),
+      msg('r1', { rootEventId: 'root', fromDisplayName: 'Guest' }),
+      msg('r2', { rootEventId: 'root', fromDisplayName: 'Guest' }),
+    ]);
+    expect(folded[0].replyAuthors).toEqual([
+      { personUid: '', displayName: 'Guest' },
+    ]);
+  });
+});

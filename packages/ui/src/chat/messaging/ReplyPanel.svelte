@@ -55,9 +55,18 @@
   } from "../chat-api";
   import { subscribeReplyNew } from "../chat-api";
 
+  export interface ReplyPreviewAuthor {
+    personUid: string;
+    displayName: string;
+    agent?: boolean;
+  }
+
   export interface ReplyPreview {
     author: string;
     at: string;
+    /** Distinct reply authors, first-appearance order (Slack-style avatar
+     *  stack in the main-chat affordance; consumers cap the render). */
+    authors?: ReplyPreviewAuthor[];
   }
 
   interface LocalReply extends ConversationMessageWire {
@@ -285,7 +294,19 @@
     const author = messageAuthor(last);
     const at = last.createdAt?.trim() ?? "";
     if (!author || !at) return null;
-    return { author, at };
+    // Distinct reply authors (keyed by personUid, falling back to the display
+    // name for rows without a uid), first-appearance order.
+    const authors: ReplyPreviewAuthor[] = [];
+    const seen = new Set<string>();
+    for (const msg of list) {
+      const personUid = (msg.fromPersonUid ?? "").trim();
+      const displayName = messageAuthor(msg);
+      const key = personUid || displayName;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      authors.push({ personUid, displayName, agent: isAgent(msg) });
+    }
+    return { author, at, authors };
   }
 
   function sortOldestFirst(

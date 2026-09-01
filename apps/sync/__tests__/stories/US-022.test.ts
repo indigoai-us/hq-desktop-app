@@ -31,7 +31,7 @@ describe('US-022: reply-count affordance in Conversation', () => {
     expect(c).toContain('onclick={() => openThread(msg.rootEventId)}');
     // It shows the count and a "last {time}" relative stamp.
     expect(c).toContain("{(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}");
-    expect(c).toContain('· last {formatRelative(msg.lastReplyAt)}');
+    expect(c).toContain('Last reply {formatRelative(msg.lastReplyAt)}');
   });
 
   it('clicking the affordance calls onopenthread with the rootEventId', () => {

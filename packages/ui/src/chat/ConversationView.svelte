@@ -28,6 +28,7 @@
     TIMELINE_ROOT_PAGE_SIZE,
   } from "./live-messages";
   import ReplyPanel, { type ReplyPreview } from "./messaging/ReplyPanel.svelte";
+  import IdentityMark from "./messaging/IdentityMark.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -472,11 +473,26 @@
                       aria-label={replyLabel(m.replyCount ?? 0)}
                       onclick={() => openReply(m.eventId)}
                     >
+                      {#if preview?.authors?.length}
+                        <span
+                          class="conv-replies-avatars"
+                          data-testid="reply-authors"
+                        >
+                          {#each preview.authors.slice(0, 3) as a (a.personUid || a.displayName)}
+                            <span class="conv-replies-avatar">
+                              <IdentityMark
+                                kind={a.agent ? "agent" : "person"}
+                                label={a.displayName}
+                                size="small"
+                              />
+                            </span>
+                          {/each}
+                        </span>
+                      {/if}
                       {replyLabel(m.replyCount ?? 0)}
                       {#if preview}
                         <span class="conv-replies-preview">
-                          {preview.author}
-                          {formatRelative(preview.at)}
+                          Last reply {formatRelative(preview.at)}
                         </span>
                       {/if}
                     </button>
@@ -628,6 +644,23 @@
   .conv-replies-preview {
     color: var(--t3);
     font-weight: 400;
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .conv-replies-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .conv-replies-avatar {
+    display: inline-flex;
+    margin-left: -5px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--surface, var(--v4-ground, #161618));
+  }
+
+  .conv-replies-avatar:first-child {
+    margin-left: 0;
   }
 
   .conv-thread {

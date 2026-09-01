@@ -100,7 +100,18 @@
      * the list API — omit unless the host already knows author + time.
      */
     replyPreviewByRoot?: Readonly<
-      Record<string, { author: string; at: string }>
+      Record<
+        string,
+        {
+          author: string;
+          at: string;
+          authors?: Array<{
+            personUid: string;
+            displayName: string;
+            agent?: boolean;
+          }>;
+        }
+      >
     >;
     /** Root currently open in ReplyPanel (highlight only). */
     activeRootEventId?: string | null;
@@ -931,11 +942,28 @@
                     aria-label={replyLabel(msg.replyCount ?? 0)}
                     onclick={() => openReply(msg.eventId)}
                   >
+                    {#if preview?.authors?.length}
+                      <span
+                        class="dm-replies-avatars"
+                        data-testid="reply-authors"
+                      >
+                        {#each preview.authors.slice(0, 3) as a (a.personUid || a.displayName)}
+                          <span class="dm-replies-avatar">
+                            <IdentityMark
+                              kind={a.agent ? "agent" : "person"}
+                              label={a.displayName}
+                              avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
+                                null}
+                              size="small"
+                            />
+                          </span>
+                        {/each}
+                      </span>
+                    {/if}
                     {replyLabel(msg.replyCount ?? 0)}
                     {#if preview}
                       <span class="dm-replies-preview">
-                        {preview.author}
-                        {formatRelative(preview.at)}
+                        Last reply {formatRelative(preview.at)}
                       </span>
                     {/if}
                   </button>
@@ -1835,6 +1863,23 @@
   .dm-replies-preview {
     color: var(--t3);
     font-weight: 400;
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .dm-replies-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .dm-replies-avatar {
+    display: inline-flex;
+    margin-left: -6px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--v4-ground, var(--raised, #161618));
+  }
+
+  .dm-replies-avatar:first-child {
+    margin-left: 0;
   }
 
   /* Slack-style hover toolbar pinned to the message. */
