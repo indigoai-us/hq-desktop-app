@@ -481,7 +481,7 @@ jobs:
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: installer E2E (x64 MSI + NSIS)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: apps/sync
@@ -522,6 +522,41 @@ jobs:
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
+
+      # Build a synthetic next patch so NSIS performs a real in-place upgrade.
+      # The prior package is the stable version recorded by this checkout; the
+      # candidate is this PR's code with only its version metadata advanced.
+      - name: Prepare prior and candidate versions
+        id: versions
+        shell: pwsh
+        run: |
+          $baseVersion = node -p "require('./package.json').version"
+          $parts = $baseVersion.Split('.')
+          if ($parts.Count -ne 3) {
+            throw "Expected stable X.Y.Z base version, got $baseVersion"
+          }
+          $candidateVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          pnpm -C ../.. version:app --set-version $candidateVersion
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp candidate version $candidateVersion"
+          }
+          "base=$baseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "candidate=$candidateVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Download prior stable NSIS package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $downloadDir = Join-Path $env:RUNNER_TEMP "hq-prior-release"
+          New-Item -ItemType Directory -Path $downloadDir | Out-Null
+          $asset = "HQ_${{ steps.versions.outputs.base }}_x64-setup.exe"
+          gh release download "v${{ steps.versions.outputs.base }}" --repo indigoai-us/hq-desktop-app --pattern $asset --dir $downloadDir
+          $installer = Join-Path $downloadDir $asset
+          if (-not (Test-Path -LiteralPath $installer)) {
+            throw "Prior stable installer was not downloaded: $installer"
+          }
+          "PRIOR_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install Recall sidecar deps
         run: pnpm run sidecar:install
@@ -602,27 +637,44 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
-      - name: Install production package
-        id: install
+      - name: Install prior stable package
+        id: install_prior
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $env:PRIOR_INSTALLER -InstallDir $installDir
+
+          "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Installed prior stable application: $app"
+
+      - name: Upgrade running prior version through the copied helper
+        id: upgrade
         shell: pwsh
         run: |
           $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
-            throw "NSIS installer was not produced"
+            throw "Candidate NSIS installer was not produced"
           }
-
+          $helper = Resolve-Path "src-tauri\target\x86_64-pc-windows-msvc\release\hq-sync-menubar.exe"
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -HelperPath $helper.Path -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Installed application: $app"
+          Write-Host "Upgraded application: $app"
+
+      - name: Roll back and relaunch after an installer failure
+        shell: pwsh
+        run: |
+          $helper = Resolve-Path "src-tauri\target\x86_64-pc-windows-msvc\release\hq-sync-menubar.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -HelperPath $helper.Path -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.
       - name: Live pre-auth smoke test of the installed application
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
-          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 

@@ -13,6 +13,8 @@ mod updater;
 mod util;
 #[cfg(target_os = "macos")]
 mod webview_asset_cache;
+#[cfg(target_os = "windows")]
+mod windows_update;
 
 /// Set the macOS application icon image at runtime.
 ///
@@ -264,6 +266,12 @@ where
 }
 
 fn main() {
+    // The copied Windows update helper must run before Sentry, Tauri, and the
+    // single-instance plugin. It waits for the real app to exit, then launches
+    // the verified NSIS package from outside the install directory.
+    #[cfg(target_os = "windows")]
+    windows_update::run_helper_if_requested();
+
     // CI-only probe entrypoint, gated on the non-default `sync-cancel-probe`
     // feature. The dispatch — including its process termination — lives in
     // `commands::process` so the only process exit in this file stays the Windows

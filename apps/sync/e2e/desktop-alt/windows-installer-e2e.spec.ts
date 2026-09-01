@@ -25,6 +25,20 @@ const installerHooks = readFileSync(
   appUrl('src-tauri/windows/installer-hooks.nsh'),
   'utf8',
 );
+const updater = readFileSync(appUrl('src-tauri/src/updater.rs'), 'utf8');
+const windowsUpdate = readFileSync(
+  appUrl('src-tauri/src/windows_update.rs'),
+  'utf8',
+);
+const processRegistry = readFileSync(
+  appUrl('src-tauri/src/commands/process.rs'),
+  'utf8',
+);
+const versionGate = readFileSync(
+  appUrl('src-tauri/src/commands/version_gate.rs'),
+  'utf8',
+);
+const main = readFileSync(appUrl('src-tauri/src/main.rs'), 'utf8');
 
 describe('Windows production installer E2E', () => {
   it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
@@ -38,9 +52,12 @@ describe('Windows production installer E2E', () => {
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
   });
 
-  it('tests the installed x64 application and always uninstalls it', () => {
+  it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
-    expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.install.outputs.app }}');
+    expect(workflow).toContain('-Action upgrade');
+    expect(workflow).toContain(
+      'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
+    );
     expect(workflow).toContain('HQ_SYNC_DESKTOP_ALT_LIVE: "1"');
     expect(workflow).toContain('$installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"');
     expect(workflow).toContain('if: always()');
@@ -49,6 +66,50 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain('-Filter "hq-sync-menubar.exe"');
     expect(installerHarness).toContain('if ($machine -ne 0x8664)');
     expect(installerHarness).toContain('NSIS uninstaller exited with code');
+  });
+
+  it('upgrades a running prior stable build only after the helper observes parent exit', () => {
+    expect(workflow).toContain('Download prior stable NSIS package');
+    expect(workflow).toContain('Prepare prior and candidate versions');
+    expect(workflow).toContain(
+      'Upgrade running prior version through the copied helper',
+    );
+    expect(installerHarness).toContain('--hq-update-helper');
+    expect(installerHarness).toContain(
+      'Installer modified the application before the parent exited',
+    );
+    expect(installerHarness).toContain(
+      'Update helper exited while the prior-version parent was still running',
+    );
+    expect(installerHarness).toContain(
+      'Upgraded application does not match the candidate binary',
+    );
+    expect(installerHarness).toContain('$receipt.state -ne "installed"');
+    expect(workflow).toContain(
+      'Roll back and relaunch after an installer failure',
+    );
+    expect(workflow).toContain('-Action rollback');
+    expect(installerHarness).toContain('$receipt.state -ne "rolled-back"');
+    expect(installerHarness).toContain(
+      'Rollback did not restore the prior application binary',
+    );
+  });
+
+  it('routes every Windows update trigger through the guarded helper handoff', () => {
+    expect(updater).toContain(
+      'crate::windows_update::install_verified_update(app, update).await',
+    );
+    expect(updater).toContain('pub(crate) async fn install_stable_update');
+    expect(versionGate).toContain('crate::updater::install_stable_update(app).await');
+    expect(versionGate).not.toContain('download_and_install');
+    expect(main).toContain('windows_update::run_helper_if_requested()');
+    expect(windowsUpdate).toContain('.download(|_, _| {}, || {})');
+    expect(windowsUpdate).toContain('quiesce_for_update(PROCESS_EXIT_TIMEOUT)');
+    expect(windowsUpdate).toContain('app.exit(0)');
+    expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
+    expect(windowsUpdate).toContain('restore_original_executable(&helper, &original_exe)');
+    expect(processRegistry).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(processRegistry).toContain('pub fn quiesce_for_update');
   });
 
   it('stops HQ processes before install and uninstall so locked files never break setup', () => {

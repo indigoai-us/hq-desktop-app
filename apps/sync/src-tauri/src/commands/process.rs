@@ -47,7 +47,10 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE,
+};
 
 /// The point in the process lifecycle that failed.
 ///
@@ -243,6 +246,12 @@ const CANCELLATION_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// The daemon reads this as exit evidence; it does not alter cancellation or
 /// crash classification.
 static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Blocks new HQ-owned child registrations while a Windows update is
+/// quiescing the process tree. The updater sets this before taking its process
+/// snapshot, so a watcher cannot slip into the install window after the
+/// snapshot but before the app exits.
+static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn app_exit_requested() -> bool {
     APP_EXIT_REQUESTED.load(Ordering::Acquire)
@@ -463,6 +472,9 @@ pub fn pre_register_handle(handle: &str) {
 pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
+    if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
+        return None;
+    }
     match reg.active.entry(handle.to_string()) {
         Entry::Occupied(_) => None,
         Entry::Vacant(v) => {
@@ -558,7 +570,14 @@ fn register_process_for_generation_with_containment(
         return ProcessAttachOutcome::RefusedStale;
     }
     entry.pid = Some(pid);
-    if entry.cancelled {
+    if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
+        // This generation registered before the updater closed the spawn gate
+        // but did not attach its child until afterwards. Refuse that late
+        // child and let the spawn owner terminate/reap it through the
+        // containment it already established.
+        entry.cancelled = true;
+        ProcessAttachOutcome::Cancelled
+    } else if entry.cancelled {
         ProcessAttachOutcome::Cancelled
     } else {
         containment.attach_to_entry(entry);
@@ -3272,6 +3291,76 @@ pub fn terminate_all_for_exit(grace: Duration) {
     terminate_registered_processes_for_exit(&registered_processes_including_retired(), grace);
 }
 
+/// RAII lease for the updater's process-quiescence window.
+///
+/// A failed update preparation drops the lease and allows normal child
+/// spawning to resume. A successful preparation commits it, keeping the gate
+/// closed until the parent process exits and the out-of-process helper starts
+/// the installer.
+pub struct UpdateQuiescenceGuard {
+    committed: bool,
+}
+
+impl UpdateQuiescenceGuard {
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for UpdateQuiescenceGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            UPDATE_QUIESCE_REQUESTED.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pid_alive(pid: u32) -> bool {
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let alive = GetExitCodeProcess(process, &mut code).is_ok() && code == STILL_ACTIVE;
+        let _ = CloseHandle(process);
+        alive
+    }
+}
+
+/// Stop every registered HQ-owned process and prove the Windows processes are
+/// gone before the updater lets the parent exit. New registrations remain
+/// blocked for the lifetime of the returned guard.
+#[cfg(target_os = "windows")]
+pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, String> {
+    UPDATE_QUIESCE_REQUESTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "update process quiescence is already in progress".to_string())?;
+    let guard = UpdateQuiescenceGuard { committed: false };
+    // The gate is already closed, so this check is race-free: a manual sync
+    // that registered first wins and defers the update; a later registration
+    // observes UPDATE_QUIESCE_REQUESTED and cannot enter the install window.
+    if is_registered("hq-sync") {
+        return Err("Update deferred while a sync is active".to_string());
+    }
+    let processes = registered_processes_including_retired();
+    let pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
+    terminate_registered_processes_for_exit(&processes, Duration::ZERO);
+
+    let started = std::time::Instant::now();
+    while pids.iter().copied().any(windows_pid_alive) {
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "timed out after {}ms waiting for HQ processes to exit",
+                timeout.as_millis()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(guard)
+}
+
 /// CI-only built-artifact probe for the exact Windows mechanism reported by
 /// HQ-DESKTOP-48. It starts a real fixture child through the production
 /// registry, cancels it through the generation-aware path, observes the actual
@@ -3481,7 +3570,8 @@ pub fn report_session_end_owned_pids() {
 pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> {
     let handle = Uuid::new_v4().to_string();
 
-    let generation = pre_register_handle_gen(&handle);
+    let generation = try_register_handle_gen(&handle)
+        .ok_or_else(|| "HQ process spawning is paused for an update".to_string())?;
 
     let handle_bg = handle.clone();
     thread::spawn(move || {

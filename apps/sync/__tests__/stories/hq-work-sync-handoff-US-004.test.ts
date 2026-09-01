@@ -78,23 +78,31 @@ describe('US-004 silent HQ Work co-install after Sync update', () => {
     expect(main).toContain('tauri::async_runtime::spawn');
   });
 
-  it('updater.rs spawns maybe_co_install before download_and_install and after Ok', () => {
+  it('updater.rs keeps HQ Work co-install outside the Windows update critical section', () => {
     expect(updater).toContain('spawn_maybe_co_install_hq_work');
     expect(updater).toContain('maybe_co_install');
+
+    const installFnAt = updater.indexOf('async fn install_verified_update(');
+    const stableFnAt = updater.indexOf('pub(crate) async fn install_stable_update(');
+    const installFn = updater.slice(installFnAt, stableFnAt);
+    expect(installFnAt).toBeGreaterThan(-1);
+    expect(stableFnAt).toBeGreaterThan(installFnAt);
+    expect(installFn).toContain('#[cfg(target_os = "windows")]');
+    expect(installFn).toContain('crate::windows_update::install_verified_update(app, update).await');
+    expect(installFn).toContain('#[cfg(not(target_os = "windows"))]');
+    const downloadAt = installFn.indexOf('download_and_install');
+    const postInstallSpawnAt = installFn.indexOf('spawn_maybe_co_install_hq_work');
+    expect(downloadAt).toBeGreaterThan(-1);
+    expect(postInstallSpawnAt).toBeGreaterThan(downloadAt);
+    expect(installFn.indexOf('app.restart()')).toBeGreaterThan(postInstallSpawnAt);
 
     const autoIdx = updater.indexOf('BackgroundUpdateAction::Install =>');
     expect(autoIdx).toBeGreaterThan(-1);
     const auto = updater.slice(autoIdx, autoIdx + 4500);
+    expect(auto).toContain('#[cfg(not(target_os = "windows"))]');
     const firstSpawn = auto.indexOf('spawn_maybe_co_install_hq_work');
-    const downloadAt = auto.indexOf('download_and_install');
+    const installAt = auto.indexOf('install_verified_update(&handle, &update)');
     expect(firstSpawn).toBeGreaterThan(-1);
-    expect(downloadAt).toBeGreaterThan(firstSpawn);
-
-    const okAt = auto.indexOf('Ok(())');
-    expect(okAt).toBeGreaterThan(downloadAt);
-    expect(auto.indexOf('spawn_maybe_co_install_hq_work', okAt)).toBeGreaterThan(okAt);
-    expect(auto.indexOf('handle.restart()', okAt)).toBeGreaterThan(
-      auto.indexOf('spawn_maybe_co_install_hq_work', okAt),
-    );
+    expect(installAt).toBeGreaterThan(firstSpawn);
   });
 });
