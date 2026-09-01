@@ -61,6 +61,10 @@
     type LiveProjectMeta,
   } from "$lib/live-project";
   import {
+    createProjectMetaCache,
+    subscribeProjectMetaInvalidations,
+  } from "$lib/project-meta-cache";
+  import {
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
@@ -152,10 +156,28 @@
     }),
   );
   let workThreads = $state<WorkMeshThread[]>([]);
-  const projectMeta = new Map<string, LiveProjectMeta>();
-  const projectMetaPending = new Set<string>();
-  const projectMetaMiss = new Set<string>();
   let projectMetaTick = $state(0);
+  const projectMeta = createProjectMetaCache({
+    load: (row) => {
+      const projectId = projectIdFor(row);
+      return loadLiveProjectMeta(
+        { ...row, projectId: projectId || row.projectId },
+        companyLabelFor(row.companyUid),
+      );
+    },
+    canLoad: (row) => {
+      const projectId = projectIdFor(row);
+      const companyUid = (row.companyUid ?? "").trim();
+      const channelId = (row.channelId ?? "").trim();
+      return (
+        typeof window !== "undefined" &&
+        (Boolean(projectId && companyUid) || channelId.startsWith("chn_"))
+      );
+    },
+    onChanged: () => {
+      projectMetaTick += 1;
+    },
+  });
 
   function nativeTenantFromSession(
     value: unknown,
@@ -241,6 +263,10 @@
     }
     await refreshWorkThreads(companies);
   });
+
+  // `channel:updated` narrows to that channel; catch-up has no row identity
+  // and can reconcile any project directory entry, so it invalidates broadly.
+  onMount(() => subscribeProjectMetaInvalidations(wakes, projectMeta));
 
   $effect(() => {
     if (!self) return;
@@ -343,33 +369,8 @@
   });
 
   function ensureProjectMeta(row: ConversationRow): LiveProjectMeta | null {
-    const key = row.channelId || row.projectId || row.id;
-    if (!key) return null;
     void projectMetaTick;
-    const cached = projectMeta.get(key);
-    if (cached) return cached;
-    if (projectMetaMiss.has(key) || projectMetaPending.has(key)) return null;
-    const projectId = projectIdFor(row);
-    const companyUid = (row.companyUid ?? "").trim();
-    const channelId = (row.channelId ?? "").trim();
-    if (
-      typeof window === "undefined" ||
-      ((!projectId || !companyUid) && !channelId.startsWith("chn_"))
-    ) {
-      projectMetaMiss.add(key);
-      return null;
-    }
-    projectMetaPending.add(key);
-    void loadLiveProjectMeta(
-      { ...row, projectId: projectId || row.projectId },
-      companyLabelFor(row.companyUid),
-    ).then(({ meta, definitiveMiss }) => {
-      projectMetaPending.delete(key);
-      if (meta) projectMeta.set(key, meta);
-      else if (definitiveMiss) projectMetaMiss.add(key);
-      projectMetaTick += 1;
-    });
-    return null;
+    return projectMeta.read(row);
   }
 
   const boardByRow = $derived((row: ConversationRow): BoardTabData | null => {
