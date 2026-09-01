@@ -26,7 +26,7 @@ Write-Host "Windows tests exceeded their $TimeoutSeconds-second deadline; termin
 & taskkill.exe /PID $cargo.Id /T /F
 $taskkillExitCode = $LASTEXITCODE
 
-if (-not $cargo.WaitForExit(30_000)) {
+if (-not $cargo.WaitForExit(30000)) {
   Write-Error "cargo PID $($cargo.Id) remained alive for 30 seconds after taskkill.exe attempted to terminate its process tree."
 }
 

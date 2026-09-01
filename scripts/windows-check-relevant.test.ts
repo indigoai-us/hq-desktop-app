@@ -240,7 +240,9 @@ describe("the Windows test process-tree watchdog", () => {
 
   it("kills cargo and its complete descendant tree before failing on deadline", () => {
     expect(watchdogScript).toContain("& taskkill.exe /PID $cargo.Id /T /F");
-    expect(watchdogScript).toContain("$cargo.WaitForExit(30_000)");
+    expect(watchdogScript).toContain("$cargo.WaitForExit(30000)");
+    // PowerShell does not allow digit separators such as `30_000`.
+    expect(watchdogScript).not.toMatch(/(?<![A-Za-z0-9])\d+_\d+/);
     expect(watchdogScript).toContain("$taskkillExitCode -ne 0");
     expect(watchdogScript).toContain("process-tree deadline");
     expect(watchdogScript).toContain("exit 1");
