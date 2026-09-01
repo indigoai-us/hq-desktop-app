@@ -276,7 +276,31 @@ export function createSyncPlatformAdapter(
         // bearer used for this request. It also preserves the established
         // profile fallback when a Cognito refresh omits the optional ID token.
         const meResult = await hqProJson<unknown>('GET', WEB_PATHS.whoami);
-        if (!meResult.ok) return meResult;
+        if (!meResult.ok) {
+          // The canonical-profile route (`/v1/identity/whoami`) is served by the
+          // web console, not the bearer vault API the desktop calls, so it
+          // returns HTTP 404 ("no route matched") here. That never recovers on
+          // retry, so instead of hard-failing the whole account load with
+          // "Couldn't load your account", fall back to the proven native
+          // session identity (already fetched above). Every other failure still
+          // propagates so the shell keeps its existing handling: 401 →
+          // re-sign-in, transient 5xx → identity-error with a Retry button.
+          const nativeUid = auth.value.accountId?.trim();
+          if (meResult.code !== 'http-404' || !nativeUid) {
+            return meResult;
+          }
+          // NOTE: on this fallback path `personUid` is the Cognito subject, not
+          // the server-issued `prs_*` person uid the success path returns. It is
+          // fine for rendering the account, but must not be assumed `prs_*` by
+          // recipient-scoped consumers (e.g. the realtime wake scope in
+          // hq-work-host.ts) — resolve the canonical `prs_*` uid natively before
+          // coupling any recipient-scope check to it.
+          return ok({
+            personUid: nativeUid,
+            email: auth.value.email?.trim() || '',
+            displayName: auth.value.displayName?.trim() || undefined,
+          });
+        }
         const currentAuth = await call<ShellAuthState>('get_auth_state');
         if (!currentAuth.ok) return currentAuth;
         if (
