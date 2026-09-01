@@ -141,6 +141,8 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => void;
+    /** Emits the full normalized conversation list whenever it changes. */
+    onrows?: (rows: ConversationRow[]) => void;
   }
 
   let {
@@ -162,6 +164,7 @@
     onselect,
     oncompanyscopechange,
     onsignout,
+    onrows,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -381,6 +384,16 @@
       recentDms,
     }),
   );
+
+  let lastEmittedRows: ConversationRow[] | null = null;
+  $effect(() => {
+    const rows = allRows;
+    const emit = onrows;
+    if (!emit) return;
+    if (rows === lastEmittedRows) return;
+    lastEmittedRows = rows;
+    emit(rows);
+  });
 
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).

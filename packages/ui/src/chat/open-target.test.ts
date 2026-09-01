@@ -163,6 +163,31 @@ describe("conversationRowForDeepLink", () => {
       channelId: "chn_missing",
     });
   });
+
+  it("never uses the person uid as a DM stub title", () => {
+    const uid = "agt_374A1JY3NE63KSYBN97PND4QGC";
+    const stub = conversationRowForDeepLink({
+      channelId: null,
+      personUid: uid,
+      replyRootEventId: null,
+    });
+    expect(stub).toMatchObject({
+      id: `dm:${uid}`,
+      kind: "dm",
+      personUid: uid,
+    });
+    expect(stub?.title).toBe("Direct message");
+    expect(stub?.title).not.toContain("agt_");
+    expect(stub?.title).not.toBe(uid);
+
+    const named = conversationRowForDeepLink({
+      channelId: null,
+      personUid: uid,
+      replyRootEventId: null,
+      displayName: "  Polar Data Agent  ",
+    });
+    expect(named?.title).toBe("Polar Data Agent");
+  });
 });
 
 describe("shouldOpenReplyDeepLink", () => {
