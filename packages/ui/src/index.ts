@@ -98,10 +98,14 @@ export * from "./shell/embedded-navigation.js";
 export {
   updateStore,
   checkDesktopUpdates,
-  installDesktopUpdate,
+  downloadDesktopUpdate,
+  restartToUpdate,
+  hydrateDownloadedUpdate,
   resetUpdateStore,
   reportDownloadProgress,
+  markDownloaded,
   markInstallStarted,
+  reportInstallFailed,
   applyAvailableUpdate,
 } from "./settings/update-store.svelte.js";
 

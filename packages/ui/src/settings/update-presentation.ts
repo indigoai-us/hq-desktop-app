@@ -2,15 +2,27 @@
  * Pure labels and action flags for the shared desktop-app update row.
  *
  * The Core mini-menu and Settings › Updates both render from this so a
- * CHECKING / UPDATE AVAILABLE / DOWNLOADING 42% pill can never disagree.
+ * CHECKING / UPDATE AVAILABLE / DOWNLOADING 42% / RESTART TO UPDATE pill can
+ * never disagree between the two surfaces.
  */
 import type { UpdateRowStatus } from "./update-orchestration";
 
+/**
+ * Lifecycle of a queued desktop-app update, layered over the check status:
+ *   idle        — nothing queued
+ *   queued      — the native host announced an install (automatic updates)
+ *                 but no bytes have landed yet
+ *   downloading — bytes are landing (manual queue or automatic install)
+ *   ready       — verified package staged; waiting for "Restart to update"
+ *   installing  — install + restart handed to the native host
+ *   failed      — download/install failed; the row offers the download again
+ */
 export type AppInstallPhase =
   | "idle"
-  | "downloading"
   | "queued"
+  | "downloading"
   | "ready"
+  | "installing"
   | "failed";
 
 export function appRowStatusLabel(input: {
@@ -18,14 +30,22 @@ export function appRowStatusLabel(input: {
   installPhase: AppInstallPhase;
   downloadPercent: number | null;
 }): string {
-  if (input.installPhase === "downloading") {
-    return input.downloadPercent == null
-      ? "DOWNLOADING"
-      : `DOWNLOADING ${input.downloadPercent}%`;
+  switch (input.installPhase) {
+    case "downloading":
+      return input.downloadPercent == null
+        ? "DOWNLOADING"
+        : `DOWNLOADING ${input.downloadPercent}%`;
+    case "queued":
+      return "QUEUED";
+    case "ready":
+      return "RESTART TO UPDATE";
+    case "installing":
+      return "INSTALLING";
+    case "failed":
+      return "UPDATE FAILED";
+    default:
+      break;
   }
-  if (input.installPhase === "queued") return "QUEUED";
-  if (input.installPhase === "ready") return "READY";
-  if (input.installPhase === "failed") return "INSTALL FAILED";
   switch (input.status) {
     case "checking":
       return "CHECKING";
@@ -40,6 +60,10 @@ export function appRowStatusLabel(input: {
   }
 }
 
+export function isInstallBusyPhase(phase: AppInstallPhase): boolean {
+  return phase === "downloading" || phase === "queued" || phase === "installing";
+}
+
 export function appRowActions(input: {
   status: UpdateRowStatus;
   installPhase: AppInstallPhase;
@@ -48,11 +72,12 @@ export function appRowActions(input: {
   showDownload: boolean;
   showRestart: boolean;
 } {
-  const busy =
-    input.installPhase === "downloading" || input.installPhase === "queued";
+  const busy = isInstallBusyPhase(input.installPhase);
   return {
-    showCheck: !busy,
-    showDownload: input.status === "available" && input.installPhase === "idle",
+    showCheck: !busy && input.installPhase !== "ready",
+    showDownload:
+      input.status === "available" &&
+      (input.installPhase === "idle" || input.installPhase === "failed"),
     showRestart: input.installPhase === "ready",
   };
 }
@@ -79,4 +104,10 @@ export function progressPercentFrom(payload: unknown): number | null {
     return Math.max(0, Math.min(100, Math.round((downloaded / total) * 100)));
   }
   return null;
+}
+
+export function versionFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const version = (payload as { version?: unknown }).version;
+  return typeof version === "string" && version.trim() ? version.trim() : null;
 }

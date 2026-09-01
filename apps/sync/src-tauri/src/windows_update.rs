@@ -573,11 +573,23 @@ pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result
         )
         .await
         .map_err(|error| error.to_string())?;
+    install_verified_bytes(app, update, &bytes).await
+}
+
+/// Install an already-downloaded, Tauri-verified package through the helper
+/// handoff. Shared by the one-shot path above and the queued
+/// `download_update` → `install_downloaded_update` flow so both exit through
+/// the same NSIS-safe lifecycle.
+pub async fn install_verified_bytes(
+    app: &AppHandle,
+    update: &Update,
+    bytes: &[u8],
+) -> Result<(), String> {
     if crate::updater::sync_in_progress() {
         return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
 
-    let staged = stage_update(&bytes, &update.version)?;
+    let staged = stage_update(bytes, &update.version)?;
     let mut helper = match spawn_helper(&staged) {
         Ok(helper) => helper,
         Err(error) => {

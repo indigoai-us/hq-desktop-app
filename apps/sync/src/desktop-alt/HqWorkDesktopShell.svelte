@@ -15,8 +15,10 @@
     createChatWakeBus,
     createLiveNotificationsApi,
     dispatchEmbeddedNavigation,
+    markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
+    reportInstallFailed,
     settingsProfileFromSelf,
     toSelfIdentity,
     workspacesFromMembershipRows,
@@ -530,6 +532,15 @@
         if (!cancelled) markInstallStarted(event.payload?.version ?? null);
       },
     ).catch(() => () => {});
+    const unlistenDownloadedPromise = listen<{ version?: string }>(
+      'update:downloaded',
+      (event) => {
+        if (!cancelled) markDownloaded(event.payload?.version ?? null);
+      },
+    ).catch(() => () => {});
+    const unlistenInstallFailedPromise = listen('update:install-failed', (event) => {
+      if (!cancelled) reportInstallFailed(event.payload);
+    }).catch(() => () => {});
 
     const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
       if (cancelled) return;
@@ -566,6 +577,8 @@
       }
       void unlistenProgressPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenInstallStartedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenDownloadedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenInstallFailedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);

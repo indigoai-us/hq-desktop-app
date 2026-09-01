@@ -2,8 +2,14 @@
   import { type AdapterResult } from "./update-orchestration";
   import { appRowStatusLabel } from "./update-presentation";
   import {
+    appRowActions,
+  } from "./update-presentation";
+  import {
     checkDesktopUpdates,
+    downloadDesktopUpdate,
+    hydrateDownloadedUpdate,
     orchestrationAdapterFrom,
+    restartToUpdate,
     setAutoUpdateEnabled,
     updateStore,
   } from "./update-store.svelte";
@@ -174,6 +180,12 @@
       status: appUpdateStatus,
       installPhase: updateStore.installPhase,
       downloadPercent: updateStore.downloadPercent,
+    }),
+  );
+  const appRowAction = $derived(
+    appRowActions({
+      status: appUpdateStatus,
+      installPhase: updateStore.installPhase,
     }),
   );
   // Release channel (Stable / Beta / Alpha). The native host owns the
@@ -639,9 +651,40 @@
     if (res.ok) notifPermission = String(res.value);
   }
 
+  function updateOrchAdapter() {
+    const updates = adapter!.updates;
+    return orchestrationAdapterFrom({
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+  }
+
+  async function queueDesktopUpdate(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    await downloadDesktopUpdate(updateOrchAdapter());
+  }
+
+  async function restartDesktopUpdate(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    await restartToUpdate(updateOrchAdapter());
+  }
+
   async function refreshVersions(): Promise<void> {
     if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
     const updates = adapter.updates;
+    void hydrateDownloadedUpdate(updateOrchAdapter()).catch(() => {});
     const orchAdapter = orchestrationAdapterFrom({
       getVersions: () =>
         updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
@@ -651,8 +694,12 @@
         updates.checkCoreState() as Promise<AdapterResult<unknown>>,
       checkCliUpdate: () =>
         updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
-      installUpdate: () =>
-        updates.installUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
     });
     const versionPromise = refreshAppVersion
       ? refreshAppVersion().catch(() => null)
@@ -1300,7 +1347,26 @@
           </div>
         {/if}
       </div>
-      <span class="mono" class:ok={appRowLabel === "UP TO DATE"}>{appRowLabel}</span>
+      <span class="update-row-end">
+        {#if appRowAction.showDownload}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-app-download"
+            title={updateStore.installError ?? undefined}
+            onclick={() => void queueDesktopUpdate()}
+          >Download &amp; install</button>
+        {:else if appRowAction.showRestart}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-app-restart"
+            title={updateStore.installError ?? undefined}
+            onclick={() => void restartDesktopUpdate()}
+          >Restart to update</button>
+        {/if}
+        <span class="mono" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
+      </span>
     </div>
     <div class="set-row">
       <div>
@@ -1526,6 +1592,12 @@
     gap: 6px;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .update-row-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .chip {

@@ -29,8 +29,10 @@
   } from "../settings/update-presentation.js";
   import {
     checkDesktopUpdates,
-    installDesktopUpdate,
+    downloadDesktopUpdate,
+    hydrateDownloadedUpdate,
     orchestrationAdapterFrom,
+    restartToUpdate,
     updateStore,
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
@@ -191,9 +193,7 @@
       coreChecking,
       updateAvailable:
         appStatusForLabel === "available" ||
-        updateStore.installPhase === "ready" ||
-        updateStore.installPhase === "downloading" ||
-        updateStore.installPhase === "queued",
+        updateStore.installPhase !== "idle",
       packs: modelPacks,
       packsLoading,
       cloudPaused,
@@ -217,8 +217,12 @@
         updates.checkCoreState() as Promise<AdapterResult<unknown>>,
       checkCliUpdate: () =>
         updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
-      installUpdate: () =>
-        updates.installUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
     });
   }
 
@@ -251,6 +255,11 @@
       // Shared checker: the same runUpdateCheck Settings › Updates uses.
       // Auto-run only when nothing has checked yet so an already-populated
       // store (the Updates pane) paints immediately without a CHECKING flash.
+      if (adapter.isAvailable("canSelfUpdate")) {
+        // A download that finished while the popover was closed paints as
+        // RESTART TO UPDATE immediately.
+        void hydrateDownloadedUpdate(orchAdapter()).catch(() => {});
+      }
       if (
         adapter.isAvailable("canSelfUpdate") &&
         updateStore.appStatus === "unchecked" &&
@@ -318,9 +327,18 @@
   async function handleDownloadInstall(): Promise<void> {
     if (useFixtures || !canInspectCore || updateStore.isInstallBusy) return;
     try {
-      await installDesktopUpdate(orchAdapter());
+      await downloadDesktopUpdate(orchAdapter());
     } catch (err) {
-      console.error("core-popover: install_update failed", err);
+      console.error("core-popover: download_update failed", err);
+    }
+  }
+
+  async function handleRestartToUpdate(): Promise<void> {
+    if (useFixtures || !canInspectCore) return;
+    try {
+      await restartToUpdate(orchAdapter());
+    } catch (err) {
+      console.error("core-popover: install_downloaded_update failed", err);
     }
   }
 
@@ -506,23 +524,20 @@
           >
             {coreRestoring ? "Restoring…" : "Restore"}
           </button>
+        {:else if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
+          <button
+            type="button"
+            class="core-text-btn"
+            data-testid="core-popover-core-check"
+            disabled={updateStore.checking}
+            aria-busy={updateStore.checking}
+            onclick={() => void handleCheckUpdates()}
+          >
+            {updateStore.checking ? "Checking…" : "Check"}
+          </button>
         {/if}
       </span>
     </div>
-    {#if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
-      <div class="core-row-subactions">
-        <button
-          type="button"
-          class="core-text-btn"
-          data-testid="core-popover-core-check"
-          disabled={updateStore.checking}
-          aria-busy={updateStore.checking}
-          onclick={() => void handleCheckUpdates()}
-        >
-          Check
-        </button>
-      </div>
-    {/if}
 
     <div class="core-row" data-testid="core-popover-app-row">
       <span class="core-row-label">{model.appVersionLabel}</span>
@@ -531,52 +546,56 @@
           class="core-pill"
           class:ok={appStatusLabel === "UP TO DATE"}
           class:neutral={appStatusLabel === "NOT CHECKED" ||
+            appStatusLabel === "CHECKING" ||
+            appStatusLabel === "QUEUED" ||
+            appStatusLabel === "INSTALLING" ||
+            appStatusLabel.startsWith("DOWNLOADING")}
+          class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
             appStatusLabel === "CHECK FAILED" ||
-            appStatusLabel === "INSTALL FAILED"}
+            appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"
             ? "core-popover-app-up-to-date"
             : "core-popover-app-status"}
         >
           {appStatusLabel}
         </span>
+        {#if !useFixtures && canInspectCore}
+          {#if appActions.showDownload}
+            <button
+              type="button"
+              class="core-text-btn accent"
+              data-testid="core-popover-download-install"
+              title={updateStore.installError ?? undefined}
+              onclick={() => void handleDownloadInstall()}
+            >
+              Download &amp; install
+            </button>
+          {:else if appActions.showRestart}
+            <button
+              type="button"
+              class="core-text-btn accent"
+              data-testid="core-popover-restart-update"
+              title={updateStore.installError ?? undefined}
+              onclick={() => void handleRestartToUpdate()}
+            >
+              Restart to update
+            </button>
+          {/if}
+          {#if appActions.showCheck}
+            <button
+              type="button"
+              class="core-text-btn"
+              data-testid="core-popover-check-updates"
+              disabled={updateStore.checking}
+              aria-busy={updateStore.checking}
+              onclick={() => void handleCheckUpdates()}
+            >
+              {updateStore.checking ? "Checking…" : "Check for updates"}
+            </button>
+          {/if}
+        {/if}
       </span>
     </div>
-    {#if !useFixtures && canInspectCore && (appActions.showCheck || appActions.showDownload || appActions.showRestart)}
-      <div class="core-row-subactions">
-        {#if appActions.showCheck}
-          <button
-            type="button"
-            class="core-text-btn"
-            data-testid="core-popover-check-updates"
-            disabled={updateStore.checking}
-            aria-busy={updateStore.checking}
-            onclick={() => void handleCheckUpdates()}
-          >
-            Check for updates
-          </button>
-        {/if}
-        {#if appActions.showDownload}
-          <button
-            type="button"
-            class="core-text-btn"
-            data-testid="core-popover-download-install"
-            onclick={() => void handleDownloadInstall()}
-          >
-            Download &amp; install
-          </button>
-        {/if}
-        {#if appActions.showRestart}
-          <button
-            type="button"
-            class="core-text-btn"
-            data-testid="core-popover-restart-update"
-            onclick={() => void handleDownloadInstall()}
-          >
-            Restart to update
-          </button>
-        {/if}
-      </div>
-    {/if}
 
     <button
       type="button"
@@ -855,18 +874,12 @@
     gap: 4px;
   }
 
-  .core-row-subactions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-    padding: 0 8px 6px;
-  }
-
+  /* Ghost text actions on the row's right side — typography only, no chrome. */
   .core-text-btn {
     appearance: none;
     display: inline-flex;
     align-items: center;
+    margin-left: 6px;
     padding: 0;
     border: 0;
     background: transparent;
@@ -874,7 +887,12 @@
     font: inherit;
     font-size: 11px;
     font-weight: 500;
+    white-space: nowrap;
     cursor: pointer;
+  }
+
+  .core-text-btn.accent {
+    color: var(--ice-ink);
   }
 
   .core-text-btn:hover:not(:disabled) {

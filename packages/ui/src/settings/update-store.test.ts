@@ -14,10 +14,14 @@ import {
 } from "./update-presentation";
 import {
   checkDesktopUpdates,
-  installDesktopUpdate,
+  downloadDesktopUpdate,
+  hydrateDownloadedUpdate,
+  markDownloaded,
   markInstallStarted,
   reportDownloadProgress,
+  reportInstallFailed,
   resetUpdateStore,
+  restartToUpdate,
   setAutoUpdateEnabled,
   updateStore,
 } from "./update-store.svelte";
@@ -50,7 +54,11 @@ function orch(overrides: Partial<Record<string, () => Promise<unknown>>> = {}) {
     checkCoreState:
       overrides.checkCoreState ?? (async () => pass({ versionBehind: false })),
     checkCliUpdate: overrides.checkCliUpdate ?? (async () => pass(null)),
-    installUpdate: overrides.installUpdate ?? (async () => pass(undefined)),
+    downloadUpdate:
+      overrides.downloadUpdate ?? (async () => pass({ version: "0.10.173" })),
+    installDownloadedUpdate:
+      overrides.installDownloadedUpdate ?? (async () => pass(undefined)),
+    getDownloadedUpdate: overrides.getDownloadedUpdate ?? (async () => pass(null)),
   } as never;
 }
 
@@ -90,7 +98,21 @@ describe("update presentation labels", () => {
         installPhase: "ready",
         downloadPercent: 100,
       }),
-    ).toBe("READY");
+    ).toBe("RESTART TO UPDATE");
+    expect(
+      appRowStatusLabel({
+        status: "available",
+        installPhase: "installing",
+        downloadPercent: 100,
+      }),
+    ).toBe("INSTALLING");
+    expect(
+      appRowStatusLabel({
+        status: "available",
+        installPhase: "failed",
+        downloadPercent: null,
+      }),
+    ).toBe("UPDATE FAILED");
   });
 
   it("hides Download & install while a queued auto-update is installing", () => {
@@ -106,6 +128,12 @@ describe("update presentation labels", () => {
     ).toBe(false);
     expect(
       appRowActions({ status: "available", installPhase: "ready" }).showRestart,
+    ).toBe(true);
+    expect(
+      appRowActions({ status: "available", installPhase: "installing" }).showDownload,
+    ).toBe(false);
+    expect(
+      appRowActions({ status: "available", installPhase: "failed" }).showDownload,
     ).toBe(true);
   });
 
@@ -154,15 +182,16 @@ describe("shared update store", () => {
     ).toBe("UPDATE AVAILABLE");
   });
 
-  it("Download & install calls orchestration, shows progress, then restart", async () => {
-    const install = deferred<unknown>();
-    const installUpdate = vi.fn(() => install.promise as Promise<never>);
+  it("Download & install calls orchestration, shows progress, then offers restart, then installs", async () => {
+    const download = deferred<unknown>();
+    const downloadUpdate = vi.fn(() => download.promise as Promise<never>);
+    const installDownloadedUpdate = vi.fn(async () => pass(undefined));
     await checkDesktopUpdates(
       orch({
         checkForUpdates: async () => pass({ version: "0.10.173" }),
       }),
     );
-    const running = installDesktopUpdate(orch({ installUpdate }));
+    const running = downloadDesktopUpdate(orch({ downloadUpdate }));
     expect(updateStore.installPhase).toBe("downloading");
     expect(
       appRowStatusLabel({
@@ -179,17 +208,69 @@ describe("shared update store", () => {
         downloadPercent: updateStore.downloadPercent,
       }),
     ).toBe("DOWNLOADING 42%");
-    install.resolve(pass(undefined));
+    // A second click mid-download shares the in-flight download.
+    await Promise.race([downloadDesktopUpdate(orch({ downloadUpdate })), Promise.resolve()]);
+    download.resolve(pass({ version: "0.10.173" }));
     await running;
-    expect(installUpdate).toHaveBeenCalledTimes(1);
+    expect(downloadUpdate).toHaveBeenCalledTimes(1);
     expect(updateStore.installPhase).toBe("ready");
+    expect(
+      appRowStatusLabel({
+        status: updateStore.appStatus,
+        installPhase: updateStore.installPhase,
+        downloadPercent: updateStore.downloadPercent,
+      }),
+    ).toBe("RESTART TO UPDATE");
     expect(appRowActions({ status: "available", installPhase: "ready" }).showRestart).toBe(
       true,
     );
+    expect(installDownloadedUpdate).not.toHaveBeenCalled();
+
+    await restartToUpdate(orch({ installDownloadedUpdate }));
+    expect(installDownloadedUpdate).toHaveBeenCalledTimes(1);
+    expect(updateStore.installPhase).toBe("installing");
+  });
+
+  it("a failed install keeps the staged package and returns to Restart to update", async () => {
+    await checkDesktopUpdates(
+      orch({ checkForUpdates: async () => pass({ version: "0.10.173" }) }),
+    );
+    await downloadDesktopUpdate(orch({}));
+    await restartToUpdate(
+      orch({ installDownloadedUpdate: async () => fail("disk full") }),
+    );
+    expect(updateStore.installPhase).toBe("ready");
+    expect(updateStore.installError).toBe("disk full");
+  });
+
+  it("hydrates a package downloaded while the surface was closed into Restart to update", async () => {
+    await hydrateDownloadedUpdate(
+      orch({ getDownloadedUpdate: async () => pass({ version: "0.10.173" }) }),
+    );
+    expect(updateStore.installPhase).toBe("ready");
+    expect(updateStore.appStatus).toBe("available");
+    expect(updateStore.availableVersion).toBe("0.10.173");
+    // No staged package → untouched.
+    resetUpdateStore();
+    await hydrateDownloadedUpdate(orch({}));
+    expect(updateStore.installPhase).toBe("idle");
+  });
+
+  it("host events move the row from downloading to staged to failed", () => {
+    reportDownloadProgress({ downloaded: 5, total: 10 });
+    expect(updateStore.installPhase).toBe("downloading");
+    expect(updateStore.downloadPercent).toBe(50);
+    markDownloaded("0.10.173");
+    expect(updateStore.installPhase).toBe("ready");
+    markInstallStarted("0.10.173");
+    expect(updateStore.installPhase).toBe("installing");
+    reportInstallFailed({ version: "0.10.173", message: "helper exited" });
+    expect(updateStore.installPhase).toBe("failed");
+    expect(updateStore.installError).toBe("helper exited");
   });
 
   it("already-queued auto-update suppresses a second download", async () => {
-    const installUpdate = vi.fn(async () => pass(undefined));
+    const downloadUpdate = vi.fn(async () => pass({ version: "0.10.173" }));
     await checkDesktopUpdates(
       orch({
         checkForUpdates: async () => pass({ version: "0.10.173" }),
@@ -199,13 +280,23 @@ describe("shared update store", () => {
     markInstallStarted("0.10.173");
     expect(updateStore.installPhase).toBe("queued");
     expect(
+      appRowStatusLabel({
+        status: updateStore.appStatus,
+        installPhase: updateStore.installPhase,
+        downloadPercent: updateStore.downloadPercent,
+      }),
+    ).toBe("QUEUED");
+    expect(
       appRowActions({
         status: updateStore.appStatus,
         installPhase: updateStore.installPhase,
       }).showDownload,
     ).toBe(false);
-    await installDesktopUpdate(orch({ installUpdate }));
-    expect(installUpdate).not.toHaveBeenCalled();
+    await downloadDesktopUpdate(orch({ downloadUpdate }));
+    expect(downloadUpdate).not.toHaveBeenCalled();
+    reportDownloadProgress({ percent: 42 });
+    expect(updateStore.installPhase).toBe("downloading");
+    expect(updateStore.downloadPercent).toBe(42);
   });
 
   it("an already-in-progress install error becomes queued instead of a second download", async () => {
@@ -214,9 +305,9 @@ describe("shared update store", () => {
         checkForUpdates: async () => pass({ version: "0.10.173" }),
       }),
     );
-    await installDesktopUpdate(
+    await downloadDesktopUpdate(
       orch({
-        installUpdate: async () =>
+        downloadUpdate: async () =>
           fail("An update installation is already in progress"),
       }),
     );
@@ -246,7 +337,9 @@ function updatesAdapter(overrides: Record<string, unknown> = {}) {
       checkForUpdates: vi.fn(async () => ok({ version: "0.10.173" })),
       checkCoreState: vi.fn(async () => ok({ versionBehind: false })),
       checkCliUpdate: vi.fn(async () => ok(null)),
-      installUpdate: vi.fn(async () => ok(undefined)),
+      downloadUpdate: vi.fn(async () => ok({ version: "0.10.173" })),
+      installDownloadedUpdate: vi.fn(async () => ok(undefined)),
+      getDownloadedUpdate: vi.fn(async () => ok(null)),
       availableChannels: vi.fn(async () => ok(["stable", "beta", "alpha"])),
       ...overrides,
     },
@@ -336,10 +429,10 @@ describe("shared store keeps pane and popover in lockstep", () => {
     });
   });
 
-  it("Download & install on the popover calls the shared installer and shows progress", async () => {
+  it("Download & install on the popover downloads, shows progress on both, then Restart to update installs", async () => {
     const install = deferred<unknown>();
     const adapter = updatesAdapter({
-      installUpdate: vi.fn(() => install.promise),
+      downloadUpdate: vi.fn(() => install.promise),
     });
     const { paneHost, popoverHost } = mountBoth(adapter);
     await vi.waitFor(() => {
@@ -359,14 +452,65 @@ describe("shared store keeps pane and popover in lockstep", () => {
       flushSync();
       expect(popoverHost.textContent).toContain("DOWNLOADING 42%");
     });
-    install.resolve(ok(undefined));
+    install.resolve(ok({ version: "0.10.173" }));
     await vi.waitFor(() => {
       flushSync();
       expect(popoverHost.textContent).toContain("Restart to update");
-      expect(popoverHost.textContent).toContain("READY");
+      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
     });
-    expect(
-      (adapter.updates as unknown as { installUpdate: ReturnType<typeof vi.fn> }).installUpdate,
-    ).toHaveBeenCalledTimes(1);
+    const updates = adapter.updates as unknown as {
+      downloadUpdate: ReturnType<typeof vi.fn>;
+      installDownloadedUpdate: ReturnType<typeof vi.fn>;
+    };
+    expect(updates.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(updates.installDownloadedUpdate).not.toHaveBeenCalled();
+
+    popoverHost
+      .querySelector<HTMLButtonElement>('[data-testid="core-popover-restart-update"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(updates.installDownloadedUpdate).toHaveBeenCalledTimes(1);
+      expect(popoverHost.textContent).toContain("INSTALLING");
+      expect(paneHost.textContent).toContain("INSTALLING");
+    });
+  });
+
+  it("an automatic install already queued shows on both surfaces without a Download button", async () => {
+    const adapter = updatesAdapter();
+    const { paneHost, popoverHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.querySelector('[data-testid="core-popover-download-install"]')).toBeTruthy();
+    });
+    setAutoUpdateEnabled(true);
+    markInstallStarted("0.10.173");
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.textContent).toContain("QUEUED");
+      expect(paneHost.textContent).toContain("QUEUED");
+    });
+    expect(popoverHost.querySelector('[data-testid="core-popover-download-install"]')).toBeNull();
+    expect(paneHost.querySelector('[data-testid="settings-app-download"]')).toBeNull();
+    reportDownloadProgress({ percent: 42 });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.textContent).toContain("DOWNLOADING 42%");
+      expect(paneHost.textContent).toContain("DOWNLOADING 42%");
+    });
+  });
+
+  it("a package downloaded while the popover was closed hydrates as RESTART TO UPDATE", async () => {
+    const adapter = updatesAdapter({
+      getDownloadedUpdate: vi.fn(async () => ok({ version: "0.10.173" })),
+    });
+    const { popoverHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeTruthy();
+    });
   });
 });

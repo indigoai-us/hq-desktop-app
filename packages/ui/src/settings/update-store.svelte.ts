@@ -15,12 +15,19 @@ import {
 } from "./update-orchestration";
 import {
   isInstallAlreadyInProgress,
+  isInstallBusyPhase,
   progressPercentFrom,
+  versionFromPayload,
   type AppInstallPhase,
 } from "./update-presentation";
 
 export interface UpdateStoreAdapter extends UpdateOrchestrationAdapter {
-  installUpdate(): Promise<AdapterResult<unknown>>;
+  /** Phase 1 of the queued update — background download of the verified package. */
+  downloadUpdate(): Promise<AdapterResult<unknown>>;
+  /** Phase 2 — install the staged package and restart. */
+  installDownloadedUpdate(): Promise<AdapterResult<unknown>>;
+  /** Staged-but-not-installed package, if any. */
+  getDownloadedUpdate(): Promise<AdapterResult<unknown>>;
 }
 
 const INITIAL = {
@@ -56,6 +63,7 @@ let autoUpdateEnabled = $state(INITIAL.autoUpdateEnabled);
 let installError = $state<string | null>(INITIAL.installError);
 
 let runner = createUpdateCheckRunner();
+let downloadInFlight: Promise<void> | null = null;
 let installInFlight: Promise<void> | null = null;
 let storeGeneration = 0;
 
@@ -72,25 +80,30 @@ function applyOutcome(outcome: UpdateCheckOutcome): void {
   coreState = outcome.coreState;
 }
 
+const NOT_ON_THIS_HOST = async (): Promise<AdapterResult<never>> => ({
+  ok: false as const,
+  reason: "unavailable",
+  message: "Update install is not available on this host.",
+});
+
 export function orchestrationAdapterFrom(updates: {
   getVersions: UpdateOrchestrationAdapter["getVersions"];
   checkForUpdates: UpdateOrchestrationAdapter["checkForUpdates"];
   checkCoreState: UpdateOrchestrationAdapter["checkCoreState"];
   checkCliUpdate: UpdateOrchestrationAdapter["checkCliUpdate"];
-  installUpdate?: UpdateStoreAdapter["installUpdate"];
+  downloadUpdate?: UpdateStoreAdapter["downloadUpdate"];
+  installDownloadedUpdate?: UpdateStoreAdapter["installDownloadedUpdate"];
+  getDownloadedUpdate?: UpdateStoreAdapter["getDownloadedUpdate"];
 }): UpdateStoreAdapter {
   return {
     getVersions: () => updates.getVersions(),
     checkForUpdates: () => updates.checkForUpdates(),
     checkCoreState: () => updates.checkCoreState(),
     checkCliUpdate: () => updates.checkCliUpdate(),
-    installUpdate:
-      updates.installUpdate ??
-      (async () => ({
-        ok: false as const,
-        reason: "unavailable",
-        message: "Install is not available on this host.",
-      })),
+    downloadUpdate: updates.downloadUpdate ?? NOT_ON_THIS_HOST,
+    installDownloadedUpdate: updates.installDownloadedUpdate ?? NOT_ON_THIS_HOST,
+    getDownloadedUpdate:
+      updates.getDownloadedUpdate ?? (async () => ({ ok: true as const, value: null })),
   };
 }
 
@@ -136,28 +149,68 @@ export async function checkDesktopUpdates(
   }
 }
 
-export async function installDesktopUpdate(
-  adapter: Pick<UpdateStoreAdapter, "installUpdate">,
+/**
+ * "Download & install": phase 1 of the queued update. Downloads the verified
+ * package in the background (progress arrives via reportDownloadProgress),
+ * then parks the row on RESTART TO UPDATE. A second call while a download or
+ * install is already running (manual or automatic) is a no-op.
+ */
+export async function downloadDesktopUpdate(
+  adapter: Pick<UpdateStoreAdapter, "downloadUpdate">,
 ): Promise<void> {
-  if (installPhase === "downloading" || installPhase === "queued") return;
-  if (installInFlight) return installInFlight;
+  if (isInstallBusyPhase(installPhase) || installPhase === "ready") return;
+  if (downloadInFlight) return downloadInFlight;
   const generation = storeGeneration;
   installError = null;
   installPhase = "downloading";
   if (downloadPercent == null) downloadPercent = 0;
   const run = (async () => {
-    const result = await adapter.installUpdate();
+    const result = await adapter.downloadUpdate();
     if (generation !== storeGeneration) return;
     if (result.ok) {
+      const version = versionFromPayload(result.value);
+      if (version) availableVersion = version;
       installPhase = "ready";
       downloadPercent = 100;
       return;
     }
     if (isInstallAlreadyInProgress(result.message)) {
+      // The automatic installer already owns this package — reflect it
+      // instead of racing a second download.
       installPhase = "queued";
       return;
     }
     installPhase = "failed";
+    installError = result.message ?? "Download failed";
+  })().finally(() => {
+    if (generation === storeGeneration) downloadInFlight = null;
+  });
+  downloadInFlight = run;
+  return run;
+}
+
+/**
+ * "Restart to update": phase 2. Hands the staged package to the native
+ * installer, which restarts the app on success. On failure the staged bytes
+ * stay on the host, so the row can retry without another download.
+ */
+export async function restartToUpdate(
+  adapter: Pick<UpdateStoreAdapter, "installDownloadedUpdate">,
+): Promise<void> {
+  if (installPhase !== "ready") return;
+  if (installInFlight) return installInFlight;
+  const generation = storeGeneration;
+  installError = null;
+  installPhase = "installing";
+  const run = (async () => {
+    const result = await adapter.installDownloadedUpdate();
+    if (generation !== storeGeneration) return;
+    if (result.ok) return; // the host restarts; nothing further to paint
+    if (isInstallAlreadyInProgress(result.message)) {
+      installPhase = "queued";
+      return;
+    }
+    installPhase = "ready";
     installError = result.message ?? "Install failed";
   })().finally(() => {
     if (generation === storeGeneration) installInFlight = null;
@@ -166,27 +219,72 @@ export async function installDesktopUpdate(
   return run;
 }
 
+/**
+ * Late-mounting surfaces (the popover opens after a download finished in the
+ * background) hydrate straight into RESTART TO UPDATE from the host's staged
+ * package. Never downgrades an in-flight phase.
+ */
+export async function hydrateDownloadedUpdate(
+  adapter: Pick<UpdateStoreAdapter, "getDownloadedUpdate">,
+): Promise<void> {
+  const generation = storeGeneration;
+  const result = await adapter.getDownloadedUpdate();
+  if (generation !== storeGeneration || !result.ok) return;
+  const version = versionFromPayload(result.value);
+  if (!version) return;
+  if (installPhase !== "idle" && installPhase !== "failed") return;
+  availableVersion = version;
+  if (appStatus !== "checking") appStatus = "available";
+  installPhase = "ready";
+  downloadPercent = 100;
+}
+
 export function reportDownloadProgress(payload: unknown): void {
   const percent = progressPercentFrom(payload);
-  if (
-    installPhase === "idle" &&
-    (appStatus === "available" || autoUpdateEnabled)
-  ) {
-    installPhase = autoUpdateEnabled ? "queued" : "downloading";
+  if (installPhase === "idle" || installPhase === "failed") {
+    // Progress without a local download call means the automatic installer
+    // (or another window) owns this package.
+    installPhase = "downloading";
   }
   if (installPhase === "queued" && percent != null) {
     installPhase = "downloading";
   }
-  if (installPhase === "downloading" || installPhase === "queued") {
-    if (percent != null) downloadPercent = percent;
+  if (installPhase === "downloading" && percent != null) {
+    downloadPercent = percent;
   }
 }
 
+/** Host `update:downloaded` — the verified package is staged. */
+export function markDownloaded(version?: string | null): void {
+  if (version && version.trim()) availableVersion = version.trim();
+  if (installPhase === "installing") return;
+  installPhase = "ready";
+  downloadPercent = 100;
+}
+
+/** Host `update:install-started` — automatic or manual install began. */
 export function markInstallStarted(version?: string | null): void {
   if (version && version.trim()) availableVersion = version.trim();
-  if (installPhase === "ready" || installPhase === "downloading") return;
-  installPhase = "queued";
   installError = null;
+  if (installPhase === "ready" || installPhase === "installing") {
+    installPhase = "installing";
+    return;
+  }
+  if (installPhase === "downloading") return;
+  installPhase = "queued";
+}
+
+/** Host `update:install-failed` — download or install failed natively. */
+export function reportInstallFailed(payload: unknown): void {
+  const rec =
+    payload && typeof payload === "object"
+      ? (payload as { message?: unknown })
+      : null;
+  installError =
+    typeof rec?.message === "string" && rec.message.trim()
+      ? rec.message.trim()
+      : "Update failed";
+  installPhase = "failed";
 }
 
 export function setAutoUpdateEnabled(enabled: boolean): void {
@@ -222,6 +320,7 @@ export function resetUpdateStore(): void {
   autoUpdateEnabled = INITIAL.autoUpdateEnabled;
   installError = INITIAL.installError;
   installInFlight = null;
+  downloadInFlight = null;
   runner = createUpdateCheckRunner();
 }
 
@@ -269,6 +368,6 @@ export const updateStore = {
     return installError;
   },
   get isInstallBusy() {
-    return installPhase === "downloading" || installPhase === "queued";
+    return isInstallBusyPhase(installPhase);
   },
 };
