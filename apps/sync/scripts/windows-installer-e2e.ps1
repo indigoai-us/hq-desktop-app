@@ -77,6 +77,20 @@ function Export-UninstallRegistry([string]$Path) {
   }
 }
 
+function Test-NsisUninstallRegistry {
+  & reg.exe query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" *> $null
+  return $LASTEXITCODE -eq 0
+}
+
+function Snapshot-UninstallRegistry([string]$Path) {
+  if (Test-NsisUninstallRegistry) {
+    Export-UninstallRegistry -Path $Path
+    return "present"
+  }
+  Set-Content -LiteralPath $Path -Value "HQ NSIS uninstall registry key was absent`n" -Encoding utf8NoBOM -NoNewline
+  return "absent"
+}
+
 function Get-ShortcutManifest([string]$InstalledApp) {
   $roots = @(
     [Environment]::GetFolderPath("Desktop"),
@@ -106,9 +120,20 @@ if ($Action -eq "install") {
     throw "InstallDir must not already exist: $resolvedInstallDir"
   }
 
-  $process = Start-Process -FilePath $resolvedInstaller -ArgumentList @("/S", "/D=$resolvedInstallDir") -Wait -PassThru
-  if ($process.ExitCode -ne 0) {
-    throw "NSIS installer exited with code $($process.ExitCode)"
+  if ([System.IO.Path]::GetExtension($resolvedInstaller) -eq ".msi") {
+    $arguments = "/i `"$resolvedInstaller`" /qn /norestart INSTALLDIR=`"$resolvedInstallDir`""
+    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+      throw "MSI installer exited with code $($process.ExitCode)"
+    }
+    if (Test-NsisUninstallRegistry) {
+      throw "MSI bridge unexpectedly created NSIS uninstall metadata"
+    }
+  } else {
+    $process = Start-Process -FilePath $resolvedInstaller -ArgumentList @("/S", "/D=$resolvedInstallDir") -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+      throw "NSIS installer exited with code $($process.ExitCode)"
+    }
   }
 
   Wait-Until -Condition { Test-Path -LiteralPath $resolvedInstallDir } -TimeoutSeconds 30 -FailureMessage "Installer did not create $resolvedInstallDir"
@@ -158,7 +183,7 @@ if ($Action -eq "upgrade") {
   Copy-Item -LiteralPath $resolvedInstaller -Destination $stagedInstaller
   Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup
   Write-InstallManifest -Root $installBackup -Path $installManifest
-  Export-UninstallRegistry -Path $registryBackup
+  $registryState = Snapshot-UninstallRegistry -Path $registryBackup
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedInstaller).Hash.ToLowerInvariant()
   $helperHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedHelper).Hash
   if ($helperHash -ne $oldHash) {
@@ -189,6 +214,7 @@ if ($Action -eq "upgrade") {
     "--expected-manifest-sha256", $expectedManifestHash,
     "--uninstall-registry-backup", $registryBackup,
     "--expected-registry-sha256", $expectedRegistryHash,
+    "--prior-nsis-registry", $registryState,
     "--target-version", $TargetVersion
   )
   $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
@@ -258,7 +284,7 @@ if ($Action -eq "rollback") {
   Copy-Item -LiteralPath (Join-Path $env:WINDIR "System32\where.exe") -Destination $failingInstaller
   Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup
   Write-InstallManifest -Root $installBackup -Path $installManifest
-  Export-UninstallRegistry -Path $registryBackup
+  $registryState = Snapshot-UninstallRegistry -Path $registryBackup
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $failingInstaller).Hash.ToLowerInvariant()
   $expectedManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installManifest).Hash.ToLowerInvariant()
   $expectedRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $registryBackup).Hash.ToLowerInvariant()
@@ -294,6 +320,7 @@ if ($Action -eq "rollback") {
     "--expected-manifest-sha256", $expectedManifestHash,
     "--uninstall-registry-backup", $registryBackup,
     "--expected-registry-sha256", $expectedRegistryHash,
+    "--prior-nsis-registry", $registryState,
     "--target-version", $TargetVersion
   )
   $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
@@ -312,11 +339,15 @@ if ($Action -eq "rollback") {
   if ($afterManifest -ne $beforeManifest) {
     throw "Rollback did not restore the complete prior installation"
   }
-  $restoredRegistry = Join-Path $stageDir "verified-restored-uninstall.reg"
-  Export-UninstallRegistry -Path $restoredRegistry
-  $restoredRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $restoredRegistry).Hash.ToLowerInvariant()
-  if ($restoredRegistryHash -ne $expectedRegistryHash) {
-    throw "Rollback did not restore the exact prior uninstall registry metadata"
+  if ($registryState -eq "present") {
+    $restoredRegistry = Join-Path $stageDir "verified-restored-uninstall.reg"
+    Export-UninstallRegistry -Path $restoredRegistry
+    $restoredRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $restoredRegistry).Hash.ToLowerInvariant()
+    if ($restoredRegistryHash -ne $expectedRegistryHash) {
+      throw "Rollback did not restore the exact prior uninstall registry metadata"
+    }
+  } elseif (Test-NsisUninstallRegistry) {
+    throw "Rollback created NSIS uninstall metadata for an MSI-installed bridge"
   }
   & reg.exe query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" /v HqRollbackFixture *> $null
   if ($LASTEXITCODE -eq 0) {
@@ -344,6 +375,16 @@ if (-not (Test-Path -LiteralPath $resolvedInstallDir)) {
 }
 
 $uninstallers = @(Get-ChildItem -LiteralPath $resolvedInstallDir -Filter "*uninstall*.exe" -File)
+if ($uninstallers.Count -eq 0 -and $InstallerPath -and [System.IO.Path]::GetExtension($InstallerPath) -eq ".msi") {
+  $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
+  $arguments = "/x `"$resolvedInstaller`" /qn /norestart"
+  $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $arguments -Wait -PassThru
+  if ($process.ExitCode -ne 0) {
+    throw "MSI uninstaller exited with code $($process.ExitCode)"
+  }
+  Wait-Until -Condition { -not (Test-Path -LiteralPath $resolvedInstallDir) } -TimeoutSeconds 30 -FailureMessage "MSI uninstaller did not remove $resolvedInstallDir"
+  return
+}
 if ($uninstallers.Count -ne 1) {
   $names = ($uninstallers | ForEach-Object Name) -join ", "
   throw "Expected one uninstaller, found $($uninstallers.Count): $names"

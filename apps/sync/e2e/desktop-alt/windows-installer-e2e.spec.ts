@@ -54,6 +54,8 @@ describe('Windows production installer E2E', () => {
 
   it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
+    expect(workflow).toContain('Install PR bridge MSI package');
+    expect(workflow).toContain('bundle\\msi');
     expect(workflow).toContain('-Action upgrade');
     expect(workflow).toContain(
       'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
@@ -70,7 +72,10 @@ describe('Windows production installer E2E', () => {
 
   it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
     expect(workflow).toContain('Prepare bridge and target versions');
-    expect(workflow).toContain('Install PR bridge package');
+    expect(workflow).toContain('Install PR bridge MSI package');
+    expect(workflow).toContain(
+      'Roll back MSI-installed bridge after an installer failure',
+    );
     expect(workflow).toContain('Build next synthetic NSIS updater');
     expect(workflow).toContain(
       'Upgrade running PR bridge through its copied helper',
@@ -91,7 +96,7 @@ describe('Windows production installer E2E', () => {
     );
     expect(installerHarness).toContain('$receipt.state -ne "installed"');
     expect(workflow).toContain(
-      'Roll back and relaunch after an installer failure',
+      'Roll back NSIS-installed target after an installer failure',
     );
     expect(workflow).toContain('-Action rollback');
     expect(installerHarness).toContain('$receipt.state -ne "rolled-back"');
@@ -106,7 +111,10 @@ describe('Windows production installer E2E', () => {
       'Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup',
     );
     expect(installerHarness).toContain(
-      'Export-UninstallRegistry -Path $registryBackup',
+      'Snapshot-UninstallRegistry -Path $registryBackup',
+    );
+    expect(installerHarness).toContain(
+      '"--prior-nsis-registry", $registryState',
     );
     expect(installerHarness).toContain(
       'Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force',
@@ -119,6 +127,9 @@ describe('Windows production installer E2E', () => {
     );
     expect(installerHarness).toContain(
       'Rollback left candidate-only registry metadata behind',
+    );
+    expect(installerHarness).toContain(
+      'Rollback created NSIS uninstall metadata for an MSI-installed bridge',
     );
     expect(installerHarness).toContain(
       'Update rollback changed existing HQ shortcuts',
@@ -139,7 +150,7 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
     expect(windowsUpdate).toContain('restore_prior_installation(');
     expect(windowsUpdate).toContain('copy_install_tree(&install_dir, &install_backup)');
-    expect(windowsUpdate).toContain('export_uninstall_registry(&uninstall_registry_backup)');
+    expect(windowsUpdate).toContain('snapshot_uninstall_registry(&uninstall_registry_backup)');
     expect(windowsUpdate).toContain('restore_install_tree(');
     expect(windowsUpdate).toContain('restore_uninstall_registry(');
     expect(windowsUpdate).toContain(

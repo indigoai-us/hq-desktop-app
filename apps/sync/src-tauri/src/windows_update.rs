@@ -23,6 +23,8 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE,
 };
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+use winreg::RegKey;
 
 use crate::util::logfile::log;
 
@@ -39,8 +41,11 @@ const INSTALL_MANIFEST_ARG: &str = "--install-manifest";
 const EXPECTED_MANIFEST_SHA_ARG: &str = "--expected-manifest-sha256";
 const UNINSTALL_REGISTRY_BACKUP_ARG: &str = "--uninstall-registry-backup";
 const EXPECTED_REGISTRY_SHA_ARG: &str = "--expected-registry-sha256";
+const PRIOR_NSIS_REGISTRY_ARG: &str = "--prior-nsis-registry";
 const UNINSTALL_REGISTRY_PATH: &str =
     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ";
+const UNINSTALL_REGISTRY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ";
+const ABSENT_REGISTRY_MARKER: &[u8] = b"HQ NSIS uninstall registry key was absent\n";
 const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const PARENT_EXIT_TIMEOUT_MS: u32 = 120_000;
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -75,6 +80,7 @@ struct StagedUpdate {
     manifest_sha256: String,
     uninstall_registry_backup: PathBuf,
     registry_sha256: String,
+    prior_nsis_registry_existed: bool,
     sha256: String,
     version: String,
 }
@@ -243,11 +249,15 @@ fn registry_command() -> Command {
 }
 
 fn registry_key_exists() -> Result<bool, String> {
-    registry_command()
-        .args(["query", UNINSTALL_REGISTRY_PATH])
-        .status()
-        .map(|status| status.success())
-        .map_err(|error| format!("query prior uninstall registry metadata: {error}"))
+    match RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(UNINSTALL_REGISTRY_SUBKEY, KEY_READ)
+    {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "open prior uninstall registry metadata for query: {error}"
+        )),
+    }
 }
 
 fn export_uninstall_registry(path: &Path) -> Result<(), String> {
@@ -267,6 +277,16 @@ fn export_uninstall_registry(path: &Path) -> Result<(), String> {
         Err(format!(
             "export prior uninstall registry metadata exited with {status}"
         ))
+    }
+}
+
+fn snapshot_uninstall_registry(path: &Path) -> Result<bool, String> {
+    if registry_key_exists()? {
+        export_uninstall_registry(path)?;
+        Ok(true)
+    } else {
+        write_new_file(path, ABSENT_REGISTRY_MARKER)?;
+        Ok(false)
     }
 }
 
@@ -349,7 +369,7 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
         let install_manifest = root.join("prior-install-manifest.json");
         let manifest_sha256 = write_install_manifest(&install_backup, &install_manifest)?;
         let uninstall_registry_backup = root.join("prior-uninstall.reg");
-        export_uninstall_registry(&uninstall_registry_backup)?;
+        let prior_nsis_registry_existed = snapshot_uninstall_registry(&uninstall_registry_backup)?;
         let registry_sha256 = file_sha256_hex(&uninstall_registry_backup)?;
 
         let staged = StagedUpdate {
@@ -365,6 +385,7 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
             manifest_sha256,
             uninstall_registry_backup,
             registry_sha256,
+            prior_nsis_registry_existed,
             sha256,
             version: version.to_string(),
         };
@@ -507,6 +528,12 @@ fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
         .arg(&staged.uninstall_registry_backup)
         .arg(EXPECTED_REGISTRY_SHA_ARG)
         .arg(&staged.registry_sha256)
+        .arg(PRIOR_NSIS_REGISTRY_ARG)
+        .arg(if staged.prior_nsis_registry_existed {
+            "present"
+        } else {
+            "absent"
+        })
         .arg("--target-version")
         .arg(&staged.version)
         .spawn()
@@ -675,7 +702,11 @@ fn restore_install_tree(
     Ok(())
 }
 
-fn restore_uninstall_registry(prior_backup: &Path, expected_sha256: &str) -> Result<(), String> {
+fn restore_uninstall_registry(
+    prior_backup: &Path,
+    expected_sha256: &str,
+    prior_existed: bool,
+) -> Result<(), String> {
     if expected_sha256.len() != 64
         || !file_sha256_hex(prior_backup)?.eq_ignore_ascii_case(expected_sha256)
     {
@@ -691,12 +722,16 @@ fn restore_uninstall_registry(prior_backup: &Path, expected_sha256: &str) -> Res
 
     let restore_result = (|| {
         delete_uninstall_registry()?;
-        import_uninstall_registry(prior_backup)?;
-        export_uninstall_registry(&restored_probe)?;
-        if !file_sha256_hex(&restored_probe)?.eq_ignore_ascii_case(expected_sha256) {
-            return Err(
-                "restored uninstall registry metadata does not match its backup".to_string(),
-            );
+        if prior_existed {
+            import_uninstall_registry(prior_backup)?;
+            export_uninstall_registry(&restored_probe)?;
+            if !file_sha256_hex(&restored_probe)?.eq_ignore_ascii_case(expected_sha256) {
+                return Err(
+                    "restored uninstall registry metadata does not match its backup".to_string(),
+                );
+            }
+        } else if registry_key_exists()? {
+            return Err("rollback did not remove candidate NSIS uninstall metadata".to_string());
         }
         Ok(())
     })();
@@ -717,7 +752,8 @@ fn restore_uninstall_registry(prior_backup: &Path, expected_sha256: &str) -> Res
 /// `/UPDATE` leaves shortcuts and app-data registrations in place, but it can
 /// replace any installed file and its Add/Remove Programs metadata before a
 /// later step fails. Restore the byte-verified complete installation snapshot
-/// plus the exact uninstall registry subtree before relaunching the prior app.
+/// plus the prior NSIS registry state before relaunching the prior app. MSI
+/// registration lives elsewhere and remains untouched throughout this path.
 fn restore_prior_installation(
     install_backup: &Path,
     install_manifest: &Path,
@@ -725,6 +761,7 @@ fn restore_prior_installation(
     install_dir: &Path,
     uninstall_registry_backup: &Path,
     expected_registry_sha256: &str,
+    prior_nsis_registry_existed: bool,
     original_exe: &Path,
 ) -> Result<(), String> {
     restore_install_tree(
@@ -733,8 +770,11 @@ fn restore_prior_installation(
         expected_manifest_sha256,
         install_dir,
     )?;
-    let registry_result =
-        restore_uninstall_registry(uninstall_registry_backup, expected_registry_sha256);
+    let registry_result = restore_uninstall_registry(
+        uninstall_registry_backup,
+        expected_registry_sha256,
+        prior_nsis_registry_existed,
+    );
     let relaunch_result = Command::new(original_exe)
         .spawn()
         .map(|_| ())
@@ -764,6 +804,11 @@ fn run_helper(args: &[String]) -> Result<(), String> {
     let expected_manifest_sha = arg_value(args, EXPECTED_MANIFEST_SHA_ARG)?;
     let uninstall_registry_backup = PathBuf::from(arg_value(args, UNINSTALL_REGISTRY_BACKUP_ARG)?);
     let expected_registry_sha = arg_value(args, EXPECTED_REGISTRY_SHA_ARG)?;
+    let prior_nsis_registry_existed = match arg_value(args, PRIOR_NSIS_REGISTRY_ARG)?.as_str() {
+        "present" => true,
+        "absent" => false,
+        _ => return Err("invalid prior NSIS registry state".to_string()),
+    };
     let version = arg_value(args, "--target-version")?;
     let helper = std::env::current_exe().map_err(|error| error.to_string())?;
     let helper_dir = helper
@@ -825,6 +870,7 @@ fn run_helper(args: &[String]) -> Result<(), String> {
                 &install_dir,
                 &uninstall_registry_backup,
                 &expected_registry_sha,
+                prior_nsis_registry_existed,
                 &original_exe,
             ) {
                 Ok(()) => {
@@ -846,6 +892,7 @@ fn run_helper(args: &[String]) -> Result<(), String> {
                 &install_dir,
                 &uninstall_registry_backup,
                 &expected_registry_sha,
+                prior_nsis_registry_existed,
                 &original_exe,
             ) {
                 Ok(()) => {
