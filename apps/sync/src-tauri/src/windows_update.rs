@@ -17,7 +17,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::Update;
 use ulid::Ulid;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WIN32_ERROR,
+    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WIN32_ERROR,
 };
 use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 
@@ -316,17 +316,25 @@ fn parent_open_error_means_exited(error: &windows::core::Error) -> bool {
     WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)
 }
 
-fn wait_for_parent(parent_pid: u32) -> Result<(), String> {
+fn open_parent(parent_pid: u32) -> Result<Option<HANDLE>, String> {
     unsafe {
-        let parent = match OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
-            Ok(parent) => parent,
-            Err(error) if parent_open_error_means_exited(&error) => return Ok(()),
+        match OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
+            Ok(parent) => Ok(Some(parent)),
+            Err(error) if parent_open_error_means_exited(&error) => Ok(None),
             Err(error) => {
-                return Err(format!(
+                Err(format!(
                     "open HQ parent process {parent_pid} for synchronization: {error}"
-                ));
+                ))
             }
-        };
+        }
+    }
+}
+
+fn wait_for_parent(parent: Option<HANDLE>) -> Result<(), String> {
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    unsafe {
         let result = WaitForSingleObject(parent, PARENT_EXIT_TIMEOUT_MS);
         let _ = CloseHandle(parent);
         if result == WAIT_OBJECT_0 {
@@ -372,9 +380,10 @@ fn run_helper(args: &[String]) -> Result<(), String> {
     if expected_sha.len() != 64 || !actual_sha.eq_ignore_ascii_case(&expected_sha) {
         return Err("staged installer checksum changed before launch".to_string());
     }
+    let parent = open_parent(parent_pid)?;
     write_new_file(&ready, b"ready")?;
     write_receipt(&receipt, "waiting-for-parent", &version, None);
-    wait_for_parent(parent_pid)?;
+    wait_for_parent(parent)?;
 
     write_receipt(&receipt, "installing", &version, None);
     let result = Command::new(&installer)

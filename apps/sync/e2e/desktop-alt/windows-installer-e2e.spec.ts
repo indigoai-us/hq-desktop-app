@@ -127,6 +127,10 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain(
       'open HQ parent process {parent_pid} for synchronization',
     );
+    const parentOpen = windowsUpdate.indexOf('let parent = open_parent(parent_pid)?;');
+    const readyMarker = windowsUpdate.indexOf('write_new_file(&ready, b"ready")?;');
+    expect(parentOpen).toBeGreaterThan(-1);
+    expect(readyMarker).toBeGreaterThan(parentOpen);
     expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
     expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
     expect(updater).toContain('install_failure_is_sync_deferral');
@@ -143,6 +147,10 @@ describe('Windows production installer E2E', () => {
     );
     expect(processRegistry).toContain('open HQ process {pid} for exit query');
     expect(processRegistry).toContain('query HQ process {pid} exit code');
+    expect(processRegistry).toContain('require_update_job_containment(&processes)?');
+    expect(processRegistry).toContain(
+      'cannot safely quiesce an HQ process without Job Object containment',
+    );
   });
 
   it('stops HQ processes before install and uninstall so locked files never break setup', () => {

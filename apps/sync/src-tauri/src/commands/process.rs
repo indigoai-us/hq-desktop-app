@@ -3122,6 +3122,8 @@ struct RegisteredProcess {
     handle: String,
     pid: u32,
     generation: u64,
+    #[cfg(target_os = "windows")]
+    job_attached: bool,
 }
 
 /// Snapshot every currently-registered child as `(handle, pid)`.
@@ -3147,6 +3149,8 @@ fn registered_processes() -> Vec<RegisteredProcess> {
                 handle: handle.clone(),
                 pid,
                 generation: entry.generation,
+                #[cfg(target_os = "windows")]
+                job_attached: entry.job_handle.is_some(),
             })
         })
         .collect()
@@ -3162,6 +3166,8 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
                 handle: handle.clone(),
                 pid,
                 generation: entry.generation,
+                #[cfg(target_os = "windows")]
+                job_attached: entry.job_handle.is_some(),
             })
         })
         .collect();
@@ -3170,6 +3176,8 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
             handle: retired.handle.clone(),
             pid,
             generation: retired.entry.generation,
+            #[cfg(target_os = "windows")]
+            job_attached: retired.entry.job_handle.is_some(),
         })
     }));
     processes
@@ -3189,6 +3197,8 @@ fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
             handle: handle.to_string(),
             pid,
             generation: entry.generation,
+            #[cfg(target_os = "windows")]
+            job_attached: entry.job_handle.is_some(),
         })
 }
 
@@ -3343,6 +3353,15 @@ fn windows_pid_alive(pid: u32) -> Result<bool, String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn require_update_job_containment(processes: &[RegisteredProcess]) -> Result<(), String> {
+    if processes.iter().all(|process| process.job_attached) {
+        Ok(())
+    } else {
+        Err("cannot safely quiesce an HQ process without Job Object containment".to_string())
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod update_quiescence_tests {
     use super::*;
@@ -3356,6 +3375,26 @@ mod update_quiescence_tests {
         assert!(windows_process_open_error_means_exited(&missing_pid));
         assert!(!windows_process_open_error_means_exited(&access_denied));
         assert_eq!(windows_pid_alive(std::process::id()), Ok(true));
+    }
+
+    #[test]
+    fn update_quiescence_requires_complete_job_containment() {
+        let contained = RegisteredProcess {
+            handle: "contained".to_string(),
+            pid: 10,
+            generation: 1,
+            job_attached: true,
+        };
+        let fallback = RegisteredProcess {
+            handle: "fallback".to_string(),
+            pid: 11,
+            generation: 2,
+            job_attached: false,
+        };
+
+        assert!(require_update_job_containment(&[]).is_ok());
+        assert!(require_update_job_containment(&[contained.clone()]).is_ok());
+        assert!(require_update_job_containment(&[contained, fallback]).is_err());
     }
 }
 
@@ -3375,6 +3414,11 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
         return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let processes = registered_processes_including_retired();
+    // The fallback PID-tree terminator remains useful for ordinary cancellation,
+    // but it cannot provide an atomic, complete descendant set for an updater
+    // handoff. Refuse installation unless every registered tree has Job Object
+    // containment, whose successful termination covers the full descendant set.
+    require_update_job_containment(&processes)?;
     let pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
     terminate_registered_processes_for_exit(&processes, Duration::ZERO);
 
