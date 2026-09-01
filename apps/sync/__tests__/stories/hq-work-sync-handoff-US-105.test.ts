@@ -543,6 +543,45 @@ describe('US-105 embedded feature-parity QA', () => {
       });
     });
 
+    // The cross-company confirmation (D7) has no other source: the unscoped
+    // `list_contacts` feed carries no companyUid at all, so without this seam
+    // the modal can never tell an outsider from a teammate.
+    it('listCompanyMembers maps list_company_members and unwraps its envelope', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? { contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }] }
+          : null,
+      );
+      const api = createHqWorkSidebarApi(adapter);
+      expect(await api.listCompanyMembers?.('cmp_indigo')).toEqual({
+        contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }],
+      });
+      expect(calls[0]).toEqual({
+        cmd: 'list_company_members',
+        args: { companyUid: 'cmp_indigo' },
+      });
+    });
+
+    it('listCompanyMembers accepts a bare array and degrades to empty', async () => {
+      const bare = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? [{ personUid: 'prs_kai' }]
+          : null,
+      );
+      expect(
+        await createHqWorkSidebarApi(bare.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+
+      const junk = makeAdapter(async () => 'nope');
+      expect(
+        await createHqWorkSidebarApi(junk.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [] });
+    });
+
     it('readLocalSnapshot stays not-yet-mapped (DesktopApp does not call it)', async () => {
       const { adapter } = makeAdapter();
       expect(await adapter.workMesh.readLocalSnapshot()).toMatchObject({

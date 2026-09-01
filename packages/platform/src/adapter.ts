@@ -508,6 +508,20 @@ export interface MessagingApi {
       }>;
     },
   ): AdapterPromise<Json>;
+  /**
+   * POST /v1/notify/dm (desktop `send_dm_to_email`) — address a DM by email
+   * OR person uid, never both. Returns `{ state: "delivered" }` when the pair
+   * is already connected and `{ state: "connectionRequested" }` when the
+   * server parked an approval request instead.
+   *
+   * OPTIONAL: the web adapter does not implement it, and the UI hides every
+   * email-invite affordance when it is absent.
+   */
+  sendDmToEmail?(args: {
+    toEmail?: string;
+    toPersonUid?: string;
+    body: string;
+  }): AdapterPromise<Json>;
   fetchReplyThread(args: {
     scope: "dm" | "channel";
     rootEventId: string;

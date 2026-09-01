@@ -33,6 +33,16 @@ export interface ChatSidebarApi {
   fetchChannelDirectory(cursor: string | null): Promise<ChannelDirectoryFeed>;
   /** the desktop `list_contacts` command. */
   listContacts(): Promise<ContactsResponse>;
+  /**
+   * the desktop `list_company_members` command
+   * (`GET /v1/notify/contacts?companyUid=…`) — the roster for ONE workspace.
+   *
+   * Optional: `listContacts()` returns rows WITHOUT a `companyUid`, so this is
+   * the only seam that can answer "is this person in that workspace?" (D7).
+   * Hosts without it degrade to no cross-company confirmation rather than
+   * confirming on every teammate.
+   */
+  listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
   /** the desktop `list_channels` command (US-021). */
@@ -65,6 +75,20 @@ export interface ChatSidebarApi {
   sendChannelMessage(args: { channelId: string; body: string }): Promise<void>;
   /** Send a one-to-one DM before closing or navigating compose. */
   sendDm(args: { toPersonUid: string; body: string }): Promise<void>;
+  /**
+   * POST /v1/notify/dm (desktop `send_dm_to_email`) — message someone we
+   * cannot add directly. `delivered` when already connected; the server
+   * returns `connectionRequested` when it parked an approval request.
+   * Optional: hosts without it hide the email-invite affordance entirely.
+   *
+   * Exactly one of `toEmail` / `toPersonUid` is sent — the Rust
+   * `build_compose_payload` enforces this, so pass only the key you have.
+   */
+  sendDmToEmail?(args: {
+    toEmail?: string;
+    toPersonUid?: string;
+    body: string;
+  }): Promise<{ state: "delivered" | "connectionRequested" }>;
 }
 
 // ---------------------------------------------------------------------------

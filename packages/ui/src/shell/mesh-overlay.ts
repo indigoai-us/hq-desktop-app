@@ -334,6 +334,9 @@ export function createHybridSidebarApi(
         ? persist.sendChannelMessage.call(persist, args)
         : live.sendChannelMessage(args),
     sendDm: (args) => live.sendDm(args),
+    ...(persist?.sendDmToEmail
+      ? { sendDmToEmail: persist.sendDmToEmail.bind(persist) }
+      : {}),
     searchMessages: (args) => live.searchMessages(args),
   };
 }
@@ -345,6 +348,7 @@ export interface CacheSidebarPersist {
   addChannelMember?: ChatSidebarApi["addChannelMember"];
   sendChannelMessage?: ChatSidebarApi["sendChannelMessage"];
   sendDm?: ChatSidebarApi["sendDm"];
+  sendDmToEmail?: ChatSidebarApi["sendDmToEmail"];
 }
 
 /** Directory from the mesh overlay. Contacts come from inbox merge when given. */
@@ -386,6 +390,9 @@ export function createCacheSidebarApi(
       : {}),
     ...(persist?.addChannelMember
       ? { addChannelMember: persist.addChannelMember.bind(persist) }
+      : {}),
+    ...(persist?.sendDmToEmail
+      ? { sendDmToEmail: persist.sendDmToEmail.bind(persist) }
       : {}),
   };
 }

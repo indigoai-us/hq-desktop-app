@@ -475,6 +475,14 @@ export function createSyncPlatformAdapter(
         }
         return call('send_dm', { toPersonUid, body });
       },
+      // Exactly one recipient key travels; the other is explicitly null to
+      // match the Rust `build_compose_payload` contract.
+      sendDmToEmail: ({ toEmail, toPersonUid, body }) =>
+        call('send_dm_to_email', {
+          toEmail: toEmail ?? null,
+          toPersonUid: toPersonUid ?? null,
+          body,
+        }),
       fetchReplyThread: async (args) => {
         const invalid = validateFetchReplyThread(args);
         if (invalid) return invalid;
