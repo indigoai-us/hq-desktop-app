@@ -121,6 +121,12 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain('app.exit(0)');
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
     expect(windowsUpdate).toContain('restore_original_executable(&helper, &original_exe)');
+    expect(windowsUpdate).toContain(
+      'WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)',
+    );
+    expect(windowsUpdate).toContain(
+      'open HQ parent process {parent_pid} for synchronization',
+    );
     expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
     expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
     expect(updater).toContain('install_failure_is_sync_deferral');

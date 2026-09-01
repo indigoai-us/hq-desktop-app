@@ -16,7 +16,9 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::Update;
 use ulid::Ulid;
-use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WIN32_ERROR,
+};
 use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 
 use crate::util::logfile::log;
@@ -310,10 +312,20 @@ fn require_helper_sibling(helper_dir: &Path, path: &Path, label: &str) -> Result
     }
 }
 
+fn parent_open_error_means_exited(error: &windows::core::Error) -> bool {
+    WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)
+}
+
 fn wait_for_parent(parent_pid: u32) -> Result<(), String> {
     unsafe {
-        let Ok(parent) = OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) else {
-            return Ok(());
+        let parent = match OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
+            Ok(parent) => parent,
+            Err(error) if parent_open_error_means_exited(&error) => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "open HQ parent process {parent_pid} for synchronization: {error}"
+                ));
+            }
         };
         let result = WaitForSingleObject(parent, PARENT_EXIT_TIMEOUT_MS);
         let _ = CloseHandle(parent);
@@ -449,6 +461,17 @@ mod tests {
             sha256_hex(b"hq-update"),
             "504cb0ca325c9fade5fd05e16db3b71ec6329bbe79d8e2ed9af0a3b1dd206547"
         );
+    }
+
+    #[test]
+    fn parent_open_only_treats_a_missing_pid_as_exited() {
+        let missing_pid = windows::core::Error::from(ERROR_INVALID_PARAMETER);
+        let access_denied = windows::core::Error::from(
+            windows::Win32::Foundation::ERROR_ACCESS_DENIED,
+        );
+
+        assert!(parent_open_error_means_exited(&missing_pid));
+        assert!(!parent_open_error_means_exited(&access_denied));
     }
 
     #[test]
