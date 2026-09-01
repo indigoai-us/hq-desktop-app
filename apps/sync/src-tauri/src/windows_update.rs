@@ -8,10 +8,10 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command};
+use std::time::{Duration, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::Update;
@@ -31,6 +31,7 @@ const ORIGINAL_EXE_ARG: &str = "--original-exe";
 const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const PARENT_EXIT_TIMEOUT_MS: u32 = 120_000;
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+const STALE_STAGING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +42,13 @@ struct UpdateReceipt<'a> {
     detail: Option<&'a str>,
 }
 
+#[derive(Deserialize)]
+struct StoredUpdateReceipt {
+    state: String,
+}
+
 struct StagedUpdate {
+    root: PathBuf,
     helper: PathBuf,
     installer: PathBuf,
     ready: PathBuf,
@@ -100,27 +107,103 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
     fs::create_dir_all(&root)
         .map_err(|error| format!("create update staging directory: {error}"))?;
 
-    let installer = root.join("hq-update-installer.exe");
-    write_new_file(&installer, bytes)?;
-    let sha256 = sha256_hex(bytes);
+    let result: Result<StagedUpdate, String> = (|| {
+        let installer = root.join("hq-update-installer.exe");
+        write_new_file(&installer, bytes)?;
+        let sha256 = sha256_hex(bytes);
 
-    let original_exe = std::env::current_exe()
-        .map_err(|error| format!("resolve current HQ executable: {error}"))?;
-    let helper = root.join("hq-update-helper.exe");
-    fs::copy(&original_exe, &helper)
-        .map_err(|error| format!("copy signed update helper: {error}"))?;
+        let original_exe = std::env::current_exe()
+            .map_err(|error| format!("resolve current HQ executable: {error}"))?;
+        let helper = root.join("hq-update-helper.exe");
+        fs::copy(&original_exe, &helper)
+            .map_err(|error| format!("copy signed update helper: {error}"))?;
 
-    let staged = StagedUpdate {
-        helper,
-        installer,
-        ready: root.join("helper.ready"),
-        receipt: root.join("receipt.json"),
-        original_exe,
-        sha256,
-        version: version.to_string(),
+        let staged = StagedUpdate {
+            root: root.clone(),
+            helper,
+            installer,
+            ready: root.join("helper.ready"),
+            receipt: root.join("receipt.json"),
+            original_exe,
+            sha256,
+            version: version.to_string(),
+        };
+        write_receipt(&staged.receipt, "staged", version, None);
+        Ok(staged)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    result
+}
+
+fn cleanup_staged_update(staged: &StagedUpdate) {
+    if let Err(error) = fs::remove_dir_all(&staged.root) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log(
+                "updater",
+                &format!("could not remove update staging directory: {error}"),
+            );
+        }
+    }
+}
+
+fn stop_helper_and_cleanup(helper: &mut Child, staged: &StagedUpdate) {
+    let _ = helper.kill();
+    let _ = helper.wait();
+    cleanup_staged_update(staged);
+}
+
+fn is_terminal_receipt_state(state: &str) -> bool {
+    matches!(state, "installed" | "rolled-back" | "failed")
+}
+
+fn should_cleanup_staging_dir(state: Option<&str>, age: Duration) -> bool {
+    state.is_some_and(is_terminal_receipt_state) || age >= STALE_STAGING_MAX_AGE
+}
+
+fn staging_dir_age(path: &Path) -> Duration {
+    let receipt = path.join("receipt.json");
+    let modified = fs::metadata(&receipt)
+        .or_else(|_| fs::metadata(path))
+        .and_then(|metadata| metadata.modified());
+    modified
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .unwrap_or_default()
+}
+
+fn receipt_state(path: &Path) -> Option<String> {
+    let bytes = fs::read(path.join("receipt.json")).ok()?;
+    serde_json::from_slice::<StoredUpdateReceipt>(&bytes)
+        .ok()
+        .map(|receipt| receipt.state)
+}
+
+fn cleanup_update_staging_dirs() {
+    let root = std::env::temp_dir().join("hq-desktop-update");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
     };
-    write_receipt(&staged.receipt, "staged", version, None);
-    Ok(staged)
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let state = receipt_state(&path);
+        if should_cleanup_staging_dir(state.as_deref(), staging_dir_age(&path)) {
+            if let Err(error) = fs::remove_dir_all(&path) {
+                log(
+                    "updater",
+                    &format!(
+                        "could not clean completed or abandoned update staging directory {}: {error}",
+                        path.display()
+                    ),
+                );
+            }
+        }
+    }
+    let _ = fs::remove_dir(&root);
 }
 
 fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
@@ -152,22 +235,33 @@ pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result
         .await
         .map_err(|error| error.to_string())?;
     if crate::updater::sync_in_progress() {
-        return Err("Update deferred while a sync is active".to_string());
+        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
 
     let staged = stage_update(&bytes, &update.version)?;
-    let mut helper = spawn_helper(&staged)?;
+    let mut helper = match spawn_helper(&staged) {
+        Ok(helper) => helper,
+        Err(error) => {
+            cleanup_staged_update(&staged);
+            return Err(error);
+        }
+    };
     let started = tokio::time::Instant::now();
     while !staged.ready.is_file() {
         if started.elapsed() >= HELPER_READY_TIMEOUT {
-            let _ = helper.kill();
+            stop_helper_and_cleanup(&mut helper, &staged);
             return Err("Windows update helper did not become ready".to_string());
         }
-        if let Some(status) = helper
-            .try_wait()
-            .map_err(|error| format!("poll update helper: {error}"))?
-        {
-            return Err(format!("Windows update helper exited early: {status}"));
+        match helper.try_wait() {
+            Ok(Some(status)) => {
+                cleanup_staged_update(&staged);
+                return Err(format!("Windows update helper exited early: {status}"));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                stop_helper_and_cleanup(&mut helper, &staged);
+                return Err(format!("poll update helper: {error}"));
+            }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -175,13 +269,13 @@ pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result
     // Recheck after the download and helper startup. A manual sync gets to
     // finish; the updater will retry instead of interrupting it.
     if crate::updater::sync_in_progress() {
-        let _ = helper.kill();
-        return Err("Update deferred while a sync is active".to_string());
+        stop_helper_and_cleanup(&mut helper, &staged);
+        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let quiescence = match crate::commands::process::quiesce_for_update(PROCESS_EXIT_TIMEOUT) {
         Ok(quiescence) => quiescence,
         Err(error) => {
-            let _ = helper.kill();
+            stop_helper_and_cleanup(&mut helper, &staged);
             return Err(error);
         }
     };
@@ -315,6 +409,7 @@ fn run_helper(args: &[String]) -> Result<(), String> {
 pub fn run_helper_if_requested() {
     let args: Vec<String> = std::env::args().collect();
     if !args.iter().any(|arg| arg == HELPER_FLAG) {
+        cleanup_update_staging_dirs();
         return;
     }
     let code = match run_helper(&args) {
@@ -354,5 +449,29 @@ mod tests {
             sha256_hex(b"hq-update"),
             "504cb0ca325c9fade5fd05e16db3b71ec6329bbe79d8e2ed9af0a3b1dd206547"
         );
+    }
+
+    #[test]
+    fn staging_cleanup_removes_terminal_and_abandoned_attempts() {
+        assert!(should_cleanup_staging_dir(
+            Some("installed"),
+            Duration::ZERO
+        ));
+        assert!(should_cleanup_staging_dir(
+            Some("rolled-back"),
+            Duration::ZERO
+        ));
+        assert!(should_cleanup_staging_dir(
+            Some("failed"),
+            Duration::ZERO
+        ));
+        assert!(!should_cleanup_staging_dir(
+            Some("installing"),
+            Duration::ZERO
+        ));
+        assert!(should_cleanup_staging_dir(
+            None,
+            STALE_STAGING_MAX_AGE
+        ));
     }
 }

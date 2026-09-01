@@ -115,6 +115,12 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain('app.exit(0)');
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
     expect(windowsUpdate).toContain('restore_original_executable(&helper, &original_exe)');
+    expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
+    expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
+    expect(updater).toContain('install_failure_is_sync_deferral');
+    expect(updater).toContain(
+      'automatic update deferred during install startup; retrying soon',
+    );
     expect(processRegistry).toContain('UPDATE_QUIESCE_REQUESTED');
     expect(processRegistry).toContain('pub fn quiesce_for_update');
   });

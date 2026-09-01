@@ -117,12 +117,18 @@ static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str =
+    "Update deferred while a sync is active";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
     Install,
     DeferForSync,
     Announce,
+}
+
+fn install_failure_is_sync_deferral(error: &str) -> bool {
+    error == UPDATE_DEFERRED_DURING_SYNC
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -689,6 +695,18 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                                 "automatic update handed off successfully",
                                                             );
                                                         }
+                                                        Err(error)
+                                                            if install_failure_is_sync_deferral(
+                                                                &error,
+                                                            ) =>
+                                                        {
+                                                            log(
+                                                                "updater",
+                                                                "automatic update deferred during install startup; retrying soon",
+                                                            );
+                                                            next_check =
+                                                                UPDATE_SYNC_RETRY_INTERVAL;
+                                                        }
                                                         Err(error) => {
                                                             log(
                                                                 "updater",
@@ -896,6 +914,12 @@ mod tests {
             BackgroundUpdateAction::DeferForSync
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
+        assert!(install_failure_is_sync_deferral(
+            UPDATE_DEFERRED_DURING_SYNC
+        ));
+        assert!(!install_failure_is_sync_deferral(
+            "Windows update helper did not become ready"
+        ));
     }
 
     #[test]

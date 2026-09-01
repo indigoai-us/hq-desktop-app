@@ -3342,7 +3342,7 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
     // that registered first wins and defers the update; a later registration
     // observes UPDATE_QUIESCE_REQUESTED and cannot enter the install window.
     if is_registered("hq-sync") {
-        return Err("Update deferred while a sync is active".to_string());
+        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let processes = registered_processes_including_retired();
     let pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
