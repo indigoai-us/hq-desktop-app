@@ -13,7 +13,7 @@
    */
   import { onMount, tick, untrack } from 'svelte';
   import NotificationRow from './NotificationRow.svelte';
-  import { resolutionForItem } from '../stores/widgetNotifications';
+  import { meetingFocusId, resolutionForItem } from '../stores/widgetNotifications';
   import type { NotificationRowType } from './NotificationRow.svelte';
   import {
     type BannerPayloadLike,
@@ -306,13 +306,18 @@
   }
 
   function handlePointerDownCapture(e: PointerEvent): void {
-    if ((e.target as HTMLElement | null)?.closest?.('input')) {
+    if (
+      (e.target as HTMLElement | null)?.closest?.(
+        'input, select, textarea, [data-testid="notification-resolve-trigger"], [data-testid="notification-resolve-sheet"]',
+      )
+    ) {
       void setWidgetFocusable(true);
     }
   }
 
   function handleFocusInCapture(e: FocusEvent): void {
-    if ((e.target as HTMLElement | null)?.tagName === 'INPUT') {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
       void setWidgetFocusable(true);
     }
   }
@@ -582,6 +587,7 @@
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const explicitClickAction =
+        item.kind !== 'meeting' &&
         item.clickActionId !== '' &&
         item.clickActionId !== 'open' &&
         !item.clickActionId.startsWith('open-');
@@ -589,6 +595,9 @@
       // widget does not depend on the (often hidden) main webview's
       // notification:banner-action listener. Kind-based fallbacks keep
       // localStorage-hydrated rows (action surface stripped) usable.
+      // Meeting rows always open the desktop Meetings page (with the meeting
+      // selected when we have an id). `assign` used to go through banner_action
+      // → the hidden popover webview, which is a dead end in the new shell.
       if (explicitClickAction) {
         const payload: BannerPayloadLike = {
           kind: item.kind,
@@ -629,7 +638,9 @@
         // Inbox that may not have updater history hydrated yet.
         await invoke('open_desktop_alt_window', { route: 'settings:updates' });
       } else if (item.kind === 'meeting') {
-        await invoke('show_main_window');
+        await invoke('open_meetings_window', {
+          focusMeetingId: meetingFocusId(item.data) ?? null,
+        });
       } else if (item.clickActionId) {
         const payload: BannerPayloadLike = {
           kind: item.kind,
@@ -1036,6 +1047,9 @@
     } else {
       size = widgetWindowSize(stack);
     }
+    if (filingError) {
+      size = { width: Math.max(size.width, 348), height: size.height + 40 };
+    }
     size = scaleDesktopWindowSize(size, desktopZoom);
     if (!hasTauri()) return;
     if (
@@ -1064,10 +1078,12 @@
   // the meeting itself through the same backend the Meetings window uses
   // (`meetings_set_company`), and dismisses on success.
   let companyOptionsList = $state<Array<{ value: string; label: string }>>([]);
+  let filingError = $state<string | null>(null);
 
   async function loadCompanyOptions(): Promise<void> {
     if (companyOptionsList.length > 0) return;
     if (!hasTauri()) return;
+    void setWidgetFocusable(true);
     const { listMemberships, companyOptions } = await import('../lib/meetingAttribution');
     const memberships = await listMemberships();
     companyOptionsList = companyOptions(memberships).map((o) => ({
@@ -1081,16 +1097,20 @@
     meetingId: string,
     companyId: string,
   ): Promise<void> {
+    filingError = null;
     if (!hasTauri()) throw new Error('Assignment is unavailable here');
     const { setMeetingCompany, setCompanyErrorMessage } = await import(
       '../lib/meetingAttribution'
     );
     const result = await setMeetingCompany(meetingId, companyId);
     if (!result.ok) {
-      throw new Error(setCompanyErrorMessage(result));
+      const message = setCompanyErrorMessage(result);
+      filingError = message;
+      throw new Error(message);
     }
-    // Resolved — the row no longer needs attention.
-    applyStack(dismissItem(stack, item.id));
+    // Resolved — drop the row from the live stack and history so it cannot
+    // come back as a duplicate needs-action item.
+    applyStack(dismissRecent(dismissItem(stack, item.id), item.id));
     setReplyHold(item.id, false);
   }
 </script>
@@ -1107,11 +1127,17 @@
       unread={row.item.unread ?? false}
       badgeCount={conversationUnreadFor(row.item)}
       hoverExpand={row.item.kind === 'dm' && !row.item.compactGroupCount}
-      actionLabel={row.item.actionLabel ?? undefined}
+      actionLabel={
+        resolutionForItem(row.item) ? undefined : (row.item.actionLabel ?? undefined)
+      }
       actionDisabled={actioningIds.has(row.item.id)}
       textDismiss
       onopen={() => handleOpen(row.item)}
-      onaction={row.item.actionId ? () => handleAction(row.item) : undefined}
+      onaction={
+        row.item.actionId && !resolutionForItem(row.item)
+          ? () => handleAction(row.item)
+          : undefined
+      }
       ondismiss={() => handleHoverDismiss(row.item)}
       onreply={row.item.kind === 'dm' && !row.item.compactGroupCount
         ? (text) => replyDm(row.item, text)
@@ -1407,6 +1433,12 @@
     </div>
   {/if}
 
+  {#if filingError}
+    <div class="wg-toast" data-testid="widget-filing-error" role="alert">
+      {filingError}
+    </div>
+  {/if}
+
   {#if stack.visible.length > 0 && !hoverOpen}
     <div
       class="stack"
@@ -1424,10 +1456,16 @@
             sourceLabel={notificationSourceLabel(item)}
             text={item.text}
             ts={item.ts}
-            actionLabel={item.actionLabel ?? undefined}
+            actionLabel={
+              resolutionForItem(item) ? undefined : (item.actionLabel ?? undefined)
+            }
             actionDisabled={actioningIds.has(item.id)}
             onopen={() => handleOpen(item)}
-            onaction={item.actionId ? () => handleAction(item) : undefined}
+            onaction={
+              item.actionId && !resolutionForItem(item)
+                ? () => handleAction(item)
+                : undefined
+            }
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => reactDm(item, emoji) : undefined}
@@ -1522,6 +1560,19 @@
        stronger pre-redesign sampling local to its actual glass shells. */
     --glass-filter: blur(30px) saturate(175%) contrast(103%);
     --glass-filter-soft: blur(16px) saturate(145%) contrast(102%);
+  }
+
+  .wg-toast {
+    width: 348px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--row-bg);
+    color: var(--row-fg);
+    font-size: 11px;
+    line-height: 1.35;
+    box-sizing: border-box;
+    box-shadow: var(--row-shadow);
   }
 
   /* Notification stack — column of one-line rows ABOVE the wordmark. */

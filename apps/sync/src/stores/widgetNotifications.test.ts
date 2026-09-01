@@ -48,6 +48,9 @@ import {
   stableBannerId,
   contentDedupeKey,
   resolutionForItem,
+  formatMeetingNotificationTitle,
+  meetingFocusId,
+  meetingIdentityKey,
 } from './widgetNotifications';
 
 function item(overrides: Partial<WidgetStackItem> & Pick<WidgetStackItem, 'id'>): WidgetStackItem {
@@ -167,7 +170,7 @@ describe('bannerToStackItem', () => {
         1,
         'm',
       ),
-    ).toMatchObject({ type: 'system', text: 'Standup — starting' });
+    ).toMatchObject({ type: 'meeting', text: 'Standup — starting' });
 
     expect(
       bannerToStackItem(
@@ -1429,5 +1432,101 @@ describe('inline resolution seam', () => {
     ).toBeNull();
     expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: {} })).toBeNull();
     expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: null })).toBeNull();
+  });
+});
+
+describe('meeting needs-action titles, focus, and dedupe', () => {
+  it('formats a meeting name + date/time instead of the generic "Meeting needs a company" prefix', () => {
+    const text = formatMeetingNotificationTitle({
+      title: 'Meeting needs a company',
+      body: '"Amir Tor sync" isn\'t filed to a company yet.',
+      data: {
+        meetingId: 'bot_42',
+        meetingTitle: 'Amir Tor sync',
+        scheduledStartTime: '2026-09-01T16:00:00.000Z',
+      },
+    });
+    expect(text).toContain('Amir Tor sync');
+    expect(text).toMatch(/·/);
+    expect(text).toMatch(/\d/);
+    expect(text.startsWith('Meeting')).toBe(false);
+  });
+
+  it('falls back to a quoted body name, then a non-generic title', () => {
+    expect(
+      formatMeetingNotificationTitle({
+        title: 'Meeting needs a company',
+        body: '"Weekly standup" isn\'t filed yet.',
+        data: { meetingId: 'bot_1' },
+      }),
+    ).toBe('Weekly standup');
+    expect(
+      formatMeetingNotificationTitle({
+        title: 'Detected call',
+        body: 'starting now',
+        data: null,
+      }),
+    ).toBe('Detected call');
+  });
+
+  it('uses the meeting name + when as the live banner row text', () => {
+    const mapped = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: '"Design review" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        data: {
+          meetingId: 'bot_9',
+          meetingTitle: 'Design review',
+          scheduledStartTime: '2026-09-01T18:30:00.000Z',
+          calendarEventId: 'evt_9',
+        },
+      },
+      1,
+      'wn-1',
+    );
+    expect(mapped.type).toBe('meeting');
+    expect(mapped.text).toContain('Design review');
+    expect(mapped.text).toMatch(/·/);
+    expect(mapped.id).toBe('meeting:bot_9');
+  });
+
+  it('prefers the calendar event id for Meetings-page navigation, then the bot id', () => {
+    expect(
+      meetingFocusId({ meetingId: 'bot_9', calendarEventId: 'evt_9' }),
+    ).toBe('evt_9');
+    expect(meetingFocusId({ meetingId: 'bot_9' })).toBe('bot_9');
+    expect(meetingFocusId(null)).toBeUndefined();
+  });
+
+  it('collapses repeated live deliveries of the same meeting into one visible row', () => {
+    let state = emptyWidgetStack();
+    state = addItem(
+      state,
+      item({
+        id: 'wn-1',
+        kind: 'meeting',
+        type: 'meeting',
+        text: 'Standup',
+        data: { meetingId: 'bot_dup' },
+      }),
+    );
+    state = addItem(
+      state,
+      item({
+        id: 'wn-2',
+        kind: 'meeting',
+        type: 'meeting',
+        text: 'Standup · later',
+        data: { meetingId: 'bot_dup' },
+      }),
+    );
+    expect(state.visible).toHaveLength(1);
+    expect(state.visible[0]?.id).toBe('wn-2');
+    expect(state.visible[0]?.text).toBe('Standup · later');
+    expect(state.recent).toHaveLength(1);
+    expect(meetingIdentityKey(state.visible[0]!)).toBe('meeting:bot_dup');
   });
 });

@@ -128,6 +128,7 @@
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
   const replyHold = $derived(replyFocused || replyText.length > 0);
+  const resolveHold = $derived(Boolean(resolvePrompt && onresolve && resolveOpen));
   // hoverExpand gates message expand so dense lists (side pane) stay one-line;
   // widget surfaces keep the default (true) so reply holds still expand.
   const expanded = $derived(
@@ -156,7 +157,7 @@
   // Non-reactive last-notified value — only fire onholdchange on transitions.
   let lastHold = false;
   $effect(() => {
-    const current = replyHold;
+    const current = replyHold || resolveHold;
     if (current !== lastHold) {
       lastHold = current;
       onholdchange?.(current);
@@ -417,7 +418,7 @@
   <span
     class="nr-text"
     title={identityLabel
-      ? `${identityLabel} · ${actor ? `${actor}: ${text}` : text}`
+      ? identityLabel
       : actor
         ? `${actor}: ${text}`
         : text}
@@ -1064,6 +1065,8 @@
   }
 
   .nr-resolve {
+    position: relative;
+    z-index: 5;
     flex: 0 0 auto;
     height: 20px;
     margin-left: 6px;
@@ -1088,15 +1091,16 @@
 
   .nr-resolve-sheet {
     position: absolute;
-    top: calc(100% - 1px);
+    top: 2px;
+    bottom: 2px;
     left: 8px;
-    right: 8px;
-    z-index: 3;
+    right: 96px;
+    z-index: 4;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 6px;
+    padding: 0 6px;
     border-radius: 8px;
     background: var(--popover-surface);
     box-shadow:
