@@ -3,14 +3,15 @@ import type {
   FeedbackApi,
   Json,
   MeetingsApi,
+  SettingsApi,
 } from "@hq/platform";
-import { readSettingsPrefs } from "../settings/settings-prefs";
 import {
   loadMeetingsCache,
   saveMeetingsCache,
   type MeetingsStorage,
 } from "./meetings-cache";
 import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
+import { isRecordingCompanyMembership } from "./recording-membership";
 import {
   buildRefreshProblemReport,
   botForEvent,
@@ -47,8 +48,12 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface MeetingsStoreApi {
+  /** Authenticated account id, carried with native generation transitions. */
+  accountId?: string | null;
   meetings: MeetingsApi;
   feedback: FeedbackApi;
+  /** Native settings are authoritative for recording attribution. */
+  settings?: Pick<SettingsApi, "getSettings">;
   /** Account-partitioned renderer persistence supplied by the desktop host. */
   storage?: MeetingsStorage | null;
   /** Monotonic native auth generation; owns all in-flight meeting work. */
@@ -500,16 +505,46 @@ function isCurrentTenantSession(epoch: number): boolean {
 
 /** True when `uid` is one of the user's current memberships (cached names or live rows). */
 function isOwnMembershipUid(uid: string): boolean {
-  if (companyNamesByUid.has(uid)) return true;
-  return memberships.some((row) => row.companyUid === uid);
+  return memberships.some(
+    (row) => row.companyUid === uid && isRecordingCompanyMembership(row),
+  );
 }
 
-function invitePayload(meetingUrl: string, evt: MeetingEvent | null): Json {
+type RecordingDestination =
+  | { kind: "personal" }
+  | { kind: "company"; companyUid: string }
+  | { kind: "unavailable" };
+
+async function defaultRecordingDestination(
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined,
+): Promise<RecordingDestination> {
+  // Never fall back to renderer preferences: a tenant-scoped native setting
+  // is the authoritative source for an event with no source company.
+  if (!settings) return { kind: "unavailable" };
+  const result = await settings.getSettings();
+  if (!result.ok) return { kind: "unavailable" };
+  const value = result.value.defaultRecordingCompanyUid;
+  return typeof value === "string" && value.trim()
+    ? { kind: "company", companyUid: value.trim() }
+    : { kind: "personal" };
+}
+
+async function invitePayload(
+  meetingUrl: string,
+  evt: MeetingEvent | null,
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined = requireApi().settings,
+): Promise<Json> {
   // Event company wins; settings default fills only when the event has none.
-  // Cross-company guard: default must be an own membership uid.
+  // Cross-company guard: default must be an active own membership.
+  const destination = evt?.sourceCompanyUid
+    ? { kind: "personal" as const }
+    : await defaultRecordingDestination(settings);
+  if (destination.kind === "unavailable") {
+    throw new Error("Recording destination settings are unavailable. Retry.");
+  }
   const companyId = resolveInviteCompanyId(
     evt?.sourceCompanyUid,
-    readSettingsPrefs(storage).recordingCompanyId,
+    destination.kind === "company" ? destination.companyUid : null,
     { has: isOwnMembershipUid },
   );
   return {
@@ -535,8 +570,11 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const key = evt.id;
   if (!lockRow(key, "invite")) return null;
   const epoch = sessionEpoch;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.inviteBot(invitePayload(url, evt)));
+    const payload = await invitePayload(url, evt, actionApi.settings);
+    if (!isCurrentTenantSession(epoch)) return null;
+    unwrap(await actionApi.meetings.inviteBot(payload));
     if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);
@@ -617,8 +655,11 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const key = evt.id;
   if (!lockRow(key, "join-now")) return null;
   const epoch = sessionEpoch;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.joinBotNow(invitePayload(url, evt)));
+    const payload = await invitePayload(url, evt, actionApi.settings);
+    if (!isCurrentTenantSession(epoch)) return null;
+    unwrap(await actionApi.meetings.joinBotNow(payload));
     if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);

@@ -8,6 +8,10 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const tauriEvents = vi.hoisted(() => ({
+  listeners: new Map<string, (event: { payload?: unknown }) => void>(),
+}));
+
 vi.mock('svelte', async () => {
   // @ts-expect-error client entry has no public type export.
   return await import('../../node_modules/svelte/src/index-client.js');
@@ -20,7 +24,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (event: string, handler: (payload: { payload?: unknown }) => void) => {
+    tauriEvents.listeners.set(event, handler);
+    return () => tauriEvents.listeners.delete(event);
+  }),
 }));
 
 vi.mock('@tauri-apps/api/app', () => ({
@@ -275,6 +282,7 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });
 
@@ -376,6 +384,160 @@ describe('US-103 embedded desktop window', () => {
       flushSync();
       await flush();
       expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
+    });
+
+    it('rechecks authoritative version state when the native host emits an update edge', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const calls: string[] = [];
+      const baseInvoke = mockInvoke();
+      const invokeFn: SyncInvokeFn = async (command, args) => {
+        calls.push(command);
+        return baseInvoke(command, args);
+      };
+      component = mount(HqWorkDesktopShell, {
+        target: host,
+        props: { invokeFn },
+      });
+      await flush(24);
+
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'updates' },
+        }),
+      );
+      await flush(24);
+      expect(host.querySelector('[data-testid="settings-updates-pane"]')).toBeTruthy();
+      const before = calls.filter((command) => command === 'check_for_updates').length;
+      const listener = tauriEvents.listeners.get('hq-cli-update:available');
+      expect(listener).toBeTypeOf('function');
+      listener?.({ payload: { latest: '5.104.0' } });
+      await flush(24);
+      expect(calls.filter((command) => command === 'check_for_updates')).toHaveLength(before + 1);
+    });
+
+    it('does not recursively restart an Updates probe when that probe emits core-state:changed', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const baseInvoke = mockInvoke();
+      let coreChecks = 0;
+      const invokeFn: SyncInvokeFn = async (command, args) => {
+        if (command === 'check_core_state') {
+          coreChecks += 1;
+          if (coreChecks === 1) {
+            tauriEvents.listeners.get('core-state:changed')?.({ payload: { versionBehind: false } });
+          }
+          return { versionBehind: false };
+        }
+        return baseInvoke(command, args);
+      };
+      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      await flush(24);
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'updates' },
+        }),
+      );
+      await flush(24);
+
+      expect(coreChecks).toBe(1);
+    });
+
+    it('rotates the mounted Settings profile and company scope with the authoritative auth session', async () => {
+      let active: 'ada' | 'grace' = 'ada';
+      const identities = {
+        ada: {
+          accountId: 'acct_ada',
+          generation: 1,
+          personUid: 'prs_ada',
+          displayName: 'Ada',
+          email: 'ada@getindigo.ai',
+          companyUid: 'cmp_ada',
+          companyName: 'Ada Org',
+        },
+        grace: {
+          accountId: 'acct_grace',
+          generation: 2,
+          personUid: 'prs_grace',
+          displayName: 'Grace',
+          email: 'grace@getindigo.ai',
+          companyUid: 'cmp_grace',
+          companyName: 'Grace Org',
+        },
+      } as const;
+      const fallback = mockInvoke();
+      const invokeFn: SyncInvokeFn = async (command, args) => {
+        const identity = identities[active];
+        if (command === 'get_auth_session') {
+          return {
+            status: 'active',
+            accountId: identity.accountId,
+            generation: identity.generation,
+          };
+        }
+        if (command === 'list_syncable_workspaces') {
+          return {
+            workspaces: [
+              {
+                companyUid: identity.companyUid,
+                companySlug: identity.companyName.toLowerCase().replace(' ', '-'),
+                companyName: identity.companyName,
+                status: 'active',
+                role: 'member',
+              },
+            ],
+          };
+        }
+        if (command === 'hq_pro_fetch' && hqProPath(args?.url).startsWith('/v1/identity/whoami')) {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              personUid: identity.personUid,
+              displayName: identity.displayName,
+              email: identity.email,
+            }),
+          };
+        }
+        return fallback(command, args);
+      };
+
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      await flush(36);
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'profile' },
+        }),
+      );
+      await flush(24);
+      expect(
+        host.querySelector<HTMLInputElement>('[data-testid="settings-display-name-input"]')?.value,
+      ).toBe('Ada');
+
+      active = 'grace';
+      tauriEvents.listeners.get('auth:session-changed')?.({
+        payload: { status: 'active', accountId: 'acct_grace', generation: 2 },
+      });
+      await flush(40);
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'companies' },
+        }),
+      );
+      await flush(24);
+
+      expect(host.querySelector('[data-testid="settings-companies-pane"]')?.textContent).toContain('Grace Org');
+      expect(host.querySelector('[data-testid="settings-companies-pane"]')?.textContent).not.toContain('Ada Org');
+      window.dispatchEvent(
+        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
+          detail: { kind: 'settings', section: 'profile' },
+        }),
+      );
+      await flush(24);
+      expect(
+        host.querySelector<HTMLInputElement>('[data-testid="settings-display-name-input"]')?.value,
+      ).toBe('Grace');
     });
 
     it('applyDesktopAltRoute emits typed subsection targets instead of flattening them', () => {

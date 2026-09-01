@@ -57,7 +57,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onMount, untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -281,6 +281,10 @@
     onembeddednavigationready?: () => void | (() => void);
     /** Optional desktop package-operation stream for Library → Installed. */
     packagesEvents?: PackagesEvents | null;
+    /** Native app/Core/CLI update event edge for Settings → Updates. */
+    updateWakeSeq?: number;
+    /** Read the current native app version during an Updates refresh. */
+    refreshAppVersion?: () => Promise<string>;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
     /** Host owns native active-thread registration for realtime reply wakes. */
@@ -353,6 +357,8 @@
     onOpenConsole,
     onembeddednavigationready,
     packagesEvents = null,
+    updateWakeSeq = 0,
+    refreshAppVersion,
     notificationWakeSeq = 0,
     onactivethreadchange,
     hydrateLiveMessages = false,
@@ -1351,8 +1357,10 @@
     // company boundary as well, otherwise a completed agenda request could
     // paint metadata from the previously selected workspace.
     configureMeetingsApi({
+      accountId: tenantAccountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
       storage: tenantStorage,
       sessionGeneration: tenantGeneration,
     });
@@ -1370,6 +1378,12 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  onDestroy(() => {
+    // Account transitions unmount the shared shell; never leave its singleton
+    // cache/snapshot visible until the next identity has finished hydrating.
+    configureMeetingsApi(null);
   });
 
   const mentionRoster = $derived(
@@ -1913,8 +1927,10 @@
     // open paints from state instead of a cold fetch. View-active gating
     // (poll + focus refresh) stays owned by MeetingsPage.
     configureMeetingsApi({
+      accountId: tenantAccountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
       storage: tenantStorage,
       sessionGeneration: tenantGeneration,
     });
@@ -2073,6 +2089,8 @@
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
         consoleBase={HQ_CONSOLE_BASE}
+        {updateWakeSeq}
+        {refreshAppVersion}
       />
     </div>
   {:else}
@@ -2136,6 +2154,7 @@
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
+            accountId={tenantAccountId}
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {

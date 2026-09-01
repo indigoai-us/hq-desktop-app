@@ -7,11 +7,13 @@
  */
 
 import {
+  type AdapterResult,
   type AdapterPromise,
   type Capability,
   type ChannelSummary,
   type Json,
   type PlatformAdapter,
+  type VersionProbe,
   type WhoAmI,
   type VersionInfo,
   TAURI_CAPABILITIES,
@@ -149,12 +151,20 @@ export function createSyncPlatformAdapter(
       call<string | null>('get_hq_version'),
       call<string | null>('get_hq_cli_version'),
     ]);
-    if (!core.ok) return core;
-    if (!cli.ok) return cli;
-    return ok({
-      ...(core.value ? { core: core.value } : {}),
-      ...(cli.value ? { cli: cli.value } : {}),
-    });
+    // Version probes are independent. A missing or failed CLI probe must not
+    // erase a successfully read Core version (and vice versa); the Settings UI
+    // renders the failed row as unchecked with its own remediation.
+    const toProbe = (result: AdapterResult<string | null>): VersionProbe =>
+      result.ok
+        ? { status: result.value ? 'available' : 'missing', value: result.value }
+        : { status: 'failed', code: result.code, message: result.message };
+    const versions: VersionInfo = {
+      ...(core.ok && core.value ? { core: core.value } : {}),
+      ...(cli.ok && cli.value ? { cli: cli.value } : {}),
+      coreProbe: toProbe(core),
+      cliProbe: toProbe(cli),
+    };
+    return ok(versions);
   }
 
   async function hqProJson<T>(
@@ -861,6 +871,7 @@ export function createSyncPlatformAdapter(
         call('notification_permission_state'),
       requestNotificationPermission: () =>
         call('notification_request_permission'),
+      openNotificationSettings: () => call('notification_open_settings'),
       setDesktopWidget: (enabled) =>
         persistThenApplyAppShellPreference(
           'widgetEnabled',
@@ -915,6 +926,18 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      updateSettings: async (patch) => {
+        const settingsInvoker: SettingsInvoker = <T>(
+          command: string,
+          args?: Record<string, unknown>,
+        ) => invokeFn(command, args) as Promise<T>;
+        try {
+          await updateSettings(patch, settingsInvoker);
+          return ok(undefined);
+        } catch (err) {
+          return invokeError(err);
+        }
+      },
       getSetupStatus: () => call('get_setup_status'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },

@@ -54,6 +54,7 @@
   interface MeetingsPageProps {
     /** Platform backend seam (meetings/feedback/identity slices are used). */
     adapter: PlatformAdapter;
+    accountId?: string | null;
     onback?: () => void;
     /**
      * Open a URL in the host's external browser. Defaults to window.open —
@@ -75,6 +76,7 @@
   }
   let {
     adapter,
+    accountId = null,
     onback,
     openExternal = (url: string) => {
       const opened = window.open(url, "_blank", "noopener,noreferrer");
@@ -441,8 +443,10 @@
     // Cache-first singleton. Do not force another refresh on every icon
     // click — that re-downloaded the full calendar and beachballed the app.
     configureMeetingsApi({
+      accountId,
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
       storage,
       sessionGeneration,
     });

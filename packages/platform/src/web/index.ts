@@ -823,6 +823,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
         );
       }
     },
+    openNotificationSettings: async () =>
+      unavailable(
+        "desktop-only",
+        "Notification settings are opened by the native desktop host.",
+      ),
     // Native banners are desktop-only (US-001). Web stays a no-op.
     showOsNotification: async () => ok(undefined),
   };
@@ -858,6 +863,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Local, browser-scoped stubs until a web settings store lands.
     getConfig: async () => ok({} as Json),
     getSettings: async () => ok({} as Json),
+    updateSettings: async () =>
+      unavailable(
+        "not-yet-implemented-api",
+        "The web host has no authoritative native settings store.",
+      ),
     getSetupStatus: async () => DESKTOP_ONLY,
     getTelemetryConsent: async () => ok<boolean | null>(null),
   };

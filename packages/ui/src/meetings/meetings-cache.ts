@@ -24,7 +24,7 @@
 /** Bump on every breaking change to the cached shape so old entries from a
  *  previous app version are treated as a cache miss instead of crashing
  *  the hydration path with a shape mismatch. */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** localStorage key. Namespaced with the schema version so a future bump
  *  doesn't have to manually delete the prior entry — old keys just rot

@@ -78,11 +78,14 @@
   let signingOut = $state(false);
   let reauthError = $state<string | null>(null);
   let notificationWakeSeq = $state(0);
-  let hydration = 0;
+  let hydration = $state(0);
   let authGeneration = $state(0);
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
+  // Incrementing, rather than storing an update payload, guarantees the pane
+  // re-reads each authoritative command after every native state edge.
+  let updateWakeSeq = $state(0);
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -447,6 +450,20 @@
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
 
+    const updateEvents = [
+      'update:available',
+      'update:cleared',
+      // `check_core_state` emits this after every successful probe. Treating
+      // that completion as a wake would recursively re-run the same probe.
+      'hq-cli-update:available',
+      'hq-cli-update:cleared',
+    ];
+    const unlistenUpdatePromises = updateEvents.map((eventName) =>
+      listen(eventName, () => {
+        if (!cancelled) updateWakeSeq += 1;
+      }).catch(() => () => {}),
+    );
+
     const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
       if (cancelled) return;
       const next = parseAuthSessionEnvelope(event.payload);
@@ -476,6 +493,9 @@
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
+      for (const unlistenPromise of unlistenUpdatePromises) {
+        void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
+      }
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -530,6 +550,8 @@
     <DesktopApp
       {adapter}
       {version}
+      {updateWakeSeq}
+      refreshAppVersion={getVersion}
       {sidebarApi}
       {notificationsApi}
       {wakes}

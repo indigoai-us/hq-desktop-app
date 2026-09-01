@@ -73,6 +73,10 @@
     /** Change-photo affordance (host seam; display-only default). */
     onchangephoto?: () => void;
     consoleBase?: string;
+    /** Native update event edge; wakes the authoritative Updates pane. */
+    updateWakeSeq?: number;
+    /** Reads the running native app version when Updates refreshes. */
+    refreshAppVersion?: () => Promise<string>;
   }
 
   let {
@@ -88,6 +92,8 @@
     onopenconsole,
     onchangephoto,
     consoleBase = HQ_CONSOLE_BASE,
+    updateWakeSeq = 0,
+    refreshAppVersion,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -136,11 +142,11 @@
   /** Data-URL preview for the avatar (picked file or persisted avatarUrl). */
   let avatarPreview = $state<string | null>(null);
   let profileLoaded = $state(false);
+  let descriptionLoaded = $state(false);
   let savingProfile = $state(false);
   let profileError = $state<string | null>(null);
   let profileSavedAt = $state<number | null>(null);
   let profileLoading = $state(false);
-  let descriptionLoaded = $state(false);
   let profileRequest = 0;
   let observedSessionGeneration = $state<number | null>(null);
   let avatarBusy = $state(false);
@@ -443,6 +449,7 @@
                 <div class="sd">
                   A short line teammates see ({editDescription.trim()
                     .length}/{DESCRIPTION_MAX})
+                  {#if !descriptionLoaded} — unavailable until the profile service recovers{/if}
                 </div>
               </div>
               <input
@@ -550,7 +557,6 @@
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
-          canSync={adapter?.isAvailable("canSync") ?? false}
         />
       {:else}
         <PrototypeSettingsPanes
@@ -569,6 +575,8 @@
           personalLabel={profile?.displayName ?? ""}
           {consoleBase}
           onopenconsole={openConsole}
+          {updateWakeSeq}
+          {refreshAppVersion}
         />
       {/if}
     </div>

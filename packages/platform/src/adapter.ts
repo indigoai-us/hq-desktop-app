@@ -177,7 +177,17 @@ export interface VersionInfo {
   app?: string;
   core?: string;
   cli?: string;
+  /** Independent probe outcomes are retained even when the other probe works. */
+  coreProbe?: VersionProbe;
+  cliProbe?: VersionProbe;
   [k: string]: unknown;
+}
+
+export interface VersionProbe {
+  status: "available" | "missing" | "failed";
+  value?: string | null;
+  code?: string;
+  message?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +688,8 @@ export interface AppShellApi {
   openMeetingPermissionsWindow(): AdapterPromise<void>;
   notificationPermissionState(): AdapterPromise<string>;
   requestNotificationPermission(): AdapterPromise<string>;
+  /** Open the host OS's notification settings without the frontend owning a URI. */
+  openNotificationSettings(): AdapterPromise<void>;
   /** Desktop-only: post a native OS banner. `route` is echoed on click. */
   showOsNotification(args: {
     title: string;
@@ -727,6 +739,8 @@ export interface SessionsApi {
 export interface SettingsApi {
   getConfig(): AdapterPromise<Json>;
   getSettings(): AdapterPromise<Json>;
+  /** Persist a minimal patch over the latest host settings. */
+  updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }

@@ -787,6 +787,7 @@ fn main() {
             commands::notifications_feed::run_notification_action,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
+            commands::notifications::notification_open_settings,
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
             commands::banner::banner_action_result,
