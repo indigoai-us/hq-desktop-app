@@ -51,6 +51,10 @@ describe('US-004 / US-001: chrome-free menubar notification panel', () => {
     expect(compactSource).toContain('Mark all read');
     expect(compactSource).toContain('<NotificationFeed');
     expect(compactSource).toContain('class="mbp-unread-count"');
+    expect(compactSource).toContain('data-testid="popover-sync-sublabel"');
+    expect(popoverSource).not.toContain('mbp-progress-track');
+    expect(popoverSource).not.toContain('barPct');
+    expect(popoverSource).not.toContain('role="progressbar"');
   });
 
   it('offers an explicit jump to the full desktop without forcing an Inbox route', () => {
