@@ -150,8 +150,18 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo check --target x86_64-pc-windows-msvc
 
-      - name: Windows tests
+      # `cargo check` deliberately does not build cfg(test) code or
+      # dev-dependencies. Compile and link the test binaries in their own
+      # named gate so a cold cache cannot look like a stuck test harness.
+      # This also keeps the execution gate below a genuine five-minute
+      # deadlock detector: the broad suite normally executes in under a minute.
+      - name: Build Windows test binaries
         timeout-minutes: 30
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
+
+      - name: Windows tests
+        timeout-minutes: 5
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins
 
