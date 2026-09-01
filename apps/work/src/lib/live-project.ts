@@ -137,7 +137,13 @@ export function loadWebVaultFilePreview(
     item,
     selectedCompanyUid,
     presign: presignWebVaultGet,
-    get: (url) => fetch(url),
+    get: (url, maxBytes) =>
+      fetch("/api/chat-attachment-bytes", {
+        headers: {
+          "x-hq-source-url": url,
+          "x-hq-max-bytes": String(maxBytes),
+        },
+      }),
   });
 }
 

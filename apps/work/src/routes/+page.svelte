@@ -51,6 +51,7 @@
     resolveLastSelectedId,
     seedConversationCacheFromRail,
   } from "$lib/browser-cache";
+  import { openWorkExternalUrl } from "$lib/external-open";
   import { startWebMeshForAdapter } from "$lib/mesh-runtime";
   import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
   import {
@@ -108,12 +109,17 @@
   );
   let tenantGeneration = $state(0);
   const personUid = $derived(self?.uid ?? "");
-  const shallow = $derived(readShallowCache(personUid));
+  let shallow = $state(readShallowCache(personUid));
+  $effect(() => {
+    shallow = readShallowCache(personUid);
+  });
   $effect(() => {
     seedConversationCacheFromRail(shallow);
   });
   const sidebarApi = $derived(
-    createChatSidebarApi(adapter, shallow.directory, personUid),
+    createChatSidebarApi(adapter, shallow.directory, personUid, () => {
+      shallow = readShallowCache(personUid);
+    }),
   );
 
   let companies = $state(
@@ -410,7 +416,7 @@
   }
 
   function openUrl(url: string): void {
-    window.open(url, "_blank", "noopener,noreferrer");
+    openWorkExternalUrl(url, adapter.kind);
   }
 </script>
 
