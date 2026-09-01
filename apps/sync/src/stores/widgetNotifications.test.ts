@@ -209,6 +209,33 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(state.visible.every((v) => v.expiresAt === now + WIDGET_ROW_TIMEOUT_MS)).toBe(true);
   });
 
+  it('expireItems keeps needs-action rows until resolved or dismissed', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const notice = bannerToStackItem(
+      { kind: 'update', title: 'New version', body: 'ready', clickActionId: 'open', data: null },
+      0,
+      'wn-2',
+    );
+    let state = addItem(emptyWidgetStack(), notice);
+    state = addItem(state, needsAction);
+    const next = expireItems(state, WIDGET_ROW_TIMEOUT_MS + 1);
+    expect(next.visible.map((item) => item.id)).toEqual(['meeting:bot_1']);
+    // Dismiss still clears it.
+    expect(dismissItem(next, 'meeting:bot_1').visible).toEqual([]);
+  });
+
   it('expireItems drops only past-due visible rows', () => {
     const state = {
       ...emptyWidgetStack(),

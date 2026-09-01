@@ -801,25 +801,14 @@ describe('Widget restored native standalone behavior', () => {
     trigger.click();
     flushSync();
 
-    const select = await vi.waitFor(() => {
-      const node = host.querySelector<HTMLSelectElement>(
-        '[data-testid="notification-resolve-select"]',
+    const option = await vi.waitFor(() => {
+      const node = host.querySelector<HTMLButtonElement>(
+        '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
       );
       expect(node).toBeTruthy();
-      expect([...node!.options].some((option) => option.value === 'cmp_indigo')).toBe(
-        true,
-      );
       return node!;
     });
-
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(
-      select,
-      'cmp_indigo',
-    );
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    flushSync();
-
-    host.querySelector<HTMLButtonElement>('[data-testid="notification-resolve-save"]')!.click();
+    option.click();
     await vi.waitFor(() => {
       flushSync();
       expect(tauri.invoke).toHaveBeenCalledWith(
@@ -859,23 +848,14 @@ describe('Widget restored native standalone behavior', () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="notification-resolve-trigger"]')!.click();
     flushSync();
-    const select = await vi.waitFor(() => {
-      const node = host.querySelector<HTMLSelectElement>(
-        '[data-testid="notification-resolve-select"]',
+    const option = await vi.waitFor(() => {
+      const node = host.querySelector<HTMLButtonElement>(
+        '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
       );
       expect(node).toBeTruthy();
-      expect([...node!.options].some((option) => option.value === 'cmp_indigo')).toBe(
-        true,
-      );
       return node!;
     });
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(
-      select,
-      'cmp_indigo',
-    );
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    flushSync();
-    host.querySelector<HTMLButtonElement>('[data-testid="notification-resolve-save"]')!.click();
+    option.click();
 
     await vi.waitFor(() => {
       flushSync();

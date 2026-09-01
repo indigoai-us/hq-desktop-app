@@ -636,11 +636,21 @@ export function setOccluded(
  * Drop visible items whose `expiresAt <= now`. Queued/recent are untouched.
  * No-op while `held` — auto-collapse is suspended under the pointer / mid-reply.
  */
+/** True for rows the user can complete in place (they wait for a decision). */
+export function isNeedsActionItem(item: WidgetStackItem): boolean {
+  return resolutionForItem(item) !== null;
+}
+
 export function expireItems(state: WidgetStackState, now: number): WidgetStackState {
   if (state.held === true) {
     return state;
   }
-  const visible = state.visible.filter((item) => item.expiresAt > now);
+  // Needs-action rows stay until resolved or dismissed: the 8 s auto-collapse
+  // is for glanceable notices, and pulling a picker out from under the user
+  // was one of the ways these rows dead-ended.
+  const visible = state.visible.filter(
+    (item) => item.expiresAt > now || isNeedsActionItem(item),
+  );
   if (visible.length === state.visible.length) {
     return state;
   }

@@ -124,6 +124,8 @@
   let resolvePending = $state(false);
   let resolveLoading = $state(false);
   let resolveError = $state<string | null>(null);
+  /** Measured trigger width so hover chips can sit beside it, never on it. */
+  let resolveWidth = $state(0);
 
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
@@ -344,9 +346,15 @@
   /** Row can be completed in place rather than only opened elsewhere. */
   const resolvable = $derived(Boolean(resolvePrompt && onresolve));
 
+  function closeResolver(): void {
+    resolveOpen = false;
+    resolveError = null;
+    resolveValue = '';
+  }
+
   async function openResolver(): Promise<void> {
     if (resolveOpen) {
-      resolveOpen = false;
+      closeResolver();
       return;
     }
     resolveOpen = true;
@@ -361,6 +369,13 @@
     } finally {
       resolveLoading = false;
     }
+  }
+
+  /** One click files it: pick a company chip and submit immediately. */
+  function chooseResolve(value: string): void {
+    if (resolvePending) return;
+    resolveValue = value;
+    submitResolve();
   }
 
   function submitResolve(): void {
@@ -397,8 +412,7 @@
     e.stopPropagation();
     if (e.key === 'Escape') {
       e.preventDefault();
-      resolveOpen = false;
-      resolveError = null;
+      closeResolver();
     }
   }
 
@@ -428,7 +442,7 @@
   <span class="nr-trail">
     {#if resolvable}<span class="nr-needs-action" data-testid="notification-needs-action" aria-hidden="true">Needs action</span>{/if}
     {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-    <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
+    {#if !resolvable}<span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>{/if}
     <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
   </span>
 {/snippet}
@@ -440,6 +454,9 @@
   class:nr-selected={selected}
   class:nr-comfortable={comfortable}
   class:nr-has-error={openError !== null || actionError !== null}
+  class:nr-resolvable={resolvable}
+  class:nr-resolving={resolveOpen}
+  style:--nr-resolve-w={`${resolveWidth}px`}
   role="group"
   aria-label={`${actor ? `${actor} ` : ''}${type} notification${
     unreadLabel ? `, ${unreadLabel}` : ''
@@ -483,50 +500,76 @@
       data-testid="notification-resolve-trigger"
       aria-expanded={resolveOpen}
       aria-label={resolvePrompt}
+      bind:clientWidth={resolveWidth}
       onclick={() => void openResolver()}
     >
       {resolvePrompt}
     </button>
     {#if resolveOpen}
+      <!-- The picker takes over the whole row (opaque, in the row's own box)
+           so it never overlaps the title, meta, or hover chips. -->
       <div
         class="nr-resolve-sheet"
         data-testid="notification-resolve-sheet"
         onkeydowncapture={onResolveKeydown}
         role="presentation"
       >
-        <select
-          class="nr-resolve-select"
-          data-testid="notification-resolve-select"
-          aria-label={resolvePrompt}
-          value={resolveValue}
-          onchange={(e) => {
-            resolveValue = (e.currentTarget as HTMLSelectElement).value;
-          }}
-          disabled={resolvePending || resolveLoading}
-        >
-          <option value="">{resolveLoading ? 'Loading…' : 'Choose…'}</option>
-          {#each resolveOptions ?? [] as option (option.value)}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-        </select>
-        <button
-          class="nr-resolve-save"
-          type="button"
-          data-testid="notification-resolve-save"
-          disabled={!resolveValue || resolvePending}
-          aria-busy={resolvePending}
-          onclick={() => submitResolve()}
-        >
-          {#if resolvePending}
-            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
-          {/if}
-          {resolvePending ? 'Saving…' : 'Save'}
-        </button>
         {#if resolveError}
-          <span class="nr-resolve-error" data-testid="notification-resolve-error" role="alert">
+          <span
+            class="nr-resolve-error"
+            data-testid="notification-resolve-error"
+            role="alert"
+            title={resolveError}
+          >
             {resolveError}
           </span>
+        {:else}
+          <span class="nr-resolve-label">{resolvePrompt}</span>
         {/if}
+        <!-- Company chips instead of a native <select>: the widget is a
+             non-activating panel, so native popups are unreliable there, and
+             one click files the meeting with no extra Save step. -->
+        <div
+          class="nr-resolve-options"
+          role="listbox"
+          aria-label={resolvePrompt}
+          data-testid="notification-resolve-options"
+        >
+          {#if (resolveOptions ?? []).length === 0}
+            <span class="nr-resolve-note">
+              {resolveLoading ? 'Loading…' : 'No companies available'}
+            </span>
+          {:else}
+            {#each resolveOptions ?? [] as option (option.value)}
+              <button
+                class="nr-resolve-option"
+                type="button"
+                role="option"
+                data-testid="notification-resolve-option"
+                data-value={option.value}
+                aria-selected={resolveValue === option.value}
+                aria-busy={resolvePending && resolveValue === option.value}
+                disabled={resolvePending}
+                onclick={() => chooseResolve(option.value)}
+              >
+                {#if resolvePending && resolveValue === option.value}
+                  <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+                {/if}
+                {option.label}
+              </button>
+            {/each}
+          {/if}
+        </div>
+        <button
+          class="nr-resolve-cancel"
+          type="button"
+          data-testid="notification-resolve-cancel"
+          aria-label="Cancel"
+          disabled={resolvePending}
+          onclick={() => closeResolver()}
+        >
+          Cancel
+        </button>
       </div>
     {/if}
   {/if}
@@ -630,7 +673,7 @@
     </div>
   {:else if (!isMessage && (onopen || onaction || ondismiss)) || (isMessage && onaction)}
     <span class="nr-actions">
-      {#if onaction || (!isMessage && onopen)}
+      {#if onaction || (!isMessage && onopen && !resolvable)}
         <button
           class="nr-open"
           type="button"
@@ -1089,64 +1132,123 @@
     outline-offset: 1px;
   }
 
+  /* Needs-action rows: hover chips (Dismiss) sit to the LEFT of the
+     always-present resolve trigger instead of on top of it. */
+  .nr-resolvable .nr-actions {
+    right: calc(var(--nr-resolve-w, 112px) + 14px);
+  }
+
+  .nr-resolvable .nr-text {
+    min-width: 110px;
+  }
+
+  /* While the picker is open it owns the row: the one-line content is hidden
+     underneath (geometry unchanged), hover chips and the trigger step aside. */
+  .nr-resolving .nr-primary-action,
+  .nr-resolving .nr-primary-content,
+  .nr-resolving .nr-actions {
+    visibility: hidden;
+  }
+
+  .nr-resolving .nr-resolve {
+    visibility: hidden;
+  }
+
   .nr-resolve-sheet {
     position: absolute;
-    top: 2px;
-    bottom: 2px;
-    left: 8px;
-    right: 96px;
-    z-index: 4;
+    inset: 0;
+    z-index: 6;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 6px;
-    padding: 0 6px;
-    border-radius: 8px;
+    padding: 0 10px;
+    border-radius: inherit;
     background: var(--popover-surface);
-    box-shadow:
-      inset 0 0 0 0.5px var(--popover-divider),
-      0 8px 20px color-mix(in srgb, var(--popover-text) 14%, transparent);
+    box-shadow: inset 0 0 0 0.5px var(--popover-divider);
     cursor: default;
   }
 
-  .nr-resolve-select {
-    flex: 1;
-    min-width: 0;
-    height: 24px;
-    padding: 0 6px;
-    border-radius: 7px;
-    border: 0.5px solid var(--popover-divider);
-    background: var(--popover-surface);
-    color: var(--popover-text);
-    font: inherit;
-    font-size: 11px;
-    font-weight: 400;
+  .nr-resolve-label {
+    flex: 0 0 auto;
+    color: var(--popover-text-muted);
+    font-size: 10.5px;
+    white-space: nowrap;
   }
 
-  .nr-resolve-save {
+  .nr-resolve-cancel {
     flex: 0 0 auto;
     height: 24px;
-    padding: 0 9px;
+    padding: 0 7px;
     border: 0;
     border-radius: 7px;
-    background: var(--popover-action-hover);
-    color: var(--popover-text);
+    background: transparent;
+    color: var(--popover-text-muted);
     font: inherit;
     font-size: 11px;
     font-weight: 400;
     cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
   }
 
-  .nr-resolve-save:disabled {
+  .nr-resolve-cancel:disabled {
     cursor: default;
     opacity: 0.55;
   }
 
+  .nr-resolve-options {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nr-resolve-options::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nr-resolve-note {
+    color: var(--popover-text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .nr-resolve-option {
+    flex: 0 0 auto;
+    height: 22px;
+    padding: 0 8px;
+    border: 0.5px solid var(--popover-divider);
+    border-radius: 6px;
+    background: var(--popover-surface);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 400;
+    white-space: nowrap;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .nr-resolve-option:hover,
+  .nr-resolve-option[aria-selected='true'] {
+    background: var(--popover-action-hover);
+  }
+
+  .nr-resolve-option:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
   .nr-resolve-error {
-    flex: 1 0 100%;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--popover-danger, var(--popover-text));
     font-size: 10px;
     line-height: 1.3;

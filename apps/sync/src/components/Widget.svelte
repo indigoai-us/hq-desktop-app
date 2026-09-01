@@ -27,6 +27,7 @@
     deserializeRecent,
     dismissItem,
     dismissRecent,
+    WIDGET_ROW_TIMEOUT_MS,
     expireItems,
     historyFeedItemToStackItem,
     hoverRows,
@@ -1079,6 +1080,16 @@
   // (`meetings_set_company`), and dismisses on success.
   let companyOptionsList = $state<Array<{ value: string; label: string }>>([]);
   let filingError = $state<string | null>(null);
+  let filingErrorTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showFilingError(message: string): void {
+    filingError = message;
+    if (filingErrorTimer !== undefined) clearTimeout(filingErrorTimer);
+    filingErrorTimer = setTimeout(() => {
+      filingError = null;
+      filingErrorTimer = undefined;
+    }, WIDGET_ROW_TIMEOUT_MS);
+  }
 
   async function loadCompanyOptions(): Promise<void> {
     if (companyOptionsList.length > 0) return;
@@ -1105,7 +1116,7 @@
     const result = await setMeetingCompany(meetingId, companyId);
     if (!result.ok) {
       const message = setCompanyErrorMessage(result);
-      filingError = message;
+      showFilingError(message);
       throw new Error(message);
     }
     // Resolved — drop the row from the live stack and history so it cannot
