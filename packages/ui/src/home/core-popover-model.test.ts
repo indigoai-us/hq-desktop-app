@@ -14,6 +14,7 @@ import {
   packsSummaryLabel,
   parseInstalledPacks,
 } from "./core-popover-model";
+import { packDisplayName } from "./pack-display-name";
 
 describe("core-popover-model (US-016)", () => {
   describe("detectedCoreVersion", () => {
@@ -296,5 +297,64 @@ describe("core checking state (owner bug: healthy install shown as not detected)
     expect(driftPillLabel(3, true, true)).toBe("3 drifted");
     expect(hqVersionLabel(null, true)).toBe("Checking HQ core\u2026");
     expect(hqVersionLabel(null, false)).toBe("HQ core not detected");
+  });
+});
+
+describe("parseInstalledPacks displayName / old cache", () => {
+  it("carries a string displayName through from the wire", () => {
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Pack" },
+      ]),
+    ).toEqual([
+      { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Pack" },
+    ]);
+  });
+
+  it("carries a string title through as displayName when displayName is absent", () => {
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", title: "Foo Title" },
+      ]),
+    ).toEqual([
+      { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Title" },
+    ]);
+  });
+
+  it("prefers displayName over title and ignores non-string hosted fields", () => {
+    expect(
+      parseInstalledPacks([
+        {
+          name: "hq-pack-foo",
+          version: "1.0.0",
+          displayName: "From displayName",
+          title: "From title",
+        },
+      ]),
+    ).toEqual([
+      {
+        name: "hq-pack-foo",
+        version: "1.0.0",
+        displayName: "From displayName",
+      },
+    ]);
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", displayName: 12, title: true },
+      ]),
+    ).toEqual([{ name: "hq-pack-foo", version: "1.0.0" }]);
+  });
+
+  it("old-cache rows with only name+version still derive a display name, never blank", () => {
+    const packs = parseInstalledPacks([
+      { name: "hq-pack-client-service", version: "1.2.0" },
+    ]);
+    expect(packs).toEqual([
+      { name: "hq-pack-client-service", version: "1.2.0" },
+    ]);
+    expect(packs[0]).not.toHaveProperty("displayName");
+    const derived = packDisplayName(packs[0]!);
+    expect(derived).toBe("Client Service");
+    expect(derived).not.toBe("");
   });
 });

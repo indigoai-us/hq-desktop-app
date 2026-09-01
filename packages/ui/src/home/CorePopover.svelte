@@ -22,6 +22,7 @@
     type CorePopoverConflict,
     type CorePopoverPack,
   } from "./core-popover-model.js";
+  import { packDisplayName } from "./pack-display-name.js";
   import "./tokens.css";
 
   interface Props {
@@ -552,7 +553,7 @@
         {:else}
           {#each model.packs as pack (pack.name)}
             <li class="core-pack-row" data-testid="core-popover-pack-row">
-              <span class="core-pack-name">{pack.name}</span>
+              <span class="core-pack-name" title={pack.name}>{packDisplayName(pack)}</span>
               {#if pack.isNew}
                 <span class="core-pack-new" data-testid="core-popover-pack-new"
                   >NEW</span

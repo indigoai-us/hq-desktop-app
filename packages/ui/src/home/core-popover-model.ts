@@ -19,6 +19,12 @@ export interface CorePopoverConflict {
 export interface CorePopoverPack {
   name: string;
   version?: string | null;
+  /**
+   * Optional server-provided human name (forward-compat). Absent on today's
+   * `hq packs list --json` rows and on older `~/.hq/sync-packs-cache.json`
+   * snapshots — the UI derives a friendly name via `packDisplayName`.
+   */
+  displayName?: string | null;
   /** When true, row shows a NEW badge (D-08 fixtures). */
   isNew?: boolean;
 }
@@ -254,11 +260,26 @@ export function parseInstalledPacks(raw: unknown): CorePopoverPack[] {
   const packs: CorePopoverPack[] = [];
   for (const row of installedPackRows(raw)) {
     if (!row || typeof row !== "object") continue;
-    const rec = row as { name?: unknown; version?: unknown };
+    const rec = row as {
+      name?: unknown;
+      version?: unknown;
+      displayName?: unknown;
+      title?: unknown;
+    };
     const name = typeof rec.name === "string" ? rec.name.trim() : "";
     if (!name) continue;
     const version = typeof rec.version === "string" ? rec.version : null;
-    packs.push({ name, version });
+    const hosted =
+      typeof rec.displayName === "string"
+        ? rec.displayName
+        : typeof rec.title === "string"
+          ? rec.title
+          : undefined;
+    if (hosted !== undefined) {
+      packs.push({ name, version, displayName: hosted });
+    } else {
+      packs.push({ name, version });
+    }
   }
   return packs;
 }
