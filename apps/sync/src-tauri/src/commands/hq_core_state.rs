@@ -66,6 +66,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 // staggered behind the app updater's first check.
 const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
+const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 static AUTO_ATTEMPTED_TARGETS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -129,6 +130,20 @@ pub struct CoreState {
     pub user_only_count: u32,
     /// ISO-8601 timestamp of when the scan ran.
     pub scanned_at: String,
+}
+
+struct RecentCoreState {
+    at: Instant,
+    state: Option<CoreState>,
+}
+
+static CORE_STATE_CHECK: tokio::sync::Mutex<Option<RecentCoreState>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// True when a previous `check_core_state` result can be reused instead of
+/// starting another scan. Stale at and after `window`.
+fn recent_core_state_is_reusable(at: Instant, now: Instant, window: Duration) -> bool {
+    now.saturating_duration_since(at) < window
 }
 
 /// Native ownership decision for the periodic Core updater. Kept pure so the
@@ -659,6 +674,7 @@ fn semver_lt(local: &str, latest: &str) -> bool {
 /// (no HQ folder, no `core.yaml`, no `rules.locked`). Returns `Ok(Some)`
 /// for both "in sync" and "drifted" cases — frontend renders both.
 async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateError> {
+    let started = Instant::now();
     // Resolve HQ folder + local version (same path the old checkers used).
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
         .ok()
@@ -1144,7 +1160,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     log(
         "hq-core-state",
         &format!(
-            "check: channel={:?} target={}@{} local={:?} floor={:?} version_behind={} user_edit={} missing={} user_only={} unchanged={}",
+            "check: channel={:?} target={}@{} local={:?} floor={:?} version_behind={} user_edit={} missing={} user_only={} unchanged={} elapsed_ms={}",
             state.channel,
             state.target_repo,
             state.target_version,
@@ -1155,6 +1171,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             state.drift_report.missing.len(),
             state.drift_report.added.len(),
             state.unchanged_count,
+            started.elapsed().as_millis(),
         ),
     );
 
@@ -1195,17 +1212,42 @@ fn staging_authed_client(token: &str) -> Result<reqwest::Client, String> {
 
 /// Tauri command — synchronous one-shot. Used by Settings + post-action
 /// refreshes (post-rescue, post-install-update, post-channel-toggle).
+///
+/// Concurrent callers share one in-flight scan: the mutex is held for the
+/// duration of the check, so a second caller waits and then reuses the
+/// just-finished result instead of kicking off another GitHub walk.
 #[tauri::command]
 pub async fn check_core_state(app: AppHandle) -> Result<Option<CoreState>, String> {
+    let mut slot = CORE_STATE_CHECK.lock().await;
+    let now = Instant::now();
+    if let Some(recent) = slot.as_ref() {
+        if recent_core_state_is_reusable(recent.at, now, CORE_STATE_REUSE_WINDOW) {
+            log(
+                "hq-core-state",
+                &format!(
+                    "check: served recent result age={}ms",
+                    now.saturating_duration_since(recent.at).as_millis()
+                ),
+            );
+            return Ok(recent.state.clone());
+        }
+    }
+
     let result = check_once_observed(&app, "ui").await;
-    if let Ok(Some(state)) = &result {
-        let handle = app.clone();
-        let state = state.clone();
-        // Return the check result to the UI immediately; automatic rescue is a
-        // native background concern and may take several minutes.
-        tauri::async_runtime::spawn(async move {
-            run_native_core_auto_update(&handle, &state).await;
+    if let Ok(state) = &result {
+        *slot = Some(RecentCoreState {
+            at: Instant::now(),
+            state: state.clone(),
         });
+        if let Some(state) = state {
+            let handle = app.clone();
+            let state = state.clone();
+            // Return the check result to the UI immediately; automatic rescue is a
+            // native background concern and may take several minutes.
+            tauri::async_runtime::spawn(async move {
+                run_native_core_auto_update(&handle, &state).await;
+            });
+        }
     }
     result.map_err(|error| error.to_string())
 }
@@ -1575,5 +1617,29 @@ mod tests {
         // pre-release ordering — just confirm the parser doesn't crash on
         // suffixed forms and treats them by their numeric prefix.
         assert!(!semver_lt("14.1.0", "14.0.0-rc1"));
+    }
+
+    #[test]
+    fn recent_core_state_is_reusable_inside_window() {
+        let at = Instant::now();
+        let window = Duration::from_secs(15);
+        let now = at + Duration::from_secs(1);
+        assert!(recent_core_state_is_reusable(at, now, window));
+    }
+
+    #[test]
+    fn recent_core_state_is_stale_at_window() {
+        let at = Instant::now();
+        let window = Duration::from_secs(15);
+        let now = at + window;
+        assert!(!recent_core_state_is_reusable(at, now, window));
+    }
+
+    #[test]
+    fn recent_core_state_is_stale_after_window() {
+        let at = Instant::now();
+        let window = Duration::from_secs(15);
+        let now = at + window + Duration::from_millis(1);
+        assert!(!recent_core_state_is_reusable(at, now, window));
     }
 }

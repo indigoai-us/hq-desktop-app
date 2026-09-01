@@ -29,7 +29,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
@@ -45,7 +48,27 @@ pub use hq_desktop_core::staging::{
 /// public payload — only resolved at runtime once the email gate passes.
 const DEFAULT_STAGING_REPO: &str = "indigoai-us/hq-core-staging";
 
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const PR_FILES_CONCURRENCY: usize = 8;
+const STAGING_INDEX_TTL: Duration = Duration::from_secs(10 * 60);
+
+struct CachedStagingIndex {
+    repo: String,
+    built_at: Instant,
+    index: StagingIndex,
+}
+
+static STAGING_INDEX_CACHE: OnceLock<Mutex<Option<CachedStagingIndex>>> = OnceLock::new();
+
+fn staging_index_cache() -> &'static Mutex<Option<CachedStagingIndex>> {
+    STAGING_INDEX_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// True when a cached staging index is still within its TTL. Stale at and
+/// after `ttl` so a build that landed exactly on the boundary is refreshed.
+fn staging_index_cache_is_fresh(built_at: Instant, now: Instant, ttl: Duration) -> bool {
+    now.saturating_duration_since(built_at) < ttl
+}
 
 // ── Eligibility + token resolution ────────────────────────────────────────────
 
@@ -323,6 +346,26 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
     if !eligible && repo == DEFAULT_STAGING_REPO {
         return None;
     }
+
+    let now = Instant::now();
+    if let Ok(guard) = staging_index_cache().lock() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.repo == repo
+                && staging_index_cache_is_fresh(cached.built_at, now, STAGING_INDEX_TTL)
+            {
+                log(
+                    "hq-core-staging",
+                    &format!(
+                        "index cache hit: repo={} age={}s",
+                        cached.repo,
+                        now.saturating_duration_since(cached.built_at).as_secs()
+                    ),
+                );
+                return Some(cached.index.clone());
+            }
+        }
+    }
+
     let token = resolve_gh_token()?;
     let client = match authed_client(&token) {
         Ok(c) => c,
@@ -332,6 +375,7 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
         }
     };
 
+    let build_started = Instant::now();
     let main = match fetch_main_tree(&client, &repo).await {
         Ok(m) => m,
         Err(e) => {
@@ -343,8 +387,19 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
     let mut prs = Vec::new();
     match fetch_open_pr_numbers(&client, &repo).await {
         Ok(numbers) => {
-            for pr in numbers {
-                match fetch_pr_files(&client, &repo, pr).await {
+            let mut fetched: Vec<(u32, Result<BTreeMap<String, BTreeSet<String>>, String>)> =
+                stream::iter(numbers)
+                    .map(|pr| {
+                        let client = client.clone();
+                        let repo = repo.clone();
+                        async move { (pr, fetch_pr_files(&client, &repo, pr).await) }
+                    })
+                    .buffer_unordered(PR_FILES_CONCURRENCY)
+                    .collect()
+                    .await;
+            fetched.sort_by_key(|(pr, _)| *pr);
+            for (pr, result) in fetched {
+                match result {
                     Ok(files) => prs.push((pr, files)),
                     Err(e) => log(
                         "hq-core-staging",
@@ -362,12 +417,21 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
     log(
         "hq-core-staging",
         &format!(
-            "index built: repo={repo} main_paths={} open_prs={}",
+            "index built: repo={repo} main_paths={} open_prs={} in {}ms",
             main.len(),
-            prs.len()
+            prs.len(),
+            build_started.elapsed().as_millis()
         ),
     );
-    Some(StagingIndex::from_parts(main, prs))
+    let index = StagingIndex::from_parts(main, prs);
+    if let Ok(mut guard) = staging_index_cache().lock() {
+        *guard = Some(CachedStagingIndex {
+            repo,
+            built_at: Instant::now(),
+            index: index.clone(),
+        });
+    }
+    Some(index)
 }
 
 // ── Sync-point provenance & full replace-rescue ──────────────────────────────
@@ -782,4 +846,33 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staging_index_cache_is_fresh_inside_ttl() {
+        let built_at = Instant::now();
+        let ttl = Duration::from_secs(10 * 60);
+        let now = built_at + Duration::from_secs(60);
+        assert!(staging_index_cache_is_fresh(built_at, now, ttl));
+    }
+
+    #[test]
+    fn staging_index_cache_is_stale_at_ttl() {
+        let built_at = Instant::now();
+        let ttl = Duration::from_secs(10 * 60);
+        let now = built_at + ttl;
+        assert!(!staging_index_cache_is_fresh(built_at, now, ttl));
+    }
+
+    #[test]
+    fn staging_index_cache_is_stale_after_ttl() {
+        let built_at = Instant::now();
+        let ttl = Duration::from_secs(10 * 60);
+        let now = built_at + ttl + Duration::from_secs(1);
+        assert!(!staging_index_cache_is_fresh(built_at, now, ttl));
+    }
 }

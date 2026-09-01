@@ -4,6 +4,7 @@ import {
   appStatusFrom,
   cliStatusFrom,
   coreStatusFrom,
+  createUpdateCheckRunner,
   probeFailure,
   runUpdateCheck,
 } from "./update-orchestration";
@@ -137,5 +138,99 @@ describe("regression: busy state always resolves", () => {
 
   it("exposes a sane default ceiling", () => {
     expect(DEFAULT_UPDATE_CHECK_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+});
+
+describe("update orchestration: versions, errors, and coalescing", () => {
+  it("fires onVersions before the slow core check resolves", async () => {
+    const events: string[] = [];
+    let releaseCore: ((value: unknown) => void) | undefined;
+    const coreGate = new Promise((resolve) => {
+      releaseCore = resolve;
+    });
+    const run = runUpdateCheck(
+      adapter({
+        getVersions: async () => {
+          events.push("versions");
+          return ok({ core: "15.0.120-beta.3", cli: "5.105.1" });
+        },
+        checkCoreState: () =>
+          coreGate.then(() => {
+            events.push("core");
+            return ok({ versionBehind: false });
+          }),
+      }),
+      {
+        onVersions: (versions) => {
+          events.push("onVersions");
+          expect(versions.coreVersion).toBe("15.0.120-beta.3");
+          expect(versions.cliVersion).toBe("5.105.1");
+        },
+      },
+    );
+    await vi.waitFor(() => expect(events).toContain("onVersions"));
+    expect(events.indexOf("onVersions")).toBeLessThan(events.indexOf("core") === -1 ? Infinity : events.indexOf("core"));
+    expect(events).not.toContain("core");
+    releaseCore?.(undefined);
+    const outcome = await run;
+    expect(events).toContain("core");
+    expect(outcome.coreVersion).toBe("15.0.120-beta.3");
+  });
+
+  it("a timed-out core check is failed with a non-empty timed-out reason", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = runUpdateCheck(
+        adapter({
+          checkCoreState: () => new Promise(() => {}),
+        }),
+        { timeoutMs: 1_000 },
+      );
+      await vi.advanceTimersByTimeAsync(1_500);
+      const outcome = await run;
+      expect(outcome.coreStatus).toBe("failed");
+      expect(outcome.coreProbeError).toBeTruthy();
+      expect(outcome.coreProbeError).toMatch(/timed out/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces a rejected checkCoreState message without changing the unchecked mapping", async () => {
+    const outcome = await runUpdateCheck(
+      adapter({
+        checkCoreState: async () => {
+          throw new Error("native gone");
+        },
+      }),
+    );
+    expect(outcome.coreStatus).toBe("unchecked");
+    expect(outcome.coreProbeError).toContain("native gone");
+  });
+
+  it("createUpdateCheckRunner returns the same promise while in flight and calls the adapter once", async () => {
+    let releaseCore: ((value: unknown) => void) | undefined;
+    const coreGate = new Promise((resolve) => {
+      releaseCore = resolve;
+    });
+    const checkCoreState = vi.fn(() =>
+      coreGate.then(() => ok({ versionBehind: false })),
+    );
+    const a = adapter({ checkCoreState });
+    const runner = createUpdateCheckRunner();
+    const first = runner.run(a);
+    const second = runner.run(a);
+    expect(second).toBe(first);
+    expect(runner.isRunning()).toBe(true);
+    await Promise.resolve();
+    expect(checkCoreState).toHaveBeenCalledTimes(1);
+    releaseCore?.(undefined);
+    await first;
+    await second;
+    expect(runner.isRunning()).toBe(false);
+    const third = runner.run(a);
+    expect(third).not.toBe(first);
+    await third;
+    expect(checkCoreState).toHaveBeenCalledTimes(2);
   });
 });
