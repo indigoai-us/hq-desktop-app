@@ -228,6 +228,9 @@
   let launchContainer: HTMLDivElement | null = $state(null);
   let launchMenuEl: HTMLDivElement | null = $state(null);
   let launchFolder = $state<string | null>(null);
+  /** Bottom-start by default; flipped to bottom-end when the menu would
+   *  overflow the right viewport edge (measured on open). */
+  let launchAlignEnd = $state(false);
   let launching = $state<LaunchKey | null>(null);
   let launchErrors = $state<Partial<Record<LaunchKey, string>>>({});
 
@@ -290,6 +293,19 @@
       launching = null;
     }
   }
+
+  /** Viewport clamp: measure once per open; happy-dom rects are 0 so tests
+   *  keep the default bottom-start alignment. */
+  $effect(() => {
+    if (!launchOpen || !launchMenuEl) {
+      launchAlignEnd = false;
+      return;
+    }
+    const rect = launchMenuEl.getBoundingClientRect();
+    if (rect.width > 0 && rect.right > window.innerWidth - 12) {
+      launchAlignEnd = true;
+    }
+  });
 
   /** Escape / outside-click close + ArrowUp/ArrowDown item nav (menu a11y). */
   $effect(() => {
@@ -480,7 +496,8 @@
       </button>
       {#if launchOpen}
         <div
-          class="v4-launch-menu"
+          class="v4-launch-menu v4-popover-strong-surface"
+          class:align-end={launchAlignEnd}
           role="menu"
           aria-label="Launch HQ folder in"
           data-testid="titlebar-launch-menu"
@@ -689,23 +706,34 @@
     flex: 0 0 auto;
   }
 
-  /* Dropdown anchored under the Launch pill. Same stacking story as the Core
-     popover: the titlebar itself is z-index 30, above the channel header, so
-     an absolutely positioned menu needs no portal. Semantic tokens only —
-     dark + light come along for free. */
+  /* Dropdown anchored bottom-start under the Launch pill (flips to
+     bottom-end via .align-end when it would overflow the viewport — measured
+     in the open $effect). Surface follows the RecipientPicker/VersionPopout
+     convention: --v4-popover-strong is NEAR-OPAQUE, because a nested
+     backdrop-filter is neutered outside its parent's backdrop root — a glass
+     --pop-bg/--btn-bg here lets the channel toolbar read straight through
+     the menu. z-index matches CorePopover so sibling chrome never overdraws
+     it. */
   .v4-launch-menu {
     position: absolute;
     top: calc(100% + 6px);
-    right: 0;
-    z-index: 40;
+    left: 0;
+    z-index: 10000;
     display: flex;
     flex-direction: column;
     min-width: 220px;
+    max-width: calc(100vw - 24px);
     padding: 4px;
-    border: 1px solid var(--line2);
+    border: 1px solid var(--panel-border, var(--line2));
     border-radius: 10px;
-    background: var(--bg2, var(--btn-bg));
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
+  }
+
+  /* Viewport clamp: right-align to the button when bottom-start overflows. */
+  .v4-launch-menu.align-end {
+    left: auto;
+    right: 0;
   }
 
   .v4-launch-item {
