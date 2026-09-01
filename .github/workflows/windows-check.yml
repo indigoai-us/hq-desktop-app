@@ -665,9 +665,8 @@ jobs:
       - name: Roll back and relaunch after an installer failure
         shell: pwsh
         run: |
-          $helper = Resolve-Path "src-tauri\target\x86_64-pc-windows-msvc\release\hq-sync-menubar.exe"
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -HelperPath $helper.Path -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.

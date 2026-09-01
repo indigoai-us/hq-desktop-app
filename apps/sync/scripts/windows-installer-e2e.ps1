@@ -168,8 +168,8 @@ if ($Action -eq "upgrade") {
 }
 
 if ($Action -eq "rollback") {
-  if (-not $HelperPath -or -not $TargetVersion) {
-    throw "HelperPath and TargetVersion are required for rollback"
+  if (-not $TargetVersion) {
+    throw "TargetVersion is required for rollback"
   }
   $installedApp = Join-Path $resolvedInstallDir "hq-sync-menubar.exe"
   if (-not (Test-Path -LiteralPath $installedApp)) {
@@ -180,7 +180,10 @@ if ($Action -eq "rollback") {
   New-Item -ItemType Directory -Path $stageDir | Out-Null
   $stagedHelper = Join-Path $stageDir "hq-update-helper.exe"
   $failingInstaller = Join-Path $stageDir "hq-update-installer.exe"
-  Copy-Item -LiteralPath (Resolve-Path -LiteralPath $HelperPath).Path -Destination $stagedHelper
+  # The production updater copies the currently installed executable before
+  # starting NSIS. Mirror that exact flow so the rollback identity assertion
+  # proves we restored the user's pre-update application.
+  Copy-Item -LiteralPath $installedApp -Destination $stagedHelper
   Copy-Item -LiteralPath (Join-Path $env:WINDIR "System32\where.exe") -Destination $failingInstaller
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $failingInstaller).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"

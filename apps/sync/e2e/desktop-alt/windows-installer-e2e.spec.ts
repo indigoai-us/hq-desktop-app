@@ -95,6 +95,9 @@ describe('Windows production installer E2E', () => {
     expect(workflow).toContain('-Action rollback');
     expect(installerHarness).toContain('$receipt.state -ne "rolled-back"');
     expect(installerHarness).toContain(
+      'Copy-Item -LiteralPath $installedApp -Destination $stagedHelper',
+    );
+    expect(installerHarness).toContain(
       'Rollback did not restore the prior application binary',
     );
   });
