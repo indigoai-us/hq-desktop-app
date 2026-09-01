@@ -5,6 +5,14 @@ import { mount, unmount } from "svelte";
 import { failure, ok, type PlatformAdapter } from "@hq/platform";
 import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function adapterForSettings(
   getSettings: PlatformAdapter["settings"]["getSettings"],
 ): PlatformAdapter {
@@ -45,6 +53,15 @@ function personalSyncState(): string | null | undefined {
 }
 
 describe("CompaniesSettingsPane personal sync status", () => {
+  it("shows a neutral checking state until native settings are available", async () => {
+    const settings = deferred<ReturnType<typeof ok<Record<string, unknown>>>>();
+    mountPane(adapterForSettings(() => settings.promise));
+
+    expect(personalSyncState()).toBe("Checking");
+    settings.resolve(ok({ personalSyncEnabled: false }));
+    await vi.waitFor(() => expect(personalSyncState()).toBe("Local"));
+  });
+
   it("shows Personal as synced when native sync is enabled", async () => {
     mountPane(adapterForSettings(async () => ok({ personalSyncEnabled: true })));
 
@@ -67,5 +84,18 @@ describe("CompaniesSettingsPane personal sync status", () => {
     mountPane(adapterForSettings(async () => failure("error", "settings-read-failed")));
 
     await vi.waitFor(() => expect(personalSyncState()).toBe("Unavailable"));
+  });
+
+  it("refreshes Personal sync state when the native setting changes", async () => {
+    let enabled = true;
+    const getSettings = vi.fn(async () => ok({ personalSyncEnabled: enabled }));
+    mountPane(adapterForSettings(getSettings));
+    await vi.waitFor(() => expect(personalSyncState()).toBe("Synced"));
+
+    enabled = false;
+    window.dispatchEvent(new Event("hq:workspace-sync-enabled-changed"));
+
+    await vi.waitFor(() => expect(personalSyncState()).toBe("Local"));
+    expect(getSettings).toHaveBeenCalledTimes(2);
   });
 });

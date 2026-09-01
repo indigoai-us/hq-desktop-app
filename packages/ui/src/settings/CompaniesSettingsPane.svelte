@@ -30,19 +30,37 @@
   }: Props = $props();
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
-  let personalSyncState = $state<"synced" | "local" | "unavailable">("synced");
+  let personalSyncState = $state<
+    "checking" | "synced" | "local" | "unavailable"
+  >("checking");
+  let personalSyncReadGeneration = 0;
   let externalError = $state<string | null>(null);
 
+  async function refreshPersonalSyncState(): Promise<void> {
+    const generation = ++personalSyncReadGeneration;
+    if (!adapter?.isAvailable("canSync")) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const result = await adapter.settings.getSettings();
+    if (generation !== personalSyncReadGeneration) return;
+    if (!result.ok) {
+      personalSyncState = "unavailable";
+      return;
+    }
+    const settings = result.value as Record<string, unknown>;
+    personalSyncState = settings.personalSyncEnabled === false ? "local" : "synced";
+  }
+
   onMount(() => {
-    if (!adapter?.isAvailable("canSync")) return;
-    void adapter.settings.getSettings().then((result) => {
-      if (!result.ok) {
-        personalSyncState = "unavailable";
-        return;
-      }
-      const settings = result.value as Record<string, unknown>;
-      personalSyncState = settings.personalSyncEnabled === false ? "local" : "synced";
-    });
+    const refresh = () => void refreshPersonalSyncState();
+    window.addEventListener("focus", refresh);
+    window.addEventListener("hq:workspace-sync-enabled-changed", refresh);
+    refresh();
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("hq:workspace-sync-enabled-changed", refresh);
+    };
   });
   function companyUrl(slug: string): string {
     const base = consoleBase.replace(/\/$/, "");
@@ -140,7 +158,9 @@
           ? "Synced"
           : personalSyncState === "local"
             ? "Local"
-            : "Unavailable"}
+            : personalSyncState === "checking"
+              ? "Checking"
+              : "Unavailable"}
       </span>
     </div>
   {/if}
