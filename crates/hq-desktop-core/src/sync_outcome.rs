@@ -155,6 +155,10 @@ pub struct RunTotals {
     /// what the banner would commit, so nothing observable changes. `None` until
     /// a GC line is parsed. See `record_heap_oom_stderr_line`.
     heap_gc_candidate: Option<(u64, u64)>,
+    /// Highest round-half-away V8 GC heap-used MB seen before the first heap-OOM
+    /// banner. It is retained independently of `heap_gc_candidate` so the
+    /// numeric used/total fields keep their intentional final-reading semantics.
+    heap_gc_peak_used_mb: Option<u64>,
     /// Retained V8 heap-OOM evidence for this pass (HQ-DESKTOP-55), created at
     /// the fatal banner and populated with a bounded native-frame capture. A V8
     /// heap OOM aborts the process, so this can never span the per-pass reset the
@@ -176,6 +180,10 @@ struct HeapOomEvidence {
     /// banner, or `None` when no GC line preceded it. Both-or-neither by
     /// construction.
     used_total_mb: Option<(u64, u64)>,
+    /// Highest pre-banner GC heap-used reading, frozen at the banner. This feeds
+    /// the fixed-vocabulary `runner_heap_peak_used_bucket` tag; it is separate
+    /// from the last-reading `used_total_mb` retained for existing consumers.
+    peak_used_mb: Option<u64>,
     /// Normalized native-stack symbols (ordinal/address/bracketed-suffix stripped),
     /// hard-capped at [`HEAP_OOM_FRAME_CAP`]. Memory-local — hashed into the
     /// signature and mapped to fixed tokens, never emitted raw.
@@ -399,20 +407,27 @@ impl RunTotals {
     }
 
     /// Single-pass, line-oriented V8 heap-OOM retention. Three transitions, in
-    /// order: (a) update the last-wins GC heap candidate until frozen; (b) create
-    /// the evidence on the first heap-OOM banner, freezing the GC candidate into
-    /// it; (c) collect the bounded native-stack section that follows the banner.
+    /// order: (a) update the last-wins GC candidate and true peak until frozen;
+    /// (b) create the evidence on the first heap-OOM banner, freezing both values
+    /// into it; (c) collect the bounded native-stack section that follows the
+    /// banner.
     /// A V8 heap OOM aborts the process, so this state can never span a reset.
     fn record_heap_oom_stderr_line(&mut self, line: &str, class: RunnerFatalClass) {
-        // (a) GC candidate — last-wins, and permanently frozen once the banner is
-        // seen so a post-banner GC-shaped line can never move the committed value.
+        // (a) GC values — keep the existing last-wins candidate while tracking a
+        // separate true used peak. Both become permanently frozen once the banner
+        // is seen, so a post-banner GC-shaped line can never move either value.
         if self.heap_oom.is_none() {
             if let Some((used, total)) = parse_gc_heap_candidate(line) {
-                self.heap_gc_candidate = Some((round_mb(used), round_mb(total)));
+                let used_mb = round_mb(used);
+                self.heap_gc_candidate = Some((used_mb, round_mb(total)));
+                self.heap_gc_peak_used_mb = Some(
+                    self.heap_gc_peak_used_mb
+                        .map_or(used_mb, |peak| peak.max(used_mb)),
+                );
             }
         }
         // (b) Banner — create the evidence on the first heap-OOM fatal line and
-        // freeze the current GC candidate as the committed used/total.
+        // freeze the current GC candidate plus its true used peak.
         if class == RunnerFatalClass::HeapOom && self.heap_oom.is_none() {
             let lowered = line.to_ascii_lowercase();
             let banner = if lowered.contains("reached heap limit") {
@@ -425,6 +440,7 @@ impl RunTotals {
             self.heap_oom = Some(HeapOomEvidence {
                 banner,
                 used_total_mb: self.heap_gc_candidate,
+                peak_used_mb: self.heap_gc_peak_used_mb,
                 frames: Vec::new(),
                 frames_done: false,
             });
@@ -464,6 +480,15 @@ impl RunTotals {
     /// no GC line preceded the banner. Both-or-neither integers, never floats.
     pub fn runner_heap_used_total_mb(&self) -> Option<(u64, u64)> {
         self.heap_oom.as_ref().and_then(|evidence| evidence.used_total_mb)
+    }
+
+    /// Highest V8 GC heap-used MB before the retained heap-OOM banner, or `None`
+    /// when no GC line preceded the banner. Unlike [`Self::runner_heap_used_total_mb`],
+    /// this is a true maximum and backs the `runner_heap_peak_used_bucket` tag.
+    pub fn runner_heap_peak_used_mb(&self) -> Option<u64> {
+        self.heap_oom
+            .as_ref()
+            .and_then(|evidence| evidence.peak_used_mb)
     }
 
     /// Count of native-stack frames captured for the retained heap OOM (0 when the
@@ -7423,17 +7448,22 @@ mod tests {
     }
 
     #[test]
-    fn heap_oom_gc_candidate_last_wins_then_freezes_at_banner() {
+    fn heap_oom_gc_candidate_keeps_last_reading_and_freezes_peak_at_banner() {
         let mut totals = RunTotals::default();
         totals.record_stderr_line("x 10.0 (20.0) -> 10.0 (20.0) MB, tail");
-        totals.record_stderr_line("x 30.4 (40.6) -> 30.4 (40.6) MB, tail"); // later wins
+        totals.record_stderr_line("x 30.4 (40.6) -> 30.4 (40.6) MB, tail");
+        // The GC value can fall after its peak. The existing used/total fields
+        // intentionally retain this final reading; the peak accessor must not.
+        totals.record_stderr_line("x 20.1 (40.6) -> 20.1 (40.6) MB, tail");
         totals.record_stderr_line(
             "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
         );
-        assert_eq!(totals.runner_heap_used_total_mb(), Some((30, 41)));
+        assert_eq!(totals.runner_heap_used_total_mb(), Some((20, 41)));
+        assert_eq!(totals.runner_heap_peak_used_mb(), Some(30));
         // A GC-shaped line AFTER the banner never moves the frozen value.
         totals.record_stderr_line("x 99.9 (99.9) -> 99.9 (99.9) MB, tail");
-        assert_eq!(totals.runner_heap_used_total_mb(), Some((30, 41)));
+        assert_eq!(totals.runner_heap_used_total_mb(), Some((20, 41)));
+        assert_eq!(totals.runner_heap_peak_used_mb(), Some(30));
     }
 
     #[test]
