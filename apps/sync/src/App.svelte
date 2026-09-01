@@ -92,8 +92,6 @@
     }
   }
 
-  let showHandoffCard = $state(false);
-  let handoffFirstShow = $state(true);
   let authenticated = $state(false);
   let expiresAt = $state('');
   let checking = $state(true);
@@ -1260,9 +1258,6 @@
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
           if (authenticated) void loadUnreadSummary();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
-        } else {
-          // Handoff overlay replaces Open desktop, not the compact tray click.
-          showHandoffCard = false;
         }
       })
     );
@@ -1316,13 +1311,6 @@
           void invoke('show_main_window').catch(console.error);
         });
       })
-    );
-
-    unlisteners.push(
-      await listen<{ firstShow?: boolean }>('handoff:show-card', (e) => {
-        handoffFirstShow = e.payload?.firstShow !== false;
-        showHandoffCard = true;
-      }),
     );
 
     unlisteners.push(
@@ -2451,8 +2439,6 @@
       oninstallupdate={handleInstallUpdate}
       onretrynotificationaction={handleRetryNotificationAction}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
-      showHqWorkHandoff={showHandoffCard}
-      hqWorkHandoffFirstShow={handoffFirstShow}
     />
   {:else}
     <SignInPrompt reauth={syncState === 'auth-error'} onsuccess={handleAuthSuccess} />
