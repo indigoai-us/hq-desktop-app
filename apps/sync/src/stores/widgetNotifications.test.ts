@@ -45,6 +45,9 @@ import {
   widgetHoverWindowSize,
   widgetWindowSize,
   type WidgetStackItem,
+  stableBannerId,
+  contentDedupeKey,
+  resolutionForItem,
 } from './widgetNotifications';
 
 function item(overrides: Partial<WidgetStackItem> & Pick<WidgetStackItem, 'id'>): WidgetStackItem {
@@ -1328,5 +1331,103 @@ describe('mergeRecentWithHistory', () => {
     };
     expect(hoverItems(state)).toHaveLength(WIDGET_HOVER_MAX);
     expect(hoverItems(state)[0]?.id).toBe('h0');
+  });
+});
+
+describe('duplicate notifications — stable ids across live and history ingest', () => {
+  it('derives the same id for a live DM banner as the history feed row', () => {
+    const item = bannerToStackItem(
+      {
+        kind: 'dm',
+        title: 'Izzy',
+        body: 'Done. I pinged Jacob.',
+        data: { eventId: 'evt_abc', fromPersonUid: 'prs_1' },
+        clickActionId: 'open',
+      },
+      1_700_000_000_000,
+      'wn-1700000000000-3',
+    );
+    // notificationFeedData mints `dm:${eventId}` for the same underlying event.
+    expect(item.id).toBe('dm:evt_abc');
+    expect(item.id).not.toMatch(/^wn-/);
+  });
+
+  it('derives stable ids for share and meeting payloads, falling back when identity is absent', () => {
+    expect(stableBannerId('share', { eventId: 'evt_s1' }, 'wn-1')).toBe('share:evt_s1');
+    expect(stableBannerId('meeting', { meetingId: 'bot_9' }, 'wn-1')).toBe('meeting:bot_9');
+    expect(stableBannerId('system', null, 'wn-1')).toBe('wn-1');
+    expect(stableBannerId('dm', {}, 'wn-1')).toBe('wn-1');
+  });
+
+  it('collapses a repeated live delivery of the same event into one recent row', () => {
+    const payload = {
+      kind: 'dm',
+      title: 'Izzy',
+      body: 'Hey — Izzy here. What\u2019s up?',
+      data: { eventId: 'evt_dup' },
+      clickActionId: 'open',
+    };
+    let state = emptyWidgetStack();
+    state = addItem(state, bannerToStackItem(payload, 1_000, 'wn-1000-1'));
+    // Same event arriving again (poll + wake, or a re-emit) must not duplicate.
+    state = addItem(state, bannerToStackItem(payload, 61_000, 'wn-61000-2'));
+    expect(state.recent.filter((r) => r.id === 'dm:evt_dup')).toHaveLength(1);
+    expect(state.recent).toHaveLength(1);
+  });
+
+  it('keys content timestamp-free so a local arrival row matches its server-stamped twin', () => {
+    const a = contentDedupeKey({ kind: 'dm', actor: 'Izzy', text: 'Done.' });
+    const b = contentDedupeKey({ kind: 'dm', actor: 'izzy ', text: ' done. ' });
+    expect(a).toBe(b);
+    expect(contentDedupeKey({ kind: 'dm', actor: 'Izzy', text: 'Other' })).not.toBe(a);
+    expect(contentDedupeKey({ kind: 'share', actor: 'Izzy', text: 'Done.' })).not.toBe(a);
+  });
+
+  it('rewrites a persisted legacy wn-* row onto its history id instead of showing both', () => {
+    const legacy = {
+      ...bannerToStackItem(
+        { kind: 'dm', title: 'Izzy', body: 'Done. I pinged Jacob.', data: null, clickActionId: 'open' },
+        1_700_000_000_000,
+        'wn-1700000000000-7',
+      ),
+      unread: true,
+    };
+    expect(legacy.id).toBe('wn-1700000000000-7');
+    const history = {
+      ...legacy,
+      id: 'dm:evt_abc',
+      ts: 1_700_000_030_000,
+      data: { eventId: 'evt_abc' },
+    };
+    const merged = mergeRecentWithHistory([legacy], [history]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe('dm:evt_abc');
+  });
+});
+
+describe('inline resolution seam', () => {
+  it('declares a company picker for unattributed meeting rows', () => {
+    const resolution = resolutionForItem({
+      kind: 'meeting',
+      actionId: 'assign',
+      clickActionId: 'assign',
+      data: { meetingId: 'bot_42' },
+    });
+    expect(resolution).toEqual({
+      kind: 'company-picker',
+      meetingId: 'bot_42',
+      prompt: 'File to company',
+    });
+  });
+
+  it('returns null for rows that are navigate-only or missing a meeting id', () => {
+    expect(
+      resolutionForItem({ kind: 'dm', actionId: 'assign', data: { meetingId: 'x' } }),
+    ).toBeNull();
+    expect(
+      resolutionForItem({ kind: 'meeting', actionId: 'record', data: { windowId: 'w' } }),
+    ).toBeNull();
+    expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: {} })).toBeNull();
+    expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: null })).toBeNull();
   });
 });

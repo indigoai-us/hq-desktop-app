@@ -136,9 +136,11 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
     expect(row).toContain('role="group"');
     expect(row).toContain('class="nr-primary-action"');
     expect(row).toContain('aria-label={primaryActionLabel}');
-    expect(row).toMatch(/\.nr-actions\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?opacity:\s*0;/);
     expect(row).toMatch(
-      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?opacity:\s*1;/,
+      /\.nr-actions,\s*\.nr-hoverbar\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?opacity:\s*0;[\s\S]*?pointer-events:\s*none;/,
+    );
+    expect(row).toMatch(
+      /\.nr:not\(\.nr-message\):focus-within \.nr-actions(?:,[\s\S]*?)?\{[\s\S]*?opacity:\s*1;/,
     );
   });
 });

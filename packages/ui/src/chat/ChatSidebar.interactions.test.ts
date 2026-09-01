@@ -95,8 +95,16 @@ describe("ChatSidebar right-click context menu", () => {
     expect(
       document.querySelector('[data-testid="chat-context-menu"]'),
     ).toBeTruthy();
-    // No pinned section yet — right-click alone must not pin.
-    expect(host.querySelector("#chat-pinned-label")).toBeNull();
+    // Right-click alone must not pin — the row stays out of the pinned list.
+    // (The pinned section itself always exists: the synthetic #setup channel
+    // is permanently pinned there.)
+    const pinnedRowIds = () =>
+      Array.from(
+        host.querySelectorAll(
+          '[aria-labelledby="chat-pinned-label"] [data-conversation-id]',
+        ),
+      ).map((el) => el.getAttribute("data-conversation-id"));
+    expect(pinnedRowIds()).not.toContain("ch:chn_proj");
 
     // Click "Pin conversation" — now it pins.
     const pinBtn = document.querySelector<HTMLButtonElement>(
@@ -106,7 +114,7 @@ describe("ChatSidebar right-click context menu", () => {
     pinBtn!.click();
     await tick();
 
-    expect(host.querySelector("#chat-pinned-label")).toBeTruthy();
+    expect(pinnedRowIds()).toContain("ch:chn_proj");
     // Menu closes after acting.
     expect(
       document.querySelector('[data-testid="chat-context-menu"]'),
@@ -382,5 +390,68 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
 
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
     expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
+  });
+});
+
+describe("ChatSidebar inbox activity stamps older-day DM rows", () => {
+  it("shows a DM from ~3 days ago under its day group, not TODAY", async () => {
+    const wakes = createChatWakeBus();
+    const then = new Date();
+    then.setDate(then.getDate() - 3);
+    then.setHours(14, 0, 0, 0);
+    const threeDaysAgo = then.toISOString();
+
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listContacts: async () => ({
+            contacts: [
+              {
+                personUid: "prs_today",
+                displayName: "Today Person",
+                lastActivityAt: now(),
+                lastDmAt: now(),
+              },
+              {
+                personUid: "prs_jacob",
+                displayName: "Jacob Posel",
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [seedRow],
+        selectedId: "ch:chn_proj",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="dm:prs_today"]'),
+      ).toBeTruthy();
+    });
+    expect(host.querySelector('[data-conversation-id="dm:prs_jacob"]')).toBeNull();
+
+    wakes.emit("dm:pair-unreads", {
+      activity: [
+        {
+          personUid: "prs_jacob",
+          lastMessageAt: threeDaysAgo,
+          displayName: "Jacob Posel",
+        },
+      ],
+    });
+    await tick();
+
+    const row = await vi.waitFor(() => {
+      const found = host.querySelector('[data-conversation-id="dm:prs_jacob"]');
+      expect(found).toBeTruthy();
+      return found as HTMLElement;
+    });
+    const list = row.closest('[role="list"]');
+    const heading = list?.previousElementSibling;
+    expect(heading?.classList.contains("chat-day-head")).toBe(true);
+    expect(heading?.textContent ?? "").not.toMatch(/TODAY/);
   });
 });

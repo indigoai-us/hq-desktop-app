@@ -57,9 +57,25 @@ export function parseSettingsPrefs(raw: unknown): ShellSettingsPrefs {
   };
 }
 
+/**
+ * Default storage for the prefs helpers.
+ *
+ * Prefer the DOM's `window.localStorage` over the bare global: Node 26 defines
+ * a built-in `globalThis.localStorage` that is undefined unless the runtime was
+ * started with `--localstorage-file`, and it shadows the DOM global. Reading
+ * the bare global there silently resolves to `undefined`, so stored preferences
+ * (UI size, window opacity) never apply. In a real webview both names are the
+ * same object, so this changes nothing at runtime.
+ */
+function defaultStorage(): Storage | undefined {
+  return (
+    (globalThis as { window?: { localStorage?: Storage } }).window?.localStorage ??
+    (globalThis.localStorage as Storage | undefined)
+  );
+}
+
 export function readSettingsPrefs(
-  storage:
-    Pick<Storage, "getItem"> | null | undefined = globalThis.localStorage,
+  storage: Pick<Storage, "getItem"> | null | undefined = defaultStorage(),
 ): ShellSettingsPrefs {
   try {
     const raw = storage?.getItem(SETTINGS_PREFS_KEY);
@@ -75,7 +91,7 @@ export function writeSettingsPrefs(
   storage:
     | Pick<Storage, "getItem" | "setItem">
     | null
-    | undefined = globalThis.localStorage,
+    | undefined = defaultStorage(),
 ): ShellSettingsPrefs {
   const current = readSettingsPrefs(storage);
   const next: ShellSettingsPrefs = {

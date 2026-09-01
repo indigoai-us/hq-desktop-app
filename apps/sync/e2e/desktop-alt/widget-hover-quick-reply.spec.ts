@@ -35,9 +35,12 @@ describe('US-007: set_widget_focusable command registration', () => {
   const main = readRepoFile('src-tauri/src/main.rs');
   const widgetUi = readRepoFile('src/components/Widget.svelte');
 
-  it('widget.rs exposes set_widget_focusable with set_focusable + set_focus', () => {
+  it('widget.rs exposes set_widget_focusable with set_focusable + widget-only keying', () => {
     expect(widget).toContain('pub async fn set_widget_focusable');
     expect(widget).toContain('set_focusable(');
+    expect(widget).toContain('fn focus_widget_window_only');
+    expect(widget).toContain('makeKeyAndOrderFront');
+    expect(widget).toContain('widget_focus_should_hide_popover');
     expect(widget).toContain('set_focus(');
   });
 

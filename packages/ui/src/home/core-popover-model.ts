@@ -19,6 +19,12 @@ export interface CorePopoverConflict {
 export interface CorePopoverPack {
   name: string;
   version?: string | null;
+  /**
+   * Optional server-provided human name (forward-compat). Absent on today's
+   * `hq packs list --json` rows and on older `~/.hq/sync-packs-cache.json`
+   * snapshots — the UI derives a friendly name via `packDisplayName`.
+   */
+  displayName?: string | null;
   /** When true, row shows a NEW badge (D-08 fixtures). */
   isNew?: boolean;
 }
@@ -47,6 +53,12 @@ export interface BuildCorePopoverInput {
   packsExpanded?: boolean;
   /** Wall clock for ago labels (tests inject). */
   now?: number;
+  /**
+   * True while the popover's version read is still in flight. "Not yet
+   * checked" must never render as "not detected" — the checking state gets
+   * its own neutral label/pill until the read actually resolves.
+   */
+  coreChecking?: boolean;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -146,7 +158,10 @@ export function conflictAgoLabel(
 export function driftPillLabel(
   count: number,
   coreDetected: boolean = true,
+  checking: boolean = false,
 ): string {
+  // A check still in flight is neither healthy nor undetected.
+  if (checking && !coreDetected) return "CHECKING";
   // G6: "HQ core not detected" must never pair with a green NO DRIFT — an
   // undetected core was never checked, so the pill reads neutral instead.
   if (!coreDetected) return "NOT CHECKED";
@@ -187,9 +202,14 @@ export function coreNeedsRestore(
   return Boolean(versionBehind) || Math.max(0, Math.floor(driftCount)) > 0;
 }
 
-export function hqVersionLabel(version: string | null | undefined): string {
+export function hqVersionLabel(
+  version: string | null | undefined,
+  checking: boolean = false,
+): string {
   if (version && version.trim()) return `HQ core v${version.trim()}`;
-  return "HQ core not detected";
+  // Only claim "not detected" after a check actually resolved without a
+  // version; while the read is in flight the row stays neutral.
+  return checking ? "Checking HQ core\u2026" : "HQ core not detected";
 }
 
 /** Keep the independently detected CLI version out of Core health UI. */
@@ -215,6 +235,53 @@ export function packsSummaryLabel(
   if (loading && n === 0) return "Loading…";
   if (n === 0) return "No packs installed";
   return n === 1 ? "1 pack installed" : `${n} packs installed`;
+}
+
+interface PackagesViewWire {
+  packs?: {
+    installed?: unknown;
+  };
+}
+
+function installedPackRows(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+  const packs = (raw as PackagesViewWire).packs;
+  if (!packs || typeof packs !== "object") return [];
+  const installed = (packs as { installed?: unknown }).installed;
+  return Array.isArray(installed) ? installed : [];
+}
+
+/**
+ * Parse the installed-pack list from either adapter wire shape:
+ * a flat array, or `{ packs: { installed: [...] } }`.
+ */
+export function parseInstalledPacks(raw: unknown): CorePopoverPack[] {
+  const packs: CorePopoverPack[] = [];
+  for (const row of installedPackRows(raw)) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as {
+      name?: unknown;
+      version?: unknown;
+      displayName?: unknown;
+      title?: unknown;
+    };
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    if (!name) continue;
+    const version = typeof rec.version === "string" ? rec.version : null;
+    const hosted =
+      typeof rec.displayName === "string"
+        ? rec.displayName
+        : typeof rec.title === "string"
+          ? rec.title
+          : undefined;
+    if (hosted !== undefined) {
+      packs.push({ name, version, displayName: hosted });
+    } else {
+      packs.push({ name, version });
+    }
+  }
+  return packs;
 }
 
 export const CLOUD_PAUSED_NOTICE =
@@ -254,6 +321,8 @@ export function buildCorePopoverViewModel(
   const core = input.core ?? null;
   const driftCount = Math.max(0, Math.floor(core?.driftCount ?? 0));
   const coreDetected = Boolean(core?.hqVersion && core.hqVersion.trim());
+  // Checking is only meaningful until a version is known.
+  const coreChecking = Boolean(input.coreChecking) && !coreDetected;
   const packs = [...(input.packs ?? [])];
   const packsLoading = Boolean(input.packsLoading) && packs.length === 0;
   const cloudPaused = Boolean(input.cloudPaused);
@@ -262,9 +331,9 @@ export function buildCorePopoverViewModel(
     conflictRows,
     conflictHeader: conflictHeaderLabel(conflictCount, ago),
     conflictCount,
-    hqVersionLabel: hqVersionLabel(core?.hqVersion),
+    hqVersionLabel: hqVersionLabel(core?.hqVersion, coreChecking),
     coreDetected,
-    driftPill: driftPillLabel(driftCount, coreDetected),
+    driftPill: driftPillLabel(driftCount, coreDetected, coreChecking),
     driftPillTone: driftPillTone(driftCount, coreDetected),
     driftCount,
     driftOpenable: driftCount > 0,

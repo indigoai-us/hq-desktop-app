@@ -15,12 +15,14 @@
     buildCorePopoverViewModel,
     coreNeedsRestore,
     detectedCoreVersion,
+    parseInstalledPacks,
     CORE_POPOVER_FIXTURE_PACKS,
     CORE_POPOVER_FIXTURE_CORE,
     CORE_POPOVER_FIXTURE_CONFLICTS,
     type CorePopoverConflict,
     type CorePopoverPack,
   } from "./core-popover-model.js";
+  import { packDisplayName } from "./pack-display-name.js";
   import "./tokens.css";
 
   interface Props {
@@ -73,12 +75,6 @@
     driftReport?: { count?: number };
   }
 
-  interface PackagesViewWire {
-    packs?: {
-      installed?: Array<{ name?: string; version?: string }>;
-    };
-  }
-
   let {
     adapter,
     appVersion,
@@ -104,6 +100,12 @@
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
   let loadError = $state<string | null>(null);
+  /**
+   * True while the open-time version/state read is in flight. Drives the
+   * neutral "Checking HQ core…" / CHECKING presentation — the popover must
+   * never claim "not detected" before the read has actually resolved.
+   */
+  let coreLoading = $state(false);
   /** Updates/packages are desktop-only; web renders the degraded row. */
   let updatesUnavailable = $state(false);
   let disposed = false;
@@ -164,6 +166,7 @@
       conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: modelCore,
       appVersion,
+      coreChecking: coreLoading,
       updateAvailable: modelUpdateAvailable,
       packs: modelPacks,
       packsLoading,
@@ -187,30 +190,54 @@
       updateAvailable = false;
       packs = [];
       packsLoading = false;
+      coreLoading = false;
       return;
     }
+    coreLoading = true;
+    let hadCache = false;
     try {
-      if (packs.length === 0) packsLoading = true;
-      // Pack CLI is slow. Do not hold core version / update rows behind it.
-      // After launch prefetch, listPackages is a cache read and returns fast.
+      const cachedResult = await adapter.packages.listPackagesCached();
+      if (disposed || generation !== loadGeneration) return;
+      if (cachedResult.ok && cachedResult.value != null) {
+        hadCache = true;
+        const cached = parseInstalledPacks(cachedResult.value);
+        if (cached.length > 0) packs = cached;
+      }
+    } catch (err) {
+      console.error("core-popover: pack cache read failed", err);
+    }
+    try {
+      // Pack CLI is slow. Paint cached packs immediately; only show Loading
+      // on a true first run (no cache, fetch in flight).
+      if (packs.length === 0 && !hadCache) packsLoading = true;
       const packagesPromise = adapter.packages.listPackages();
-      const [versionsResult, stateResult, pendingResult] = await Promise.all([
-        adapter.updates.getVersions(),
-        adapter.updates.checkCoreState(),
-        adapter.updates.getPendingUpdate(),
-      ]);
+      // Kick all three reads together, but commit the cheap local version
+      // read the moment it lands. checkCoreState can involve a slow scan or
+      // network lookup — gating the version behind it is exactly what made
+      // an installed core read "not detected" for the whole check window.
+      const statePromise = adapter.updates.checkCoreState();
+      const pendingPromise = adapter.updates.getPendingUpdate();
+      const versionsResult = await adapter.updates.getVersions();
+      if (disposed || generation !== loadGeneration) return;
       updatesUnavailable =
         !versionsResult.ok && versionsResult.reason === "unavailable";
-      const version = versionsResult.ok
+      hqVersion = versionsResult.ok
         ? detectedCoreVersion(versionsResult.value)
         : null;
+      // The version read resolved — from here "no version" genuinely means
+      // "not detected", so the checking presentation ends.
+      coreLoading = false;
+      const [stateResult, pendingResult] = await Promise.all([
+        statePromise,
+        pendingPromise,
+      ]);
+      if (disposed || generation !== loadGeneration) return;
       const state = stateResult.ok
         ? (stateResult.value as unknown as CoreStateWire | null)
         : null;
       const pending = pendingResult.ok
         ? (pendingResult.value as unknown as UpdateInfo | null)
         : null;
-      hqVersion = version;
       coreState = state;
       const pendingVersion =
         pending && typeof pending === "object" && "version" in pending
@@ -218,43 +245,31 @@
           : null;
       updateAvailable = Boolean(pendingVersion);
 
-      if (disposed || generation !== loadGeneration) return;
       const packagesResult = await packagesPromise;
       if (disposed || generation !== loadGeneration) return;
-      // Desktop wire shape was `{packs:{installed:[...]}}`; the adapter surface
-      // returns a flat list. Accept both defensively.
-      const rawPackages = packagesResult.ok
-        ? (packagesResult.value as unknown)
-        : null;
-      const packages: PackagesViewWire = Array.isArray(rawPackages)
-        ? {
-            packs: {
-              installed: rawPackages as Array<{
-                name?: string;
-                version?: string;
-              }>,
-            },
-          }
-        : ((rawPackages ?? {}) as PackagesViewWire);
-      const installed = (packages?.packs?.installed ?? [])
-        .map((p) => ({
-          name: (p.name ?? "").trim(),
-          version: p.version ?? null,
-        }))
-        .filter((p) => p.name.length > 0);
-      // Prefer live packs; otherwise D-08 fixtures (4 packs, one NEW).
-      packs =
-        installed.length > 0
-          ? installed
-          : useFixtures
-            ? CORE_POPOVER_FIXTURE_PACKS
-            : [];
+      if (packagesResult.ok) {
+        const installed = parseInstalledPacks(packagesResult.value);
+        // Prefer live packs; otherwise D-08 fixtures (4 packs, one NEW).
+        // A successful empty list replaces the cache.
+        packs =
+          installed.length > 0
+            ? installed
+            : useFixtures
+              ? CORE_POPOVER_FIXTURE_PACKS
+              : [];
+      } else if (!hadCache) {
+        packs = useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
+      }
       packsLoading = false;
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       console.error("core-popover: refresh failed", err);
-      loadError = "Could not load Core status";
+      if (!hadCache) loadError = "Could not load Core status";
       packsLoading = false;
+    } finally {
+      // Whatever path we exited through, never leave the neutral checking
+      // presentation stuck for this (still-current) load.
+      if (!disposed && generation === loadGeneration) coreLoading = false;
     }
   }
 
@@ -538,7 +553,7 @@
         {:else}
           {#each model.packs as pack (pack.name)}
             <li class="core-pack-row" data-testid="core-popover-pack-row">
-              <span class="core-pack-name">{pack.name}</span>
+              <span class="core-pack-name" title={pack.name}>{packDisplayName(pack)}</span>
               {#if pack.isNew}
                 <span class="core-pack-new" data-testid="core-popover-pack-new"
                   >NEW</span

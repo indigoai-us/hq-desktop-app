@@ -164,9 +164,14 @@ describe('US-007: widget hover list + quick-reply focusable', () => {
   });
 
   describe('source contracts', () => {
-    it('widget.rs defines set_widget_focusable with set_focusable + set_focus', () => {
+    it('widget.rs defines set_widget_focusable with set_focusable + widget-only keying', () => {
       expect(widgetRs).toContain('pub async fn set_widget_focusable');
       expect(widgetRs).toContain('set_focusable(');
+      expect(widgetRs).toContain('fn focus_widget_window_only');
+      expect(widgetRs).toContain('makeKeyAndOrderFront');
+      expect(widgetRs).toContain('widget_focus_should_hide_popover');
+      expect(widgetRs).toContain('NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS');
+      // tao set_focus remains only on the non-macOS path.
       expect(widgetRs).toContain('set_focus(');
     });
 

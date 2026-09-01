@@ -29,6 +29,11 @@ pub struct DmEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     pub created_at: String,
+    /// Present when this inbox event is a thread reply rather than a top-level
+    /// DM. Omitted on ordinary messages; the frontend routes these into the
+    /// thread pane instead of appending them to the main conversation list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
 }
 
 /// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
@@ -533,6 +538,14 @@ pub struct ThreadMessage {
     pub prompt: Option<String>,
     pub created_at: String,
     pub direction: String,
+    /// Parent thread id when this row is a reply. Roots omit it (or echo their
+    /// own eventId). Absent-safe so older servers still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
+    /// Reply count maintained on root rows. Absent on replies and on older
+    /// payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -635,19 +648,35 @@ pub struct ThreadReply {
     pub created_at: String,
     #[serde(default)]
     pub direction: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<u32>,
 }
 
 /// The full thread view returned by `GET /v1/notify/threads`: the pinned root
-/// message, the reply list (newest-first, like the other thread/channel fetches),
-/// and the authoritative `replyCount`.
+/// message and the reply list (newest-first, like the other thread/channel
+/// fetches). `replyCount` is optional — the DM-scope response is
+/// `{ scope, root, replies }` with no top-level count — so callers must use
+/// [`effective_reply_count`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadView {
     pub root: ThreadReply,
     #[serde(default)]
     pub replies: Vec<ThreadReply>,
-    #[serde(default)]
-    pub reply_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<u32>,
+}
+
+/// Authoritative reply count for a thread view: the larger of the declared
+/// `replyCount` (treating absence as 0) and the number of loaded replies.
+/// The DM-scope GET omits `replyCount`, so a missing/zero count with replies
+/// present must still report the loaded length.
+pub fn effective_reply_count(view: &ThreadView) -> u32 {
+    view.reply_count
+        .unwrap_or(0)
+        .max(view.replies.len() as u32)
 }
 
 /// One renderer's active reply thread. Several desktop windows can have a
@@ -915,6 +944,7 @@ mod tests {
         assert_eq!(dm.body, "hi");
         assert!(dm.prompt.is_none());
         assert!(dm.details.is_none());
+        assert!(dm.root_event_id.is_none());
     }
 
     #[test]
@@ -976,6 +1006,7 @@ mod tests {
             details: None,
             prompt: None,
             created_at: created_at.to_string(),
+            root_event_id: None,
         }
     }
 
@@ -1513,7 +1544,114 @@ mod tests {
         let view: ThreadView = serde_json::from_str(json).expect("ThreadView parses");
         assert_eq!(view.root.event_id, "evt_root");
         assert_eq!(view.replies.len(), 2);
-        assert_eq!(view.reply_count, 2);
+        assert_eq!(view.reply_count, Some(2));
         assert_eq!(view.replies[0].direction, "out");
+        assert_eq!(effective_reply_count(&view), 2);
+    }
+
+    #[test]
+    fn thread_view_absent_reply_count_deserializes_none() {
+        // DM-scope GET /v1/notify/threads returns { scope, root, replies } with
+        // no top-level replyCount. That must stay None (not coerce to 0) so
+        // callers can fall back to the loaded reply list.
+        let json = r#"{
+            "root": {
+                "eventId": "evt_root",
+                "fromPersonUid": "prs_a",
+                "body": "the root message",
+                "createdAt": "2026-06-05T00:00:00Z",
+                "direction": "in"
+            },
+            "replies": [
+                {
+                    "eventId": "evt_r1",
+                    "fromPersonUid": "prs_a",
+                    "body": "first reply",
+                    "createdAt": "2026-06-05T00:01:00Z",
+                    "direction": "in"
+                }
+            ]
+        }"#;
+        let view: ThreadView = serde_json::from_str(json).expect("ThreadView parses");
+        assert!(view.reply_count.is_none());
+        assert_eq!(view.replies.len(), 1);
+        assert_eq!(effective_reply_count(&view), 1);
+    }
+
+    #[test]
+    fn effective_reply_count_prefers_declared_when_larger() {
+        let json = r#"{
+            "root": {
+                "eventId": "evt_root",
+                "fromPersonUid": "prs_a",
+                "body": "the root message",
+                "createdAt": "2026-06-05T00:00:00Z"
+            },
+            "replies": [
+                {
+                    "eventId": "evt_r1",
+                    "fromPersonUid": "prs_a",
+                    "body": "first reply",
+                    "createdAt": "2026-06-05T00:01:00Z"
+                }
+            ],
+            "replyCount": 3
+        }"#;
+        let view: ThreadView = serde_json::from_str(json).expect("ThreadView parses");
+        assert_eq!(view.reply_count, Some(3));
+        assert_eq!(effective_reply_count(&view), 3);
+    }
+
+    #[test]
+    fn thread_message_and_reply_pass_through_root_event_id_and_count() {
+        let msg_json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "prs_a",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "hi",
+            "createdAt": "2026-06-05T00:00:00Z",
+            "direction": "in",
+            "rootEventId": "evt_root",
+            "replyCount": 2
+        }"#;
+        let msg: ThreadMessage = serde_json::from_str(msg_json).expect("ThreadMessage parses");
+        assert_eq!(msg.root_event_id.as_deref(), Some("evt_root"));
+        assert_eq!(msg.reply_count, Some(2));
+        let msg_out = serde_json::to_value(&msg).expect("ThreadMessage serializes");
+        assert_eq!(msg_out["rootEventId"], "evt_root");
+        assert_eq!(msg_out["replyCount"], 2);
+
+        let reply_json = r#"{
+            "eventId": "evt_r1",
+            "fromPersonUid": "prs_a",
+            "body": "reply",
+            "createdAt": "2026-06-05T00:01:00Z",
+            "rootEventId": "evt_root",
+            "replyCount": 1
+        }"#;
+        let reply: ThreadReply = serde_json::from_str(reply_json).expect("ThreadReply parses");
+        assert_eq!(reply.root_event_id.as_deref(), Some("evt_root"));
+        assert_eq!(reply.reply_count, Some(1));
+        let reply_out = serde_json::to_value(&reply).expect("ThreadReply serializes");
+        assert_eq!(reply_out["rootEventId"], "evt_root");
+        assert_eq!(reply_out["replyCount"], 1);
+    }
+
+    #[test]
+    fn dm_event_passes_through_root_event_id() {
+        let json = r#"{
+            "eventId": "evt_1",
+            "fromPersonUid": "prs_sender",
+            "fromEmail": "a@b.com",
+            "fromDisplayName": "Ada",
+            "body": "hi",
+            "createdAt": "2026-05-29T00:00:00Z",
+            "rootEventId": "evt_root"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent parses");
+        assert_eq!(dm.root_event_id.as_deref(), Some("evt_root"));
+        let out = serde_json::to_value(&dm).expect("DmEvent serializes");
+        assert_eq!(out["rootEventId"], "evt_root");
     }
 }

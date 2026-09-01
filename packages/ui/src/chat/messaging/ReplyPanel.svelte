@@ -7,15 +7,29 @@
    * ZERO extra fetch after send — cache-first; the host must not re-GET the
    * whole reply thread on ack (hq-work-desktop-io-off-main-thread).
    */
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import MentionPicker from "./MentionPicker.svelte";
+  import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
+    clearFromMessages,
+    startThinking,
+    tick,
+    type ThinkingEntry,
+  } from "../agent-thinking.js";
+  import {
+    activeMentionQuery,
     applyMentionMarkup,
+    filterMentionCandidates,
+    mentionPayloadTargets,
+    mentionTextForTarget,
+    mergeMentionTargets,
+    replaceActiveMention,
     storedMentionType,
     type MentionTarget,
   } from "../mentions.js";
@@ -33,6 +47,7 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import { safeHref } from "../../common/markdown.js";
   import type {
     ChatWakeBus,
     ConversationApi,
@@ -41,9 +56,18 @@
   } from "../chat-api";
   import { subscribeReplyNew } from "../chat-api";
 
+  export interface ReplyPreviewAuthor {
+    personUid: string;
+    displayName: string;
+    agent?: boolean;
+  }
+
   export interface ReplyPreview {
     author: string;
     at: string;
+    /** Distinct reply authors, first-appearance order (Slack-style avatar
+     *  stack in the main-chat affordance; consumers cap the render). */
+    authors?: ReplyPreviewAuthor[];
   }
 
   interface LocalReply extends ConversationMessageWire {
@@ -108,6 +132,10 @@
       personUid: string;
       displayName: string;
     }) => void;
+    /** Company/contacts roster for @ completion. Empty = no picker. */
+    mentionCandidates?: MentionTarget[];
+    /** Platform seam for opening an external URL from a message-body link. */
+    onopenurl?: (url: string) => void;
   }
 
   let {
@@ -132,6 +160,8 @@
     avatarByUid = {},
     displayNameByUid = {},
     onopenprofile,
+    mentionCandidates = [],
+    onopenurl,
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -159,6 +189,25 @@
       personUid,
       displayName: span.textContent?.replace(/^@/, "").trim() || personUid,
     });
+  }
+
+  /** Delegated open for markdown/autolinked anchors injected as HTML. */
+  function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+    node: EventTarget | null,
+  ): boolean {
+    if (!(node instanceof Element)) return false;
+    const body = event.currentTarget;
+    if (!(body instanceof Element)) return false;
+    const anchor = node.closest("a[href]");
+    if (!anchor || !body.contains(anchor)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const href = safeHref(anchor.getAttribute("href") ?? "");
+    if (!href) return true;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+    return true;
   }
 
   function storedMentions(
@@ -193,6 +242,63 @@
   let pendingFiles = $state<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
+  let composerEl = $state<HTMLTextAreaElement | null>(null);
+  let selectedMentions = $state<MentionTarget[]>([]);
+  let mentionHighlight = $state(0);
+  // Thread-local thinking rows — the panel owns its send + reply merge, so
+  // the indicator stays self-contained (no DesktopApp plumbing).
+  const AGENT_THINKING_TICK_MS = 5_000;
+  let agentThinking = $state<ThinkingEntry[]>([]);
+
+  onMount(() => {
+    const handle = window.setInterval(() => {
+      agentThinking = tick(agentThinking, Date.now());
+    }, AGENT_THINKING_TICK_MS);
+    return () => clearInterval(handle);
+  });
+
+  function startThinkingForMentions(mentions: MentionTarget[]): void {
+    const now = Date.now();
+    for (const mention of mentions) {
+      if (mention.participantType !== "agent") continue;
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: mention.participantUid,
+          agentName: mention.displayName,
+        },
+        now,
+      );
+    }
+  }
+
+  /** Timestamp-aware: `load()` re-fetches the WHOLE thread on every
+   *  reply:new wake, so a historical agent reply must not clear a row that
+   *  started after it. */
+  function clearThinkingFromReplies(
+    list: ConversationMessageWire[],
+  ): void {
+    if (agentThinking.length === 0) return;
+    agentThinking = clearFromMessages(agentThinking, list);
+  }
+
+  const mentionQuery = $derived(activeMentionQuery(draft));
+  const mentionHits = $derived(
+    filterMentionCandidates(mentionCandidates, mentionQuery, selectedMentions),
+  );
+  const showMentionPicker = $derived(mentionQuery !== null);
+
+  $effect(() => {
+    void mentionQuery;
+    mentionHighlight = 0;
+  });
+
+  function applyMention(target: MentionTarget): void {
+    draft = replaceActiveMention(draft, mentionTextForTarget(target));
+    selectedMentions = mergeMentionTargets(selectedMentions, target);
+    mentionHighlight = 0;
+    composerEl?.focus();
+  }
 
   $effect(() => {
     localReactions = { ...reactions };
@@ -224,7 +330,19 @@
     const author = messageAuthor(last);
     const at = last.createdAt?.trim() ?? "";
     if (!author || !at) return null;
-    return { author, at };
+    // Distinct reply authors (keyed by personUid, falling back to the display
+    // name for rows without a uid), first-appearance order.
+    const authors: ReplyPreviewAuthor[] = [];
+    const seen = new Set<string>();
+    for (const msg of list) {
+      const personUid = (msg.fromPersonUid ?? "").trim();
+      const displayName = messageAuthor(msg);
+      const key = personUid || displayName;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      authors.push({ personUid, displayName, agent: isAgent(msg) });
+    }
+    return { author, at, authors };
   }
 
   function sortOldestFirst(
@@ -237,6 +355,55 @@
       return aTime - bTime;
     });
   }
+
+  /** First trimmed eventId wins — keyed `{#each replies as msg (msg.eventId)}`
+   *  cannot receive duplicate keys (API page listed twice, or load + live
+   *  append of the same server row). */
+  function dedupeByEventId<T extends { eventId?: string | null }>(
+    messages: T[],
+  ): T[] {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const message of messages) {
+      const id = (message.eventId ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(message);
+    }
+    return out;
+  }
+
+  /** Fold a server page onto the in-memory list: drop/replace the matching
+   *  optimistic `local-` row (same trimmed body + direction out) and keep
+   *  only still-in-flight sending|failed locals that have no server copy. */
+  function mergeServerReplies(
+    serverRows: ConversationMessageWire[],
+    current: LocalReply[],
+  ): LocalReply[] {
+    const ordered = dedupeByEventId(serverRows);
+    const consumed = new Set<string>();
+    const pending: LocalReply[] = [];
+    for (const row of current) {
+      if (!row.eventId.startsWith("local-")) continue;
+      const match = ordered.find(
+        (server) =>
+          !consumed.has(server.eventId) &&
+          (server.direction ?? "out") === "out" &&
+          (row.direction ?? "out") === "out" &&
+          (server.body ?? "").trim() === (row.body ?? "").trim(),
+      );
+      if (match) {
+        consumed.add(match.eventId);
+        continue;
+      }
+      if (row.sendStatus === "sending" || row.sendStatus === "failed") {
+        pending.push(row);
+      }
+    }
+    return dedupeByEventId([...ordered, ...pending]);
+  }
+
+  const visibleReplies = $derived(dedupeByEventId(replies));
 
   function reactionsFor(id: string): ReactionAggregate[] {
     return localReactions[id] ?? [];
@@ -279,14 +446,13 @@
       if (generation !== loadGeneration || rootEventId !== requested) return;
       root = view.root ?? seedRoot ?? null;
       const ordered = sortOldestFirst(view.replies ?? []);
-      seenIds = new Set(ordered.map((row) => row.eventId));
+      // Branch's mergeServerReplies supersedes the plain pending-filter: it
+      // preserves in-flight/failed local sends AND dedupes server echoes of
+      // already-rendered local replies.
+      replies = mergeServerReplies(ordered, replies);
+      seenIds = new Set(replies.map((row) => row.eventId));
       reportActiveThread();
-      const pending = replies.filter(
-        (row) =>
-          row.eventId.startsWith("local-") &&
-          (row.sendStatus === "sending" || row.sendStatus === "failed"),
-      );
-      replies = [...ordered, ...pending];
+      clearThinkingFromReplies(ordered);
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
       if (generation !== loadGeneration || rootEventId !== requested) return;
@@ -363,6 +529,7 @@
   async function deliver(
     body: string,
     attachments?: ChatAttachmentWire[],
+    mentions?: MentionTarget[],
   ): Promise<void> {
     await api.sendReply({
       scope,
@@ -371,6 +538,7 @@
       ...(scope === "channel" && channelId ? { channelId } : {}),
       ...(scope === "dm" && withPersonUid ? { withPersonUid } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(mentions && mentions.length > 0 ? { mentions } : {}),
     });
   }
 
@@ -391,6 +559,7 @@
         return;
       }
     }
+    const mentions = mentionPayloadTargets(selectedMentions);
     const localId = `local-${rootEventId}-${++localSeq}`;
     const optimistic: LocalReply = {
       eventId: localId,
@@ -400,23 +569,28 @@
       direction: "out",
       rootEventId,
       sendStatus: "sending",
+      mentions,
       ...(attachments ? { attachments } : {}),
     };
     seenIds.add(localId);
     replies = [...replies, optimistic];
     draft = "";
+    selectedMentions = [];
+    mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
     try {
-      await deliver(text, attachments);
+      await deliver(text, attachments, mentions);
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
+      startThinkingForMentions(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
       );
+      agentThinking = [];
     } finally {
       sending = false;
     }
@@ -431,25 +605,62 @@
     replies = replies.map((row) =>
       row.eventId === eventId ? { ...row, sendStatus: "sending" } : row,
     );
+    const retryMentions = mentionPayloadTargets(
+      (failed.mentions ?? []).map((row) => ({
+        participantUid: row.participantUid,
+        participantType: storedMentionType(row),
+        displayName: row.displayName,
+      })),
+    );
     try {
       await deliver(
         failed.body ?? "",
         (failed.attachments ?? undefined) as ChatAttachmentWire[] | undefined,
+        retryMentions,
       );
       replies = replies.map((row) =>
         row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
+      startThinkingForMentions(retryMentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === eventId ? { ...row, sendStatus: "failed" } : row,
       );
+      agentThinking = [];
     } finally {
       sending = false;
     }
   }
 
   function onComposerKey(e: KeyboardEvent): void {
+    if (showMentionPicker) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        mentionHighlight = (mentionHighlight + 1) % mentionHits.length;
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        mentionHighlight =
+          (mentionHighlight - 1 + mentionHits.length) % mentionHits.length;
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        const hit = mentionHits[mentionHighlight] ?? mentionHits[0];
+        if (hit) {
+          e.preventDefault();
+          applyMention(hit);
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        draft = draft.replace(/(^|\s)@([^\s@]*)$/, "$1");
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send(draft);
@@ -466,6 +677,7 @@
       replies = [];
       replyCount = 0;
       seenIds = new Set();
+      agentThinking = [];
       void load();
     });
     return () => onactivethreadchange?.(null);
@@ -481,19 +693,21 @@
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  function onReplyNew(root: string): void {
+  function onReplyNew(root: string, eventId?: string): void {
     if (root !== rootEventId) return;
+    const id = (eventId ?? "").trim();
+    if (id && seenIds.has(id)) return;
     void load();
   }
 
   $effect(() => {
     if (wakes) {
       return wakes.on("reply:new", (payload) => {
-        onReplyNew(payload.rootEventId);
+        onReplyNew(payload.rootEventId, payload.eventId);
       });
     }
     return subscribeReplyNew((payload) => {
-      onReplyNew(payload.rootEventId);
+      onReplyNew(payload.rootEventId, payload.eventId);
     });
   });
 </script>
@@ -526,6 +740,7 @@
           kind={isAgent(root) ? "agent" : "person"}
           label={messageAuthor(root)}
           avatarUrl={replyAvatarFor(root)}
+          agentUid={root.fromPersonUid}
           size="regular"
         />
       </span>
@@ -549,10 +764,15 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="reply-md"
-              onclick={(e) => onMentionActivate(e, e.target)}
+              onclick={(e) => {
+                if (onBodyLinkActivate(e, e.target)) return;
+                onMentionActivate(e, e.target);
+              }}
               onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ")
+                if (e.key === "Enter" || e.key === " ") {
+                  if (onBodyLinkActivate(e, e.target)) return;
                   onMentionActivate(e, e.target);
+                }
               }}
             >
               {@html applyMentionMarkup(
@@ -647,12 +867,12 @@
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
-      {:else if replies.length === 0}
+      {:else if visibleReplies.length === 0}
         <p class="reply-status" data-testid="reply-panel-empty" role="status">
           No replies yet
         </p>
       {:else}
-        {#each replies as msg (msg.eventId)}
+        {#each visibleReplies as msg (msg.eventId)}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
@@ -664,6 +884,7 @@
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
                 avatarUrl={replyAvatarFor(msg)}
+                agentUid={msg.fromPersonUid}
                 size="regular"
               />
             </span>
@@ -686,10 +907,15 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="reply-md"
-                  onclick={(e) => onMentionActivate(e, e.target)}
+                  onclick={(e) => {
+                    if (onBodyLinkActivate(e, e.target)) return;
+                    onMentionActivate(e, e.target);
+                  }}
                   onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ")
+                    if (e.key === "Enter" || e.key === " ") {
+                      if (onBodyLinkActivate(e, e.target)) return;
                       onMentionActivate(e, e.target);
+                    }
                   }}
                 >
                   {@html applyMentionMarkup(
@@ -772,7 +998,16 @@
       {/if}
     </div>
 
+    <AgentThinkingRow entries={agentThinking} />
+
     <div class="reply-composer">
+      {#if showMentionPicker}
+        <MentionPicker
+          hits={mentionHits}
+          highlight={mentionHighlight}
+          onpick={applyMention}
+        />
+      {/if}
       {#if pendingFiles.length > 0 || attachError}
         <div class="reply-pending" data-testid="reply-panel-pending">
           {#each pendingFiles as file, i (file.name + file.size + i)}
@@ -799,6 +1034,7 @@
         placeholder="Reply…"
         aria-label="Reply"
         data-testid="reply-panel-composer"
+        bind:this={composerEl}
         bind:value={draft}
         onkeydown={onComposerKey}
         onpaste={onComposerPaste}
@@ -1006,6 +1242,17 @@
 
   .reply-md :global(.inline-mention[data-person-uid]:hover) {
     text-decoration: underline;
+  }
+
+  .reply-md :global(a) {
+    color: var(--message-markdown-muted);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+    text-underline-offset: 0.125rem;
+  }
+
+  .reply-md :global(a:hover) {
+    text-decoration-color: currentColor;
   }
 
   .reply-time {

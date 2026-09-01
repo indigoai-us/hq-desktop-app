@@ -24,6 +24,9 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
+  import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import { isSetupChannel } from "../chat/setup-channel.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
@@ -87,11 +90,19 @@
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import {
+    disambiguateMentionTargets,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
     type MentionTarget,
   } from "../chat/mentions.js";
+  import {
+    clearFromMessages,
+    isAgentUid,
+    startThinking,
+    tick,
+    type ThinkingEntry,
+  } from "../chat/agent-thinking.js";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -148,6 +159,7 @@
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
+    dmActivityFromInboxPage,
     pairUnreadsFromInboxPage,
     shouldArmDirectorySafety,
     TIMELINE_SAFETY_INTERVAL_MS,
@@ -186,6 +198,7 @@
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
+  import Caret from "../common/Caret.svelte";
 
   interface Props {
     /** Platform seam — forwarded to the title-bar Core popover. */
@@ -579,6 +592,36 @@
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
 
+  // Client-side "agent is thinking" rows for the open channel. Local only —
+  // the backend has no typing/ack events. Per-conversation: a row switch
+  // must not keep another channel's optimistic status on screen.
+  const AGENT_THINKING_TICK_MS = 5_000;
+  let agentThinking = $state<ThinkingEntry[]>([]);
+
+  $effect(() => {
+    void selectedRow?.id;
+    agentThinking = [];
+  });
+
+  onMount(() => {
+    const handle = window.setInterval(() => {
+      agentThinking = tick(agentThinking, Date.now());
+    }, AGENT_THINKING_TICK_MS);
+    return () => clearInterval(handle);
+  });
+
+  /** Clear thinking rows when those agents appear in a freshly fetched page
+   *  (recent messages only — not the full merged timeline, or historical
+   *  agent posts would immediately kill a new mention's indicator). */
+  function clearThinkingFromIncoming(
+    messages: ConversationMessageWire[],
+  ): void {
+    if (agentThinking.length === 0) return;
+    // Timestamp-aware so a full-history hydrate or overlapping catch-up page
+    // containing an OLD agent message cannot clear a newer row.
+    agentThinking = clearFromMessages(agentThinking, messages);
+  }
+
   function commitTimeline(
     row: ConversationRow,
     next: ConversationMessageWire[],
@@ -655,7 +698,9 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
-    commitTimeline(row, messagesForDisplay(raw));
+    const incoming = messagesForDisplay(raw);
+    commitTimeline(row, incoming);
+    clearThinkingFromIncoming(incoming);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -667,12 +712,14 @@
     const raw = await fetchTimelineRaw(row, since);
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
+    const incoming = messagesForDisplay(raw);
     commitTimeline(
       row,
       existing.length > 0
         ? mergeFetchedTimeline(existing, raw)
-        : messagesForDisplay(raw),
+        : incoming,
     );
+    clearThinkingFromIncoming(incoming);
   }
 
   $effect(() => {
@@ -1369,12 +1416,40 @@
     void prefetchMeetings();
   }
 
-  onMount(() => {
+  /**
+   * The tenant the mention roster must be drawn from: the selected channel's
+   * own company, falling back to the selected company scope. An unscoped
+   * listContacts() seeds the picker with every company the user can see, which
+   * is how a foreign-tenant agent became mentionable from a channel that had
+   * nothing to do with it. Refetch whenever this changes — not once on mount.
+   */
+  const mentionRosterCompanyUid = $derived(
+    selectedRow?.companyUid?.trim() || tenantCompanyId?.trim() || null,
+  );
+
+  // Plain (non-reactive) marker for the scope whose response we will accept.
+  // Deliberately NOT $state: it is written inside the effect below, and making
+  // it reactive would re-trigger that effect.
+  let mentionRosterScope: string | null = null;
+
+  $effect(() => {
+    const scope = mentionRosterCompanyUid;
+    // The roster is tenant-scoped data. Clear the previous company's rows
+    // before the new fetch resolves so the picker can never offer a stale
+    // foreign-tenant target during the gap.
+    mentionRosterScope = scope;
+    liveMentionTargets = [];
     let cancelled = false;
-    void adapter.messaging.listContacts().then((res) => {
-      if (cancelled || !res.ok) return;
-      liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
-    });
+    void adapter.messaging
+      .listContacts(scope ? { companyUid: scope } : undefined)
+      .then((res) => {
+        // Per-channel race guard: a slow in-flight response for the PREVIOUS
+        // company must never overwrite the roster for the one now on screen.
+        // `cancelled` alone is not enough — check the scope we resolved for
+        // still matches the scope currently being displayed.
+        if (cancelled || mentionRosterScope !== scope || !res.ok) return;
+        liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
+      });
     return () => {
       cancelled = true;
     };
@@ -1387,15 +1462,24 @@
   });
 
   const mentionRoster = $derived(
-    mergeMentionRosters(
-      mentionCandidates,
-      liveMentionTargets,
-      mentionTargetsFromContacts(
-        Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-          personUid,
-          displayName,
-        })),
-      ),
+    // Resolve companyUid → company label, then re-run disambiguation so two
+    // survivors that share a display name render "Izzy (LiveRecover)" vs
+    // "Izzy (Indigo)" instead of two identical, unpickable rows.
+    disambiguateMentionTargets(
+      mergeMentionRosters(
+        mentionCandidates,
+        liveMentionTargets,
+        mentionTargetsFromContacts(
+          Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+            personUid,
+            displayName,
+          })),
+        ),
+      ).map((target) => {
+        if (!target.companyUid || target.companyName) return target;
+        const name = companyDisplayName(target.companyUid, companyNames);
+        return name ? { ...target, companyName: name } : target;
+      }),
     ),
   );
 
@@ -1417,17 +1501,33 @@
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(res.value);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    clearThinkingFromIncoming(incoming);
   }
 
-  async function catchUpDmInbox(): Promise<void> {
+  /**
+   * `backfill` fetches the inbox page WITHOUT the stored `since` cursor, so a
+   * machine that already holds a cursor still re-reads recent DM history and
+   * can stamp older-day rail rows. It deliberately does not advance the
+   * cursor: unread deltas stay the incremental path's job.
+   */
+  async function catchUpDmInbox(
+    { backfill = false }: { backfill?: boolean } = {},
+  ): Promise<void> {
     const bus = wakes;
     if (!bus) return;
     const expectedGeneration = tenantGeneration;
     const expectedCompanyId = tenantCompanyId;
     const storage = tenantStorage;
-    const since = storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
-    const res = await adapter.notifications.fetchDmInbox({
+    const since = backfill
+      ? undefined
+      : storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
+    const notifications = adapter.notifications;
+    if (!notifications || typeof notifications.fetchDmInbox !== "function") {
+      return;
+    }
+    const res = await notifications.fetchDmInbox({
       ...(since ? { since } : {}),
       limit: "50",
     });
@@ -1442,13 +1542,25 @@
       since,
       selfUid: self?.uid,
     });
-    if (parsed.pairUnreads && parsed.pairUnreads.length > 0) {
+    const activity = dmActivityFromInboxPage(res.value, {
+      selfUid: self?.uid,
+    });
+    const hasUnreads = Boolean(
+      parsed.pairUnreads && parsed.pairUnreads.length > 0,
+    );
+    const hasActivity = activity.length > 0;
+    if (hasUnreads || hasActivity) {
       bus.emit?.("dm:pair-unreads", {
-        pairUnreads: parsed.pairUnreads,
-        ...(parsed.delta ? { delta: true } : {}),
+        ...(hasUnreads
+          ? {
+              pairUnreads: parsed.pairUnreads,
+              ...(parsed.delta ? { delta: true } : {}),
+            }
+          : {}),
+        ...(hasActivity ? { activity } : {}),
       });
     }
-    if (parsed.nextSince)
+    if (!backfill && parsed.nextSince)
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
   }
 
@@ -1474,6 +1586,17 @@
     return () => {
       for (const off of unsubs) off();
     };
+  });
+
+  // Stamp DM history on a fresh load (and tenant switch), not only after a
+  // live wake. untrack so the fetch itself cannot retrigger this effect.
+  $effect(() => {
+    if (!wakes) return;
+    void tenantGeneration;
+    void tenantCompanyId;
+    untrack(() => {
+      void catchUpDmInbox({ backfill: true });
+    });
   });
 
   $effect(() => {
@@ -1549,62 +1672,97 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
-    let attachments:
-      Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
-    if (files.length > 0) {
-      attachments = await uploadFilesForSelectedRow(files);
-    }
-    const extras = {
-      body,
-      fromPersonUid: self?.uid?.trim() || null,
-      fromDisplayName: self?.displayName?.trim() || "You",
-      mentions: mentions.length > 0 ? mentions : undefined,
-      attachments,
-    };
-    if (row.kind === "dm" && row.personUid) {
-      const res = await adapter.messaging.sendDm(row.personUid, body, {
+    try {
+      let attachments:
+        Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
+      if (files.length > 0) {
+        attachments = await uploadFilesForSelectedRow(files);
+      }
+      const extras = {
+        body,
+        fromPersonUid: self?.uid?.trim() || null,
+        fromDisplayName: self?.displayName?.trim() || "You",
+        mentions: mentions.length > 0 ? mentions : undefined,
+        attachments,
+      };
+      if (row.kind === "dm" && row.personUid) {
+        const res = await adapter.messaging.sendDm(row.personUid, body, {
+          attachments,
+        });
+        if (!res.ok) {
+          throw new Error(res.message || "Could not send the message");
+        }
+        const wire = sentMessageFromResult(res.value, extras);
+        if (wire)
+          commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        // A 1:1 DM with an agent is inherently addressed to that agent, so
+        // any send starts the indicator — no @mention required (unlike a
+        // channel, where only an explicit mention wakes an agent). Started
+        // before the catch-up below so a page that already carries the reply
+        // clears it immediately.
+        if (isAgentUid(row.personUid)) {
+          agentThinking = startThinking(
+            agentThinking,
+            {
+              agentUid: row.personUid,
+              agentName: row.title?.trim() || "Agent",
+            },
+            Date.now(),
+          );
+        }
+        if (!wire) {
+          try {
+            await catchUpTimeline(row);
+          } catch (err) {
+            console.warn("[hq-desktop] post-send DM catch-up failed", err);
+          }
+        }
+        return;
+      }
+      const channelId = row.channelId?.trim() ?? "";
+      if (!channelId) throw new Error("No channel to send to");
+      if (!channelId.startsWith("chn_") && !isSetupChannel(channelId)) {
+        throw new Error(
+          "Couldn't send — this channel isn't linked yet. Try reopening it.",
+        );
+      }
+      const res = await adapter.messaging.sendChannelMessage(channelId, body, {
+        mentions: mentions.length > 0 ? mentions : undefined,
         attachments,
       });
       if (!res.ok) {
         throw new Error(res.message || "Could not send the message");
       }
       const wire = sentMessageFromResult(res.value, extras);
-      if (wire)
-        commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-      else {
-        try {
-          await catchUpTimeline(row);
-        } catch (err) {
-          console.warn("[hq-desktop] post-send DM catch-up failed", err);
-        }
+      if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+      // Channel sends need an explicit @agent mention (agent DMs start their
+      // row in the DM branch above).
+      for (const mention of mentions) {
+        if (mention.participantType !== "agent") continue;
+        agentThinking = startThinking(
+          agentThinking,
+          {
+            agentUid: mention.participantUid,
+            agentName: mention.displayName,
+          },
+          Date.now(),
+        );
       }
-      return;
-    }
-    const channelId = row.channelId?.trim() ?? "";
-    if (!channelId) throw new Error("No channel to send to");
-    if (!channelId.startsWith("chn_")) {
-      throw new Error(
-        "Couldn't send — this channel isn't linked yet. Try reopening it.",
-      );
-    }
-    const res = await adapter.messaging.sendChannelMessage(channelId, body, {
-      mentions: mentions.length > 0 ? mentions : undefined,
-      attachments,
-    });
-    if (!res.ok) {
-      throw new Error(res.message || "Could not send the message");
-    }
-    const wire = sentMessageFromResult(res.value, extras);
-    if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-    // Mention sends write a same-timestamp member_added sibling the POST
-    // echo does not include. Catch-up/roster refresh are best-effort — a
-    // failed follow-up must not surface as "Couldn't send" after the POST
-    // already succeeded (dogfood: CHANNEL_NOT_FOUND after mention send).
-    try {
-      await catchUpTimeline(row);
-      if (mentions.length > 0) await loadChannelRoster(channelId);
+      // Mention sends write a same-timestamp member_added sibling the POST
+      // echo does not include. Catch-up/roster refresh are best-effort — a
+      // failed follow-up must not surface as "Couldn't send" after the POST
+      // already succeeded (dogfood: CHANNEL_NOT_FOUND after mention send).
+      try {
+        await catchUpTimeline(row);
+        if (mentions.length > 0) await loadChannelRoster(channelId);
+      } catch (err) {
+        console.warn("[hq-desktop] post-send catch-up failed", err);
+      }
     } catch (err) {
-      console.warn("[hq-desktop] post-send catch-up failed", err);
+      // Send never left — drop every optimistic thinking row so the status
+      // cannot outlive a failed mention.
+      agentThinking = [];
+      throw err;
     }
   }
 
@@ -2058,6 +2216,7 @@
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
+    {onopenurl}
   />
 
   {#if embeddedNavigationError}
@@ -2363,9 +2522,7 @@
                     <span class="member-count-num"
                       >{memberPillCount || "·"}</span
                     >
-                    <span class="member-count-chevron" aria-hidden="true"
-                      >⌄</span
-                    >
+                    <Caret tone="var(--t3)" size="0.9em" />
                   </button>
                   {#if membersOpen && selectedRow}
                     <ChannelStatusPopover
@@ -2406,8 +2563,28 @@
           {/if}
 
           {#if activeTab === "chat"}
-            <div class="chat-stage" data-testid="chat-stage">
+            <div
+              class="chat-stage"
+              class:is-setup={isSetupChannel(selectedRow.channelId)}
+              data-testid="chat-stage"
+              data-reply-open={openReplyRootId || openProfileMember
+                ? "true"
+                : "false"}
+            >
               {#key selectedRow.id}
+                {#snippet agentThinkingBelow()}
+                  <!-- Inside the conversation scroller (typing-indicator
+                       position) — a chat-stage sibling would become a second
+                       flex-row column floating top-right. -->
+                  <AgentThinkingRow entries={agentThinking} />
+                {/snippet}
+                {#snippet setupHeader()}
+                  <SetupChannelIntro
+                    settings={adapter.settings}
+                    shell={adapter.shell}
+                    {onopenurl}
+                  />
+                {/snippet}
                 <ChannelConversation
                   messages={timeline}
                   reactions={rowReactions}
@@ -2429,6 +2606,10 @@
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
                   loading={timelineHydrating && timeline.length === 0}
+                  header={isSetupChannel(selectedRow.channelId)
+                    ? setupHeader
+                    : undefined}
+                  belowMessages={agentThinkingBelow}
                 />
               {/key}
               {#if openProfileMember}
@@ -2474,6 +2655,8 @@
                     {avatarByUid}
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
+                    mentionCandidates={mentionRoster}
+                    {onopenurl}
                   />
                 </div>
               {/if}
@@ -2604,20 +2787,44 @@
     min-width: 0;
   }
 
+  /* Synthetic #setup channel stacks the getting-started intro above the
+     live thread instead of the usual conversation | reply-column row. */
+  .chat-stage.is-setup {
+    flex-direction: column;
+  }
+
   .chat-stage :global(.conversation) {
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
   }
 
+  .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
+    min-width: 320px;
+  }
+
   .reply-column {
-    width: 340px;
+    position: relative;
+    /* Stacking context (also covers .profile-column). Side-by-side both
+       panes are isolated with z-index:auto; DOM order puts this column after
+       .conversation so the opaque pane + border-left paint above main-pane
+       hover chrome and message text. .overlay still overrides to
+       position:absolute; z-index:5. */
+    isolation: isolate;
+    width: clamp(340px, 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
     background: var(--v4-ground, #161618);
+    transition: width 150ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reply-column {
+      transition: none;
+    }
   }
 
   .reply-column.overlay {
@@ -2813,11 +3020,6 @@
     font-weight: 500;
   }
 
-  .member-count-chevron {
-    color: var(--t3);
-    font-size: 11px;
-    line-height: 1;
-  }
 
   .member-pill-wrap {
     position: relative;

@@ -4,12 +4,21 @@
    * operator has the full context behind a pending question, plus a composer to
    * post a message straight into the team-manager inbox (no liaison needed).
    */
-  import { agencyStore, sendAgencyMessage, selectAgencyTeam } from '../lib/agency-store.svelte';
+  import { agencyStore, retryAgencyRefresh, sendAgencyMessage, selectAgencyTeam } from '../lib/agency-store.svelte';
   import { senderTone, relativeTime, type AgencyMessage } from '../lib/agency';
+  import { loadPhase } from '../lib/load-state';
+  import RowSkeleton from '../components/RowSkeleton.svelte';
 
   const teams = $derived(agencyStore.teams);
   const selected = $derived(agencyStore.selected);
   const messages = $derived(agencyStore.messages);
+  const phase = $derived(
+    loadPhase({
+      loading: agencyStore.loading || agencyStore.messagesLoading,
+      error: agencyStore.error,
+      count: messages.length,
+    }),
+  );
 
   interface FailedSend {
     text: string;
@@ -114,22 +123,32 @@
     <p class="empty">No team selected.</p>
   {:else}
     <div class="thread" bind:this={scroller}>
-      {#if messages.length === 0}
-        <p class="empty">No messages yet.</p>
-      {/if}
-      {#each messages as m, i (m.ts + '/' + m.inbox + '/' + i)}
-        <div class="msg">
-          <span class={`dot ${senderTone(m.from)}`} aria-hidden="true"></span>
-          <div class="mbody">
-            <div class="mhead">
-              <span class={`mfrom ${senderTone(m.from)}`}>{m.from}</span>
-              {#if KIND_BADGE[m.kind]}<span class={`kind ${m.kind}`}>{KIND_BADGE[m.kind]}</span>{/if}
-              {#if m.ts}<span class="mage">{relativeTime(m.ts)}</span>{/if}
-            </div>
-            <p class="mtext">{m.text}</p>
-          </div>
+      {#if phase === 'loading'}
+        <div data-testid="agency-chat-skeleton">
+          <RowSkeleton rows={4} label="Loading messages" />
         </div>
-      {/each}
+      {:else if phase === 'error'}
+        <div class="empty load-error" data-testid="agency-chat-error">
+          <span>Couldn't load messages.</span>
+          <button type="button" class="retry" onclick={() => retryAgencyRefresh()}>Retry</button>
+        </div>
+      {:else if phase === 'empty'}
+        <p class="empty" data-testid="agency-chat-empty">No messages yet.</p>
+      {:else}
+        {#each messages as m, i (m.ts + '/' + m.inbox + '/' + i)}
+          <div class="msg">
+            <span class={`dot ${senderTone(m.from)}`} aria-hidden="true"></span>
+            <div class="mbody">
+              <div class="mhead">
+                <span class={`mfrom ${senderTone(m.from)}`}>{m.from}</span>
+                {#if KIND_BADGE[m.kind]}<span class={`kind ${m.kind}`}>{KIND_BADGE[m.kind]}</span>{/if}
+                {#if m.ts}<span class="mage">{relativeTime(m.ts)}</span>{/if}
+              </div>
+              <p class="mtext">{m.text}</p>
+            </div>
+          </div>
+        {/each}
+      {/if}
     </div>
 
     <div class="composer">
@@ -194,6 +213,22 @@
   .tab.active { border-bottom-color: var(--v4-text-2); background: transparent; color: var(--v4-text-1); }
   .tab:focus-visible { outline: 2px solid var(--v4-control-border); outline-offset: 2px; }
   .empty { color: var(--v4-text-3); font-size: var(--text-base); margin: 8px 0; }
+  .load-error {
+    display: flex;
+    align-items: baseline;
+    gap: var(--v4-space-2);
+  }
+  .retry {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .retry:focus-visible { outline: 2px solid var(--v4-control-border); outline-offset: 2px; }
   .thread {
     display: flex; flex-direction: column; gap: 10px;
     max-height: 320px; overflow-y: auto;

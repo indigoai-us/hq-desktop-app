@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { agentAvatarFor } from "./agent-avatars";
+
   interface Props {
     kind?: "person" | "group" | "agent" | "channel" | "file";
     label?: string;
@@ -8,6 +10,9 @@
     online?: boolean;
     /** Real avatar photo — falls back to the monogram when absent or on error. */
     avatarUrl?: string | null;
+    /** Agent uid — drives the deterministic generated avatar when the agent
+     *  has no assigned photo. Ignored for non-agent kinds. */
+    agentUid?: string | null;
   }
 
   let {
@@ -18,12 +23,18 @@
     size = "regular",
     online = false,
     avatarUrl = null,
+    agentUid = null,
   }: Props = $props();
+
+  // Photo > deterministic generated avatar (agents only) > monogram/glyph.
+  const effectiveAvatarUrl = $derived(
+    avatarUrl ?? (kind === "agent" ? agentAvatarFor(agentUid) : null),
+  );
 
   // Drop back to the monogram if the image 404s / fails to decode.
   let imageBroken = $state(false);
   const showImage = $derived(
-    Boolean(avatarUrl) &&
+    Boolean(effectiveAvatarUrl) &&
       !imageBroken &&
       (kind === "person" || kind === "agent"),
   );
@@ -52,7 +63,7 @@
   {#if showImage}
     <img
       class="avatar-img"
-      src={avatarUrl}
+      src={effectiveAvatarUrl}
       alt=""
       onerror={() => (imageBroken = true)}
     />

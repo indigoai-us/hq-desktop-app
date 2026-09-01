@@ -4,10 +4,10 @@
    * the hq-sync desktop `components/messaging/ChannelFilesTab.svelte` MARKUP +
    * CSS (full-width row list + dismissable preview overlay).
    *
-   * ZERO NETWORK / platform-pure: the file list is INJECTED as fixture rows and
-   * the preview body renders the row's authored `previewText` — there is no
-   * Tauri invoke, no `fetch_channel_files`, no self-fetching FilePreviewPane.
-   * The host owns the data.
+   * ZERO NETWORK / platform-pure: the file list is INJECTED as fixture rows.
+   * Authored `previewText` renders immediately. Markdown/text rows without a
+   * body can be filled by an optional host `loadPreview` callback — there is
+   * no Tauri invoke inside this component. The host owns the data.
    */
   import { onDestroy } from "svelte";
   import type {
@@ -603,7 +603,7 @@
     display: flex;
     align-items: stretch;
     justify-content: flex-end;
-    background: color-mix(in srgb, var(--v4-text-1, #000) 28%, transparent);
+    background: rgba(8, 8, 10, 0.28);
   }
 
   .files-preview-sheet {
@@ -736,6 +736,10 @@
     color: var(--t2);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .preview-text.loading {
+    color: var(--t3);
   }
 
   .preview-denied {

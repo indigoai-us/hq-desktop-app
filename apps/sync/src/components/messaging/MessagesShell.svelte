@@ -38,10 +38,16 @@
   import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt';
   import { appendInboundBatch } from '../../lib/dmThread';
   import { shareTitle } from '../../lib/share-path';
+  import {
+    applyInboundReplies,
+    foldReplies,
+    partitionThreadReplies,
+  } from './thread-replies';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
   import ChannelView from './ChannelView.svelte';
+  import SetupChannelView from './SetupChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
   import IdentityMark from './IdentityMark.svelte';
@@ -72,10 +78,12 @@
     type CompanyLabel,
     channelDisplayName,
     companyNameFor,
+    dedupeChannelsById,
     upsertChannel,
     bumpChannelUnread,
     clearChannelUnread,
   } from '../../lib/channels';
+  import { SETUP_CHANNEL, SETUP_CHANNEL_ID, isSetupChannel } from '../../lib/setup-channel';
   import { type ReactionEvent, dmScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
   import { ShareReactionController } from '../../lib/shareReactionController.svelte';
@@ -130,6 +138,9 @@
     details?: string | null;
     prompt?: string | null;
     createdAt: string;
+    // Present when this inbox event is a thread reply (US-022) — routed into
+    // the root message's reply indicator instead of the main list.
+    rootEventId?: string | null;
   }
 
   interface ContactsResponse {
@@ -424,10 +435,19 @@
 
   // A reply landed (or the thread loaded) — bump the matching root message's
   // live reply-count in the DM message list so its affordance stays current.
-  function handleThreadReplyCount(rootEventId: string, replyCount: number): void {
+  function handleThreadReplyCount(
+    rootEventId: string,
+    replyCount: number,
+    lastReplyAt?: string | null,
+  ): void {
     messages = messages.map((m) =>
       m.rootEventId === rootEventId || m.eventId === rootEventId
-        ? { ...m, rootEventId: m.rootEventId ?? m.eventId, replyCount }
+        ? {
+            ...m,
+            rootEventId: m.rootEventId ?? m.eventId,
+            replyCount,
+            ...(lastReplyAt ? { lastReplyAt } : {}),
+          }
         : m,
     );
   }
@@ -926,13 +946,23 @@
     );
   }
 
+  // Reply eventIds already counted onto a root's indicator, so a re-delivered
+  // live event can't double-bump the count.
+  const countedReplyIds = new Set<string>();
+
   function applyLiveInbound(dms: DmEvent[]): void {
     if (dms.length === 0) return;
-    rememberLiveInbound(dms);
+    // Thread replies (rootEventId set) never join the main conversation list —
+    // they bump the root message's reply indicator instead (US-022).
+    const { topLevel, replies } = partitionThreadReplies(dms);
+    rememberLiveInbound(topLevel);
     updateContactPreviewsFromInbound(dms);
 
     if (!selected || selected.source === 'agent') return;
-    const next = appendLiveInbound(messages, selected.personUid);
+    let next = appendLiveInbound(messages, selected.personUid);
+    if (replies.length > 0) {
+      next = applyInboundReplies(next, replies, countedReplyIds);
+    }
     if (next !== messages) {
       messages = next;
     }
@@ -1126,7 +1156,7 @@
     try {
       const resp = await invoke<ChannelsResponse | null>('list_channels');
       if (generation !== channelsLoadGeneration) return;
-      channels = mergeChannelMutations(resp?.channels ?? [], mutationRevision);
+      channels = mergeChannelMutations(dedupeChannelsById(resp?.channels ?? []), mutationRevision);
     } catch (err) {
       if (generation !== channelsLoadGeneration) return;
       channelsError = typeof err === 'string' ? err : 'Could not load channels';
@@ -1315,7 +1345,12 @@
         selected?.personUid !== c.personUid
       ) return;
       // Server returns newest-first; render chronologically (oldest → newest).
-      messages = appendLiveInbound([...(resp.messages ?? [])].reverse(), c.personUid);
+      // Fold thread-reply rows onto their roots (count + lastReplyAt) so the
+      // reply indicator renders on load; replies never join the main list.
+      messages = appendLiveInbound(
+        foldReplies([...(resp.messages ?? [])].reverse()),
+        c.personUid,
+      );
       const preview = previewFromMessages(resp.messages ?? []);
       if (preview) applyContactPreview(c.personUid, preview);
     } catch (err) {
@@ -1915,6 +1950,7 @@
             <button type="button" onclick={() => openCreateChannel(null)} aria-label="New channel" aria-haspopup="dialog">+</button>
           </div>
           <ul class="contact-list compact-list">
+            {#if (!railQuery.trim() || 'setup'.includes(railQuery.trim().toLocaleLowerCase())) && !channels.some((c) => c.channelId === SETUP_CHANNEL_ID)}{@render channelRow(SETUP_CHANNEL)}{/if}
             {#each visibleChannelItems as item (item.key)}
               {#if item.kind === 'channel'}{@render channelRow(item.channel)}{/if}
             {/each}
@@ -1967,6 +2003,9 @@
       </header>
       <ShareMainPane events={selectedShareEvents} />
     {:else if selectedChannel}
+      {#if isSetupChannel(selectedChannel.channelId)}
+        <SetupChannelView hqFolderPath={hqFolderPath} />
+      {:else}
       <ChannelView
         channel={selectedChannel}
         {selfPersonUid}
@@ -1975,6 +2014,7 @@
         onopenthread={handleOpenChannelThread}
         activeRootEventId={openThread?.scope === 'channel' ? openThread.rootEventId : null}
       />
+      {/if}
     {:else if !selected}
       <div class="pane-empty">
         <p>Select a conversation to start messaging.</p>

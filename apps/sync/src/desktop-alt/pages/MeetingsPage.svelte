@@ -28,6 +28,7 @@
     eventStart,
     eventMeetingUrl,
     extractedSignalLabels,
+    filterListableMeetings,
     groupByDay,
     isPlausibleMeetingUrl,
     pickLiveMeeting,
@@ -92,8 +93,11 @@
   // Multi-day agenda: `meetings_list_upcoming` already returns events across
   // the server's sync window, so we show them all grouped by day rather than
   // narrowing to today (the old `isToday` filter hid every non-today meeting,
-  // which read as an empty "no meetings" view).
-  const upcomingEvents = $derived([...events].sort(sortByStart));
+  // which read as an empty "no meetings" view). Hide linkless placeholder
+  // blocks (Busy, Office, Home, Trash) that a notetaker could never join.
+  const upcomingEvents = $derived(
+    filterListableMeetings(events, botsByEventId, scheduledBots).sort(sortByStart),
+  );
   const dayGroups = $derived(groupByDay(upcomingEvents));
   const upNext = $derived(pickUpNext(upcomingEvents));
   const signalTotals = $derived(totalSignalCounts(upcomingEvents));

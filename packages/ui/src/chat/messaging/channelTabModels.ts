@@ -114,10 +114,40 @@ export interface ChannelFileItemModel {
   caption: string;
   iconKind: ChannelFileIconKind;
   accessDenied?: boolean;
-  /** Authored preview body (text/markdown) — no host fetch. */
+  /** Authored preview body (text/markdown) — skips host loadPreview when set. */
   previewText?: string;
 }
 
+export const CHANNEL_FILE_NO_PREVIEW = "No preview available.";
+export const CHANNEL_FILE_LOADING_PREVIEW = "Loading preview…";
+
+/** Markdown/text rows without authored previewText can be filled by the host. */
+export function shouldLoadPreview(
+  item: ChannelFileItemModel,
+  hasLoader: boolean,
+): boolean {
+  if (item.accessDenied) return false;
+  if (item.previewText) return false;
+  if (!hasLoader) return false;
+  return item.iconKind === "markdown" || item.iconKind === "text";
+}
+
+/** Body shown in the Files preview sheet (denied rows never reach here). */
+export function channelFilePreviewBody(
+  item: ChannelFileItemModel,
+  opts: {
+    hasLoader: boolean;
+    cacheHit: boolean;
+    cached?: string | null;
+  },
+): string {
+  if (item.previewText) return item.previewText;
+  if (opts.cacheHit) return opts.cached ?? CHANNEL_FILE_NO_PREVIEW;
+  if (shouldLoadPreview(item, opts.hasLoader)) {
+    return CHANNEL_FILE_LOADING_PREVIEW;
+  }
+  return CHANNEL_FILE_NO_PREVIEW;
+}
 /** A bounded, passive preview resolved by the host-owned file seam. */
 export type ChannelFilePreview =
   | { kind: "text"; text: string }

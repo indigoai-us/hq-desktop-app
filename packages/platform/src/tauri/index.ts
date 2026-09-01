@@ -176,7 +176,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "DELETE",
         `/v1/notify/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(personUid)}`,
       ),
-    listContacts: () => this.call("list_contacts"),
+    // Scoped reads go through the existing company-scoped command rather than
+    // a new IPC surface: list_company_members is GET /v1/notify/contacts
+    // ?companyUid=… and is already registered + capability-listed.
+    listContacts: (opts) => {
+      const companyUid = opts?.companyUid?.trim();
+      return companyUid
+        ? this.call("list_company_members", { companyUid })
+        : this.call("list_contacts");
+    },
     listDmRequests: () => this.call("list_dm_requests"),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
@@ -372,7 +380,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       }) as const,
     getAuthorizedPreview: (path) =>
       this.call("get_authorized_preview", { path }),
-    revealInFinder: (path) => this.call("reveal_in_finder", { path }),
+    // The registered Tauri command is `reveal_folder`
+    // (commands::launch::reveal_folder, main.rs invoke_handler). There has
+    // never been a `reveal_in_finder` command — that name appeared only here,
+    // so EVERY revealInFinder call rejected with "Command reveal_in_finder
+    // not found" (silently, wherever the caller swallowed the error).
+    revealInFinder: (path) => this.call("reveal_folder", { path }),
+    revealHqRoot: () => this.call("reveal_hq_root"),
   };
 
   readonly agency: PlatformAdapter["agency"] = {
@@ -410,6 +424,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
     launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
+    launchCodexWorkspace: (path, prompt) =>
+      this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),
@@ -493,6 +509,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly packages: PlatformAdapter["packages"] = {
     listPackages: () => this.call("list_packages"),
+    listPackagesCached: () => this.call("list_packages_cached"),
     install: ({ source, registry }) =>
       this.call("install_package", {
         source,

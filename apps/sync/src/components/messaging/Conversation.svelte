@@ -9,9 +9,13 @@
   import { tick } from 'svelte';
   import ReactionBar from './ReactionBar.svelte';
   import IdentityMark from './IdentityMark.svelte';
+  import WorkMeshActivityRow from './WorkMeshActivityRow.svelte';
+  import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
+  import { safeHref } from '../../lib/markdown';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
@@ -42,6 +46,8 @@
     rootEventId?: string | null;
     replyCount?: number | null;
     lastReplyAt?: string | null;
+    /** Distinct reply authors folded onto the root (avatar stack, capped at 3). */
+    replyAuthors?: Array<{ personUid: string; displayName: string }> | null;
     // Share timeline (share history in Messages). When set, the bubble renders
     // as a distinct inline share card (file icon, filename(s), note,
     // permission, timestamp) instead of a plain text body. `prompt` carries
@@ -90,6 +96,11 @@
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
     readonly?: boolean;
+    /** When false, the component renders NO footer at all — skip both the readonly static-note block and the reply composer block at the bottom of the markup (wrap the whole readonly/composer if-else in "{#if composer}"). */
+    composer?: boolean;
+    // Optional slot rendered after the message list, inside the scrollable
+    // region — used for the agent-thinking indicator (status, not a message).
+    belowMessages?: import('svelte').Snippet;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -110,10 +121,30 @@
     ontogglereaction,
     onopenshareinclaude,
     readonly = false,
+    composer = true,
+    belowMessages,
   }: Props = $props();
 
   const messageAuthor = (msg: ConversationMessage) =>
     msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
+
+  async function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+  ): Promise<void> {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest('a[href]');
+    if (!anchor) return;
+    event.preventDefault();
+    const href = anchor.getAttribute('href') ?? '';
+    const safe = safeHref(href);
+    if (!safe || !/^https?:/i.test(safe)) return;
+    try {
+      await openExternal(safe);
+    } catch {
+      window.open(safe, '_blank', 'noopener,noreferrer');
+    }
+  }
 
   let replyText = $state('');
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
@@ -413,6 +444,13 @@
         <span>{formatDateSeparator(msg.createdAt)}</span>
       </div>
     {/if}
+    {@const activity = parseWorkSessionEvent(msg.body)}
+    {#if activity}
+      <!-- Work-mesh session event: render a compact activity row instead of a
+           raw JSON bubble. Malformed/unknown payloads fall through to the
+           normal bubble (parseWorkSessionEvent returns null, never throws). -->
+      <WorkMeshActivityRow {activity} time={formatTime(msg.createdAt)} />
+    {:else}
       <div
         class="dm-msg dm-msg-{msg.direction}"
         class:dm-msg-group-start={groupStart}
@@ -505,7 +543,15 @@
             {/if}
           </div>
         {:else}
-          <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="dm-bubble-body selectable-text"
+            onclick={(event) => void onBodyLinkActivate(event)}
+            onkeydown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ')
+                void onBodyLinkActivate(event);
+            }}
+          >{@html renderMessageBodyMarkdown(msg.body)}</div>
         {/if}
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
@@ -572,12 +618,21 @@
           onclick={() => openThread(msg.rootEventId)}
           aria-label={`Open thread — ${msg.replyCount} ${(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}`}
         >
+          {#if msg.replyAuthors?.length}
+            <span class="thread-affordance-avatars" data-testid="reply-authors">
+              {#each msg.replyAuthors.slice(0, 3) as a (a.personUid || a.displayName)}
+                <span class="thread-affordance-avatar">
+                  <IdentityMark kind="person" label={a.displayName} size="small" />
+                </span>
+              {/each}
+            </span>
+          {/if}
           <span class="thread-affordance-count">
             {msg.replyCount}
             {(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}
           </span>
           {#if msg.lastReplyAt}
-            <span class="thread-affordance-time">· last {formatRelative(msg.lastReplyAt)}</span>
+            <span class="thread-affordance-time">Last reply {formatRelative(msg.lastReplyAt)}</span>
           {/if}
         </button>
       {/if}
@@ -601,7 +656,9 @@
       {/if}
       </div>
       </div>
+    {/if}
     {/each}
+    {#if belowMessages}{@render belowMessages()}{/if}
   </div>
 
   {#if newMessagesAvailable}
@@ -617,6 +674,7 @@
   {/if}
 </div>
 
+{#if composer}
 {#if readonly}
   <div class="dm-reply dm-reply-readonly">
     <span class="dm-reply-hint">Replies aren’t available in this preview.</span>
@@ -652,12 +710,16 @@
     </div>
   </div>
 {/if}
+{/if}
 
 <style>
   /* ── Thread (scrollable conversation) ─────────────────────────────────── */
 
   .dm-thread-wrap {
     position: relative;
+    /* Own stacking context so absolute/z-indexed hover chrome (copy toolbar,
+       new-messages jump) cannot paint into a sibling pane. */
+    isolation: isolate;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -667,6 +729,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;
@@ -980,7 +1043,7 @@
   }
 
   .dm-bubble-body :global(a) {
-    color: var(--message-markdown-text);
+    color: var(--message-markdown-muted);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
@@ -1130,6 +1193,14 @@
     text-align: right;
   }
 
+  .dm-bubble-body :global(.message-mention) {
+    font-weight: 600;
+    color: var(--message-markdown-text);
+    background: var(--message-markdown-surface);
+    border-radius: 5px;
+    padding: 0 3px;
+  }
+
   .dm-bubble-details {
     font-size: var(--text-base);
     line-height: 1.5;
@@ -1226,6 +1297,23 @@
   .thread-affordance-time {
     font-weight: 500;
     color: var(--pop-muted);
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .thread-affordance-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .thread-affordance-avatar {
+    display: inline-flex;
+    margin-left: -5px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--pop-hover);
+  }
+
+  .thread-affordance-avatar:first-child {
+    margin-left: 0;
   }
 
   /* The root bubble of the thread currently open in the ThreadPanel. */

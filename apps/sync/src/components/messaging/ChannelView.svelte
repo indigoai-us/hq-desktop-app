@@ -15,6 +15,8 @@
   import { untrack } from 'svelte';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
+  import AgentThinkingRow from './AgentThinkingRow.svelte';
+  import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import {
     type Channel,
     channelDisplayName,
@@ -22,6 +24,7 @@
     isInvitedNotJoined,
   } from '../../lib/channels';
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
+  import { foldReplies } from './thread-replies';
   import { ReactionController } from '../../lib/reactionController.svelte';
 
   interface Props {
@@ -75,6 +78,7 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let sendGeneration = 0;
+  let optimisticSeq = 0;
 
   let joining = $state(false);
   let joinError = $state<string | null>(null);
@@ -90,6 +94,7 @@
   // messages. Only meaningful for a joined channel (the invited preview has no
   // reactions surface).
   let reactionsCtl = $state<ReactionController | null>(null);
+  let thinkingCtl = $state<AgentThinkingController | null>(null);
 
   const title = $derived(channelDisplayName(current));
   const chip = $derived(scopeChipLabel(current));
@@ -120,8 +125,15 @@
         generation !== loadGeneration ||
         current.channelId !== requestedChannelId
       ) return;
-      // Server returns newest-first; render oldest → newest.
-      messages = [...(detail.messages ?? [])].reverse();
+      // Server returns newest-first; render oldest → newest. Thread-reply rows
+      // are folded onto their roots (count + lastReplyAt) so the reply
+      // indicator renders in the channel list; replies stay in the thread pane.
+      const previousIds = new Set(messages.map((m) => m.eventId));
+      const fetched = [...(detail.messages ?? [])].reverse();
+      messages = foldReplies(fetched);
+      // Only newly arrived senders can dismiss a thinking row — a full reload
+      // would otherwise clear on historical agent messages in the thread.
+      thinkingCtl?.noteIncoming(fetched.filter((m) => !previousIds.has(m.eventId)));
       if (detail.channel) {
         current = { ...current, ...detail.channel };
         memberCount = current.memberCount ?? memberCount;
@@ -173,7 +185,7 @@
       messages = [
         ...messages,
         {
-          eventId: `local-${messages.length}-${text.length}`,
+          eventId: `local-${Date.now()}-${optimisticSeq++}`,
           fromPersonUid: 'me',
           fromEmail: '',
           fromDisplayName: 'You',
@@ -184,6 +196,7 @@
           direction: 'out',
         },
       ];
+      void thinkingCtl?.noteOutgoing(text);
     } catch (err) {
       if (
         generation !== sendGeneration ||
@@ -191,6 +204,7 @@
       ) return;
       sendError = typeof err === 'string' ? err : 'Failed to send message';
       console.error('channel-view: send_channel_message failed', err);
+      thinkingCtl?.noteSendFailed();
     } finally {
       if (generation === sendGeneration) sending = false;
     }
@@ -272,6 +286,30 @@
     }
     const controller = new ReactionController(channelScope(id));
     reactionsCtl = controller;
+    return () => controller.dispose();
+  });
+
+  // Agent-thinking indicator: one controller per channel id. Recreated on
+  // channel swap; disposed on teardown. Member loader hits list_channel_members
+  // and maps to MentionCandidate (personUid + displayName).
+  $effect(() => {
+    const id = channel.channelId;
+    if (!id) {
+      thinkingCtl?.dispose();
+      thinkingCtl = null;
+      return;
+    }
+    const controller = new AgentThinkingController(async () => {
+      const resp = await invoke<{ members: Array<{ personUid: string; displayName: string }> }>(
+        'list_channel_members',
+        { channelId: id },
+      );
+      return (resp.members ?? []).map((m) => ({
+        personUid: m.personUid,
+        displayName: m.displayName,
+      }));
+    });
+    thinkingCtl = controller;
     return () => controller.dispose();
   });
 
@@ -405,7 +443,11 @@
     {activeRootEventId}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
-  />
+  >
+    {#snippet belowMessages()}
+      <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />
+    {/snippet}
+  </Conversation>
 {/if}
 
 {#if rosterOpen}

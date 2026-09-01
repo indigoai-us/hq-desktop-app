@@ -134,6 +134,8 @@ function makeAdapter(handler?: SyncInvokeFn) {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'fetch_reactions':
         return [{ emoji: '👍', count: 1, reactedByMe: true }];
       case 'toggle_reaction':
@@ -218,6 +220,8 @@ function mockInvoke(): SyncInvokeFn {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':
@@ -412,6 +416,32 @@ describe('US-105 embedded feature-parity QA', () => {
         body: expectedDm.body,
       });
       expect(expectedDm.path).toBe('/v1/notify/dm');
+    });
+
+    it('sendReply with mentions uses the WebPlatformAdapter POST contract', async () => {
+      const { adapter, calls } = makeAdapter();
+      const mentions = [
+        {
+          participantUid: 'prs_stefan',
+          participantType: 'human' as const,
+          displayName: 'Stefan Johnson',
+        },
+      ];
+      const channelArgs = {
+        scope: 'channel' as const,
+        rootEventId: 'evt_root',
+        body: 'hey @Stefan Johnson',
+        channelId: 'chn_1',
+        mentions,
+      };
+      expectOk(await adapter.messaging.sendReply(channelArgs));
+      const expectedChannel = buildSendReplyRequest(channelArgs);
+      expect(hqProJson(calls[0]?.args)).toEqual({
+        method: 'POST',
+        path: expectedChannel.path,
+        body: expectedChannel.body,
+      });
+      expect(expectedChannel.body.mentions).toEqual(mentions);
     });
 
     it('sendChannelMessage / sendDm with attachments match WebPlatformAdapter bodies', async () => {

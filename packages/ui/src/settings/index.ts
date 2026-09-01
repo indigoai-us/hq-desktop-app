@@ -5,6 +5,7 @@
 
 export * from "./settings-sections";
 export * from "./setup-launch";
+export * from "./launch-actions";
 export * from "./claude-code-link";
 export * from "./pending-update";
 export * from "./appearance-seam";

@@ -536,6 +536,17 @@ const handlers: Record<string, Handler> = {
   // Mirrors the native pending-route handoff consumed once on mount.
   desktop_alt_consume_pending_route: () =>
     new URLSearchParams(window.location.search).get('route'),
+  get_auth_state: () => ({
+    authenticated: true,
+    accountId: 'cognito-sub-ada',
+    email: 'ada@getindigo.ai',
+    displayName: 'Ada Lovelace',
+  }),
+  whoami: () => ({
+    personUid: 'prs_ada',
+    email: 'ada@getindigo.ai',
+    displayName: 'Ada Lovelace',
+  }),
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
     workspaces: HARNESS_WORKSPACES,
@@ -720,6 +731,7 @@ This final paragraph verifies spacing after a thematic break.
     },
     error: null,
   }),
+  list_packages_cached: (args) => handlers.list_packages(args),
   check_package_updates: () => null,
   get_library_worker_detail: (args) => {
     const path = String(args?.workerPath ?? '');

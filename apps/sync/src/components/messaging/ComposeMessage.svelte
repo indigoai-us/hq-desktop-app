@@ -36,6 +36,8 @@
   let { onclose, onsent }: Props = $props();
 
   let recipient = $state<SelectedRecipient | null>(null);
+  // Instance handle so send() can resolve a typed-but-unselected "To" value.
+  let picker = $state<{ resolveTyped: () => SelectedRecipient | null } | null>(null);
   let body = $state('');
   let sending = $state(false);
   let sendError = $state<string | null>(null);
@@ -52,26 +54,38 @@
   // "Send request" path: a known-but-not-active recipient (pending/none).
   const needsRequest = $derived(recipient != null && !isActive && !isBlocked);
 
-  const canSend = $derived(
-    recipient != null && !isBlocked && body.trim().length > 0 && !sending,
-  );
+  // The button stays enabled without an explicit recipient selection — send()
+  // resolves a typed "To" value itself and surfaces an inline error when it
+  // can't (a disabled button on a typed-but-unclicked recipient read as a
+  // silent no-op).
+  const canSend = $derived(!isBlocked && body.trim().length > 0 && !sending);
 
   const sendLabel = $derived(sending ? 'Sending…' : needsRequest ? 'Send request' : 'Send');
 
   async function send(): Promise<void> {
-    if (!recipient || isBlocked) return;
+    if (isBlocked || sending) return;
     const text = body.trim();
-    if (!text || sending) return;
+    if (!text) return;
+    // The user may have typed a recipient without clicking a suggestion —
+    // resolve it now instead of silently doing nothing.
+    const target = recipient ?? picker?.resolveTyped() ?? null;
+    if (!target) {
+      sendError = 'Choose a recipient from the suggestions.';
+      return;
+    }
+    if (target.connectionState === 'blocked' || (target.connectionState as string) === 'declined') {
+      return;
+    }
     sending = true;
     sendError = null;
     try {
       const outcome = await invoke<SendOutcome>('send_dm_to_email', {
-        toEmail: recipient.email || null,
-        toPersonUid: recipient.personUid ?? null,
+        toEmail: target.email || null,
+        toPersonUid: target.personUid ?? null,
         body: text,
       });
       const pending = outcome?.state === 'connectionRequested';
-      onsent({ recipient, body: text, pending });
+      onsent({ recipient: target, body: text, pending });
     } catch (err) {
       sendError = typeof err === 'string' ? err : 'Failed to send message';
       console.error('compose: send_dm_to_email failed', err);
@@ -83,7 +97,9 @@
   function onBodyKeydown(e: KeyboardEvent): void {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (canSend) void send();
+      // send() itself surfaces the inline "choose a recipient" error, so ⌘↵ is
+      // never a silent no-op.
+      void send();
     }
   }
 
@@ -117,11 +133,13 @@
     <div class="compose-field">
       <span class="compose-label">To</span>
       <RecipientPicker
+        bind:this={picker}
         bind:selected={recipient}
         onselect={(r) => {
           recipient = r;
           sendError = null;
         }}
+        onsubmit={() => void send()}
       />
     </div>
 

@@ -9,8 +9,12 @@ import {
   companyAvatarWash,
   membershipStatusLabel,
   normalizeColorTheme,
+  PROFILE_SKELETON_DELAY_MS,
+  profileFromMemberProfile,
+  profilePanePhase,
   roleLabel,
   settingsCompanyLists,
+  type ProfilePanePhase,
 } from "./shell-settings-model.js";
 
 function ws(partial: Partial<Workspace>): Workspace {
@@ -167,5 +171,113 @@ describe("calendarAccountLabel", () => {
     );
     expect(calendarAccountLabel({ displayName: "Work" })).toBe("Work");
     expect(calendarAccountLabel(null)).toBe("Calendar");
+  });
+});
+
+const PROFILE_PHASES: ProfilePanePhase[] = [
+  "ready",
+  "loading",
+  "error",
+  "empty",
+];
+
+describe("profilePanePhase", () => {
+  it("returns ready whenever a profile is present, even while fetching or errored", () => {
+    expect(
+      profilePanePhase({ hasProfile: true, fetching: true, error: null }),
+    ).toBe("ready");
+    expect(
+      profilePanePhase({ hasProfile: true, fetching: false, error: "fail" }),
+    ).toBe("ready");
+    expect(
+      profilePanePhase({ hasProfile: true, fetching: true, error: "fail" }),
+    ).toBe("ready");
+  });
+
+  it("returns loading when there is no profile and a fetch is in flight", () => {
+    expect(
+      profilePanePhase({ hasProfile: false, fetching: true, error: null }),
+    ).toBe("loading");
+  });
+
+  it("prefers loading over error when there is no profile yet", () => {
+    expect(
+      profilePanePhase({ hasProfile: false, fetching: true, error: "fail" }),
+    ).toBe("loading");
+  });
+
+  it("returns error when there is no profile, fetching is done, and error is set", () => {
+    expect(
+      profilePanePhase({ hasProfile: false, fetching: false, error: "fail" }),
+    ).toBe("error");
+  });
+
+  it("returns empty when there is no profile, no error, and not fetching", () => {
+    expect(
+      profilePanePhase({ hasProfile: false, fetching: false, error: null }),
+    ).toBe("empty");
+  });
+
+  it("treats a blank error as empty rather than error", () => {
+    expect(
+      profilePanePhase({ hasProfile: false, fetching: false, error: "" }),
+    ).toBe("empty");
+  });
+
+  it("covers every ProfilePanePhase branch", () => {
+    const seen = new Set<ProfilePanePhase>([
+      profilePanePhase({ hasProfile: false, fetching: true, error: null }),
+      profilePanePhase({ hasProfile: false, fetching: false, error: "fail" }),
+      profilePanePhase({ hasProfile: false, fetching: false, error: null }),
+      profilePanePhase({ hasProfile: true, fetching: false, error: "fail" }),
+    ]);
+    expect([...seen].sort()).toEqual([...PROFILE_PHASES].sort());
+  });
+});
+
+describe("PROFILE_SKELETON_DELAY_MS", () => {
+  it("is 150ms so fast loads do not flash a skeleton", () => {
+    expect(PROFILE_SKELETON_DELAY_MS).toBe(150);
+  });
+});
+
+describe("profileFromMemberProfile", () => {
+  it("returns null unless trimmed displayName is non-empty", () => {
+    expect(profileFromMemberProfile({})).toBeNull();
+    expect(profileFromMemberProfile({ displayName: null })).toBeNull();
+    expect(profileFromMemberProfile({ displayName: "   " })).toBeNull();
+    expect(
+      profileFromMemberProfile({
+        displayName: "",
+        email: "ada@example.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("builds initial, fullName, first-word displayName, and trimmed email", () => {
+    expect(
+      profileFromMemberProfile({
+        displayName: "Ada Lovelace",
+        email: " ada@example.com ",
+      }),
+    ).toEqual({
+      initial: "A",
+      fullName: "Ada Lovelace",
+      displayName: "Ada",
+      email: "ada@example.com",
+      verified: true,
+    });
+  });
+
+  it("uppercases the first letter and treats missing email as unverified", () => {
+    expect(
+      profileFromMemberProfile({ displayName: " ada" }),
+    ).toEqual({
+      initial: "A",
+      fullName: "ada",
+      displayName: "ada",
+      email: "",
+      verified: false,
+    });
   });
 });

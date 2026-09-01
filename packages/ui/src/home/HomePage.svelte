@@ -15,6 +15,7 @@
   import ActivityDigest from "./ActivityDigest.svelte";
   import NeedsYouCard from "./NeedsYouCard.svelte";
   import { pendingInviteWorkspaces } from "../chat/workspaces.js";
+  import Caret from "../common/Caret.svelte";
   import {
     formatClock,
     getAggregateConflictCardModel,
@@ -305,7 +306,8 @@
             aria-expanded={techOpen}
             onclick={() => (techOpen = !techOpen)}
           >
-            {techOpen ? "⌄" : "›"} Technical details
+<Caret open={techOpen} tone="currentColor" />
+            Technical details
           </button>
           {#if techOpen}
             <div class="home-tech-body">
@@ -991,6 +993,9 @@
   }
 
   .home-tech-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 0;
     border: none;
     background: none;

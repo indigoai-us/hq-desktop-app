@@ -9,6 +9,7 @@ export { default as V4TitleBar } from "./V4TitleBar.svelte";
 export { default as CopyPromptButton } from "./CopyPromptButton.svelte";
 export * from "./home-model.js";
 export * from "./core-popover-model.js";
+export * from "./pack-display-name.js";
 export * from "./model.js";
 export * from "./story-mutation-guard.js";
 export * from "./relative-time.js";

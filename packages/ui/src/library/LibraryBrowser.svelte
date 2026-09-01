@@ -23,6 +23,7 @@
   import InstalledPacksPanel from "../marketplace/InstalledPacksPanel.svelte";
   import SubmitPanel from "../marketplace/SubmitPanel.svelte";
   import ProfilePanel from "../marketplace/ProfilePanel.svelte";
+  import Caret from "../common/Caret.svelte";
 
   type Filter =
     | "all"
@@ -225,7 +226,7 @@
             >
               <span class="scope-label">Scope</span>
               <span class="scope-value">{scopeButtonLabel}</span>
-              <span class="scope-caret" aria-hidden="true">⌄</span>
+              <Caret tone="var(--v4-text-3)" />
             </button>
             {#if scopeMenuOpen}
               <div
@@ -452,11 +453,6 @@
     font-weight: 600;
   }
 
-  .scope-caret {
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1;
-  }
 
   .scope-menu {
     position: absolute;

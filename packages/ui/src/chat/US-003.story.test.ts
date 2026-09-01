@@ -18,6 +18,7 @@ import type {
   ReplyThreadResponse,
 } from "./chat-api";
 import type { ConversationRow } from "./sidebar-model";
+import { REPLY_OVERLAY_MAX_PX } from "./reply-layout.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -374,7 +375,7 @@ describe("US-003: Reply affordance + ReplyPanel in the shared shell", () => {
   it("Given a chat channel at a narrow viewport, when the panel opens, then it overlays the timeline and Close returns to the timeline", async () => {
     window.matchMedia = (query: string) =>
       ({
-        matches: String(query).includes("720"),
+        matches: String(query).includes(String(REPLY_OVERLAY_MAX_PX)),
         media: query,
         addEventListener() {},
         removeEventListener() {},

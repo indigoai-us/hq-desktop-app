@@ -86,7 +86,7 @@ afterEach(async () => {
 });
 
 describe('visual hierarchy polish: shared notification row', () => {
-  it('shows a neutral actor pill, source/type metadata, full timestamp semantics, and truncation tooltip', () => {
+  it('shows a plain-text actor prefix, source/type metadata, full timestamp semantics, and truncation tooltip', () => {
     const timestamp = Date.parse('2026-07-27T15:12:00.000Z');
     component = mount(NotificationRow, {
       target: host,

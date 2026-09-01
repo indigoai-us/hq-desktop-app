@@ -20,12 +20,21 @@
     applyChannelMessageWake,
     shouldBumpChannelUnread,
   } from "./channels";
+  import {
+    isSetupChannel,
+    withSetupChannel,
+    withSetupPin,
+  } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
-  import { shouldArmDirectorySafety, shouldBumpDmUnread } from "./live-catchup";
+  import {
+    shouldArmDirectorySafety,
+    shouldBumpDmUnread,
+    type InboxDmActivity,
+  } from "./live-catchup";
   import {
     adminCompanyUids,
     browseOnlyCompanyProjectChannels,
@@ -60,6 +69,7 @@
     loadRecentDms,
     loadShowFilter,
     mergeContactActivity,
+    mergeContactsWithInbox,
     normalizeChannel,
     normalizeConversations,
     rememberRecentDm,
@@ -94,6 +104,7 @@
   } from "./sidebar-modal-fixtures";
   import "./tokens.css";
   import "./chat-tokens.css";
+  import Caret from "../common/Caret.svelte";
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -161,6 +172,7 @@
   interface PairUnreadsPayload {
     pairUnreads?: PairUnreadEntry[];
     delta?: boolean;
+    activity?: InboxDmActivity[];
   }
 
   const storage = createTenantStorage(
@@ -357,9 +369,14 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  // Synthetic pinned #setup support channel (deduped against a real server
+  // `setup` channel) — always at the top of the rail's PINNED section.
+  const channelsWithSetup = $derived(withSetupChannel(channels));
+  const pinsWithSetup = $derived(withSetupPin(pins));
+
   const allRows = $derived(
-    normalizeConversations(channels, contactsWithUnreads, {
-      pinnedIds: pins,
+    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+      pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
     }),
@@ -368,8 +385,8 @@
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   const directoryRows = $derived(
-    normalizeConversations(channels, contactsWithUnreads, {
-      pinnedIds: pins,
+    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+      pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
     }),
@@ -424,7 +441,13 @@
       return;
     }
     if (autoOpenRequestedId) return;
-    const pick = pickAutoOpenConversation(filteredRows, selectedId);
+    // The synthetic #setup row never auto-opens — it exists from first paint,
+    // so it would win the empty-selection race against deep links and real
+    // conversations that hydrate a beat later.
+    const pick = pickAutoOpenConversation(
+      filteredRows.filter((row) => !isSetupChannel(row.channelId)),
+      selectedId,
+    );
     if (!pick) return;
     autoOpenRequestedId = pick.id;
     void openRow(pick, undefined, true);
@@ -457,8 +480,17 @@
   const switcherResults = $derived(
     filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
   );
+  // Compose ("new message") never targets the synthetic #setup support row:
+  // it is pinned first in the rail, so with an empty/debounced query it would
+  // be the default first suggestion and a fast type-then-send would misroute
+  // the draft to channelId "setup" instead of the intended conversation.
+  const composeRows = $derived(
+    liveSwitcherRows.filter(
+      (row) => row.kind !== "channel" || !isSetupChannel(row.id),
+    ),
+  );
   const composeResults = $derived(
-    filterSwitcher(liveSwitcherRows, newMessageQueryDebounced).slice(0, 200),
+    filterSwitcher(composeRows, newMessageQueryDebounced).slice(0, 200),
   );
   /** "Create channel #name" offer when the typed channel doesn't exist. */
   const composeCreateName = $derived(
@@ -842,7 +874,7 @@
     const generation = composeGeneration;
     const picked =
       composeRecipient ??
-      filterSwitcher(liveSwitcherRows, newMessageQuery)[0] ??
+      filterSwitcher(composeRows, newMessageQuery)[0] ??
       null;
     if (picked) {
       const body = composeBody;
@@ -1211,6 +1243,17 @@
   function mergePairUnreadsPayload(
     payload: PairUnreadsPayload | null | undefined,
   ): void {
+    const activity = payload?.activity;
+    if (Array.isArray(activity) && activity.length > 0) {
+      contacts = mergeContactsWithInbox(
+        contacts,
+        activity.map((entry) => ({
+          fromPersonUid: entry.personUid,
+          createdAt: entry.lastMessageAt,
+          fromDisplayName: entry.displayName,
+        })),
+      );
+    }
     const entries = payload?.pairUnreads;
     if (!Array.isArray(entries)) return;
     // Empty array on account switch clears the map; page rollups merge in.
@@ -1600,7 +1643,7 @@
           >
         {/if}
         {scopeLabel}
-        <span class="chat-scope-caret" aria-hidden="true">⌄</span>
+        <Caret tone="var(--t3)" />
       </button>
       {#if scopeMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1676,7 +1719,15 @@
           </svg>
         </button>
         {#if plusMenuOpen}
-          <div class="chat-popover chat-plus-menu" role="menu">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="chat-popover chat-plus-menu"
+            role="menu"
+            tabindex="-1"
+            aria-label="New message or channel"
+            use:menuPortal={{ anchor: plusMenuEl, placement: "bottom-start" }}
+            onmousedown={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               class="chat-popover-row"
@@ -2377,7 +2428,16 @@
                   >{switcherInitials(row.name)}</span
                 >
               {/if}
-              <span class="chat-switcher-name">{row.name}</span>
+              <span class="chat-switcher-copy">
+                <span class="chat-switcher-name">{row.name}</span>
+                {#if row.secondary}
+                  <span
+                    class="chat-switcher-secondary"
+                    data-testid="chat-compose-suggestion-secondary"
+                    >{row.secondary}</span
+                  >
+                {/if}
+              </span>
               <span class="chat-switcher-company">{row.company}</span>
             </button>
           {:else}
@@ -2853,12 +2913,6 @@
     opacity: 0.65;
   }
 
-  .chat-scope-caret {
-    flex: 0 0 auto;
-    color: var(--t3);
-    font-size: 10px;
-    line-height: 1;
-  }
 
   /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
      no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
@@ -3717,9 +3771,7 @@
   }
 
   .chat-plus-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
+    /* Portaled to .desktop-shell via use:menuPortal like the other chat popovers. */
     z-index: 70;
     min-width: 160px;
   }
@@ -3928,6 +3980,29 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .chat-switcher-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .chat-switcher-copy .chat-switcher-name {
+    flex: 0 1 auto;
+  }
+
+  .chat-switcher-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
   }
 
   .chat-switcher-company {

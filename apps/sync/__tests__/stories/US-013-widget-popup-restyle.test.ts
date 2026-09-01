@@ -124,7 +124,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       }
     });
 
-    it('rows carry the unread dot before their two-line communication copy', () => {
+    it('rows carry the unread dot before their one-line communication copy', () => {
       const now = Date.now();
       mountWidget({
         initialItems: [
@@ -138,10 +138,12 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       const kids = [...primaryAction!.children];
       const iconIdx = kids.findIndex((el) => el.classList.contains('nr-icon'));
       const dotIdx = kids.findIndex((el) => el.classList.contains('nr-unread'));
-      const textIdx = kids.findIndex((el) => el.classList.contains('nr-comfortable-copy'));
+      const textIdx = kids.findIndex((el) => el.classList.contains('nr-text'));
       expect(iconIdx).toBeGreaterThanOrEqual(0);
       expect(dotIdx).toBe(iconIdx + 1);
       expect(textIdx).toBe(dotIdx + 1);
+      expect(row.querySelector('.nr-comfortable-copy')).toBeNull();
+      expect(row.querySelector('.nr-identity')).toBeNull();
     });
   });
 
@@ -279,7 +281,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(rowIdx).toBeGreaterThan(-1);
       const row = style.slice(rowIdx, style.indexOf('}', rowIdx));
       expect(row).toContain('background: transparent');
-      expect(row).toContain('min-height: 58px');
+      expect(row).toContain('min-height: 32px');
       expect(row).toContain('border-radius: 0');
       expect(row).not.toContain('backdrop-filter');
       expect(row).not.toContain('box-shadow');

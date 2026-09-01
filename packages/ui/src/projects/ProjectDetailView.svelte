@@ -62,6 +62,7 @@
   import FilePreviewPane from "../files/FilePreviewPane.svelte";
   import StoryPanel from "../home/StoryPanel.svelte";
   import "../home/tokens.css";
+  import Caret from "../common/Caret.svelte";
 
   interface Props {
     /** Platform seam — projects/files/settings/shell slices + capabilities. */
@@ -640,7 +641,7 @@
                 : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
             </span>
             {#if !statusSaving}
-              <span class="status-caret" aria-hidden="true">⌄</span>
+              <Caret tone="var(--v4-text-3)" />
             {/if}
           </button>
           {#if statusOpen}
@@ -1346,11 +1347,6 @@
     outline-offset: 2px;
   }
 
-  .status-caret {
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
-    line-height: 1;
-  }
 
   .status-dot {
     width: 6px;

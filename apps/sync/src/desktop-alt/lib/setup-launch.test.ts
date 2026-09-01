@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { NO_AI_TOOLS, type AiTools } from '../../lib/onboarding-summary';
-import { codexAvailable, resolveClaudeLaunchPath, SETUP_PROMPT } from './setup-launch';
+import {
+  codexAvailable,
+  resolveClaudeLaunchPath,
+  resolveCodexLaunchPath,
+  SETUP_PROMPT,
+} from './setup-launch';
 
 function tools(overrides: Partial<AiTools>): AiTools {
   return { ...NO_AI_TOOLS, ...overrides };
@@ -32,6 +37,22 @@ describe('codexAvailable', () => {
     expect(codexAvailable(tools({ codex_desktop: true }))).toBe(true);
     expect(codexAvailable(tools({}))).toBe(false);
     expect(codexAvailable(null)).toBe(false);
+  });
+});
+
+describe('resolveCodexLaunchPath', () => {
+  it('prefers the ChatGPT desktop app when installed, even with a CLI', () => {
+    expect(resolveCodexLaunchPath(tools({ codex_desktop: true, codex_cli: true }))).toBe('desktop');
+    expect(resolveCodexLaunchPath(tools({ codex_desktop: true }))).toBe('desktop');
+  });
+
+  it('falls back to the terminal CLI when only codex_cli is detected', () => {
+    expect(resolveCodexLaunchPath(tools({ codex_cli: true }))).toBe('cli');
+  });
+
+  it('returns none when nothing is detected or probing failed', () => {
+    expect(resolveCodexLaunchPath(NO_AI_TOOLS)).toBe('none');
+    expect(resolveCodexLaunchPath(null)).toBe('none');
   });
 });
 

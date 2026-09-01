@@ -250,3 +250,45 @@ export function calendarAccountLabel(raw: unknown): string {
   }
   return "Calendar";
 }
+
+/** Hold the profile skeleton this long so a fast load never flashes a placeholder. */
+export const PROFILE_SKELETON_DELAY_MS = 150;
+
+export type ProfilePanePhase = "ready" | "loading" | "error" | "empty";
+
+/** Structural match for ShellSettingsProfile without importing the Svelte component. */
+export interface ProfilePaneIdentity {
+  initial: string;
+  fullName: string;
+  displayName: string;
+  email: string;
+  verified: boolean;
+}
+
+export function profilePanePhase(args: {
+  hasProfile: boolean;
+  fetching: boolean;
+  error: string | null;
+}): ProfilePanePhase {
+  if (args.hasProfile) return "ready";
+  if (args.fetching) return "loading";
+  if (args.error) return "error";
+  return "empty";
+}
+
+export function profileFromMemberProfile(args: {
+  displayName?: string | null;
+  email?: string | null;
+}): ProfilePaneIdentity | null {
+  const fullName = (args.displayName ?? "").trim();
+  if (!fullName) return null;
+  const email = (args.email ?? "").trim();
+  const firstWord = fullName.split(/\s+/).filter(Boolean)[0] || fullName;
+  return {
+    initial: fullName[0]!.toUpperCase(),
+    fullName,
+    displayName: firstWord,
+    email,
+    verified: Boolean(email),
+  };
+}

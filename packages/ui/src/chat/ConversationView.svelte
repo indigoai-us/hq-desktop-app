@@ -28,6 +28,7 @@
     TIMELINE_ROOT_PAGE_SIZE,
   } from "./live-messages";
   import ReplyPanel, { type ReplyPreview } from "./messaging/ReplyPanel.svelte";
+  import IdentityMark from "./messaging/IdentityMark.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -39,9 +40,11 @@
     wakes?: ChatWakeBus | null;
     /** The selected sidebar row (`ch:…` channel/group or `dm:…`). */
     row: ConversationRow;
+    /** Platform seam for opening an external URL from a reply-body link. */
+    onopenurl?: (url: string) => void;
   }
 
-  let { api, wakes = null, row }: Props = $props();
+  let { api, wakes = null, row, onopenurl }: Props = $props();
 
   interface MessageRow {
     eventId: string;
@@ -52,6 +55,10 @@
     sendStatus?: "sending" | "failed";
     rootEventId?: string | null;
     replyCount?: number;
+    /** Derived by `foldReplyMetadata` from the reply rows in the fetched
+     *  page — drives the avatar stack + last-reply stamp on first render. */
+    lastReplyAt?: string | null;
+    replyAuthors?: ConversationMessageWire["replyAuthors"];
   }
 
   /** Windowed timeline: newest window only; scroll-back pages via cursor. */
@@ -81,6 +88,8 @@
       direction: wire.direction === "out" ? "out" : "in",
       rootEventId: wire.rootEventId,
       replyCount: wire.replyCount,
+      lastReplyAt: wire.lastReplyAt,
+      replyAuthors: wire.replyAuthors,
     };
   }
 
@@ -335,6 +344,25 @@
     return timeLabel(iso);
   }
 
+
+  /**
+   * Affordance data for a root. Prefers a ReplyPanel-sourced preview (freshest
+   * once a thread has been opened) and otherwise derives it from the row
+   * itself — `foldReplyMetadata` populates `lastReplyAt` / `replyAuthors` from
+   * the reply rows the timeline page already carried, so avatars + the
+   * last-reply stamp render on FIRST paint without opening the thread.
+   */
+  function replyMetaFor(msg: MessageRow): {
+    at: string | null;
+    authors: NonNullable<ConversationMessageWire["replyAuthors"]>;
+  } {
+    const preview = replyPreviewByRoot[msg.eventId];
+    const authors = preview?.authors?.length
+      ? preview.authors
+      : (msg.replyAuthors ?? []);
+    return { at: preview?.at ?? msg.lastReplyAt ?? null, authors };
+  }
+
   function replyLabel(count: number): string {
     return count === 1 ? "1 reply" : `${count} replies`;
   }
@@ -464,7 +492,7 @@
                     Reply
                   </button>
                   {#if (m.replyCount ?? 0) > 0}
-                    {@const preview = replyPreviewByRoot[m.eventId]}
+                    {@const preview = replyMetaFor(m)}
                     <button
                       type="button"
                       class="conv-replies-count"
@@ -472,11 +500,27 @@
                       aria-label={replyLabel(m.replyCount ?? 0)}
                       onclick={() => openReply(m.eventId)}
                     >
+                      {#if preview.authors.length}
+                        <span
+                          class="conv-replies-avatars"
+                          data-testid="reply-authors"
+                        >
+                          {#each preview.authors.slice(0, 3) as a (a.personUid || a.displayName)}
+                            <span class="conv-replies-avatar">
+                              <IdentityMark
+                                kind={a.agent ? "agent" : "person"}
+                                label={a.displayName}
+                                agentUid={a.personUid}
+                                size="small"
+                              />
+                            </span>
+                          {/each}
+                        </span>
+                      {/if}
                       {replyLabel(m.replyCount ?? 0)}
-                      {#if preview}
+                      {#if preview.at}
                         <span class="conv-replies-preview">
-                          {preview.author}
-                          {formatRelative(preview.at)}
+                          Last reply {formatRelative(preview.at)}
                         </span>
                       {/if}
                     </button>
@@ -538,6 +582,7 @@
           {seedRoot}
           onclose={closeReply}
           onreplycount={onReplyCount}
+          {onopenurl}
         />
       </div>
     {/if}
@@ -628,6 +673,23 @@
   .conv-replies-preview {
     color: var(--t3);
     font-weight: 400;
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .conv-replies-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .conv-replies-avatar {
+    display: inline-flex;
+    margin-left: -5px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--surface, var(--v4-ground, #161618));
+  }
+
+  .conv-replies-avatar:first-child {
+    margin-left: 0;
   }
 
   .conv-thread {

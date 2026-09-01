@@ -38,6 +38,8 @@
     );
   }
 
+  const imageCount = $derived(attachments.filter(isImage).length);
+
   $effect(() => {
     if (!resolveUrl) return;
     for (const item of attachments) {
@@ -86,6 +88,7 @@
         <button
           type="button"
           class="att-thumb"
+          class:is-single={imageCount === 1}
           data-testid="attachment-thumb"
           aria-label={`Open ${item.name}`}
           onclick={() => onopen?.(item)}
@@ -134,14 +137,22 @@
   .att-thumb {
     appearance: none;
     position: relative;
-    width: 120px;
-    height: 88px;
+    flex: 0 0 auto;
+    width: 160px;
+    height: 120px;
     padding: 0;
     overflow: hidden;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--line2);
     border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.05));
+    background: var(--sel);
     cursor: pointer;
+  }
+
+  .att-thumb.is-single {
+    width: auto;
+    height: auto;
+    max-width: 320px;
+    max-height: 220px;
   }
 
   .att-thumb img {
@@ -149,6 +160,14 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  .att-thumb.is-single img {
+    width: auto;
+    height: auto;
+    max-width: 320px;
+    max-height: 220px;
+    object-fit: contain;
   }
 
   .att-thumb-fallback {

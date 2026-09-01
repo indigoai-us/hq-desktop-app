@@ -5,6 +5,7 @@ import {
   collapseDuplicateMentionTargets,
   filterMentionCandidates,
   mentionSpansForBody,
+  mentionTargetLabel,
   mentionTargetsFromContacts,
   mentionTargetsFromContactsPayload,
   mentionTypeForUid,
@@ -39,14 +40,198 @@ describe("channel mentions", () => {
     ]);
   });
 
-  it("collapses nameless-email duplicates like Scouty", () => {
-    const rows = mentionTargetsFromContacts([
-      { personUid: "agt_scouty", displayName: "Scouty" },
-      { personUid: "prs_scouty", displayName: "Scouty" },
-      { personUid: "prs_scouty_2", displayName: "Scouty" },
+  // Regression: keying the dedupe map on display name silently dropped one of
+  // two same-named identities, and the survivor was decided by Map insertion
+  // order. That made a cross-tenant mention (a foreign company's agent) look
+  // identical to the intended one. participantUid is the only identity.
+  it("keeps two DIFFERENT agents that share a display name and have no email", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_liverecover_izzy",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyUid: "cmp_liverecover",
+        companyName: "LiveRecover",
+      },
+      {
+        participantUid: "agt_indigo_izzy",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(rows.map((row) => row.participantUid).sort()).toEqual([
+      "agt_indigo_izzy",
+      "agt_liverecover_izzy",
+    ]);
+  });
+
+  it("renders a company disambiguator when two survivors share a name", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_liverecover_izzy",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyUid: "cmp_liverecover",
+        companyName: "LiveRecover",
+      },
+      {
+        participantUid: "agt_indigo_izzy",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(rows.map(mentionTargetLabel)).toEqual([
+      "Izzy (Indigo)",
+      "Izzy (LiveRecover)",
+    ]);
+  });
+
+  it("falls back to a uid suffix rather than dropping a nameless-company dupe", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_aaaaaaaaaaaa111111",
+        participantType: "agent",
+        displayName: "Izzy",
+      },
+      {
+        participantUid: "agt_bbbbbbbbbbbb222222",
+        participantType: "agent",
+        displayName: "Izzy",
+      },
+    ]);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.disambiguator).toBeTruthy();
+    }
+    // Distinct suffixes — the two rows are actually tellable apart.
+    expect(rows[0]?.disambiguator).not.toBe(rows[1]?.disambiguator);
+  });
+
+  it("leaves a unique display name undecorated", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_izzy",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyName: "LiveRecover",
+      },
+      {
+        participantUid: "prs_corey",
+        participantType: "human",
+        displayName: "Corey Epstein",
+      },
+    ]);
+    expect(rows.every((row) => row.disambiguator === undefined)).toBe(true);
+    expect(rows.map(mentionTargetLabel)).toEqual(["Corey Epstein", "Izzy"]);
+  });
+
+  it("merges rows that share one participantUid into a single row", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "prs_scouty",
+        participantType: "human",
+        displayName: "Scouty",
+      },
+      {
+        participantUid: "prs_scouty",
+        participantType: "human",
+        displayName: "Scouty",
+        email: "scouty@getindigo.ai",
+      },
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.participantUid).toBe("prs_scouty");
+    // The richer row's email survives the merge.
+    expect(rows[0]?.email).toBe("scouty@getindigo.ai");
+    expect(rows[0]?.disambiguator).toBeUndefined();
+  });
+
+  it("prefers the human entry over an agent alias on a true uid duplicate", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "prs_shared_seat",
+        participantType: "agent",
+        displayName: "Scouty",
+      },
+      {
+        participantUid: "prs_shared_seat",
+        participantType: "human",
+        displayName: "Scouty",
+        email: "scouty@getindigo.ai",
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.participantType).toBe("human");
+    expect(rows[0]?.email).toBe("scouty@getindigo.ai");
+  });
+
+  it("is deterministic regardless of input order", () => {
+    const a = {
+      participantUid: "agt_indigo_izzy",
+      participantType: "agent" as const,
+      displayName: "Izzy",
+      companyName: "Indigo",
+    };
+    const b = {
+      participantUid: "agt_liverecover_izzy",
+      participantType: "agent" as const,
+      displayName: "Izzy",
+      companyName: "LiveRecover",
+    };
+    expect(collapseDuplicateMentionTargets([a, b])).toEqual(
+      collapseDuplicateMentionTargets([b, a]),
+    );
+  });
+
+  it("carries companyUid/companyName from the contacts payload", () => {
+    const rows = mentionTargetsFromContacts([
+      {
+        personUid: "agt_lr_izzy",
+        displayName: "Izzy",
+        companyUid: "cmp_liverecover",
+        companyName: "LiveRecover",
+      },
+      {
+        personUid: "agt_in_izzy",
+        displayName: "Izzy",
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.companyUid).sort()).toEqual([
+      "cmp_indigo",
+      "cmp_liverecover",
+    ]);
+    expect(rows.map(mentionTargetLabel)).toEqual([
+      "Izzy (Indigo)",
+      "Izzy (LiveRecover)",
+    ]);
+  });
+
+  it("filters same-named candidates by their company", () => {
+    const roster = mentionTargetsFromContacts([
+      {
+        personUid: "agt_lr_izzy",
+        displayName: "Izzy",
+        companyUid: "cmp_liverecover",
+        companyName: "LiveRecover",
+      },
+      {
+        personUid: "agt_in_izzy",
+        displayName: "Izzy",
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(
+      filterMentionCandidates(roster, "liverecover", []).map(
+        (row) => row.participantUid,
+      ),
+    ).toEqual(["agt_lr_izzy"]);
   });
 
   it("keeps nameless agents with a fallback label instead of dropping them", () => {

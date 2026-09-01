@@ -6,6 +6,7 @@ vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
   return await import('../../../node_modules/svelte/src/index-client.js');
 });
+vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import Conversation, { type ConversationMessage } from './Conversation.svelte';

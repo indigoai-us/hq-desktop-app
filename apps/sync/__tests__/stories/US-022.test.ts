@@ -31,7 +31,7 @@ describe('US-022: reply-count affordance in Conversation', () => {
     expect(c).toContain('onclick={() => openThread(msg.rootEventId)}');
     // It shows the count and a "last {time}" relative stamp.
     expect(c).toContain("{(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}");
-    expect(c).toContain('· last {formatRelative(msg.lastReplyAt)}');
+    expect(c).toContain('Last reply {formatRelative(msg.lastReplyAt)}');
   });
 
   it('clicking the affordance calls onopenthread with the rootEventId', () => {
@@ -62,10 +62,8 @@ describe('US-022: ThreadPanel right-side panel', () => {
   it('pins the root, reuses Conversation for replies, and has its own composer', () => {
     const p = normalize(threadPanel);
     expect(p).toContain('class="thread-root"');
-    expect(p).toContain("import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';");
-    expect(p).toContain(
-      '<div class="thread-root-body selectable-text">{@html renderMessageBodyMarkdown(root.body)}</div>',
-    );
+    expect(p).toContain('composer={false}');
+    expect(p).toContain('messages={root ? [root] : []}');
     // Replies + composer reuse the shared Conversation.
     expect(p).toContain('<Conversation');
     expect(p).toContain('messages={replies}');
@@ -94,7 +92,7 @@ describe('US-022: ThreadPanel right-side panel', () => {
       'e.payload.rootEventId !== identity.rootEventId || !identityIsCurrent(identity)',
     );
     expect(p).toContain('appendReply(e.payload.reply);');
-    expect(p).toContain('onreplycount?.(identity.rootEventId, replyCount);');
+    expect(p).toContain('onreplycount?.( identity.rootEventId, replyCount, e.payload.reply.createdAt ?? null, );');
   });
 });
 
@@ -125,7 +123,7 @@ describe('US-022: MessagesShell wires onopenthread for DM + channel panes', () =
     expect(s).toContain('class="thread-column"');
     expect(s).toContain('<ThreadPanel');
     expect(s).toContain('onreplycount={handleThreadReplyCount}');
-    expect(s).toContain('function handleThreadReplyCount(rootEventId: string, replyCount: number): void');
+    expect(s).toContain('function handleThreadReplyCount( rootEventId: string, replyCount: number, lastReplyAt?: string | null, ): void');
     // Overlay on narrow widths, third column on wide.
     expect(s).toContain('@media (max-width: 720px)');
   });
