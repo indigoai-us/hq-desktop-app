@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { agentAvatarAssets, agentAvatarFor } from "./agent-avatars";
+
+const src = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "agent-avatars.ts"),
+  "utf8",
+);
 
 describe("agent-avatars", () => {
   it("bundles a discovered, sorted asset set", () => {
@@ -37,5 +45,11 @@ describe("agent-avatars", () => {
 
   it("returns null when the bundled set is empty", () => {
     expect(agentAvatarFor("agt_parker", [])).toBeNull();
+  });
+
+  it("does not guard import.meta.glob behind typeof", () => {
+    // The guard survives bundling (Vite only rewrites the *call*) and
+    // disables the set in production, where import.meta.glob is undefined.
+    expect(src).not.toContain("typeof import.meta.glob");
   });
 });

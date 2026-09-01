@@ -74,6 +74,7 @@
     normalizeConversations,
     rememberRecentDm,
     resolveSearchHitRow,
+    rowAvatar,
     saveConversationCache,
     saveDmDots,
     savePins,
@@ -132,6 +133,8 @@
      * the rail.
      */
     seedDirectory?: ChannelDirectoryRow[] | null;
+    /** personUid → presigned avatar URL from loaded channel rosters. */
+    avatarByUid?: Record<string, string> | null;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -156,6 +159,7 @@
     tenantAccountId = null,
     tenantCompanyId = null,
     seedDirectory = null,
+    avatarByUid = null,
     oncommand,
     onnavigateMessages,
     onopenSettings,
@@ -2232,9 +2236,18 @@
                         {row.memberCount ?? row.members?.length ?? 0}
                       </span>
                     {:else}
-                      <span class="chat-avatar" aria-hidden="true"
-                        >{initialsFor(row.title)}</span
+                      {@const avatar = rowAvatar(row, avatarByUid)}
+                      <span
+                        class="chat-avatar"
+                        aria-hidden="true"
+                        data-avatar={avatar.kind}
                       >
+                        {#if avatar.src}
+                          <img src={avatar.src} alt="" />
+                        {:else}
+                          {avatar.initials}
+                        {/if}
+                      </span>
                     {/if}
                     <span class="chat-search-hit-copy">
                       <span class="chat-row-title">{row.title}</span>
@@ -2278,9 +2291,18 @@
                       {row.memberCount ?? row.members?.length ?? 0}
                     </span>
                   {:else}
-                    <span class="chat-switcher-avatar" aria-hidden="true"
-                      >{initialsFor(row.title)}</span
+                    {@const avatar = rowAvatar(row, avatarByUid)}
+                    <span
+                      class="chat-switcher-avatar"
+                      aria-hidden="true"
+                      data-avatar={avatar.kind}
                     >
+                      {#if avatar.src}
+                        <img src={avatar.src} alt="" />
+                      {:else}
+                        {avatar.initials}
+                      {/if}
+                    </span>
                   {/if}
                   <span class="chat-switcher-name">{row.title}</span>
                 </button>
@@ -2736,12 +2758,18 @@
           {row.memberCount ?? row.members?.length ?? 0}
         </span>
       {:else}
+        {@const avatar = rowAvatar(row, avatarByUid)}
         <span
           class="chat-avatar"
           aria-hidden="true"
           data-testid="chat-dm-avatar"
+          data-avatar={avatar.kind}
         >
-          {initialsFor(row.title)}
+          {#if avatar.src}
+            <img src={avatar.src} alt="" />
+          {:else}
+            {avatar.initials}
+          {/if}
         </span>
       {/if}
       <span class="chat-row-title">{row.title}</span>
@@ -3199,6 +3227,15 @@
   .chat-avatar.group {
     border-radius: 50%;
     font-variant-numeric: tabular-nums;
+  }
+
+  .chat-avatar img,
+  .chat-switcher-avatar img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .chat-unread-badge {
