@@ -163,21 +163,27 @@ export function hydrateLiveRail(
   if (railHydrate) return railHydrate;
   const hydrate = (async () => {
     {
-      const [dirResult, contactsRaw, workItems, inbox] = await Promise.all([
+      const [dirResult, contactsResult, workItems, inbox] = await Promise.all([
         call<unknown>(adapter.messaging.fetchChannelDirectory(undefined)).then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        call<unknown>(adapter.messaging.listContacts()).catch(() => []),
+        call<unknown>(adapter.messaging.listContacts()).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ),
         loadWorkFeed(),
         loadInboxBundle(adapter),
       ]);
+      const contactsBase = contactsResult.ok
+        ? contactsFromRaw(contactsResult.value)
+        : readShallowCache(personUid).contacts;
       if (!dirResult.ok) {
         if (previousDirectory.length === 0) {
           throw dirResult.error;
         }
         const contacts = mergeLiveContacts(
-          contactsFromRaw(contactsRaw),
+          contactsBase,
           inbox.events,
           inbox.pairUnreads,
           inbox.selfUid,
@@ -201,7 +207,7 @@ export function hydrateLiveRail(
         workItems,
       );
       const contacts = mergeLiveContacts(
-        contactsFromRaw(contactsRaw),
+        contactsBase,
         inbox.events,
         inbox.pairUnreads,
         inbox.selfUid,
@@ -210,7 +216,7 @@ export function hydrateLiveRail(
         writeShallowCache(
           mergeShallowCache(
             readShallowCache(personUid),
-            { directory, contacts },
+            { directory, contacts: contactsResult.ok ? contacts : undefined },
             personUid,
           ),
         );

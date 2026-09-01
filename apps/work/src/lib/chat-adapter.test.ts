@@ -16,14 +16,22 @@ import {
   hydrateLiveRail,
   resetLiveRailHydrate,
 } from "./chat-adapter.js";
+import {
+  EMPTY_SHALLOW_CACHE,
+  mergeShallowCache,
+  readShallowCache,
+  writeShallowCache,
+} from "./browser-cache.js";
 
 function stubAdapter(
   fetchChannelDirectory: PlatformAdapter["messaging"]["fetchChannelDirectory"],
+  listContacts: PlatformAdapter["messaging"]["listContacts"] = async () =>
+    ok([]),
 ): PlatformAdapter {
   return {
     messaging: {
       fetchChannelDirectory,
-      listContacts: async () => ok({ contacts: [] }),
+      listContacts,
     },
     identity: {
       whoami: async () => ok({ personUid: "prs_me" }),
@@ -34,9 +42,30 @@ function stubAdapter(
   } as unknown as PlatformAdapter;
 }
 
+function shallowStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    clear: () => {
+      values.clear();
+    },
+    key: () => null,
+    get length() {
+      return values.size;
+    },
+  };
+}
+
 describe("hydrateLiveRail", () => {
   beforeEach(() => {
     resetLiveRailHydrate();
+    vi.stubGlobal("localStorage", shallowStorage());
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -93,6 +122,70 @@ describe("hydrateLiveRail", () => {
     expect(feed.rows).toEqual([
       expect.objectContaining({ channelId: "chn_cached" }),
     ]);
+  });
+
+  it("preserves cached contacts when the live roster fetch rejects", async () => {
+    const personUid = "prs_me";
+    const cachedContact = {
+      personUid: "prs_cached",
+      displayName: "Cached contact",
+    };
+    writeShallowCache(
+      mergeShallowCache(
+        EMPTY_SHALLOW_CACHE,
+        { contacts: [cachedContact] },
+        personUid,
+      ),
+    );
+    const adapter = stubAdapter(
+      async () =>
+        ok({
+          snapshot: true,
+          cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          rows: [],
+        }),
+      async () => Promise.reject(new Error("GET /v1/notify/contacts failed")),
+    );
+
+    const rail = await hydrateLiveRail(adapter, [], personUid);
+
+    expect(rail.contacts).toEqual([
+      expect.objectContaining({ personUid: cachedContact.personUid }),
+    ]);
+    expect(readShallowCache(personUid).contacts).toEqual([
+      expect.objectContaining({ personUid: cachedContact.personUid }),
+    ]);
+  });
+
+  it("overwrites cached contacts when the live roster is genuinely empty", async () => {
+    const personUid = "prs_me";
+    writeShallowCache(
+      mergeShallowCache(
+        EMPTY_SHALLOW_CACHE,
+        {
+          contacts: [
+            {
+              personUid: "prs_cached",
+              displayName: "Cached contact",
+            },
+          ],
+        },
+        personUid,
+      ),
+    );
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+
+    await hydrateLiveRail(adapter, [], personUid);
+
+    expect(readShallowCache(personUid).contacts).toEqual([]);
   });
 
   it("does not send the synthetic livefeed cursor to the API", async () => {
