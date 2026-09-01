@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
@@ -254,6 +254,63 @@ static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// snapshot, so a watcher cannot slip into the install window after the
 /// snapshot but before the app exits.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Direct `hq` mutations that are intentionally awaited outside the streamed
+/// process registry. The updater closes their admission gate before reading
+/// this count, so it can defer instead of orphaning an in-flight mutation.
+static UPDATE_SENSITIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+pub struct UpdateSensitiveOperationGuard<'a> {
+    active: &'a AtomicUsize,
+}
+
+impl Drop for UpdateSensitiveOperationGuard<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn acquire_update_sensitive_operation<'a>(
+    quiesce_requested: &AtomicBool,
+    active: &'a AtomicUsize,
+) -> Option<UpdateSensitiveOperationGuard<'a>> {
+    if quiesce_requested.load(Ordering::SeqCst) {
+        return None;
+    }
+    active.fetch_add(1, Ordering::SeqCst);
+    if quiesce_requested.load(Ordering::SeqCst) {
+        active.fetch_sub(1, Ordering::SeqCst);
+        None
+    } else {
+        Some(UpdateSensitiveOperationGuard { active })
+    }
+}
+
+pub fn begin_update_sensitive_operation() -> Result<UpdateSensitiveOperationGuard<'static>, String>
+{
+    acquire_update_sensitive_operation(&UPDATE_QUIESCE_REQUESTED, &UPDATE_SENSITIVE_OPERATIONS)
+        .ok_or_else(|| crate::updater::UPDATE_DEFERRED_DURING_MUTATION.to_string())
+}
+
+#[cfg(test)]
+mod update_sensitive_operation_tests {
+    use super::*;
+
+    #[test]
+    fn operation_admission_and_update_quiescence_are_race_closed() {
+        let quiesce_requested = AtomicBool::new(false);
+        let active = AtomicUsize::new(0);
+        let guard = acquire_update_sensitive_operation(&quiesce_requested, &active)
+            .expect("operation should start before quiescence");
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+
+        quiesce_requested.store(true, Ordering::SeqCst);
+        assert!(acquire_update_sensitive_operation(&quiesce_requested, &active).is_none());
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+
+        drop(guard);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+}
 
 pub fn app_exit_requested() -> bool {
     APP_EXIT_REQUESTED.load(Ordering::Acquire)
@@ -3005,10 +3062,7 @@ fn cancel_generation_os(handle: &str, generation: u64, sigkill_delay: Duration) 
     #[cfg(target_os = "windows")]
     {
         let mut registry = process_registry().lock().unwrap();
-        let entry = registry
-            .active
-            .get_mut(handle)
-            .filter(|entry| entry.generation == generation)?;
+        let entry = entry_for_generation_mut(&mut registry, handle, generation)?;
         if entry.signal_authority_revoked {
             return None;
         }
@@ -3322,7 +3376,7 @@ impl UpdateQuiescenceGuard {
 impl Drop for UpdateQuiescenceGuard {
     fn drop(&mut self) {
         if !self.committed {
-            UPDATE_QUIESCE_REQUESTED.store(false, Ordering::Release);
+            UPDATE_QUIESCE_REQUESTED.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -3404,7 +3458,7 @@ mod update_quiescence_tests {
 #[cfg(target_os = "windows")]
 pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, String> {
     UPDATE_QUIESCE_REQUESTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map_err(|_| "update process quiescence is already in progress".to_string())?;
     let guard = UpdateQuiescenceGuard { committed: false };
     // The gate is already closed, so this check is race-free: a manual sync
@@ -3413,6 +3467,9 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
     if is_registered("hq-sync") {
         return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
+    if UPDATE_SENSITIVE_OPERATIONS.load(Ordering::SeqCst) != 0 {
+        return Err(crate::updater::UPDATE_DEFERRED_DURING_MUTATION.to_string());
+    }
     let processes = registered_processes_including_retired();
     // The fallback PID-tree terminator remains useful for ordinary cancellation,
     // but it cannot provide an atomic, complete descendant set for an updater
@@ -3420,7 +3477,24 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
     // containment, whose successful termination covers the full descendant set.
     require_update_job_containment(&processes)?;
     let pids: Vec<u32> = processes.iter().map(|process| process.pid).collect();
-    terminate_registered_processes_for_exit(&processes, Duration::ZERO);
+    for process in &processes {
+        let attempt = cancel_process_for_generation(
+            &process.handle,
+            process.generation,
+            SyncCancelCause::AppQuit,
+            Duration::ZERO,
+        );
+        if !attempt.executed || !attempt.termination_effected {
+            log(
+                "updater",
+                &format!(
+                    "could not prove complete Job Object termination for HQ process {}",
+                    process.pid
+                ),
+            );
+            return Err(crate::updater::UPDATE_DEFERRED_DURING_PROCESS_EXIT.to_string());
+        }
+    }
 
     let started = std::time::Instant::now();
     loop {
@@ -3435,10 +3509,14 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
             break;
         }
         if started.elapsed() >= timeout {
-            return Err(format!(
-                "timed out after {}ms waiting for HQ processes to exit",
-                timeout.as_millis()
-            ));
+            log(
+                "updater",
+                &format!(
+                    "timed out after {}ms waiting for HQ processes to exit",
+                    timeout.as_millis()
+                ),
+            );
+            return Err(crate::updater::UPDATE_DEFERRED_DURING_PROCESS_EXIT.to_string());
         }
         thread::sleep(Duration::from_millis(25));
     }

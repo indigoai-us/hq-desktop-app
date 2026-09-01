@@ -624,13 +624,13 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
-      - name: Install PR bridge MSI package
+      - name: Install PR bridge NSIS package
         id: install_bridge
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi" -Filter '*.msi' -File -ErrorAction Stop | Select-Object -First 1
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
-            throw "Bridge MSI installer was not produced"
+            throw "Bridge NSIS installer was not produced"
           }
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
@@ -639,7 +639,7 @@ jobs:
           "installer=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Installed PR bridge application: $app"
 
-      - name: Roll back MSI-installed bridge after an installer failure
+      - name: Roll back NSIS-installed bridge after an installer failure
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"

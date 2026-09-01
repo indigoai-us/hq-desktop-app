@@ -54,8 +54,8 @@ describe('Windows production installer E2E', () => {
 
   it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
-    expect(workflow).toContain('Install PR bridge MSI package');
-    expect(workflow).toContain('bundle\\msi');
+    expect(workflow).toContain('Install PR bridge NSIS package');
+    expect(workflow).toContain('bundle\\nsis');
     expect(workflow).toContain('-Action upgrade');
     expect(workflow).toContain(
       'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
@@ -72,9 +72,9 @@ describe('Windows production installer E2E', () => {
 
   it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
     expect(workflow).toContain('Prepare bridge and target versions');
-    expect(workflow).toContain('Install PR bridge MSI package');
+    expect(workflow).toContain('Install PR bridge NSIS package');
     expect(workflow).toContain(
-      'Roll back MSI-installed bridge after an installer failure',
+      'Roll back NSIS-installed bridge after an installer failure',
     );
     expect(workflow).toContain('Build next synthetic NSIS updater');
     expect(workflow).toContain(
@@ -137,8 +137,8 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain(
       'Rollback left candidate-only registry metadata behind',
     );
-    expect(installerHarness).toContain(
-      'Rollback created NSIS uninstall metadata for an MSI-installed bridge',
+    expect(windowsUpdate).toContain(
+      'automatic update cannot safely migrate an MSI-installed HQ',
     );
     expect(installerHarness).toContain('$global:LASTEXITCODE = 0');
     expect(installerHarness).toContain('-RedirectStandardError $helperStderr');
@@ -184,7 +184,7 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain('cleanup_rollback_swap_dirs();');
     expect(windowsUpdate).toContain('FAILED_INSTALL_PREFIX');
     expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
-    expect(updater).toContain('install_failure_is_sync_deferral');
+    expect(updater).toContain('install_failure_is_transient_deferral');
     expect(updater).toContain(
       'automatic update deferred during install startup; retrying soon',
     );

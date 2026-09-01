@@ -21,6 +21,9 @@ const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
+const processRegistry = read('src-tauri/src/commands/process.rs');
+const packages = read('src-tauri/src/commands/packages.rs');
+const marketplace = read('src-tauri/src/commands/marketplace.rs');
 
 describe('master automatic-updates switch', () => {
   it('desktop SettingsPage exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
@@ -79,6 +82,12 @@ describe('master automatic-updates switch', () => {
     expect(windowsUpdater).toContain('let parent = open_parent(parent_pid)?;');
     expect(windowsUpdater).toContain('wait_for_parent(parent)?;');
     expect(windowsUpdater).toContain('restore_prior_installation');
+    expect(processRegistry).toContain('UPDATE_SENSITIVE_OPERATIONS');
+    expect(processRegistry).toContain('!attempt.termination_effected');
+    expect(packages).toContain('begin_update_sensitive_operation()?');
+    expect(marketplace.match(/begin_update_sensitive_operation/g) ?? []).toHaveLength(2);
+    expect(appUpdater).toContain('UPDATE_DEFERRED_DURING_MUTATION');
+    expect(appUpdater).toContain('install_failure_is_transient_deferral');
 
     // The hard version gate must route through that same coordinator rather
     // than reintroducing a direct Tauri install path.

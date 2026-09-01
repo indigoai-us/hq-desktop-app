@@ -290,6 +290,17 @@ fn snapshot_uninstall_registry(path: &Path) -> Result<bool, String> {
     }
 }
 
+fn require_nsis_installer_ownership(nsis_registry_existed: bool) -> Result<(), String> {
+    if nsis_registry_existed {
+        Ok(())
+    } else {
+        Err(
+            "automatic update cannot safely migrate an MSI-installed HQ; run the latest Windows setup executable once"
+                .to_string(),
+        )
+    }
+}
+
 fn delete_uninstall_registry() -> Result<(), String> {
     if !registry_key_exists()? {
         return Ok(());
@@ -361,6 +372,7 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
             .parent()
             .ok_or_else(|| "current HQ executable has no installation directory".to_string())?
             .to_path_buf();
+        require_nsis_installer_ownership(registry_key_exists()?)?;
         let helper = root.join("hq-update-helper.exe");
         fs::copy(&original_exe, &helper)
             .map_err(|error| format!("copy signed update helper: {error}"))?;
@@ -416,7 +428,7 @@ fn stop_helper_and_cleanup(helper: &mut Child, staged: &StagedUpdate) {
 }
 
 fn is_terminal_receipt_state(state: &str) -> bool {
-    matches!(state, "installed" | "rolled-back" | "failed")
+    matches!(state, "installed" | "rolled-back")
 }
 
 fn should_cleanup_staging_dir(state: Option<&str>, age: Duration) -> bool {
@@ -471,6 +483,10 @@ fn is_rollback_swap_dir_name(name: &str) -> bool {
     name.starts_with(ROLLBACK_READY_PREFIX) || name.starts_with(FAILED_INSTALL_PREFIX)
 }
 
+fn should_cleanup_rollback_swap_dir(name: &str, age: Duration) -> bool {
+    is_rollback_swap_dir_name(name) && age >= STALE_STAGING_MAX_AGE
+}
+
 fn cleanup_rollback_swap_dirs() {
     let Ok(current_exe) = std::env::current_exe() else {
         return;
@@ -486,7 +502,10 @@ fn cleanup_rollback_swap_dirs() {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() || !is_rollback_swap_dir_name(&entry.file_name().to_string_lossy()) {
+        let name = entry.file_name();
+        if !path.is_dir()
+            || !should_cleanup_rollback_swap_dir(&name.to_string_lossy(), staging_dir_age(&path))
+        {
             continue;
         }
         if let Err(error) = fs::remove_dir_all(&path) {
@@ -1011,7 +1030,11 @@ mod tests {
             Some("rolled-back"),
             Duration::ZERO
         ));
-        assert!(should_cleanup_staging_dir(Some("failed"), Duration::ZERO));
+        assert!(!should_cleanup_staging_dir(Some("failed"), Duration::ZERO));
+        assert!(should_cleanup_staging_dir(
+            Some("failed"),
+            STALE_STAGING_MAX_AGE
+        ));
         assert!(!should_cleanup_staging_dir(
             Some("installing"),
             Duration::ZERO
@@ -1025,5 +1048,19 @@ mod tests {
         assert!(is_rollback_swap_dir_name(".hq-rollback-ready-01K5ABC"));
         assert!(!is_rollback_swap_dir_name("HQ"));
         assert!(!is_rollback_swap_dir_name(".hq-failed-install"));
+        assert!(!should_cleanup_rollback_swap_dir(
+            ".hq-failed-install-01K5ABC",
+            Duration::ZERO
+        ));
+        assert!(should_cleanup_rollback_swap_dir(
+            ".hq-failed-install-01K5ABC",
+            STALE_STAGING_MAX_AGE
+        ));
+    }
+
+    #[test]
+    fn automatic_updates_require_nsis_installer_ownership() {
+        assert!(require_nsis_installer_ownership(true).is_ok());
+        assert!(require_nsis_installer_ownership(false).is_err());
     }
 }

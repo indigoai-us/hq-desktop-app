@@ -117,8 +117,11 @@ static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
-pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str =
-    "Update deferred while a sync is active";
+pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str = "Update deferred while a sync is active";
+pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
+    "Update deferred while an HQ change is active";
+pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
+    "Update deferred while HQ processes are still stopping";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
@@ -127,8 +130,13 @@ enum BackgroundUpdateAction {
     Announce,
 }
 
-fn install_failure_is_sync_deferral(error: &str) -> bool {
-    error == UPDATE_DEFERRED_DURING_SYNC
+fn install_failure_is_transient_deferral(error: &str) -> bool {
+    matches!(
+        error,
+        UPDATE_DEFERRED_DURING_SYNC
+            | UPDATE_DEFERRED_DURING_MUTATION
+            | UPDATE_DEFERRED_DURING_PROCESS_EXIT
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -696,7 +704,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                             );
                                                         }
                                                         Err(error)
-                                                            if install_failure_is_sync_deferral(
+                                                            if install_failure_is_transient_deferral(
                                                                 &error,
                                                             ) =>
                                                         {
@@ -914,10 +922,16 @@ mod tests {
             BackgroundUpdateAction::DeferForSync
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
-        assert!(install_failure_is_sync_deferral(
+        assert!(install_failure_is_transient_deferral(
             UPDATE_DEFERRED_DURING_SYNC
         ));
-        assert!(!install_failure_is_sync_deferral(
+        assert!(install_failure_is_transient_deferral(
+            UPDATE_DEFERRED_DURING_MUTATION
+        ));
+        assert!(install_failure_is_transient_deferral(
+            UPDATE_DEFERRED_DURING_PROCESS_EXIT
+        ));
+        assert!(!install_failure_is_transient_deferral(
             "Windows update helper did not become ready"
         ));
     }
