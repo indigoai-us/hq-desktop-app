@@ -3,8 +3,8 @@
  *
  * Only a single-slash absolute path is honored; protocol-relative
  * ("//evil.com"), backslash-smuggled ("/\\evil.com"), and off-origin values
- * collapse to "/". Shared verbatim across surfaces so every host applies the
- * exact same same-origin return-URL guard.
+ * collapse to "/". The request origin is required so URL parsing verifies that
+ * control characters and other parser-normalized values remain same-origin.
  */
 
 export type SignInSearchParams = {
@@ -23,7 +23,10 @@ export function firstParam(
 }
 
 /** Resolve a safe, same-origin post-sign-in destination. */
-export function normalizeCallback(searchParams: SignInSearchParams): string {
+export function normalizeCallback(
+  searchParams: SignInSearchParams,
+  origin: string,
+): string {
   const callbackUrl = firstParam(searchParams.callbackUrl);
   const returnUrl = firstParam(searchParams.return);
   const returnTo = firstParam(searchParams["return-to"]);
@@ -31,7 +34,15 @@ export function normalizeCallback(searchParams: SignInSearchParams): string {
   if (!raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) {
     return "/";
   }
-  return raw;
+
+  try {
+    const requestOrigin = new URL(origin);
+    return new URL(raw, requestOrigin).origin === requestOrigin.origin
+      ? raw
+      : "/";
+  } catch {
+    return "/";
+  }
 }
 
 /**

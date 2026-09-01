@@ -9,11 +9,10 @@
  * the current id_token into browser memory for direct hq-pro calls.
  */
 
-import { exchangeCodeForTokens } from "@hq/auth";
+import { exchangeCodeForTokens, normalizeCallback } from "@hq/auth";
 import { redirect } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
-import { normalizeCallback } from "$lib/auth/callback";
 import {
   OAUTH_STATE_COOKIE,
   PKCE_VERIFIER_COOKIE,

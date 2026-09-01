@@ -18,11 +18,14 @@
  * broken redirect).
  */
 
-import { buildAuthorizeUrl } from "@hq/auth";
+import {
+  buildAuthorizeUrl,
+  normalizeCallback,
+  searchParamsToSignIn,
+} from "@hq/auth";
 import { redirect } from "@sveltejs/kit";
 import type { PageServerLoad } from "./$types";
 
-import { normalizeCallback, searchParamsToSignIn } from "$lib/auth/callback";
 import {
   SIGNIN_PROVIDERS,
   SIGNIN_PROVIDER_CONFIG,
