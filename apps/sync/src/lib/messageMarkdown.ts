@@ -1,4 +1,4 @@
-import { renderMarkdown } from './markdown';
+import { renderMarkdown, safeHref } from './markdown';
 
 function trimBlankBoundaryLines(lines: string[]): string[] {
   let start = 0;
@@ -181,6 +181,38 @@ function tagName(tag: string): { name: string; closing: boolean } | null {
   return { name: match[1].toLowerCase(), closing: tag.startsWith('</') };
 }
 
+/** Strip sentence punctuation and an unmatched trailing `)` from a URL match. */
+function trimBareUrl(raw: string): string {
+  let url = raw;
+  for (;;) {
+    const withoutPunct = url.replace(/[.,;:!?]+$/, '');
+    let next = withoutPunct;
+    if (next.endsWith(')')) {
+      let open = 0;
+      let close = 0;
+      for (const character of next) {
+        if (character === '(') open += 1;
+        else if (character === ')') close += 1;
+      }
+      if (close > open) next = next.slice(0, -1);
+    }
+    if (next === url) return next;
+    url = next;
+  }
+}
+
+function autolinkUrlsInText(text: string): string {
+  const pattern = /https?:\/\/[^\s<>"']+/gi;
+  return text.replace(pattern, (raw) => {
+    const url = trimBareUrl(raw);
+    if (url.length === 0) return raw;
+    if (safeHref(url) === null) return raw;
+    if (!/^https?:/i.test(url)) return raw;
+    const suffix = raw.slice(url.length);
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${suffix}`;
+  });
+}
+
 /**
  * Wrap @mentions in already-rendered HTML. Only text outside tags is scanned,
  * and `<code>` / `<pre>` contents are skipped. Matched text is already escaped;
@@ -227,7 +259,61 @@ export function wrapMessageMentions(html: string): string {
   return out;
 }
 
+/**
+ * Wrap bare http(s) URLs in already-rendered HTML. Only text outside tags is
+ * scanned, and `<code>` / `<pre>` / `<a>` contents are skipped. Matched text is
+ * already escaped; this only wraps it — it never decodes entities or
+ * interpolates raw input.
+ */
+export function autolinkMessageUrls(html: string): string {
+  if (!/https?:\/\//i.test(html)) return html;
+
+  let out = '';
+  let cursor = 0;
+  let codeDepth = 0;
+  let preDepth = 0;
+  let aDepth = 0;
+
+  while (cursor < html.length) {
+    const tagStart = html.indexOf('<', cursor);
+    const textEnd = tagStart === -1 ? html.length : tagStart;
+    const text = html.slice(cursor, textEnd);
+    const skip = codeDepth > 0 || preDepth > 0 || aDepth > 0;
+    out += skip ? text : autolinkUrlsInText(text);
+    if (tagStart === -1) break;
+
+    const tagEnd = html.indexOf('>', tagStart);
+    if (tagEnd === -1) {
+      out += html.slice(tagStart);
+      break;
+    }
+
+    const tag = html.slice(tagStart, tagEnd + 1);
+    const parsed = tagName(tag);
+    out += tag;
+    if (
+      parsed &&
+      (parsed.name === 'code' || parsed.name === 'pre' || parsed.name === 'a')
+    ) {
+      const selfClosing = /\/\s*>$/.test(tag);
+      if (!selfClosing) {
+        const delta = parsed.closing ? -1 : 1;
+        if (parsed.name === 'code') {
+          codeDepth = Math.max(0, codeDepth + delta);
+        } else if (parsed.name === 'pre') {
+          preDepth = Math.max(0, preDepth + delta);
+        } else {
+          aDepth = Math.max(0, aDepth + delta);
+        }
+      }
+    }
+    cursor = tagEnd + 1;
+  }
+
+  return out;
+}
+
 export function renderMessageBodyMarkdown(body: string): string {
   const markdown = applyChatLineBreaks(normalizeMessageMarkdown(body));
-  return wrapMessageMentions(renderMarkdown(markdown));
+  return wrapMessageMentions(autolinkMessageUrls(renderMarkdown(markdown)));
 }

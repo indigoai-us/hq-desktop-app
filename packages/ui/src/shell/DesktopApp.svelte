@@ -2563,6 +2563,7 @@
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}
                     mentionCandidates={mentionRoster}
+                    {onopenurl}
                   />
                 </div>
               {/if}

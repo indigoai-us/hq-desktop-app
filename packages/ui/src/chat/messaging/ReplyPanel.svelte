@@ -47,6 +47,7 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import { safeHref } from "../../common/markdown.js";
   import type {
     ChatWakeBus,
     ConversationApi,
@@ -133,6 +134,8 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    /** Platform seam for opening an external URL from a message-body link. */
+    onopenurl?: (url: string) => void;
   }
 
   let {
@@ -158,6 +161,7 @@
     displayNameByUid = {},
     onopenprofile,
     mentionCandidates = [],
+    onopenurl,
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -185,6 +189,25 @@
       personUid,
       displayName: span.textContent?.replace(/^@/, "").trim() || personUid,
     });
+  }
+
+  /** Delegated open for markdown/autolinked anchors injected as HTML. */
+  function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+    node: EventTarget | null,
+  ): boolean {
+    if (!(node instanceof Element)) return false;
+    const body = event.currentTarget;
+    if (!(body instanceof Element)) return false;
+    const anchor = node.closest("a[href]");
+    if (!anchor || !body.contains(anchor)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const href = safeHref(anchor.getAttribute("href") ?? "");
+    if (!href) return true;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+    return true;
   }
 
   function storedMentions(
@@ -741,10 +764,15 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="reply-md"
-              onclick={(e) => onMentionActivate(e, e.target)}
+              onclick={(e) => {
+                if (onBodyLinkActivate(e, e.target)) return;
+                onMentionActivate(e, e.target);
+              }}
               onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ")
+                if (e.key === "Enter" || e.key === " ") {
+                  if (onBodyLinkActivate(e, e.target)) return;
                   onMentionActivate(e, e.target);
+                }
               }}
             >
               {@html applyMentionMarkup(
@@ -879,10 +907,15 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="reply-md"
-                  onclick={(e) => onMentionActivate(e, e.target)}
+                  onclick={(e) => {
+                    if (onBodyLinkActivate(e, e.target)) return;
+                    onMentionActivate(e, e.target);
+                  }}
                   onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ")
+                    if (e.key === "Enter" || e.key === " ") {
+                      if (onBodyLinkActivate(e, e.target)) return;
                       onMentionActivate(e, e.target);
+                    }
                   }}
                 >
                   {@html applyMentionMarkup(
@@ -1209,6 +1242,17 @@
 
   .reply-md :global(.inline-mention[data-person-uid]:hover) {
     text-decoration: underline;
+  }
+
+  .reply-md :global(a) {
+    color: var(--message-markdown-muted);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+    text-underline-offset: 0.125rem;
+  }
+
+  .reply-md :global(a:hover) {
+    text-decoration-color: currentColor;
   }
 
   .reply-time {

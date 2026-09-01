@@ -13,7 +13,9 @@
   import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
+  import { safeHref } from '../../lib/markdown';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
@@ -125,6 +127,24 @@
 
   const messageAuthor = (msg: ConversationMessage) =>
     msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
+
+  async function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+  ): Promise<void> {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest('a[href]');
+    if (!anchor) return;
+    event.preventDefault();
+    const href = anchor.getAttribute('href') ?? '';
+    const safe = safeHref(href);
+    if (!safe || !/^https?:/i.test(safe)) return;
+    try {
+      await openExternal(safe);
+    } catch {
+      window.open(safe, '_blank', 'noopener,noreferrer');
+    }
+  }
 
   let replyText = $state('');
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
@@ -523,7 +543,15 @@
             {/if}
           </div>
         {:else}
-          <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="dm-bubble-body selectable-text"
+            onclick={(event) => void onBodyLinkActivate(event)}
+            onkeydown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ')
+                void onBodyLinkActivate(event);
+            }}
+          >{@html renderMessageBodyMarkdown(msg.body)}</div>
         {/if}
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
@@ -1015,7 +1043,7 @@
   }
 
   .dm-bubble-body :global(a) {
-    color: var(--message-markdown-text);
+    color: var(--message-markdown-muted);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;

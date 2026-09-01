@@ -39,6 +39,7 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import { safeHref } from "../../common/markdown.js";
   import {
     toggleReaction,
     type ReactionAggregate,
@@ -199,6 +200,25 @@
       personUid,
       displayName: span.textContent?.replace(/^@/, "").trim() || personUid,
     });
+  }
+
+  /** Delegated open for markdown/autolinked anchors injected as HTML. */
+  function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+    node: EventTarget | null,
+  ): boolean {
+    if (!(node instanceof Element)) return false;
+    const body = event.currentTarget;
+    if (!(body instanceof Element)) return false;
+    const anchor = node.closest("a[href]");
+    if (!anchor || !body.contains(anchor)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const href = safeHref(anchor.getAttribute("href") ?? "");
+    if (!href) return true;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+    return true;
   }
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -896,10 +916,15 @@
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="dm-bubble-body selectable-text"
-                      onclick={(e) => onMentionActivate(e, e.target)}
+                      onclick={(e) => {
+                        if (onBodyLinkActivate(e, e.target)) return;
+                        onMentionActivate(e, e.target);
+                      }}
                       onkeydown={(e) => {
-                        if (e.key === "Enter" || e.key === " ")
+                        if (e.key === "Enter" || e.key === " ") {
+                          if (onBodyLinkActivate(e, e.target)) return;
                           onMentionActivate(e, e.target);
+                        }
                       }}
                     >
                       {#if isHeavyMessageBody(msg.body ?? "")}
@@ -1677,7 +1702,7 @@
   }
 
   .dm-bubble-body :global(a) {
-    color: var(--message-markdown-text);
+    color: var(--message-markdown-muted);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;

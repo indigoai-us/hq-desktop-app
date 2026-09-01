@@ -40,9 +40,11 @@
     wakes?: ChatWakeBus | null;
     /** The selected sidebar row (`ch:…` channel/group or `dm:…`). */
     row: ConversationRow;
+    /** Platform seam for opening an external URL from a reply-body link. */
+    onopenurl?: (url: string) => void;
   }
 
-  let { api, wakes = null, row }: Props = $props();
+  let { api, wakes = null, row, onopenurl }: Props = $props();
 
   interface MessageRow {
     eventId: string;
@@ -555,6 +557,7 @@
           {seedRoot}
           onclose={closeReply}
           onreplycount={onReplyCount}
+          {onopenurl}
         />
       </div>
     {/if}

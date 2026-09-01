@@ -8,6 +8,7 @@ vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
   return await import('../../../node_modules/svelte/src/index-client.js');
 });
+vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import Conversation from './Conversation.svelte';
@@ -97,8 +98,10 @@ pnpm test
     expect(conversation).toContain('border-radius: 0;');
     expect(conversation).toContain('overflow-x: auto;');
 
+    expect(conversation).toContain('class="dm-bubble-body selectable-text"');
+    expect(conversation).toContain('{@html renderMessageBodyMarkdown(msg.body)}');
     expect(conversation).toContain(
-      '<div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>',
+      'onclick={(event) => void onBodyLinkActivate(event)}',
     );
     expect(threadPanel).toContain('composer={false}');
     expect(threadPanel).not.toContain('thread-root-bubble');
