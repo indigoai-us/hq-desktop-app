@@ -1,4 +1,15 @@
 <script lang="ts">
+  import {
+    runUpdateCheck,
+    type AdapterResult,
+  } from "./update-orchestration";
+  import {
+    channelDowngradeNotice,
+    channelOptions,
+    normalizeChannel,
+    selectedChannel,
+    type ReleaseChannelId,
+  } from "./release-channel-model";
   /**
    * Host settings sections — Daybook / preview-v2 set-row + toggle language.
    * Appearance choices are local to this embedded window. Every setting that
@@ -148,12 +159,37 @@
   let nativeReadGeneration = 0;
   let nativeReconcileAfterWrites = false;
   let versionsReadGeneration = 0;
-  let appUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked">("unchecked");
+  // "failed" covers a timed-out/hung check: the pane must show a real failed
+  // state with a retry affordance rather than an endless CHECKING.
+  let appUpdateStatus = $state<
+    "checking" | "up-to-date" | "available" | "unchecked" | "failed"
+  >("unchecked");
   let coreUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
   let cliUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
   let coreProbeError = $state<string | null>(null);
   let cliProbeError = $state<string | null>(null);
   let versionsRefreshing = $state(false);
+  // Release channel (Stable / Beta / Alpha). The native host owns the
+  // semantics — this is the persisted `releaseChannel` pref in menubar.json
+  // that release_channel.rs `effective_channel` already resolves.
+  let availableChannels = $state<unknown>(null);
+  let releaseChannelPref = $state<ReleaseChannelId | null>(null);
+  let effectiveChannel = $state<ReleaseChannelId | null>(null);
+  let channelSaving = $state(false);
+  let channelError = $state<string | null>(null);
+  /** Newest version offered by the selected channel, when the host reports one. */
+  let channelLatestVersion = $state<string | null>(null);
+  const releaseChannelOptions = $derived(channelOptions(availableChannels));
+  const selectedReleaseChannel = $derived(
+    selectedChannel(releaseChannelPref, effectiveChannel),
+  );
+  const channelDowngrade = $derived(
+    channelDowngradeNotice(
+      appVersion,
+      selectedReleaseChannel,
+      channelLatestVersion,
+    ),
+  );
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -617,69 +653,97 @@
     cliUpdateStatus = "checking";
     coreProbeError = null;
     cliProbeError = null;
-    const [versionResult, appCheck, coreCheck, cliCheck, refreshedAppVersion] =
-      await Promise.all([
-        adapter.updates.getVersions(),
-        adapter.updates.checkForUpdates(),
-        adapter.updates.checkCoreState(),
-        adapter.updates.checkCliUpdate(),
-        refreshAppVersion ? refreshAppVersion().catch(() => null) : Promise.resolve(null),
-      ]);
-    if (generation !== versionsReadGeneration) return;
-    if (typeof refreshedAppVersion === "string" && refreshedAppVersion.trim()) {
-      appVersion = refreshedAppVersion.trim();
-    } else {
-      appVersion = version;
+    const updates = adapter.updates;
+    try {
+      const refreshedAppVersion = refreshAppVersion
+        ? await refreshAppVersion().catch(() => null)
+        : null;
+      if (generation !== versionsReadGeneration) return;
+      appVersion =
+        typeof refreshedAppVersion === "string" && refreshedAppVersion.trim()
+          ? refreshedAppVersion.trim()
+          : version;
+      // ONE orchestration for every trigger (mount, focus, native events,
+      // the explicit button, and a channel change). Each row commits as its
+      // own check settles and every call is time-bounded, so a slow or hung
+      // check can no longer pin all three rows on CHECKING forever.
+      const outcome = await runUpdateCheck(
+        {
+          getVersions: () =>
+            updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+          checkForUpdates: () =>
+            updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+          checkCoreState: () =>
+            updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+          checkCliUpdate: () =>
+            updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+        },
+        {
+          onRow: (row, status) => {
+            if (generation !== versionsReadGeneration) return;
+            // The app row has no "unlocated" arm (there is no path to
+            // locate) — fold it into "unchecked".
+            if (row === "app")
+              appUpdateStatus = status === "unlocated" ? "unchecked" : status;
+            else if (row === "core") coreUpdateStatus = status;
+            else cliUpdateStatus = status;
+          },
+        },
+      );
+      if (generation !== versionsReadGeneration) return;
+      coreVersion = outcome.coreVersion;
+      cliVersion = outcome.cliVersion;
+      coreProbeError = outcome.coreProbeError;
+      cliProbeError = outcome.cliProbeError;
+      appUpdateStatus =
+        outcome.appStatus === "unlocated" ? "unchecked" : outcome.appStatus;
+      coreUpdateStatus = outcome.coreStatus;
+      cliUpdateStatus = outcome.cliStatus;
+      channelLatestVersion = outcome.appStatus === "available" ? channelLatestVersion : null;
+    } finally {
+      // Unconditional: a superseded generation, a thrown adapter, or a timed
+      // out check all land here, so the pane always leaves the busy state.
+      if (generation === versionsReadGeneration) versionsRefreshing = false;
     }
-    const coreVersionFailure = versionResult.ok
-      ? probeFailure(versionResult.value.coreProbe)
-      : versionResult.message ?? "The Core version probe failed.";
-    const cliVersionFailure = versionResult.ok
-      ? probeFailure(versionResult.value.cliProbe)
-      : versionResult.message ?? "The CLI version probe failed.";
-    if (versionResult.ok) {
-      coreVersion =
-        typeof versionResult.value.core === "string" && versionResult.value.core
-          ? versionResult.value.core
-          : null;
-      cliVersion =
-        typeof versionResult.value.cli === "string" && versionResult.value.cli
-          ? versionResult.value.cli
-          : null;
-    } else {
-      coreVersion = null;
-      cliVersion = null;
+  }
+
+  async function loadReleaseChannel(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    const [available, settings] = await Promise.all([
+      adapter.updates.availableChannels().catch(() => null),
+      adapter.settings.getSettings().catch(() => null),
+    ]);
+    availableChannels =
+      available && available.ok ? (available.value as unknown) : null;
+    const stored =
+      settings && settings.ok
+        ? (settings.value as Record<string, unknown> | null)
+        : null;
+    releaseChannelPref = normalizeChannel(stored?.releaseChannel);
+    effectiveChannel = releaseChannelPref;
+  }
+
+  async function selectReleaseChannel(next: string): Promise<void> {
+    const channel = normalizeChannel(next);
+    if (!adapter || !channel || channel === selectedReleaseChannel) return;
+    channelSaving = true;
+    channelError = null;
+    const previous = releaseChannelPref;
+    releaseChannelPref = channel;
+    try {
+      const saved = await adapter.settings.updateSettings({
+        releaseChannel: channel,
+      });
+      if (!saved.ok) {
+        releaseChannelPref = previous;
+        channelError = "Couldn’t save the release channel.";
+        return;
+      }
+      // Re-check immediately on the new channel so the rows reflect it.
+      await refreshVersions();
+    } finally {
+      channelSaving = false;
     }
-    coreProbeError = coreVersionFailure;
-    cliProbeError = cliVersionFailure;
-    appUpdateStatus = !appCheck.ok
-      ? "unchecked"
-      : appCheck.value
-        ? "available"
-        : "up-to-date";
-    const coreState = coreCheck.ok ? asRecord(coreCheck.value) : null;
-    if (coreVersionFailure) {
-      coreUpdateStatus = "failed";
-    } else if (!coreVersion) {
-      coreUpdateStatus = coreCheck.ok ? "unlocated" : "unchecked";
-    } else if (!coreState || typeof coreState.versionBehind !== "boolean") {
-      coreUpdateStatus = "unchecked";
-    } else {
-      coreUpdateStatus = coreState.versionBehind ? "available" : "up-to-date";
-    }
-    const cliState = cliCheck.ok ? asRecord(cliCheck.value) : null;
-    if (cliVersionFailure) {
-      cliUpdateStatus = "failed";
-    } else if (!cliVersion) {
-      cliUpdateStatus = cliCheck.ok ? "unlocated" : "unchecked";
-    } else if (!cliCheck.ok) {
-      cliUpdateStatus = "unchecked";
-    } else if (cliState && typeof cliState.latest === "string") {
-      cliUpdateStatus = "available";
-    } else {
-      cliUpdateStatus = "up-to-date";
-    }
-    versionsRefreshing = false;
   }
 
   async function chooseHqFolder(): Promise<void> {
@@ -924,6 +988,7 @@
       );
     });
     void refreshVersions();
+    void loadReleaseChannel();
     void refreshNativeSettings();
     if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
@@ -1268,8 +1333,13 @@
       <div>
         <div class="sn">Desktop app</div>
         <div class="sd mono-path">v{appVersion}</div>
+        {#if appUpdateStatus === "failed"}
+          <div class="sd" data-testid="settings-app-check-failed">
+            The update check didn’t finish. Check for updates again.
+          </div>
+        {/if}
       </div>
-      <span class="mono" class:ok={appUpdateStatus === "up-to-date"}>{appUpdateStatus === "checking" ? "CHECKING" : appUpdateStatus === "available" ? "UPDATE AVAILABLE" : appUpdateStatus === "up-to-date" ? "UP TO DATE" : "NOT CHECKED"}</span>
+      <span class="mono" class:ok={appUpdateStatus === "up-to-date"}>{appUpdateStatus === "checking" ? "CHECKING" : appUpdateStatus === "available" ? "UPDATE AVAILABLE" : appUpdateStatus === "up-to-date" ? "UP TO DATE" : appUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
@@ -1320,8 +1390,46 @@
       <span class="mono" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
+      <div>
+        <div class="sn">Release channel</div>
+        <div class="sd">
+          {releaseChannelOptions.find((o) => o.id === selectedReleaseChannel)?.hint ??
+            "Released builds only."}
+        </div>
+        {#if channelDowngrade.isDowngrade}
+          <div class="sd" data-testid="settings-channel-downgrade">
+            {channelDowngrade.message}
+          </div>
+        {/if}
+        {#if channelError}
+          <div class="sd" role="alert" data-testid="settings-channel-error">{channelError}</div>
+        {/if}
+      </div>
+      <select
+        class="chip"
+        data-testid="settings-release-channel"
+        aria-label="Release channel"
+        aria-busy={channelSaving}
+        disabled={channelSaving || versionsRefreshing || releaseChannelOptions.length <= 1}
+        value={selectedReleaseChannel}
+        onchange={(e) =>
+          void selectReleaseChannel((e.currentTarget as HTMLSelectElement).value)}
+      >
+        {#each releaseChannelOptions as option (option.id)}
+          <option value={option.id}>{option.label}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="set-row">
       <div><div class="sn">Update status</div><div class="sd">Refreshes on window focus and native app, Core, or CLI update events.</div></div>
-      <button type="button" class="chip" onclick={() => void refreshVersions()} disabled={versionsRefreshing}>{versionsRefreshing ? "Refreshing…" : "Refresh"}</button>
+      <button
+        type="button"
+        class="chip"
+        data-testid="settings-check-for-updates"
+        onclick={() => void refreshVersions()}
+        disabled={versionsRefreshing}
+        aria-busy={versionsRefreshing}
+      >{versionsRefreshing ? "Checking…" : "Check for updates"}</button>
     </div>
   {/if}
 </div>

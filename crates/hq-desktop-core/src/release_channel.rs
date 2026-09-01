@@ -233,6 +233,31 @@ pub fn pick_release_for_channel(channel: ReleaseChannel, tags: &[String]) -> Opt
         .map(|(tag, _)| tag)
 }
 
+
+/// True when moving to `candidate_tag` from `installed_version` would be a
+/// DOWNGRADE (the selected channel's newest release is older than what is
+/// installed — e.g. installed `0.10.173-beta.2`, Stable's newest `0.10.172`).
+///
+/// The updater must never silently install this; Settings explains the wait
+/// instead. Pure and tag-shaped so the same comparator backs both sides.
+pub fn is_channel_downgrade(installed_version: &str, candidate_tag: &str) -> bool {
+    let installed = match semver::Version::parse(strip_tag_v(installed_version)) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let candidate = match parse_channel_from_tag(candidate_tag) {
+        Some((_, v)) => v,
+        None => return false,
+    };
+    candidate < installed
+}
+
+/// Strip a single leading `v` so an installed version string and a release
+/// tag can be compared with the same parser.
+fn strip_tag_v(s: &str) -> &str {
+    s.trim().strip_prefix('v').unwrap_or_else(|| s.trim())
+}
+
 fn stable_fallback() -> ResolvedChannelEndpoint {
     ResolvedChannelEndpoint {
         url: STABLE_FALLBACK_ENDPOINT.to_string(),
@@ -315,6 +340,58 @@ pub async fn fetch_release_tags() -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn channel_selection_resolves_the_newest_applicable_release() {
+        let tags = vec![
+            "v0.10.172".to_string(),
+            "v0.10.173-beta.2".to_string(),
+            "v0.10.174-alpha.1".to_string(),
+        ];
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Stable, &tags).as_deref(),
+            Some("v0.10.172")
+        );
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Beta, &tags).as_deref(),
+            Some("v0.10.173-beta.2")
+        );
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Alpha, &tags).as_deref(),
+            Some("v0.10.174-alpha.1")
+        );
+    }
+
+    #[test]
+    fn stored_channel_preference_drives_resolution_for_eligible_users() {
+        // An explicit selection is honored in both directions.
+        assert_eq!(
+            effective_channel(Some("stable"), true),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(effective_channel(Some("alpha"), true), ReleaseChannel::Alpha);
+        // Never chosen → the derived default, not a forced Stable.
+        assert_eq!(effective_channel(None, true), ReleaseChannel::Beta);
+        // Ineligible users are coerced regardless of what is on disk.
+        assert_eq!(
+            effective_channel(Some("alpha"), false),
+            ReleaseChannel::Stable
+        );
+    }
+
+    #[test]
+    fn downgrade_guard_flags_an_older_channel_release() {
+        // Owner's case: on a beta build, Stable's newest is behind.
+        assert!(is_channel_downgrade("0.10.173-beta.2", "v0.10.172"));
+        assert!(is_channel_downgrade("v0.10.173", "v0.10.172"));
+        // Same or newer is not a downgrade.
+        assert!(!is_channel_downgrade("0.10.173-beta.2", "v0.10.173"));
+        assert!(!is_channel_downgrade("0.10.172", "v0.10.174-alpha.1"));
+        assert!(!is_channel_downgrade("0.10.173-beta.2", "v0.10.173-beta.2"));
+        // Unparseable input never claims a downgrade.
+        assert!(!is_channel_downgrade("not-a-version", "v0.10.172"));
+        assert!(!is_channel_downgrade("0.10.173", "garbage"));
+    }
     use super::*;
 
     // --- parse_channel_from_tag -----------------------------------------
