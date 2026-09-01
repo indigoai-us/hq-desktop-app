@@ -245,7 +245,98 @@ describe("V4TitleBar Launch menu", () => {
     await tick();
     await new Promise((r) => setTimeout(r, 0));
     await tick();
+    // The REAL resolved path from settings.getSetupStatus — not "" and not
+    // undefined. A silent no-op on an unresolved path was a suspected cause
+    // of the "folder button does nothing" report.
     expect(adapter.files.revealInFinder).toHaveBeenCalledWith("/tmp/HQ");
+    const arg = adapter.files.revealInFinder.mock.calls[0]?.[0];
+    expect(typeof arg).toBe("string");
+    expect(arg).toBeTruthy();
+  });
+
+  it("surfaces the underlying reveal failure instead of swallowing it", async () => {
+    const adapter = makeAdapter({});
+    adapter.files.revealInFinder = vi.fn(async (_path: string) => ({
+      ok: false as const,
+      reason: "invoke",
+      message: "Command reveal_in_finder not found",
+    })) as never;
+    await mountBar(adapter);
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="titlebar-reveal-folder"]',
+      )
+      ?.click();
+    await tick();
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    // The tooltip must carry the real reason — a generic string is what hid
+    // the command-name bug in the first place.
+    const btn = host.querySelector('[data-testid="titlebar-reveal-folder"]');
+    btn?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    await tick();
+    const bubble = host.querySelector('[data-testid="tooltip-bubble"]');
+    expect(bubble?.textContent).toContain("Could not open HQ folder");
+    expect(bubble?.textContent).toContain("reveal_in_finder not found");
+  });
+});
+
+describe("V4TitleBar cluster tooltips", () => {
+  const CASES: ReadonlyArray<[string, string]> = [
+    ["titlebar-launch", "Open your HQ folder in an AI tool"],
+    ["titlebar-reveal-folder", "Open HQ folder"],
+    ["titlebar-console", "Open HQ Console"],
+    ["titlebar-meetings", "Meetings"],
+    ["titlebar-notifications", "Notifications"],
+  ];
+
+  it("shows a styled tooltip immediately on keyboard focus, wired via aria-describedby", async () => {
+    for (const [testid, label] of CASES) {
+      await mountBar(makeAdapter({}));
+      const btn = host.querySelector<HTMLButtonElement>(
+        `[data-testid="${testid}"]`,
+      );
+      expect(btn, `${testid} renders`).toBeTruthy();
+      // No native title attribute — these are styled tooltips now.
+      expect(btn?.hasAttribute("title")).toBe(false);
+      btn?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      await tick();
+      const bubble = host.querySelector('[data-testid="tooltip-bubble"]');
+      expect(bubble?.textContent?.trim(), `${testid} tooltip text`).toBe(label);
+      expect(bubble?.getAttribute("role")).toBe("tooltip");
+      // a11y: the trigger points at the bubble that describes it.
+      expect(btn?.getAttribute("aria-describedby")).toBe(bubble?.id);
+
+      // Blur hides it again.
+      btn?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await tick();
+      expect(host.querySelector('[data-testid="tooltip-bubble"]')).toBeNull();
+
+      if (component) await unmount(component);
+      component = null;
+      host.remove();
+    }
+  });
+
+  it("waits for the hover dwell delay before showing on pointer enter", async () => {
+    vi.useFakeTimers();
+    try {
+      await mountBar(makeAdapter({}));
+      const btn = host.querySelector<HTMLButtonElement>(
+        '[data-testid="titlebar-console"]',
+      );
+      btn?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+      await tick();
+      // Not yet — the dwell delay has not elapsed.
+      expect(host.querySelector('[data-testid="tooltip-bubble"]')).toBeNull();
+      vi.advanceTimersByTime(400);
+      await tick();
+      expect(
+        host.querySelector('[data-testid="tooltip-bubble"]')?.textContent,
+      ).toContain("Open HQ Console");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hides the folder action on hosts without local file support (web)", async () => {

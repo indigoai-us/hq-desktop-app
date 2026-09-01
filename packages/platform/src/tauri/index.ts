@@ -372,7 +372,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       }) as const,
     getAuthorizedPreview: (path) =>
       this.call("get_authorized_preview", { path }),
-    revealInFinder: (path) => this.call("reveal_in_finder", { path }),
+    // The registered Tauri command is `reveal_folder`
+    // (commands::launch::reveal_folder, main.rs invoke_handler). There has
+    // never been a `reveal_in_finder` command — that name appeared only here,
+    // so EVERY revealInFinder call rejected with "Command reveal_in_finder
+    // not found" (silently, wherever the caller swallowed the error).
+    revealInFinder: (path) => this.call("reveal_folder", { path }),
   };
 
   readonly agency: PlatformAdapter["agency"] = {

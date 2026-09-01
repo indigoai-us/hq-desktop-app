@@ -12,6 +12,8 @@
     type LaunchKey,
   } from "../settings/launch-actions.js";
   import { safeHref } from "../common/markdown.js";
+  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import Tooltip from "../common/Tooltip.svelte";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -362,7 +364,7 @@
    * (75b1bee1): safeHref-guarded, then `onopenurl`, then a noopener
    * `window.open` fallback.
    */
-  const HQ_CONSOLE_URL = "https://hq.computer";
+  const HQ_CONSOLE_URL = HQ_CONSOLE_BASE;
 
   function openHqConsole(): void {
     coreOpen = false;
@@ -401,9 +403,13 @@
       const res = await adapter.files.revealInFinder(resolvedLaunchFolder);
       if (!res.ok) throw new Error(res.message ?? "Reveal is unavailable");
     } catch (err) {
+      // Surface the REAL reason in the tooltip, not a generic string — the
+      // reveal_in_finder/reveal_folder command-name bug hid behind
+      // "Could not open HQ folder" for exactly this reason.
       console.error("titlebar: reveal HQ folder failed", err);
-      revealError = "Could not open HQ folder";
-      setTimeout(() => (revealError = null), 4000);
+      const detail = err instanceof Error ? err.message : String(err);
+      revealError = `Could not open HQ folder: ${detail}`;
+      setTimeout(() => (revealError = null), 6000);
     } finally {
       revealing = false;
     }
@@ -543,19 +549,23 @@
 
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     <div class="v4-launch-wrap" bind:this={launchContainer}>
-      <button
-        type="button"
-        class="v4-core-pill"
-        data-testid="titlebar-launch"
-        title="Launch"
-        aria-haspopup="menu"
-        aria-expanded={launchOpen}
-        aria-label="Open HQ folder in an AI tool"
-        onclick={toggleLaunch}
-      >
-        Launch
-        <span class="v4-core-caret" aria-hidden="true">⌄</span>
-      </button>
+      <Tooltip label="Open your HQ folder in an AI tool" align="start">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-core-pill"
+            data-testid="titlebar-launch"
+            aria-haspopup="menu"
+            aria-expanded={launchOpen}
+            aria-label="Open HQ folder in an AI tool"
+            aria-describedby={describedBy || undefined}
+            onclick={toggleLaunch}
+          >
+            Launch
+            <span class="v4-core-caret" aria-hidden="true">⌄</span>
+          </button>
+        {/snippet}
+      </Tooltip>
       {#if launchOpen}
         <div
           class="v4-launch-menu v4-popover-strong-surface"
@@ -590,133 +600,173 @@
       {/if}
     </div>
     {#if canRevealFolder}
-      <button
-        type="button"
-        class="v4-icon-btn"
-        data-testid="titlebar-reveal-folder"
-        aria-label="Open HQ folder"
-        title={revealError ?? "Open HQ folder (Reveal in Finder)"}
-        disabled={revealing}
-        onclick={() => void revealHqFolder()}
-      >
-        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
-            stroke="currentColor"
-            stroke-width="1.2"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
+      <Tooltip label={revealError ?? "Open HQ folder"}>
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            data-testid="titlebar-reveal-folder"
+            aria-label="Open HQ folder"
+            aria-describedby={describedBy || undefined}
+            disabled={revealing}
+            onclick={() => void revealHqFolder()}
+          >
+            <svg
+              class="v4-icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
     {/if}
-    <button
-      type="button"
-      class="v4-icon-btn"
-      data-testid="titlebar-console"
-      aria-label="Open HQ Console"
-      title="Open HQ Console"
-      onclick={openHqConsole}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle
-          cx="8"
-          cy="8"
-          r="5.75"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path
-          d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
-    <button
-      type="button"
-      class="v4-icon-btn"
-      data-testid="titlebar-meetings"
-      aria-label="Meetings"
-      title="Meetings"
-      onclick={() => {
-        coreOpen = false;
-        onopenMeetings?.();
-      }}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect
-          x="1.75"
-          y="4.25"
-          width="8.5"
-          height="7.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path
-          d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
-    <button
-      type="button"
-      class="v4-icon-btn v4-notif-btn"
-      data-testid="titlebar-notifications"
-      aria-label={hasUnread ? "Notifications, unread" : "Notifications"}
-      title="Notifications"
-      onclick={() => {
-        coreOpen = false;
-        onopenNotifications?.();
-      }}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path
-          d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linecap="round"
-        />
-      </svg>
-      {#if hasUnread}
-        <span
-          class="v4-notif-dot"
-          data-testid="titlebar-notifications-badge"
-          aria-hidden="true"
-        ></span>
-      {/if}
-    </button>
-    {#if showCore}
-      <div class="v4-core-wrap" bind:this={coreContainer}>
+    <Tooltip label="Open HQ Console">
+      {#snippet trigger(describedBy: string)}
         <button
           type="button"
-          class="v4-core-pill"
-          data-testid="titlebar-core-pill"
-          title="Core"
-          aria-expanded={coreOpen}
-          aria-haspopup="dialog"
-          aria-label="Open Core popover"
-          onclick={openCore}
+          class="v4-icon-btn"
+          data-testid="titlebar-console"
+          aria-label="Open HQ Console"
+          aria-describedby={describedBy || undefined}
+          onclick={openHqConsole}
         >
-          <span
-            class="v4-core-dot"
-            class:warn={coreDotTone === "warn"}
-            data-testid="titlebar-core-dot"
-            data-tone={coreDotTone}
-            aria-hidden="true">●</span
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
           >
-          Core
-          <span class="v4-core-caret" aria-hidden="true">⌄</span>
+            <circle
+              cx="8"
+              cy="8"
+              r="5.75"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <path
+              d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
         </button>
+      {/snippet}
+    </Tooltip>
+    <Tooltip label="Meetings">
+      {#snippet trigger(describedBy: string)}
+        <button
+          type="button"
+          class="v4-icon-btn"
+          data-testid="titlebar-meetings"
+          aria-label="Meetings"
+          aria-describedby={describedBy || undefined}
+          onclick={() => {
+            coreOpen = false;
+            onopenMeetings?.();
+          }}
+        >
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <rect
+              x="1.75"
+              y="4.25"
+              width="8.5"
+              height="7.5"
+              rx="1.5"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <path
+              d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      {/snippet}
+    </Tooltip>
+    <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"}>
+      {#snippet trigger(describedBy: string)}
+        <button
+          type="button"
+          class="v4-icon-btn v4-notif-btn"
+          data-testid="titlebar-notifications"
+          aria-label={hasUnread ? "Notifications, unread" : "Notifications"}
+          aria-describedby={describedBy || undefined}
+          onclick={() => {
+            coreOpen = false;
+            onopenNotifications?.();
+          }}
+        >
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          {#if hasUnread}
+            <span
+              class="v4-notif-dot"
+              data-testid="titlebar-notifications-badge"
+              aria-hidden="true"
+            ></span>
+          {/if}
+        </button>
+      {/snippet}
+    </Tooltip>
+    {#if showCore}
+      <div class="v4-core-wrap" bind:this={coreContainer}>
+        <Tooltip label="HQ Core: sync, packs, and updates" align="end">
+          {#snippet trigger(describedBy: string)}
+            <button
+              type="button"
+              class="v4-core-pill"
+              data-testid="titlebar-core-pill"
+              aria-expanded={coreOpen}
+              aria-haspopup="dialog"
+              aria-label="Open Core popover"
+              aria-describedby={describedBy || undefined}
+              onclick={openCore}
+            >
+              <span
+                class="v4-core-dot"
+                class:warn={coreDotTone === "warn"}
+                data-testid="titlebar-core-dot"
+                data-tone={coreDotTone}
+                aria-hidden="true">●</span
+              >
+              Core
+              <span class="v4-core-caret" aria-hidden="true">⌄</span>
+            </button>
+          {/snippet}
+        </Tooltip>
         {#if coreOpen}
           <CorePopover
             {adapter}
