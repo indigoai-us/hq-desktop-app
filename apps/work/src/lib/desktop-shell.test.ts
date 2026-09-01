@@ -187,6 +187,25 @@ describe("Tauri attachment handlers", () => {
     ]);
   });
 
+  it("forwards an optional GET byte limit to the native vault", async () => {
+    const invoke = vi.fn(async () => ({
+      status: 200,
+      contentType: "application/pdf",
+      body: [37, 80, 68, 70],
+    }));
+    const handlers = createTauriAttachmentHandlers(invoke);
+
+    await handlers.getAttachmentObject(
+      "https://bucket.s3.amazonaws.com/chat/file?signature=1",
+      1_048_576,
+    );
+
+    expect(invoke).toHaveBeenCalledWith("vault_s3_get", {
+      url: "https://bucket.s3.amazonaws.com/chat/file?signature=1",
+      maxBytes: 1_048_576,
+    });
+  });
+
   it("defaults a missing native GET content type to an octet stream", async () => {
     const handlers = createTauriAttachmentHandlers(async () => ({
       status: 200,

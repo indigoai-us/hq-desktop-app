@@ -9,7 +9,7 @@ type ShellIdentityAdapter = Pick<PlatformAdapter, "kind" | "identity">;
 
 export interface TauriAttachmentHandlers {
   putAttachmentObject: PutChatAttachment;
-  getAttachmentObject: (url: string) => Promise<Response>;
+  getAttachmentObject: (url: string, maxBytes?: number) => Promise<Response>;
 }
 
 export interface ShellSignOutOptions {
@@ -70,8 +70,11 @@ export function createTauriAttachmentHandlers(
       })) as number;
       return new Response(null, { status });
     },
-    async getAttachmentObject(url): Promise<Response> {
-      const result = (await invoke("vault_s3_get", { url })) as {
+    async getAttachmentObject(url, maxBytes): Promise<Response> {
+      const result = (await invoke("vault_s3_get", {
+        url,
+        ...(maxBytes ? { maxBytes } : {}),
+      })) as {
         status: number;
         contentType: string;
         body: number[];
