@@ -562,8 +562,15 @@ fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
 /// Download through Tauri (including minisign verification), then prepare the
 /// helper, stop HQ-owned processes, and exit through Tauri's normal lifecycle.
 pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result<(), String> {
+    let mut downloaded = 0_u64;
     let bytes = update
-        .download(|_, _| {}, || {})
+        .download(
+            |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                crate::updater::emit_update_download_progress(app, downloaded, total);
+            },
+            || {},
+        )
         .await
         .map_err(|error| error.to_string())?;
     if crate::updater::sync_in_progress() {

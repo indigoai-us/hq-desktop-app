@@ -13,6 +13,7 @@ import { mount, tick, unmount } from 'svelte';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '../../src/lib/hq-work-adapter';
 import CompaniesSettingsPane from '../../../../packages/ui/src/settings/CompaniesSettingsPane.svelte';
 import PrototypeSettingsPanes from '../../../../packages/ui/src/settings/PrototypeSettingsPanes.svelte';
+import { resetUpdateStore } from '../../../../packages/ui/src/settings/update-store.svelte';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -102,7 +103,8 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
-  localStorage.clear();
+  localStorage?.clear();
+  resetUpdateStore();
   vi.clearAllMocks();
 });
 

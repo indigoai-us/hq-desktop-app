@@ -56,6 +56,47 @@ pub struct UpdateInfo {
     pub detected_at: String,
 }
 
+/// Byte-progress for an in-flight desktop-app download. `percent` is omitted
+/// when the updater did not report a total size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInstallStarted<'a> {
+    version: &'a str,
+}
+
+pub(crate) fn download_progress_percent(downloaded: u64, total: Option<u64>) -> Option<u32> {
+    let total = total.filter(|size| *size > 0)?;
+    Some(((downloaded.min(total) * 100) / total) as u32)
+}
+
+pub(crate) fn emit_update_download_progress(
+    app: &AppHandle,
+    downloaded: u64,
+    total: Option<u64>,
+) {
+    let _ = app.emit(
+        "update:progress",
+        UpdateProgress {
+            downloaded,
+            total,
+            percent: download_progress_percent(downloaded, total),
+        },
+    );
+}
+
+pub(crate) fn emit_update_install_started(app: &AppHandle, version: &str) {
+    let _ = app.emit("update:install-started", UpdateInstallStarted { version });
+}
+
 /// Trusted updater state returned to the frontend.
 ///
 /// `unchecked` covers startup before the first successful check and preserves
@@ -535,14 +576,22 @@ async fn install_verified_update(
     app: &AppHandle,
     update: &tauri_plugin_updater::Update,
 ) -> Result<(), String> {
+    emit_update_install_started(app, &update.version);
     #[cfg(target_os = "windows")]
     {
         crate::windows_update::install_verified_update(app, update).await
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let mut downloaded = 0_u64;
         update
-            .download_and_install(|_, _| {}, || {})
+            .download_and_install(
+                |chunk, total| {
+                    downloaded = downloaded.saturating_add(chunk as u64);
+                    emit_update_download_progress(app, downloaded, total);
+                },
+                || {},
+            )
             .await
             .map_err(|error| error.to_string())?;
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
@@ -1015,6 +1064,15 @@ mod tests {
         let second = apply_confirmed_absent(&mut ledger, second_ticket);
         assert!(second.applied);
         assert!(!second.cleared_pending);
+    }
+
+    #[test]
+    fn download_progress_percent_is_none_without_a_total_and_caps_at_100() {
+        assert_eq!(download_progress_percent(42, None), None);
+        assert_eq!(download_progress_percent(42, Some(0)), None);
+        assert_eq!(download_progress_percent(42, Some(100)), Some(42));
+        assert_eq!(download_progress_percent(100, Some(100)), Some(100));
+        assert_eq!(download_progress_percent(150, Some(100)), Some(100));
     }
 
     #[test]

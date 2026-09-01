@@ -48,6 +48,10 @@ export interface UpdateCheckOutcome {
   cliVersion: string | null;
   coreProbeError: string | null;
   cliProbeError: string | null;
+  /** Version string from a successful app-updater hit; null when up to date. */
+  appUpdateVersion: string | null;
+  /** Raw Core state payload (drift, channel, versionBehind) from the check. */
+  coreState: unknown;
 }
 
 export interface UpdateVersions {
@@ -136,6 +140,16 @@ export function appStatusFrom(check: AdapterResult<unknown>): UpdateRowStatus {
   return check.value ? "available" : "up-to-date";
 }
 
+/** Version offered by a successful app-updater hit. */
+export function appUpdateVersionFrom(
+  check: AdapterResult<unknown>,
+): string | null {
+  if (!check.ok) return null;
+  const rec = asRecord(check.value);
+  const version = rec?.version;
+  return typeof version === "string" && version.trim() ? version.trim() : null;
+}
+
 /** Map the Core state result onto a row status (main's mapping). */
 export function coreStatusFrom(
   check: AdapterResult<unknown>,
@@ -184,8 +198,10 @@ export async function runUpdateCheck(
   const corePromise = run(() => adapter.checkCoreState());
   const cliPromise = run(() => adapter.checkCliUpdate());
 
+  let appUpdateVersion: string | null = null;
   const appPromise = run(() => adapter.checkForUpdates()).then((check) => {
     const status = appStatusFrom(check);
+    appUpdateVersion = appUpdateVersionFrom(check);
     options.onRow?.("app", status);
     return status;
   });
@@ -215,6 +231,7 @@ export async function runUpdateCheck(
   });
 
   const coreCheck = await corePromise;
+  const coreState = coreCheck.ok ? (coreCheck.value ?? null) : null;
   const coreStatus = coreStatusFrom(coreCheck, coreVersion, coreProbeError);
   if (!coreCheck.ok && !coreProbeError) {
     coreProbeError =
@@ -240,6 +257,8 @@ export async function runUpdateCheck(
     cliVersion,
     coreProbeError,
     cliProbeError,
+    appUpdateVersion,
+    coreState,
   };
 }
 
