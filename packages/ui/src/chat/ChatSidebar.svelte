@@ -1240,6 +1240,53 @@
     }
   }
 
+  /** Peers already asked about — one thread read per bare uid, ever. */
+  const dmNameLookupsTried = new Set<string>();
+
+  /**
+   * The DM peer index (dm-threads) carries bare uids. When such a peer is not
+   * in the contacts roster its row would be titled by uid; read the newest
+   * page of that thread once and take the counterpart's name/email from it.
+   */
+  async function resolveUnnamedDmPeers(): Promise<void> {
+    const fetchThread = api.fetchDmThread;
+    if (typeof fetchThread !== "function") return;
+    const pending = contacts.filter(
+      (contact) =>
+        !contact.displayName?.trim() &&
+        !contact.email?.trim() &&
+        !dmNameLookupsTried.has(contact.personUid),
+    );
+    for (const contact of pending) {
+      const uid = contact.personUid;
+      dmNameLookupsTried.add(uid);
+      try {
+        const page = await fetchThread.call(api, {
+          withPersonUid: uid,
+          limit: 10,
+        });
+        const messages = Array.isArray(page?.messages) ? page.messages : [];
+        const theirs = messages.find(
+          (message) => (message.fromPersonUid ?? "").trim() === uid,
+        );
+        const displayName = theirs?.fromDisplayName?.trim() ?? "";
+        const email = theirs?.fromEmail?.trim() ?? "";
+        if (!displayName && !email) continue;
+        contacts = contacts.map((entry) =>
+          entry.personUid === uid
+            ? {
+                ...entry,
+                displayName: entry.displayName || displayName || null,
+                email: entry.email || email || null,
+              }
+            : entry,
+        );
+      } catch {
+        /* best effort — the row still lists, titled by email or uid */
+      }
+    }
+  }
+
   function mergePairUnreadsPayload(
     payload: PairUnreadsPayload | null | undefined,
   ): void {
@@ -1253,6 +1300,7 @@
           fromDisplayName: entry.displayName,
         })),
       );
+      void resolveUnnamedDmPeers();
     }
     const entries = payload?.pairUnreads;
     if (!Array.isArray(entries)) return;
@@ -1333,6 +1381,18 @@
 
       track(
         wakes.on("dm:new-message", (payload) => {
+          const fromPersonUid = (payload.fromPersonUid ?? "").trim();
+          const stamp = payload.createdAt;
+          if (
+            fromPersonUid &&
+            fromPersonUid !== self?.uid &&
+            typeof stamp === "string" &&
+            stamp
+          ) {
+            contacts = mergeContactsWithInbox(contacts, [
+              { fromPersonUid, createdAt: stamp },
+            ]);
+          }
           if (
             !shouldBumpDmUnread({
               selectedId: selectedId ?? activeId,
@@ -1345,17 +1405,6 @@
           if (payload.absoluteUnread !== true) {
             pairUnreads = incrementPairUnread(pairUnreads, payload.fromPersonUid);
           }
-          const stamp = payload.createdAt;
-          contacts = contacts.map((contact) =>
-            contact.personUid === payload.fromPersonUid
-              ? {
-                  ...contact,
-                  ...(stamp
-                    ? { lastActivityAt: stamp, lastMessageAt: stamp }
-                    : {}),
-                }
-              : contact,
-          );
         }),
       );
 
