@@ -2250,6 +2250,9 @@
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
+              data-reply-open={openReplyRootId || openProfileMember
+                ? "true"
+                : "false"}
             >
               {#key selectedRow.id}
                 {#snippet setupHeader()}
@@ -2464,6 +2467,10 @@
     min-height: 0;
   }
 
+  .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
+    min-width: 320px;
+  }
+
   .reply-column {
     position: relative;
     /* Stacking context (also covers .profile-column). Side-by-side both
@@ -2472,13 +2479,20 @@
        hover chrome and message text. .overlay still overrides to
        position:absolute; z-index:5. */
     isolation: isolate;
-    width: 340px;
+    width: clamp(340px, 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
     background: var(--v4-ground, #161618);
+    transition: width 150ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reply-column {
+      transition: none;
+    }
   }
 
   .reply-column.overlay {
