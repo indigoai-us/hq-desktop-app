@@ -378,11 +378,12 @@ describe('US-102 Sync PlatformAdapter', () => {
 
   it('whoami degrades to native session identity when the account has no person entity', async () => {
     // Regression: the embedded HQ Work shell hard-gated account load on the
-    // identity probe. A signed-in user must still load using the proven native
-    // session identity instead of "Couldn't load your account" when the vault
-    // account permanently lacks a vault person entity (main a1aab012 intent,
-    // carried onto the native `whoami` command). Transient vault failures
-    // still surface as identity-error with Retry.
+    // identity probe, so every cohort user landed on "Couldn't load your
+    // account". A signed-in user must still load using the proven native
+    // session identity when the account permanently lacks a vault person
+    // entity (the intent of main's since-reverted a1aab012, carried onto the
+    // native `whoami` command). Transient vault failures still surface as
+    // identity-error with Retry.
     const { adapter, calls } = makeAdapter(async (cmd) => {
       if (cmd === 'get_auth_state') {
         return {

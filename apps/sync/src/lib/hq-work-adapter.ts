@@ -274,12 +274,15 @@ export function createSyncPlatformAdapter(
         }
         // Native `whoami` binds the canonical `prs_*` person UID and profile
         // fields to the signed-in session (Cognito claims + vault person
-        // entity). This replaces main's provisional REST leg
-        // (`GET /v1/identity/whoami` via hq_pro_fetch), which 404s on the
-        // bearer vault API and could only ever degrade (a1aab012).
+        // entity). This is the ONLY identity path: the provisional REST route
+        // `GET /v1/identity/whoami` is served by the web console, not the
+        // bearer vault API the desktop calls, so it 404s here and never
+        // recovers on retry. Main briefly carried a 404-degrade fallback over
+        // that dead route (a1aab012) and then reverted it wholesale (d91bfc95),
+        // leaving main hard-gated on the 404 again — do not reintroduce it.
         const meResult = await call<unknown>('whoami');
         if (!meResult.ok) {
-          // Preserve main's resilience intent (a1aab012): an account whose
+          // Preserve the reverted fix's resilience intent (a1aab012): an account whose
           // canonical person entity is PERMANENTLY absent must not hard-fail
           // the whole account load with "Couldn't load your account" (it never
           // recovers on retry). Fall back to the proven native session
