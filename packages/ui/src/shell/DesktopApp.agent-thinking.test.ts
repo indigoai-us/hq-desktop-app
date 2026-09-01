@@ -131,6 +131,14 @@ describe("DesktopApp agent thinking indicator", () => {
     const row = host.querySelector('[data-testid="agent-thinking-row"]');
     expect(row, "thinking row renders beneath the conversation").toBeTruthy();
     expect(row?.textContent).toContain("Izzy is thinking");
+    // Placement regression (owner bug): the row must live INSIDE the
+    // conversation scroller, after the messages — never as a chat-stage
+    // sibling, which the horizontal flex lays out as a floating top-right
+    // column outside the conversation.
+    expect(
+      row?.closest('[data-testid="conversation-thread"]'),
+      "row is inside the conversation scroll flow",
+    ).toBeTruthy();
 
     // Agent reply lands via a channel wake → timeline catch-up → clear.
     fx.messages.push({

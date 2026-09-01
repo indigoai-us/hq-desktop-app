@@ -125,6 +125,13 @@
      * that scroll away with history.
      */
     header?: Snippet;
+    /**
+     * Optional status row rendered INSIDE the `.dm-thread` scroller, after the
+     * newest message (typing-indicator position). Must live in the scroll flow
+     * — `.chat-stage` is a horizontal flexbox, so a sibling of this component
+     * would lay out as a second column in the upper-right instead.
+     */
+    belowMessages?: Snippet;
   }
 
   let {
@@ -149,6 +156,7 @@
     avatarByUid = {},
     displayNameByUid = {},
     header,
+    belowMessages,
   }: Props = $props();
 
   /** Real avatar for a message's author, when the roster carried one. */
@@ -995,6 +1003,7 @@
             </div>
           {/if}
         {/each}
+        {#if belowMessages}{@render belowMessages()}{/if}
       </div>
     </div>
   </div>

@@ -2255,6 +2255,12 @@
                 : "false"}
             >
               {#key selectedRow.id}
+                {#snippet agentThinkingBelow()}
+                  <!-- Inside the conversation scroller (typing-indicator
+                       position) — a chat-stage sibling would become a second
+                       flex-row column floating top-right. -->
+                  <AgentThinkingRow entries={agentThinking} />
+                {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
                     settings={adapter.settings}
@@ -2286,8 +2292,8 @@
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : undefined}
+                  belowMessages={agentThinkingBelow}
                 />
-                <AgentThinkingRow entries={agentThinking} />
               {/key}
               {#if openProfileMember}
                 <div
