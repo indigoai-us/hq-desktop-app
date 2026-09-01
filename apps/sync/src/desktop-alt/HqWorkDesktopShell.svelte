@@ -405,7 +405,8 @@
 
   onMount(() => {
     let cancelled = false;
-    let receivedLiveNavigation = false;
+    let latestLiveNavigation: 'meetings' | 'other' | null = null;
+    let receivedLiveMeetingFocus = false;
 
     // The route must be restored before its optional meeting-focus payload.
     // Consume them in this order so a specific focus target is the final
@@ -416,16 +417,22 @@
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
-        if (!receivedLiveNavigation) {
+        if (!latestLiveNavigation) {
           applyDesktopAltRoute(
             typeof pending === 'string' ? pending : null,
             navigation,
           );
         }
         const meetingId = await invokeFn('meetings_take_pending_focus');
+        // Native emits a meeting-focus event before its paired live Meetings
+        // route. If listener registration missed only that first event, the
+        // one-shot pending ID still belongs to the latest visible destination.
+        const pendingFocusIsCurrent =
+          latestLiveNavigation === null ||
+          (latestLiveNavigation === 'meetings' && !receivedLiveMeetingFocus);
         if (
           cancelled ||
-          receivedLiveNavigation ||
+          !pendingFocusIsCurrent ||
           typeof meetingId !== 'string' ||
           !meetingId.trim()
         ) return;
@@ -443,8 +450,10 @@
     });
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
-      receivedLiveNavigation = true;
-      applyDesktopAltRoute(event.payload, navigation);
+      const target = applyDesktopAltRoute(event.payload, navigation);
+      if (target) {
+        latestLiveNavigation = target.kind === 'meetings' ? 'meetings' : 'other';
+      }
     }).catch(() => () => {});
 
     const unlistenMeetingFocusPromise = listen<{ meetingId?: string }>(
@@ -452,7 +461,8 @@
       (event) => {
         const meetingId = event.payload?.meetingId?.trim();
         if (meetingId) {
-          receivedLiveNavigation = true;
+          latestLiveNavigation = 'meetings';
+          receivedLiveMeetingFocus = true;
           navigation.navigate({ kind: 'meetings', meetingId });
         }
       },

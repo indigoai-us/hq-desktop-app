@@ -595,10 +595,11 @@ function deliverImmediately(target: EmbeddedNavigationTarget): void {
 export function applyDesktopAltRoute(
   route: string | null | undefined,
   controller?: EmbeddedNavigationController,
-): void {
+): EmbeddedNavigationTarget | null {
   const trimmed = route?.trim() ?? '';
-  if (!trimmed) return;
+  if (!trimmed) return null;
   const target = routeTarget(trimmed);
   if (controller) controller.navigate(target);
   else deliverImmediately(target);
+  return target;
 }
