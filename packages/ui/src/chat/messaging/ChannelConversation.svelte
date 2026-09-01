@@ -808,6 +808,7 @@
                 <IdentityMark
                   kind="agent"
                   label={messageAuthor(msg)}
+                  agentUid={msg.fromPersonUid}
                   size="regular"
                 />
               </span>
@@ -852,6 +853,7 @@
                       kind="agent"
                       label={messageAuthor(msg)}
                       avatarUrl={avatarFor(msg)}
+                      agentUid={msg.fromPersonUid}
                       size="regular"
                     />
                   {:else}
@@ -954,6 +956,7 @@
                               label={a.displayName}
                               avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
                                 null}
+                              agentUid={a.personUid}
                               size="small"
                             />
                           </span>

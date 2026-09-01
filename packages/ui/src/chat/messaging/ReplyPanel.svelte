@@ -690,6 +690,7 @@
           kind={isAgent(root) ? "agent" : "person"}
           label={messageAuthor(root)}
           avatarUrl={replyAvatarFor(root)}
+          agentUid={root.fromPersonUid}
           size="regular"
         />
       </span>
@@ -828,6 +829,7 @@
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
                 avatarUrl={replyAvatarFor(msg)}
+                agentUid={msg.fromPersonUid}
                 size="regular"
               />
             </span>

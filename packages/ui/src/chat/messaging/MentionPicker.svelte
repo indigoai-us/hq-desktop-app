@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MentionTarget } from "../mentions.js";
+  import { agentAvatarFor } from "./agent-avatars";
 
   interface Props {
     hits: MentionTarget[];
@@ -20,6 +21,10 @@
     <div class="mention-empty">No one matches</div>
   {:else}
     {#each hits as hit, index (hit.participantUid)}
+      {@const generated =
+        hit.participantType === "agent"
+          ? agentAvatarFor(hit.participantUid)
+          : null}
       <button
         type="button"
         class="mention-row"
@@ -32,8 +37,12 @@
           class="mention-ava"
           class:agent={hit.participantType === "agent"}
           aria-hidden="true"
-          >{hit.displayName.trim().slice(0, 1).toUpperCase() ||
-            "?"}</span
+          >{#if generated}<img
+              class="mention-ava-img"
+              src={generated}
+              alt=""
+            />{:else}{hit.displayName.trim().slice(0, 1).toUpperCase() ||
+              "?"}{/if}</span
         >
         <span class="mention-copy">
           <span class="mention-name">{hit.displayName}</span>
@@ -106,6 +115,15 @@
 
   .mention-ava.agent {
     background: #312e81;
+    overflow: hidden;
+  }
+
+  .mention-ava-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .mention-copy {

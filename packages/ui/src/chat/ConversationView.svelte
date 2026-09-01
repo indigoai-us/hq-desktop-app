@@ -483,6 +483,7 @@
                               <IdentityMark
                                 kind={a.agent ? "agent" : "person"}
                                 label={a.displayName}
+                                agentUid={a.personUid}
                                 size="small"
                               />
                             </span>

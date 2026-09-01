@@ -12,6 +12,7 @@ export { default as RunCompleteCard } from "./RunCompleteCard.svelte";
 export { default as ReactionBar } from "./ReactionBar.svelte";
 export { default as EmojiPicker } from "./EmojiPicker.svelte";
 export { default as IdentityMark } from "./IdentityMark.svelte";
+export * from "./agent-avatars";
 export { default as SystemEventLine } from "./SystemEventLine.svelte";
 export { default as WorkMeshActivityRow } from "./WorkMeshActivityRow.svelte";
 export * from "./workSessionEvent";

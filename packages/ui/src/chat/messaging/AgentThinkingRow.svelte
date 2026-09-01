@@ -3,6 +3,7 @@
   // under the last message (via Conversation's `belowMessages` snippet) — status,
   // not an alert, not a message bubble. Tokens only so dark + light stay correct.
   import { labelFor, type ThinkingEntry } from "../agent-thinking.js";
+  import { agentAvatarFor } from "./agent-avatars";
 
   interface Props {
     entries: ThinkingEntry[];
@@ -29,8 +30,15 @@
     data-testid="agent-thinking-row"
   >
     {#each entries as entry (entry.agentUid)}
+      {@const generated = agentAvatarFor(entry.agentUid)}
       <div class="thinking-row">
-        <span class="avatar" aria-hidden="true">{initial(entry.agentName)}</span>
+        <span class="avatar" aria-hidden="true">
+          {#if generated}<img
+              class="avatar-img"
+              src={generated}
+              alt=""
+            />{:else}{initial(entry.agentName)}{/if}
+        </span>
         {#if entry.phase === 'thinking'}
           <span class="label">
             {thinkingLabel(entry)}<span class="ellipsis-anim" aria-hidden="true"
@@ -74,6 +82,15 @@
     font-size: 0.625rem;
     font-weight: 600;
     line-height: 1;
+    overflow: hidden;
+  }
+
+  .avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .label {
