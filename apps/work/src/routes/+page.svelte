@@ -126,9 +126,7 @@
       ...api,
       fetchChannelDirectory: async (cursor) => {
         const feed = await api.fetchChannelDirectory(cursor);
-        if (cursor === null) {
-          shallow = readShallowCache(personUid);
-        }
+        shallow = readShallowCache(personUid);
         return feed;
       },
       listContacts: async () => {

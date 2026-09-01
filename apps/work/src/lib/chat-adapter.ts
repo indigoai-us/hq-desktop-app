@@ -232,7 +232,6 @@ export function createChatSidebarApi(
   adapter: PlatformAdapter,
   previousDirectory: ChannelDirectoryRow[] = [],
   personUid = "",
-  onHydratedRail?: (rail: HydratedRail) => void,
 ): ChatSidebarApi {
   return {
     fetchChannelDirectory: async (cursor) => {
@@ -249,7 +248,6 @@ export function createChatSidebarApi(
         previousDirectory,
         personUid,
       );
-      onHydratedRail?.(rail);
       return normalizeDirectoryFeed({
         snapshot: true,
         cursor: "livefeed0000000000000000000000000000",
@@ -263,7 +261,6 @@ export function createChatSidebarApi(
         previousDirectory,
         personUid,
       );
-      onHydratedRail?.(rail);
       return { contacts: rail.contacts };
     },
     listDmRequests: async () => ({
