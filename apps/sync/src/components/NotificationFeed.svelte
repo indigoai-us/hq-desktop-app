@@ -587,7 +587,7 @@
   }
 
   .notif-skeleton-row {
-    min-height: 28px;
+    min-height: 32px;
     display: flex;
     align-items: center;
     gap: 8px;

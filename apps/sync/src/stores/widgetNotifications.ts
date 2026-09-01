@@ -73,7 +73,7 @@ export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
 
 /** Collapsed one-line row height in the mini communications panel. */
-export const WIDGET_HOVER_ROW_HEIGHT = 28;
+export const WIDGET_HOVER_ROW_HEIGHT = 32;
 
 /** Day-separator row height in the hover list. */
 export const WIDGET_HOVER_SEPARATOR_HEIGHT = 22;

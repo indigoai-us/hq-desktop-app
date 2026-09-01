@@ -129,15 +129,17 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(openBtn?.textContent?.trim()).toBe('Open');
     expect(dismissBtn).toBeTruthy();
 
-    // Keep the controls in the keyboard tab order while visually quiet.
-    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*display:\s*inline-flex/s);
-    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*opacity:\s*0/s);
-    expect(rowSource).toMatch(/\.nr-actions\s*\{[^}]*width:\s*0/s);
+    // Keep the controls in the keyboard tab order while visually quiet —
+    // hidden via opacity as an absolute overlay (round-2: reveal must not
+    // resize the row or shift the trailing timestamp).
+    expect(rowSource).toMatch(/\.nr-hoverbar\s*\{[^}]*display:\s*inline-flex/s);
+    expect(rowSource).toMatch(/\.nr-hoverbar\s*\{[^}]*opacity:\s*0/s);
+    expect(rowSource).toMatch(/\.nr-hoverbar\s*\{[^}]*position:\s*absolute/s);
     expect(rowSource).toMatch(
       /\.nr:not\(\.nr-message\):hover \.nr-actions[\s\S]*?opacity:\s*1/,
     );
     expect(rowSource).toMatch(
-      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?width:\s*auto/,
+      /\.nr:not\(\.nr-message\):focus-within \.nr-actions[\s\S]*?pointer-events:\s*auto/,
     );
 
     // Hover still sets the hover state on the interaction surface.
@@ -156,7 +158,7 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(ondismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('Given a message row, when hovered, then it expands to full text with quick-reply and react controls, and collapses on mouse-out.', () => {
+  it('Given a message row, when hovered, then quick-reply and react controls overlay the fixed one-line row, and hide on mouse-out.', () => {
     const longText =
       'Hey — can you take a look at the Q2 metrics share when you get a chance? The numbers look off in the funnel tab.';
     const onopen = vi.fn();
@@ -184,19 +186,28 @@ describe('US-001: One-line minimal notification row component', () => {
     flushSync();
 
     expect(row.getAttribute('data-expanded')).toBe('true');
-    const body = row.querySelector<HTMLElement>('.nr-body');
-    expect(body).toBeTruthy();
-    expect(body?.textContent).toBe(longText);
+    // Round-2 lock: hover must NOT resize the row or reflow the list — the
+    // one-line layout persists (no expanded body block) and the reply/react
+    // controls arrive as overlays out of normal flow.
+    expect(row.querySelector('.nr-body')).toBeNull();
+    const oneLine = row.querySelector<HTMLElement>('.nr-text');
+    expect(oneLine?.textContent).toContain(longText);
+    const hoverbar = row.querySelector<HTMLElement>(
+      '[data-testid="notification-hoverbar"]',
+    );
+    expect(hoverbar).toBeTruthy();
+    const replyOverlay = row.querySelector<HTMLElement>('.nr-foot');
+    expect(replyOverlay).toBeTruthy();
 
-    // The body is inside a native primary button, while reply/react controls
-    // remain siblings. This preserves full-row pointer activation without
-    // nesting interactive controls.
+    // The text stays inside the native primary button, while reply/react
+    // controls remain siblings. This preserves full-row pointer activation
+    // without nesting interactive controls.
     const primaryAction = row.querySelector<HTMLButtonElement>(
       'button.nr-primary-action',
     );
     expect(primaryAction).toBeTruthy();
     expect(primaryAction?.tabIndex).toBe(0);
-    body!.click();
+    oneLine!.click();
     flushSync();
     expect(onopen).toHaveBeenCalledTimes(1);
 
@@ -240,7 +251,7 @@ describe('US-001: One-line minimal notification row component', () => {
     primaryAction!.blur();
     flushSync();
     expect(row.getAttribute('data-expanded')).toBe('false');
-    expect(row.querySelector('.nr-body')).toBeNull();
+    expect(row.querySelector('[data-testid="notification-hoverbar"]')).toBeNull();
     expect(row.querySelector('input.nr-reply')).toBeNull();
   });
 
@@ -296,5 +307,53 @@ describe('US-001: One-line minimal notification row component', () => {
     // Dismissed rows must not keep the unread badge stale: count from visibleItems
     expect(feedSource).toMatch(/countUnread\s*\(\s*visibleItems\b/);
     expect(feedSource).not.toMatch(/countUnread\s*\(\s*items\b/);
+  });
+});
+
+describe('Round-2 polish — calm typography and no-reflow hover (source contract)', () => {
+  const rowSource = readFileSync(
+    resolve(__dirname, '../../src/components/NotificationRow.svelte'),
+    'utf-8',
+  );
+  const rowStyle = rowSource.slice(rowSource.indexOf('<style>'));
+
+  it('uses at most two font weights: regular everywhere, semibold only for the actor', () => {
+    const weights = [...rowStyle.matchAll(/font-weight:\s*(\d+)/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(weights.length).toBeGreaterThan(0);
+    for (const w of weights) {
+      expect([400, 600]).toContain(w);
+    }
+    // Semibold is reserved for the actor (and the inline Retry affordance) —
+    // body text, meta labels, counts, and action pills are regular.
+    for (const cls of ['.nr-text {', '.nr-meta-type {', '.nr-count {']) {
+      const idx = rowStyle.indexOf(cls);
+      expect(idx).toBeGreaterThan(-1);
+      const block = rowStyle.slice(idx, rowStyle.indexOf('}', idx));
+      expect(block).not.toMatch(/font-weight:\s*(?!400)\d+/);
+    }
+  });
+
+  it('mutes the company/ambient actor prefix instead of bolding it', () => {
+    expect(rowStyle).toMatch(
+      /\.nr:not\(\[data-type='message'\]\):not\(\[data-type='mention'\]\) \.nr-actor \{[^}]*font-weight:\s*400[^}]*var\(--popover-text-muted\)/,
+    );
+  });
+
+  it('keeps rows at a fixed breathing-room height with overlay-only hover actions', () => {
+    const nrIdx = rowStyle.indexOf('.nr {');
+    const nrBlock = rowStyle.slice(nrIdx, rowStyle.indexOf('}', nrIdx));
+    expect(nrBlock).toContain('min-height: 32px');
+    expect(nrBlock).toContain('position: relative');
+    // Hover toolbar and quick-reply are absolutely positioned overlays.
+    expect(rowStyle).toMatch(/\.nr-hoverbar \{[\s\S]*?position: absolute/);
+    expect(rowStyle).toMatch(/\.nr-foot \{[\s\S]*?position: absolute/);
+    // The expanded-message rule must not change row geometry.
+    const expIdx = rowStyle.indexOf('.nr-message.nr-expanded {');
+    const expBlock = rowStyle.slice(expIdx, rowStyle.indexOf('}', expIdx));
+    for (const prop of ['padding', 'min-height', 'flex-direction']) {
+      expect(expBlock).not.toContain(prop);
+    }
   });
 });

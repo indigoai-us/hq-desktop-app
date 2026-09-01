@@ -281,7 +281,7 @@ describe('US-013: pinned popup matches locked design (scenes 8-10)', () => {
       expect(rowIdx).toBeGreaterThan(-1);
       const row = style.slice(rowIdx, style.indexOf('}', rowIdx));
       expect(row).toContain('background: transparent');
-      expect(row).toContain('min-height: 28px');
+      expect(row).toContain('min-height: 32px');
       expect(row).toContain('border-radius: 0');
       expect(row).not.toContain('backdrop-filter');
       expect(row).not.toContain('box-shadow');

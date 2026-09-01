@@ -323,46 +323,30 @@
 </script>
 
 {#snippet primaryContent()}
-  {#if expanded}
-    <span class="nr-head">
-      <span class="nr-icon" aria-hidden="true">
-        {@render typeIcon(type)}
-      </span>
-      {#if unread}
-        <span class="nr-unread" aria-label="Unread"></span>
-      {/if}
-      <span class="nr-text nr-text-head">
-        {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{/if}
-      </span>
-      <span class="nr-trail">
-        <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
-        <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
-      </span>
-    </span>
-    <span class="nr-body">{text}</span>
-  {:else}
-    <span class="nr-icon" aria-hidden="true">
-      {@render typeIcon(type)}
-    </span>
-    {#if unread && badgeCount === 0}
-      <span class="nr-unread" aria-label="Unread"></span>
-    {/if}
-    <span
-      class="nr-text"
-      title={identityLabel
-        ? `${identityLabel} · ${actor ? `${actor}: ${text}` : text}`
-        : actor
-          ? `${actor}: ${text}`
-          : text}
-    >
-      {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
-    </span>
-    <span class="nr-trail">
-      {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-      <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
-      <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
-    </span>
+  <!-- Locked one-line layout at all times. Hover reveals actions as an
+       overlay toolbar (Slack-style) so rows never resize and the list never
+       reflows (owner round-2 feedback). -->
+  <span class="nr-icon" aria-hidden="true">
+    {@render typeIcon(type)}
+  </span>
+  {#if unread && badgeCount === 0}
+    <span class="nr-unread" aria-label="Unread"></span>
   {/if}
+  <span
+    class="nr-text"
+    title={identityLabel
+      ? `${identityLabel} · ${actor ? `${actor}: ${text}` : text}`
+      : actor
+        ? `${actor}: ${text}`
+        : text}
+  >
+    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+  </span>
+  <span class="nr-trail">
+    {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
+    <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
+    <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
+  </span>
 {/snippet}
 
 <div
@@ -388,7 +372,6 @@
   {#if onopen}
     <button
       class="nr-primary-action"
-      class:nr-primary-expanded={expanded}
       type="button"
       aria-label={primaryActionLabel}
       aria-busy={openPending || actionPending}
@@ -401,12 +384,50 @@
       {/if}
     </button>
   {:else}
-    <div class="nr-primary-content" class:nr-primary-expanded={expanded}>
+    <div class="nr-primary-content">
       {@render primaryContent()}
     </div>
   {/if}
 
   {#if expanded}
+    <!-- Slack-style hover toolbar: overlaid on the row's trailing edge so
+         revealing it never resizes the row or reflows the list. -->
+    <span class="nr-hoverbar" data-testid="notification-hoverbar">
+      {#each REACT_EMOJI as emoji (emoji)}
+        <button
+          class="nr-react"
+          type="button"
+          disabled={replyPending || reactionPending !== null}
+          aria-busy={reactionPending === emoji}
+          onclick={() => void react(emoji)}
+          aria-label={`React with ${emoji}`}
+        >
+          {#if reactionPending === emoji}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {:else}
+            {emoji}
+          {/if}
+        </button>
+      {/each}
+      {#if onaction}
+        <button
+          class="nr-message-action"
+          type="button"
+          data-testid="notification-message-action"
+          aria-label={actionLabel ?? 'Run message action'}
+          aria-busy={visibleActionPending}
+          disabled={actionDisabled || visibleActionPending}
+          onclick={() => void handleAction()}
+        >
+          {#if visibleActionPending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Action')}
+        </button>
+      {/if}
+    </span>
+    <!-- Quick-reply overlay anchored below the row — out of normal flow, so
+         opening it never pushes sibling rows (PRD US-007 stays reachable). -->
     <div
       class="nr-foot"
     >
@@ -426,38 +447,6 @@
         }}
         onkeydown={onReplyKeydown}
       />
-      {#if onaction}
-        <button
-          class="nr-message-action"
-          type="button"
-          data-testid="notification-message-action"
-          aria-label={actionLabel ?? 'Run message action'}
-          aria-busy={visibleActionPending}
-          disabled={actionDisabled || visibleActionPending}
-          onclick={() => void handleAction()}
-        >
-          {#if visibleActionPending}
-            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
-          {/if}
-          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Action')}
-        </button>
-      {/if}
-      {#each REACT_EMOJI as emoji (emoji)}
-        <button
-          class="nr-react"
-          type="button"
-          disabled={replyPending || reactionPending !== null}
-          aria-busy={reactionPending === emoji}
-          onclick={() => void react(emoji)}
-          aria-label={`React with ${emoji}`}
-        >
-          {#if reactionPending === emoji}
-            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
-          {:else}
-            {emoji}
-          {/if}
-        </button>
-      {/each}
       {#if replyPending}
         <span class="nr-reply-status" data-testid="notification-reply-pending" aria-live="polite">Sending…</span>
       {/if}
@@ -627,10 +616,11 @@
 
 <style>
   .nr {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0;
-    min-height: 28px;
+    min-height: 32px;
     padding: 0 10px;
     border-radius: 0;
     font-size: 12px;
@@ -640,8 +630,8 @@
   }
 
   .nr-comfortable {
-    min-height: 32px;
-    padding-block: 1px;
+    min-height: 36px;
+    padding-block: 2px;
   }
 
   .nr-has-error {
@@ -650,7 +640,7 @@
 
   .nr-comfortable .nr-primary-action,
   .nr-comfortable .nr-primary-content {
-    min-height: 32px;
+    min-height: 36px;
     gap: 8px;
   }
 
@@ -672,14 +662,10 @@
     box-shadow: inset 0 -1px 0 var(--popover-divider);
   }
 
+  /* Hover/expanded message rows keep their exact one-line geometry — actions
+     arrive as overlays (.nr-hoverbar / .nr-foot), never by growing the row. */
   .nr-message.nr-expanded {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-    padding: 6px 10px 8px;
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--popover-divider);
-    min-height: 0;
+    background: var(--popover-action-hover);
   }
 
   .nr-primary-action,
@@ -687,7 +673,7 @@
     align-self: stretch;
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 28px;
+    min-height: 32px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -720,15 +706,6 @@
     transform: scale(0.995);
   }
 
-  .nr-primary-expanded {
-    flex: 0 0 auto;
-    width: 100%;
-    min-height: 0;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 7px;
-  }
-
   /* Non-message hover / keyboard focus: tint + swap ts for actions */
   .nr:not(.nr-message):hover,
   .nr:not(.nr-message):focus-within {
@@ -744,25 +721,27 @@
     color: var(--popover-text-muted);
   }
 
+  /* Two weights only (owner round-2): regular for body/meta/timestamps,
+     semibold reserved for a person actor. Company/ambient actors are muted
+     regular text, not bold. */
   .nr-text {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-weight: 450;
+    font-weight: 400;
     color: var(--popover-text);
   }
 
   .nr-actor {
-    font-weight: 650;
+    font-weight: 600;
     color: var(--popover-text);
   }
 
-  .nr-text-head {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .nr:not([data-type='message']):not([data-type='mention']) .nr-actor {
+    font-weight: 400;
+    color: var(--popover-text-muted);
   }
 
   .nr-trail {
@@ -788,7 +767,7 @@
     overflow: hidden;
     color: var(--popover-text-muted);
     font-size: 9.5px;
-    font-weight: 600;
+    font-weight: 400;
     letter-spacing: 0.035em;
     text-overflow: ellipsis;
     text-transform: uppercase;
@@ -805,7 +784,7 @@
 
   .nr-count {
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 400;
     color: var(--popover-text-muted);
     display: inline-flex;
     align-items: center;
@@ -825,26 +804,36 @@
     margin-left: 3px;
   }
 
-  .nr-actions {
+  /* Hover actions overlay the row's trailing edge (Slack-style toolbar) on a
+     subtle backdrop — revealing them never changes row size or shifts the
+     timestamp/siblings. */
+  .nr-actions,
+  .nr-hoverbar {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    width: 0;
-    overflow: hidden;
+    padding: 2px 3px;
+    border-radius: 6px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 1px 4px color-mix(in srgb, var(--popover-text) 10%, transparent);
     opacity: 0;
     pointer-events: none;
-    margin-left: 0;
+    z-index: 2;
   }
 
   .nr:not(.nr-message):hover .nr-actions,
   .nr:not(.nr-message):focus-within .nr-actions,
   .nr-message:not(.nr-expanded):hover .nr-actions,
-  .nr-message:not(.nr-expanded):focus-within .nr-actions {
-    width: auto;
-    overflow: visible;
+  .nr-message:not(.nr-expanded):focus-within .nr-actions,
+  .nr-expanded .nr-hoverbar {
     opacity: 1;
     pointer-events: auto;
-    margin-left: 6px;
   }
 
   .nr-open,
@@ -855,7 +844,7 @@
     background: var(--popover-action-hover);
     color: var(--popover-text);
     font-size: 10.5px;
-    font-weight: 600;
+    font-weight: 400;
     font-family: inherit;
     border: none;
     cursor: pointer;
@@ -921,33 +910,24 @@
     height: 9px;
   }
 
-  /* Expanded message layout */
-  .nr-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .nr-head .nr-text {
-    flex: 1;
-  }
-
-  .nr-body {
-    white-space: normal;
-    font-size: 12px;
-    line-height: 1.45;
-    color: var(--popover-text);
-    font-weight: 450;
-    padding-left: 20px; /* icon (12) + gap (8) */
-  }
-
+  /* Quick-reply overlay — anchored below the row, out of normal flow so
+     opening it never pushes sibling rows. */
   .nr-foot {
+    position: absolute;
+    top: calc(100% - 1px);
+    left: 8px;
+    right: 8px;
+    z-index: 3;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding-left: 20px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 8px 20px color-mix(in srgb, var(--popover-text) 14%, transparent);
     cursor: default;
   }
 
@@ -1021,7 +1001,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
   }
 

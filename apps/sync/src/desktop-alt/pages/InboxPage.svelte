@@ -161,15 +161,11 @@
   /* Slightly taller, more readable rows on the naked canvas — no rounded outer
      containers (DESKTOP-002). Spacing + hairlines establish structure. */
   .notif-host :global(.nr) {
-    min-height: 32px;
+    min-height: 36px;
     padding: 4px 10px;
     border-radius: 0;
     font-size: var(--type-body, 15px);
     box-shadow: inset 0 -1px 0 var(--v4-rowline, var(--border));
-  }
-
-  .notif-host :global(.nr-message.nr-expanded) {
-    padding: 8px 10px;
   }
 
   .notif-host :global(.nr-ts) {

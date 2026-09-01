@@ -1932,7 +1932,7 @@
   }
 
   .hl-row :global(.nr) {
-    min-height: 28px;
+    min-height: 32px;
     padding-inline: 8px;
     font-size: 12px;
     border-radius: 0;
