@@ -285,6 +285,46 @@
   let dragDepth = 0;
   let pasteCounter = 0;
   let scroller = $state<HTMLDivElement | null>(null);
+  /**
+   * Scroll ownership: the user wins. `stickToBottom` is the SINGLE gate for all
+   * programmatic scrolling. It starts true (land on the newest message at mount
+   * and on channel switch — the host remounts this component per channel) and
+   * flips false the moment the user scrolls up to read history, after which
+   * NOTHING may move their offset — not the host's periodic message refresh,
+   * not live arrivals, not a timeline merge.
+   */
+  let stickToBottom = $state(true);
+  /** New rows landed while scrolled up — drives the "jump to latest" pill. */
+  let hasUnseenBelow = $state(false);
+  /** Within this many px of the bottom still counts as pinned. */
+  const STICK_THRESHOLD_PX = 40;
+  /** scrollHeight captured immediately before an older-history prepend. */
+  let prependAnchorHeight = 0;
+
+  function scrollToBottom(): void {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  /** Recompute stickiness from the user's actual position on every scroll. */
+  function onThreadScroll(): void {
+    if (!scroller) return;
+    const distance =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottom = distance <= STICK_THRESHOLD_PX;
+    if (stickToBottom) hasUnseenBelow = false;
+  }
+
+  function jumpToLatest(): void {
+    stickToBottom = true;
+    hasUnseenBelow = false;
+    scrollToBottom();
+  }
+
+  /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
+  function showEarlier(): void {
+    prependAnchorHeight = scroller?.scrollHeight ?? 0;
+    extraOlder += TIMELINE_WINDOW;
+  }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
 
@@ -750,10 +790,37 @@
     }
   }
 
-  // Stick to the bottom as the timeline grows.
+  /**
+   * Follow the newest message as the timeline grows — but ONLY while the user is
+   * pinned to the bottom. The host repolls messages every few seconds; before
+   * this was gated, every refresh slammed a history-reading user back down.
+   *
+   * Tracks the timeline identity (length + newest id) so a same-length refresh
+   * still follows for a pinned user. `stickToBottom` / bookkeeping are read via
+   * untrack so flipping the flag never re-runs the effect on its own.
+   */
+  let prevTimelineLength = 0;
   $effect(() => {
-    void timeline.length;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    const length = timeline.length;
+    void timeline.at(-1)?.eventId;
+    untrack(() => {
+      const el = scroller;
+      const grew = length > prevTimelineLength;
+      prevTimelineLength = length;
+      if (!el) return;
+      if (prependAnchorHeight > 0) {
+        // Older history was prepended: hold the user's VISUAL position by
+        // shifting scrollTop by exactly the height the prepend added.
+        el.scrollTop += el.scrollHeight - prependAnchorHeight;
+        prependAnchorHeight = 0;
+        return;
+      }
+      if (stickToBottom) {
+        el.scrollTop = el.scrollHeight;
+      } else if (grew) {
+        hasUnseenBelow = true;
+      }
+    });
   });
 </script>
 
@@ -776,6 +843,7 @@
       <div
         class="dm-thread"
         bind:this={scroller}
+        onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
         {#if header}{@render header()}{/if}
@@ -793,7 +861,7 @@
             type="button"
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
-            onclick={() => (extraOlder += TIMELINE_WINDOW)}
+            onclick={showEarlier}
           >
             Show {windowed.hidden} earlier
             {windowed.hidden === 1 ? "message" : "messages"}
@@ -1061,6 +1129,17 @@
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
       </div>
+      {#if !stickToBottom}
+        <button
+          type="button"
+          class="new-messages-jump"
+          class:has-unseen={hasUnseenBelow}
+          data-testid="conversation-jump-latest"
+          onclick={jumpToLatest}
+        >
+          {hasUnseenBelow ? "New messages" : "Jump to latest"} ↓
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -1417,6 +1496,33 @@
     color: var(--t3);
     font-size: 13px;
     text-align: center;
+  }
+
+  /* Floating "jump to latest" pill — lives in the positioned wrap, NOT in the
+     scroller, so it holds still while history scrolls behind it. */
+  .new-messages-jump {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 2;
+    padding: 5px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--bg2, var(--bg1));
+    color: var(--t2, var(--t1));
+    font: 500 12px/1.3 var(--font-ui);
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--t1) 14%, transparent);
+  }
+  .new-messages-jump:hover {
+    background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
+    color: var(--t1);
+  }
+  .new-messages-jump.has-unseen {
+    border-color: var(--accent, var(--line));
+    color: var(--accent, var(--t1));
   }
 
   .dm-load-earlier {
