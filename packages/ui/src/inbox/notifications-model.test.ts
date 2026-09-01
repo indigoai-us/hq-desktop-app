@@ -184,20 +184,11 @@ describe("notifications-model (US-012)", () => {
   });
 
   describe("actionButtonsFor", () => {
-    it("renders Accept/Decline for connection_accept", () => {
-      const buttons = actionButtonsFor(
-        "connection_accept",
-        "connection_request",
-      );
-      expect(buttons.map((b) => b.label)).toEqual(["Accept", "Decline"]);
-      expect(buttons[0]?.actionKind).toBe("connection_accept");
-      expect(buttons[1]?.actionKind).toBe("connection_decline");
-    });
-
-    it("renders Approve for agent_owner_approve", () => {
+    it("hides action kinds until the host can execute an authoritative operation", () => {
       expect(
-        actionButtonsFor("agent_owner_approve").map((b) => b.label),
-      ).toEqual(["Approve"]);
+        actionButtonsFor("connection_accept", "connection_request"),
+      ).toEqual([]);
+      expect(actionButtonsFor("agent_owner_approve")).toEqual([]);
     });
 
     it("returns empty when no actionKind", () => {
@@ -247,7 +238,7 @@ describe("notifications-model (US-012)", () => {
       expect(parseNotificationsResponse({}).items).toEqual([]);
     });
 
-    it("maps actionKind into buttons", () => {
+    it("does not expose an action reference for an action the host cannot execute", () => {
       const row = mapNotificationRow(
         wire({
           type: "connection_request",
@@ -257,8 +248,9 @@ describe("notifications-model (US-012)", () => {
         }),
         NOW,
       );
-      expect(row?.actionButtons).toHaveLength(2);
-      expect(row?.actionRef).toBe("req_1");
+      expect(row?.actionButtons).toEqual([]);
+      expect(row?.actionKind).toBeNull();
+      expect(row?.actionRef).toBeNull();
     });
   });
 

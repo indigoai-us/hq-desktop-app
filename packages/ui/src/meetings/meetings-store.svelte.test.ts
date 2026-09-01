@@ -25,10 +25,7 @@ import {
 } from "./meetings-store.svelte";
 import { loadMeetingsCache } from "./meetings-cache";
 import type { GoogleAccount } from "./meetings-model";
-import {
-  SETTINGS_PREFS_KEY,
-  writeSettingsPrefs,
-} from "../settings/settings-prefs";
+import { SETTINGS_PREFS_KEY } from "../settings/settings-prefs";
 
 // Fake-adapter dispatch: one mock, keyed by method name, so the assertions
 // mirror the original invoke-keyed Tauri test.
@@ -37,8 +34,28 @@ const call =
     (method: string, payload?: unknown) => Promise<AdapterResult<unknown>>
   >();
 
-function wireApi() {
+type SessionOptions = { sessionGeneration?: number; storage?: Storage | null };
+
+let lastLegacyAccountId: string | null = null;
+let legacySessionGeneration = 0;
+
+function wireApi(
+  source: SessionOptions | Record<string, unknown> | null = {},
+  accountId: string | null = "test-account",
+) {
+  const isSessionOptions =
+    source !== null &&
+    ("sessionGeneration" in source || "storage" in source);
+  const options: SessionOptions = isSessionOptions
+    ? (source as SessionOptions)
+    : (() => {
+        if (accountId !== lastLegacyAccountId) legacySessionGeneration += 1;
+        lastLegacyAccountId = accountId;
+        return { sessionGeneration: legacySessionGeneration };
+      })();
+  const nativeSettings = isSessionOptions ? {} : source;
   configureMeetingsApi({
+    accountId,
     meetings: {
       listMemberships: () => call("listMemberships") as never,
       listUpcoming: () => call("listUpcoming") as never,
@@ -57,6 +74,10 @@ function wireApi() {
       submitBugReport: (title: string, body: string) =>
         call("submitBugReport", { title, body }) as never,
     },
+    ...(nativeSettings
+      ? { settings: { getSettings: async () => ok(nativeSettings) } }
+      : {}),
+    ...options,
   });
 }
 
@@ -127,7 +148,13 @@ async function expectPlanGateDoesNotCommitOrRefresh(
 beforeEach(() => {
   call.mockReset();
   saveMeetingsCache.mockReset();
+  lastLegacyAccountId = null;
+  legacySessionGeneration = 0;
   stopMeetingsStore();
+  // The production shell explicitly clears the singleton when identity goes
+  // away. Mirror that lifecycle between examples so a deferred response from
+  // one test cannot own the next test's account generation.
+  configureMeetingsApi(null);
   meetingsStore.stopCalendarConnectWatch();
   meetingsStore.clearConnectNotice();
   localStorage.removeItem(SETTINGS_PREFS_KEY);
@@ -135,6 +162,52 @@ beforeEach(() => {
 });
 
 describe("meetings store refresh coordination", () => {
+  it("withdraws a deferred account A agenda before account B can mount", async () => {
+    const accountA = new Map<string, string>();
+    const accountB = new Map<string, string>();
+    const storage = (values: Map<string, string>) => ({
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+      key: () => null,
+      get length() {
+        return values.size;
+      },
+    }) as Storage;
+    const staleUpcoming = deferred<AdapterResult<unknown>>();
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming") return staleUpcoming.promise;
+      if (
+        method === "listMemberships" ||
+        method === "listAccounts" ||
+        method === "listScheduledBots"
+      ) {
+        return Promise.resolve(ok([]));
+      }
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi({ sessionGeneration: 1, storage: storage(accountA) });
+    const inFlight = meetingsStore.refresh();
+    wireApi({ sessionGeneration: 2, storage: storage(accountB) });
+
+    staleUpcoming.resolve(
+      ok([
+        {
+          id: "meeting-a",
+          summary: "Account A private planning",
+          start: { dateTime: "2026-08-01T10:00:00.000Z" },
+          end: { dateTime: "2026-08-01T10:30:00.000Z" },
+        },
+      ]),
+    );
+    await inFlight;
+
+    expect(meetingsStore.events).toEqual([]);
+    expect(saveMeetingsCache).not.toHaveBeenCalled();
+  });
+
   it("shares a poll and queues a post-mutation refresh without committing stale data", async () => {
     const evt: MeetingEvent = {
       id: "event-1",
@@ -201,6 +274,115 @@ describe("meetings store refresh coordination", () => {
     // reached the cache.
     expect(saveMeetingsCache).toHaveBeenCalledTimes(1);
   });
+
+  it("drops a stale account-A refresh before account B can paint", async () => {
+    const accountA = deferred<AdapterResult<unknown>>();
+    const accountAEvent = { ...event, id: "event-account-a", summary: "A only" };
+    const accountBEvent = { ...event, id: "event-account-b", summary: "B only" };
+    let upcomingCalls = 0;
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming") {
+        upcomingCalls += 1;
+        return upcomingCalls === 1
+          ? accountA.promise
+          : Promise.resolve(ok([accountBEvent]));
+      }
+      if (method === "listMemberships" || method === "listAccounts") {
+        return Promise.resolve(ok([]));
+      }
+      if (method === "listScheduledBots") return Promise.resolve(ok([]));
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi(null, "account-a");
+    const staleRefresh = meetingsStore.refresh();
+    wireApi(null, "account-b");
+    accountA.resolve(ok([accountAEvent]));
+    await staleRefresh;
+
+    // The identity rotation clears synchronously and stale A is not allowed
+    // to repopulate either the rendered singleton or B's persistent key.
+    expect(meetingsStore.events).toEqual([]);
+    expect(saveMeetingsCache).not.toHaveBeenCalled();
+
+    await meetingsStore.refresh();
+    expect(meetingsStore.events).toEqual([accountBEvent]);
+    expect(saveMeetingsCache).toHaveBeenLastCalledWith(
+      expect.objectContaining({ events: [accountBEvent] }),
+      expect.anything(),
+    );
+  });
+
+  it("fails closed when an account-A invite completes after an account-B rotation", async () => {
+    const invitation = deferred<AdapterResult<unknown>>();
+    call.mockImplementation((method: string) => {
+      if (method === "inviteBot") return invitation.promise;
+      if (
+        method === "listUpcoming" ||
+        method === "listMemberships" ||
+        method === "listAccounts" ||
+        method === "listScheduledBots"
+      ) {
+        return Promise.resolve(ok([]));
+      }
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+    const ownEvent = { ...event, id: "event-rotated-action", sourceCompanyUid: "co_a" };
+    wireApi(null, "account-a");
+    const invite = meetingsStore.inviteBot(ownEvent);
+    await Promise.resolve();
+    wireApi(null, "account-b");
+    invitation.resolve(ok({ botId: "bot-a" }));
+
+    await expect(invite).resolves.toBeNull();
+    expect(meetingsStore.pendingActionsByEventId.size).toBe(0);
+  });
+
+  it("clears account A instead of inheriting it when the next shell has no verified id", async () => {
+    const accountAEvent = { ...event, id: "event-account-a", summary: "A only" };
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming") return Promise.resolve(ok([accountAEvent]));
+      if (method === "listMemberships" || method === "listAccounts") {
+        return Promise.resolve(ok([]));
+      }
+      if (method === "listScheduledBots") return Promise.resolve(ok([]));
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi(null, "account-a");
+    await meetingsStore.refresh();
+    expect(meetingsStore.events).toEqual([accountAEvent]);
+
+    wireApi(null, null);
+    expect(meetingsStore.events).toEqual([]);
+    expect(meetingsStore.accounts).toEqual([]);
+  });
+
+  it("does not let an account-A calendar disconnect completion change account B", async () => {
+    const disconnect = deferred<AdapterResult<unknown>>();
+    call.mockImplementation((method: string) => {
+      if (method === "listUpcoming" || method === "listScheduledBots") {
+        return Promise.resolve(ok([]));
+      }
+      if (method === "listMemberships") return Promise.resolve(ok([]));
+      if (method === "listAccounts") {
+        return Promise.resolve(ok([{ accountId: "calendar-a", email: "a@example.com" }]));
+      }
+      if (method === "listCalendars") return Promise.resolve(ok({ calendars: [] }));
+      if (method === "disconnectCalendar") return disconnect.promise;
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+
+    wireApi(null, "account-a");
+    await meetingsStore.refresh();
+    const pending = meetingsStore.disconnectCalendar("calendar-a");
+    wireApi(null, "account-b");
+    disconnect.resolve(ok(undefined));
+
+    await expect(pending).resolves.toBeNull();
+    expect(meetingsStore.accounts).toEqual([]);
+    expect(meetingsStore.disconnectPendingByAccountId.size).toBe(0);
+  });
 });
 
 describe("meetings store recording-company attribution", () => {
@@ -238,7 +420,27 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
+
+    await meetingsStore.inviteBot(baseEvent);
+
+    expect(call).toHaveBeenCalledWith("inviteBot", {
+      meetingUrl: baseEvent.meetingUrl,
+      calendarEventId: baseEvent.id,
+      calendarSeriesId: null,
+      companyId: memberUid,
+    });
+  });
+
+  it("uses the injected native recording-company setting over stale local storage", async () => {
+    await seedMemberships([
+      { companyUid: memberUid, companyName: "Mine", status: "active" },
+    ]);
+    localStorage.setItem(
+      SETTINGS_PREFS_KEY,
+      JSON.stringify({ recordingCompanyId: foreignUid }),
+    );
+    wireApi({ defaultRecordingCompanyUid: memberUid });
 
     await meetingsStore.inviteBot(baseEvent);
 
@@ -254,7 +456,7 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
     const withCompany: MeetingEvent = {
       ...baseEvent,
       sourceCompanyUid: "co_event",
@@ -270,11 +472,11 @@ describe("meetings store recording-company attribution", () => {
     });
   });
 
-  it("does not leak a foreign/stale recordingCompanyId into the invite payload", async () => {
+  it("does not leak a foreign/stale native recording default into the invite payload", async () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: foreignUid });
+    wireApi({ defaultRecordingCompanyUid: foreignUid });
 
     await meetingsStore.inviteBot(baseEvent);
 
@@ -290,7 +492,7 @@ describe("meetings store recording-company attribution", () => {
     await seedMemberships([
       { companyUid: memberUid, companyName: "Mine", status: "active" },
     ]);
-    writeSettingsPrefs({ recordingCompanyId: memberUid });
+    wireApi({ defaultRecordingCompanyUid: memberUid });
 
     await meetingsStore.joinBotNow(baseEvent);
 
@@ -300,6 +502,35 @@ describe("meetings store recording-company attribution", () => {
       calendarSeriesId: null,
       companyId: memberUid,
     });
+  });
+
+  it("fails closed instead of silently routing to Personal when native recording settings are unavailable", async () => {
+    await seedMemberships([
+      { companyUid: memberUid, companyName: "Mine", status: "active" },
+    ]);
+    configureMeetingsApi({
+      meetings: {
+        listMemberships: () => call("listMemberships") as never,
+        listUpcoming: () => call("listUpcoming") as never,
+        listScheduledBots: () => call("listScheduledBots") as never,
+        inviteBot: (payload: Json) => call("inviteBot", payload) as never,
+        cancelBot: (id: string) => call("cancelBot", id) as never,
+        joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
+        listAccounts: () => call("listAccounts") as never,
+        listCalendars: (account: string) => call("listCalendars", account) as never,
+        connectCalendar: () => call("connectCalendar") as never,
+        disconnectCalendar: (accountId: string) => call("disconnectCalendar", accountId) as never,
+      },
+      feedback: { submitBugReport: (title, body) => call("submitBugReport", { title, body }) as never },
+      settings: {
+        getSettings: async () => failure("invoke", "menubar.json is unreadable"),
+      },
+    });
+
+    const result = await meetingsStore.inviteBot(baseEvent);
+
+    expect(result?.kind).toBe("warn");
+    expect(call).not.toHaveBeenCalledWith("inviteBot", expect.anything());
   });
 });
 
@@ -769,6 +1000,31 @@ describe("meetings store in-app calendar connect", () => {
       const again = await meetingsStore.beginCalendarConnect();
       expect(again.url).toBe(consentUrl);
       expect(meetingsStore.connectPending).toBe(true);
+    } finally {
+      meetingsStore.stopCalendarConnectWatch();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a queued calendar-connect notice when the tenant session changes", async () => {
+    vi.useFakeTimers();
+    try {
+      mockConnectHappyPath({
+        listAccountsImpl: () => Promise.resolve(ok([])),
+      });
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(meetingsStore.connectNotice).toEqual({
+        kind: "warn",
+        text: "No new calendar connected — try again if you cancelled.",
+      });
+
+      wireApi({
+        sessionGeneration: 2,
+        storage: localStorage,
+      });
+
+      expect(meetingsStore.connectNotice).toBeNull();
     } finally {
       meetingsStore.stopCalendarConnectWatch();
       vi.useRealTimers();

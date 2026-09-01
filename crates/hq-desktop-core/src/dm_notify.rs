@@ -650,11 +650,9 @@ pub struct ThreadView {
     pub reply_count: u32,
 }
 
-/// Managed state: the thread the user currently has open in the ThreadPanel, if
-/// any (US-022). Set by `set_active_thread` when a panel opens and cleared when it
-/// closes. The SINGLE poll path reads this to know which thread to re-fetch on a
-/// "thread" wake and which reply event-ids it has already surfaced, so it only
-/// emits `thread:new-reply` for genuinely new replies.
+/// One renderer's active reply thread. Several desktop windows can have a
+/// thread open at once, so [`ActiveThreadState`] owns one of these per window
+/// label rather than a last-writer-wins global descriptor.
 #[derive(Default)]
 pub struct ActiveThreadInner {
     /// The root message id of the open thread (`None` = no panel open).
@@ -670,11 +668,16 @@ pub struct ActiveThreadInner {
     pub seen_reply_ids: HashSet<String>,
 }
 
-pub struct ActiveThreadState(pub Mutex<ActiveThreadInner>);
+/// Managed active reply threads keyed by the invoking Tauri window label.
+///
+/// Closing one renderer must remove only its own descriptor: a Messages window
+/// and the embedded desktop window can both stay mounted and reconcile replies
+/// independently through the single native poll path.
+pub struct ActiveThreadState(pub Mutex<HashMap<String, ActiveThreadInner>>);
 
 impl ActiveThreadState {
     pub fn new() -> Self {
-        ActiveThreadState(Mutex::new(ActiveThreadInner::default()))
+        ActiveThreadState(Mutex::new(HashMap::new()))
     }
 }
 
@@ -782,6 +785,48 @@ pub fn build_thread_reply_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_thread_registry_keeps_other_window_seen_reply_suppression_on_selective_cleanup() {
+        let state = ActiveThreadState::new();
+        let mut threads = state.0.lock().unwrap();
+        threads.insert(
+            "messages".to_string(),
+            ActiveThreadInner {
+                root_event_id: Some("evt_messages".to_string()),
+                scope: "dm".to_string(),
+                with_person_uid: Some("prs_peer".to_string()),
+                seen_reply_ids: ["evt_messages_seen".to_string()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+        threads.insert(
+            "desktop-alt".to_string(),
+            ActiveThreadInner {
+                root_event_id: Some("evt_desktop".to_string()),
+                scope: "channel".to_string(),
+                channel_id: Some("chn_1".to_string()),
+                seen_reply_ids: ["evt_desktop_seen".to_string()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+
+        threads.remove("desktop-alt");
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            threads
+                .get("messages")
+                .and_then(|thread| thread.root_event_id.as_deref()),
+            Some("evt_messages"),
+        );
+        assert!(
+            threads
+                .get("messages")
+                .is_some_and(|thread| thread.seen_reply_ids.contains("evt_messages_seen")),
+            "clearing desktop-alt must not make the Messages window re-emit an already seen reply"
+        );
+    }
 
     #[test]
     fn send_payload_uses_to_person_uid_and_body() {

@@ -25,14 +25,20 @@ import {
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = resolve(rootDir, "scripts/windows-check-relevant.mjs");
+const watchdogScriptPath = resolve(
+  rootDir,
+  "scripts/windows-test-watchdog.ps1",
+);
 
 let workflow = "";
+let watchdogScript = "";
 
 beforeAll(async () => {
   workflow = await readFile(
     resolve(rootDir, ".github/workflows/windows-check.yml"),
     "utf8",
   );
+  watchdogScript = await readFile(watchdogScriptPath, "utf8");
 });
 
 describe("paths that need the Windows gate", () => {
@@ -208,5 +214,69 @@ describe("the workflow keeps both required checks reachable", () => {
       ".github/workflows/windows-check.yml",
       "workspace/evidence/**",
     ]);
+  });
+});
+
+describe("the Windows test process-tree watchdog", () => {
+  it("runs the complete pre-built Windows binary suite with live diagnostics", () => {
+    expect(watchdogScript).toContain('"test",');
+    expect(watchdogScript).toContain('"--target",');
+    expect(watchdogScript).toContain('"x86_64-pc-windows-msvc",');
+    expect(watchdogScript).toContain('"--bins"');
+    expect(watchdogScript).not.toContain("--no-run");
+    expect(watchdogScript).toMatch(
+      /Start-Process -FilePath "cargo" -ArgumentList \$cargoArguments -NoNewWindow -PassThru/,
+    );
+    expect(watchdogScript).not.toContain("RedirectStandardOutput");
+    expect(watchdogScript).not.toContain("RedirectStandardError");
+  });
+
+  it("returns cargo's actual exit code when the suite finishes before the deadline", () => {
+    expect(watchdogScript).toContain(
+      "if ($cargo.WaitForExit($TimeoutSeconds * 1000)) {",
+    );
+    expect(watchdogScript).toContain("exit $cargo.ExitCode");
+  });
+
+  it("kills cargo and its complete descendant tree before failing on deadline", () => {
+    expect(watchdogScript).toContain("& taskkill.exe /PID $cargo.Id /T /F");
+    expect(watchdogScript).toContain("$cargo.WaitForExit(30000)");
+    // PowerShell does not allow digit separators such as `30_000`.
+    expect(watchdogScript).not.toMatch(/(?<![A-Za-z0-9])\d+_\d+/);
+    expect(watchdogScript).toContain("$taskkillExitCode -ne 0");
+    expect(watchdogScript).toContain("process-tree deadline");
+    expect(watchdogScript).toContain("exit 1");
+  });
+
+  it("makes the five-minute watchdog deadline explicit while retaining an outer guard", () => {
+    const executionStepStart = workflow.indexOf(
+      "\n      - name: Windows tests (process-tree watchdog)\n",
+    );
+    const executionStep = workflow.slice(
+      executionStepStart,
+      workflow.indexOf("\n\n", executionStepStart),
+    );
+
+    expect(executionStep).toContain("timeout-minutes: 7");
+    expect(executionStep).toContain("working-directory: apps/sync/src-tauri");
+    expect(executionStep).toContain("shell: pwsh");
+    expect(executionStep).toContain(
+      '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300',
+    );
+  });
+
+  it("keeps the compile and link gate separate with its 30-minute deadline", () => {
+    const buildStepStart = workflow.indexOf(
+      "\n      - name: Build Windows test binaries\n",
+    );
+    const buildStep = workflow.slice(
+      buildStepStart,
+      workflow.indexOf("\n\n", buildStepStart),
+    );
+
+    expect(buildStep).toContain("timeout-minutes: 30");
+    expect(buildStep).toContain(
+      "cargo test --target x86_64-pc-windows-msvc --bins --no-run",
+    );
   });
 });

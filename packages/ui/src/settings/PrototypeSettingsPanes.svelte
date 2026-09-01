@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * Host settings sections — Daybook / preview-v2 set-row + toggle language.
-   * Prefs persist locally; host seams (autostart, folder, versions, calendars)
-   * are used when they exist.
+   * Appearance choices are local to this embedded window. Every setting that
+   * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
@@ -11,7 +11,6 @@
   import {
     APPEARANCE_SIZES,
     APPEARANCE_THEMES,
-    MEETING_PLATFORM_ORDER,
     applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
@@ -37,6 +36,7 @@
     configureMeetingsApi,
     meetingsStore,
   } from "../meetings/meetings-store.svelte";
+  import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -53,23 +53,33 @@
     section: Section;
     version?: string;
     adapter?: PlatformAdapter | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+    sessionGeneration?: number;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
+    /** Changes whenever the native host observes an app/Core/CLI update edge. */
+    updateWakeSeq?: number;
+    /** Reads the running native app version (Tauri's app API in Sync). */
+    refreshAppVersion?: () => Promise<string>;
   }
 
   let {
     section,
     version = "0.0.0",
     adapter = null,
-    companies = [],
+    storage = typeof window !== "undefined" ? window.localStorage : null,
+    sessionGeneration = 0,
+    companies = null,
     personalLabel = null,
     onopenconsole,
     consoleBase: _consoleBase = HQ_CONSOLE_BASE,
+    updateWakeSeq = 0,
+    refreshAppVersion,
   }: Props = $props();
 
-  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs());
+  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs(storage));
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -88,6 +98,7 @@
   let coreVersion = $state<string | null>(null);
   let cliVersion = $state<string | null>(null);
   let hqFolder = $state<string | null>(null);
+  let customHqRoot = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   let dockVisibilityChanged = false;
   let desktopWidgetChanged = false;
@@ -95,6 +106,54 @@
   let desktopWidgetWriteSeq = 0;
   let dockAuthoritativeValue: boolean | undefined;
   let desktopWidgetAuthoritativeValue: boolean | undefined;
+  type NativeSettings = {
+    startAtLogin: boolean;
+    syncOnLaunch: boolean;
+    realtimeSync: boolean;
+    instantSync: boolean;
+    personalSyncEnabled: boolean;
+    notifications: boolean;
+    shareNotifications: boolean;
+    dmNotifications: boolean;
+    autoUpdate: boolean;
+    meetingDetection: boolean;
+    meetingPlatforms: string[];
+    defaultRecordingCompanyUid: string | null;
+  };
+  const DEFAULT_NATIVE_SETTINGS: NativeSettings = {
+    startAtLogin: true,
+    syncOnLaunch: true,
+    realtimeSync: true,
+    instantSync: true,
+    personalSyncEnabled: true,
+    notifications: true,
+    shareNotifications: true,
+    dmNotifications: true,
+    autoUpdate: true,
+    meetingDetection: true,
+    meetingPlatforms: ["zoom", "meet", "teams", "slack", "webex"],
+    defaultRecordingCompanyUid: null,
+  };
+  const MEETING_PLATFORMS = [
+    { id: "zoom", label: "Zoom" },
+    { id: "meet", label: "Google Meet" },
+    { id: "teams", label: "Teams" },
+    { id: "slack", label: "Slack huddles" },
+    { id: "webex", label: "Webex" },
+  ] as const;
+  let native = $state<NativeSettings>({ ...DEFAULT_NATIVE_SETTINGS });
+  let nativeLoaded = $state(false);
+  let nativeError = $state<string | null>(null);
+  let pendingControls = $state<string[]>([]);
+  let nativeReadGeneration = 0;
+  let nativeReconcileAfterWrites = false;
+  let versionsReadGeneration = 0;
+  let appUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked">("unchecked");
+  let coreUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
+  let cliUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
+  let coreProbeError = $state<string | null>(null);
+  let cliProbeError = $state<string | null>(null);
+  let versionsRefreshing = $state(false);
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -108,22 +167,17 @@
   );
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
-  const companyOptions = $derived([
-    ...lists.active,
-    ...(lists.personal ? [lists.personal] : []),
-  ]);
-  const defaultCompany = $derived(
-    companyOptions.find((row) => row.id === prefs.defaultCompanyId) ??
-      companyOptions[0] ??
-      null,
-  );
-  const recordingCompany = $derived(
-    companyOptions.find((row) => row.id === prefs.recordingCompanyId) ??
-      defaultCompany,
+  const recordingCompanies = $derived(
+    (companies ?? [])
+      .filter(isRecordingWorkspace)
+      .map((company) => ({
+        id: company.cloudUid!,
+        name: company.displayName,
+      })),
   );
 
   function patch(next: Partial<ShellSettingsPrefs>): void {
-    prefs = writeSettingsPrefs(next);
+    prefs = writeSettingsPrefs(next, storage);
   }
 
   function setTheme(next: ColorTheme): void {
@@ -138,22 +192,32 @@
     patch({ windowOpacity: applyWindowOpacity(next) });
   }
 
-  function setDefaultCompany(id: string): void {
-    patch({ defaultCompanyId: id });
-    const row = companyOptions.find((item) => item.id === id);
-    if (row && adapter) {
-      void adapter.appShell.setActiveCompany(row.slug);
-    }
-  }
-
-  function setRecordingCompany(id: string): void {
-    patch({ recordingCompanyId: id });
-  }
-
   async function toggleLaunch(): Promise<void> {
-    const next = !prefs.launchAtLogin;
-    patch({ launchAtLogin: next });
-    if (adapter) void adapter.appShell.setAutostart(next);
+    if (!adapter || pending("launch")) return;
+    const previous = native.startAtLogin;
+    const next = !previous;
+    native = { ...native, startAtLogin: next };
+    nativeReadGeneration += 1;
+    nativeReconcileAfterWrites = true;
+    beginPending("launch");
+    nativeError = null;
+    const applied = await adapter.appShell.setAutostart(next);
+    if (!applied.ok) {
+      native = { ...native, startAtLogin: previous };
+      nativeError = actionableError("Launch at login", applied.message);
+      endPending("launch");
+      return;
+    }
+    const saved = await adapter.settings.updateSettings({ startAtLogin: next });
+    if (!saved.ok) {
+      native = { ...native, startAtLogin: previous };
+      nativeError = actionableError("Launch at login", saved.message);
+      const rollback = await adapter.appShell.setAutostart(previous);
+      if (!rollback.ok) {
+        nativeError += " macOS could not restore the prior login item; check System Settings → Login Items.";
+      }
+    }
+    endPending("launch");
   }
 
   async function toggleDock(): Promise<void> {
@@ -169,6 +233,7 @@
       dockAuthoritativeValue = next;
       return;
     }
+    nativeError = actionableError("Show in Dock", result.message);
     if (result.reason !== "error") return;
     const settings = await adapter.settings.getSettings();
     if (writeSeq !== dockWriteSeq) return;
@@ -200,6 +265,7 @@
       desktopWidgetAuthoritativeValue = next;
       return;
     }
+    nativeError = actionableError("Desktop widget", result.message);
     if (result.reason !== "error") return;
     const settings = await adapter.settings.getSettings();
     if (writeSeq !== desktopWidgetWriteSeq) return;
@@ -219,18 +285,270 @@
     }
   }
 
-  function togglePlatform(name: string): void {
-    patch({
-      meetingPlatforms: {
-        ...prefs.meetingPlatforms,
-        [name]: !prefs.meetingPlatforms[name],
+  function pending(control: string): boolean {
+    return pendingControls.includes(control);
+  }
+
+  function beginPending(control: string): void {
+    pendingControls = [...pendingControls, control];
+  }
+
+  function endPending(control: string): void {
+    pendingControls = pendingControls.filter((item) => item !== control);
+    if (pendingControls.length === 0 && nativeReconcileAfterWrites) {
+      nativeReconcileAfterWrites = false;
+      void refreshNativeSettings();
+    }
+  }
+
+  function actionableError(subject: string, detail?: string): string {
+    return `${subject} wasn’t saved${detail ? `: ${detail}` : "."} Try again.`;
+  }
+
+  function readBoolean(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
+    return typeof raw[key] === "boolean" ? raw[key] : fallback;
+  }
+
+  function readNativeSettings(raw: unknown): NativeSettings {
+    const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const meeting =
+      rec.meetingDetectNotify && typeof rec.meetingDetectNotify === "object"
+        ? (rec.meetingDetectNotify as Record<string, unknown>)
+        : {};
+    const platforms = Array.isArray(meeting.platforms)
+      ? meeting.platforms.filter((item): item is string => typeof item === "string")
+      : DEFAULT_NATIVE_SETTINGS.meetingPlatforms;
+    return {
+      startAtLogin: readBoolean(rec, "startAtLogin", native.startAtLogin),
+      syncOnLaunch: readBoolean(rec, "syncOnLaunch", native.syncOnLaunch),
+      realtimeSync: readBoolean(rec, "realtimeSync", native.realtimeSync),
+      instantSync: readBoolean(rec, "instantSync", native.instantSync),
+      personalSyncEnabled: readBoolean(
+        rec,
+        "personalSyncEnabled",
+        native.personalSyncEnabled,
+      ),
+      notifications: readBoolean(rec, "notifications", native.notifications),
+      shareNotifications: readBoolean(
+        rec,
+        "shareNotifications",
+        native.shareNotifications,
+      ),
+      dmNotifications: readBoolean(
+        rec,
+        "dmNotifications",
+        native.dmNotifications,
+      ),
+      autoUpdate: readBoolean(rec, "autoUpdate", native.autoUpdate),
+      meetingDetection: readBoolean(meeting, "enabled", native.meetingDetection),
+      meetingPlatforms: platforms,
+      defaultRecordingCompanyUid:
+        typeof rec.defaultRecordingCompanyUid === "string" &&
+        rec.defaultRecordingCompanyUid.trim()
+          ? rec.defaultRecordingCompanyUid.trim()
+          : null,
+    };
+  }
+
+  function hydrateNativeSettings(raw: unknown): void {
+    const next = readNativeSettings(raw);
+    // Memberships arrive after identity. While that request is pending or has
+    // failed, preserve the authoritative value rather than lying "Personal".
+    if (
+      companies !== null &&
+      next.defaultRecordingCompanyUid &&
+      !recordingCompanies.some(
+        (company) => company.id === next.defaultRecordingCompanyUid,
+      )
+    ) {
+      next.defaultRecordingCompanyUid = null;
+    }
+    native = next;
+    nativeLoaded = true;
+  }
+
+  $effect(() => {
+    // Revalidate once — and only once — membership data has authoritatively
+    // settled. A stale/foreign value behaves as Personal in both the selector
+    // and the invite guard; pending membership data never clears the UI value.
+    if (
+      !nativeLoaded ||
+      companies === null ||
+      !native.defaultRecordingCompanyUid ||
+      recordingCompanies.some((company) => company.id === native.defaultRecordingCompanyUid)
+    ) {
+      return;
+    }
+    native = { ...native, defaultRecordingCompanyUid: null };
+  });
+
+  async function refreshNativeSettings(): Promise<void> {
+    if (!adapter) return;
+    const generation = ++nativeReadGeneration;
+    const result = await adapter.settings.getSettings();
+    if (generation !== nativeReadGeneration || !result.ok) {
+      if (!result.ok && !nativeLoaded) {
+        nativeError = actionableError("Settings", result.message);
+      }
+      return;
+    }
+    hydrateNativeSettings(result.value);
+    hydrateHostBackedToggles(result.value);
+    if (adapter.isAvailable("canSync")) {
+      customHqRoot = readCustomHqRoot(result.value);
+      hqFolder = customHqRoot ?? readFolderFromSettings(result.value) ?? hqFolder;
+    }
+  }
+
+  async function persistNative<K extends keyof NativeSettings>(
+    control: string,
+    patchValue: Record<string, unknown>,
+    field: K,
+    previous: NativeSettings[K],
+  ): Promise<boolean> {
+    if (!adapter || pending(control)) return false;
+    // Any host read that began before this mutation is stale. A post-write
+    // reconciliation runs only after all independent controls have settled.
+    nativeReadGeneration += 1;
+    nativeReconcileAfterWrites = true;
+    beginPending(control);
+    nativeError = null;
+    const saved = await adapter.settings.updateSettings(patchValue);
+    endPending(control);
+    if (saved.ok) return true;
+    native = { ...native, [field]: previous };
+    nativeError = actionableError(control, saved.message);
+    return false;
+  }
+
+  async function toggleNativeBoolean(
+    control: string,
+    key:
+      | "syncOnLaunch"
+      | "personalSyncEnabled"
+      | "notifications"
+      | "shareNotifications"
+      | "dmNotifications"
+      | "autoUpdate",
+  ): Promise<void> {
+    const previous = { ...native };
+    const value = !native[key];
+    native = { ...native, [key]: value };
+    const saved = await persistNative(control, { [key]: value }, key, previous[key]);
+    if (saved && key === "personalSyncEnabled") {
+      window.dispatchEvent(
+        new CustomEvent("hq:workspace-sync-enabled-changed", {
+          detail: { slug: "personal", enabled: value },
+        }),
+      );
+    }
+  }
+
+  async function toggleRealtimeSync(): Promise<void> {
+    if (!adapter || pending("auto-sync")) return;
+    const previous = { ...native };
+    const next = !previous.realtimeSync;
+    native = { ...native, realtimeSync: next };
+    nativeReadGeneration += 1;
+    nativeReconcileAfterWrites = true;
+    beginPending("auto-sync");
+    nativeError = null;
+    const live = await (next ? adapter.sync.startDaemon() : adapter.sync.stopDaemon());
+    if (!live.ok) {
+      native = { ...native, realtimeSync: previous.realtimeSync };
+      nativeError = actionableError("Auto-sync", live.message);
+      endPending("auto-sync");
+      return;
+    }
+    const saved = await adapter.settings.updateSettings({ realtimeSync: next });
+    if (!saved.ok) {
+      native = { ...native, realtimeSync: previous.realtimeSync };
+      nativeError = actionableError("Auto-sync", saved.message);
+      await (previous.realtimeSync
+        ? adapter.sync.startDaemon()
+        : adapter.sync.stopDaemon());
+    }
+    endPending("auto-sync");
+  }
+
+  async function toggleInstantSync(): Promise<void> {
+    if (!adapter || pending("instant-sync")) return;
+    const previous = { ...native };
+    const next = !previous.instantSync;
+    native = { ...native, instantSync: next };
+    nativeReadGeneration += 1;
+    nativeReconcileAfterWrites = true;
+    beginPending("instant-sync");
+    nativeError = null;
+    const saved = await adapter.settings.updateSettings({ instantSync: next });
+    if (saved.ok && previous.realtimeSync) {
+      const stopped = await adapter.sync.stopDaemon();
+      const started = stopped.ok ? await adapter.sync.startDaemon() : stopped;
+      if (!started.ok) {
+        native = { ...native, instantSync: previous.instantSync };
+        await adapter.settings.updateSettings({ instantSync: previous.instantSync });
+        await adapter.sync.startDaemon();
+        nativeError = actionableError("Instant sync", started.message);
+      }
+    } else if (!saved.ok) {
+      native = { ...native, instantSync: previous.instantSync };
+      nativeError = actionableError("Instant sync", saved.message);
+    }
+    endPending("instant-sync");
+  }
+
+  async function toggleMeetingDetection(): Promise<void> {
+    const previous = { ...native };
+    const meetingDetection = !previous.meetingDetection;
+    native = { ...native, meetingDetection };
+    await persistNative(
+      "meeting-detection",
+      {
+        meetingDetectNotify: {
+          enabled: meetingDetection,
+          platforms: native.meetingPlatforms,
+        },
       },
-    });
+      "meetingDetection",
+      previous.meetingDetection,
+    );
+  }
+
+  async function togglePlatform(id: string): Promise<void> {
+    const previous = { ...native };
+    const meetingPlatforms = previous.meetingPlatforms.includes(id)
+      ? previous.meetingPlatforms.filter((platform) => platform !== id)
+      : [...previous.meetingPlatforms, id];
+    native = { ...native, meetingPlatforms };
+    await persistNative(
+      "meeting-platforms",
+      {
+        meetingDetectNotify: {
+          enabled: native.meetingDetection,
+          platforms: meetingPlatforms,
+        },
+      },
+      "meetingPlatforms",
+      previous.meetingPlatforms,
+    );
+  }
+
+  async function setRecordingCompany(id: string): Promise<void> {
+    const previous = { ...native };
+    const defaultRecordingCompanyUid =
+      id && recordingCompanies.some((company) => company.id === id) ? id : null;
+    native = { ...native, defaultRecordingCompanyUid };
+    await persistNative(
+      "recording-company",
+      { defaultRecordingCompanyUid },
+      "defaultRecordingCompanyUid",
+      previous.defaultRecordingCompanyUid,
+    );
   }
 
   /**
-   * Match hq-desktop-app Settings UX:
-   * - denied → deep-link System Settings (OS will not re-show the dialog)
+   * Match host Settings UX:
+   * - denied → host-owned OS Settings (OS will not re-show the dialog)
    * - prompt/unknown → requestAuthorization (system dialog when notDetermined)
    * Never auto-prompt on launch — only from this control.
    */
@@ -239,14 +557,9 @@
     notifPermissionError = null;
     // Denied: do not flip notifRequesting into "Requesting…" — open Settings.
     if (notifPermission === "denied") {
-      try {
-        await openExternalUrl(
-          "x-apple.systempreferences:com.apple.preference.notifications",
-        );
-      } catch (err) {
-        console.error("Failed to open System Settings:", err);
-        notifPermissionError =
-          "Couldn’t open Notification Settings. Try again.";
+      const opened = await adapter.appShell.openNotificationSettings();
+      if (!opened.ok) {
+        notifPermissionError = "Couldn’t open Notification Settings. Try again.";
       }
       return;
     }
@@ -257,7 +570,7 @@
         notifPermission = String(res.value);
         if (res.value === "prompt") {
           notifPermissionError =
-            "macOS didn’t show a permission prompt. Try again, or allow HQ Work in System Settings → Notifications.";
+          "The system didn’t show a permission prompt. Try again, or allow HQ Work in Notification Settings.";
         }
       } else {
         console.error(
@@ -282,10 +595,123 @@
     if (res.ok) notifPermission = String(res.value);
   }
 
+  function asRecord(value: unknown): Record<string, unknown> | null {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  function probeFailure(value: unknown): string | null {
+    const probe = asRecord(value);
+    if (probe?.status !== "failed") return null;
+    const detail = typeof probe.message === "string" ? probe.message.trim() : "";
+    return detail || "The native version probe failed.";
+  }
+
+  async function refreshVersions(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    const generation = ++versionsReadGeneration;
+    versionsRefreshing = true;
+    appUpdateStatus = "checking";
+    coreUpdateStatus = "checking";
+    cliUpdateStatus = "checking";
+    coreProbeError = null;
+    cliProbeError = null;
+    const [versionResult, appCheck, coreCheck, cliCheck, refreshedAppVersion] =
+      await Promise.all([
+        adapter.updates.getVersions(),
+        adapter.updates.checkForUpdates(),
+        adapter.updates.checkCoreState(),
+        adapter.updates.checkCliUpdate(),
+        refreshAppVersion ? refreshAppVersion().catch(() => null) : Promise.resolve(null),
+      ]);
+    if (generation !== versionsReadGeneration) return;
+    if (typeof refreshedAppVersion === "string" && refreshedAppVersion.trim()) {
+      appVersion = refreshedAppVersion.trim();
+    } else {
+      appVersion = version;
+    }
+    const coreVersionFailure = versionResult.ok
+      ? probeFailure(versionResult.value.coreProbe)
+      : versionResult.message ?? "The Core version probe failed.";
+    const cliVersionFailure = versionResult.ok
+      ? probeFailure(versionResult.value.cliProbe)
+      : versionResult.message ?? "The CLI version probe failed.";
+    if (versionResult.ok) {
+      coreVersion =
+        typeof versionResult.value.core === "string" && versionResult.value.core
+          ? versionResult.value.core
+          : null;
+      cliVersion =
+        typeof versionResult.value.cli === "string" && versionResult.value.cli
+          ? versionResult.value.cli
+          : null;
+    } else {
+      coreVersion = null;
+      cliVersion = null;
+    }
+    coreProbeError = coreVersionFailure;
+    cliProbeError = cliVersionFailure;
+    appUpdateStatus = !appCheck.ok
+      ? "unchecked"
+      : appCheck.value
+        ? "available"
+        : "up-to-date";
+    const coreState = coreCheck.ok ? asRecord(coreCheck.value) : null;
+    if (coreVersionFailure) {
+      coreUpdateStatus = "failed";
+    } else if (!coreVersion) {
+      coreUpdateStatus = coreCheck.ok ? "unlocated" : "unchecked";
+    } else if (!coreState || typeof coreState.versionBehind !== "boolean") {
+      coreUpdateStatus = "unchecked";
+    } else {
+      coreUpdateStatus = coreState.versionBehind ? "available" : "up-to-date";
+    }
+    const cliState = cliCheck.ok ? asRecord(cliCheck.value) : null;
+    if (cliVersionFailure) {
+      cliUpdateStatus = "failed";
+    } else if (!cliVersion) {
+      cliUpdateStatus = cliCheck.ok ? "unlocated" : "unchecked";
+    } else if (!cliCheck.ok) {
+      cliUpdateStatus = "unchecked";
+    } else if (cliState && typeof cliState.latest === "string") {
+      cliUpdateStatus = "available";
+    } else {
+      cliUpdateStatus = "up-to-date";
+    }
+    versionsRefreshing = false;
+  }
+
+  async function chooseHqFolder(): Promise<void> {
+    if (!adapter || pending("hq-folder")) return;
+    beginPending("hq-folder");
+    nativeError = null;
+    const picked = await adapter.shell.pickFolder();
+    if (!picked.ok) {
+      nativeError = actionableError("HQ folder", picked.message);
+      endPending("hq-folder");
+      return;
+    }
+    if (!picked.value) {
+      endPending("hq-folder");
+      return;
+    }
+    const saved = await adapter.settings.updateSettings({ hqPath: picked.value });
+    if (!saved.ok) {
+      nativeError = actionableError("HQ folder", saved.message);
+    } else {
+      hqFolder = picked.value;
+      customHqRoot = picked.value;
+      await refreshVersions();
+    }
+    endPending("hq-folder");
+  }
+
   function readFolderFromSettings(raw: unknown): string | null {
     if (!raw || typeof raw !== "object") return null;
     const rec = raw as Record<string, unknown>;
     for (const key of [
+      "hqPath",
       "hqFolderPath",
       "hq_folder_path",
       "hqFolder",
@@ -296,6 +722,12 @@
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return null;
+  }
+
+  function readCustomHqRoot(raw: unknown): string | null {
+    if (!raw || typeof raw !== "object") return null;
+    const value = (raw as Record<string, unknown>).hqPath;
+    return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
   function readHostBooleanSetting(
@@ -329,6 +761,9 @@
     configureMeetingsApi({
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      settings: adapter.settings,
+      storage,
+      sessionGeneration,
     });
     return true;
   }
@@ -455,13 +890,19 @@
     refreshCalendarLabelsFromStore();
   });
 
+  $effect(() => {
+    // Native update events are delivered by the desktop shell. The initial
+    // zero is handled on mount; later values refresh each status independently.
+    if (updateWakeSeq > 0) void refreshVersions();
+  });
+
   onMount(() => {
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
     if (adapter?.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
-        if (next.hqFolderPath) hqFolder = next.hqFolderPath;
+        if (next.hqFolderPath && !customHqRoot) hqFolder = next.hqFolderPath;
       });
     }
     if (!adapter) return;
@@ -469,6 +910,8 @@
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
     const onFocus = () => {
       void refreshNotifPermission();
+      void refreshNativeSettings();
+      void refreshVersions();
     };
     window.addEventListener("focus", onFocus);
     void adapter.meetings.listAccounts().then((res) => {
@@ -480,36 +923,13 @@
         }>,
       );
     });
-    if (adapter.isAvailable("canSelfUpdate")) {
-      void adapter.updates.getVersions().then((res) => {
-        if (!res.ok || !res.value) return;
-        if (typeof res.value.app === "string" && res.value.app) {
-          appVersion = res.value.app;
-        }
-        if (typeof res.value.core === "string" && res.value.core) {
-          coreVersion = res.value.core;
-        }
-        if (typeof res.value.cli === "string" && res.value.cli) {
-          cliVersion = res.value.cli;
-        }
-      });
-    }
-    const canReadSettings =
-      adapter.isAvailable("canSync") || adapter.isAvailable("trayAndWindow");
-    if (canReadSettings) {
-      void adapter.settings.getSettings().then((res) => {
-        if (!res.ok) return;
-        if (adapter.isAvailable("canSync")) {
-          hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
-        }
-        if (adapter.isAvailable("trayAndWindow")) {
-          hydrateHostBackedToggles(res.value);
-        }
-      });
-    }
+    void refreshVersions();
+    void refreshNativeSettings();
     if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
-        if (res.ok) hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        if (res.ok && !customHqRoot) {
+          hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        }
       });
     }
     return () => {
@@ -519,6 +939,11 @@
 </script>
 
 <div class="proto" data-testid={`settings-${section}-pane`}>
+  {#if nativeError}
+    <p class="settings-error" role="alert" data-testid="settings-native-error">
+      {nativeError}
+    </p>
+  {/if}
   {#if section === "general"}
     {#if canTray}
       <div class="set-row">
@@ -526,306 +951,64 @@
           <div class="sn">Launch at login</div>
           <div class="sd">Start HQ when you sign in to your Mac</div>
         </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={prefs.launchAtLogin}
-          role="switch"
-          aria-checked={prefs.launchAtLogin}
-          aria-label="Launch at login"
-          onclick={() => void toggleLaunch()}
-        ></button>
+        <button type="button" class="toggle" class:on={native.startAtLogin} role="switch" aria-checked={native.startAtLogin} aria-label="Launch at login" aria-busy={pending("launch")} disabled={!nativeLoaded || pending("launch")} onclick={() => void toggleLaunch()}></button>
       </div>
       <div class="set-row">
-        <div>
-          <div class="sn">Show in Dock</div>
-          <div class="sd">Keep HQ in the Dock and ⌘-Tab switcher</div>
-        </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={prefs.showInDock}
-          role="switch"
-          aria-checked={prefs.showInDock}
-          aria-label="Show in Dock"
-          onclick={() => void toggleDock()}
-        ></button>
+        <div><div class="sn">Show in Dock</div><div class="sd">Keep HQ in the Dock and ⌘-Tab switcher</div></div>
+        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label="Show in Dock" onclick={() => void toggleDock()}></button>
+      </div>
+      <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
+        <div><div class="sn">Menubar quick access</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
+        <span class="mono">HOST-OWNED</span>
       </div>
       <div class="set-row">
-        <div>
-          <div class="sn">Menubar quick access</div>
-          <div class="sd">Keep the compact popover in the menu bar</div>
-        </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={prefs.menubarAccess}
-          role="switch"
-          aria-checked={prefs.menubarAccess}
-          aria-label="Menubar quick access"
-          onclick={() => patch({ menubarAccess: !prefs.menubarAccess })}
-        ></button>
-      </div>
-      <div class="set-row">
-        <div>
-          <div class="sn">Desktop widget</div>
-          <div class="sd">
-            Float the mini notifications widget on your desktop
-          </div>
-        </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={prefs.desktopWidget}
-          role="switch"
-          aria-checked={prefs.desktopWidget}
-          aria-label="Desktop widget"
-          onclick={() => void toggleDesktopWidget()}
-        ></button>
-      </div>
-    {/if}
-    <div class="set-row">
-      <div>
-        <div class="sn">Default company</div>
-        <div class="sd">Which company loads on launch</div>
-      </div>
-      {#if companyOptions.length > 0}
-        <label class="sr-only" for="default-company">Default company</label>
-        <select
-          id="default-company"
-          class="mono-select"
-          value={defaultCompany?.id ?? ""}
-          onchange={(event) => setDefaultCompany(event.currentTarget.value)}
-        >
-          {#each companyOptions as row (row.id)}
-            <option value={row.id}>{row.name}</option>
-          {/each}
-        </select>
-      {:else}
-        <span class="mono">Personal</span>
-      {/if}
-    </div>
-    {#if !canSelfUpdate}
-      <div class="set-row">
-        <div>
-          <div class="sn">Web app</div>
-          <div class="sd mono-path">v{appVersion}</div>
-        </div>
-        <span class="mono">This site</span>
+        <div><div class="sn">Desktop widget</div><div class="sd">Float the mini notifications widget on your desktop</div></div>
+        <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
   {:else if section === "appearance"}
+    <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
     <div class="set-row">
-      <div>
-        <div class="sn">Theme</div>
-        <div class="sd">Follow the system or pick one</div>
-      </div>
+      <div><div class="sn">Theme</div><div class="sd">Appearance for this embedded Work view</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Color theme">
         {#each APPEARANCE_THEMES as option (option.id)}
-          <button
-            type="button"
-            class="chip"
-            class:on={theme === option.id}
-            role="radio"
-            aria-checked={theme === option.id}
-            data-testid={`settings-theme-${option.id}`}
-            onclick={() => setTheme(option.id)}
-          >
-            {option.label}
-          </button>
+          <button type="button" class="chip" class:on={theme === option.id} role="radio" aria-checked={theme === option.id} data-testid={`settings-theme-${option.id}`} onclick={() => setTheme(option.id)}>{option.label}</button>
         {/each}
       </div>
     </div>
     {#if canTray}
       <div class="set-row">
-        <div>
-          <div class="sn">Window opacity</div>
-          <div class="sd">How much desktop shows through the glass</div>
-        </div>
-        <div class="range-wrap">
-          <input
-            type="range"
-            min="50"
-            max="100"
-            value={prefs.windowOpacity}
-            aria-label="Window opacity"
-            oninput={(event) => setOpacity(Number(event.currentTarget.value))}
-          />
-          <span class="mono range-val">{prefs.windowOpacity}%</span>
-        </div>
+        <div><div class="sn">Window opacity</div><div class="sd">Visual treatment for this embedded Work view</div></div>
+        <div class="range-wrap"><input type="range" min="50" max="100" value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">
-      <div>
-        <div class="sn">Interface size</div>
-        <div class="sd">Density of text and controls</div>
-      </div>
+      <div><div class="sn">Interface size</div><div class="sd">Density in this embedded Work view</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Interface size">
         {#each APPEARANCE_SIZES as option (option.id)}
-          <button
-            type="button"
-            class="chip"
-            class:on={prefs.uiSize === option.id}
-            role="radio"
-            aria-checked={prefs.uiSize === option.id}
-            onclick={() => setUiSize(option.id)}
-          >
-            {option.label}
-          </button>
+          <button type="button" class="chip" class:on={prefs.uiSize === option.id} role="radio" aria-checked={prefs.uiSize === option.id} onclick={() => setUiSize(option.id)}>{option.label}</button>
         {/each}
       </div>
     </div>
   {:else if section === "notifications"}
-    <div class="set-row">
-      <div>
-        <div class="sn">Agent completion</div>
-        <div class="sd">Ping when a run finishes or needs review</div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={prefs.notifyComplete}
-        role="switch"
-        aria-checked={prefs.notifyComplete}
-        aria-label="Agent completion"
-        onclick={() => patch({ notifyComplete: !prefs.notifyComplete })}
-      ></button>
-    </div>
     {#if canSync}
-      <div class="set-row">
-        <div>
-          <div class="sn">Sync notifications</div>
-          <div class="sd">Notify when sync needs attention</div>
-        </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={prefs.notifySync}
-          role="switch"
-          aria-checked={prefs.notifySync}
-          aria-label="Sync notifications"
-          onclick={() => patch({ notifySync: !prefs.notifySync })}
-        ></button>
-      </div>
+      <div class="set-row"><div><div class="sn">Meeting notifications</div><div class="sd">Show native alerts for detected and unattributed meetings</div></div><button type="button" class="toggle" class:on={native.notifications} role="switch" aria-checked={native.notifications} aria-label="Meeting notifications" disabled={!nativeLoaded || pending("meeting-notifications")} onclick={() => void toggleNativeBoolean("meeting-notifications", "notifications")}></button></div>
     {/if}
-    <div class="set-row">
-      <div>
-        <div class="sn">Share notifications</div>
-        <div class="sd">Show file-share activity from teammates</div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={prefs.notifyShare}
-        role="switch"
-        aria-checked={prefs.notifyShare}
-        aria-label="Share notifications"
-        onclick={() => patch({ notifyShare: !prefs.notifyShare })}
-      ></button>
-    </div>
-    <div class="set-row">
-      <div>
-        <div class="sn">DM notifications</div>
-        <div class="sd">
-          Native macOS banners for DMs and channel messages when HQ Work is in
-          the background
-        </div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={prefs.notifyDm}
-        role="switch"
-        aria-checked={prefs.notifyDm}
-        aria-label="DM notifications"
-        onclick={() => patch({ notifyDm: !prefs.notifyDm })}
-      ></button>
-    </div>
-    <div class="set-row">
-      <div>
-        <div class="sn">Quiet hours</div>
-        <div class="sd">Mute non-urgent notifications 6 PM – 8 AM</div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={prefs.quietHours}
-        role="switch"
-        aria-checked={prefs.quietHours}
-        aria-label="Quiet hours"
-        onclick={() => patch({ quietHours: !prefs.quietHours })}
-      ></button>
-    </div>
-    <div class="set-row">
-      <div>
-        <div class="sn">Sound effects</div>
-        <div class="sd">Subtle sends & completion sounds</div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={prefs.sounds}
-        role="switch"
-        aria-checked={prefs.sounds}
-        aria-label="Sound effects"
-        onclick={() => patch({ sounds: !prefs.sounds })}
-      ></button>
-    </div>
-    <!-- OS authorization is separate from the in-app toggles above (v1 UX).
-         Hidden until the first non-unknown read resolves. Desktop-only. -->
+    <div class="set-row"><div><div class="sn">Share notifications</div><div class="sd">Show file-share activity from teammates</div></div><button type="button" class="toggle" class:on={native.shareNotifications} role="switch" aria-checked={native.shareNotifications} aria-label="Share notifications" disabled={!nativeLoaded || pending("share-notifications")} onclick={() => void toggleNativeBoolean("share-notifications", "shareNotifications")}></button></div>
+    <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show direct-message activity in the native HQ surfaces</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
     {#if canTray && notifPermission && notifPermission !== "unknown" && notifPermission !== "unsupported"}
       <div class="set-row">
-        <div>
-          <div class="sn">System permission</div>
-          <div class="sd">
-            {#if notifPermission === "granted"}
-              macOS is allowing notifications from HQ
-            {:else if notifPermission === "denied"}
-              Blocked in macOS — open System Settings to allow
-            {:else}
-              Not enabled yet — allow to see message alerts
-            {/if}
-            {#if notifPermissionError}
-              <div
-                class="sd"
-                role="alert"
-                data-testid="settings-notification-permission-error"
-              >
-                {notifPermissionError}
-              </div>
-            {/if}
-          </div>
-        </div>
-        {#if notifPermission === "granted"}
-          <span class="mono ok">Enabled</span>
-        {:else}
-          <button
-            type="button"
-            class="chip"
-            onclick={() => void enableNotifications()}
-            disabled={notifRequesting}
-            aria-busy={notifRequesting}
-          >
-            {#if notifRequesting}
-              Requesting…
-            {:else if notifPermissionError}
-              Try again
-            {:else if notifPermission === "denied"}
-              Open Settings
-            {:else}
-              Enable
-            {/if}
-          </button>
-        {/if}
+        <div><div class="sn">System permission</div><div class="sd">{notifPermission === "granted" ? "Your system is allowing notifications from HQ" : notifPermission === "denied" ? "Blocked by system settings — open Notification Settings to allow" : "Not enabled yet — allow to see message alerts"}{#if notifPermissionError}<div class="sd" role="alert" data-testid="settings-notification-permission-error">{notifPermissionError}</div>{/if}</div></div>
+        {#if notifPermission === "granted"}<span class="mono ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
       </div>
     {/if}
   {:else if section === "sync" && canSync}
     <div class="set-row">
       <div>
         <div class="sn">HQ folder</div>
-        <div class="sd mono-path">{formatHqFolderMeta(hqFolder) || "~/hq"}</div>
+        <div class="sd mono-path">{formatHqFolderMeta(hqFolder) || "Not located"}</div>
       </div>
-      <span class="mono">{hqFolder ? "LOCAL" : "DEFAULT"}</span>
+      <button type="button" class="chip quiet" onclick={() => void chooseHqFolder()} disabled={pending("hq-folder")}>{pending("hq-folder") ? "Choosing…" : "Choose…"}</button>
     </div>
     <div class="set-row">
       <div>
@@ -862,11 +1045,12 @@
       <button
         type="button"
         class="toggle"
-        class:on={prefs.syncOnLaunch}
+        class:on={native.syncOnLaunch}
         role="switch"
-        aria-checked={prefs.syncOnLaunch}
+        aria-checked={native.syncOnLaunch}
         aria-label="Sync on launch"
-        onclick={() => patch({ syncOnLaunch: !prefs.syncOnLaunch })}
+        disabled={!nativeLoaded || pending("sync-on-launch")}
+        onclick={() => void toggleNativeBoolean("sync-on-launch", "syncOnLaunch")}
       ></button>
     </div>
     <div class="set-row">
@@ -877,11 +1061,12 @@
       <button
         type="button"
         class="toggle"
-        class:on={prefs.autoSync}
+        class:on={native.realtimeSync}
         role="switch"
-        aria-checked={prefs.autoSync}
+        aria-checked={native.realtimeSync}
         aria-label="Auto-sync"
-        onclick={() => patch({ autoSync: !prefs.autoSync })}
+        disabled={!nativeLoaded || pending("auto-sync")}
+        onclick={() => void toggleRealtimeSync()}
       ></button>
     </div>
     <div class="set-row">
@@ -892,11 +1077,12 @@
       <button
         type="button"
         class="toggle"
-        class:on={prefs.instantSync}
+        class:on={native.instantSync}
         role="switch"
-        aria-checked={prefs.instantSync}
+        aria-checked={native.instantSync}
         aria-label="Instant sync"
-        onclick={() => patch({ instantSync: !prefs.instantSync })}
+        disabled={!nativeLoaded || pending("instant-sync")}
+        onclick={() => void toggleInstantSync()}
       ></button>
     </div>
     <div class="set-row">
@@ -907,11 +1093,12 @@
       <button
         type="button"
         class="toggle"
-        class:on={prefs.syncPersonalVault}
+        class:on={native.personalSyncEnabled}
         role="switch"
-        aria-checked={prefs.syncPersonalVault}
+        aria-checked={native.personalSyncEnabled}
         aria-label="Sync personal vault"
-        onclick={() => patch({ syncPersonalVault: !prefs.syncPersonalVault })}
+        disabled={!nativeLoaded || pending("personal-sync")}
+        onclick={() => void toggleNativeBoolean("personal-sync", "personalSyncEnabled")}
       ></button>
     </div>
     <div class="set-row">
@@ -927,36 +1114,38 @@
     {#if canWatchMeetings}
       <div class="set-row">
         <div>
-          <div class="sn">Meeting detection</div>
+          <div class="sn">Detected-meeting alerts</div>
           <div class="sd">
-            Detect active meeting apps and surface recording actions
+            Show a native alert when a meeting is detected
           </div>
         </div>
         <button
           type="button"
           class="toggle"
-          class:on={prefs.meetingDetection}
+          class:on={native.meetingDetection}
           role="switch"
-          aria-checked={prefs.meetingDetection}
-          aria-label="Meeting detection"
-          onclick={() => patch({ meetingDetection: !prefs.meetingDetection })}
+          aria-checked={native.meetingDetection}
+          aria-label="Detected-meeting alerts"
+          disabled={!nativeLoaded || pending("meeting-detection") || pending("meeting-platforms")}
+          onclick={() => void toggleMeetingDetection()}
         ></button>
       </div>
       <div class="set-row">
         <div>
-          <div class="sn">Platforms</div>
-          <div class="sd">Which meeting apps are watched</div>
+          <div class="sn">Alert sources</div>
+          <div class="sd">Which detected meeting apps may show native alerts</div>
         </div>
         <div class="theme-pills">
-          {#each MEETING_PLATFORM_ORDER as name (name)}
+          {#each MEETING_PLATFORMS as platform (platform.id)}
             <button
               type="button"
               class="chip"
-              class:on={prefs.meetingPlatforms[name]}
-              aria-pressed={prefs.meetingPlatforms[name]}
-              onclick={() => togglePlatform(name)}
+              class:on={native.meetingPlatforms.includes(platform.id)}
+              aria-pressed={native.meetingPlatforms.includes(platform.id)}
+              disabled={!nativeLoaded || pending("meeting-detection") || pending("meeting-platforms")}
+              onclick={() => void togglePlatform(platform.id)}
             >
-              {name}
+              {platform.label}
             </button>
           {/each}
         </div>
@@ -969,20 +1158,26 @@
           Attribution for new recordings — changeable per recording
         </div>
       </div>
-      {#if companyOptions.length > 0}
+      {#if !nativeLoaded}
+        <span class="mono" data-testid="recording-company-unavailable">Settings unavailable</span>
+      {:else if companies === null}
+        <span class="mono" data-testid="recording-company-membership-pending">Memberships loading…</span>
+      {:else if recordingCompanies.length > 0}
         <label class="sr-only" for="recording-company">Recording company</label>
         <select
           id="recording-company"
           class="mono-select"
-          value={recordingCompany?.id ?? ""}
-          onchange={(event) => setRecordingCompany(event.currentTarget.value)}
+          value={native.defaultRecordingCompanyUid ?? ""}
+          disabled={!nativeLoaded || pending("recording-company")}
+          onchange={(event) => void setRecordingCompany(event.currentTarget.value)}
         >
-          {#each companyOptions as row (row.id)}
+          <option value="">Personal</option>
+          {#each recordingCompanies as row (row.id)}
             <option value={row.id}>{row.name}</option>
           {/each}
         </select>
       {:else}
-        <span class="mono">Personal</span>
+        <span class="mono" data-testid="recording-company-personal">Personal</span>
       {/if}
     </div>
     {#if connectedAccounts.length > 0}
@@ -1055,17 +1250,18 @@
       <div>
         <div class="sn">Automatic updates</div>
         <div class="sd">
-          Install app, HQ Core, and CLI updates in the background
+          Allow the native host to install eligible desktop app, HQ Core, and CLI updates in the background
         </div>
       </div>
       <button
         type="button"
         class="toggle"
-        class:on={prefs.autoUpdates}
+        class:on={native.autoUpdate}
         role="switch"
-        aria-checked={prefs.autoUpdates}
+        aria-checked={native.autoUpdate}
         aria-label="Automatic updates"
-        onclick={() => patch({ autoUpdates: !prefs.autoUpdates })}
+        disabled={!nativeLoaded || pending("automatic-updates")}
+        onclick={() => void toggleNativeBoolean("automatic-updates", "autoUpdate")}
       ></button>
     </div>
     <div class="set-row">
@@ -1073,29 +1269,59 @@
         <div class="sn">Desktop app</div>
         <div class="sd mono-path">v{appVersion}</div>
       </div>
-      <span class="mono ok">This window</span>
+      <span class="mono" class:ok={appUpdateStatus === "up-to-date"}>{appUpdateStatus === "checking" ? "CHECKING" : appUpdateStatus === "available" ? "UPDATE AVAILABLE" : appUpdateStatus === "up-to-date" ? "UP TO DATE" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ Core</div>
         <div class="sd mono-path">
-          {coreVersion ? `v${coreVersion}` : "Not detected"}
+          {coreVersion
+            ? `v${coreVersion}`
+            : coreUpdateStatus === "checking"
+              ? "Checking installed location…"
+              : coreUpdateStatus === "unlocated"
+                ? "HQ root is required"
+                : coreUpdateStatus === "failed"
+                  ? "Version probe failed"
+                  : "Version unavailable"}
         </div>
+        {#if coreUpdateStatus === "unlocated"}
+          <div class="sd" data-testid="settings-core-remediation">Choose the HQ root above (or set hqPath/hqFolderPath), then refresh.</div>
+        {:else if coreUpdateStatus === "failed"}
+          <div class="sd">Core version probe failed: {coreProbeError}</div>
+        {:else if coreUpdateStatus === "unchecked"}
+          <div class="sd">Core update status could not be checked. Refresh and verify your connection.</div>
+        {/if}
       </div>
-      <span class="mono" class:ok={Boolean(coreVersion)}
-        >{coreVersion ? "Up to date" : "LOCAL"}</span
-      >
+      <span class="mono" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ CLI</div>
         <div class="sd mono-path">
-          {cliVersion ? `v${cliVersion}` : "Not checked"}
+          {cliVersion
+            ? `v${cliVersion}`
+            : cliUpdateStatus === "checking"
+              ? "Checking installed location…"
+              : cliUpdateStatus === "unlocated"
+                ? "CLI path is required"
+                : cliUpdateStatus === "failed"
+                  ? "Version probe failed"
+                  : "Version unavailable"}
         </div>
+        {#if cliUpdateStatus === "unlocated"}
+          <div class="sd" data-testid="settings-cli-remediation">Add the CLI directory to this HQ root’s .claude/settings.local.json (or settings.json) env.PATH, then refresh. The host uses that Claude settings PATH before broader PATH locations.</div>
+        {:else if cliUpdateStatus === "failed"}
+          <div class="sd">CLI version probe failed: {cliProbeError}</div>
+        {:else if cliUpdateStatus === "unchecked"}
+          <div class="sd">CLI update status could not be checked. Refresh and verify your connection.</div>
+        {/if}
       </div>
-      <span class="mono" class:ok={Boolean(cliVersion)}
-        >{cliVersion ? "Up to date" : "—"}</span
-      >
+      <span class="mono" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+    </div>
+    <div class="set-row">
+      <div><div class="sn">Update status</div><div class="sd">Refreshes on window focus and native app, Core, or CLI update events.</div></div>
+      <button type="button" class="chip" onclick={() => void refreshVersions()} disabled={versionsRefreshing}>{versionsRefreshing ? "Refreshing…" : "Refresh"}</button>
     </div>
   {/if}
 </div>
@@ -1106,6 +1332,27 @@
     flex-direction: column;
     gap: 10px;
     max-width: 640px;
+  }
+
+  .settings-error,
+  .settings-note {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .settings-error {
+    border: 1px solid color-mix(in srgb, #ef4444 45%, var(--line));
+    color: #fecaca;
+    background: color-mix(in srgb, #7f1d1d 28%, var(--raised));
+  }
+
+  .settings-note,
+  .set-row.unavailable {
+    color: var(--t3);
+    background: color-mix(in srgb, var(--raised) 72%, transparent);
   }
 
   .set-row {

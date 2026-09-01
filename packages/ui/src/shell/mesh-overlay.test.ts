@@ -434,6 +434,8 @@ describe("createHybridSidebarApi", () => {
       listChannels: async () => ({ channels: [] }),
       markDmThreadRead: async () => {},
       markChannelRead: async () => {},
+      sendChannelMessage: async () => {},
+      sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
     };
     const api = createHybridSidebarApi(live, () => overlay);
@@ -470,6 +472,8 @@ describe("createHybridSidebarApi", () => {
       listChannels: async () => ({ channels: [] }),
       markDmThreadRead: async () => {},
       markChannelRead: async () => {},
+      sendChannelMessage: async () => {},
+      sendDm: async () => {},
       searchMessages: async () => ({ results: [] }),
     };
     const api = createHybridSidebarApi(live, () => seeded);
@@ -591,12 +595,17 @@ describe("createCacheSidebarApi channel capabilities", () => {
     expect(calls).toEqual(["create", "member", "send"]);
   });
 
-  it("omits channel capabilities when persist does not provide them", () => {
+  it("surfaces an actionable send failure when persist does not provide it", async () => {
     const api = createCacheSidebarApi(
       () => ({ rows: [], contacts: [], updatedAt: 0 }) as never,
     );
     expect(api.createChannel).toBeUndefined();
-    expect(api.sendChannelMessage).toBeUndefined();
+    await expect(
+      api.sendChannelMessage({ channelId: "chn_x", body: "hi" }),
+    ).rejects.toThrow("Message sending is unavailable while offline");
+    await expect(
+      api.sendDm({ toPersonUid: "prs_a", body: "hi" }),
+    ).rejects.toThrow("Message sending is unavailable while offline");
   });
 });
 

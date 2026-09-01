@@ -3,10 +3,15 @@ import type {
   FeedbackApi,
   Json,
   MeetingsApi,
+  SettingsApi,
 } from "@hq/platform";
-import { readSettingsPrefs } from "../settings/settings-prefs";
-import { loadMeetingsCache, saveMeetingsCache } from "./meetings-cache";
+import {
+  loadMeetingsCache,
+  saveMeetingsCache,
+  type MeetingsStorage,
+} from "./meetings-cache";
 import { isAlreadyScheduledError, isPlanRequiredError } from "./invite-errors";
+import { isRecordingCompanyMembership } from "./recording-membership";
 import {
   buildRefreshProblemReport,
   botForEvent,
@@ -43,15 +48,38 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface MeetingsStoreApi {
+  /** Authenticated account id, carried with native generation transitions. */
+  accountId?: string | null;
   meetings: MeetingsApi;
   feedback: FeedbackApi;
+  /** Native settings are authoritative for recording attribution. */
+  settings?: Pick<SettingsApi, "getSettings">;
+  /** Account-partitioned renderer persistence supplied by the desktop host. */
+  storage?: MeetingsStorage | null;
+  /** Monotonic native auth generation; owns all in-flight meeting work. */
+  sessionGeneration?: number;
 }
 
 let api: MeetingsStoreApi | null = null;
+function defaultStorage(): MeetingsStorage | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+let storage: MeetingsStorage | null = defaultStorage();
+let sessionGeneration = 0;
+let sessionEpoch = 0;
 
 /** Inject the platform backend before startMeetingsStore(). */
 export function configureMeetingsApi(next: MeetingsStoreApi | null): void {
+  const nextStorage = next?.storage ?? defaultStorage();
+  const nextGeneration = next?.sessionGeneration ?? 0;
+  const changed =
+    api !== null &&
+    (storage !== nextStorage || sessionGeneration !== nextGeneration);
   api = next;
+  storage = nextStorage;
+  sessionGeneration = nextGeneration;
+  if (changed) resetTenantSession();
 }
 
 function requireApi(): MeetingsStoreApi {
@@ -174,6 +202,8 @@ let connectWatchGeneration = 0;
 let connectPollTimer: ReturnType<typeof setInterval> | null = null;
 let connectDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
 let connectFocusHandler: (() => void) | null = null;
+let storeFocusHandler: (() => void) | null = null;
+let storeStorageHandler: (() => void) | null = null;
 
 const CONNECT_POLL_INTERVAL_MS = 3_000;
 const CONNECT_POLL_MAX_MS = 120_000;
@@ -184,7 +214,7 @@ function hydrateFromCache() {
     ScheduledBot,
     GoogleAccount,
     GoogleCalendar
-  >();
+  >(storage);
   if (!snapshot) return;
   hydratedFromCache = true;
   events = snapshot.events ?? [];
@@ -220,17 +250,21 @@ function refresh(forceAfterMutation = false): Promise<void> {
     return refreshInFlight;
   }
 
+  const epoch = sessionEpoch;
   const run = async (): Promise<void> => {
     loading = true;
     try {
       do {
+        if (epoch !== sessionEpoch) return;
         forceTrailingRefresh = false;
         const refreshRevision = mutationRevision;
-        await refreshOnce(refreshRevision);
-      } while (forceTrailingRefresh);
+        await refreshOnce(refreshRevision, epoch);
+      } while (epoch === sessionEpoch && forceTrailingRefresh);
     } finally {
-      loading = false;
-      firstRefreshSettled = true;
+      if (epoch === sessionEpoch) {
+        loading = false;
+        firstRefreshSettled = true;
+      }
     }
   };
 
@@ -241,7 +275,7 @@ function refresh(forceAfterMutation = false): Promise<void> {
   return operation;
 }
 
-async function refreshOnce(refreshRevision: number): Promise<void> {
+async function refreshOnce(refreshRevision: number, epoch: number): Promise<void> {
   const { meetings } = requireApi();
   let nextMembershipsError = "";
   try {
@@ -285,11 +319,11 @@ async function refreshOnce(refreshRevision: number): Promise<void> {
 
     // Calendar fan-out is part of the same snapshot. Holding these values
     // locally prevents a pre-mutation poll from partially repainting the UI.
-    const calendarSnapshot = await loadCalendarsForAccounts(accts ?? []);
+    const calendarSnapshot = await loadCalendarsForAccounts(meetings, accts ?? []);
 
     // A mutation committed while this pass was in flight. Its forced trailing
     // pass owns the next paint; never apply this pre-mutation snapshot.
-    if (refreshRevision !== mutationRevision) return;
+    if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
 
     const resetGate = meetingsRefreshGate(refreshFailureCount, null);
     refreshFailureCount = resetGate.consecutiveFailures;
@@ -330,7 +364,7 @@ async function refreshOnce(refreshRevision: number): Promise<void> {
     lastRefreshAt = Date.now();
     hasLiveSnapshot = true;
   } catch (err) {
-    if (refreshRevision !== mutationRevision) return;
+    if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error("meetings refresh failed:", err);
     lastRefreshErrorRaw = String(err ?? "");
@@ -368,9 +402,9 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
 }
 
 async function loadCalendarsForAccounts(
+  meetings: MeetingsApi,
   accts: GoogleAccount[],
 ): Promise<CalendarSnapshot> {
-  const { meetings } = requireApi();
   const nextByAccount = new Map<string, GoogleCalendar[]>();
   const nextEnabled = new Map<string, Set<string>>();
   const nextSummaries = new Map<string, string>();
@@ -412,7 +446,7 @@ function persistSnapshot(): void {
       ([acct, ids]) => [acct, Array.from(ids)],
     ),
     calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
-  });
+  }, storage);
 }
 
 function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
@@ -465,18 +499,52 @@ function markMutationCommitted(): void {
   mutationRevision += 1;
 }
 
-/** True when `uid` is one of the user's current memberships (cached names or live rows). */
-function isOwnMembershipUid(uid: string): boolean {
-  if (companyNamesByUid.has(uid)) return true;
-  return memberships.some((row) => row.companyUid === uid);
+function isCurrentTenantSession(epoch: number): boolean {
+  return epoch === sessionEpoch;
 }
 
-function invitePayload(meetingUrl: string, evt: MeetingEvent | null): Json {
+/** True when `uid` is one of the user's current memberships (cached names or live rows). */
+function isOwnMembershipUid(uid: string): boolean {
+  return memberships.some(
+    (row) => row.companyUid === uid && isRecordingCompanyMembership(row),
+  );
+}
+
+type RecordingDestination =
+  | { kind: "personal" }
+  | { kind: "company"; companyUid: string }
+  | { kind: "unavailable" };
+
+async function defaultRecordingDestination(
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined,
+): Promise<RecordingDestination> {
+  // Never fall back to renderer preferences: a tenant-scoped native setting
+  // is the authoritative source for an event with no source company.
+  if (!settings) return { kind: "unavailable" };
+  const result = await settings.getSettings();
+  if (!result.ok) return { kind: "unavailable" };
+  const value = result.value.defaultRecordingCompanyUid;
+  return typeof value === "string" && value.trim()
+    ? { kind: "company", companyUid: value.trim() }
+    : { kind: "personal" };
+}
+
+async function invitePayload(
+  meetingUrl: string,
+  evt: MeetingEvent | null,
+  settings: Pick<SettingsApi, "getSettings"> | null | undefined = requireApi().settings,
+): Promise<Json> {
   // Event company wins; settings default fills only when the event has none.
-  // Cross-company guard: default must be an own membership uid.
+  // Cross-company guard: default must be an active own membership.
+  const destination = evt?.sourceCompanyUid
+    ? { kind: "personal" as const }
+    : await defaultRecordingDestination(settings);
+  if (destination.kind === "unavailable") {
+    throw new Error("Recording destination settings are unavailable. Retry.");
+  }
   const companyId = resolveInviteCompanyId(
     evt?.sourceCompanyUid,
-    readSettingsPrefs().recordingCompanyId,
+    destination.kind === "company" ? destination.companyUid : null,
     { has: isOwnMembershipUid },
   );
   return {
@@ -501,12 +569,18 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!url) return { kind: "warn", text: "No meeting URL on this event." };
   const key = evt.id;
   if (!lockRow(key, "invite")) return null;
+  const epoch = sessionEpoch;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.inviteBot(invitePayload(url, evt)));
+    const payload = await invitePayload(url, evt, actionApi.settings);
+    if (!isCurrentTenantSession(epoch)) return null;
+    unwrap(await actionApi.meetings.inviteBot(payload));
+    if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);
     return { kind: "info", text: "Bot invited." };
   } catch (err) {
+    if (!isCurrentTenantSession(epoch)) return null;
     if (isAlreadyScheduledError(err)) {
       markMutationCommitted();
       seedAlreadyInvited(evt, url);
@@ -521,7 +595,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       text: friendlyError(err, "Couldn't invite the bot."),
     };
   } finally {
-    unlockRow(key);
+    if (isCurrentTenantSession(epoch)) unlockRow(key);
   }
 }
 
@@ -543,11 +617,13 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!bot) return null;
   const key = evt.id;
   if (!lockRow(key, "uninvite")) return null;
+  const epoch = sessionEpoch;
   try {
     // The adapter's cancelBot resolves void; the richer CancelBotResult
     // (series scope / counts) is not on the wire, so the series-scoped toast
     // falls back to the bot row's own recurring flag.
     unwrap(await requireApi().meetings.cancelBot(bot.botId));
+    if (!isCurrentTenantSession(epoch)) return null;
     const result: CancelBotResult = { recurringMeeting: bot.recurringMeeting };
     markMutationCommitted();
     await refresh(true);
@@ -560,12 +636,13 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     }
     return { kind: "info", text: "Bot uninvited." };
   } catch (err) {
+    if (!isCurrentTenantSession(epoch)) return null;
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't remove the bot."),
     };
   } finally {
-    unlockRow(key);
+    if (isCurrentTenantSession(epoch)) unlockRow(key);
   }
 }
 
@@ -577,12 +654,18 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   if (!url) return { kind: "warn", text: "No meeting URL on this event." };
   const key = evt.id;
   if (!lockRow(key, "join-now")) return null;
+  const epoch = sessionEpoch;
+  const actionApi = requireApi();
   try {
-    unwrap(await requireApi().meetings.joinBotNow(invitePayload(url, evt)));
+    const payload = await invitePayload(url, evt, actionApi.settings);
+    if (!isCurrentTenantSession(epoch)) return null;
+    unwrap(await actionApi.meetings.joinBotNow(payload));
+    if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);
     return { kind: "info", text: "Bot's on the way." };
   } catch (err) {
+    if (!isCurrentTenantSession(epoch)) return null;
     if (isAlreadyScheduledError(err)) {
       markMutationCommitted();
       seedAlreadyInvited(evt, url);
@@ -595,7 +678,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
       text: friendlyError(err, "Couldn't tell the bot to join."),
     };
   } finally {
-    unlockRow(key);
+    if (isCurrentTenantSession(epoch)) unlockRow(key);
   }
 }
 
@@ -611,6 +694,7 @@ async function inviteBotByUrl(
 ): Promise<ToastDescriptor | null> {
   const url = meetingUrl.trim();
   if (!isPlausibleMeetingUrl(url)) return null;
+  const epoch = sessionEpoch;
   try {
     unwrap(
       await requireApi().meetings.inviteBot({
@@ -620,6 +704,7 @@ async function inviteBotByUrl(
         companyId,
       }),
     );
+    if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);
     const dest = urlInviteDestinationLabel(companyId, companyNamesByUid);
@@ -628,6 +713,7 @@ async function inviteBotByUrl(
       text: `Bot invited — meeting will save to ${dest}.`,
     };
   } catch (err) {
+    if (!isCurrentTenantSession(epoch)) return null;
     // URL invites have no calendar row to seed; still treat 409 as success +
     // background refresh (no warn toast / error banner).
     if (isAlreadyScheduledError(err)) {
@@ -685,12 +771,18 @@ function finishCalendarConnect(notice: ToastDescriptor | null): void {
 async function pollForConnectedAccount(): Promise<void> {
   if (!connectPending) return;
   const gen = connectWatchGeneration;
+  const epoch = sessionEpoch;
   try {
     const accts = (await requireApi()
       .meetings.listAccounts()
       .then((r) => unwrap(r))) as unknown as GoogleAccount[];
     // Discard polls that finished after this watch ended or was replaced.
-    if (!connectPending || gen !== connectWatchGeneration) return;
+    if (
+      !connectPending ||
+      gen !== connectWatchGeneration ||
+      !isCurrentTenantSession(epoch)
+    )
+      return;
     const hasNew = (accts ?? []).some(
       (a) => a.accountId && !connectBaselineIds.has(a.accountId),
     );
@@ -742,11 +834,13 @@ async function beginCalendarConnect(): Promise<BeginCalendarConnectResult> {
   if (connectPending) {
     return { url: null, toast: null };
   }
+  const epoch = sessionEpoch;
   try {
     const raw = unwrap(await requireApi().meetings.connectCalendar()) as {
       url?: unknown;
     };
     const url = typeof raw?.url === "string" ? raw.url.trim() : "";
+    if (!isCurrentTenantSession(epoch)) return { url: null, toast: null };
     if (!url) {
       return {
         url: null,
@@ -770,6 +864,7 @@ async function beginCalendarConnect(): Promise<BeginCalendarConnectResult> {
     } catch (err) {
       console.error("meetings connect baseline listAccounts failed:", err);
     }
+    if (!isCurrentTenantSession(epoch)) return { url: null, toast: null };
     startCalendarConnectWatch(baselineIds);
     return {
       url,
@@ -889,6 +984,7 @@ async function disconnectCalendar(
   const id = accountId.trim();
   if (!id) return null;
   if (disconnectPendingByAccountId.has(id)) return null;
+  const epoch = sessionEpoch;
 
   disconnectPendingByAccountId = new Set(disconnectPendingByAccountId).add(id);
   const removed = snapshotAccountSlice(id);
@@ -896,19 +992,23 @@ async function disconnectCalendar(
 
   try {
     unwrap(await requireApi().meetings.disconnectCalendar(id));
+    if (!isCurrentTenantSession(epoch)) return null;
     markMutationCommitted();
     await refresh(true);
     return { kind: "info", text: "Calendar disconnected." };
   } catch (err) {
+    if (!isCurrentTenantSession(epoch)) return null;
     restoreAccountSlice(id, removed);
     return {
       kind: "warn",
       text: friendlyError(err, "Couldn't disconnect calendar."),
     };
   } finally {
-    const next = new Set(disconnectPendingByAccountId);
-    next.delete(id);
-    disconnectPendingByAccountId = next;
+    if (isCurrentTenantSession(epoch)) {
+      const next = new Set(disconnectPendingByAccountId);
+      next.delete(id);
+      disconnectPendingByAccountId = next;
+    }
   }
 }
 
@@ -931,14 +1031,14 @@ export function startMeetingsStore(): void {
   }, POLL_INTERVAL_MS);
 
   if (typeof window !== "undefined") {
-    const onFocus = () => {
+    storeFocusHandler = () => {
       if (!viewActive) return;
       hydrateFromCache();
       if (Date.now() - lastRefreshAt > MEETINGS_REFRESH_MIN_MS) void refresh();
     };
-    const onStorage = () => hydrateFromCache();
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("storage", onStorage);
+    storeStorageHandler = () => hydrateFromCache();
+    window.addEventListener("focus", storeFocusHandler);
+    window.addEventListener("storage", storeStorageHandler);
   }
 }
 
@@ -951,13 +1051,51 @@ export function stopMeetingsStore(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  if (typeof window !== "undefined") {
+    if (storeFocusHandler) window.removeEventListener("focus", storeFocusHandler);
+    if (storeStorageHandler) window.removeEventListener("storage", storeStorageHandler);
+  }
+  storeFocusHandler = null;
+  storeStorageHandler = null;
   finishCalendarConnect(null);
+  sessionEpoch += 1;
   started = false;
   viewActive = false;
   hydratedFromCache = false;
   firstRefreshSettled = false;
   hasLiveSnapshot = false;
   lastRefreshAt = 0;
+}
+
+/**
+ * A native identity transition owns a hard meeting-store boundary. The store
+ * lives at module scope for route speed, so it cannot retain a previous
+ * account's agenda while the replacement DesktopApp mounts.
+ */
+function resetTenantSession(): void {
+  stopMeetingsStore();
+  clearConnectNotice();
+  refreshInFlight = null;
+  forceTrailingRefresh = false;
+  mutationRevision += 1;
+  events = [];
+  accounts = [];
+  calendarsByAccount = new Map();
+  enabledCalIdsByAccount = new Map();
+  botsByEventId = new Map();
+  allBots = [];
+  companyNamesByUid = new Map();
+  accountEmailById = new Map();
+  calendarSummaryByKey = new Map();
+  memberships = [];
+  membershipsError = "";
+  fetchError = "";
+  refreshBlocked = false;
+  refreshFailureCount = 0;
+  lastRefreshErrorRaw = "";
+  loading = false;
+  rowPending = new Map();
+  disconnectPendingByAccountId = new Set();
 }
 
 /**

@@ -7,12 +7,13 @@
  */
 
 import {
+  type AdapterResult,
   type AdapterPromise,
   type Capability,
   type ChannelSummary,
   type Json,
-  type NotificationItem,
   type PlatformAdapter,
+  type VersionProbe,
   type WhoAmI,
   type VersionInfo,
   TAURI_CAPABILITIES,
@@ -20,6 +21,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -119,21 +121,6 @@ function asChannelSummary(row: Json): ChannelSummary {
   };
 }
 
-function asNotificationItem(row: Json): NotificationItem {
-  const status = String(row.status ?? '');
-  const readAt = row.readAt ?? row.read_at;
-  const read =
-    row.read === true ||
-    status === 'read' ||
-    (typeof readAt === 'string' && readAt.length > 0);
-  return {
-    ...row,
-    id: String(row.id ?? ''),
-    title: String(row.title ?? row.body ?? ''),
-    read,
-  };
-}
-
 function invokeError(err: unknown): ReturnType<typeof failure> {
   return failure(
     'invoke',
@@ -164,12 +151,20 @@ export function createSyncPlatformAdapter(
       call<string | null>('get_hq_version'),
       call<string | null>('get_hq_cli_version'),
     ]);
-    if (!core.ok) return core;
-    if (!cli.ok) return cli;
-    return ok({
-      ...(core.value ? { core: core.value } : {}),
-      ...(cli.value ? { cli: cli.value } : {}),
-    });
+    // Version probes are independent. A missing or failed CLI probe must not
+    // erase a successfully read Core version (and vice versa); the Settings UI
+    // renders the failed row as unchecked with its own remediation.
+    const toProbe = (result: AdapterResult<string | null>): VersionProbe =>
+      result.ok
+        ? { status: result.value ? 'available' : 'missing', value: result.value }
+        : { status: 'failed', code: result.code, message: result.message };
+    const versions: VersionInfo = {
+      ...(core.ok && core.value ? { core: core.value } : {}),
+      ...(cli.ok && cli.value ? { cli: cli.value } : {}),
+      coreProbe: toProbe(core),
+      cliProbe: toProbe(cli),
+    };
+    return ok(versions);
   }
 
   async function hqProJson<T>(
@@ -330,8 +325,11 @@ export function createSyncPlatformAdapter(
     },
 
     messaging: {
-      listChannels: async () => {
-        const result = await call<unknown>('list_channels');
+      listChannels: async (opts) => {
+        const result = await call<unknown>('list_channels', {
+          companyUid: opts?.companyUid,
+          includeCompanyProjects: opts?.includeCompanyProjects,
+        });
         if (!result.ok) return result;
         return ok(
           unwrapNamedArray(result.value, ['channels']).map(asChannelSummary),
@@ -498,22 +496,33 @@ export function createSyncPlatformAdapter(
     notifications: {
       fetchNotifications: async (opts) => {
         const rec = asRecord(opts) ?? {};
+        const rawLimit = rec.limit;
+        const limit =
+          typeof rawLimit === 'number'
+            ? rawLimit
+            : typeof rawLimit === 'string' && rawLimit.trim()
+              ? Number(rawLimit)
+              : undefined;
         const result = await call<unknown>('fetch_notifications', {
-          limit: rec.limit,
-          cursor: rec.cursor,
+          ...(typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {}),
+          ...(typeof rec.cursor === 'string' && rec.cursor.trim()
+            ? { cursor: rec.cursor }
+            : {}),
           unreadOnly: rec.unreadOnly ?? rec.unread_only,
         });
         if (!result.ok) return result;
-        return ok(
-          unwrapNamedArray(result.value, ['notifications']).map(
-            asNotificationItem,
-          ),
-        );
+        return ok(normalizeNotificationsFeed(result.value));
       },
       ack: (id) => call('ack_notification', { id }),
       readAll: () => call('read_all_notifications'),
-      runAction: (id, action) =>
-        call('run_notification_action', { id, actionKind: action }),
+      runAction: (id, action, actionRef) =>
+        call('run_notification_action', {
+          id,
+          actionKind: action,
+          ...(typeof actionRef === 'string' && actionRef.trim()
+            ? { actionRef }
+            : {}),
+        }),
       fetchDmInbox: (opts) => {
         const rec = asRecord(opts) ?? {};
         return hqProJson(
@@ -606,7 +615,14 @@ export function createSyncPlatformAdapter(
         call('get_creator_profile', { handle }),
       getMyCreator: () => call('get_my_creator'),
       claimHandle: (handle) => call('claim_creator_handle', { handle }),
-      updateCreatorProfile: (p) => call('update_creator_profile', { p }),
+      updateCreatorProfile: (payload) => {
+        const profile = asRecord(payload) ?? {};
+        return call('update_creator_profile', {
+          bio: typeof profile.bio === 'string' ? profile.bio : null,
+          socialLinks: Array.isArray(profile.socialLinks) ? profile.socialLinks : null,
+          tipUrl: typeof profile.tipUrl === 'string' ? profile.tipUrl : null,
+        });
+      },
       uploadCreatorAvatar: (filePath) =>
         typeof filePath === 'string'
           ? call('upload_creator_avatar', { filePath })
@@ -616,7 +632,13 @@ export function createSyncPlatformAdapter(
                 'Sync avatar uploads require a file path.',
               ),
             ),
-      requestCreatorAccess: () => call('request_creator_access'),
+      requestCreatorAccess: (payload) => {
+        const request = asRecord(payload) ?? {};
+        return call('request_creator_access', {
+          reason: typeof request.reason === 'string' ? request.reason : null,
+          handle: typeof request.handle === 'string' ? request.handle : null,
+        });
+      },
       listCreatorApplications: () => call('list_creator_applications'),
       decideCreatorApplication: (id, decision) =>
         call('decide_creator_application', { id, decision }),
@@ -849,6 +871,7 @@ export function createSyncPlatformAdapter(
         call('notification_permission_state'),
       requestNotificationPermission: () =>
         call('notification_request_permission'),
+      openNotificationSettings: () => call('notification_open_settings'),
       setDesktopWidget: (enabled) =>
         persistThenApplyAppShellPreference(
           'widgetEnabled',
@@ -903,6 +926,18 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      updateSettings: async (patch) => {
+        const settingsInvoker: SettingsInvoker = <T>(
+          command: string,
+          args?: Record<string, unknown>,
+        ) => invokeFn(command, args) as Promise<T>;
+        try {
+          await updateSettings(patch, settingsInvoker);
+          return ok(undefined);
+        } catch (err) {
+          return invokeError(err);
+        }
+      },
       getSetupStatus: () => call('get_setup_status'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },

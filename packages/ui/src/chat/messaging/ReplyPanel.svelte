@@ -88,6 +88,18 @@
       replyCount: number,
       preview?: ReplyPreview | null,
     ) => void;
+    /** Host-only active-thread registration for native realtime reconciliation. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
     /** personUid → presigned avatar URL for real profile photos. */
     avatarByUid?: Record<string, string>;
     /** personUid → live roster display name (profile override). */
@@ -117,6 +129,7 @@
     vaultCompanyUid = null,
     onclose,
     onreplycount,
+    onactivethreadchange,
     avatarByUid = {},
     displayNameByUid = {},
     onopenprofile,
@@ -243,6 +256,15 @@
     onreplycount?.(rootEventId, count, previewFrom(list));
   }
 
+  function reportActiveThread(): void {
+    onactivethreadchange?.({
+      rootEventId,
+      scope,
+      ...(scope === "channel" ? { channelId } : { withPersonUid }),
+      seenReplyIds: [...seenIds],
+    });
+  }
+
   async function load(): Promise<void> {
     const generation = ++loadGeneration;
     const requested = rootEventId;
@@ -259,6 +281,7 @@
       root = view.root ?? seedRoot ?? null;
       const ordered = sortOldestFirst(view.replies ?? []);
       seenIds = new Set(ordered.map((row) => row.eventId));
+      reportActiveThread();
       const pending = replies.filter(
         (row) =>
           row.eventId.startsWith("local-") &&
@@ -474,6 +497,7 @@
       seenIds = new Set();
       void load();
     });
+    return () => onactivethreadchange?.(null);
   });
 
   $effect(() => {

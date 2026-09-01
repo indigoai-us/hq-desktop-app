@@ -42,6 +42,8 @@ function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
     listChannels: async () => null,
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
+    sendChannelMessage: async () => {},
+    sendDm: async () => {},
     searchMessages: async () => ({ results: [] }),
     ...overrides,
   };
@@ -303,6 +305,32 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     expect(badge?.textContent?.trim()).toBe("1");
   });
 
+  it("uses a native channel wake's absolute unread rollup without undercounting a batch", async () => {
+    const wakes = createChatWakeBus();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [seedRow],
+        selectedId: "dm:agt_deacon",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-conversation-id="ch:chn_proj"]')).toBeTruthy();
+    });
+
+    wakes.emit("channel:new-message", {
+      channelId: "chn_proj",
+      unread: 2,
+      absoluteUnread: true,
+    });
+    await tick();
+
+    expect(host.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("2");
+  });
+
   it("shows a numeric badge after dm:new-message when another row is selected", async () => {
     const wakes = createChatWakeBus();
     const deacon: ChannelDirectoryRow = {
@@ -348,5 +376,46 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
     const badge = row?.querySelector('[data-testid="chat-unread-badge"]');
     expect(badge?.textContent?.trim()).toBe("1");
+  });
+
+  it("does not increment after the native pair-unread rollup already set the count", async () => {
+    const wakes = createChatWakeBus();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listContacts: async () => ({
+            contacts: [
+              {
+                personUid: "agt_deacon",
+                displayName: "Deacon",
+                lastActivityAt: now(),
+                lastDmAt: now(),
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [seedRow],
+        selectedId: "ch:chn_proj",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-conversation-id="dm:agt_deacon"]')).toBeTruthy();
+    });
+
+    wakes.emit("dm:pair-unreads", {
+      pairUnreads: [{ withPersonUid: "agt_deacon", unreadCount: 1 }],
+    });
+    wakes.emit("dm:new-message", {
+      fromPersonUid: "agt_deacon",
+      eventId: "evt_dm",
+      absoluteUnread: true,
+    });
+    await tick();
+
+    const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
+    expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
   });
 });

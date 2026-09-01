@@ -49,6 +49,16 @@ function renderBoard(): HTMLDivElement {
 }
 
 describe("BoardTab column filter", () => {
+  it("does not advertise a changes action without an authoritative diff", () => {
+    const root = renderBoard();
+    flushSync(() =>
+      root.querySelector<HTMLButtonElement>('[data-testid="board-card"]')?.click(),
+    );
+
+    expect(root.querySelector('[data-testid="board-story-panel"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="board-view-changes"]')).toBeNull();
+  });
+
   it("shows To do, Doing, and Done by default even when empty", () => {
     const root = renderBoard();
     expect(

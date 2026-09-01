@@ -77,10 +77,11 @@ pub const EVENT_DM_PAIR_UNREADS: &str = "dm:pair-unreads";
 /// thread the user currently has open (US-022). A "thread" wake on the person
 /// topic routes through the same `poll_dm_once` → `do_poll` path as DMs/channels
 /// (the MQTT wake is ids-only); `do_poll` re-fetches the active thread and emits
-/// this for each reply not previously seen. Payload is `{ rootEventId, reply,
-/// replyCount }` — the open ThreadPanel appends `reply` and the root bubble in
-/// the main Conversation bumps to `replyCount`. Listened for in ThreadPanel +
-/// MessagesShell. There is NO parallel thread poller.
+/// this for each reply not previously seen. Payload is `{ rootEventId, eventId,
+/// scope, channelId|withPersonUid, reply, replyCount }` — UI hosts use the ids
+/// and scope to re-fetch their own visible thread; they never payload-apply a
+/// reply from another account or conversation. There is NO parallel thread
+/// poller.
 pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
 
 /// Tauri event emitted by the SINGLE poll path when reactions on a message in
@@ -447,7 +448,7 @@ async fn transition_notification_session_if_generation_expected<R: Runtime>(
             })
             .unwrap_or_default();
         if let Some(state) = app.try_state::<ActiveThreadState>() {
-            *state.0.lock().unwrap_or_else(|p| p.into_inner()) = ActiveThreadInner::default();
+            state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
         }
         if let Some(state) = app.try_state::<ActiveConversationState>() {
             *state.0.lock().unwrap_or_else(|p| p.into_inner()) = ActiveConversationInner::default();
@@ -711,7 +712,13 @@ pub(crate) async fn resolve_notification_credentials<R: Runtime>(
     let tokens = match cognito::get_valid_tokens().await {
         Ok(tokens) => tokens,
         Err(error) => {
-            let _ = clear_notification_session_if_generation(app, started_generation).await;
+            // A refresh transport failure is recoverable and must keep its
+            // existing tenant partition. Cognito removes invalid credentials
+            // before returning, so clear notification ownership only when no
+            // credential remains for this generation.
+            if cognito::get_tokens().await.ok().flatten().is_none() {
+                let _ = clear_notification_session_if_generation(app, started_generation).await;
+            }
             return Err(error);
         }
     };
@@ -1589,10 +1596,10 @@ async fn poll_requests(app: &AppHandle, base_url: &str, auth: &NotificationAuthS
 //
 // Realtime: a "thread" wake ({type:"thread", rootEventId, eventId,...}) lands on
 // the person topic and routes through the SAME `poll_dm_once` → `do_poll` path as
-// DMs/channels. `do_poll` re-fetches whichever thread the user currently has open
-// (tracked in `ActiveThreadState`, set by the frontend when a ThreadPanel opens /
-// cleared when it closes) and emits `thread:new-reply` for replies it hasn't seen
-// yet. There is NO parallel thread poller.
+// DMs/channels. `do_poll` re-fetches every thread registered by a mounted
+// renderer (tracked in `ActiveThreadState`, set by the frontend when a ThreadPanel
+// opens / cleared when it closes) and emits `thread:new-reply` for replies it
+// hasn't seen yet. There is NO parallel thread poller.
 
 /// Tauri command: register (or clear) the conversation the open Conversation host
 /// currently shows (US-025). Called with the messageScope + the visible message
@@ -2111,14 +2118,14 @@ pub async fn send_thread_reply(
     Err(server_msg.unwrap_or_else(|| format!("Reply failed (status {})", status.as_u16())))
 }
 
-/// Tauri command: register (or clear) the thread the ThreadPanel currently has
-/// open (US-022). Called with the root id + scope + the reply ids already shown
-/// when a panel opens, so the SINGLE poll path knows which thread to re-fetch on a
-/// "thread" wake and which replies it has already surfaced. Called with a `None`
-/// root (or the panel-close path) to clear it.
+/// Tauri command: register (or clear) the invoking renderer's open reply
+/// thread (US-022). A Messages window and the embedded desktop window may both
+/// be mounted, so registrations are keyed by the Tauri window label. Clearing
+/// one renderer never wipes another renderer's active thread.
 #[tauri::command]
 pub fn set_active_thread(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     root_event_id: Option<String>,
     scope: Option<String>,
     channel_id: Option<String>,
@@ -2128,6 +2135,7 @@ pub fn set_active_thread(
     let Some(state) = app.try_state::<ActiveThreadState>() else {
         return Ok(());
     };
+    let owner = window.label().to_string();
     let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
     match root_event_id
         .as_deref()
@@ -2135,130 +2143,187 @@ pub fn set_active_thread(
         .filter(|s| !s.is_empty())
     {
         Some(root) => {
-            guard.root_event_id = Some(root.to_string());
-            guard.scope = normalize_scope(scope.as_deref().unwrap_or("dm"));
-            guard.channel_id = channel_id
-                .map(|c| c.trim().to_string())
-                .filter(|s| !s.is_empty());
-            guard.with_person_uid = with_person_uid
-                .map(|c| c.trim().to_string())
-                .filter(|s| !s.is_empty());
-            guard.seen_reply_ids = seen_reply_ids.unwrap_or_default().into_iter().collect();
-            log(LOG_TAG, &format!("DM_NOTIFY_ACTIVE_THREAD_SET root={root}"));
+            guard.insert(
+                owner.clone(),
+                ActiveThreadInner {
+                    root_event_id: Some(root.to_string()),
+                    scope: normalize_scope(scope.as_deref().unwrap_or("dm")),
+                    channel_id: channel_id
+                        .map(|c| c.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    with_person_uid: with_person_uid
+                        .map(|c| c.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    seen_reply_ids: seen_reply_ids.unwrap_or_default().into_iter().collect(),
+                },
+            );
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_ACTIVE_THREAD_SET owner={owner} root={root}"),
+            );
         }
         None => {
-            *guard = ActiveThreadInner::default();
-            log(LOG_TAG, "DM_NOTIFY_ACTIVE_THREAD_CLEAR");
+            guard.remove(&owner);
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_ACTIVE_THREAD_CLEAR owner={owner}"),
+            );
         }
     }
     Ok(())
 }
 
-/// Poll the active thread (if any) and emit `thread:new-reply` for replies the
-/// open panel hasn't seen yet. Folded into the SINGLE `do_poll` path (NOT a
-/// parallel poller). Best-effort: any failure logs and returns without disturbing
-/// the rest of the poll. No-op when no thread is open.
+/// Build the typed wire envelope used by the embedded Work bridge. This keeps
+/// enough routing context for a mounted panel to reconcile its own thread
+/// without treating a native payload as authoritative message state.
+fn thread_reply_wake_payload(
+    root_event_id: &str,
+    scope: &str,
+    channel_id: Option<&str>,
+    with_person_uid: Option<&str>,
+    reply: &ThreadReply,
+    reply_count: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "rootEventId": root_event_id,
+        "eventId": reply.event_id,
+        "scope": normalize_scope(scope),
+        "channelId": channel_id,
+        "withPersonUid": with_person_uid,
+        "reply": reply,
+        "replyCount": reply_count,
+    })
+}
+
+/// Poll every registered active thread and emit `thread:new-reply` for replies
+/// the owning panel has not seen yet. Folded into the SINGLE `do_poll` path
+/// (NOT a parallel poller). Best-effort: any failure logs and continues so one
+/// unavailable thread cannot suppress another mounted window's reconciliation.
 async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
-    // Snapshot the active-thread descriptor without holding the lock across the
-    // network call.
-    let descriptor = {
+    // Snapshot all active descriptors without holding the lock across network
+    // requests. The owner label makes late closes/switches reject their stale
+    // response during the guarded reconciliation below.
+    let descriptors = {
         let Some(state) = app.try_state::<ActiveThreadState>() else {
             return;
         };
         let guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-        guard.root_event_id.as_ref().map(|root| {
-            (
-                root.clone(),
-                guard.scope.clone(),
-                guard.channel_id.clone(),
-                guard.with_person_uid.clone(),
-            )
-        })
+        guard
+            .iter()
+            .filter_map(|(owner, descriptor)| {
+                descriptor.root_event_id.as_ref().map(|root| {
+                    (
+                        owner.clone(),
+                        root.clone(),
+                        descriptor.scope.clone(),
+                        descriptor.channel_id.clone(),
+                        descriptor.with_person_uid.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
     };
-    let Some((root, scope, channel_id, with_person_uid)) = descriptor else {
-        return; // no panel open
-    };
+    for (owner, root, scope, channel_id, with_person_uid) in descriptors {
+        let url = build_threads_url(
+            base_url,
+            &root,
+            &normalize_scope(&scope),
+            channel_id.as_deref(),
+            with_person_uid.as_deref(),
+        );
+        let resp = build_client()
+            .get(&url)
+            .header("authorization", format!("Bearer {}", auth.access_token))
+            .send()
+            .await;
 
-    let url = build_threads_url(
-        base_url,
-        &root,
-        &normalize_scope(&scope),
-        channel_id.as_deref(),
-        with_person_uid.as_deref(),
-    );
-    let resp = build_client()
-        .get(&url)
-        .header("authorization", format!("Bearer {}", auth.access_token))
-        .send()
-        .await;
-
-    let view = match resp {
-        Err(e) => {
-            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_NETWORK_FAIL {e}"));
-            return;
-        }
-        Ok(r) => {
-            let status = r.status();
-            if !status.is_success() {
+        let view = match resp {
+            Err(e) => {
                 log(
                     LOG_TAG,
-                    &format!("DM_NOTIFY_THREAD_POLL_ERROR status={status}"),
+                    &format!("DM_NOTIFY_THREAD_POLL_NETWORK_FAIL owner={owner} {e}"),
                 );
-                return;
+                continue;
             }
-            match r.json::<ThreadView>().await {
-                Ok(v) => v,
-                Err(e) => {
-                    log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_ERROR parse: {e}"));
-                    return;
+            Ok(r) => {
+                let status = r.status();
+                if !status.is_success() {
+                    log(
+                        LOG_TAG,
+                        &format!("DM_NOTIFY_THREAD_POLL_ERROR owner={owner} status={status}"),
+                    );
+                    continue;
+                }
+                match r.json::<ThreadView>().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log(
+                            LOG_TAG,
+                            &format!("DM_NOTIFY_THREAD_POLL_ERROR owner={owner} parse: {e}"),
+                        );
+                        continue;
+                    }
                 }
             }
-        }
-    };
-
-    // Reconcile and emit under the same auth-snapshot guard, so stale account
-    // work cannot mutate the active thread or leak an event to the new account.
-    let committed = with_current_notification_auth_snapshot(app, auth, || {
-        let Some(state) = app.try_state::<ActiveThreadState>() else {
-            return false;
         };
-        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
-        if guard.root_event_id.as_deref() != Some(root.as_str()) {
-            return false;
-        }
-        let fresh: Vec<ThreadReply> = view
-            .replies
-            .iter()
-            .filter(|r| !guard.seen_reply_ids.contains(&r.event_id))
-            .cloned()
-            .collect();
-        for r in &fresh {
-            guard.seen_reply_ids.insert(r.event_id.clone());
-        }
-        drop(guard);
 
-        // Emit oldest→newest so the panel appends in chronological order. The
-        // server returns newest-first, so reverse.
-        for reply in fresh.iter().rev() {
-            let payload = serde_json::json!({
-                "rootEventId": root,
-                "reply": reply,
-                "replyCount": view.reply_count,
-            });
-            log(
-                LOG_TAG,
-                &format!(
-                    "DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}",
-                    reply.event_id
-                ),
-            );
-            let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
+        // Reconcile and emit under the same auth-snapshot guard, so stale
+        // account work cannot mutate a retained thread or leak an event to a
+        // new account. The full descriptor check rejects a response when that
+        // same window switched threads while the request was in flight.
+        let committed = with_current_notification_auth_snapshot(app, auth, || {
+            let Some(state) = app.try_state::<ActiveThreadState>() else {
+                return false;
+            };
+            let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(active) = guard.get_mut(&owner) else {
+                return false;
+            };
+            if active.root_event_id.as_deref() != Some(root.as_str())
+                || active.scope != scope
+                || active.channel_id != channel_id
+                || active.with_person_uid != with_person_uid
+            {
+                return false;
+            }
+            let fresh: Vec<ThreadReply> = view
+                .replies
+                .iter()
+                .filter(|r| !active.seen_reply_ids.contains(&r.event_id))
+                .cloned()
+                .collect();
+            for reply in &view.replies {
+                active.seen_reply_ids.insert(reply.event_id.clone());
+            }
+            drop(guard);
+
+            // Emit oldest→newest so the panel appends in chronological order.
+            // The server returns newest-first, so reverse.
+            for reply in fresh.iter().rev() {
+                let payload = thread_reply_wake_payload(
+                    &root,
+                    &scope,
+                    channel_id.as_deref(),
+                    with_person_uid.as_deref(),
+                    reply,
+                    view.reply_count,
+                );
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "DM_NOTIFY_THREAD_NEW_REPLY owner={owner} root={root} reply={}",
+                        reply.event_id
+                    ),
+                );
+                let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
+            }
+            true
+        })
+        .await;
+        if committed.is_none() {
+            log(LOG_TAG, "DM_NOTIFY_THREAD_POLL_STALE auth snapshot changed");
+            return;
         }
-        true
-    })
-    .await;
-    if committed.is_none() {
-        log(LOG_TAG, "DM_NOTIFY_THREAD_POLL_STALE auth snapshot changed");
     }
 }
 
@@ -2473,9 +2538,9 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     poll_channels(app, &base_url, auth).await;
 
     // Fold thread-activity polling into the SAME single path (US-022) — a
-    // "thread" wake on the person topic routes here. Re-fetches whichever thread
-    // the ThreadPanel currently has open and emits `thread:new-reply` for replies
-    // it hasn't surfaced yet. No-op when no panel is open. NOT a parallel poller.
+    // "thread" wake on the person topic routes here. Re-fetches every thread a
+    // mounted ThreadPanel registered and emits `thread:new-reply` for replies it
+    // hasn't surfaced yet. No-op when no panel is open. NOT a parallel poller.
     poll_active_thread(app, &base_url, auth).await;
 
     // Fold reaction-activity polling into the SAME single path (US-025) — a
@@ -3091,6 +3156,38 @@ mod tests {
     }
 
     #[test]
+    fn thread_reply_wake_carries_reconciliation_scope_and_ids() {
+        let reply = ThreadReply {
+            event_id: "evt_reply".to_string(),
+            from_person_uid: "prs_bryan".to_string(),
+            from_email: String::new(),
+            from_display_name: "Bryan".to_string(),
+            body: "Looks good".to_string(),
+            details: None,
+            prompt: None,
+            created_at: "2026-09-01T00:00:00.000Z".to_string(),
+            direction: "in".to_string(),
+        };
+
+        let payload = thread_reply_wake_payload(
+            "evt_root",
+            "CHANNEL",
+            Some("chn_engineering"),
+            None,
+            &reply,
+            3,
+        );
+
+        assert_eq!(payload["rootEventId"], "evt_root");
+        assert_eq!(payload["eventId"], "evt_reply");
+        assert_eq!(payload["scope"], "channel");
+        assert_eq!(payload["channelId"], "chn_engineering");
+        assert!(payload["withPersonUid"].is_null());
+        assert_eq!(payload["reply"]["eventId"], "evt_reply");
+        assert_eq!(payload["replyCount"], 3);
+    }
+
+    #[test]
     fn communications_target_waits_through_created_but_not_ready_window() {
         let mut state = CommunicationsWindowState::default();
 
@@ -3381,8 +3478,13 @@ mod tests {
                 .0
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .seen_reply_ids
-                .insert("stale-reply".to_string());
+                .insert(
+                    "stale-window".to_string(),
+                    ActiveThreadInner {
+                        seen_reply_ids: ["stale-reply".to_string()].into_iter().collect(),
+                        ..Default::default()
+                    },
+                );
             handle
                 .state::<ActiveConversationState>()
                 .0
@@ -3407,7 +3509,6 @@ mod tests {
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .seen_reply_ids
             .is_empty());
         assert!(handle
             .state::<ActiveConversationState>()

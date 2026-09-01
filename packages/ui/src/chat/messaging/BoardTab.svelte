@@ -276,13 +276,6 @@
             >
               Open in channel
             </button>
-            <button
-              type="button"
-              class="panel-btn panel-btn-secondary"
-              data-testid="board-view-changes"
-            >
-              View changes
-            </button>
           </footer>
         </div>
       {/if}
@@ -541,12 +534,6 @@
     flex: 1;
   }
 
-  .panel-story-id {
-    color: var(--t3);
-    font-size: 11px;
-    font-weight: 400;
-  }
-
   .panel-title {
     margin: 0;
     color: var(--t1);
@@ -752,18 +739,6 @@
 
   .panel-btn:active {
     border-color: var(--border-active);
-  }
-
-  .panel-btn-secondary {
-    background: transparent;
-    color: var(--t2);
-    border-color: var(--line2);
-  }
-
-  .panel-btn-secondary:hover {
-    background: var(--hover);
-    color: var(--t1);
-    border-color: var(--line2);
   }
 
   .panel-btn:focus-visible {
