@@ -169,31 +169,11 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     hq_telemetry::record_native_panic_seam(
         hq_telemetry::NativePanicSeam::SingleInstanceSurfaceExisting,
     );
-
-    #[cfg(target_os = "windows")]
-    {
-        tray::show_window_at_tray(app);
-        util::logfile::log(
-            "app",
-            "single-instance: showed main popover at tray on second launch",
-        );
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        util::logfile::log(
-            "app",
-            "single-instance: focused existing window on second launch",
-        );
-    } else {
-        util::logfile::log(
-            "app",
-            "single-instance: second launch with no window to focus",
-        );
-    }
+    tray::activate_primary_surface(app);
+    util::logfile::log(
+        "app",
+        "single-instance: opened primary surface on second launch",
+    );
 }
 
 fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
@@ -893,6 +873,7 @@ fn main() {
             // possible). Best-effort and idempotent — failures log to the
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
+            commands::config::migrate_retired_hq_work_handoff();
 
             // Record this app's version to ~/.hq/sync-version.json so the
             // hq-cli can attach the installed hq-sync version to feedback

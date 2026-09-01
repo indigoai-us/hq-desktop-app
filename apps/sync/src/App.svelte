@@ -2386,6 +2386,11 @@
     if (shouldResumeSync) {
       await handleSyncNow();
     }
+    if (auth.authenticated) {
+      void invoke('open_desktop_alt_window').catch((e) => {
+        console.error('open_desktop_alt_window after sign-in failed:', e);
+      });
+    }
   }
 </script>
 

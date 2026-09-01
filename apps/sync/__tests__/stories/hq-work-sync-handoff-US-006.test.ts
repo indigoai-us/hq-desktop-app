@@ -27,62 +27,43 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
   const desktopAltDoc = readRepo('docs/desktop-alt.md');
   const logfile = readRepo('../../crates/hq-desktop-core/src/logfile.rs');
 
-  describe('flag defaults false', () => {
-    it('get_settings no-file branch is Some(false), not Some(true)', () => {
+  describe('retired flag cannot select a shell', () => {
+    it('get_settings reports hq_work_handoff as None', () => {
       const idx = settings.indexOf('if !path.exists()');
       expect(idx).toBeGreaterThan(-1);
       const noFile = settings.slice(idx, settings.indexOf('let contents =', idx));
-      expect(noFile).toContain('hq_work_handoff: Some(false)');
-      expect(noFile).not.toContain('hq_work_handoff: Some(true)');
+      expect(noFile).toContain('hq_work_handoff: None');
+      expect(noFile).not.toContain('hq_work_handoff: Some(false)');
     });
 
-    it('get_settings present branch unwrap_or(false)', () => {
-      expect(settings).toContain(
+    it('get_settings present branch ignores leftover hqWorkHandoff', () => {
+      expect(settings).toContain('hq_work_handoff: None');
+      expect(settings).not.toContain(
         'hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))',
       );
-      expect(settings).not.toContain(
-        'hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))',
-      );
     });
 
-    it('hq_work_handoff_enabled unwrap_or(false)', () => {
+    it('hq_work_handoff_enabled is always true', () => {
       const idx = config.indexOf('pub fn hq_work_handoff_enabled');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(idx, idx + 280);
-      expect(body).toContain('.unwrap_or(false)');
-      expect(body).not.toContain('.unwrap_or(true)');
+      expect(body).toContain('true');
+      expect(body).not.toContain('.unwrap_or(false)');
     });
 
-    it('get_hq_work_handoff defaults on inside the cohort, off outside it', () => {
-      // Was: "missing file is Ok(false)". The embed is now default-ON for
-      // Approved cohort members should not have to hand-edit menubar.json,
-      // and there is deliberately no Settings toggle. A missing
-      // file or missing key is "no explicit choice", not an opt-out.
+    it('get_hq_work_handoff always returns true', () => {
       const idx = config.indexOf('fn get_hq_work_handoff');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
-      // Cohort membership is still required, and still comes from one place.
-      expect(body).toContain('feature_gate::is_hq_work_cohort_user()');
-      expect(body).toContain('hq_work_handoff_visible(');
-      // An explicit false is still an opt-out, and still short-circuits.
-      expect(body).toContain('choice == Some(false)');
-      expect(body).toContain('return Ok(false)');
-      // The default itself: cohort AND (choice defaulting to true).
-      const visible = config.slice(
-        config.indexOf('pub fn hq_work_handoff_visible'),
-        config.indexOf('/// On by default for'),
-      );
-      expect(visible).toContain('is_cohort_member && choice.unwrap_or(true)');
+      expect(body).toContain('Ok(true)');
+      expect(body).not.toContain('is_hq_work_cohort_user');
     });
 
-    it('MenubarPrefs and core apply_defaults stay default-off', () => {
+    it('MenubarPrefs keeps the field only so upgrades can strip it', () => {
       expect(coreConfig).toContain('pub hq_work_handoff: Option<bool>');
-      expect(coreConfig).toContain('Absent → false');
-      expect(coreSettings).toContain(
-        'hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))',
-      );
-      expect(coreSettings).toContain('test_hq_work_handoff_defaults_false');
-      expect(frontend).toContain('return flag === true');
+      expect(coreSettings).toContain('hq_work_handoff: None');
+      expect(coreSettings).toContain('test_hq_work_handoff_is_ignored');
+      expect(frontend).toContain('return true');
     });
   });
 
