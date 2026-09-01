@@ -85,28 +85,18 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
   });
 
   describe('rollout docs', () => {
-    it('documents alpha enable, default-on one-liners, rollback, removal', () => {
+    it('documents the retired flag and single desktop shell', () => {
       expect(doc).toContain('hqWorkHandoff');
       expect(doc).toContain('~/.hq/menubar.json');
-      expect(doc).toContain('@getindigo.ai');
-      expect(doc).toContain('hq_work_handoff: Some(false)');
-      expect(doc).toContain('hq_work_handoff: Some(true)');
-      expect(doc).toContain('unwrap_or(false)');
-      expect(doc).toContain('unwrap_or(true)');
-      expect(doc).toContain('hq_work_handoff_enabled');
-      expect(doc).toContain('grep \'\\[handoff\\]\' ~/.hq/logs/hq-sync.log');
+      expect(doc).toContain('hq-work-embedded-rollout.md');
       expect(doc).toContain('flag_off_opens_desktop_alt_regardless_of_install');
-      expect(doc).toContain('plan_desktop_alt_open(false');
       expect(doc).toContain('OpenDesktopAlt');
-      expect(doc).toContain('one Sync release after default-on bake');
-      expect(doc).toContain('Not a live macOS GUI session');
-      expect(doc).toContain('no migration');
     });
 
-    it('desktop-alt.md points at the handoff doc and keeps the window', () => {
+    it('desktop-alt.md points at the embed doc and the historical handoff doc', () => {
       expect(desktopAltDoc).toContain('hq-work-handoff.md');
-      expect(desktopAltDoc).toContain('one');
-      expect(desktopAltDoc).toContain('default-on bake');
+      expect(desktopAltDoc).toContain('hq-work-embedded-rollout.md');
+      expect(desktopAltDoc).toContain('single HQ UI');
     });
   });
 

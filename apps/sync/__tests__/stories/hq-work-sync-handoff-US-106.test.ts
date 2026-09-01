@@ -62,24 +62,15 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
   });
 
   describe('canonical rollout doc', () => {
-    it('documents alpha enable, default-on one-liners, rollback, removal', () => {
+    it('documents the single desktop shell and retired hqWorkHandoff key', () => {
       const doc = readRepo('docs/hq-work-embedded-rollout.md');
       expect(doc).toContain('hqWorkHandoff');
       expect(doc).toContain('~/.hq/menubar.json');
-      expect(doc).toContain('@getindigo.ai');
-      expect(doc).toContain('@vyg.ai');
-      expect(doc).toContain('@liverecover.com');
-      expect(doc).toContain('hq_work_handoff: Some(false)');
-      expect(doc).toContain('hq_work_handoff: Some(true)');
-      expect(doc).toContain('unwrap_or(false)');
-      expect(doc).toContain('unwrap_or(true)');
-      expect(doc).toContain('hq_work_handoff_enabled');
       expect(doc).toContain('get_hq_work_handoff');
-      expect(doc).toContain('return Ok(false)');
-      expect(doc).toContain('Not a live macOS GUI session');
-      expect(doc).toContain('no migration');
-      expect(doc).toContain('legacy');
-      expect(doc).toContain('one Sync release after default-on bake');
+      expect(doc).toContain('HqWorkDesktopShell');
+      expect(doc).toContain('always returns');
+      expect(doc).toContain('strips the key');
+      expect(doc).toContain('is_indigo_user');
     });
 
     it('records BEFORE updater bytes and withholds fabricated AFTER', () => {
@@ -102,7 +93,7 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(twoApp).toContain('hq-work-embedded-rollout.md');
       expect(desktopAltDoc).toContain('hq-work-embedded-rollout.md');
       expect(desktopAltDoc).toContain('hq-work-handoff.md');
-      expect(desktopAltDoc).toContain('default-on bake');
+      expect(desktopAltDoc).toContain('single HQ UI');
     });
   });
 });

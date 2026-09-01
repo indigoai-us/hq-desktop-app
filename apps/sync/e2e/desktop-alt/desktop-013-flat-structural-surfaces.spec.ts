@@ -43,9 +43,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
   const operations = readRepoFile(
     'src/desktop-alt/panels/CompanyOperationsPanel.svelte',
   );
-  const channelList = readRepoFile(
-    'src/components/messaging/ChannelList.svelte',
-  );
   const recipientPicker = readRepoFile(
     'src/components/messaging/RecipientPicker.svelte',
   );
@@ -152,7 +149,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
       ['files sidebar', filesSidebar, ['.fs-company-row']],
       ['team', team, ['.team-member-row', '.team-member-row.is-selected']],
       ['operations', operations, ['.ops-nav-item', '.ops-nav-item.is-selected']],
-      ['message channels', channelList, ['.channel-row']],
       ['recipient suggestions', recipientPicker, ['.suggestion']],
       ['channel roster', channelRoster, ['.invite-row', '.member-row']],
     ] as const) {

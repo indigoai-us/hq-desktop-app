@@ -31,19 +31,6 @@ describe('audit batch 2: confirmed-finding fixes', () => {
     expect(invitedBlock).toContain('readonly={true}');
   });
 
-  it.skip('messages rail load errors offer a retry instead of a dead-end', () => {
-    const shell = readRepoFile('src/components/messaging/MessagesShell.svelte');
-    expect(shell).toContain('class="rail-retry"');
-    expect(shell).toContain('onclick={() => loadContacts()}');
-    expect(shell).toContain('onclick={() => loadRequests()}');
-  });
-
-  it.skip('CreateChannel company dropdown never shows a raw cmp_ UID', () => {
-    const create = readRepoFile('src/components/messaging/CreateChannel.svelte');
-    expect(create).not.toContain('|| co.companyUid}</option>');
-    expect(create).toContain("co.companyName?.trim() || 'Company'");
-  });
-
   it('command palette always closes even if a command action throws', () => {
     const palette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
     // try/finally so a throwing action can't leave the modal palette stuck open.

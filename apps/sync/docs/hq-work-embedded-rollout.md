@@ -1,93 +1,42 @@
-# HQ Work embedded window — rollout, bake, rollback, updater budget
+# Desktop workspace — the single HQ UI
 
-Flag-gated embed of `@hq/ui` DesktopApp inside Sync's desktop-alt window.
-Tray popover, widget, and sync engine stay in Sync. No second app, no
-co-install, no account or data migration.
+The desktop workspace (`desktop-alt` window, `@hq/ui` DesktopApp via
+`HqWorkDesktopShell`) is the only HQ surface. Every signed-in user gets it.
+Signed-out and first-run onboarding lead into it. There is no email-domain
+cohort and no classic popover chat shell.
 
-This file is the source of truth for the combined-app rollout
+Tray icon, compact status popover (Opt+Shift+H), widget, and the sync engine
+stay in Sync. No second app, no co-install, no account or data migration.
+
+This file remains the source of truth for the combined-app embed
 (US-101..US-107). The two-app doc [hq-work-handoff.md](hq-work-handoff.md)
-(launch HQ Work / co-install / card) is superseded and kept only because
-existing tests source-contract it.
+(launch HQ Work / co-install / card) is historical.
 
-**Default is ON for `@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`, OFF
-for everyone else.** Going wider than the cohort is still a config change,
-not a leap — do not touch the compiled defaults until this doc's bake
-checklist is done.
+**The retired `hqWorkHandoff` key is ignored and stripped.** Launch migrates
+`~/.hq/menubar.json` by removing `hqWorkHandoff`, including an explicit
+`false` left by an upgraded install. `get_hq_work_handoff` always returns
+true. `hqWorkHandoffEnabled` is always true. Settings does not re-persist the
+key.
 
-ONE flag only. JSON key `hqWorkHandoff` in `~/.hq/menubar.json`. Rust field
-`hq_work_handoff`. No Settings toggle — do not add one. Do not invent a second
-flag.
+The window always mounts `@hq/ui` DesktopApp via `HqWorkDesktopShell` +
+`createSyncPlatformAdapter`. Live `maybe_intercept_desktop_alt_handoff` is a
+no-op (always false). Combined-app does not launch HQ Work, does not show a
+handoff card, does not co-install. Auth is the same Cognito vault-users
+session already in Sync. No second sign-in, no token sharing.
 
-`config::get_hq_work_handoff` resolves
-`is_hq_work_cohort_user() AND (choice defaulting to true)`, where "choice" is the
-tri-state `hq_work_handoff_choice`: missing file, missing key, and parse
-failure all mean *no explicit choice*, not an opt-out. An explicit `false` is
-the opt-out, and it is the only thing that turns the embed off for a cohort
-member.
+Indigo-only gates that are **not** the shell (Beta/Alpha updater, Core
+staging, Moderation admin) still use `is_indigo_user` / `@getindigo.ai`. Do
+not broaden those.
 
-The bool readers (`hq_work_handoff_enabled`, `hq_work_handoff_from_json`,
-`hqWorkHandoffEnabled`) still collapse absent and false into `false`. They
-answer "is it explicitly enabled" for the retained two-app paths and cannot
-express the cohort default — do not route the boot decision through them.
+## Retired flag
 
-Flag on: the same desktop-alt window mounts `@hq/ui` DesktopApp via
-`HqWorkDesktopShell` + `createSyncPlatformAdapter` (US-103). Flag off:
-legacy desktop-alt (`src/desktop-alt/DesktopApp.svelte`); no extra probes /
-no `[handoff]` log on open (finding-6). Live
-`maybe_intercept_desktop_alt_handoff` is a no-op (always false). Combined-app
-does not launch HQ Work, does not show `HqWorkHandoffCard`, does not
-co-install. Auth is the same Cognito vault-users session already in Sync.
-No migration, no second sign-in, no token sharing.
+The email-domain cohort (`@getindigo.ai` / `@vyg.ai` / `@liverecover.com`) no
+longer selects a shell. `migrate_retired_hq_work_handoff` runs at launch and
+deletes `hqWorkHandoff` from `~/.hq/menubar.json`. Writing the key again does
+nothing: `get_hq_work_handoff` is `Ok(true)` and `set_hq_work_handoff`
+strips the key.
 
-## Approved cohort enable
-
-The approved cohort is `@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`.
-There is no Settings toggle for this flag — do not add one.
-
-The cohort is **enforced**, not conventional. `menubar.json` is user-writable,
-so the flag alone is an opt-in and never an authorisation:
-`config::get_hq_work_handoff` resolves
-`flag AND hq_desktop_core::feature_gate::is_hq_work_cohort_user()`, and
-`set_hq_work_handoff(true)` refuses outside the cohort rather than persisting a
-flag the reader would ignore. Every consumer — desktop-alt boot, the
-`hqwork://` internal route, and the notification/DM intercepts — reads through
-that one command, so there is a single chokepoint. The HQ Work predicate is
-deliberately separate from `is_indigo_user`; updater, moderation, admin, and
-staging access remain Indigo-only.
-
-**The embed is ON by default for the cohort.** A user on any approved domain
-gets it with no setup: `hqWorkHandoff` absent means "no explicit choice", and
-that resolves to on inside the cohort. Everyone else is off no matter what the
-file says. Nothing to distribute, and no Terminal step for the cohort — which
-was the practical problem with an opt-in that has no Settings toggle.
-
-To opt a machine back out (this is what Scenario 1 of the smoke checklist
-needs — for a cohort member, *absent* is now on, so the rollback scenario has
-to write an explicit `false`):
-
-```json
-{
-  "hqWorkHandoff": false
-}
-```
-
-Quit and relaunch after editing; the value is read at boot.
-
-Enable explicitly (redundant for the cohort, kept for completeness):
-
-1. Merge `{"hqWorkHandoff": true}` into `~/.hq/menubar.json` (do not
-   overwrite other keys):
-
-   ```json
-   {
-     "hqWorkHandoff": true
-   }
-   ```
-
-   Same write path as `set_hq_work_handoff(true)` / `merge_menubar_flags` on
-   `hqWorkHandoff`.
-
-2. Quit and relaunch Sync so boot re-reads the flag.
+There is no Settings toggle. There is no opt-out to the classic chat shell.
 
 3. Confirm flag-on mounts `HqWorkDesktopShell` (`@hq/ui` DesktopApp via
    `createSyncPlatformAdapter`) in the same desktop-alt window.
