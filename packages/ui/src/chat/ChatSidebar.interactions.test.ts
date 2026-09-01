@@ -392,3 +392,66 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
   });
 });
+
+describe("ChatSidebar inbox activity stamps older-day DM rows", () => {
+  it("shows a DM from ~3 days ago under its day group, not TODAY", async () => {
+    const wakes = createChatWakeBus();
+    const then = new Date();
+    then.setDate(then.getDate() - 3);
+    then.setHours(14, 0, 0, 0);
+    const threeDaysAgo = then.toISOString();
+
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listContacts: async () => ({
+            contacts: [
+              {
+                personUid: "prs_today",
+                displayName: "Today Person",
+                lastActivityAt: now(),
+                lastDmAt: now(),
+              },
+              {
+                personUid: "prs_jacob",
+                displayName: "Jacob Posel",
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [seedRow],
+        selectedId: "ch:chn_proj",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="dm:prs_today"]'),
+      ).toBeTruthy();
+    });
+    expect(host.querySelector('[data-conversation-id="dm:prs_jacob"]')).toBeNull();
+
+    wakes.emit("dm:pair-unreads", {
+      activity: [
+        {
+          personUid: "prs_jacob",
+          lastMessageAt: threeDaysAgo,
+          displayName: "Jacob Posel",
+        },
+      ],
+    });
+    await tick();
+
+    const row = await vi.waitFor(() => {
+      const found = host.querySelector('[data-conversation-id="dm:prs_jacob"]');
+      expect(found).toBeTruthy();
+      return found as HTMLElement;
+    });
+    const list = row.closest('[role="list"]');
+    const heading = list?.previousElementSibling;
+    expect(heading?.classList.contains("chat-day-head")).toBe(true);
+    expect(heading?.textContent ?? "").not.toMatch(/TODAY/);
+  });
+});

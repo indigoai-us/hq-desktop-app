@@ -1174,6 +1174,79 @@ describe("G2: day grouping on real mixed conversation timestamps", () => {
   });
 });
 
+describe("inbox activity stamps older DMs into their true day bucket", () => {
+  it("contacts stamped with inbox activity from ~3 days ago land in that day's section, not today", () => {
+    const contacts: DmContactInput[] = [
+      dm({
+        personUid: "prs_jacob",
+        displayName: "Jacob Posel",
+      }),
+    ];
+    expect(
+      normalizeConversations([], contacts).some((r) => r.id === "dm:prs_jacob"),
+    ).toBe(false);
+
+    const threeDaysAgo = iso(msOnDay(3, 14));
+    const stamped = mergeContactsWithInbox(contacts, [
+      {
+        fromPersonUid: "prs_jacob",
+        fromDisplayName: "Jacob Posel",
+        createdAt: threeDaysAgo,
+      },
+    ]);
+    const rows = normalizeConversations([], stamped);
+    const dmRow = rows.find((r) => r.id === "dm:prs_jacob");
+    expect(dmRow).toBeTruthy();
+    expect(dmRow!.kind).toBe("dm");
+    expect(dmRow!.lastActivityAt).toBe(msOnDay(3, 14));
+
+    const grouped = groupByDay(rows, NOW);
+    expect(
+      grouped.sections
+        .find((s) => s.label.startsWith("TODAY"))
+        ?.rows.some((r) => r.id === "dm:prs_jacob") ?? false,
+    ).toBe(false);
+    expect(grouped.lastWeek.some((r) => r.id === "dm:prs_jacob")).toBe(false);
+    const home = grouped.sections.find((s) =>
+      s.rows.some((r) => r.id === "dm:prs_jacob"),
+    );
+    expect(home).toBeTruthy();
+    expect(home!.label).toBe(daySectionLabel(msOnDay(3, 14), NOW));
+    expect(home!.label.startsWith("TODAY")).toBe(false);
+  });
+
+  it("never drags a pair backwards when the contact's own stamp is newer", () => {
+    // The inbox only knows INBOUND DMs. A pair the owner messaged today must
+    // stay in TODAY even though the counterpart's last reply was days ago.
+    const today = msOnDay(0, 9);
+    const stamped = mergeContactsWithInbox(
+      [
+        dm({
+          personUid: "prs_jacob",
+          displayName: "Jacob Posel",
+          lastMessageAt: iso(today),
+        }),
+      ],
+      [
+        {
+          fromPersonUid: "prs_jacob",
+          fromDisplayName: "Jacob Posel",
+          createdAt: iso(msOnDay(3, 14)),
+        },
+      ],
+    );
+    const rows = normalizeConversations([], stamped);
+    const dmRow = rows.find((r) => r.id === "dm:prs_jacob");
+    expect(dmRow?.lastActivityAt).toBe(today);
+    const grouped = groupByDay(rows, NOW);
+    expect(
+      grouped.sections
+        .find((s) => s.label.startsWith("TODAY"))
+        ?.rows.some((r) => r.id === "dm:prs_jacob") ?? false,
+    ).toBe(true);
+  });
+});
+
 describe("mergeContactsWithInbox — 1:1 DMs are not channel-directory rows", () => {
   it("stamps lastMessageAt from the newest inbox event onto a roster contact", () => {
     const merged = mergeContactsWithInbox(

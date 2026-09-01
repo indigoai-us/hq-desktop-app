@@ -14,6 +14,7 @@
 import type { Channel } from "./channels";
 import type { DmRequest } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
+import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
 
 export interface ContactsResponse {
@@ -315,6 +316,8 @@ export interface ChatWakeEvents {
     }>;
     /** When true, unreadCount is a delta to add, not an absolute replace. */
     delta?: boolean;
+    /** Newest inbound DM per counterpart — stamps rail rows for older days. */
+    activity?: InboxDmActivity[];
   };
   /** A 1:1 DM landed — ids only. Rail bumps unread when that pair is not open. */
   "dm:new-message": {

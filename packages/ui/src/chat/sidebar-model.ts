@@ -265,8 +265,14 @@ export function mergeContactsWithInbox(
     if (!uid) continue;
     seen.add(uid);
     const event = latest.get(uid);
-    const at =
-      event?.createdAt ?? contact.lastMessageAt ?? contact.lastActivityAt;
+    // Take the NEWER of the inbox stamp and what the contact already carries.
+    // The inbox only knows INBOUND DMs, so a pair you messaged yourself more
+    // recently must not be dragged back to the counterpart's older reply.
+    const at = newestIso(
+      event?.createdAt,
+      contact.lastMessageAt,
+      contact.lastActivityAt,
+    );
     out.push({
       ...contact,
       displayName:
@@ -388,6 +394,13 @@ export function mergeContactActivity(
     out.push(prev);
   }
   return out;
+}
+
+/** Newest of several ISO stamps (blank/absent ignored). */
+function newestIso(...values: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  for (const value of values) best = newerIso(best, value);
+  return best;
 }
 
 function newerIso(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dmActivityFromInboxPage,
   pairUnreadsFromInboxPage,
   shouldArmDirectorySafety,
   shouldBumpDmUnread,
@@ -97,5 +98,78 @@ describe("pairUnreadsFromInboxPage", () => {
       pairUnreads: [{ withPersonUid: "agt_deacon", unreadCount: 1 }],
       nextSince: "2026-08-22T19:59:22.000Z",
     });
+  });
+});
+
+describe("dmActivityFromInboxPage", () => {
+  it("keeps the newest createdAt per person", () => {
+    expect(
+      dmActivityFromInboxPage({
+        events: [
+          {
+            fromPersonUid: "prs_b",
+            createdAt: "2026-08-18T12:00:00.000Z",
+            fromDisplayName: "Bee",
+          },
+          {
+            fromPersonUid: "prs_c",
+            createdAt: "2026-08-17T09:00:00.000Z",
+          },
+          {
+            fromPersonUid: "prs_b",
+            createdAt: "2026-08-18T15:00:00.000Z",
+            fromDisplayName: "Bee",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        personUid: "prs_b",
+        lastMessageAt: "2026-08-18T15:00:00.000Z",
+        displayName: "Bee",
+      },
+      {
+        personUid: "prs_c",
+        lastMessageAt: "2026-08-17T09:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("skips blank uids and the caller", () => {
+    expect(
+      dmActivityFromInboxPage(
+        {
+          events: [
+            {
+              fromPersonUid: "prs_me",
+              createdAt: "2026-08-18T12:00:00.000Z",
+            },
+            {
+              fromPersonUid: "  ",
+              createdAt: "2026-08-18T12:00:00.000Z",
+            },
+            {
+              fromPersonUid: "prs_b",
+              createdAt: "2026-08-18T12:00:00.000Z",
+            },
+            {
+              fromPersonUid: "prs_c",
+              createdAt: 123,
+            },
+          ],
+        },
+        { selfUid: "prs_me" },
+      ),
+    ).toEqual([
+      { personUid: "prs_b", lastMessageAt: "2026-08-18T12:00:00.000Z" },
+    ]);
+  });
+
+  it("returns [] for malformed input", () => {
+    expect(dmActivityFromInboxPage(null)).toEqual([]);
+    expect(dmActivityFromInboxPage(undefined)).toEqual([]);
+    expect(dmActivityFromInboxPage([])).toEqual([]);
+    expect(dmActivityFromInboxPage("nope")).toEqual([]);
+    expect(dmActivityFromInboxPage({ events: "nope" })).toEqual([]);
   });
 });
