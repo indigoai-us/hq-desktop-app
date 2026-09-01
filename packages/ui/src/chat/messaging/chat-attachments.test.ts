@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentKindForContentType,
   buildChatAttachmentVaultPath,
+  chatAttachmentValidatorForPlatform,
   conversationPairKey,
   isAllowedChatAttachment,
   isImageFile,
@@ -35,6 +36,18 @@ describe("chat attachment helpers", () => {
       type: "application/x-msdownload",
     });
     expect(isAllowedChatAttachment(exe)).toMatch(/supported/);
+  });
+
+  it("rejects oversized web uploads without reducing the desktop limit", () => {
+    const file = new File([new Uint8Array(5 * 1024 * 1024)], "report.pdf", {
+      type: "application/pdf",
+    });
+
+    expect(chatAttachmentValidatorForPlatform("web")(file)).toEqual({
+      code: "attachment-too-large",
+      message: "report.pdf is larger than 4 MB, the web upload limit",
+    });
+    expect(chatAttachmentValidatorForPlatform("desktop")(file)).toBeNull();
   });
 
   it("classifies composer files as images via mime or extension", () => {

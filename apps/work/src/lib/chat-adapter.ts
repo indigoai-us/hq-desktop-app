@@ -161,8 +161,8 @@ export function hydrateLiveRail(
   personUid = "",
 ): Promise<HydratedRail> {
   if (railHydrate) return railHydrate;
-  railHydrate = (async () => {
-    try {
+  const hydrate = (async () => {
+    {
       const [dirResult, contactsRaw, workItems, inbox] = await Promise.all([
         call<unknown>(adapter.messaging.fetchChannelDirectory(undefined)).then(
           (value) => ({ ok: true as const, value }),
@@ -216,12 +216,18 @@ export function hydrateLiveRail(
         );
       }
       return { directory, contacts };
-    } catch (err) {
-      railHydrate = null;
-      throw err;
     }
   })();
-  return railHydrate;
+  railHydrate = hydrate;
+  void hydrate.then(
+    () => {
+      if (railHydrate === hydrate) railHydrate = null;
+    },
+    () => {
+      if (railHydrate === hydrate) railHydrate = null;
+    },
+  );
+  return hydrate;
 }
 
 export function resetLiveRailHydrate(): void {

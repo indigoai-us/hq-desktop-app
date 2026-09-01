@@ -24,8 +24,9 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isAllowedChatAttachment,
     isImageFile,
+    validateChatAttachment,
+    type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
   import {
@@ -104,6 +105,8 @@
     avatarByUid?: Record<string, string>;
     /** personUid → live roster display name (profile override). */
     displayNameByUid?: Record<string, string>;
+    /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
+    attachmentValidator?: ChatAttachmentValidator;
     /** Open a person's profile panel when their name/avatar/mention is clicked. */
     onopenprofile?: (author: {
       personUid: string;
@@ -132,6 +135,7 @@
     onactivethreadchange,
     avatarByUid = {},
     displayNameByUid = {},
+    attachmentValidator = validateChatAttachment,
     onopenprofile,
   }: Props = $props();
 
@@ -310,9 +314,9 @@
         errors.push(`You can attach up to ${MAX_CHAT_ATTACHMENTS} files`);
         break;
       }
-      const reason = isAllowedChatAttachment(file);
-      if (reason) {
-        errors.push(reason);
+      const error = attachmentValidator(file);
+      if (error) {
+        errors.push(error.message);
         continue;
       }
       if (

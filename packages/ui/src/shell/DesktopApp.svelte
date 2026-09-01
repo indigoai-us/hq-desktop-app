@@ -129,7 +129,10 @@
     fileCompanyScope,
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
-  import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
+  import {
+    chatAttachmentValidatorForPlatform,
+    conversationPairKey,
+  } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
     uploadChatAttachments,
@@ -2424,6 +2427,7 @@
                   onopenattachment={openAttachmentTray}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}
                   {displayNameByUid}
@@ -2468,6 +2472,7 @@
                     onopenattachment={openAttachmentTray}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                    attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     onactivethreadchange={onactivethreadchange}

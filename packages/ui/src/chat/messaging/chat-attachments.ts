@@ -7,6 +7,21 @@
 
 export const MAX_CHAT_ATTACHMENTS = 5;
 export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/** Vercel accepts at most 4.5 MB request bodies; leave boundary headroom. */
+export const WEB_CHAT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+
+export type ChatAttachmentValidationErrorCode =
+  | "attachment-too-large"
+  | "attachment-unsupported-type";
+
+export interface ChatAttachmentValidationError {
+  code: ChatAttachmentValidationErrorCode;
+  message: string;
+}
+
+export type ChatAttachmentValidator = (
+  file: File,
+) => ChatAttachmentValidationError | null;
 
 export type ChatAttachmentKind = "image" | "file";
 
@@ -107,15 +122,45 @@ export function isImageFile(file: File): boolean {
   return attachmentKindForContentType(contentTypeForFile(file)) === "image";
 }
 
-export function isAllowedChatAttachment(file: File): string | null {
-  if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
-    return `${file.name} is larger than 25 MB`;
+export function validateChatAttachment(
+  file: File,
+  maxBytes = MAX_CHAT_ATTACHMENT_BYTES,
+): ChatAttachmentValidationError | null {
+  if (file.size > maxBytes) {
+    return {
+      code: "attachment-too-large",
+      message: `${file.name} is larger than ${maxBytes / (1024 * 1024)} MB`,
+    };
   }
   const type = contentTypeForFile(file);
   if (!IMAGE_TYPES.has(type) && !FILE_TYPES.has(type)) {
-    return `${file.name} isn't a supported file type`;
+    return {
+      code: "attachment-unsupported-type",
+      message: `${file.name} isn't a supported file type`,
+    };
   }
   return null;
+}
+
+export function validateWebChatAttachment(
+  file: File,
+): ChatAttachmentValidationError | null {
+  const error = validateChatAttachment(file, WEB_CHAT_ATTACHMENT_MAX_BYTES);
+  if (error?.code !== "attachment-too-large") return error;
+  return {
+    ...error,
+    message: `${file.name} is larger than 4 MB, the web upload limit`,
+  };
+}
+
+export function chatAttachmentValidatorForPlatform(
+  platform: "web" | "desktop",
+): ChatAttachmentValidator {
+  return platform === "web" ? validateWebChatAttachment : validateChatAttachment;
+}
+
+export function isAllowedChatAttachment(file: File): string | null {
+  return validateChatAttachment(file)?.message ?? null;
 }
 
 export function buildChatAttachmentVaultPath(args: {
