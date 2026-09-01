@@ -271,9 +271,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getCreatorProfile: (handle) => this.call("get_creator_profile", { handle }),
     getMyCreator: () => this.call("get_my_creator"),
     claimHandle: (handle) => this.call("claim_handle", { handle }),
-    updateCreatorProfile: (p) => this.call("update_creator_profile", { p }),
+    updateCreatorProfile: (p) =>
+      this.call("update_creator_profile", {
+        bio: p.bio,
+        socialLinks: p.socialLinks,
+        tipUrl: p.tipUrl,
+      }),
     uploadCreatorAvatar: (data) => this.call("upload_creator_avatar", { data }),
-    requestCreatorAccess: () => this.call("request_creator_access"),
+    requestCreatorAccess: (payload) =>
+      this.call("request_creator_access", {
+        reason: payload.reason,
+        handle: payload.handle,
+      }),
     listCreatorApplications: () => this.call("list_creator_applications"),
     decideCreatorApplication: (id, decision) =>
       this.call("decide_creator_application", { id, decision }),

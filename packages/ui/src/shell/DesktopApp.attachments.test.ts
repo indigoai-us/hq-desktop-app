@@ -18,6 +18,7 @@ const row: ConversationRow = {
   lastActivityAt: 0,
   pinned: false,
   channelId: "chn_received",
+  channelScope: "project",
 };
 
 function adapter(
@@ -141,5 +142,71 @@ describe("DesktopApp received attachment flow", () => {
     await unmount(component);
     component = null;
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:received-photo");
+  });
+
+  it("routes cloud file previews through the same-origin byte proxy instead of the non-CORS Vault URL", async () => {
+    const fetchSpy = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >(async () =>
+      new Response("# Project brief", {
+        headers: { "content-type": "text/markdown" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const presignVaultGet = vi.fn(async () =>
+      ok({ results: [{ url: "https://bucket.s3.amazonaws.com/projects/brief.md" }] }),
+    );
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter(presignVaultGet),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        initialRow: row,
+        searchRows: [row],
+        coreFixtures: false,
+        filesByRow: () => [
+          {
+            key: "projects/brief.md",
+            vaultPath: "projects/brief.md",
+            companyUid: "cmp_conversation",
+            name: "brief.md",
+            caption: "PROJECT",
+            iconKind: "markdown",
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Files",
+        ),
+      ).toBeTruthy();
+    });
+    [...host.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "Files")
+      ?.click();
+    await tick();
+    host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("# Project brief");
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+    for (const [path, init] of fetchSpy.mock.calls) {
+      expect(path).toBe("/api/chat-attachment-bytes");
+      expect(init).toMatchObject({
+        headers: {
+          "x-hq-source-url": "https://bucket.s3.amazonaws.com/projects/brief.md",
+          "x-hq-max-bytes": "2097152",
+        },
+      });
+    }
+    expect(presignVaultGet).toHaveBeenCalledWith("cmp_conversation", "projects/brief.md");
   });
 });

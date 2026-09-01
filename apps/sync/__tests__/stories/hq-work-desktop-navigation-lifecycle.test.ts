@@ -66,6 +66,11 @@ interface Options {
   workspaceFailure?: boolean;
   identityFailure?: boolean;
   directoryResponse?: Promise<unknown>;
+  shareEvents?: unknown[];
+  hqProPaths?: string[];
+  invocations?: Array<{ command: string; args?: Record<string, unknown> }>;
+  nativeResults?: Record<string, unknown>;
+  nativeErrors?: Record<string, string>;
   notificationFeed?: { current: unknown };
   fetchNotifications?: () => unknown;
   sendChannelResponse?: Promise<unknown>;
@@ -74,6 +79,12 @@ interface Options {
 function invokeFor(options: Options = {}): SyncInvokeFn {
   return async (command, args) => {
     options.calls?.push(command);
+    options.invocations?.push({ command, args });
+    const nativeError = options.nativeErrors?.[command];
+    if (nativeError) throw new Error(nativeError);
+    if (Object.prototype.hasOwnProperty.call(options.nativeResults ?? {}, command)) {
+      return options.nativeResults?.[command];
+    }
     switch (command) {
       case 'get_auth_session':
         return options.authSession ?? null;
@@ -166,6 +177,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         return null;
       case 'hq_pro_fetch': {
         const path = String(args?.url ?? '');
+        options.hqProPaths?.push(path);
         if (path.startsWith('/v1/identity/whoami')) {
           if (options.identityFailure) {
             return {
@@ -184,6 +196,12 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
             body: JSON.stringify({
               url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=hq',
             }),
+          };
+        }
+        if (path.startsWith('/v1/files/shared-with-me')) {
+          return {
+            status: 200,
+            body: JSON.stringify({ events: options.shareEvents ?? [] }),
           };
         }
         return { status: 200, body: JSON.stringify({}) };
@@ -317,12 +335,33 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
     ).toBe('page');
 
+    warmRoute('library:workers');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-workers"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeTruthy();
+
     warmRoute('library:marketplace');
     await flush();
     expect(
       host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-marketplace-panel"]')).toBeTruthy();
+
+    warmRoute('library:submit');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-submit"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-submit-panel"]')).toBeTruthy();
+
+    warmRoute('library:profile');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-profile"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+    expect(host.querySelector('[data-testid="library-profile-panel"]')).toBeTruthy();
 
     warmRoute('library');
     await flush();
@@ -381,6 +420,159 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-installed-panel"]')).toBeNull();
+  });
+
+  it('routes a real Sync-host file-share notification to its scoped file surface', async () => {
+    const hqProPaths: string[] = [];
+    await mountShell({
+      hqProPaths,
+      shareEvents: [
+        {
+          eventId: 'shr_1',
+          issuerDisplayName: 'Grace',
+          paths: ['projects/alpha/brief.md'],
+          createdAt: MEETING_START,
+        },
+      ],
+    });
+
+    warmRoute('inbox');
+    await flush(64);
+    (host.querySelector('[data-testid="notifications-row"]') as HTMLDivElement).click();
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="shared-files-event"]')?.textContent).toContain(
+      'brief.md',
+    );
+    expect(hqProPaths.some((path) => path.startsWith('/v1/files/shared-with-me'))).toBe(true);
+  });
+
+  it('shows Workers only through the Sync host and opens its real native detail command', async () => {
+    const invocations: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    await mountShell({
+      invocations,
+      nativeResults: {
+        get_library_root: {
+          workers: [
+            {
+              id: 'worker_planner',
+              name: 'Planner',
+              type: 'agent',
+              description: 'Plans work',
+              scope: 'root',
+              status: 'ready',
+              path: 'workers/planner',
+            },
+          ],
+          skills: [],
+        },
+        get_library_worker_detail: {
+          id: 'worker_planner',
+          name: 'Planner',
+          type: 'agent',
+          description: 'Plans work',
+          skills: [],
+          instructions: 'Use the plan.',
+        },
+      },
+    });
+
+    warmRoute('library:workers');
+    await flush(64);
+    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeTruthy();
+    (host.querySelector('[data-testid="library-worker-card"]') as HTMLButtonElement).click();
+    await flush(64);
+
+    expect(
+      invocations.find((entry) => entry.command === 'get_library_worker_detail')?.args,
+    ).toEqual({ workerPath: 'workers/planner' });
+    expect(host.querySelector('[data-testid="library-detail-panel"]')).toBeTruthy();
+  });
+
+  it('preserves Submit and Profile mutations through the mounted Sync-to-Tauri seam', async () => {
+    const invocations: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const nativeErrors: Record<string, string> = {
+      publish_marketplace_pack: 'verified creator required',
+      request_creator_access: 'application service unavailable',
+    };
+    const creator = {
+      handle: 'ada',
+      displayName: 'Ada Lovelace',
+      bio: 'Old bio',
+      socialLinks: [],
+      tipUrl: null,
+    };
+    await mountShell({
+      invocations,
+      nativeErrors,
+      nativeResults: {
+        pick_folder: '/tmp/ada-pack',
+        request_creator_access: 'Application received.',
+        get_my_creator: creator,
+        get_creator_profile: { creator, listings: [] },
+        update_creator_profile: {
+          ...creator,
+          bio: 'Compiler pioneer',
+          socialLinks: [{ label: 'GitHub', url: 'https://github.com/ada' }],
+          tipUrl: 'https://example.test/tip',
+        },
+      },
+    });
+
+    const fill = async (selector: string, value: string): Promise<void> => {
+      const input = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
+      if (!input) throw new Error(`Missing input ${selector}`);
+      flushSync(() => {
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await flush();
+    };
+
+    warmRoute('library:submit');
+    await flush(64);
+    (host.querySelector('[data-testid="submit-choose"]') as HTMLButtonElement).click();
+    await flush(64);
+    (host.querySelector('[data-testid="submit-publish"]') as HTMLButtonElement).click();
+    await flush(64);
+    expect(host.querySelector('[data-testid="submit-request-access"]')).toBeTruthy();
+
+    await fill('[data-testid="submit-application-reason"]', 'I publish trustworthy workers.');
+    await fill('[data-testid="submit-application-handle"]', 'ada');
+    (host.querySelector('[data-testid="submit-request-access-button"]') as HTMLButtonElement).click();
+    await flush(64);
+    expect(host.querySelector('[data-testid="submit-request-error"]')?.textContent).toContain(
+      'application service unavailable',
+    );
+    expect(invocations.find((entry) => entry.command === 'request_creator_access')?.args).toEqual({
+      reason: 'I publish trustworthy workers.',
+      handle: 'ada',
+    });
+
+    delete nativeErrors.request_creator_access;
+    (host.querySelector('[data-testid="submit-request-access-button"]') as HTMLButtonElement).click();
+    await flush(64);
+    expect(host.querySelector('[data-testid="submit-request-note"]')).toBeTruthy();
+
+    warmRoute('library:profile');
+    await flush(64);
+    expect(host.querySelector('[data-testid="profile-edit"]')).toBeTruthy();
+    await fill('[data-testid="profile-bio"]', 'Compiler pioneer');
+    (host.querySelector('[data-testid="profile-add-social"]') as HTMLButtonElement).click();
+    await flush();
+    await fill('[data-testid="profile-social-label"]', 'GitHub');
+    await fill('[data-testid="profile-social-url"]', 'https://github.com/ada');
+    await fill('[data-testid="profile-tip"]', 'https://example.test/tip');
+    (host.querySelector('[data-testid="profile-save"]') as HTMLButtonElement).click();
+    await flush(64);
+
+    expect(invocations.find((entry) => entry.command === 'update_creator_profile')?.args).toEqual({
+      bio: 'Compiler pioneer',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/ada' }],
+      tipUrl: 'https://example.test/tip',
+    });
+    expect(host.querySelector('[data-testid="profile-save-ok"]')).toBeTruthy();
   });
 
   it('carries a warm hqwork reply target through the mounted host into ReplyPanel', async () => {

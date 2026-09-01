@@ -2,10 +2,9 @@
   /**
    * Library full-screen overlay (US-017).
    *
-   * Takeover surface for route.kind === 'library': left nav (Skills N /
-   * Workers N / Marketplace). Marketplace reuses the shared v1
-   * MarketplacePanel (browse + detail + install) so web and desktop
-   * hit the same hq-pro listings API.
+   * Takeover surface for route.kind === 'library': distinct Skills, Workers,
+   * Installed, Marketplace, Submit, and Profile destinations. Marketplace
+   * reuses the shared v1 panel so web and desktop hit the same listings API.
    */
   import type { PlatformAdapter } from "@hq/platform";
   import {
@@ -21,12 +20,15 @@
   } from "./library-refresh.js";
   import MarketplacePanel from "../marketplace/MarketplacePanel.svelte";
   import InstalledPacksPanel from "../marketplace/InstalledPacksPanel.svelte";
+  import SubmitPanel from "../marketplace/SubmitPanel.svelte";
+  import ProfilePanel from "../marketplace/ProfilePanel.svelte";
   import type { PackagesEvents } from "./packages-events.js";
   import {
     type LibraryTab,
     buildLibraryNavRows,
     filterSkillCards,
     filterWorkerCards,
+    libraryOverlayCapabilities,
     overlayTabToLibraryTab,
     resolveOverlayTab,
     toSkillCards,
@@ -64,8 +66,11 @@
   $effect(() => {
     currentTab = tab;
   });
-  const showWorkers = $derived(false);
-  const showMarketplace = $derived(adapter.kind !== "web");
+  // Local Workers are meaningful only where the adapter can open their local
+  // detail/session seam; the host capability, not its name, owns that contract.
+  const hostCapabilities = $derived(libraryOverlayCapabilities(adapter.capabilities));
+  const showWorkers = $derived(hostCapabilities.workers);
+  const showMarketplace = $derived(hostCapabilities.marketplace);
   const activeTab = $derived(
     resolveOverlayTab(currentTab, {
       workers: showWorkers,
@@ -269,7 +274,7 @@
     </nav>
 
     <div class="lo-main">
-      {#if activeTab !== "marketplace"}
+      {#if activeTab !== "marketplace" && activeTab !== "submit" && activeTab !== "profile"}
         <div class="lo-search-row">
           <div class="lo-search-wrap">
             <span class="lo-search-ic" aria-hidden="true">
@@ -438,9 +443,17 @@
         <div class="lo-panel" data-testid="library-installed-panel">
           <InstalledPacksPanel {adapter} {packagesEvents} />
         </div>
-      {:else}
+      {:else if activeTab === "marketplace"}
         <div class="lo-panel lo-market" data-testid="library-marketplace-panel">
           <MarketplacePanel {adapter} />
+        </div>
+      {:else if activeTab === "submit"}
+        <div class="lo-panel lo-market" data-testid="library-submit-panel">
+          <SubmitPanel {adapter} />
+        </div>
+      {:else}
+        <div class="lo-panel lo-market" data-testid="library-profile-panel">
+          <ProfilePanel {adapter} />
         </div>
       {/if}
     </div>

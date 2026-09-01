@@ -9,28 +9,244 @@
    * Tauri invoke, no `fetch_channel_files`, no self-fetching FilePreviewPane.
    * The host owns the data.
    */
+  import { onDestroy } from "svelte";
   import type {
     ChannelFileIconKind,
     ChannelFileItemModel,
+    ChannelFilePreview,
   } from "./channelTabModels";
 
   interface Props {
     files: ChannelFileItemModel[];
+    /** Identity of the account/company/conversation that owns this file list. */
+    previewContext?: string | null;
+    /** Host-owned bounded preview; it performs all remote/native I/O. */
+    onloadpreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
+    /** Native actions are only rendered for an authorized local mirror. */
+    onreveal?: (item: ChannelFileItemModel) => Promise<unknown>;
+    onopen?: (item: ChannelFileItemModel) => Promise<unknown>;
+    /** Host re-check before rendering or executing a native local-file action. */
+    onauthorizeaction?: (item: ChannelFileItemModel) => boolean;
   }
 
-  let { files }: Props = $props();
+  let {
+    files,
+    previewContext = null,
+    onloadpreview,
+    onreveal,
+    onopen,
+    onauthorizeaction,
+  }: Props = $props();
 
   let selectedKey = $state<string | null>(null);
+  let preview = $state<ChannelFilePreview | null>(null);
+  let previewLoading = $state(false);
+  let previewSequence = 0;
+  let actionSequence = 0;
+  let previewTarget = $state<ChannelFileItemModel | null>(null);
+  let actionPending = $state<"reveal" | "open" | null>(null);
+  let actionError = $state<string | null>(null);
   const selected = $derived<ChannelFileItemModel | null>(
     selectedKey ? (files.find((f) => f.key === selectedKey) ?? null) : null,
   );
 
-  function selectFile(item: ChannelFileItemModel): void {
+  function releasePreviewUrl(candidate: ChannelFilePreview | null): void {
+    if (
+      (candidate?.kind === "image" || candidate?.kind === "pdf") &&
+      candidate.url.startsWith("blob:")
+    ) {
+      URL.revokeObjectURL(candidate.url);
+    }
+  }
+
+  function setPreview(next: ChannelFilePreview | null): void {
+    if (preview !== next) releasePreviewUrl(preview);
+    preview = next;
+  }
+
+  onDestroy(() => {
+    // A pending host request can resolve after Svelte removes this component.
+    // Invalidate before releasing the current preview so its late blob is
+    // released by the completion branch instead of becoming detached state.
+    previewSequence += 1;
+    actionSequence += 1;
+    selectedKey = null;
+    previewTarget = null;
+    setPreview(null);
+  });
+
+  function samePreviewTarget(
+    current: ChannelFileItemModel,
+    requested: ChannelFileItemModel,
+  ): boolean {
+    return (
+      current.key === requested.key &&
+      current.vaultPath === requested.vaultPath &&
+      current.localPath === requested.localPath &&
+      current.companyUid === requested.companyUid &&
+      current.name === requested.name &&
+      current.caption === requested.caption &&
+      current.iconKind === requested.iconKind &&
+      current.accessDenied === requested.accessDenied &&
+      current.previewText === requested.previewText
+    );
+  }
+
+  function invalidatePreviewSelection(): void {
+    previewSequence += 1;
+    actionSequence += 1;
+    selectedKey = null;
+    previewTarget = null;
+    setPreview(null);
+    previewLoading = false;
+    actionPending = null;
+    actionError = null;
+  }
+
+  let observedPreviewContext: string | null | undefined = undefined;
+
+  // A stable account/company/conversation token is required even when two
+  // contexts happen to expose the same vault key. The file row alone cannot
+  // prove an in-flight response still belongs to the rendered conversation.
+  $effect(() => {
+    const nextContext = previewContext ?? null;
+    if (observedPreviewContext === undefined) {
+      observedPreviewContext = nextContext;
+      return;
+    }
+    if (nextContext === observedPreviewContext) return;
+    observedPreviewContext = nextContext;
+    invalidatePreviewSelection();
+  });
+
+  // A live files refresh can remove or replace a selected row while its
+  // asynchronous preview is in flight. Invalidate first so a late completion
+  // cannot retain stale bytes or a generated blob URL for a vanished file.
+  $effect(() => {
+    const current = selected;
+    const requested = previewTarget;
+    if (!selectedKey || !requested) return;
+    if (!current || !samePreviewTarget(current, requested)) {
+      invalidatePreviewSelection();
+    }
+  });
+
+  function requestStillCurrent(
+    item: ChannelFileItemModel,
+    context: string | null,
+    sequence: number,
+  ): boolean {
+    const current = selected;
+    const requested = previewTarget;
+    return (
+      sequence === previewSequence &&
+      context === (previewContext ?? null) &&
+      selectedKey === item.key &&
+      current !== null &&
+      requested !== null &&
+      samePreviewTarget(current, item) &&
+      samePreviewTarget(requested, item)
+    );
+  }
+
+  async function selectFile(item: ChannelFileItemModel): Promise<void> {
     selectedKey = item.key;
+    previewTarget = item;
+    const sequence = ++previewSequence;
+    actionSequence += 1;
+    const context = previewContext ?? null;
+    setPreview(null);
+    previewLoading = false;
+    actionError = null;
+    actionPending = null;
+    if (item.accessDenied) {
+      setPreview({
+        kind: "unavailable",
+        state: "denied",
+        message: "You don't have access to this file.",
+      });
+      return;
+    }
+    if (item.previewText !== undefined) {
+      setPreview({ kind: "text", text: item.previewText });
+      return;
+    }
+    if (!onloadpreview) {
+      setPreview({
+        kind: "unavailable",
+        state: "unsupported",
+        message: "Preview is unavailable in this host.",
+      });
+      return;
+    }
+    previewLoading = true;
+    try {
+      const next = await onloadpreview(item);
+      if (requestStillCurrent(item, context, sequence)) setPreview(next);
+      else releasePreviewUrl(next);
+    } catch {
+      if (requestStillCurrent(item, context, sequence)) {
+        setPreview({
+          kind: "unavailable",
+          state: "offline",
+          message: "Couldn't load this preview. Check your connection and try again.",
+        });
+      }
+    } finally {
+      if (sequence === previewSequence && context === (previewContext ?? null)) {
+        previewLoading = false;
+      }
+    }
   }
 
   function closePreview(): void {
-    selectedKey = null;
+    invalidatePreviewSelection();
+  }
+
+  function nativeActionAllowed(item: ChannelFileItemModel): boolean {
+    return (
+      !item.accessDenied &&
+      Boolean(item.localPath?.trim()) &&
+      (onauthorizeaction?.(item) ?? true)
+    );
+  }
+
+  async function runAction(
+    kind: "reveal" | "open",
+    action: ((item: ChannelFileItemModel) => Promise<unknown>) | undefined,
+  ): Promise<void> {
+    const item = selected;
+    if (!item || !nativeActionAllowed(item) || !action || actionPending) return;
+    const sequence = ++actionSequence;
+    const context = previewContext ?? null;
+    actionPending = kind;
+    actionError = null;
+    try {
+      await action(item);
+    } catch {
+      if (actionStillCurrent(item, context, sequence)) {
+        actionError =
+          kind === "reveal"
+            ? "Couldn’t reveal this file."
+            : "Couldn’t open this file in Claude Code.";
+      }
+    } finally {
+      if (actionStillCurrent(item, context, sequence)) actionPending = null;
+    }
+  }
+
+  function actionStillCurrent(
+    item: ChannelFileItemModel,
+    context: string | null,
+    sequence: number,
+  ): boolean {
+    const current = selected;
+    return (
+      sequence === actionSequence &&
+      context === (previewContext ?? null) &&
+      current !== null &&
+      samePreviewTarget(current, item)
+    );
   }
 
   function iconPaths(kind: ChannelFileIconKind): string {
@@ -168,18 +384,79 @@
           </button>
         </header>
         <div class="files-preview-body">
-          {#if selected.accessDenied}
-            <div class="files-denied preview-denied" role="status">
-              <p class="files-denied-title">
-                You don't have access to this file.
-              </p>
+          {#if nativeActionAllowed(selected) && (onreveal || onopen)}
+            <div class="files-preview-actions">
+              {#if onreveal}
+                <button
+                  type="button"
+                  class="files-preview-action"
+                  data-testid="channel-file-reveal"
+                  disabled={actionPending !== null}
+                  aria-busy={actionPending === "reveal"}
+                  onclick={() => void runAction("reveal", onreveal)}
+                >{actionPending === "reveal" ? "Revealing…" : "Reveal in Finder"}</button>
+              {/if}
+              {#if onopen}
+                <button
+                  type="button"
+                  class="files-preview-action"
+                  data-testid="channel-file-open"
+                  disabled={actionPending !== null}
+                  aria-busy={actionPending === "open"}
+                  onclick={() => void runAction("open", onopen)}
+                >{actionPending === "open" ? "Opening…" : "Open in Claude Code"}</button>
+              {/if}
             </div>
+          {/if}
+          {#if actionError}
+            <p class="files-action-error" data-testid="channel-file-action-error" role="alert">
+              {actionError}
+            </p>
+          {/if}
+          {#if previewLoading}
+            <div class="files-preview-status" data-testid="channel-file-preview-loading" role="status">
+              Loading a safe preview…
+            </div>
+          {:else if preview?.kind === "unavailable"}
+            <div
+              class="files-denied preview-denied"
+              class:files-preview-unavailable={preview.state !== "denied"}
+              data-testid={
+                preview.state === "denied"
+                  ? "channel-file-preview-denied"
+                  : "channel-file-preview-unavailable"
+              }
+              role="status"
+            >
+              <p class="files-denied-title">{preview.message}</p>
+            </div>
+          {:else if preview?.kind === "text"}
+            <div class="preview-meta">{selected.caption} · {selected.vaultPath}</div>
+            <pre class="preview-text" data-testid="channel-file-preview-text">{preview.text}</pre>
+          {:else if preview?.kind === "image"}
+            <img
+              class="preview-media"
+              data-testid="channel-file-preview-image"
+              src={preview.url}
+              alt={selected.name}
+            />
+          {:else if preview?.kind === "pdf"}
+            <object
+              class="preview-pdf"
+              data-testid="channel-file-preview-pdf"
+              data={preview.url}
+              type="application/pdf"
+              title={selected.name}
+            >
+              <p>PDF preview unavailable.</p>
+            </object>
           {:else}
             <div class="preview-meta">
               {selected.caption} · {selected.vaultPath}
             </div>
-            <pre class="preview-text">{selected.previewText ??
-                "No preview available."}</pre>
+            <p class="files-preview-status" data-testid="channel-file-preview-unavailable">
+              Preview is unavailable for this file.
+            </p>
           {/if}
         </div>
       </div>
@@ -385,6 +662,50 @@
     flex-direction: column;
     gap: 10px;
     padding: 16px;
+  }
+
+  .files-preview-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .files-preview-action {
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 5px 8px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .files-preview-action:hover:not(:disabled) { background: var(--hover); }
+  .files-preview-action:disabled { cursor: progress; opacity: 0.6; }
+
+  .files-action-error {
+    margin: 0;
+    color: var(--err, #d96c75);
+    font-size: 12px;
+  }
+
+  .files-preview-status {
+    margin: 0;
+    color: var(--t2);
+    font-size: 13px;
+  }
+
+  .files-preview-unavailable { padding: 0; }
+
+  .preview-media,
+  .preview-pdf {
+    display: block;
+    width: 100%;
+    max-height: 100%;
+    min-height: 220px;
+    border: 0;
+    object-fit: contain;
   }
 
   .preview-meta {
