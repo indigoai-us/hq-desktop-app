@@ -34,7 +34,7 @@ describe("work vault file-preview seam", () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns the shared text preview arm after web presign and fetch", async () => {
+  it("returns the shared text preview arm through the same-origin byte hop", async () => {
     vi.mocked(hqProFetch).mockResolvedValue(
       new Response(
         JSON.stringify({ results: [{ url: "https://vault.test/brief.md" }] }),
@@ -60,7 +60,13 @@ describe("work vault file-preview seam", () => {
         key: "projects/demo/brief.md",
       }),
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://vault.test/brief.md");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chat-attachment-bytes", {
+      headers: {
+        "x-hq-source-url": "https://vault.test/brief.md",
+        "x-hq-max-bytes": String(2 * 1024 * 1024),
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith("https://vault.test/brief.md");
   });
 
   it("returns the shared unavailable arm when presigning fails", async () => {

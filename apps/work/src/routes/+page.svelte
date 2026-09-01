@@ -34,6 +34,7 @@
     type BoardTabData,
     type ChannelFileItemModel,
     type ChannelStatusModel,
+    type ChatSidebarApi,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -51,6 +52,7 @@
     resolveLastSelectedId,
     seedConversationCacheFromRail,
   } from "$lib/browser-cache";
+  import { openWorkExternalUrl } from "$lib/external-open";
   import { startWebMeshForAdapter } from "$lib/mesh-runtime";
   import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
   import {
@@ -94,6 +96,7 @@
   const notificationsApi = createNotificationsApi(adapter);
   const wakes = createChatWakeBus();
   let notificationWakeSeq = $state(0);
+  let externalLinkError = $state<string | null>(null);
 
   // The Cognito subject owns the web storage partition. The shared shell's
   // person identity is hydrated from caller-scoped whoami below.
@@ -108,13 +111,32 @@
   );
   let tenantGeneration = $state(0);
   const personUid = $derived(self?.uid ?? "");
-  const shallow = $derived(readShallowCache(personUid));
+  let shallow = $state(readShallowCache(personUid));
+  $effect(() => {
+    shallow = readShallowCache(personUid);
+  });
   $effect(() => {
     seedConversationCacheFromRail(shallow);
   });
   const sidebarApi = $derived(
     createChatSidebarApi(adapter, shallow.directory, personUid),
   );
+  function refreshableSidebarApi(api: ChatSidebarApi): ChatSidebarApi {
+    return {
+      ...api,
+      fetchChannelDirectory: async (cursor) => {
+        const feed = await api.fetchChannelDirectory(cursor);
+        shallow = readShallowCache(personUid);
+        return feed;
+      },
+      listContacts: async () => {
+        const contacts = await api.listContacts();
+        shallow = readShallowCache(personUid);
+        return contacts;
+      },
+    };
+  }
+  const liveSidebarApi = $derived(refreshableSidebarApi(sidebarApi));
 
   let companies = $state(
     resolveShellCompanies({
@@ -410,7 +432,15 @@
   }
 
   function openUrl(url: string): void {
-    window.open(url, "_blank", "noopener,noreferrer");
+    externalLinkError = null;
+    try {
+      openWorkExternalUrl(url, adapter.kind);
+    } catch (error) {
+      externalLinkError =
+        error instanceof Error
+          ? error.message
+          : "This external link could not be opened.";
+    }
   }
 </script>
 
@@ -418,7 +448,7 @@
   <DesktopApp
     {adapter}
     version={displayVersion(`v${workPackage.version}`)}
-    {sidebarApi}
+    sidebarApi={liveSidebarApi}
     {notificationsApi}
     {messagesByRow}
     {reactionsByRow}
@@ -449,14 +479,53 @@
     onsignout={signOut}
     onOpenConsole={openUrl}
   />
+  {#if externalLinkError}
+    <div
+      class="external-link-notice"
+      role="alert"
+      data-testid="external-link-error"
+    >
+      <span>{externalLinkError}</span>
+      <button
+        type="button"
+        aria-label="Dismiss external link warning"
+        onclick={() => (externalLinkError = null)}>Dismiss</button
+      >
+    </div>
+  {/if}
 </div>
 
 <style>
   .shell-root {
+    position: relative;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .external-link-notice {
+    position: absolute;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    max-width: min(32rem, calc(100% - 2rem));
+    padding: 0.75rem 1rem;
+    color: #fff;
+    background: #8a1c1c;
+    border-radius: 0.5rem;
+    box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 25%);
+  }
+
+  .external-link-notice button {
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentcolor;
+    border-radius: 0.25rem;
+    cursor: pointer;
   }
 </style>

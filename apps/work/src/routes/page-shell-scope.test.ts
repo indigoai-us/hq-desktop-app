@@ -34,12 +34,14 @@ vi.mock("$lib/mesh-runtime", () => ({
 import { mount, tick, unmount } from "svelte";
 import type {
   BoardTabData,
+  ChatSidebarApi,
   ChannelStatusModel,
   ConversationRow,
   SelfIdentity,
 } from "@hq/ui";
 import { displayVersion } from "$lib/version.js";
 import { hqProFetch } from "$lib/hq-pro-client.js";
+import { resetLiveRailHydrate } from "$lib/chat-adapter.js";
 import { tenantStorageKey } from "../../../../packages/ui/src/identity/tenant-storage.js";
 import Page from "./+page.svelte";
 
@@ -47,6 +49,8 @@ type CapturedDesktopAppProps = {
   self: SelfIdentity | null;
   version: string;
   tenantAccountId: string | null;
+  sidebarApi: ChatSidebarApi;
+  searchRows: ConversationRow[];
   channelStatusByRow: (row: ConversationRow) => ChannelStatusModel | null;
   boardByRow: (row: ConversationRow) => BoardTabData | null;
 };
@@ -85,6 +89,7 @@ function urlOf(input: RequestInfo | URL): string {
 beforeEach(() => {
   desktopAppProps.current = null;
   vi.mocked(hqProFetch).mockReset();
+  resetLiveRailHydrate();
   localStorage.clear();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -94,6 +99,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host.remove();
+  resetLiveRailHydrate();
   vi.unstubAllGlobals();
 });
 
@@ -163,6 +169,49 @@ describe("hosted Work shell identity and tenancy", () => {
         "hq.chat.dm-inbox-since",
       ),
     );
+  });
+
+  it("updates command-palette rows after an empty-cache rail hydration", async () => {
+    vi.mocked(hqProFetch).mockImplementation(async (input) => {
+      const url = urlOf(input);
+      if (url.endsWith("/v1/identity/whoami")) {
+        return response({ personUid: "prs_web", email: "web@example.com" });
+      }
+      if (url.endsWith("/membership/me")) return response({ memberships: [] });
+      if (url.includes("/v1/notify/channels")) {
+        return response({
+          snapshot: true,
+          rows: [
+            {
+              channelId: "chn_live",
+              type: "channel",
+              scope: "company",
+              name: "Live project",
+              companyUid: "cmp_live",
+              lastActivityAt: "2026-09-01T00:00:00.000Z",
+            },
+          ],
+        });
+      }
+      if (url.includes("/v1/notify/contacts")) return response({ contacts: [] });
+      if (url.includes("/v1/notify/inbox")) return response({ events: [] });
+      if (url.includes("/v1/work-mesh/work")) return response({ items: [] });
+      return response({ threads: [] });
+    });
+
+    await mountSignedInPage();
+    await vi.waitFor(() => {
+      expect(capturedProps().self?.uid).toBe("prs_web");
+    });
+    expect(capturedProps().searchRows).toEqual([]);
+
+    await capturedProps().sidebarApi.fetchChannelDirectory(null);
+
+    await vi.waitFor(() => {
+      expect(capturedProps().searchRows).toEqual([
+        expect.objectContaining({ id: "ch:chn_live", title: "Live project" }),
+      ]);
+    });
   });
 });
 

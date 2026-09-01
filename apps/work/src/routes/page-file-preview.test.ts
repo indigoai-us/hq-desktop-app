@@ -112,6 +112,12 @@ describe("web Vault file preview company scope", () => {
       props.loadFilePreview({ ...otherCompanyFile, companyUid: "cmp_a" }),
     ).resolves.toEqual({ kind: "text", text: "# Company A brief" });
     expect(hqProFetch).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith("https://vault.test/brief.md");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chat-attachment-bytes", {
+      headers: {
+        "x-hq-source-url": "https://vault.test/brief.md",
+        "x-hq-max-bytes": String(2 * 1024 * 1024),
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith("https://vault.test/brief.md");
   });
 });

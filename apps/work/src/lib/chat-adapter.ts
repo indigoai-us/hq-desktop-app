@@ -249,7 +249,7 @@ export function createChatSidebarApi(
           ),
         );
       }
-      const { directory } = await hydrateLiveRail(
+      const rail = await hydrateLiveRail(
         adapter,
         previousDirectory,
         personUid,
@@ -258,16 +258,16 @@ export function createChatSidebarApi(
         snapshot: true,
         cursor: "livefeed0000000000000000000000000000",
         cursorExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
-        rows: directory,
+        rows: rail.directory,
       });
     },
     listContacts: async () => {
-      const { contacts } = await hydrateLiveRail(
+      const rail = await hydrateLiveRail(
         adapter,
         previousDirectory,
         personUid,
       );
-      return { contacts };
+      return { contacts: rail.contacts };
     },
     listDmRequests: async () => ({
       requests: await call<NonNullable<RequestsResponse["requests"]>>(
