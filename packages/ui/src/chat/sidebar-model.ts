@@ -613,7 +613,7 @@ export function normalizeConversations(
     seen.add(row.id);
     deduped.push(row);
   }
-  return collapseDuplicateDmRows(deduped);
+  return collapseDuplicateGroupRows(collapseDuplicateDmRows(deduped));
 }
 
 /**
@@ -645,6 +645,73 @@ export function collapseDuplicateDmRows(
     byKey.set(key, nextScore >= prevScore ? row : prev);
   }
   return [...rest, ...byKey.values()];
+}
+
+/**
+ * Duplicate 1:1 group channels for the same counterpart originate SERVER-SIDE
+ * (distinct channelIds whose roster resolves to the same people). This is a
+ * client-side mitigation: group rows with an identical participant roster
+ * collapse to one, keeping the most recently active (same scoring as
+ * collapseDuplicateDmRows). Rows without member info are left alone — never
+ * collapse rows you cannot key. Channel and DM rows are not moved.
+ */
+export function collapseDuplicateGroupRows(
+  rows: ConversationRow[],
+): ConversationRow[] {
+  const bestByKey = new Map<string, ConversationRow>();
+  for (const row of rows) {
+    if (row.kind !== "group") continue;
+    const key = groupRosterKey(row);
+    if (!key) continue;
+    const prev = bestByKey.get(key);
+    if (!prev) {
+      bestByKey.set(key, row);
+      continue;
+    }
+    const prevScore =
+      prev.lastActivityAt + (prev.unreadCount ?? (prev.unreadDot ? 1 : 0));
+    const nextScore =
+      row.lastActivityAt + (row.unreadCount ?? (row.unreadDot ? 1 : 0));
+    bestByKey.set(key, nextScore >= prevScore ? row : prev);
+  }
+  const seen = new Set<string>();
+  const out: ConversationRow[] = [];
+  for (const row of rows) {
+    if (row.kind !== "group") {
+      out.push(row);
+      continue;
+    }
+    const key = groupRosterKey(row);
+    if (!key) {
+      out.push(row);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(bestByKey.get(key) ?? row);
+  }
+  return out;
+}
+
+/** Sorted, deduped member personUids; fall back to lowercased displayNames. */
+function groupRosterKey(row: ConversationRow): string | null {
+  const members = row.members ?? [];
+  if (members.length === 0) return null;
+  const uids = [
+    ...new Set(
+      members.map((member) => (member.personUid ?? "").trim()).filter(Boolean),
+    ),
+  ].sort();
+  if (uids.length > 0) return `uid:${uids.join("\0")}`;
+  const names = [
+    ...new Set(
+      members
+        .map((member) => (member.displayName ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ].sort();
+  if (names.length === 0) return null;
+  return `name:${names.join("\0")}`;
 }
 
 // ── Channel fabric directory rows (US-009) ───────────────────────────────────

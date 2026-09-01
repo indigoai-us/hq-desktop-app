@@ -11,6 +11,7 @@ import {
   buildScopeOptions,
   clearDmDot,
   clearPairUnread,
+  collapseDuplicateGroupRows,
   companyLabelFor,
   conversationKindLabel,
   conversationQueryScore,
@@ -1472,5 +1473,146 @@ describe("G3: contacts directory never renders as sidebar conversation rows", ()
     expect(rows).toHaveLength(4);
     const hits = filterTypeahead(rows, "alan");
     expect(hits.map((r) => r.personUid)).toContain("prs_alan");
+  });
+});
+
+describe("collapseDuplicateGroupRows", () => {
+  function groupRow(
+    partial: Partial<ConversationRow> & { id: string },
+  ): ConversationRow {
+    return {
+      kind: "group",
+      title: "Jacob Posel",
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 0,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  const jacob = { personUid: "prs_jacob", displayName: "Jacob Posel" };
+  const caitlin = { personUid: "prs_caitlin", displayName: "Caitlin Hutchinson" };
+
+  it("collapses identical rosters to the most recently active row", () => {
+    const older = groupRow({
+      id: "ch:g-old",
+      channelId: "g-old",
+      lastActivityAt: msOnDay(0, 8),
+      members: [jacob],
+    });
+    const newer = groupRow({
+      id: "ch:g-new",
+      channelId: "g-new",
+      lastActivityAt: msOnDay(0, 10),
+      unreadDot: true,
+      members: [jacob],
+    });
+    const channelRow: ConversationRow = {
+      id: "ch:ops",
+      kind: "channel",
+      title: "ops",
+      companyUid: "cmp_a",
+      unreadDot: false,
+      lastActivityAt: msOnDay(0, 9),
+      pinned: false,
+      channelId: "ops",
+    };
+    const rows = collapseDuplicateGroupRows([channelRow, older, newer]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:ops", "ch:g-new"]);
+  });
+
+  it("keeps group rows with different rosters separate", () => {
+    const withJacob = groupRow({
+      id: "ch:g-jacob",
+      lastActivityAt: msOnDay(0, 10),
+      members: [jacob],
+    });
+    const withBoth = groupRow({
+      id: "ch:g-both",
+      title: "Jacob Posel, Caitlin Hutchinson",
+      lastActivityAt: msOnDay(0, 9),
+      members: [jacob, caitlin],
+    });
+    const rows = collapseDuplicateGroupRows([withJacob, withBoth]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:g-jacob", "ch:g-both"]);
+  });
+
+  it("leaves rows without member info untouched", () => {
+    const noMembers = groupRow({
+      id: "ch:g-empty",
+      lastActivityAt: msOnDay(0, 10),
+    });
+    const emptyMembers = groupRow({
+      id: "ch:g-blank",
+      lastActivityAt: msOnDay(0, 9),
+      members: [],
+    });
+    const unnamed = groupRow({
+      id: "ch:g-unnamed",
+      lastActivityAt: msOnDay(0, 8),
+      members: [{ personUid: "", displayName: "" }],
+    });
+    const rows = collapseDuplicateGroupRows([
+      noMembers,
+      emptyMembers,
+      unnamed,
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([
+      "ch:g-empty",
+      "ch:g-blank",
+      "ch:g-unnamed",
+    ]);
+  });
+
+  it("keys by display names when personUids are missing, ignoring order", () => {
+    const a = groupRow({
+      id: "ch:g-a",
+      lastActivityAt: msOnDay(0, 8),
+      members: [
+        { personUid: "", displayName: "Caitlin Hutchinson" },
+        { personUid: "", displayName: "Jacob Posel" },
+      ],
+    });
+    const b = groupRow({
+      id: "ch:g-b",
+      lastActivityAt: msOnDay(0, 11),
+      members: [
+        { personUid: "", displayName: "Jacob Posel" },
+        { personUid: "", displayName: "Caitlin Hutchinson" },
+      ],
+    });
+    const rows = collapseDuplicateGroupRows([a, b]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:g-b"]);
+  });
+
+  it("normalizeConversations collapses duplicate group channels by roster", () => {
+    const rows = normalizeConversations(
+      [
+        channel({
+          channelId: "g-old",
+          name: "",
+          scope: "group",
+          lastActivityAt: iso(msOnDay(0, 8)),
+          members: [jacob],
+        }),
+        channel({
+          channelId: "g-new",
+          name: "",
+          scope: "group",
+          lastActivityAt: iso(msOnDay(0, 10)),
+          members: [jacob],
+        }),
+        channel({
+          channelId: "ops",
+          name: "ops",
+          lastActivityAt: iso(msOnDay(0, 9)),
+        }),
+      ],
+      [],
+    );
+    expect(rows.filter((row) => row.kind === "group")).toHaveLength(1);
+    expect(rows.find((row) => row.kind === "group")?.channelId).toBe("g-new");
+    expect(rows.find((row) => row.kind === "channel")?.channelId).toBe("ops");
   });
 });

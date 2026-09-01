@@ -2411,7 +2411,16 @@
                   >{switcherInitials(row.name)}</span
                 >
               {/if}
-              <span class="chat-switcher-name">{row.name}</span>
+              <span class="chat-switcher-copy">
+                <span class="chat-switcher-name">{row.name}</span>
+                {#if row.secondary}
+                  <span
+                    class="chat-switcher-secondary"
+                    data-testid="chat-compose-suggestion-secondary"
+                    >{row.secondary}</span
+                  >
+                {/if}
+              </span>
               <span class="chat-switcher-company">{row.company}</span>
             </button>
           {:else}
@@ -3954,6 +3963,29 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .chat-switcher-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .chat-switcher-copy .chat-switcher-name {
+    flex: 0 1 auto;
+  }
+
+  .chat-switcher-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
   }
 
   .chat-switcher-company {

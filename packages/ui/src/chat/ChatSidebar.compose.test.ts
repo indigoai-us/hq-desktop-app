@@ -113,6 +113,61 @@ describe("ChatSidebar new-message modal", () => {
     }
   });
 
+  it("renders a secondary disambiguator on compose suggestion rows", async () => {
+    host = document.createElement("div");
+    host.className = "desktop-shell chat-shell";
+    document.body.appendChild(host);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: createFixtureChatSidebarApi(),
+        seedDirectory: [
+          {
+            channelId: "hq-desktop",
+            name: "hq-desktop",
+            scope: "company",
+            lastActivityAt: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    await tick();
+    await tick();
+
+    (
+      host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement
+    )?.click();
+    await tick();
+
+    await vi.waitFor(() => {
+      const secondaries = Array.from(
+        document.querySelectorAll(
+          '[data-testid="chat-compose-suggestion-secondary"]',
+        ),
+      );
+      expect(secondaries.length).toBeGreaterThan(0);
+      expect(
+        secondaries.some((node) => (node.textContent ?? "").trim().length > 0),
+      ).toBe(true);
+    });
+
+    const suggestions = Array.from(
+      document.querySelectorAll('[data-testid="chat-compose-suggestion"]'),
+    );
+    const dmWithEmail = suggestions.find((node) => {
+      const secondary = node.querySelector(
+        '[data-testid="chat-compose-suggestion-secondary"]',
+      );
+      return (secondary?.textContent ?? "").includes("@");
+    });
+    expect(dmWithEmail).toBeTruthy();
+    expect(
+      dmWithEmail
+        ?.querySelector('[data-testid="chat-compose-suggestion-secondary"]')
+        ?.textContent?.trim(),
+    ).toMatch(/@/);
+  });
+
   it("offers create-channel for an unknown channel name and sends the draft as the first message", async () => {
     host = document.createElement("div");
     host.className = "desktop-shell chat-shell";

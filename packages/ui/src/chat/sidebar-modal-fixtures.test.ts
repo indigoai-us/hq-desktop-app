@@ -60,6 +60,59 @@ describe("switcherRowsFromConversations", () => {
     ]);
     expect(filterSwitcher(rows, "zzz")).toEqual([]);
   });
+
+  it("adds a secondary disambiguator for DMs and groups, not channels", () => {
+    const rows = switcherRowsFromConversations([
+      row({ title: "hq-desktop" }),
+      row({
+        id: "dm:prs_ada",
+        kind: "dm",
+        title: "Ada",
+        personUid: "prs_ada",
+        email: "ada@getindigo.ai",
+        channelId: undefined,
+        companyUid: null,
+      }),
+      row({
+        id: "dm:agt_scouty",
+        kind: "dm",
+        title: "Scouty",
+        personUid: "agt_scouty",
+        email: null,
+        channelId: undefined,
+        companyUid: null,
+      }),
+      // Named group: the roster is extra information, so it shows.
+      row({
+        id: "ch:g-launch",
+        kind: "group",
+        title: "launch-crew",
+        channelId: "g-launch",
+        companyUid: null,
+        members: [
+          { personUid: "prs_jacob", displayName: "Jacob Posel" },
+          { personUid: "prs_cait", displayName: "Caitlin Hutchinson" },
+        ],
+      }),
+      // Unnamed group: the title IS the roster join, so the secondary would
+      // stutter the name verbatim and is dropped.
+      row({
+        id: "ch:g-jacob",
+        kind: "group",
+        title: "Jacob Posel",
+        channelId: "g-jacob",
+        companyUid: null,
+        members: [{ personUid: "prs_jacob", displayName: "Jacob Posel" }],
+      }),
+    ]);
+    expect(rows.map((item) => item.secondary)).toEqual([
+      undefined,
+      "ada@getindigo.ai",
+      "Agent",
+      "Jacob Posel, Caitlin Hutchinson",
+      undefined,
+    ]);
+  });
 });
 
 describe("channelCreateCandidate", () => {
