@@ -888,6 +888,7 @@ export function createSyncPlatformAdapter(
 
     packages: {
       listPackages: () => call('list_packages'),
+      listPackagesCached: () => call('list_packages_cached'),
       install: ({ source, registry }) =>
         call('install_package', {
           source,

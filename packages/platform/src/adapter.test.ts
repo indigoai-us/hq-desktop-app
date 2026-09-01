@@ -128,6 +128,7 @@ describe("PlatformAdapter contract", () => {
       adapter.updates.getVersions(),
       adapter.updates.checkCoreState(),
       adapter.packages.listPackages(),
+      adapter.packages.listPackagesCached(),
       adapter.sessions.listAgentSessions(),
     ]);
 

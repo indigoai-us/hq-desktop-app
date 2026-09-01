@@ -12,6 +12,7 @@ import {
   hqVersionLabel,
   isSyncNowAllowed,
   packsSummaryLabel,
+  parseInstalledPacks,
 } from "./core-popover-model";
 
 describe("core-popover-model (US-016)", () => {
@@ -191,6 +192,53 @@ describe("G6: undetected core never pairs with green NO DRIFT", () => {
     });
     expect(loading.packsSummary).toBe("Loading…");
     expect(loading.packsLoading).toBe(true);
+  });
+
+  it("parseInstalledPacks accepts both wire shapes", () => {
+    expect(
+      parseInstalledPacks({
+        packs: {
+          installed: [
+            { name: " engineering ", version: "1.4.0" },
+            { name: "gstack", version: "2.1.0" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { name: "engineering", version: "1.4.0" },
+      { name: "gstack", version: "2.1.0" },
+    ]);
+    expect(
+      parseInstalledPacks([
+        { name: "engineering", version: "1.4.0" },
+        { name: "gstack", version: "2.1.0" },
+      ]),
+    ).toEqual([
+      { name: "engineering", version: "1.4.0" },
+      { name: "gstack", version: "2.1.0" },
+    ]);
+  });
+
+  it("parseInstalledPacks returns empty for empty and malformed input", () => {
+    expect(parseInstalledPacks(undefined)).toEqual([]);
+    expect(parseInstalledPacks(null)).toEqual([]);
+    expect(parseInstalledPacks({})).toEqual([]);
+    expect(parseInstalledPacks({ packs: { installed: [] } })).toEqual([]);
+    expect(parseInstalledPacks({ packs: { installed: "nope" } })).toEqual([]);
+    expect(parseInstalledPacks("engineering")).toEqual([]);
+    expect(parseInstalledPacks(5)).toEqual([]);
+    expect(
+      parseInstalledPacks({
+        packs: {
+          installed: [
+            null,
+            { name: "  " },
+            { name: "ok", version: "1.0.0" },
+            { version: "2.0.0" },
+          ],
+        },
+      }),
+    ).toEqual([{ name: "ok", version: "1.0.0" }]);
   });
 });
 

@@ -217,6 +217,38 @@ export function packsSummaryLabel(
   return n === 1 ? "1 pack installed" : `${n} packs installed`;
 }
 
+interface PackagesViewWire {
+  packs?: {
+    installed?: unknown;
+  };
+}
+
+function installedPackRows(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+  const packs = (raw as PackagesViewWire).packs;
+  if (!packs || typeof packs !== "object") return [];
+  const installed = (packs as { installed?: unknown }).installed;
+  return Array.isArray(installed) ? installed : [];
+}
+
+/**
+ * Parse the installed-pack list from either adapter wire shape:
+ * a flat array, or `{ packs: { installed: [...] } }`.
+ */
+export function parseInstalledPacks(raw: unknown): CorePopoverPack[] {
+  const packs: CorePopoverPack[] = [];
+  for (const row of installedPackRows(raw)) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as { name?: unknown; version?: unknown };
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    if (!name) continue;
+    const version = typeof rec.version === "string" ? rec.version : null;
+    packs.push({ name, version });
+  }
+  return packs;
+}
+
 export const CLOUD_PAUSED_NOTICE =
   "Cloud is off — sync is paused on this device. Turn Cloud on to resume.";
 

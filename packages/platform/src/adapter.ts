@@ -621,6 +621,8 @@ export interface PackageInstallRequest {
 /** Desktop-only group (capability: canManagePackages). */
 export interface PackagesApi {
   listPackages(): AdapterPromise<Json[]>;
+  /** Instant last-known snapshot; null when no cache. */
+  listPackagesCached(): AdapterPromise<Json | null>;
   install(request: PackageInstallRequest): AdapterPromise<Json>;
   update(name: string): AdapterPromise<Json>;
   uninstall(name: string): AdapterPromise<void>;

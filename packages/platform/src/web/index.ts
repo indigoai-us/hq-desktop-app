@@ -826,6 +826,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   readonly packages: PlatformAdapter["packages"] = {
     listPackages: async () => DESKTOP_ONLY,
+    listPackagesCached: async () => DESKTOP_ONLY,
     install: async () => DESKTOP_ONLY,
     update: async () => DESKTOP_ONLY,
     uninstall: async () => DESKTOP_ONLY,

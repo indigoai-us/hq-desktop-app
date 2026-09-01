@@ -1521,6 +1521,15 @@ pub fn sync_version_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("sync-version.json"))
 }
 
+/// Returns the path to ~/.hq/sync-packs-cache.json.
+///
+/// Owned exclusively by this app — last-known `list_packages` snapshot for
+/// instant popover render. Distinct from `~/.hq/pack-update-cache.json`,
+/// which is owned by the hq CLI's update prober.
+pub fn packs_cache_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("sync-packs-cache.json"))
+}
+
 /// Returns the path to ~/.hq/deploy-prefs.json.
 ///
 /// This file is owned exclusively by hq-core's `/deploy` skill — it persists
@@ -1776,6 +1785,13 @@ mod tests {
     fn test_menubar_json_path() {
         let path = menubar_json_path().unwrap();
         assert!(path.ends_with("menubar.json"));
+    }
+
+    #[test]
+    fn test_packs_cache_json_path() {
+        let path = packs_cache_json_path().unwrap();
+        assert!(path.ends_with("sync-packs-cache.json"));
+        assert!(path.parent().unwrap().ends_with(".hq"));
     }
 
     #[test]

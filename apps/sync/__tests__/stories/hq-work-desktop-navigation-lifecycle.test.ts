@@ -118,6 +118,8 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         };
       case 'list_packages':
         return { packs: [] };
+      case 'list_packages_cached':
+        return null;
       case 'meetings_list_upcoming':
         return [
           {

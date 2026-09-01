@@ -634,6 +634,7 @@ fn main() {
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
             commands::packages::list_packages,
+            commands::packages::list_packages_cached,
             commands::packages::check_package_updates,
             commands::packages::check_pack_update,
             commands::packages::install_package,

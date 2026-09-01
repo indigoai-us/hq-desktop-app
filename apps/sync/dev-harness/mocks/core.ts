@@ -720,6 +720,7 @@ This final paragraph verifies spacing after a thematic break.
     },
     error: null,
   }),
+  list_packages_cached: (args) => handlers.list_packages(args),
   check_package_updates: () => null,
   get_library_worker_detail: (args) => {
     const path = String(args?.workerPath ?? '');
