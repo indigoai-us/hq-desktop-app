@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createTauriAttachmentHandlers,
   hydrateDesktopSelf,
+  nativeTenantFromSession,
   signOutFromShell,
 } from "./desktop-shell.js";
 
@@ -161,6 +162,65 @@ describe("desktop shell identity", () => {
     ).resolves.toEqual(hostSelf);
     expect(whoami).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe("native auth session envelopes", () => {
+  it("parses an active session with a trimmed account id", () => {
+    expect(
+      nativeTenantFromSession({
+        accountId: " acct_desktop ",
+        generation: 7,
+        status: "active",
+      }),
+    ).toEqual({
+      accountId: "acct_desktop",
+      generation: 7,
+      status: "active",
+    });
+  });
+
+  it.each([
+    "credentials_absent",
+    "credentials_invalid",
+    "refresh_temporarily_unavailable",
+  ] as const)("retains the %s session status", (status) => {
+    expect(
+      nativeTenantFromSession({ accountId: null, generation: 3, status }),
+    ).toEqual({ accountId: null, generation: 3, status });
+  });
+
+  it.each([
+    Number.NaN,
+    0,
+    -1,
+    1.5,
+  ])("rejects an invalid generation: %s", (generation) => {
+    expect(
+      nativeTenantFromSession({
+        accountId: "acct_desktop",
+        generation,
+        status: "active",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects a missing generation", () => {
+    expect(
+      nativeTenantFromSession({ accountId: "acct_desktop", status: "active" }),
+    ).toBeNull();
+  });
+
+  it("rejects non-object payloads and unknown statuses", () => {
+    expect(nativeTenantFromSession(null)).toBeNull();
+    expect(nativeTenantFromSession("active")).toBeNull();
+    expect(
+      nativeTenantFromSession({
+        accountId: "acct_desktop",
+        generation: 1,
+        status: "unexpected",
+      }),
+    ).toBeNull();
   });
 });
 

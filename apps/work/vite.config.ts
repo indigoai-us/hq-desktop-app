@@ -10,11 +10,15 @@ export default defineConfig({
   plugins: [sveltekit()],
   resolve: {
     // The Work web build never selects the desktop adapter. Keep the literal
-    // dynamic import in tauri-invoke.ts for the TAURI build, while ensuring
-    // this target does not emit @tauri-apps/api as a lazy browser chunk.
+    // dynamic imports in the Tauri bridge modules for the TAURI build, while
+    // ensuring this target does not emit @tauri-apps/api as a lazy browser
+    // chunk.
     alias: process.env.TAURI
       ? undefined
-      : { "@tauri-apps/api/core": webTauriCoreFallback },
+      : {
+          "@tauri-apps/api/core": webTauriCoreFallback,
+          "@tauri-apps/api/event": webTauriCoreFallback,
+        },
   },
   // TAURI is intentionally public to the client bundle: the shell selects
   // the injected TauriPlatformAdapter when this static build is launched.

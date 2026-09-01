@@ -23,6 +23,51 @@ export interface ShellSignOutOptions {
   onDesktopSignedOut: () => void;
 }
 
+export type NativeAuthSessionStatus =
+  | "active"
+  | "credentials_absent"
+  | "credentials_invalid"
+  | "refresh_temporarily_unavailable";
+
+export interface NativeAuthSession {
+  accountId: string | null;
+  generation: number;
+  status: NativeAuthSessionStatus;
+}
+
+function isNativeAuthSessionStatus(
+  value: unknown,
+): value is NativeAuthSessionStatus {
+  return (
+    value === "active" ||
+    value === "credentials_absent" ||
+    value === "credentials_invalid" ||
+    value === "refresh_temporarily_unavailable"
+  );
+}
+
+export function nativeTenantFromSession(
+  value: unknown,
+): NativeAuthSession | null {
+  if (!value || typeof value !== "object") return null;
+  const session = value as Record<string, unknown>;
+  const accountId =
+    typeof session.accountId === "string" && session.accountId.trim()
+      ? session.accountId.trim()
+      : null;
+  const generation = session.generation;
+  const status = session.status;
+  if (
+    typeof generation !== "number" ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    !isNativeAuthSessionStatus(status)
+  ) {
+    return null;
+  }
+  return { accountId, generation, status };
+}
+
 /**
  * The desktop owns its persistent Cognito tokens, while the web shell owns a
  * cookie-backed session route. Do not navigate a static Tauri build to the web

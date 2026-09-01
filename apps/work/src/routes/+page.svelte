@@ -73,9 +73,11 @@
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
+    nativeTenantFromSession,
     signOutFromShell,
   } from "$lib/desktop-shell";
   import { tauriInvoke } from "$lib/tauri-invoke";
+  import { tauriListen } from "$lib/tauri-listen";
   import workPackage from "../../package.json";
 
   let { data } = $props();
@@ -122,6 +124,7 @@
     adapter.kind === "web" ? hostAccountId : null,
   );
   let tenantGeneration = $state(0);
+  let tenantHydration = 0;
   const personUid = $derived(self?.uid ?? "");
   let shallow = $state(readShallowCache(personUid));
   $effect(() => {
@@ -179,34 +182,19 @@
     },
   });
 
-  function nativeTenantFromSession(
-    value: unknown,
-  ): { accountId: string | null; generation: number } | null {
-    if (!value || typeof value !== "object") return null;
-    const session = value as Record<string, unknown>;
-    const accountId =
-      typeof session.accountId === "string" && session.accountId.trim()
-        ? session.accountId.trim()
-        : null;
-    const generation = session.generation;
-    if (
-      session.status !== "active" ||
-      typeof generation !== "number" ||
-      !Number.isSafeInteger(generation) ||
-      generation < 1
-    ) {
-      return null;
-    }
-    return { accountId, generation };
-  }
-
   async function hydrateNativeTenant(): Promise<void> {
     if (adapter.kind !== "desktop") return;
     try {
       const session = nativeTenantFromSession(
         await tauriInvoke("get_auth_session"),
       );
-      if (!session) return;
+      if (
+        !session ||
+        session.status !== "active" ||
+        session.generation < tenantGeneration
+      ) {
+        return;
+      }
       tenantAccountId = session.accountId;
       tenantGeneration = session.generation;
     } catch {
@@ -214,7 +202,21 @@
     }
   }
 
-  async function refreshWorkThreads(roster: Workspace[]): Promise<void> {
+  function clearTenantState(): void {
+    self = null;
+    shallow = readShallowCache("");
+    companies = resolveShellCompanies({ authed: false });
+    workThreads = [];
+    selectedCompanyUid = null;
+  }
+
+  function ownsTenant(generation: number, hydration: number): boolean {
+    return generation === tenantGeneration && hydration === tenantHydration;
+  }
+
+  async function refreshWorkThreads(
+    roster: Workspace[],
+  ): Promise<WorkMeshThread[]> {
     const uids = [
       ...new Set(
         roster
@@ -223,8 +225,7 @@
       ),
     ];
     if (uids.length === 0) {
-      workThreads = [];
-      return;
+      return [];
     }
     const collected: WorkMeshThread[] = [];
     await Promise.all(
@@ -242,26 +243,89 @@
         }),
       ),
     );
-    workThreads = collected;
+    return collected;
   }
 
-  onMount(async () => {
+  async function bootstrapTenant(expectedGeneration: number): Promise<void> {
+    const hydration = ++tenantHydration;
     const [hydratedSelf] = await Promise.all([
       hydrateDesktopSelf(hostSelf, adapter),
-      hydrateNativeTenant(),
     ]);
+    if (!ownsTenant(expectedGeneration, hydration)) return;
     self = hydratedSelf;
     if (!self) return;
+    let roster: Workspace[];
     try {
       const res = await adapter.identity.listWorkspaces();
-      companies = resolveShellCompanies({
+      if (!ownsTenant(expectedGeneration, hydration)) return;
+      roster = resolveShellCompanies({
         authed: true,
         membershipRows: res.ok ? res.value : undefined,
       });
+      companies = roster;
     } catch {
       /* keep empty — never invent a roster */
+      return;
     }
-    await refreshWorkThreads(companies);
+
+    const threads = await refreshWorkThreads(roster);
+    if (!ownsTenant(expectedGeneration, hydration)) return;
+    workThreads = threads;
+  }
+
+  function acceptAuthSession(
+    next: NonNullable<ReturnType<typeof nativeTenantFromSession>>,
+  ): void {
+    if (next.generation < tenantGeneration) return;
+    if (
+      next.generation === tenantGeneration &&
+      next.accountId === tenantAccountId &&
+      next.status === "active"
+    ) {
+      return;
+    }
+
+    // The native session event is the only authority allowed to cross tenants.
+    // Clear synchronously before starting a B request so the keyed shell
+    // cancels the old tenant's async work at the generation boundary.
+    tenantAccountId = next.accountId;
+    tenantGeneration = next.generation;
+    tenantHydration += 1;
+    clearTenantState();
+
+    if (next.status !== "active") return;
+    void bootstrapTenant(next.generation);
+  }
+
+  onMount(async () => {
+    if (adapter.kind === "desktop") await hydrateNativeTenant();
+    await bootstrapTenant(tenantGeneration);
+  });
+
+  onMount(() => {
+    if (adapter.kind !== "desktop") return;
+    let cancelled = false;
+    const unlistenPromise = tauriListen<unknown>(
+      "auth:session-changed",
+      (event) => {
+        if (cancelled) return;
+        const next = nativeTenantFromSession(event.payload);
+        if (next) acceptAuthSession(next);
+      },
+    ).catch(() => () => {});
+
+    return () => {
+      cancelled = true;
+      void unlistenPromise
+        .then((unlisten) => {
+          try {
+            unlisten();
+          } catch {
+            /* cleanup must never escape Svelte's teardown pass */
+          }
+        })
+        .catch(() => {});
+    };
   });
 
   // `channel:updated` narrows to that channel; catch-up has no row identity
