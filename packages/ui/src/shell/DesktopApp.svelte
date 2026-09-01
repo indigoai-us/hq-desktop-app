@@ -97,6 +97,7 @@
   } from "../chat/mentions.js";
   import {
     clearFromMessages,
+    isAgentUid,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -1617,7 +1618,22 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-        else {
+        // A 1:1 DM with an agent is inherently addressed to that agent, so
+        // any send starts the indicator — no @mention required (unlike a
+        // channel, where only an explicit mention wakes an agent). Started
+        // before the catch-up below so a page that already carries the reply
+        // clears it immediately.
+        if (isAgentUid(row.personUid)) {
+          agentThinking = startThinking(
+            agentThinking,
+            {
+              agentUid: row.personUid,
+              agentName: row.title?.trim() || "Agent",
+            },
+            Date.now(),
+          );
+        }
+        if (!wire) {
           try {
             await catchUpTimeline(row);
           } catch (err) {
@@ -1642,7 +1658,8 @@
       }
       const wire = sentMessageFromResult(res.value, extras);
       if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-      // Channel @agent mentions only — a DM send never starts a thinking row.
+      // Channel sends need an explicit @agent mention (agent DMs start their
+      // row in the DM branch above).
       for (const mention of mentions) {
         if (mention.participantType !== "agent") continue;
         agentThinking = startThinking(
