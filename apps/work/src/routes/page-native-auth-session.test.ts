@@ -162,6 +162,7 @@ function emitAuthSession(next: AuthSession): void {
 beforeEach(() => {
   desktopAppProps.current = null;
   desktopAppProps.mounts = 0;
+  localStorage.clear();
   accountId = "acct_a";
   initialSession = {
     accountId: "acct_a",
@@ -232,11 +233,47 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host.remove();
+  localStorage.clear();
   clearDesktopRuntime();
   vi.unstubAllGlobals();
 });
 
 describe("native desktop auth session transitions", () => {
+  it("seeds the conversation cache into the literal tenant-scoped key", async () => {
+    const tenantCacheKey =
+      "hq.work.tenant.v1.acct_a.all.hq.chat.conversation-cache";
+    const bareCacheKey = "hq.chat.conversation-cache";
+    localStorage.setItem(
+      "hq.web.rail-cache.v4",
+      JSON.stringify({
+        personUid: "prs_acct_a",
+        savedAt: Date.now(),
+        directory: [
+          {
+            channelId: "chn_seeded",
+            scope: "project",
+            name: "Seeded project",
+            lastActivityAt: null,
+          },
+        ],
+        contacts: [],
+        lastThread: null,
+        lastSelectedId: null,
+      }),
+    );
+
+    await mountDesktop();
+
+    await vi.waitFor(() => expect(localStorage.length).toBe(2));
+    const seededConversationKey = Array.from(
+      { length: localStorage.length },
+      (_, index) => localStorage.key(index),
+    ).find((key) => key?.endsWith("hq.chat.conversation-cache"));
+
+    expect(seededConversationKey).toBe(tenantCacheKey);
+    expect(localStorage.getItem(bareCacheKey)).toBeNull();
+  });
+
   it("remounts the desktop shell only for a real auth-session transition", async () => {
     await mountDesktop();
     const initialMounts = desktopAppProps.mounts;

@@ -69,6 +69,7 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
   readSettingsPrefs,

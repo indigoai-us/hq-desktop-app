@@ -375,7 +375,10 @@ describe("Tauri attachment handlers", () => {
     expect(source).toContain("{tenantAccountId}");
     expect(source).toContain("{tenantGeneration}");
     expect(source).toMatch(
-      /\$effect\(\(\) => \{\s*seedConversationCacheFromRail\(shallow\);\s*\}\)/,
+      /const conversationCacheStorage = \$derived\(\s*createTenantStorage\(/,
+    );
+    expect(source).toMatch(
+      /\$effect\(\(\) => \{\s*seedConversationCacheFromRail\(shallow, conversationCacheStorage\);\s*\}\)/,
     );
     expect(source).toMatch(
       /const sidebarApi = \$derived\(\s*createChatSidebarApi\(adapter, shallow\.directory, personUid\),\s*\)/,

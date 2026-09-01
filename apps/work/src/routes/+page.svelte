@@ -17,6 +17,7 @@
   import {
     DesktopApp,
     createChatWakeBus,
+    createTenantStorage,
     resolveShellCompanies,
     settingsProfileFromSelf,
     statusForRow,
@@ -128,11 +129,17 @@
   let shellEpoch = $state(0);
   const personUid = $derived(self?.uid ?? "");
   let shallow = $state(readShallowCache(personUid));
+  const conversationCacheStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: tenantAccountId, companyId: "all" },
+    ),
+  );
   $effect(() => {
     shallow = readShallowCache(personUid);
   });
   $effect(() => {
-    seedConversationCacheFromRail(shallow);
+    seedConversationCacheFromRail(shallow, conversationCacheStorage);
   });
   const sidebarApi = $derived(
     createChatSidebarApi(adapter, shallow.directory, personUid),
