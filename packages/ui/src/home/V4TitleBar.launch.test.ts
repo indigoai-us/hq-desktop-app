@@ -19,8 +19,12 @@ function makeAdapter(tools: Partial<AiTools>) {
     detectAiTools: vi.fn(async () => ok({ ...NO_AI_TOOLS, ...tools })),
     openClaudeCodeLink: vi.fn(async (_url: string) => ok(undefined)),
     launchClaudeCode: vi.fn(async () => ok(undefined)),
-    launchCodexWorkspace: vi.fn(async () => ok(undefined)),
-    launchCliInTerminal: vi.fn(async () => ok(undefined)),
+    launchCodexWorkspace: vi.fn(async (..._args: [string, string?]) =>
+      ok(undefined),
+    ),
+    launchCliInTerminal: vi.fn(
+      async (_args: Record<string, unknown>) => ok(undefined),
+    ),
   };
   return {
     kind: "desktop" as const,
@@ -100,9 +104,13 @@ describe("V4TitleBar Launch menu", () => {
       .querySelector<HTMLButtonElement>('[data-testid="titlebar-launch"]')
       ?.click();
     await tick();
-    expect(
-      host.querySelector('[data-testid="titlebar-launch-menu"]'),
-    ).toBeTruthy();
+    const menu = host.querySelector('[data-testid="titlebar-launch-menu"]');
+    expect(menu).toBeTruthy();
+    // Regression (owner bug, beta.10): the menu surface must be the
+    // near-opaque popover-strong convention, not a glass/translucent token —
+    // nested backdrop-filter is neutered outside the titlebar's backdrop
+    // root, so a translucent surface lets the channel toolbar read through.
+    expect(menu?.classList.contains("v4-popover-strong-surface")).toBe(true);
     for (const key of ["claude", "codex", "grok"]) {
       expect(
         host.querySelector(`[data-testid="titlebar-launch-${key}"]`),
@@ -131,6 +139,12 @@ describe("V4TitleBar Launch menu", () => {
     const adapter = makeAdapter({ codex_desktop: true, codex_cli: true });
     await openMenuAndClick(adapter, "titlebar-launch-codex");
     expect(adapter.shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ");
+    // Strict arity: no second (prompt) argument at all, so the Rust command
+    // receives None and never fires the delayed codex://threads/new?prompt=
+    // deep link.
+    expect(adapter.shell.launchCodexWorkspace.mock.calls[0]).toEqual([
+      "/tmp/HQ",
+    ]);
     expect(adapter.shell.launchCliInTerminal).not.toHaveBeenCalled();
   });
 
@@ -150,6 +164,12 @@ describe("V4TitleBar Launch menu", () => {
       path: "/tmp/HQ",
       tool: "grok",
     });
+    // Terminal launches carry ONLY path + tool — no prompt key of any kind.
+    expect(
+      Object.keys(
+        adapter.shell.launchCliInTerminal.mock.calls[0]?.[0] ?? {},
+      ).sort(),
+    ).toEqual(["path", "tool"]);
   });
 
   it("shows a per-item error and keeps the menu open when a launch fails", async () => {
