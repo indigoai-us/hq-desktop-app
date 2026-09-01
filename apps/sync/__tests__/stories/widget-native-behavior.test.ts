@@ -796,7 +796,10 @@ describe('Widget restored native standalone behavior', () => {
       expect(
         tauri.invoke.mock.calls.filter(([command]) => command === 'banner_action'),
       ).toHaveLength(1);
-      expect(list.textContent).not.toContain('Update now');
+      const actionAfter = [...list.querySelectorAll<HTMLButtonElement>('.nr-open')]
+        .map((button) => button.textContent?.trim());
+      expect(actionAfter).not.toContain('Update now');
+      expect(actionAfter).toContain('Open');
     });
 
     const retainedRow = list.querySelector<HTMLElement>(

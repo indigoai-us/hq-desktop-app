@@ -72,8 +72,8 @@ export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 6 * 60 * 60 * 1000;
 /** localStorage key for persisted widget recent history (US-015). */
 export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
 
-/** Comfortable two-line row height in the mini communications panel. */
-export const WIDGET_HOVER_ROW_HEIGHT = 58;
+/** Collapsed one-line row height in the mini communications panel. */
+export const WIDGET_HOVER_ROW_HEIGHT = 28;
 
 /** Day-separator row height in the hover list. */
 export const WIDGET_HOVER_SEPARATOR_HEIGHT = 22;
@@ -88,13 +88,13 @@ export const WIDGET_HOVER_ROW_GAP = 1;
 export const WIDGET_HOVER_LIST_PADDING = 18;
 
 /** Orienting title and summary above mini-window conversations. */
-export const WIDGET_HOVER_HEADER_HEIGHT = 60;
+export const WIDGET_HOVER_HEADER_HEIGHT = 32;
 
 /**
  * Footer toolbar height inside the hover popup (Inbox + Desktop icon actions).
  * Includes top hairline gap + icon row + bottom pad.
  */
-export const WIDGET_HOVER_FOOTER_HEIGHT = 48;
+export const WIDGET_HOVER_FOOTER_HEIGHT = 36;
 
 /** NotificationRow-compatible type strings. */
 export type WidgetRowType =

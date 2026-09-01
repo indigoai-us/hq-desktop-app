@@ -587,11 +587,11 @@
   }
 
   .notif-skeleton-row {
-    min-height: 56px;
+    min-height: 28px;
     display: flex;
     align-items: center;
-    gap: 11px;
-    padding: 8px;
+    gap: 8px;
+    padding: 4px 8px;
     border-bottom: 1px solid var(--popover-divider);
     box-sizing: border-box;
   }
@@ -604,17 +604,17 @@
   }
 
   .notif-skeleton-icon {
-    width: 30px;
-    height: 30px;
-    flex: 0 0 30px;
-    border-radius: 8px;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
+    border-radius: 2px;
   }
 
   .notif-skeleton-copy {
     min-width: 0;
     flex: 1;
     display: grid;
-    gap: 6px;
+    gap: 4px;
   }
 
   .notif-skeleton-copy span {
@@ -657,11 +657,11 @@
         transparent
       );
     color: var(--popover-text-muted);
-    font-size: 11px;
+    font-size: 9.5px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 7px 2px 4px;
+    letter-spacing: 0.08em;
+    padding: 5px 2px 3px;
     z-index: 1;
   }
 
@@ -673,20 +673,20 @@
 
   /* Desktop Inbox: roomier day sections + slightly taller rows via host tokens. */
   .notif-comfortable .notif-day {
-    margin-top: 10px;
+    margin-top: 6px;
   }
   .notif-comfortable .notif-day:first-child {
     margin-top: 0;
   }
   .notif-comfortable .notif-day-label {
-    padding: 10px 12px 6px;
-    font-size: 11px;
-    letter-spacing: 0.06em;
+    padding: 6px 10px 3px;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
     border-bottom: 1px solid var(--popover-day-rule, transparent);
   }
   .notif-comfortable .notif-day-rows {
-    gap: 2px;
-    padding: 4px 4px 6px;
+    gap: 0;
+    padding: 2px 2px 4px;
   }
   .notif-comfortable .notif-empty {
     padding: 48px 24px;

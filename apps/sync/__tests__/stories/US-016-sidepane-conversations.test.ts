@@ -142,14 +142,15 @@ describe('US-016: side pane conversation grouping', () => {
       expect(paneSource).not.toContain("window.addEventListener('pagehide'");
     });
 
-    it('NotificationRow exposes unread-count pill and type icons via data-type', () => {
+    it('NotificationRow exposes unread-count as muted text, not a pill, plus type icons via data-type', () => {
       expect(rowSource).toContain('data-testid="unread-count"');
       expect(rowSource).toContain('data-type={type}');
       expect(rowSource).toContain("t === 'message'");
       expect(rowSource).toContain("t === 'share'");
-      expect(rowSource).toContain(
-        'border: 1px solid var(--popover-divider, var(--pop-border));',
-      );
+      const countRule = rowSource.match(/\.nr-count\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+      expect(countRule).toContain('background: transparent');
+      expect(countRule).toContain('color: var(--popover-text-muted);');
+      expect(countRule).not.toContain('border-radius: 8px');
       expect(rowSource).toContain('background: var(--popover-action-hover);');
       expect(rowSource).toContain('color: var(--popover-text);');
       expect(rowSource).not.toMatch(

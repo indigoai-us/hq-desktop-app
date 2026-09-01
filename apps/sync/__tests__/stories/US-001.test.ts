@@ -100,6 +100,10 @@ describe('US-001: One-line minimal notification row component', () => {
     expect(row?.querySelector('.nr-body')).toBeNull();
     expect(row?.querySelector('input.nr-reply')).toBeNull();
     expect(row?.querySelector('.nr-foot')).toBeNull();
+    expect(row?.querySelector('.nr-actor-pill')).toBeNull();
+    expect(row?.querySelector('.nr-comfortable-copy')).toBeNull();
+    expect(row?.querySelector('.nr-identity')).toBeNull();
+    expect(row?.querySelector('.nr-actor')?.textContent).toBe('Yousuf');
   });
 
   it('Given a non-message row, when hovered, then open and dismiss actions appear.', () => {

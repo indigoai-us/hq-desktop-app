@@ -574,6 +574,14 @@ pub async fn resize_widget(
 /// + Accessory policy). This command flips that on so keyboard focus can reach
 /// the reply field; the frontend restores `focusable(false)` when the reply is
 /// sent/dismissed or the pointer leaves the widget.
+///
+/// On macOS we must **not** call Tauri/tao `window.set_focus()`. That path is
+/// `makeKeyAndOrderFront` plus `NSApp.activateIgnoringOtherApps`, which
+/// activates HQ as a whole and orders every window front — including the
+/// hidden `"main"` menubar popover. Widget click (`togglePinned` →
+/// `openMiniInbox` → `setWidgetFocusable(true)`) then double-opens the
+/// popover. Key only the widget NSWindow, and hide the popover if activation
+/// still surfaced it.
 #[tauri::command]
 pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -591,12 +599,7 @@ pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(),
                         &format!("set_widget_focusable: focusable={focusable}"),
                     );
                     if focusable {
-                        if let Err(e) = window.set_focus() {
-                            log(
-                                LOG_TAG,
-                                &format!("set_widget_focusable: set_focus failed: {e}"),
-                            );
-                        }
+                        focus_widget_window_only(&app, &window);
                     }
                 }
                 Err(e) => {
@@ -638,6 +641,79 @@ pub async fn set_widget_focusable(app: AppHandle, focusable: bool) -> Result<(),
             }
         }
         Ok(())
+    }
+}
+
+/// True when focusing the widget ordered the hidden menubar popover front.
+///
+/// `was_visible` is sampled before widget activation; `is_visible` after.
+/// cfg-independent so unit tests cover the hide decision on every host.
+#[cfg(any(test, target_os = "macos"))]
+fn widget_focus_should_hide_popover(was_visible: bool, is_visible: bool) -> bool {
+    !was_visible && is_visible
+}
+
+/// Key the widget NSWindow for typing without bringing HQ's other windows
+/// (the hidden `"main"` popover) to the front.
+///
+/// tao's `Window::set_focus` is `makeKeyAndOrderFront` +
+/// `NSApp.activateIgnoringOtherApps:YES`, which activates the whole app and
+/// can order every window forward. We:
+///   1. `makeKeyAndOrderFront` **this** window only
+///   2. Activate HQ without `NSApplicationActivateAllWindows` (bit 0) so
+///      keystrokes reach the webview
+///   3. Hide `"main"` if that activation still surfaced it
+///
+/// Must run on the AppKit main thread (same as `set_widget_focusable`).
+#[cfg(target_os = "macos")]
+fn focus_widget_window_only(app: &AppHandle, window: &tauri::WebviewWindow) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    let popover_was_visible = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+
+    let Ok(ns_win_raw) = window.ns_window() else {
+        log(LOG_TAG, "set_widget_focusable: ns_window failed");
+        return;
+    };
+    let ns_win = ns_win_raw as *mut AnyObject;
+    if ns_win.is_null() {
+        log(LOG_TAG, "set_widget_focusable: ns_window is nil");
+        return;
+    }
+
+    // MAIN THREAD ONLY — `set_widget_focusable` hops here via run_on_main_thread.
+    unsafe {
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        let _: () = msg_send![ns_win, makeKeyAndOrderFront: nil];
+
+        // NSApplicationActivateAllWindows = 1 << 0. Omit it so activation
+        // does not order the hidden popover (or desktop-alt) front.
+        // NSApplicationActivateIgnoringOtherApps = 1 << 1.
+        const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+        let current: *mut AnyObject = msg_send![class!(NSRunningApplication), currentApplication];
+        if !current.is_null() {
+            let _: bool = msg_send![
+                current,
+                activateWithOptions: NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS
+            ];
+        }
+    }
+
+    if let Some(popover) = app.get_webview_window("main") {
+        let popover_is_visible = popover.is_visible().unwrap_or(false);
+        if widget_focus_should_hide_popover(popover_was_visible, popover_is_visible) {
+            let _ = popover.hide();
+            log(
+                LOG_TAG,
+                "set_widget_focusable: hid popover that widget focus ordered front",
+            );
+            unsafe {
+                let _: () = msg_send![ns_win, makeKeyWindow];
+            }
+        }
     }
 }
 
@@ -1345,6 +1421,14 @@ mod tests {
     #[test]
     fn floating_widget_platform_default_matches_native_surface() {
         assert_eq!(default_widget_enabled(), !cfg!(target_os = "windows"));
+    }
+
+    #[test]
+    fn widget_focus_hides_popover_only_when_activation_surfaced_it() {
+        assert!(widget_focus_should_hide_popover(false, true));
+        assert!(!widget_focus_should_hide_popover(true, true));
+        assert!(!widget_focus_should_hide_popover(false, false));
+        assert!(!widget_focus_should_hide_popover(true, false));
     }
     use hq_desktop_core::banner::BannerPayload;
 

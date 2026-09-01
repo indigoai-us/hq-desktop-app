@@ -679,11 +679,11 @@
 
   .qw-side-label {
     flex-shrink: 0;
-    padding: 12px 8px 5px;
+    padding: 8px 8px 3px;
     color: var(--pop-muted);
-    font-size: 10.5px;
-    font-weight: 650;
-    letter-spacing: 0.055em;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     line-height: 1.2;
     text-transform: uppercase;
   }
@@ -732,11 +732,11 @@
 
   .conversation-row {
     width: 100%;
-    min-height: 34px;
+    min-height: 28px;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 8px;
+    padding: 3px 8px;
     border: 0;
     border-radius: 7px;
     background: transparent;
@@ -787,19 +787,19 @@
   }
 
   .row-unread-count {
-    min-width: 17px;
-    height: 17px;
+    min-width: 0;
+    height: auto;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0 5px;
-    border: 1px solid var(--pop-divider);
-    border-radius: 999px;
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-size: 9.5px;
-    font-weight: 700;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-muted);
+    font-size: 10px;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
 
@@ -811,11 +811,11 @@
   }
 
   .qw-skeleton-row {
-    min-height: 54px;
+    min-height: 28px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 7px 8px;
+    gap: 8px;
+    padding: 4px 8px;
     border-bottom: 1px solid var(--pop-divider);
     box-sizing: border-box;
   }
@@ -828,10 +828,10 @@
   }
 
   .qw-skeleton-avatar {
-    width: 30px;
-    height: 30px;
-    flex: 0 0 30px;
-    border-radius: 8px;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    border-radius: 50%;
   }
 
   .qw-skeleton-copy span {

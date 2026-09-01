@@ -102,12 +102,12 @@ describe('notifications-first popover (feed-folded system notices)', () => {
 
   it('preserves a readable actor/message/timestamp lane at the native compact width', () => {
     expect(popover).toContain('.mbp-sec :global(.nr)');
-    expect(popover).toContain('font-size: 12.5px');
+    expect(popover).toContain('font-size: 12px');
     expect(popover).toContain('.mbp-sec :global(.nr-meta-type)');
     expect(popover).toMatch(
       /\.mbp-sec :global\(\.nr-meta-type\)\s*\{\s*display:\s*none;/,
     );
-    expect(popover).toContain('-webkit-line-clamp: 2');
+    expect(popover).toContain('-webkit-line-clamp: 1');
   });
 
   it('keeps the detailed conflict resolver as its own card, mutually exclusive with the summary row', () => {
