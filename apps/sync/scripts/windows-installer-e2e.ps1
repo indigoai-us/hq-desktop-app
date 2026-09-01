@@ -59,7 +59,15 @@ function Write-InstallManifest([string]$Root, [string]$Path) {
   if ($manifest.Count -eq 0) {
     throw "Installation backup is empty: $Root"
   }
-  $json = ConvertTo-Json -InputObject $manifest -Compress -Depth 4 -AsArray
+  $serializableManifest = @(
+    $manifest | ForEach-Object {
+      [pscustomobject]@{
+        relative = [string]$_.relative
+        sha256 = [string]$_.sha256
+      }
+    }
+  )
+  $json = ConvertTo-Json -InputObject $serializableManifest -Compress -Depth 4 -AsArray
   Set-Content -LiteralPath $Path -Value $json -Encoding utf8NoBOM -NoNewline
 }
 

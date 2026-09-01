@@ -110,6 +110,8 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain(
       'Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup',
     );
+    expect(installerHarness).toContain('relative = [string]$_.relative');
+    expect(installerHarness).toContain('sha256 = [string]$_.sha256');
     expect(installerHarness).toContain(
       'Snapshot-UninstallRegistry -Path $registryBackup',
     );
