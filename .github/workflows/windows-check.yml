@@ -160,10 +160,14 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
 
-      - name: Windows tests
-        timeout-minutes: 5
+      # The runner's outer timeout did not reap a stranded cargo child tree on
+      # live run 33461363416. Keep it as a secondary boundary, but let the
+      # process-level watchdog enforce the real five-minute test deadline.
+      - name: Windows tests (process-tree watchdog)
+        timeout-minutes: 7
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300'
 
       # These regressions force each Job Object attachment failure and then let
       # the real production pid-tree fallback run: they assert that a real child
