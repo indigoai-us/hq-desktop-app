@@ -1202,6 +1202,79 @@ pub async fn reveal_authorized_file(
     reveal_file_in_manager(&target.absolute_path)
 }
 
+/// Open the user's CONFIGURED HQ folder in the platform file manager.
+///
+/// Takes NO path. `reveal_authorized_file` speaks the HQ-RELATIVE contract and
+/// `validate_hq_relative_path(.., allow_root = false)` rejects both an empty
+/// path and any absolute one, so the HQ ROOT is not expressible there — the
+/// renderer passing an absolute `hqFolderPath` is what produced
+/// "invalid HQ-relative path". Rather than loosen that validation to accept
+/// absolute paths, this command resolves the root natively via
+/// `resolve_hq_folder()` (the same `~/.hq/config.json` `hqFolderPath` →
+/// menubar-prefs chain the rest of the app uses). No caller-controlled path
+/// crosses the boundary at all, which is strictly tighter than the command it
+/// replaces for this job, and there is nothing machine-specific for a renderer
+/// to get wrong: whatever folder THIS user configured is what opens.
+///
+/// Deliberately NOT routed through `commands::launch::reveal_folder`: that
+/// path's `validate_reveal_target` requires the target to sit inside the home
+/// directory, which would reject a perfectly valid HQ root on a shared volume
+/// (`/srv/teams/acme-hq`).
+///
+/// Opens the folder rather than selecting it in its parent — the button says
+/// "Open HQ folder", and for a root the contents are the useful destination.
+#[tauri::command]
+pub async fn reveal_hq_root(scope: State<'_, DesktopSessionScope>) -> Result<(), String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    // The root is not company-scoped; this mirrors `list_hq_dir`'s root case,
+    // where `enforce_read_scope("")` is an explicit allow.
+    enforce_desktop_read_scope("", &scope)?;
+
+    let root = resolve_hq_folder();
+    if root.as_os_str().is_empty() {
+        return Err("HQ folder is not configured".to_string());
+    }
+    if !root.is_dir() {
+        return Err(format!(
+            "configured HQ folder does not exist: {}",
+            root.display()
+        ));
+    }
+    open_directory_in_manager(&root)
+}
+
+/// Open (not select) a directory in the platform file manager.
+fn open_directory_in_manager(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to open folder: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer")
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to open folder: {e}"))?;
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = Command::new("xdg-open")
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to open folder: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "file manager exited with status {}",
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
 /// Open an authorized Files/Knowledge selection in Claude Code. This command
 /// accepts only an HQ-relative path, authorizes its canonical company scope
 /// against live workspace membership, then constructs the fixed prompt and

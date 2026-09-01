@@ -632,6 +632,16 @@ export interface FilesApi {
   getAuthorizedPreview(path: string): AdapterPromise<Json>;
   /** Desktop-only capability: localFiles. */
   revealInFinder(path: string): AdapterPromise<void>;
+  /**
+   * Open the user's CONFIGURED HQ folder in the OS file manager.
+   *
+   * Takes no argument on purpose. `revealInFinder` speaks the HQ-RELATIVE
+   * path contract, which cannot express the HQ ROOT (an empty path is
+   * rejected, and an absolute one is rejected outright). The host resolves
+   * the configured root itself, so no renderer can hardcode or mis-resolve a
+   * machine-specific path.
+   */
+  revealHqRoot(): AdapterPromise<void>;
 }
 
 export interface AgencyApi {

@@ -377,10 +377,21 @@
   }
 
   /**
-   * Reveal the HQ folder in the OS file manager via the same adapter seam the
-   * Files inspector uses (`adapter.files.revealInFinder`, FilePreviewPane).
-   * Hidden on hosts without local-file support (web); disabled until
-   * `hqFolderPath` resolves, mirroring the Launch pill.
+   * Open the user's CONFIGURED HQ folder in the OS file manager.
+   *
+   * The renderer passes NO path. `revealInFinder` speaks the HQ-RELATIVE
+   * contract (what FilePreviewPane correctly uses for a selected file), and
+   * that contract cannot express the HQ ROOT — an absolute `hqFolderPath` is
+   * rejected outright, which is what "invalid HQ-relative path" was. The host
+   * resolves the configured root itself, so this works for whatever folder
+   * THIS user configured, wherever it lives, on any OS. Nothing here is
+   * machine-specific and nothing is hardcoded.
+   *
+   * `hqFolderPath` is still read, but ONLY to decide the button's enabled
+   * state and tooltip — never as the reveal argument.
+   *
+   * Hidden entirely on hosts without local-file support (web), where the
+   * platform seam reports the command unavailable.
    */
   const canRevealFolder = $derived(
     Boolean(adapter?.capabilities?.localFiles) ||
@@ -389,6 +400,32 @@
   let revealing = $state(false);
   let revealError = $state<string | null>(null);
 
+  /**
+   * Config presence gates the control. `null` = still loading (allow the
+   * click; the handler awaits resolution), `""` = genuinely not configured.
+   */
+  const hqFolderConfigured = $derived(
+    hqFolderPath === null && launchFolder === null
+      ? null
+      : resolvedLaunchFolder.length > 0,
+  );
+
+  /**
+   * Resolve the configured HQ folder once on mount so the button shows its
+   * true enabled/disabled state immediately, rather than looking available
+   * and only failing on click.
+   */
+  $effect(() => {
+    if (canRevealFolder) void ensureLaunchFolder();
+  });
+
+  const revealTooltip = $derived(
+    revealError ??
+      (hqFolderConfigured === false
+        ? "HQ folder not configured"
+        : "Open HQ folder"),
+  );
+
   async function revealHqFolder(): Promise<void> {
     if (revealing) return;
     coreOpen = false;
@@ -396,18 +433,20 @@
     revealing = true;
     revealError = null;
     try {
+      // Resolve config first purely to give a precise disabled/error message;
+      // the host does its own authoritative resolution.
       await ensureLaunchFolder();
       if (!resolvedLaunchFolder) {
-        revealError = "HQ folder not configured yet";
+        revealError = "HQ folder not configured";
+        setTimeout(() => (revealError = null), 6000);
         return;
       }
-      const res = await adapter.files.revealInFinder(resolvedLaunchFolder);
+      const res = await adapter.files.revealHqRoot();
       if (!res.ok) throw new Error(res.message ?? "Reveal is unavailable");
     } catch (err) {
-      // Surface the REAL reason in the tooltip, not a generic string — the
-      // reveal_in_finder/reveal_folder command-name bug hid behind
-      // "Could not open HQ folder" for exactly this reason.
-      console.error("titlebar: reveal HQ folder failed", err);
+      // Surface the REAL reason. A generic string is what hid both the
+      // wrong-command-name bug and the wrong-argument-contract bug.
+      console.error("titlebar: open HQ folder failed", err);
       const detail = err instanceof Error ? err.message : String(err);
       revealError = `Could not open HQ folder: ${detail}`;
       setTimeout(() => (revealError = null), 6000);
@@ -601,7 +640,7 @@
       {/if}
     </div>
     {#if canRevealFolder}
-      <Tooltip label={revealError ?? "Open HQ folder"}>
+      <Tooltip label={revealTooltip}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -609,7 +648,7 @@
             data-testid="titlebar-reveal-folder"
             aria-label="Open HQ folder"
             aria-describedby={describedBy || undefined}
-            disabled={revealing}
+            disabled={revealing || hqFolderConfigured === false}
             onclick={() => void revealHqFolder()}
           >
             <svg

@@ -378,6 +378,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     // so EVERY revealInFinder call rejected with "Command reveal_in_finder
     // not found" (silently, wherever the caller swallowed the error).
     revealInFinder: (path) => this.call("reveal_folder", { path }),
+    revealHqRoot: () => this.call("reveal_hq_root"),
   };
 
   readonly agency: PlatformAdapter["agency"] = {

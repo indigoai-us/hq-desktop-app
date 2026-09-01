@@ -749,6 +749,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       }),
     getAuthorizedPreview: async () => NO_API,
     revealInFinder: async () => DESKTOP_ONLY,
+    revealHqRoot: async () => DESKTOP_ONLY,
   };
 
   readonly agency: PlatformAdapter["agency"] = {

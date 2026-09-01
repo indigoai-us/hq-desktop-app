@@ -775,6 +775,7 @@ export function createSyncPlatformAdapter(
       getAuthorizedPreview: (path) =>
         call('get_authorized_file_preview', { path }),
       revealInFinder: (path) => call('reveal_authorized_file', { path }),
+      revealHqRoot: () => call('reveal_hq_root'),
     },
 
     agency: {

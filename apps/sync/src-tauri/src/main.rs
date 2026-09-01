@@ -687,6 +687,7 @@ fn main() {
             commands::desktop_alt::get_company_file_content,
             commands::desktop_alt::get_authorized_file_preview,
             commands::desktop_alt::reveal_authorized_file,
+            commands::desktop_alt::reveal_hq_root,
             commands::desktop_alt::open_authorized_file_in_claude,
             commands::desktop_alt::list_hq_dir,
             commands::projects_local::get_local_projects,

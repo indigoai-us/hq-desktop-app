@@ -4500,6 +4500,35 @@ mod tests {
             assert!(entries.is_empty());
         }
 
+        /// Documents WHY the title bar's "Open HQ folder" cannot go through
+        /// the HQ-relative reveal contract: the root is not expressible, and
+        /// an absolute `hqFolderPath` is rejected outright. That rejection is
+        /// correct and must stay — the fix is a pathless command that resolves
+        /// the configured root natively, not a loosening of this validation.
+        #[test]
+        fn hq_relative_contract_cannot_express_the_hq_root() {
+            // Absolute path: exactly what the renderer used to send, and
+            // exactly the error seen live ("invalid HQ-relative path").
+            let err =
+                validate_hq_relative_path("/Users/someone/Documents/HQ", false).unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
+
+            // A non-home, differently-named root is rejected just the same —
+            // nothing about this is specific to one machine's layout.
+            let err = validate_hq_relative_path("/srv/teams/acme-hq", false).unwrap_err();
+            assert!(err.contains("invalid HQ-relative path"), "got: {err}");
+
+            // The root itself is not addressable when allow_root is false.
+            assert!(validate_hq_relative_path("", false).is_err());
+            assert!(validate_hq_relative_path(".", false).is_err());
+
+            // Relative descendants remain valid — FilePreviewPane's usage.
+            assert_eq!(
+                validate_hq_relative_path("companies/acme/knowledge.md", false).unwrap(),
+                "companies/acme/knowledge.md"
+            );
+        }
+
         #[test]
         fn read_file_content_rejects_path_traversal() {
             let tmp = TempDir::new().unwrap();
