@@ -158,6 +158,7 @@
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
+    dmActivityFromInboxPage,
     pairUnreadsFromInboxPage,
     shouldArmDirectorySafety,
     TIMELINE_SAFETY_INTERVAL_MS,
@@ -1467,14 +1468,28 @@
     clearThinkingFromIncoming(incoming);
   }
 
-  async function catchUpDmInbox(): Promise<void> {
+  /**
+   * `backfill` fetches the inbox page WITHOUT the stored `since` cursor, so a
+   * machine that already holds a cursor still re-reads recent DM history and
+   * can stamp older-day rail rows. It deliberately does not advance the
+   * cursor: unread deltas stay the incremental path's job.
+   */
+  async function catchUpDmInbox(
+    { backfill = false }: { backfill?: boolean } = {},
+  ): Promise<void> {
     const bus = wakes;
     if (!bus) return;
     const expectedGeneration = tenantGeneration;
     const expectedCompanyId = tenantCompanyId;
     const storage = tenantStorage;
-    const since = storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
-    const res = await adapter.notifications.fetchDmInbox({
+    const since = backfill
+      ? undefined
+      : storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
+    const notifications = adapter.notifications;
+    if (!notifications || typeof notifications.fetchDmInbox !== "function") {
+      return;
+    }
+    const res = await notifications.fetchDmInbox({
       ...(since ? { since } : {}),
       limit: "50",
     });
@@ -1489,13 +1504,25 @@
       since,
       selfUid: self?.uid,
     });
-    if (parsed.pairUnreads && parsed.pairUnreads.length > 0) {
+    const activity = dmActivityFromInboxPage(res.value, {
+      selfUid: self?.uid,
+    });
+    const hasUnreads = Boolean(
+      parsed.pairUnreads && parsed.pairUnreads.length > 0,
+    );
+    const hasActivity = activity.length > 0;
+    if (hasUnreads || hasActivity) {
       bus.emit?.("dm:pair-unreads", {
-        pairUnreads: parsed.pairUnreads,
-        ...(parsed.delta ? { delta: true } : {}),
+        ...(hasUnreads
+          ? {
+              pairUnreads: parsed.pairUnreads,
+              ...(parsed.delta ? { delta: true } : {}),
+            }
+          : {}),
+        ...(hasActivity ? { activity } : {}),
       });
     }
-    if (parsed.nextSince)
+    if (!backfill && parsed.nextSince)
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
   }
 
@@ -1521,6 +1548,17 @@
     return () => {
       for (const off of unsubs) off();
     };
+  });
+
+  // Stamp DM history on a fresh load (and tenant switch), not only after a
+  // live wake. untrack so the fetch itself cannot retrigger this effect.
+  $effect(() => {
+    if (!wakes) return;
+    void tenantGeneration;
+    void tenantCompanyId;
+    untrack(() => {
+      void catchUpDmInbox({ backfill: true });
+    });
   });
 
   $effect(() => {

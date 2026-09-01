@@ -30,7 +30,11 @@
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
-  import { shouldArmDirectorySafety, shouldBumpDmUnread } from "./live-catchup";
+  import {
+    shouldArmDirectorySafety,
+    shouldBumpDmUnread,
+    type InboxDmActivity,
+  } from "./live-catchup";
   import {
     adminCompanyUids,
     browseOnlyCompanyProjectChannels,
@@ -65,6 +69,7 @@
     loadRecentDms,
     loadShowFilter,
     mergeContactActivity,
+    mergeContactsWithInbox,
     normalizeChannel,
     normalizeConversations,
     rememberRecentDm,
@@ -167,6 +172,7 @@
   interface PairUnreadsPayload {
     pairUnreads?: PairUnreadEntry[];
     delta?: boolean;
+    activity?: InboxDmActivity[];
   }
 
   const storage = createTenantStorage(
@@ -1237,6 +1243,17 @@
   function mergePairUnreadsPayload(
     payload: PairUnreadsPayload | null | undefined,
   ): void {
+    const activity = payload?.activity;
+    if (Array.isArray(activity) && activity.length > 0) {
+      contacts = mergeContactsWithInbox(
+        contacts,
+        activity.map((entry) => ({
+          fromPersonUid: entry.personUid,
+          createdAt: entry.lastMessageAt,
+          fromDisplayName: entry.displayName,
+        })),
+      );
+    }
     const entries = payload?.pairUnreads;
     if (!Array.isArray(entries)) return;
     // Empty array on account switch clears the map; page rollups merge in.
