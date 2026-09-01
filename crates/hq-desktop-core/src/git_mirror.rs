@@ -762,17 +762,37 @@ fn clear_push_block(git_dir: &Path) {
     let _ = fs::remove_file(push_block_path(git_dir));
 }
 
-/// The size latch: written once, when the staged snapshot first crosses the cap,
-/// and never cleared by this program.
+/// Why the latch was written. The two causes need *different* remedies, so the
+/// notice cannot be one sentence for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DisableReason {
+    /// The staged snapshot — the tree the next commit would record — is over the
+    /// cap. Shrinking the working tree is a real fix: nothing oversized has been
+    /// committed yet.
+    StagedSnapshot,
+    /// Objects already committed locally but not yet pushed are over the cap in
+    /// packed form. Shrinking the working tree does *not* fix this: deleting the
+    /// content only adds another commit, and the oversized objects stay in an
+    /// unpushed ancestor that the next push would still send.
+    UnpushedHistory,
+}
+
+/// The size latch: written once, when the repo first crosses the cap, and never
+/// cleared by this program.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedDisable {
     /// Wall clock, RFC3339 — same convention as the other records here, since
     /// chrono's serde integration is not enabled for this crate.
     disabled_at: String,
-    /// What the snapshot measured, and against what ceiling. Carried so the log
-    /// line after a restart is as specific as the one that tripped it.
+    /// What was measured, and against what ceiling. Carried so the log line after
+    /// a restart is as specific as the one that tripped it.
     measured_bytes: u64,
     cap_bytes: u64,
+    /// `None` when the record could not be read or parsed, in which case the
+    /// notice has to cover both remedies rather than guess one.
+    #[serde(default)]
+    reason: Option<DisableReason>,
 }
 
 fn disable_path(git_dir: &Path) -> PathBuf {
@@ -796,6 +816,7 @@ fn read_disable_latch(git_dir: &Path) -> Option<PersistedDisable> {
         disabled_at: String::new(),
         measured_bytes: 0,
         cap_bytes: resolve_mirror_size_cap(),
+        reason: None,
     };
     match fs::read_to_string(&path) {
         Ok(raw) => Some(serde_json::from_str(&raw).unwrap_or_else(|_| unparsable())),
@@ -807,11 +828,18 @@ fn read_disable_latch(git_dir: &Path) -> Option<PersistedDisable> {
 /// Latch the mirror off for this root. Best-effort: if the record cannot be
 /// written we still refuse *this* pass, so the worst case is that the next pass
 /// re-measures and refuses again rather than an oversized push slipping out.
-fn write_disable_latch(git_dir: &Path, measured: u64, cap: u64, now: DateTime<Utc>) {
+fn write_disable_latch(
+    git_dir: &Path,
+    measured: u64,
+    cap: u64,
+    reason: DisableReason,
+    now: DateTime<Utc>,
+) {
     let record = PersistedDisable {
         disabled_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
         measured_bytes: measured,
         cap_bytes: cap,
+        reason: Some(reason),
     };
     let Ok(encoded) = serde_json::to_string(&record) else {
         return;
@@ -849,23 +877,47 @@ fn log_disable_notice(hq_folder: &str, git_dir: &Path, record: &PersistedDisable
     log(LOG_TAG, &disable_notice(hq_folder, git_dir, record));
 }
 
-/// The one line a user needs to turn the mirror back on, with the real path in
-/// it.
+/// The one paragraph a user needs to turn the mirror back on, with the real path
+/// in it — and, crucially, the remedy that actually works for *this* cause.
+///
+/// Getting the remedy wrong is worse than saying nothing: someone told to "shrink
+/// the repo" after an unpushed-history latch would delete the large content, clear
+/// the latch, and watch the very next pass latch again, because the oversized
+/// objects were never in the working tree — they were already in a commit.
 fn disable_notice(hq_folder: &str, git_dir: &Path, record: &PersistedDisable) -> String {
-    let measured = if record.measured_bytes > 0 {
-        format!(
-            " (staged content measured {})",
-            human_bytes(record.measured_bytes)
-        )
-    } else {
+    let measured = if record.measured_bytes == 0 {
         String::new()
+    } else {
+        let what = match record.reason {
+            Some(DisableReason::UnpushedHistory) => "unpushed history measured",
+            _ => "staged content measured",
+        };
+        format!(" ({what} {})", human_bytes(record.measured_bytes))
     };
+    let remedy = match record.reason {
+        Some(DisableReason::StagedSnapshot) => {
+            "Shrink the working tree (or move the large content out of the repo), then delete \
+             {path} to re-enable."
+        }
+        Some(DisableReason::UnpushedHistory) => {
+            "The oversized objects are already in local commits, so deleting the content now \
+             will not help — that only adds another commit on top of them. Reset or rewrite the \
+             unpushed history first (`git reset --soft @{u}`, then recommit without the large \
+             content), then delete {path} to re-enable."
+        }
+        // Unreadable record: we no longer know which cause it was, so name both
+        // rather than send someone down the remedy that cannot work.
+        None => {
+            "Shrink the working tree, and if the large content is already in local commits that \
+             have not been pushed, reset or rewrite those commits too. Then delete {path} to \
+             re-enable."
+        }
+    }
+    .replace("{path}", &disable_path(git_dir).display().to_string());
     format!(
         "{hq_folder}: git mirror is disabled — the repo crossed the {} size cap{measured}. \
-         No commits and no pushes will be made. HQ vault sync is unaffected. \
-         Shrink the repo (or move the large content out of it), then delete {} to re-enable.",
+         No commits and no pushes will be made. HQ vault sync is unaffected. {remedy}",
         human_bytes(record.cap_bytes),
-        disable_path(git_dir).display(),
     )
 }
 
@@ -2388,7 +2440,13 @@ fn size_latch_tripped(hq_folder: &str, git_dir: &Path) -> Result<bool, String> {
     if staged <= cap {
         return Ok(false);
     }
-    write_disable_latch(git_dir, staged, cap, Utc::now());
+    write_disable_latch(
+        git_dir,
+        staged,
+        cap,
+        DisableReason::StagedSnapshot,
+        Utc::now(),
+    );
     log(
         LOG_TAG,
         &format!(
@@ -2403,6 +2461,7 @@ fn size_latch_tripped(hq_folder: &str, git_dir: &Path) -> Result<bool, String> {
         disabled_at: String::new(),
         measured_bytes: staged,
         cap_bytes: cap,
+        reason: Some(DisableReason::StagedSnapshot),
     });
     log_disable_notice(hq_folder, git_dir, &record);
     Ok(true)
@@ -2446,23 +2505,38 @@ fn push_decision(hq_folder: &str) -> Result<MirrorOutcome, String> {
     Ok(MirrorOutcome::Push)
 }
 
-/// Whether the objects a push would send exceed the cap in packed form. The
-/// staged-snapshot latch only sees the tree the *next* commit would record, so an
-/// oversized blob already sitting in an unpushed local ancestor — committed by
-/// the HQ autocommit hook, or by the user directly — would otherwise still reach
-/// the remote. Checked in `push_with_backoff` immediately before `git push`
-/// (not in `push_decision`), so a branch advanced by another writer after the
-/// snapshot was validated is still caught. Fail-open when it can't be measured
-/// (older git without `rev-list --disk-usage`) — the remote's own size limit
-/// remains the hard backstop.
-fn unpushed_history_over_cap(hq_folder: &str) -> bool {
-    match unpushed_pack_bytes(hq_folder) {
-        Some(bytes) => bytes > resolve_mirror_size_cap(),
-        None => false,
-    }
+/// The measured packed size when the objects a push would send exceed the cap,
+/// `None` otherwise. The staged-snapshot latch only sees the tree the *next*
+/// commit would record, so an oversized blob already sitting in an unpushed local
+/// ancestor — committed by the HQ autocommit hook, or by the user directly —
+/// would otherwise still reach the remote. Checked in `push_with_backoff` (not in
+/// `push_decision`), so a branch advanced by another writer after the snapshot was
+/// validated is still caught. Fail-open when it can't be measured (older git
+/// without `rev-list --disk-usage`) — the remote's own size limit remains the hard
+/// backstop.
+///
+/// Returns the byte count rather than a bool so the caller records the *same*
+/// snapshot it decided on. Measuring a second time to fill in the record would
+/// re-read a HEAD that a concurrent reset or rebase may have shrunk in between,
+/// and could persist a permanent latch stamped with a now-under-cap figure — or
+/// with 0, if the second read failed outright.
+fn unpushed_history_over_cap(hq_folder: &str) -> Option<u64> {
+    let bytes = unpushed_pack_bytes(hq_folder)?;
+    (bytes > resolve_mirror_size_cap()).then_some(bytes)
 }
 
 fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
+    // Re-check the latch now that the mirror lock is held. `mirror_after_sync`
+    // already checked, but that check happens *before* the lock, and the push
+    // path deliberately runs *without* it — so `push_with_backoff` can latch this
+    // root during the window between another invocation's pre-lock check and its
+    // arrival here. Without this second read, that invocation would go on to
+    // stage and commit into a repo that is already disabled.
+    if let Some(record) = read_disable_latch(git_dir) {
+        log_disable_notice(hq_folder, git_dir, &record);
+        return Ok(MirrorOutcome::NoPush);
+    }
+
     // Pre-run self-heal: clear an orphaned lock from an earlier killed run so
     // this cycle isn't the third one in a row to fail for the same reason.
     reap_index_lock_if_stale(hq_folder, git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
@@ -2473,16 +2547,20 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // nothing short of a history rewrite could remove it again.
     run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
 
-    // Over the cap: latch the mirror off and leave the index as we found it.
-    // This pass commits nothing and pushes nothing, and `mirror_after_sync`
-    // will not reach this function again until the latch is cleared by hand.
+    // Over the cap: latch the mirror off. This pass commits nothing and pushes
+    // nothing, and neither `mirror_after_sync` nor this function will get past
+    // the latch again until it is cleared by hand.
+    //
+    // The index is left exactly as the `add -A` above left it. An earlier draft
+    // ran `git reset -q` here to "restore" it, which was strictly worse for
+    // anyone who had staged a selection by hand: `add -A` at least keeps their
+    // staged content staged (as part of a superset), while the reset empties the
+    // index outright — destroying that selection on a pass that otherwise changes
+    // nothing. Measuring without disturbing the index at all would need a
+    // separate temporary index, and seeding one per pass would re-hash the whole
+    // working tree every cycle; on the repo sizes this guard exists for, that
+    // cost is worse than the thing it avoids.
     if size_latch_tripped(hq_folder, git_dir)? {
-        if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
-            log(
-                LOG_TAG,
-                &format!("{hq_folder}: index reset after the size latch tripped failed: {e}"),
-            );
-        }
         return Ok(MirrorOutcome::NoPush);
     }
 
@@ -2577,6 +2655,41 @@ fn push_after_mirror(hq_folder: &str, git_dir: &Path) {
 /// a rejection that retrying cannot fix backs the mirror off for
 /// [`PUSH_BLOCK_COOLDOWN`] instead of recurring every cycle.
 fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
+    // Size backstop, re-reading the true HEAD: the mirror lock was released after
+    // the snapshot was validated, so another writer (the autocommit hook, a second
+    // mirror) could have advanced the branch to a never-measured — possibly
+    // oversized — commit. Latch off rather than push it: an oversized ancestor is
+    // a settled fact about history that no later pass of this daemon can undo, so
+    // retrying is pure noise.
+    //
+    // This runs *before* the push-backoff early return, not after. A permanent
+    // rejection parks an active block for PUSH_BLOCK_COOLDOWN, and a check placed
+    // after that return would simply never execute for six hours. Meanwhile
+    // `run_mirror` keeps committing every cycle, so history committed-then-deleted
+    // during the block can push the unpushed set over the cap while the working
+    // tree stays comfortably under it — the exact case the latch exists for, going
+    // unnoticed for the whole cooldown.
+    if let Some(measured) = unpushed_history_over_cap(hq_folder) {
+        let cap = resolve_mirror_size_cap();
+        write_disable_latch(git_dir, measured, cap, DisableReason::UnpushedHistory, now);
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: unpushed history {} exceeds the {} cap in packed form — disabling the git mirror for this repo.",
+                human_bytes(measured),
+                human_bytes(cap),
+            ),
+        );
+        let record = read_disable_latch(git_dir).unwrap_or(PersistedDisable {
+            disabled_at: String::new(),
+            measured_bytes: measured,
+            cap_bytes: cap,
+            reason: Some(DisableReason::UnpushedHistory),
+        });
+        log_disable_notice(hq_folder, git_dir, &record);
+        return;
+    }
+
     let existing = read_push_block(git_dir);
     if push_block_is_active(existing.as_ref(), now) {
         // One quiet line, not the full multi-line remote stderr — the loud,
@@ -2586,29 +2699,6 @@ fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
                 LOG_TAG,
                 &format!("{hq_folder}: push skipped — {} (backing off)", block.reason),
             );
-        }
-        return;
-    }
-
-    // Size backstop at the last possible moment, re-reading the true HEAD: the
-    // mirror lock was released after the snapshot was validated, so another writer
-    // (the autocommit hook, a second mirror) could have advanced the branch to a
-    // never-measured — possibly oversized — commit. Latch off rather than push it:
-    // an oversized ancestor is a settled fact about history that no later pass of
-    // this daemon can undo, so retrying is pure noise.
-    if unpushed_history_over_cap(hq_folder) {
-        let cap = resolve_mirror_size_cap();
-        let measured = unpushed_pack_bytes(hq_folder).unwrap_or(0);
-        write_disable_latch(git_dir, measured, cap, now);
-        log(
-            LOG_TAG,
-            &format!(
-                "{hq_folder}: unpushed history exceeds the {} cap in packed form — disabling the git mirror for this repo.",
-                human_bytes(cap),
-            ),
-        );
-        if let Some(record) = read_disable_latch(git_dir) {
-            log_disable_notice(hq_folder, git_dir, &record);
         }
         return;
     }
@@ -6736,6 +6826,28 @@ mod tests {
             .collect()
     }
 
+    /// What the repo actually *tracks* — the committed tree, not the index. The
+    /// index picks up whatever `run_mirror`'s `add -A` staged, so it is the wrong
+    /// place to ask whether a file was untracked; only a commit can do that.
+    fn head_files(dir: &Path) -> Vec<String> {
+        let out = git(dir, &["ls-tree", "-r", "--name-only", "HEAD"]);
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Paths the index has staged for *deletion* relative to HEAD. The latch path
+    /// must never produce one: removing a tracked file from the index is the first
+    /// half of the untracking behaviour this change exists to delete.
+    fn staged_deletions(dir: &Path) -> Vec<String> {
+        let out = git(dir, &["diff", "--cached", "--diff-filter=D", "--name-only"]);
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     #[test]
     fn size_cap_env_override_parses_mebibytes() {
         let _serial = serial();
@@ -6803,9 +6915,17 @@ mod tests {
             before,
             "a latched pass commits nothing"
         );
+        // The index keeps whatever `add -A` staged — the latch path adds no
+        // further mutation of its own. What it must never do is *remove* a
+        // tracked path from the index, which is how the old ladder began.
+        assert_eq!(
+            staged_deletions(tmp.path()),
+            Vec::<String>::new(),
+            "a latched pass must not stage any deletion"
+        );
         assert!(
-            index_is_clean(tmp.path()),
-            "the index must be left as found"
+            ls_files(tmp.path(), ".").contains(&"README".to_string()),
+            "the previously tracked file must still be in the index"
         );
         assert!(
             ws.join("big.jsonl").exists(),
@@ -6834,7 +6954,7 @@ mod tests {
         assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
             .status
             .success());
-        let tracked_before = ls_files(tmp.path(), ".");
+        let tracked_before = head_files(tmp.path());
 
         // Push the staged snapshot over the cap.
         fs::write(logs.join("big.jsonl"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
@@ -6842,9 +6962,14 @@ mod tests {
         run_mirror_at(tmp.path()).expect("mirror ok");
 
         assert_eq!(
-            ls_files(tmp.path(), "."),
+            head_files(tmp.path()),
             tracked_before,
             "going over the cap must not untrack anything"
+        );
+        assert_eq!(
+            staged_deletions(tmp.path()),
+            Vec::<String>::new(),
+            "nor stage the removal that untracking would start with"
         );
         assert_eq!(
             fs::read_to_string(tmp.path().join(".gitignore")).unwrap(),
@@ -6874,7 +6999,13 @@ mod tests {
             .status
             .success());
         let git_dir = resolve_git_dir(tmp.path().to_str().unwrap()).unwrap();
-        write_disable_latch(&git_dir, 3 * 1024 * 1024, 1024 * 1024, Utc::now());
+        write_disable_latch(
+            &git_dir,
+            3 * 1024 * 1024,
+            1024 * 1024,
+            DisableReason::StagedSnapshot,
+            Utc::now(),
+        );
         let before = rev_count(tmp.path());
 
         // Ordinary, well-under-cap work that a healthy mirror would commit.
@@ -6973,14 +7104,191 @@ mod tests {
 
         push_with_backoff(tmp.path().to_str().unwrap(), &git_dir, Utc::now());
 
+        let latch = read_disable_latch(&git_dir).expect("oversized history must latch off");
+        assert_eq!(
+            latch.reason,
+            Some(DisableReason::UnpushedHistory),
+            "the cause has to be recorded — it decides which remedy the notice gives"
+        );
+        // The record carries the byte count the decision was made on, not a
+        // second, separately-taken reading.
         assert!(
-            read_disable_latch(&git_dir).is_some(),
-            "oversized unpushed history must latch the mirror off"
+            latch.measured_bytes > latch.cap_bytes,
+            "measured {} must exceed cap {}",
+            latch.measured_bytes,
+            latch.cap_bytes
         );
         assert_eq!(
             remote_head(remote.path()),
             remote_head_before,
             "the oversized commit must not reach the remote"
+        );
+    }
+
+    /// The size backstop runs before the push-backoff early return. A permanent
+    /// rejection parks an active block for six hours; if the size check sat behind
+    /// that return, an over-cap repo would keep committing for the whole cooldown
+    /// without ever latching.
+    #[test]
+    fn an_active_push_block_does_not_hide_oversized_history() {
+        let _serial = serial();
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(remote.path())
+            .output()
+            .expect("git available")
+            .status
+            .success());
+        init_repo(tmp.path());
+        assert!(git(
+            tmp.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()]
+        )
+        .status
+        .success());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        assert!(git(tmp.path(), &["push", "-q", "-u", "origin", "main"])
+            .status
+            .success());
+        fs::write(tmp.path().join("big.bin"), incompressible(3 * 1024 * 1024)).unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "someone else"])
+            .status
+            .success());
+
+        let git_dir = resolve_git_dir(tmp.path().to_str().unwrap()).unwrap();
+        let now = Utc::now();
+        // A permanent rejection recorded one minute ago: firmly inside the cooldown.
+        write_push_block(
+            &git_dir,
+            &PersistedPushBlock {
+                blocked_at: (now - chrono::Duration::minutes(1))
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+                reason: "file too large".to_string(),
+            },
+        );
+        assert!(
+            push_block_is_active(read_push_block(&git_dir).as_ref(), now),
+            "the block must really be active, or this test proves nothing"
+        );
+
+        push_with_backoff(tmp.path().to_str().unwrap(), &git_dir, now);
+
+        assert_eq!(
+            read_disable_latch(&git_dir).and_then(|l| l.reason),
+            Some(DisableReason::UnpushedHistory),
+            "an active push block must not stop the size backstop from latching"
+        );
+    }
+
+    /// A history-caused latch cannot be cleared by deleting files: the oversized
+    /// objects are already in commits. Telling someone to "shrink the repo" would
+    /// send them round a loop that re-latches on the very next pass.
+    #[test]
+    fn a_history_latch_tells_the_user_to_rewrite_not_to_shrink() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let git_dir = resolve_git_dir(tmp.path().to_str().unwrap()).unwrap();
+
+        let history = PersistedDisable {
+            disabled_at: String::new(),
+            measured_bytes: 3 * 1024 * 1024,
+            cap_bytes: 1024 * 1024,
+            reason: Some(DisableReason::UnpushedHistory),
+        };
+        let notice = disable_notice("root", &git_dir, &history);
+        assert!(notice.contains("unpushed history measured"), "{notice}");
+        assert!(notice.contains("reset"), "{notice}");
+        assert!(
+            notice.contains("will not help"),
+            "the notice must say outright that deleting content is not the fix:\n{notice}"
+        );
+
+        // The staged-snapshot cause keeps the remedy that does work for it.
+        let staged = PersistedDisable {
+            reason: Some(DisableReason::StagedSnapshot),
+            ..history.clone()
+        };
+        let notice = disable_notice("root", &git_dir, &staged);
+        assert!(notice.contains("Shrink the working tree"), "{notice}");
+        assert!(
+            !notice.contains("will not help"),
+            "the two causes must not share one remedy:\n{notice}"
+        );
+
+        // An unreadable record knows neither cause, so it must name both rather
+        // than pick one and be wrong half the time.
+        let unknown = PersistedDisable {
+            reason: None,
+            ..history.clone()
+        };
+        let notice = disable_notice("root", &git_dir, &unknown);
+        assert!(notice.contains("Shrink the working tree"), "{notice}");
+        assert!(
+            notice.contains("reset or rewrite those commits"),
+            "{notice}"
+        );
+    }
+
+    /// `mirror_after_sync` checks the latch before taking the mirror lock, but the
+    /// push path runs *without* that lock and can latch mid-flight. `run_mirror`
+    /// must therefore re-check under the lock, or a pass that cleared the pre-lock
+    /// check would still commit into a repo that has since been disabled.
+    #[test]
+    fn a_latch_written_after_the_pre_lock_check_still_stops_the_pass() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+        let git_dir = resolve_git_dir(tmp.path().to_str().unwrap()).unwrap();
+
+        // Stands in for the push path latching between another invocation's
+        // pre-lock read and its call into `run_mirror`.
+        fs::write(tmp.path().join("new.md"), "would be committed").unwrap();
+        write_disable_latch(
+            &git_dir,
+            3 * 1024 * 1024,
+            1024 * 1024,
+            DisableReason::UnpushedHistory,
+            Utc::now(),
+        );
+
+        let outcome = run_mirror(tmp.path().to_str().unwrap(), &git_dir).expect("mirror ok");
+
+        assert_eq!(outcome, MirrorOutcome::NoPush);
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "run_mirror must not commit into a latched repo"
+        );
+        assert!(
+            index_is_clean(tmp.path()),
+            "and must not stage it either — the re-check comes before `add -A`"
+        );
+
+        // Control: without the latch the same pass does commit, so the assertions
+        // above are testing the re-check and not some unrelated refusal.
+        fs::remove_file(disable_path(&git_dir)).unwrap();
+        run_mirror(tmp.path().to_str().unwrap(), &git_dir).expect("mirror ok");
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the pass must be otherwise committable"
         );
     }
 
