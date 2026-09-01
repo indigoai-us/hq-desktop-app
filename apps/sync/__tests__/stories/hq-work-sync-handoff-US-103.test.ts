@@ -74,6 +74,8 @@ function mockInvoke(): SyncInvokeFn {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':
@@ -314,11 +316,8 @@ describe('US-103 embedded desktop window', () => {
       });
       const inner = mockInvoke();
       const invokeFn: SyncInvokeFn = async (cmd, args) => {
-        if (cmd === 'hq_pro_fetch') {
-          const path = hqProPath(args?.url);
-          if (path.startsWith('/v1/identity/whoami')) {
-            await gate;
-          }
+        if (cmd === 'whoami') {
+          await gate;
         }
         return inner(cmd, args);
       };

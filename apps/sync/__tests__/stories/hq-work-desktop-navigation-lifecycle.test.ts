@@ -67,6 +67,11 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
     switch (command) {
       case 'get_auth_state':
         return { authenticated: options.signedIn ?? true, accountId: 'acct_ada' };
+      case 'whoami':
+        if (options.identityFailure) {
+          throw new Error('identity service unavailable');
+        }
+        return WHOAMI;
       case 'desktop_alt_consume_pending_route':
         return options.pendingRoute ?? null;
       case 'meetings_take_pending_focus':

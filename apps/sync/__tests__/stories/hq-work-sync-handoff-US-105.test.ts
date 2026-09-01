@@ -134,6 +134,8 @@ function makeAdapter(handler?: SyncInvokeFn) {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'fetch_reactions':
         return [{ emoji: '👍', count: 1, reactedByMe: true }];
       case 'toggle_reaction':
@@ -218,6 +220,8 @@ function mockInvoke(): SyncInvokeFn {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':

@@ -1,5 +1,19 @@
 use super::cognito::{self, AuthState, CognitoTokens};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+/// Canonical identity the embedded shell hydrates from. Person UID comes from
+/// the vault (same `list_entities_by_type("person")` path as
+/// `list_syncable_workspaces`); email / display name come from Cognito claims
+/// with a person-name fallback. Never the provisional REST `/v1/identity/whoami`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhoAmIIdentity {
+    pub person_uid: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
 
 /// Update Sentry's scoped user context to the Cognito identity carried in
 /// `tokens`. Best-effort: a malformed/missing id_token just clears the user
@@ -83,6 +97,58 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
         email,
         display_name,
     }
+}
+
+fn oldest_person_entity(
+    mut persons: Vec<super::vault_client::EntityInfo>,
+) -> Option<super::vault_client::EntityInfo> {
+    persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
+        std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
+        ord => ord,
+    });
+    persons.into_iter().next()
+}
+
+/// Native identity for the desktop shell. Resolves Cognito claims plus the
+/// oldest vault person entity — the same working endpoint
+/// `list_syncable_workspaces` uses. The provisional REST path
+/// `/v1/identity/whoami` does not exist on the real API.
+#[tauri::command]
+pub async fn whoami(app: AppHandle) -> Result<WhoAmIIdentity, String> {
+    let (tokens, _) = crate::commands::dm_notify::resolve_notification_credentials(&app)
+        .await
+        .map_err(|_| "Not signed in".to_string())?;
+    let auth = authenticated_state_from_tokens(&tokens);
+
+    let vault_url = crate::commands::sync::resolve_vault_api_url()
+        .map_err(|e| format!("person entity lookup failed: {e}"))?;
+    let jwt = crate::commands::sync::resolve_jwt()
+        .await
+        .map_err(|e| format!("person entity lookup failed: {e}"))?;
+    let vault = super::vault_client::VaultClient::new(&vault_url, &jwt);
+
+    let persons = vault
+        .list_entities_by_type("person")
+        .await
+        .map_err(|e| format!("person entity lookup failed: {e}"))?;
+    let person = oldest_person_entity(persons).ok_or_else(|| {
+        "person entity lookup failed: no person entity for this account".to_string()
+    })?;
+
+    let display_name = auth.display_name.or_else(|| {
+        person
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+
+    Ok(WhoAmIIdentity {
+        person_uid: person.uid,
+        email: auth.email.unwrap_or_default(),
+        display_name,
+    })
 }
 
 #[tauri::command]
@@ -215,6 +281,59 @@ mod tests {
         assert_eq!(state.account_id.as_deref(), Some("cognito-sub-ada"));
         assert_eq!(state.email.as_deref(), Some("ada@getindigo.ai"));
         assert_eq!(state.display_name.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn whoami_identity_serializes_camel_case_and_omits_empty_display_name() {
+        let named = serde_json::to_value(&WhoAmIIdentity {
+            person_uid: "prs_1".to_string(),
+            email: "a@b.c".to_string(),
+            display_name: Some("Ada".to_string()),
+        })
+        .expect("serialize named");
+        assert_eq!(named["personUid"], "prs_1");
+        assert_eq!(named["email"], "a@b.c");
+        assert_eq!(named["displayName"], "Ada");
+
+        let unnamed = serde_json::to_value(&WhoAmIIdentity {
+            person_uid: "prs_1".to_string(),
+            email: String::new(),
+            display_name: None,
+        })
+        .expect("serialize unnamed");
+        assert_eq!(unnamed["personUid"], "prs_1");
+        assert_eq!(unnamed["email"], "");
+        assert!(unnamed.get("displayName").is_none());
+    }
+
+    fn person_entity(
+        uid: &str,
+        created_at: &str,
+        name: Option<&str>,
+    ) -> super::super::vault_client::EntityInfo {
+        super::super::vault_client::EntityInfo {
+            uid: uid.to_string(),
+            slug: uid.to_string(),
+            entity_type: "person".to_string(),
+            name: name.map(str::to_string),
+            bucket_name: None,
+            status: "active".to_string(),
+            created_at: created_at.to_string(),
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn oldest_person_entity_sorts_by_created_at_then_uid() {
+        let older = person_entity("prs_b", "2024-01-01T00:00:00Z", Some("B"));
+        let newer = person_entity("prs_a", "2025-01-01T00:00:00Z", Some("A"));
+        let picked = oldest_person_entity(vec![newer, older]).expect("pick");
+        assert_eq!(picked.uid, "prs_b");
+
+        let first = person_entity("prs_a", "2024-01-01T00:00:00Z", None);
+        let second = person_entity("prs_b", "2024-01-01T00:00:00Z", None);
+        let tied = oldest_person_entity(vec![second, first]).expect("tie-break");
+        assert_eq!(tied.uid, "prs_a");
     }
 
     #[test]

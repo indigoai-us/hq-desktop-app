@@ -277,10 +277,10 @@ export function createSyncPlatformAdapter(
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        // The API response binds the person UID and profile fields to the
-        // bearer used for this request. It also preserves the established
-        // profile fallback when a Cognito refresh omits the optional ID token.
-        const meResult = await hqProJson<unknown>('GET', WEB_PATHS.whoami);
+        // Native `whoami` binds the person UID and profile fields to the
+        // signed-in session. It also preserves the established profile
+        // fallback when a Cognito refresh omits the optional ID token.
+        const meResult = await call<unknown>('whoami');
         if (!meResult.ok) return meResult;
         const currentAuth = await call<ShellAuthState>('get_auth_state');
         if (!currentAuth.ok) return currentAuth;

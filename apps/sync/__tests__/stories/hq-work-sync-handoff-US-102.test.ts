@@ -78,6 +78,8 @@ function makeAdapter(handler?: SyncInvokeFn) {
           email: WHOAMI.email,
           displayName: WHOAMI.displayName,
         };
+      case 'whoami':
+        return WHOAMI;
       case 'get_config':
         return { configured: true, personUid: WHOAMI.personUid };
       case 'desktop_alt_is_admin':
@@ -221,13 +223,9 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(whoami).toMatchObject(WHOAMI);
     expect(calls.map((c) => c.cmd)).toEqual([
       'get_auth_state',
-      'hq_pro_fetch',
+      'whoami',
       'get_auth_state',
     ]);
-    expect(hqProJson(calls[1]?.args)).toMatchObject({
-      method: 'GET',
-      path: '/v1/identity/whoami',
-    });
     expect(calls.some((c) => c.cmd === 'start_oauth_login')).toBe(false);
     expect(calls.some((c) => c.cmd === 'oauth_exchange_code')).toBe(false);
     expect(calls.some((c) => c.cmd === 'begin_reauth')).toBe(false);
@@ -248,8 +246,66 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(calls.map((c) => c.cmd)).toEqual(['get_auth_state']);
   });
 
+  it('whoami invokes the native whoami command and never hq_pro_fetch', async () => {
+    const { adapter, calls } = makeAdapter();
+    await adapter.identity.whoami();
+    const cmds = calls.map((c) => c.cmd);
+    expect(cmds).toContain('whoami');
+    expect(cmds).not.toContain('hq_pro_fetch');
+    expect(
+      calls.some((c) =>
+        JSON.stringify(c.args ?? {}).includes('/v1/identity/whoami'),
+      ),
+    ).toBe(false);
+  });
+
+  it('whoami success path returns the native personUid', async () => {
+    const { adapter, calls } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return {
+          authenticated: true,
+          accountId: 'sub1',
+          email: 'a@b.c',
+          displayName: 'Ada',
+        };
+      }
+      if (cmd === 'whoami') {
+        return { personUid: 'prs_1', email: 'a@b.c', displayName: 'Ada' };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    expect(expectOk(await adapter.identity.whoami())).toMatchObject({
+      personUid: 'prs_1',
+      email: 'a@b.c',
+      displayName: 'Ada',
+    });
+    expect(calls.map((c) => c.cmd)).toEqual([
+      'get_auth_state',
+      'whoami',
+      'get_auth_state',
+    ]);
+  });
+
+  it('whoami maps native "Not signed in" to an invoke failure the shell treats as unauthenticated', async () => {
+    const { adapter } = makeAdapter(async (cmd) => {
+      if (cmd === 'get_auth_state') {
+        return { authenticated: true, accountId: 'sub1' };
+      }
+      if (cmd === 'whoami') {
+        throw new Error('Not signed in');
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    expect(await adapter.identity.whoami()).toMatchObject({
+      ok: false,
+      reason: 'error',
+      code: 'invoke',
+      message: 'Not signed in',
+    });
+  });
+
   it('whoami ignores a stale configured person uid and uses the caller-scoped profile', async () => {
-    const { adapter } = makeAdapter(async (cmd, args) => {
+    const { adapter } = makeAdapter(async (cmd) => {
       if (cmd === 'get_auth_state') {
         return {
           authenticated: true,
@@ -258,12 +314,8 @@ describe('US-102 Sync PlatformAdapter', () => {
           displayName: WHOAMI.displayName,
         };
       }
-      if (cmd === 'hq_pro_fetch') {
-        expect(hqProJson(args).path).toBe('/v1/identity/whoami');
-        return {
-          status: 200,
-          body: JSON.stringify(WHOAMI),
-        };
+      if (cmd === 'whoami') {
+        return WHOAMI;
       }
       throw new Error(`unexpected command: ${cmd}`);
     });
@@ -286,8 +338,8 @@ describe('US-102 Sync PlatformAdapter', () => {
           email: authCalls === 1 ? 'a@example.com' : 'b@example.com',
         };
       }
-      if (cmd === 'hq_pro_fetch') {
-        return { status: 200, body: JSON.stringify(WHOAMI) };
+      if (cmd === 'whoami') {
+        return WHOAMI;
       }
       throw new Error(`unexpected command: ${cmd}`);
     });
@@ -308,8 +360,8 @@ describe('US-102 Sync PlatformAdapter', () => {
           displayName: null,
         };
       }
-      if (cmd === 'hq_pro_fetch') {
-        return { status: 200, body: JSON.stringify(WHOAMI) };
+      if (cmd === 'whoami') {
+        return WHOAMI;
       }
       throw new Error(`unexpected command: ${cmd}`);
     });
