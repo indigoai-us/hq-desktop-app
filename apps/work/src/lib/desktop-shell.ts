@@ -42,7 +42,7 @@ export async function hydrateDesktopSelf(
   hostSelf: SelfIdentity | null,
   adapter: ShellIdentityAdapter,
 ): Promise<SelfIdentity | null> {
-  if (hostSelf || adapter.kind !== "desktop") return hostSelf;
+  if (!hostSelf && adapter.kind === "web") return null;
   try {
     const result = await adapter.identity.whoami();
     return result.ok
@@ -51,9 +51,9 @@ export async function hydrateDesktopSelf(
           email: result.value.email,
           displayName: result.value.displayName,
         })
-      : null;
+      : adapter.kind === "desktop" ? hostSelf : null;
   } catch {
-    return null;
+    return adapter.kind === "desktop" ? hostSelf : null;
   }
 }
 
