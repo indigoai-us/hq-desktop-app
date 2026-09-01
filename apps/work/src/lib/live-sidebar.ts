@@ -79,11 +79,19 @@ export function parseWorkFeed(raw: unknown): WorkFeedItem[] {
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
       : null;
-  const list = [
+  const legacyList = [
     ...(Array.isArray(rec?.open) ? rec.open : []),
     ...(Array.isArray(rec?.changed) ? rec.changed : []),
   ];
-  const source = list.length > 0 ? list : Array.isArray(raw) ? raw : [];
+  // contractVersion-2 snapshots are authoritative. Do not mix their items
+  // with legacy open/changed rows, which can otherwise duplicate stale data.
+  const source = Array.isArray(rec?.items)
+    ? rec.items
+    : legacyList.length > 0
+      ? legacyList
+      : Array.isArray(raw)
+        ? raw
+        : [];
   const out: WorkFeedItem[] = [];
   for (const item of source) {
     if (!item || typeof item !== "object") continue;
