@@ -391,8 +391,13 @@ export function createSyncPlatformAdapter(
       // Owner-only server-side (403 otherwise); Sync already exposes the command.
       removeChannelMember: (channelId, personUid) =>
         call('remove_channel_member', { channelId, personUid }),
-      listContacts: async () => {
-        const result = await call<unknown>('list_contacts');
+      // A companyUid scopes the roster to one tenant via the already-registered
+      // list_company_members command (GET /v1/notify/contacts?companyUid=…).
+      listContacts: async (opts) => {
+        const companyUid = opts?.companyUid?.trim();
+        const result = companyUid
+          ? await call<unknown>('list_company_members', { companyUid })
+          : await call<unknown>('list_contacts');
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },

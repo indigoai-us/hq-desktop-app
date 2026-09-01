@@ -449,7 +449,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.channelMembers(channelId), { toPersonUid }),
     removeChannelMember: (channelId, personUid) =>
       this.request("DELETE", WEB_PATHS.channelMember(channelId, personUid)),
-    listContacts: () => this.get(WEB_PATHS.contacts),
+    listContacts: (opts) => {
+      const companyUid = opts?.companyUid?.trim();
+      // Company-scoped slice of the same surface — never widen to the global
+      // roster when a caller asked for one tenant.
+      return this.get(
+        companyUid
+          ? `${WEB_PATHS.contacts}?companyUid=${encodeURIComponent(companyUid)}`
+          : WEB_PATHS.contacts,
+      );
+    },
     listDmRequests: () => this.get(WEB_PATHS.dmRequests),
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
     markDmThreadRead: async (uid) => {

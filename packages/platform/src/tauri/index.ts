@@ -176,7 +176,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "DELETE",
         `/v1/notify/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(personUid)}`,
       ),
-    listContacts: () => this.call("list_contacts"),
+    // Scoped reads go through the existing company-scoped command rather than
+    // a new IPC surface: list_company_members is GET /v1/notify/contacts
+    // ?companyUid=… and is already registered + capability-listed.
+    listContacts: (opts) => {
+      const companyUid = opts?.companyUid?.trim();
+      return companyUid
+        ? this.call("list_company_members", { companyUid })
+        : this.call("list_contacts");
+    },
     listDmRequests: () => this.call("list_dm_requests"),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
