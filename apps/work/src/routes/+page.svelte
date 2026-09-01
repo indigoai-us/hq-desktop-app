@@ -236,6 +236,7 @@
     const recent = pickMostRecentDirectoryRow(shallow.directory);
     return recent ? rowFromDirectory(recent) : null;
   });
+  let selectedCompanyUid = $state<string | null>(null);
 
   const messagesByRow = $derived((row: ConversationRow) => {
     const last = shallow.lastThread;
@@ -250,6 +251,18 @@
     const hit = companies.find((row) => row.cloudUid === uid);
     return hit?.displayName?.trim() || hit?.slug || null;
   }
+
+  function attachmentCompanyUid(row: ConversationRow | null): string | null {
+    const fromRow = row?.companyUid?.trim();
+    if (fromRow) return fromRow;
+    const first = (companies ?? []).find((company) => company.cloudUid?.trim());
+    return first?.cloudUid?.trim() || null;
+  }
+
+  $effect(() => {
+    if (selectedCompanyUid !== null || !initialRow) return;
+    selectedCompanyUid = attachmentCompanyUid(initialRow);
+  });
 
   function ensureProjectMeta(row: ConversationRow): LiveProjectMeta | null {
     const key = row.channelId || row.projectId || row.id;
@@ -292,7 +305,7 @@
     },
   );
   const loadFilePreview = (item: ChannelFileItemModel) =>
-    loadWebVaultFilePreview(item, item.companyUid);
+    loadWebVaultFilePreview(item, selectedCompanyUid);
   const channelStatusByRow = $derived(
     (row: ConversationRow): ChannelStatusModel | null => {
       const live = ensureProjectMeta(row);
@@ -329,6 +342,7 @@
   }
 
   function rememberSelectedRow(row: ConversationRow): void {
+    selectedCompanyUid = attachmentCompanyUid(row);
     persistLastSelected(personUid, row.id);
   }
 
