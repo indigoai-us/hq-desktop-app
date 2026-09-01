@@ -366,8 +366,10 @@ describe("native desktop auth session transitions", () => {
     });
 
     slowBWorkspace.resolve({ workspaces: [workspace("acct_b")] });
-    await tick();
-    await Promise.resolve();
+    // A macrotask turn drains the entire microtask queue, including the stale
+    // lane's continuation. Draining a fixed number of microtasks instead would
+    // let the assertions run before the stale write and pass by luck.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(capturedProps().tenantGeneration).toBe(3);
     expect(capturedProps().self?.uid).toBe("prs_acct_c");
