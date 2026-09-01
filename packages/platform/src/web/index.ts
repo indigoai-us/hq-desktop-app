@@ -49,7 +49,7 @@ export const WEB_PATHS = {
   dmThread: "/v1/notify/thread",
   /** POST body `{ withPersonUid }` — pair lastReadAt (US-010). */
   markDmThreadRead: "/v1/notify/thread/read",
-  searchMessages: "/v1/messaging/search",
+  searchMessages: "/v1/notify/search",
   /** Canonical roster: uid + live companyName. Not written into work-mesh. */
   workspaces: "/membership/me",
   channel: (id: string) => `/v1/notify/channels/${encodeURIComponent(id)}`,
@@ -321,6 +321,27 @@ function membershipRowsFromPayload(value: unknown): Json[] {
   return [];
 }
 
+function encodeMessageSearchValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/** Matches the desktop core's `build_search_url` query contract. */
+export function buildWebMessageSearchPath(
+  q: string,
+  opts?: { companyUid?: string; limit?: number },
+): string {
+  let path = `${WEB_PATHS.searchMessages}?q=${encodeMessageSearchValue(q)}`;
+  const companyUid = opts?.companyUid?.trim();
+  if (companyUid) {
+    path += `&companyUid=${encodeMessageSearchValue(companyUid)}`;
+  }
+  if (opts?.limit != null) path += `&limit=${opts.limit}`;
+  return path;
+}
+
 export class WebPlatformAdapter implements PlatformAdapter {
   readonly kind = "web" as const;
   readonly capabilities = WEB_CAPABILITIES;
@@ -459,10 +480,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       return this.post(WEB_PATHS.markDmThreadRead, { withPersonUid });
     },
     searchMessages: (q, opts) => {
-      const params = new URLSearchParams({ q });
-      if (opts?.companyUid) params.set("companyUid", opts.companyUid);
-      if (opts?.limit != null) params.set("limit", String(opts.limit));
-      return this.get(`${WEB_PATHS.searchMessages}?${params.toString()}`);
+      return this.get(buildWebMessageSearchPath(q, opts));
     },
     fetchChannel: ({ channelId, limit, cursor, since }) => {
       const params = new URLSearchParams();

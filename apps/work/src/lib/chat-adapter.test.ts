@@ -13,6 +13,7 @@ import { replyScopeForRow as uiReplyScopeForRow } from "../../../../packages/ui/
 import {
   createChatSidebarApi,
   createConversationApi,
+  hydrateLiveRail,
   resetLiveRailHydrate,
 } from "./chat-adapter.js";
 
@@ -109,6 +110,46 @@ describe("hydrateLiveRail", () => {
 
     await api.fetchChannelDirectory("livefeed0000000000000000000000000000");
     expect(calls).toEqual([undefined]);
+  });
+
+  it("coalesces overlapping hydrates but refreshes after they settle", async () => {
+    type DirectoryResult = Awaited<
+      ReturnType<PlatformAdapter["messaging"]["fetchChannelDirectory"]>
+    >;
+    let resolveFirst!: (value: DirectoryResult) => void;
+    const first = new Promise<DirectoryResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const fetchChannelDirectory = vi.fn<
+      PlatformAdapter["messaging"]["fetchChannelDirectory"]
+    >(async () => {
+      if (fetchChannelDirectory.mock.calls.length === 1) return first;
+      return ok({
+        snapshot: true,
+        cursor: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [{ channelId: "chn_2", name: "beta" }],
+      });
+    });
+    const adapter = stubAdapter(fetchChannelDirectory);
+
+    const initial = hydrateLiveRail(adapter);
+    const overlapping = hydrateLiveRail(adapter);
+    expect(overlapping).toBe(initial);
+    expect(fetchChannelDirectory).toHaveBeenCalledTimes(1);
+
+    resolveFirst(
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [{ channelId: "chn_1", name: "alpha" }],
+      }),
+    );
+    await initial;
+
+    await hydrateLiveRail(adapter);
+    expect(fetchChannelDirectory).toHaveBeenCalledTimes(2);
   });
 });
 
