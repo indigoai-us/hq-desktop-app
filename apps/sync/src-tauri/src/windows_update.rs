@@ -102,7 +102,7 @@ fn file_sha256_hex(path: &Path) -> Result<String, String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(format!("{digest:x}"))
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
