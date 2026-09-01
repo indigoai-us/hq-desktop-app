@@ -315,7 +315,14 @@ pub struct TelemetryOptInResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UsageBatch {
     pub machine_id: String,
+    /// The DESKTOP APP version (CARGO_PKG_VERSION) — legacy field name kept
+    /// for wire compatibility; the server reads it as appVersion.
     pub installer_version: String,
+    /// Installed hq CLI version, when resolvable. Feeds the staff version
+    /// roster (hq-pro usage ingest → clientVersions) so stranded machines
+    /// are visible; None simply omits the field on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
     pub events: Vec<serde_json::Value>,
 }
 
