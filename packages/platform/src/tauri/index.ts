@@ -11,6 +11,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -127,7 +128,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
-    listChannels: () => this.call("list_channels"),
+    listChannels: (opts) =>
+      this.call("list_channels", {
+        companyUid: opts?.companyUid,
+        includeCompanyProjects: opts?.includeCompanyProjects,
+      }),
     fetchChannelDirectory: (cursor) =>
       this.call("fetch_channel_directory", { cursor }),
     // No create_channel Tauri command exists — route through hq-pro REST like
@@ -219,11 +224,21 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly notifications: PlatformAdapter["notifications"] = {
-    fetchNotifications: (opts) => this.call("fetch_notifications", { opts }),
+    fetchNotifications: async (opts) => {
+      const result = await this.call<unknown>("fetch_notifications", opts);
+      if (!result.ok) return result;
+      return ok(normalizeNotificationsFeed(result.value));
+    },
     ack: (id) => this.call("ack_notification", { id }),
     readAll: () => this.call("read_all_notifications"),
-    runAction: (id, action) =>
-      this.call("run_notification_action", { id, action }),
+    runAction: (id, action, actionRef) =>
+      this.call("run_notification_action", {
+        id,
+        actionKind: action,
+        ...(typeof actionRef === "string" && actionRef.trim()
+          ? { actionRef }
+          : {}),
+      }),
     fetchDmInbox: (opts) => this.call("fetch_dm_inbox", { opts }),
     ackDmInbox: (eventIds) => this.call("ack_dm_inbox", { eventIds }),
     fetchSharedWithMe: (opts) => this.call("fetch_shared_with_me", { opts }),

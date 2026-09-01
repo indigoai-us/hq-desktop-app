@@ -12,6 +12,7 @@ import {
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
+  normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
@@ -425,7 +426,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
-    listChannels: () => this.get(WEB_PATHS.channels),
+    listChannels: (opts) => {
+      if (!opts?.includeCompanyProjects || !opts.companyUid?.trim()) {
+        return this.get(WEB_PATHS.channelDirectory);
+      }
+      const params = new URLSearchParams({
+        companyUid: opts.companyUid.trim(),
+        includeCompanyProjects: "1",
+      });
+      return this.get(`${WEB_PATHS.channelDirectory}?${params.toString()}`);
+    },
     fetchChannelDirectory: (cursor) =>
       this.get(
         cursor
@@ -516,16 +526,24 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly notifications: PlatformAdapter["notifications"] = {
-    fetchNotifications: (opts) =>
-      this.get(
+    fetchNotifications: async (opts) => {
+      const result = await this.get<unknown>(
         opts && Object.keys(opts).length > 0
           ? `${WEB_PATHS.notifications}?${new URLSearchParams(opts as Record<string, string>).toString()}`
           : WEB_PATHS.notifications,
-      ),
+      );
+      if (!result.ok) return result;
+      return ok(normalizeNotificationsFeed(result.value));
+    },
     ack: (id) => this.post(WEB_PATHS.notificationAck, { id }),
     readAll: () => this.post(WEB_PATHS.notificationsReadAll, {}),
-    runAction: (id, action) =>
-      this.post(WEB_PATHS.notificationAction(id, action)),
+    runAction: (id, action, actionRef) =>
+      this.post(
+        WEB_PATHS.notificationAction(id, action),
+        typeof actionRef === "string" && actionRef.trim()
+          ? { actionRef }
+          : undefined,
+      ),
     fetchDmInbox: (opts) =>
       this.get(
         opts && Object.keys(opts).length > 0

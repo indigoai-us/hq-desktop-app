@@ -562,6 +562,15 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     eprintln!("[oauth] token exchange completed");
 
     let state = crate::commands::auth::authenticated_state_from_tokens(&tokens);
+    crate::commands::auth::publish_auth_session(
+        &app,
+        crate::commands::auth::AuthSessionEnvelope {
+            account_id: state.account_id.clone(),
+            generation: 0,
+            status: crate::commands::auth::AuthSessionStatus::Active,
+            reason: None,
+        },
+    );
     // Native credentials are durable before this event goes out. Embedded HQ
     // Work uses this completion edge to re-hydrate account and memberships;
     // the payload contains only the existing non-secret auth state.

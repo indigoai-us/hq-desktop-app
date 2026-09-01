@@ -17,6 +17,7 @@
 
   interface Props {
     companies?: Workspace[] | null;
+    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
     consoleBase?: string;
@@ -26,6 +27,7 @@
 
   let {
     companies = [],
+    storage = typeof window !== "undefined" ? window.localStorage : null,
     personalLabel = null,
     onopenconsole,
     consoleBase = HQ_CONSOLE_BASE,
@@ -33,7 +35,7 @@
   }: Props = $props();
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
-  let prefs = $state(readSettingsPrefs());
+  let prefs = $state(readSettingsPrefs(storage));
   let externalError = $state<string | null>(null);
 
   function isOn(row: SettingsCompanyRow): boolean {
@@ -44,7 +46,7 @@
   function toggle(row: SettingsCompanyRow): void {
     prefs = writeSettingsPrefs({
       companySync: { [row.id]: !isOn(row) },
-    });
+    }, storage);
   }
 
   function companyUrl(slug: string): string {

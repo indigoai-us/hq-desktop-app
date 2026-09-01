@@ -46,6 +46,7 @@
   import {
     configureMeetingsApi,
     prefetchMeetings,
+    setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
@@ -97,6 +98,7 @@
     ConversationApi,
     ConversationMessageWire,
     NotificationsApi,
+    ReplyThreadScope,
     ReplyThreadResponse,
   } from "../chat/chat-api.js";
   import {
@@ -179,6 +181,7 @@
     settingsProfileFromSelf,
     type SelfIdentity,
   } from "../identity/self.js";
+  import { createTenantStorage } from "../identity/tenant-storage.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -217,6 +220,10 @@
      * shared UI. Null on the unauth / empty path.
      */
     self?: SelfIdentity | null;
+    /** Native account partition for renderer persistence and async guards. */
+    tenantAccountId?: string | null;
+    /** Monotonic native auth-session generation. A new value remounts the host. */
+    tenantGeneration?: number;
     /**
      * Optional explicit admin/owner flag from a defensive host probe
      * (`identity.isAdmin()`). When omitted, admin is derived from membership
@@ -276,6 +283,18 @@
     packagesEvents?: PackagesEvents | null;
     /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
     notificationWakeSeq?: number;
+    /** Host owns native active-thread registration for realtime reply wakes. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -314,6 +333,8 @@
     wakes = null,
     companies = null,
     self = null,
+    tenantAccountId = null,
+    tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
     accountInitials = null,
@@ -333,6 +354,7 @@
     onembeddednavigationready,
     packagesEvents = null,
     notificationWakeSeq = 0,
+    onactivethreadchange,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
@@ -423,6 +445,13 @@
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   let meshConnectionState = $state<string>("idle");
+  let tenantCompanyId = $state<string | null>(null);
+  const tenantStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
+    ),
+  );
   const liveSyncState = $derived<SyncState>(syncStateFromLive(liveSync));
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
@@ -1305,6 +1334,33 @@
 
   let liveMentionTargets = $state<MentionTarget[]>([]);
 
+  function changeTenantCompany(companyUid: string | null): void {
+    if (tenantCompanyId === companyUid) return;
+    // Company scope is a tenant boundary too. Remove every visible selection
+    // before the re-keyed sidebar begins reads in the replacement scope.
+    tenantCompanyId = companyUid;
+    selectedRow = null;
+    liveTimeline = [];
+    liveTimelineId = null;
+    timelineHydrating = false;
+    openReplyRootId = null;
+    openProfileMember = null;
+    attachTray = null;
+    replyPreviewByRoot = {};
+    // Meetings is a module-level warm store. Rotate it with the visible
+    // company boundary as well, otherwise a completed agenda request could
+    // paint metadata from the previously selected workspace.
+    configureMeetingsApi({
+      meetings: adapter.meetings,
+      feedback: adapter.feedback,
+      storage: tenantStorage,
+      sessionGeneration: tenantGeneration,
+    });
+    startMeetingsStore();
+    if (view === "meetings") setMeetingsViewActive(true);
+    void prefetchMeetings();
+  }
+
   onMount(() => {
     let cancelled = false;
     void adapter.messaging.listContacts().then((res) => {
@@ -1353,12 +1409,20 @@
   async function catchUpDmInbox(): Promise<void> {
     const bus = wakes;
     if (!bus) return;
-    const storage = typeof window !== "undefined" ? window.localStorage : null;
+    const expectedGeneration = tenantGeneration;
+    const expectedCompanyId = tenantCompanyId;
+    const storage = tenantStorage;
     const since = storage?.getItem(DM_INBOX_SINCE_KEY)?.trim() || undefined;
     const res = await adapter.notifications.fetchDmInbox({
       ...(since ? { since } : {}),
       limit: "50",
     });
+    if (
+      expectedGeneration !== tenantGeneration ||
+      expectedCompanyId !== tenantCompanyId
+    ) {
+      return;
+    }
     if (!res.ok) return;
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
@@ -1817,7 +1881,7 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
-    const prefs = readSettingsPrefs();
+    const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
@@ -1851,6 +1915,8 @@
     configureMeetingsApi({
       meetings: adapter.meetings,
       feedback: adapter.feedback,
+      storage: tenantStorage,
+      sessionGeneration: tenantGeneration,
     });
     startMeetingsStore();
     void prefetchMeetings();
@@ -1919,7 +1985,7 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-    function onOpenSettingsEvent(): void {
+  function onOpenSettingsEvent(): void {
       openSettings();
     }
     function onEmbeddedNavigation(event: Event): void {
@@ -1997,6 +2063,8 @@
         profile={resolvedSettingsProfile}
         {companies}
         {adapter}
+        sessionGeneration={tenantGeneration}
+        storage={tenantStorage}
         {version}
         initialSection={settingsSection}
         onback={closeSettings}
@@ -2010,6 +2078,7 @@
   {:else}
     <div class="desktop-body">
       {#if !sidebarCollapsed}
+        {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
           api={sidebarApi}
           {wakes}
@@ -2019,11 +2088,15 @@
           accountLabel={resolvedAccountLabel}
           accountInitials={resolvedAccountInitials}
           selectedId={selectedRow?.id ?? null}
+          scopeUid={tenantCompanyId}
+          {tenantAccountId}
+          {tenantCompanyId}
           {seedDirectory}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
             })}
+          oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
             view = "conversation";
@@ -2032,6 +2105,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
         />
+        {/key}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -2062,6 +2136,8 @@
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
+            storage={tenantStorage}
+            sessionGeneration={tenantGeneration}
             onback={() => {
               view = "conversation";
               meetingFocusRequest = null;
@@ -2375,6 +2451,7 @@
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
+                    onactivethreadchange={onactivethreadchange}
                     {avatarByUid}
                     {displayNameByUid}
                     onopenprofile={openProfileForAuthor}

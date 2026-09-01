@@ -258,6 +258,60 @@ describe("ChannelFilesTab", () => {
     },
   );
 
+  it("does not surface an account A action failure after account B reopens the same file", async () => {
+    const accountAAction = {
+      reject: null as ((reason?: unknown) => void) | null,
+    };
+    const reveal = vi.fn(
+      () =>
+        new Promise<unknown>((_resolve, reject) => {
+          accountAAction.reject = reject;
+        }),
+    );
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const harness = mount(ChannelFilesTabHarness, {
+      target: host,
+      props: {
+        onloadpreview: async () => ({ kind: "text", text: "Account-scoped brief" }),
+        onreveal: reveal,
+      },
+    });
+
+    flushSync(() => {
+      harness.replaceFiles(files);
+      harness.replacePreviewContext("account-a|cmp_member|chn_demo");
+    });
+    await flush();
+    flushSync(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+    );
+    await flush();
+    flushSync(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="channel-file-reveal"]')?.click(),
+    );
+    expect(reveal).toHaveBeenCalledTimes(1);
+
+    flushSync(() => harness.replacePreviewContext("account-b|cmp_member|chn_demo"));
+    await flush();
+    flushSync(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="channel-file-row"]')?.click(),
+    );
+    await flush();
+
+    const reject = accountAAction.reject;
+    if (!reject) throw new Error("Account A action did not start.");
+    reject(new Error("Account A access was revoked"));
+    await flush();
+
+    expect(host.querySelector('[data-testid="channel-file-action-error"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="channel-file-preview-text"]')?.textContent,
+    ).toContain("Account-scoped brief");
+    await unmount(harness);
+  });
+
   it("releases a deferred blob preview that resolves after component teardown", async () => {
     const originalRevoke = URL.revokeObjectURL;
     const revoke = vi.fn();

@@ -329,9 +329,11 @@ export function createHybridSidebarApi(
     ...(persist?.addChannelMember
       ? { addChannelMember: persist.addChannelMember.bind(persist) }
       : {}),
-    ...(persist?.sendChannelMessage
-      ? { sendChannelMessage: persist.sendChannelMessage.bind(persist) }
-      : {}),
+    sendChannelMessage: (args) =>
+      persist?.sendChannelMessage
+        ? persist.sendChannelMessage.call(persist, args)
+        : live.sendChannelMessage(args),
+    sendDm: (args) => live.sendDm(args),
     searchMessages: (args) => live.searchMessages(args),
   };
 }
@@ -342,6 +344,7 @@ export interface CacheSidebarPersist {
   createChannel?: ChatSidebarApi["createChannel"];
   addChannelMember?: ChatSidebarApi["addChannelMember"];
   sendChannelMessage?: ChatSidebarApi["sendChannelMessage"];
+  sendDm?: ChatSidebarApi["sendDm"];
 }
 
 /** Directory from the mesh overlay. Contacts come from inbox merge when given. */
@@ -361,6 +364,18 @@ export function createCacheSidebarApi(
     markChannelRead: async (channelId) => {
       await persist?.markChannelRead?.(channelId);
     },
+    sendChannelMessage: async (args) => {
+      if (!persist?.sendChannelMessage) {
+        throw new Error("Message sending is unavailable while offline");
+      }
+      await persist.sendChannelMessage(args);
+    },
+    sendDm: async (args) => {
+      if (!persist?.sendDm) {
+        throw new Error("Message sending is unavailable while offline");
+      }
+      await persist.sendDm(args);
+    },
     searchMessages: async () => ({ results: [] }),
     // Channel create/membership/send are live capabilities the host may wire
     // in. Forwarding them matters: the sidebar hides every "New channel"
@@ -371,9 +386,6 @@ export function createCacheSidebarApi(
       : {}),
     ...(persist?.addChannelMember
       ? { addChannelMember: persist.addChannelMember.bind(persist) }
-      : {}),
-    ...(persist?.sendChannelMessage
-      ? { sendChannelMessage: persist.sendChannelMessage.bind(persist) }
       : {}),
   };
 }

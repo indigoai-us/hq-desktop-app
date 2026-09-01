@@ -69,7 +69,7 @@ use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
-const WINDOW_LABEL: &str = "desktop-alt";
+pub const WINDOW_LABEL: &str = "desktop-alt";
 const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
 
 /// Desktop session scope — mirrors CLI session `company_slug` binding for read gates.

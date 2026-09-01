@@ -8,7 +8,7 @@
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { listen } from '@tauri-apps/api/event';
-  import { onMount } from 'svelte';
+  import { flushSync, onMount } from 'svelte';
   import {
     DesktopApp,
     createChatWakeBus,
@@ -29,6 +29,7 @@
     createEmbeddedNavigationController,
     createHqWorkPackagesEvents,
     createHqWorkSidebarApi,
+    subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { openApprovedExternalUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -52,15 +53,35 @@
   let self = $state<SelfIdentity | null>(null);
   let companies = $state<Workspace[] | null>(null);
   let version = $state('0.0.0');
-  type Lifecycle = 'loading' | 'ready' | 'signed-out' | 'identity-error';
+  type Lifecycle =
+    | 'loading'
+    | 'ready'
+    | 'signed-out'
+    | 'recovery'
+    | 'identity-error';
+  type AuthSessionStatus =
+    | 'active'
+    | 'credentials_absent'
+    | 'credentials_invalid'
+    | 'refresh_temporarily_unavailable';
+  interface AuthSessionEnvelope {
+    accountId: string | null;
+    generation: number;
+    status: AuthSessionStatus;
+    reason: string | null;
+  }
   let lifecycle = $state<Lifecycle>('loading');
-  let signedOutReason = $state<'signed-out' | 'expired'>('signed-out');
+  let signedOutReason = $state<'signed-out' | 'expired' | 'invalid'>('signed-out');
   let identityError = $state<string | null>(null);
   let workspaceError = $state<string | null>(null);
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
   let reauthError = $state<string | null>(null);
+  let notificationWakeSeq = $state(0);
   let hydration = 0;
+  let authGeneration = $state(0);
+  let authAccountId = $state<string | null>(null);
+  let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
@@ -81,6 +102,90 @@
     );
   }
 
+  function parseAuthSessionEnvelope(value: unknown): AuthSessionEnvelope | null {
+    if (!value || typeof value !== 'object') return null;
+    const candidate = value as Record<string, unknown>;
+    const accountId =
+      typeof candidate.accountId === 'string' && candidate.accountId.trim()
+        ? candidate.accountId.trim()
+        : null;
+    const generation = candidate.generation;
+    const status = candidate.status;
+    if (
+      typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1 ||
+      !isAuthSessionStatus(status)
+    ) {
+      return null;
+    }
+    const rawReason = typeof candidate.reason === 'string' ? candidate.reason.trim() : '';
+    return {
+      accountId,
+      generation,
+      status,
+      reason: rawReason ? rawReason.slice(0, 200) : null,
+    };
+  }
+
+  function isAuthSessionStatus(value: unknown): value is AuthSessionStatus {
+    return (
+      value === 'active' ||
+      value === 'credentials_absent' ||
+      value === 'credentials_invalid' ||
+      value === 'refresh_temporarily_unavailable'
+    );
+  }
+
+  /**
+   * The native session event is the only authority allowed to cross tenants.
+   * Clear synchronously before starting a B request: every mounted descendant
+   * is keyed by this generation, so its async work is cancelled at the same
+   * boundary rather than being asked to recognize a future account later.
+   */
+  function acceptAuthSession(next: AuthSessionEnvelope): void {
+    if (next.generation < authGeneration) return;
+    if (
+      next.generation === authGeneration &&
+      next.accountId === authAccountId &&
+      next.status === 'active'
+    ) {
+      return;
+    }
+    authGeneration = next.generation;
+    authAccountId = next.accountId;
+    hydration += 1;
+    detachNavigation?.();
+    detachNavigation = null;
+    self = null;
+    companies = null;
+    workspaceError = null;
+    identityError = null;
+    signOutError = null;
+    reauthError = null;
+
+    if (next.status === 'credentials_absent') {
+      signedOutReason = 'signed-out';
+      lifecycle = 'signed-out';
+      flushSync();
+      return;
+    }
+    if (next.status === 'credentials_invalid') {
+      signedOutReason = 'invalid';
+      lifecycle = 'signed-out';
+      flushSync();
+      return;
+    }
+    if (next.status === 'refresh_temporarily_unavailable') {
+      lifecycle = 'recovery';
+      flushSync();
+      return;
+    }
+    lifecycle = 'loading';
+    flushSync();
+    void hydrateSession(next.generation);
+  }
+
   async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -98,13 +203,13 @@
     }
   }
 
-  async function refreshWorkspaces(request: number): Promise<void> {
+  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<void> {
     try {
       const result = await bounded(
         adapter.identity.listWorkspaces(),
         'Workspace lookup',
       );
-      if (request !== hydration || lifecycle === 'signed-out') return;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
       if (!result.ok) {
         companies = null;
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
@@ -113,13 +218,13 @@
       companies = workspacesFromMembershipRows(result.value);
       workspaceError = null;
     } catch (error) {
-      if (request !== hydration || lifecycle === 'signed-out') return;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
       companies = null;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
     }
   }
 
-  async function hydrateSession(): Promise<void> {
+  async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
     lifecycle = 'loading';
     identityError = null;
@@ -131,8 +236,30 @@
     companies = null;
 
     try {
-      const who = await bounded(adapter.identity.whoami(), 'Identity lookup');
-      if (request !== hydration) return;
+      // Start the identity request under this request/generation lease while
+      // native resolves credentials. If native reports a newer tenant, its
+      // completion is ignored below; starting both keeps the no-transition
+      // bootstrap path from adding a second visible loading turn.
+      const whoami = bounded(adapter.identity.whoami(), 'Identity lookup');
+      const nativeSession = parseAuthSessionEnvelope(
+        await bounded(invokeFn('get_auth_session'), 'Auth session lookup'),
+      );
+      if (request !== hydration || expectedGeneration !== authGeneration) return;
+      if (
+        nativeSession &&
+        (nativeSession.generation !== authGeneration ||
+          nativeSession.accountId !== authAccountId ||
+          nativeSession.status !== 'active')
+      ) {
+        // This request no longer owns the shell. Its speculative identity
+        // result cannot update a later tenant, but must still be observed so
+        // a rejected network promise never becomes an unhandled rejection.
+        void whoami.catch(() => undefined);
+        acceptAuthSession(nativeSession);
+        return;
+      }
+      const who = await whoami;
+      if (request !== hydration || expectedGeneration !== authGeneration) return;
       if (!who.ok) {
         if (isUnauthenticated(who)) {
           signedOutReason = 'expired';
@@ -149,16 +276,16 @@
         displayName: who.value.displayName,
       });
       lifecycle = 'ready';
-      void refreshWorkspaces(request);
+      void refreshWorkspaces(request, expectedGeneration);
     } catch (error) {
-      if (request !== hydration) return;
+      if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
       lifecycle = 'identity-error';
     }
 
     void getVersion()
       .then((next) => {
-        if (request === hydration) version = next;
+        if (request === hydration && expectedGeneration === authGeneration) version = next;
       })
       .catch(() => undefined);
   }
@@ -166,7 +293,20 @@
   async function retryWorkspaces(): Promise<void> {
     if (lifecycle !== 'ready') return;
     workspaceError = null;
-    await refreshWorkspaces(hydration);
+    await refreshWorkspaces(hydration, authGeneration);
+  }
+
+  function requestRevalidation(options: { automatic?: boolean } = {}): void {
+    // Browser wakeups are recovery probes only. Revalidating a ready session
+    // forces `hydrateSession()` through loading and remounts DesktopApp,
+    // which discards the user's current destination for no auth transition.
+    // OAuth completion and explicit Retry remain allowed outside recovery.
+    if (options.automatic && lifecycle !== 'recovery') return;
+    if (revalidationPending) return;
+    revalidationPending = true;
+    void hydrateSession(authGeneration).finally(() => {
+      revalidationPending = false;
+    });
   }
 
   async function signOut(): Promise<void> {
@@ -176,6 +316,8 @@
     try {
       await invokeFn('sign_out');
       navigation.clear();
+      authGeneration += 1;
+      authAccountId = null;
       self = null;
       companies = null;
       workspaceError = null;
@@ -197,31 +339,99 @@
     }
   }
 
+  // Sync owns MQTT credentials and turns wake-only publishes into reconciled,
+  // authenticated native events. Subscribe only for the currently mounted
+  // account/membership snapshot; explicit foreign company payloads fail closed.
+  $effect(() => {
+    const personUid = self?.uid?.trim() ?? '';
+    const scopedCompanies = companies;
+    if (lifecycle !== 'ready' || !personUid) return;
+    const companyUids = new Set(
+      (scopedCompanies ?? [])
+        .map((company) => company.cloudUid?.trim() ?? '')
+        .filter(Boolean),
+    );
+    let closed = false;
+    const subscribed = subscribeHqWorkNativeWakes({
+      listen,
+      wakes,
+      scope: () => {
+        if (closed || lifecycle !== 'ready' || self?.uid !== personUid) return null;
+        return { personUid, companyUids };
+      },
+      onNotificationWake: () => {
+        if (!closed && lifecycle === 'ready' && self?.uid === personUid) {
+          notificationWakeSeq += 1;
+        }
+      },
+    });
+    return () => {
+      closed = true;
+      void subscribed.then((unsubscribe) => unsubscribe());
+    };
+  });
+
+  function setActiveReplyThread(
+    active:
+      | {
+          rootEventId: string;
+          scope: 'channel' | 'dm';
+          channelId?: string | null;
+          withPersonUid?: string | null;
+          seenReplyIds: string[];
+        }
+      | null,
+  ): void {
+    if (lifecycle !== 'ready' || !self?.uid) return;
+    void invokeFn(
+      'set_active_thread',
+      active
+        ? {
+            rootEventId: active.rootEventId,
+            scope: active.scope,
+            channelId: active.channelId ?? null,
+            withPersonUid: active.withPersonUid ?? null,
+            seenReplyIds: active.seenReplyIds,
+          }
+        : { rootEventId: null },
+    ).catch(() => {
+      // Native active-thread registration is a realtime optimization. The
+      // shared UI retains its bounded disconnected-state fallback when absent.
+    });
+  }
+
   onMount(() => {
     let cancelled = false;
 
-    void hydrateSession();
-
-    void invokeFn('desktop_alt_consume_pending_route')
-      .then((pending) => {
+    // The route must be restored before its optional meeting-focus payload.
+    // Consume them in this order so a specific focus target is the final
+    // navigation request during a slow auth mount.
+    const restoreInitialNavigation = async () => {
+      try {
+        const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
         applyDesktopAltRoute(
           typeof pending === 'string' ? pending : null,
           navigation,
         );
-      })
-      .catch(() => undefined);
+        const meetingId = await invokeFn('meetings_take_pending_focus');
+        if (cancelled || typeof meetingId !== 'string' || !meetingId.trim()) return;
+        navigation.navigate({ kind: 'meetings', meetingId });
+      } catch {
+        // Pending desktop navigation is best-effort; a mounted route still
+        // accepts future native navigation events.
+      }
+    };
+    // Hydration may perform an extra native session lookup before the shared
+    // app mounts. Deferring cold delivery until that boundary has settled keeps
+    // a pending route/focus pair from racing a not-yet-attached renderer.
+    void hydrateSession().finally(() => {
+      if (!cancelled) void restoreInitialNavigation();
+    });
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
       applyDesktopAltRoute(event.payload, navigation);
     }).catch(() => () => {});
-
-    void invokeFn('meetings_take_pending_focus')
-      .then((meetingId) => {
-        if (cancelled || typeof meetingId !== 'string' || !meetingId.trim()) return;
-        navigation.navigate({ kind: 'meetings', meetingId });
-      })
-      .catch(() => undefined);
 
     const unlistenMeetingFocusPromise = listen<{ meetingId?: string }>(
       'meetings:focus-meeting',
@@ -234,8 +444,27 @@
     // Emitted only after OAuth tokens have been persisted by native code. This
     // is an authoritative completion edge, not a timing-based reauth poll.
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
-      if (!cancelled) void hydrateSession();
+      if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
+
+    const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
+      if (cancelled) return;
+      const next = parseAuthSessionEnvelope(event.payload);
+      if (next) acceptAuthSession(next);
+    }).catch(() => () => {});
+
+    const revalidateOnRecovery = () => {
+      if (!cancelled) requestRevalidation({ automatic: true });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') revalidateOnRecovery();
+    };
+    window.addEventListener('focus', revalidateOnRecovery);
+    window.addEventListener('online', revalidateOnRecovery);
+    // `pageshow` covers a restored/resumed webview where focus is not
+    // re-dispatched (for example after an OS sleep/wake cycle).
+    window.addEventListener('pageshow', revalidateOnRecovery);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       cancelled = true;
@@ -247,6 +476,11 @@
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
+      window.removeEventListener('focus', revalidateOnRecovery);
+      window.removeEventListener('online', revalidateOnRecovery);
+      window.removeEventListener('pageshow', revalidateOnRecovery);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   });
 </script>
@@ -258,7 +492,7 @@
     </section>
   {:else if lifecycle === 'signed-out'}
     <section class="lifecycle-state" data-testid="hq-work-signed-out" role="status">
-      <h1>{signedOutReason === 'expired' ? 'Your session expired' : 'You are signed out'}</h1>
+      <h1>{signedOutReason === 'expired' ? 'Your session expired' : signedOutReason === 'invalid' ? 'Your sign-in is no longer valid' : 'You are signed out'}</h1>
       <p>
         {signedOutReason === 'expired'
           ? 'Sign in again to continue using HQ Work.'
@@ -267,6 +501,12 @@
       <button type="button" onclick={() => void beginReauth()}>Sign in</button>
       <button type="button" class="secondary" onclick={() => void hydrateSession()}>Retry</button>
       {#if reauthError}<p class="lifecycle-error" role="alert">{reauthError}</p>{/if}
+    </section>
+  {:else if lifecycle === 'recovery'}
+    <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
+      <h1>Reconnecting your HQ Work session</h1>
+      <p>Your credentials are still saved. We’ll retry when the connection returns.</p>
+      <button type="button" class="secondary" onclick={() => requestRevalidation()}>Retry now</button>
     </section>
   {:else if lifecycle === 'identity-error'}
     <section class="lifecycle-state" data-testid="hq-work-identity-error" role="alert">
@@ -286,15 +526,19 @@
         <span>{signOutError}</span>
       </div>
     {/if}
+    {#key authGeneration}
     <DesktopApp
       {adapter}
       {version}
       {sidebarApi}
       {notificationsApi}
       {wakes}
+      {notificationWakeSeq}
       {packagesEvents}
       {companies}
       {self}
+      tenantAccountId={authAccountId}
+      tenantGeneration={authGeneration}
       settingsProfile={settingsProfileFromSelf(self)}
       hydrateLiveMessages={true}
       coreFixtures={false}
@@ -303,6 +547,7 @@
       onsignout={signOut}
       onOpenConsole={openApprovedExternalUrl}
       onopenurl={openApprovedExternalUrl}
+      onactivethreadchange={setActiveReplyThread}
       onembeddednavigationready={() => {
         detachNavigation?.();
         const detach = navigation.attach((target) => {
@@ -316,6 +561,7 @@
         };
       }}
     />
+    {/key}
   {/if}
 </div>
 

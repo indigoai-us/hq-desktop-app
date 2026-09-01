@@ -27,7 +27,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
     nativeListeners.set(name, handler);
-    return () => nativeListeners.delete(name);
+    return () => {
+      if (nativeListeners.get(name) === handler) nativeListeners.delete(name);
+    };
   }),
 }));
 
@@ -54,6 +56,12 @@ interface Options {
   pendingRoute?: string | null;
   pendingMeetingId?: string | null;
   signedIn?: boolean;
+  session?: {
+    accountId: string;
+    whoami: { personUid: string; email: string; displayName: string };
+    workspaces?: Promise<unknown>;
+  };
+  authSession?: unknown;
   calls?: string[];
   workspaceFailure?: boolean;
   identityFailure?: boolean;
@@ -63,6 +71,9 @@ interface Options {
   invocations?: Array<{ command: string; args?: Record<string, unknown> }>;
   nativeResults?: Record<string, unknown>;
   nativeErrors?: Record<string, string>;
+  notificationFeed?: { current: unknown };
+  fetchNotifications?: () => unknown;
+  sendChannelResponse?: Promise<unknown>;
 }
 
 function invokeFor(options: Options = {}): SyncInvokeFn {
@@ -75,8 +86,13 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
       return options.nativeResults?.[command];
     }
     switch (command) {
+      case 'get_auth_session':
+        return options.authSession ?? null;
       case 'get_auth_state':
-        return { authenticated: options.signedIn ?? true, accountId: 'acct_ada' };
+        return {
+          authenticated: options.signedIn ?? true,
+          accountId: options.session?.accountId ?? 'acct_ada',
+        };
       case 'desktop_alt_consume_pending_route':
         return options.pendingRoute ?? null;
       case 'meetings_take_pending_focus':
@@ -88,6 +104,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         return false;
       case 'list_syncable_workspaces':
         if (options.workspaceFailure) throw new Error('workspace service unavailable');
+        if (options.session?.workspaces) return options.session.workspaces;
         return {
           workspaces: [
             {
@@ -105,6 +122,8 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
             { channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering', scope: 'company' },
           ],
         };
+      case 'send_channel_message':
+        return options.sendChannelResponse ?? { eventId: 'evt_sent' };
       case 'list_contacts':
         return {
           contacts: [
@@ -117,8 +136,13 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           ],
         };
       case 'list_dm_requests':
-      case 'fetch_notifications':
         return { notifications: [] };
+      case 'fetch_notifications':
+        return options.fetchNotifications?.() ?? options.notificationFeed?.current ?? {
+          notifications: [],
+          unreadCount: 0,
+          nextCursor: null,
+        };
       case 'fetch_channel':
         return { messages: [{ eventId: 'evt_root', body: 'hello' }] };
       case 'fetch_thread':
@@ -161,7 +185,10 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
               body: JSON.stringify({ error: 'identity service unavailable' }),
             };
           }
-          return { status: 200, body: JSON.stringify(WHOAMI) };
+          return {
+            status: 200,
+            body: JSON.stringify(options.session?.whoami ?? WHOAMI),
+          };
         }
         if (path.startsWith('/v1/google/connect')) {
           return {
@@ -185,9 +212,17 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
   };
 }
 
-async function flush(times = 16): Promise<void> {
+async function flush(times = 64): Promise<void> {
   for (let i = 0; i < times; i += 1) await Promise.resolve();
   flushSync();
+}
+
+function setInput(testId: string, value: string): void {
+  const input = document.querySelector(`[data-testid="${testId}"]`) as
+    | HTMLInputElement
+    | HTMLTextAreaElement;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 let host: HTMLElement;
@@ -221,9 +256,21 @@ function warmAuthSessionReady(): void {
   listener({ payload: { authenticated: true } });
 }
 
+function warmAuthSessionChanged(payload: unknown): void {
+  const listener = nativeListeners.get('auth:session-changed');
+  if (!listener) throw new Error('auth:session-changed listener was not registered');
+  listener({ payload });
+}
+
 function warmPackageUpdates(payload: unknown): void {
   const listener = nativeListeners.get('packages:updates');
   if (!listener) throw new Error('packages:updates listener was not registered');
+  listener({ payload });
+}
+
+function nativeWake(name: string, payload: unknown): void {
+  const listener = nativeListeners.get(name);
+  if (!listener) throw new Error(`${name} listener was not registered`);
   listener({ payload });
 }
 
@@ -546,6 +593,194 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="reply-panel"]')).toBeTruthy();
   });
 
+  it('reconciles scoped native message, reply, and notification wakes without duplicate or foreign delivery', async () => {
+    const calls: string[] = [];
+    const notificationFeed = {
+      current: {
+        notifications: [],
+        unreadCount: 0,
+        nextCursor: null,
+      } as unknown,
+    };
+    await mountShell({ calls, notificationFeed });
+    // Workspace membership resolves after the authenticated shell. Wait until
+    // the native wake bridge has captured that tenant snapshot.
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeNull();
+
+    notificationFeed.current = {
+      notifications: [
+        {
+          id: 'notif-1',
+          type: 'mention',
+          status: 'unread',
+          title: 'mentioned you',
+          companyUid: 'cmp_indigo',
+          createdAt: '2026-09-01T00:00:00.000Z',
+        },
+      ],
+      unreadCount: 1,
+      nextCursor: 'next-page',
+    };
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_indigo',
+      events: [{ eventId: 'share-1' }],
+    });
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+
+    const fetchesAfterFirstWake = calls.filter((command) => command === 'fetch_notifications').length;
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_indigo',
+      events: [{ eventId: 'share-1' }],
+    });
+    await flush(64);
+    expect(calls.filter((command) => command === 'fetch_notifications')).toHaveLength(
+      fetchesAfterFirstWake,
+    );
+
+    notificationFeed.current = {
+      notifications: [
+        {
+          id: 'foreign-notif',
+          type: 'mention',
+          status: 'unread',
+          title: 'must not cross company boundary',
+          companyUid: 'cmp_other',
+        },
+      ],
+      unreadCount: 2,
+      nextCursor: null,
+    };
+    nativeWake('share:new-events', {
+      companyUid: 'cmp_other',
+      events: [{ eventId: 'share-foreign' }],
+    });
+    await flush(64);
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+    expect(calls.filter((command) => command === 'fetch_notifications')).toHaveLength(
+      fetchesAfterFirstWake,
+    );
+
+    warmRoute('hqwork://open?channel=chn_engineering&reply=evt_root');
+    await flush(64);
+    const channelFetches = calls.filter((command) => command === 'fetch_channel').length;
+    const replyFetches = calls.filter((command) => command === 'fetch_thread').length;
+
+    nativeWake('channel:new-message', {
+      channelId: 'chn_engineering',
+      eventId: 'evt-channel-2',
+      companyUid: 'cmp_indigo',
+    });
+    nativeWake('thread:new-reply', {
+      rootEventId: 'evt_root',
+      eventId: 'evt-reply-2',
+      scope: 'channel',
+      channelId: 'chn_engineering',
+      companyUid: 'cmp_indigo',
+    });
+    await flush(64);
+    expect(calls.filter((command) => command === 'fetch_channel').length).toBeGreaterThan(
+      channelFetches,
+    );
+    expect(calls.filter((command) => command === 'fetch_thread').length).toBeGreaterThan(
+      replyFetches,
+    );
+
+  });
+
+  it('rotates account A to B and ignores account A notification work that completes late', async () => {
+    type NotificationFeed = {
+      notifications: Array<{
+        id: string;
+        type: string;
+        status: string;
+        title: string;
+        companyUid: string;
+      }>;
+      unreadCount: number;
+      nextCursor: null;
+    };
+    let releaseAccountA!: (value: NotificationFeed) => void;
+    const accountANotifications = new Promise<NotificationFeed>((resolve) => {
+      releaseAccountA = resolve;
+    });
+    const accountA = {
+      accountId: 'acct_a',
+      whoami: {
+        personUid: 'prs_account_a',
+        email: 'account-a@example.test',
+        displayName: 'Ada Account',
+      },
+    };
+    const accountB = {
+      accountId: 'acct_b',
+      whoami: {
+        personUid: 'prs_account_b',
+        email: 'account-b@example.test',
+        displayName: 'Blaise Account',
+      },
+    };
+    const options: Options = {
+      session: accountA,
+      fetchNotifications: () =>
+        options.session?.accountId === 'acct_a'
+          ? accountANotifications
+          : {
+              notifications: [
+                {
+                  id: 'notification-b',
+                  type: 'mention',
+                  status: 'unread',
+                  title: 'Account B notification',
+                  companyUid: 'cmp_indigo',
+                },
+              ],
+              unreadCount: 1,
+              nextCursor: null,
+            },
+    };
+    await mountShell(options);
+    await flush(64);
+
+    options.session = accountB;
+    warmAuthSessionChanged({
+      accountId: 'acct_b',
+      generation: 1,
+      status: 'active',
+      reason: null,
+    });
+    await flush(128);
+
+    expect(host.querySelector('[data-testid="chat-user-card"]')?.textContent).toContain('Blaise');
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="notifications-unread"]')?.textContent?.trim()).toBe(
+      '1 unread',
+    );
+    expect(host.textContent).toContain('Account B notification');
+
+    releaseAccountA({
+      notifications: [
+        {
+          id: 'notification-a-stale',
+          type: 'mention',
+          status: 'unread',
+          title: 'Account A stale notification',
+          companyUid: 'cmp_indigo',
+        },
+      ],
+      unreadCount: 9,
+      nextCursor: null,
+    });
+    await flush(128);
+
+    expect(host.textContent).not.toContain('Account A stale notification');
+    expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="notifications-unread"]')?.textContent?.trim()).toBe(
+      '1 unread',
+    );
+  });
+
   it('consumes a cold meeting focus id and marks the requested agenda row', async () => {
     await mountShell({ pendingRoute: 'meetings', pendingMeetingId: 'mtg_focus' });
     (host.querySelector('[data-testid="meetings-refresh"]') as HTMLButtonElement).click();
@@ -614,6 +849,67 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe(true);
   });
 
+  it('keeps automatic Inbox hydration and a replacement compose draft intact across a delayed send', async () => {
+    let releaseDirectory: ((value: unknown) => void) | undefined;
+    const directoryResponse = new Promise<unknown>((resolve) => {
+      releaseDirectory = resolve;
+    });
+    let releaseSend: ((value: unknown) => void) | undefined;
+    const sendChannelResponse = new Promise<unknown>((resolve) => {
+      releaseSend = resolve;
+    });
+    await mountShell({ pendingRoute: 'inbox', directoryResponse, sendChannelResponse });
+
+    releaseDirectory?.({
+      channels: [{ channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering' }],
+    });
+    await flush(64);
+
+    // The channel directory's automatic first-row selection must not pull a
+    // host-selected Inbox back to Messages.
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+
+    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    setInput('chat-compose-to', 'engineering');
+    setInput('chat-compose-body', 'old delayed draft');
+    await flush();
+    (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+    await flush();
+
+    // Start a newer compose instance while the old host send is still in
+    // flight. Its completion must not close or clear this replacement draft.
+    (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
+    await flush();
+    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    setInput('chat-compose-to', 'engineering');
+    setInput('chat-compose-body', 'new replacement draft');
+    await flush();
+
+    releaseSend?.({ eventId: 'evt_old' });
+    await flush(64);
+
+    expect(
+      host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
+    ).toBe(true);
+    expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
+    expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe(
+      'engineering',
+    );
+    expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe(
+      'new replacement draft',
+    );
+  });
+
   it('rehydrates the compact embedded shell from the native OAuth completion event', async () => {
     const auth = { signedIn: false, calls: [] as string[] };
     await mountShell(auth);
@@ -678,7 +974,8 @@ describe('embedded Work navigation and lifecycle', () => {
       target: host,
       props: { invokeFn: invokeFor({ pendingRoute: 'settings', calls }) },
     });
-    await flush();
+    await flush(64);
+    expect(nativeListeners.has('share:new-events')).toBe(true);
 
     (host.querySelector('[data-testid="settings-sign-out"]') as HTMLButtonElement).click();
     await flush();
@@ -688,6 +985,7 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(calls).toContain('sign_out');
     expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+    expect(nativeListeners.has('share:new-events')).toBe(false);
 
     // The old DesktopApp listener is detached while signed out. A new native
     // route must be queued for the next mounted host rather than dispatched
@@ -765,5 +1063,149 @@ describe('embedded Work navigation and lifecycle', () => {
     (host.querySelector('[data-testid="hq-work-workspace-error"] button') as HTMLButtonElement).click();
     await flush(64);
     expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+  });
+
+  it('synchronously clears account A and rejects its late workspace completion after native switches to B', async () => {
+    let releaseAWorkspaces: ((value: unknown) => void) | undefined;
+    const account: NonNullable<Options['session']> = {
+      accountId: 'acct_ada',
+      whoami: WHOAMI,
+      workspaces: new Promise<unknown>((resolve) => {
+        releaseAWorkspaces = resolve;
+      }),
+    };
+    await mountShell({ session: account });
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+
+    account.accountId = 'acct_grace';
+    account.whoami = {
+      personUid: 'prs_grace',
+      email: 'grace@example.test',
+      displayName: 'Grace Hopper',
+    };
+    warmAuthSessionChanged({
+      accountId: 'acct_grace',
+      generation: 2,
+      status: 'active',
+      reason: 'account changed',
+    });
+
+    // The tenant boundary is synchronous: no A-labelled renderer stays mounted
+    // while the B identity/profile/workspaces loads.
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeTruthy();
+
+    releaseAWorkspaces?.({
+      workspaces: [
+        { slug: 'indigo', cloudUid: 'cmp_indigo', role: 'owner', membershipStatus: 'active' },
+      ],
+    });
+    await flush(64);
+
+    warmRoute('settings');
+    await flush(64);
+    expect(
+      (host.querySelector('[data-testid="settings-display-name-input"]') as HTMLInputElement)
+        .value,
+    ).toBe('Grace');
+  });
+
+  it('retries only the recoverable native refresh state on coalesced online/focus recovery', async () => {
+    const calls: string[] = [];
+    const auth: Options = {
+      calls,
+      authSession: {
+        accountId: 'acct_ada',
+        generation: 1,
+        status: 'refresh_temporarily_unavailable',
+        reason: 'network unavailable',
+      },
+    };
+    await mountShell(auth);
+    expect(host.querySelector('[data-testid="hq-work-auth-recovery"]')).toBeTruthy();
+    const before = calls.filter((command) => command === 'get_auth_session').length;
+
+    auth.authSession = {
+      accountId: 'acct_ada',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    };
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('focus'));
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+    // Both browser recovery signals share one in-flight revalidation. The
+    // second lookup is the nested B-generation hydration, not a second focus
+    // or online request.
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before + 2);
+  });
+
+  it('keeps a ready shell mounted and on its destination during ordinary browser wakeups', async () => {
+    const calls: string[] = [];
+    await mountShell({ calls });
+    warmRoute('settings:appearance');
+    await flush();
+    const before = calls.filter((command) => command === 'get_auth_session').length;
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush(64);
+
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(before);
+    expect(host.querySelector('[data-testid="hq-work-loading"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="settings-nav-appearance"]')?.getAttribute('aria-current'),
+    ).toBe('page');
+  });
+
+  it('keeps invalid credentials fail closed until the user explicitly retries', async () => {
+    const calls: string[] = [];
+    const auth: Options = {
+      calls,
+      authSession: {
+        accountId: 'acct_ada',
+        generation: 1,
+        status: 'credentials_invalid',
+        reason: 'refresh token rejected',
+      },
+    };
+    await mountShell(auth);
+    expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
+    expect(host.textContent).toContain('sign-in is no longer valid');
+    const beforeAutomaticRecovery = calls.filter(
+      (command) => command === 'get_auth_session',
+    ).length;
+
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('pageshow'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+
+    expect(calls.filter((command) => command === 'get_auth_session').length).toBe(
+      beforeAutomaticRecovery,
+    );
+
+    auth.authSession = {
+      accountId: 'acct_ada',
+      generation: 2,
+      status: 'active',
+      reason: null,
+    };
+    const retry = host.querySelector(
+      '[data-testid="hq-work-signed-out"] button.secondary',
+    ) as HTMLButtonElement;
+    retry.click();
+    await flush(64);
+
+    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
   });
 });

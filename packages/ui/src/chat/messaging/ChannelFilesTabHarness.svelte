@@ -4,9 +4,10 @@
 
   interface Props {
     onloadpreview: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
+    onreveal?: (item: ChannelFileItemModel) => Promise<unknown>;
   }
 
-  let { onloadpreview }: Props = $props();
+  let { onloadpreview, onreveal }: Props = $props();
   let files = $state<ChannelFileItemModel[]>([]);
   let previewContext = $state<string | null>(null);
 
@@ -19,4 +20,4 @@
   }
 </script>
 
-<ChannelFilesTab {files} {previewContext} {onloadpreview} />
+<ChannelFilesTab {files} {previewContext} {onloadpreview} {onreveal} />

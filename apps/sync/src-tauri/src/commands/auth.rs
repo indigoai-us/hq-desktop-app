@@ -1,5 +1,96 @@
 use super::cognito::{self, AuthState, CognitoTokens};
+use serde::Serialize;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
+
+pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
+const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
+
+/// Native-to-renderer tenant boundary. This is deliberately independent of a
+/// `/whoami` request: the renderer must withdraw old tenant state before it
+/// begins any cloud hydration, and it must never see bearer material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSessionStatus {
+    Active,
+    CredentialsAbsent,
+    CredentialsInvalid,
+    RefreshTemporarilyUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthSessionEnvelope {
+    pub account_id: Option<String>,
+    pub generation: u64,
+    pub status: AuthSessionStatus,
+    pub reason: Option<String>,
+}
+
+static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
+
+fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
+    AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
+}
+
+fn bounded_reason(reason: Option<&str>) -> Option<String> {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(MAX_AUTH_SESSION_REASON_CHARS).collect())
+}
+
+fn next_auth_session_envelope(
+    previous: Option<&AuthSessionEnvelope>,
+    account_id: Option<String>,
+    status: AuthSessionStatus,
+    reason: Option<&str>,
+) -> AuthSessionEnvelope {
+    let reason = bounded_reason(reason);
+    let unchanged = previous.is_some_and(|current| {
+        current.account_id == account_id && current.status == status && current.reason == reason
+    });
+    AuthSessionEnvelope {
+        account_id,
+        generation: if unchanged {
+            previous.expect("checked above").generation
+        } else {
+            previous.map_or(1, |current| current.generation.saturating_add(1))
+        },
+        status,
+        reason,
+    }
+}
+
+pub(crate) fn publish_auth_session(
+    app: &AppHandle,
+    next: AuthSessionEnvelope,
+) -> AuthSessionEnvelope {
+    let current = {
+        let mut guard = auth_session_envelope_cell()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = next_auth_session_envelope(
+            guard.as_ref(),
+            next.account_id,
+            next.status,
+            next.reason.as_deref(),
+        );
+        let changed = guard.as_ref() != Some(&current);
+        *guard = Some(current.clone());
+        (current, changed)
+    };
+    if current.1 {
+        // The desktop label is intentional: auth events for the compact main
+        // window must not be mistaken for an embedded Work tenant transition.
+        let _ = app.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
+            AUTH_SESSION_CHANGED_EVENT,
+            &current.0,
+        );
+    }
+    current.0
+}
 
 /// Update Sentry's scoped user context to the Cognito identity carried in
 /// `tokens`. Best-effort: a malformed/missing id_token just clears the user
@@ -85,24 +176,92 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
     }
 }
 
-#[tauri::command]
-pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
-    match crate::commands::dm_notify::resolve_notification_credentials(&app).await {
+fn signed_out_state() -> AuthState {
+    AuthState {
+        authenticated: false,
+        expires_at: None,
+        account_id: None,
+        email: None,
+        display_name: None,
+    }
+}
+
+/// Resolve the credential state once, then publish the same non-secret result
+/// to the embedded renderer. A refresh transport failure deliberately leaves
+/// the stored credential intact and becomes a recoverable state; an invalid
+/// refresh is observed after Cognito has invalidated its file and becomes a
+/// fail-closed signed-out state.
+async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
+    let before = cognito::get_tokens().await.ok().flatten();
+    let outcome = crate::commands::dm_notify::resolve_notification_credentials(app).await;
+    let (state, status, account_id, reason) = match outcome {
         Ok((tokens, _)) => {
             set_sentry_user_from_tokens(&tokens);
-            Ok(authenticated_state_from_tokens(&tokens))
+            let state = authenticated_state_from_tokens(&tokens);
+            (
+                state,
+                AuthSessionStatus::Active,
+                Some(notification_identity_from_tokens(&tokens)),
+                None,
+            )
         }
+        Err(_) if before.is_none() => (
+            signed_out_state(),
+            AuthSessionStatus::CredentialsAbsent,
+            None,
+            Some("No HQ Work credentials are saved on this device."),
+        ),
         Err(_) => {
-            clear_sentry_user();
-            Ok(AuthState {
-                authenticated: false,
-                expires_at: None,
-                account_id: None,
-                email: None,
-                display_name: None,
-            })
+            let after = cognito::get_tokens().await.ok().flatten();
+            let preserved_account = before
+                .as_ref()
+                .or(after.as_ref())
+                .map(notification_identity_from_tokens);
+            if after.is_none() {
+                (
+                    signed_out_state(),
+                    AuthSessionStatus::CredentialsInvalid,
+                    preserved_account,
+                    Some("Your saved HQ Work credentials are no longer valid."),
+                )
+            } else {
+                (
+                    signed_out_state(),
+                    AuthSessionStatus::RefreshTemporarilyUnavailable,
+                    preserved_account,
+                    Some("HQ Work could not refresh credentials while offline or unavailable."),
+                )
+            }
         }
+    };
+    if !state.authenticated {
+        clear_sentry_user();
     }
+    let envelope = publish_auth_session(
+        app,
+        AuthSessionEnvelope {
+            account_id,
+            generation: 0,
+            status,
+            reason: reason.map(str::to_string),
+        },
+    );
+    (state, envelope)
+}
+
+#[tauri::command]
+pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
+    let (state, _) = resolve_authoritative_auth_session(&app).await;
+    Ok(state)
+}
+
+/// Renderer bootstrap/recovery command. The event is the live transition
+/// transport; this command closes the subscription race for a newly mounted
+/// webview by returning the latest authoritative envelope.
+#[tauri::command]
+pub async fn get_auth_session(app: AppHandle) -> Result<AuthSessionEnvelope, String> {
+    let (_, envelope) = resolve_authoritative_auth_session(&app).await;
+    Ok(envelope)
 }
 
 /// Returns true when `~/.hq/cognito-tokens.json` exists and contains a
@@ -122,6 +281,15 @@ pub async fn has_stored_token() -> Result<bool, String> {
 pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     clear_sentry_user();
+    publish_auth_session(
+        &app,
+        AuthSessionEnvelope {
+            account_id: None,
+            generation: 0,
+            status: AuthSessionStatus::CredentialsAbsent,
+            reason: Some("Signed out on this device.".to_string()),
+        },
+    );
     Ok(())
 }
 
@@ -129,7 +297,17 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
 pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     let current_tokens = crate::commands::dm_notify::refresh_notification_credentials(&app).await?;
     set_sentry_user_from_tokens(&current_tokens);
-    Ok(authenticated_state_from_tokens(&current_tokens))
+    let state = authenticated_state_from_tokens(&current_tokens);
+    publish_auth_session(
+        &app,
+        AuthSessionEnvelope {
+            account_id: state.account_id.clone(),
+            generation: 0,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        },
+    );
+    Ok(state)
 }
 
 /// Clear this device's stale session and take the user straight to the
@@ -240,5 +418,104 @@ mod tests {
             notification_identity_from_tokens(&other_account),
             "different accounts must never collapse into one fallback partition"
         );
+    }
+
+    #[test]
+    fn auth_session_envelope_rotates_only_for_identity_or_status_transitions() {
+        let first = next_auth_session_envelope(
+            None,
+            Some("acct-a".to_string()),
+            AuthSessionStatus::Active,
+            None,
+        );
+        let same = next_auth_session_envelope(
+            Some(&first),
+            Some("acct-a".to_string()),
+            AuthSessionStatus::Active,
+            None,
+        );
+        let transient = next_auth_session_envelope(
+            Some(&same),
+            Some("acct-a".to_string()),
+            AuthSessionStatus::RefreshTemporarilyUnavailable,
+            Some(&"x".repeat(250)),
+        );
+        let switched = next_auth_session_envelope(
+            Some(&transient),
+            Some("acct-b".to_string()),
+            AuthSessionStatus::Active,
+            None,
+        );
+
+        assert_eq!(first.generation, 1);
+        assert_eq!(same.generation, first.generation);
+        assert_eq!(transient.generation, first.generation + 1);
+        assert_eq!(switched.generation, transient.generation + 1);
+        assert_eq!(transient.reason.as_deref().map(str::len), Some(200));
+    }
+
+    #[test]
+    fn no_id_token_keeps_the_access_token_subject_in_the_auth_envelope() {
+        let tokens = tokens(None, jwt_with_sub("access-subject"), "refresh-a");
+        let envelope = next_auth_session_envelope(
+            None,
+            Some(notification_identity_from_tokens(&tokens)),
+            AuthSessionStatus::Active,
+            None,
+        );
+
+        assert_eq!(envelope.account_id.as_deref(), Some("access-subject"));
+        assert_eq!(envelope.status, AuthSessionStatus::Active);
+    }
+
+    #[test]
+    fn successful_expired_token_refresh_keeps_the_same_account_generation() {
+        let expired = tokens(None, jwt_with_sub("access-subject"), "refresh-a");
+        let refreshed = tokens(None, jwt_with_sub("access-subject"), "refresh-a");
+        let before = next_auth_session_envelope(
+            None,
+            Some(notification_identity_from_tokens(&expired)),
+            AuthSessionStatus::Active,
+            None,
+        );
+        let after = next_auth_session_envelope(
+            Some(&before),
+            Some(notification_identity_from_tokens(&refreshed)),
+            AuthSessionStatus::Active,
+            None,
+        );
+
+        assert_eq!(after.account_id, before.account_id);
+        assert_eq!(after.generation, before.generation);
+    }
+
+    #[test]
+    fn terminal_and_transient_refresh_failures_are_distinct_session_states() {
+        let active = next_auth_session_envelope(
+            None,
+            Some("account-a".to_string()),
+            AuthSessionStatus::Active,
+            None,
+        );
+        let transient = next_auth_session_envelope(
+            Some(&active),
+            Some("account-a".to_string()),
+            AuthSessionStatus::RefreshTemporarilyUnavailable,
+            Some("network unavailable"),
+        );
+        let invalid = next_auth_session_envelope(
+            Some(&transient),
+            Some("account-a".to_string()),
+            AuthSessionStatus::CredentialsInvalid,
+            Some("refresh rejected"),
+        );
+
+        assert_eq!(transient.generation, active.generation + 1);
+        assert_eq!(invalid.generation, transient.generation + 1);
+        assert_eq!(
+            transient.status,
+            AuthSessionStatus::RefreshTemporarilyUnavailable
+        );
+        assert_eq!(invalid.status, AuthSessionStatus::CredentialsInvalid);
     }
 }

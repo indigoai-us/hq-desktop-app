@@ -42,6 +42,7 @@
   let preview = $state<ChannelFilePreview | null>(null);
   let previewLoading = $state(false);
   let previewSequence = 0;
+  let actionSequence = 0;
   let previewTarget = $state<ChannelFileItemModel | null>(null);
   let actionPending = $state<"reveal" | "open" | null>(null);
   let actionError = $state<string | null>(null);
@@ -68,6 +69,7 @@
     // Invalidate before releasing the current preview so its late blob is
     // released by the completion branch instead of becoming detached state.
     previewSequence += 1;
+    actionSequence += 1;
     selectedKey = null;
     previewTarget = null;
     setPreview(null);
@@ -92,6 +94,7 @@
 
   function invalidatePreviewSelection(): void {
     previewSequence += 1;
+    actionSequence += 1;
     selectedKey = null;
     previewTarget = null;
     setPreview(null);
@@ -150,6 +153,7 @@
     selectedKey = item.key;
     previewTarget = item;
     const sequence = ++previewSequence;
+    actionSequence += 1;
     const context = previewContext ?? null;
     setPreview(null);
     previewLoading = false;
@@ -211,19 +215,38 @@
     kind: "reveal" | "open",
     action: ((item: ChannelFileItemModel) => Promise<unknown>) | undefined,
   ): Promise<void> {
-    if (!selected || !nativeActionAllowed(selected) || !action || actionPending) return;
+    const item = selected;
+    if (!item || !nativeActionAllowed(item) || !action || actionPending) return;
+    const sequence = ++actionSequence;
+    const context = previewContext ?? null;
     actionPending = kind;
     actionError = null;
     try {
-      await action(selected);
+      await action(item);
     } catch {
-      actionError =
-        kind === "reveal"
-          ? "Couldn’t reveal this file."
-          : "Couldn’t open this file in Claude Code.";
+      if (actionStillCurrent(item, context, sequence)) {
+        actionError =
+          kind === "reveal"
+            ? "Couldn’t reveal this file."
+            : "Couldn’t open this file in Claude Code.";
+      }
     } finally {
-      actionPending = null;
+      if (actionStillCurrent(item, context, sequence)) actionPending = null;
     }
+  }
+
+  function actionStillCurrent(
+    item: ChannelFileItemModel,
+    context: string | null,
+    sequence: number,
+  ): boolean {
+    const current = selected;
+    return (
+      sequence === actionSequence &&
+      context === (previewContext ?? null) &&
+      current !== null &&
+      samePreviewTarget(current, item)
+    );
   }
 
   function iconPaths(kind: ChannelFileIconKind): string {

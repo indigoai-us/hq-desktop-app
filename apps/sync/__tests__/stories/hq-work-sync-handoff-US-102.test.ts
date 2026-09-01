@@ -122,8 +122,15 @@ function makeAdapter(handler?: SyncInvokeFn) {
       case 'fetch_notifications':
         return {
           notifications: [
-            { id: 'n1', title: 'hello', status: 'unread' },
+            {
+              id: 'n1',
+              title: 'hello',
+              status: 'unread',
+              actionRef: 'story-7',
+            },
           ],
+          unreadCount: 7,
+          nextCursor: 'opaque-next-page',
         };
       case 'ack_notification':
         return { ok: true, marked: 1 };
@@ -565,16 +572,37 @@ describe('US-102 Sync PlatformAdapter', () => {
 
   it('notifications fetch + ack map existing feed commands', async () => {
     const { adapter, calls } = makeAdapter();
-    const items = expectOk(await adapter.notifications.fetchNotifications());
-    expect(items).toEqual([
-      { id: 'n1', title: 'hello', status: 'unread', read: false },
-    ]);
+    const feed = expectOk(
+      await adapter.notifications.fetchNotifications({
+        limit: 25,
+        cursor: 'opaque-next-page',
+        unreadOnly: true,
+      }),
+    );
+    expect(feed).toEqual({
+      notifications: [
+        {
+          id: 'n1',
+          title: 'hello',
+          status: 'unread',
+          actionRef: 'story-7',
+          read: false,
+        },
+      ],
+      unreadCount: 7,
+      nextCursor: 'opaque-next-page',
+    });
     expect((await adapter.notifications.ack('n1')).ok).toBe(true);
     expect(calls.map((c) => c.cmd)).toEqual([
       'fetch_notifications',
       'ack_notification',
     ]);
     expect(calls[1]?.args).toEqual({ id: 'n1' });
+    expect(calls[0]?.args).toEqual({
+      limit: 25,
+      cursor: 'opaque-next-page',
+      unreadOnly: true,
+    });
   });
 
   it('files vault list + presign GET/PUT go through hq-pro files endpoints', async () => {
