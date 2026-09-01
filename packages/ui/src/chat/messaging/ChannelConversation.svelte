@@ -317,14 +317,47 @@
    * WorkMeshActivityRow itself falls back to "A teammate" for unresolved
    * raw UIDs, so this never surfaces a UUID.
    */
+  /** `event.by` UIDs may be bare Cognito subs while roster keys carry a
+   *  `prs_`/`agt_` prefix (or vice versa) — compare on the normalized form. */
+  function normalizeParticipantUid(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/^(prs_|agt_)/, "");
+  }
+
+  /** Normalized uid → display name, merged from the live roster map and the
+   *  channel's mention roster so sub-shaped actors still resolve. */
+  const workActorNameByUid = $derived.by(() => {
+    const map: Record<string, string> = {};
+    for (const candidate of mentionCandidates) {
+      const name = candidate.displayName?.trim();
+      const uid = normalizeParticipantUid(candidate.participantUid ?? "");
+      if (name && uid && !map[uid]) map[uid] = name;
+    }
+    for (const [uid, name] of Object.entries(displayNameByUid)) {
+      const trimmed = name?.trim();
+      const key = normalizeParticipantUid(uid);
+      if (trimmed && key) map[key] = trimmed;
+    }
+    return map;
+  });
+
   function resolveWorkActor(
     actor: string,
     msg: ConversationMessageWire,
   ): string {
     const raw = actor.trim();
-    const live = displayNameByUid[raw]?.trim();
+    if (!raw) return raw;
+    const live =
+      displayNameByUid[raw]?.trim() ||
+      workActorNameByUid[normalizeParticipantUid(raw)];
     if (live) return live;
-    if (raw && raw === (msg.fromPersonUid ?? "").trim()) {
+    const sender = (msg.fromPersonUid ?? "").trim();
+    if (
+      sender &&
+      normalizeParticipantUid(raw) === normalizeParticipantUid(sender)
+    ) {
       return messageAuthor(msg);
     }
     return raw;

@@ -46,8 +46,11 @@ function mountWith(
 }
 
 function rowText(root: HTMLDivElement): string {
-  return root.querySelector(".work-mesh-row .text")?.textContent ?? "";
+  return root.querySelector(".work-mesh-row .sys-summary")?.textContent ?? "";
 }
+
+const PAYLOAD_SAMPLE =
+  '{"v":1,"kind":"work-session-event","threadId":"work-desktop-dogfood:US-011","event":{"kind":"start","at":"2026-08-28T15:14:05.854Z","by":"Stefan Johnson","payload":"{\\"storyId\\":\\"US-011\\",\\"storyTitle\\":\\"Dock badge\\",\\"doneCriteria\\":[\\"badge shows\\",\\"badge clears\\"],\\"branch\\":\\"wt/us-011-badge\\",\\"runtime\\":\\"claude-code\\"}"}}';
 
 describe("ChannelConversation work-mesh activity rows", () => {
   it("renders a compact activity row instead of a raw JSON bubble", async () => {
@@ -92,5 +95,66 @@ describe("ChannelConversation work-mesh activity rows", () => {
     await tick();
     expect(rowText(root)).toContain("A teammate marked T-002 done");
     expect(rowText(root)).not.toContain(ACTOR_UID);
+  });
+
+  it("resolves a bare sub against a prs_-prefixed roster key", async () => {
+    const root = mountWith(UID_SAMPLE, {
+      displayNameByUid: { ["prs_" + ACTOR_UID]: "Stefan Johnson" },
+    });
+    await tick();
+    expect(rowText(root)).toContain("Stefan Johnson marked T-002 done");
+  });
+
+  it("uses the muted system-row treatment, not the bold message style", async () => {
+    const root = mountWith(DONE_SAMPLE);
+    await tick();
+    const row = root.querySelector(".work-mesh-row");
+    expect(row?.classList.contains("sys-line")).toBe(true);
+    expect(row?.tagName).toBe("BUTTON"); // keyboard accessible toggle
+    expect(row?.querySelector(".sys-icon")).not.toBeNull();
+    expect(row?.querySelector(".sys-who")).not.toBeNull();
+    expect(row?.querySelector(".actor")).toBeNull();
+  });
+
+  it("is collapsed by default and expands on click with payload fields", async () => {
+    const root = mountWith(PAYLOAD_SAMPLE);
+    await tick();
+    expect(root.querySelector(".work-mesh-detail")).toBeNull();
+    const row = root.querySelector<HTMLButtonElement>(".work-mesh-row");
+    expect(row?.getAttribute("aria-expanded")).toBe("false");
+    row?.click();
+    await tick();
+    const detail = root.querySelector(".work-mesh-detail");
+    expect(detail).not.toBeNull();
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    const text = detail?.textContent ?? "";
+    expect(text).toContain("Story");
+    expect(text).toContain("Dock badge");
+    expect(text).toContain("Done criteria");
+    expect(text).toContain("badge shows; badge clears");
+    expect(text).toContain("Branch");
+    expect(text).toContain("wt/us-011-badge");
+    expect(text).toContain("Runtime");
+    expect(text).toContain("claude-code");
+    row?.click();
+    await tick();
+    expect(root.querySelector(".work-mesh-detail")).toBeNull();
+    expect(row?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("omits empty detail rows and only offers Summary when that is all", async () => {
+    const root = mountWith(DONE_SAMPLE);
+    await tick();
+    const row = root.querySelector<HTMLButtonElement>(".work-mesh-row");
+    row?.click();
+    await tick();
+    const detail = root.querySelector(".work-mesh-detail");
+    expect(detail).not.toBeNull();
+    const text = detail?.textContent ?? "";
+    expect(text).toContain("Summary");
+    expect(text).toContain("T-002 marked done on the board");
+    expect(text).not.toContain("Branch");
+    expect(text).not.toContain("Runtime");
+    expect(text).not.toContain("Done criteria");
   });
 });

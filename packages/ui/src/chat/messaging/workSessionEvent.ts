@@ -21,6 +21,26 @@ export interface WorkSessionActivity {
   title: string | null;
   verb: string;
   at: string | null;
+  /** Expanded-detail fields (mirrors hq-sessions' MeshEvent mapping). */
+  storyTitle: string | null;
+  summary: string | null;
+  /** `doneCriteria` (or `acceptanceCriteria`) — arrays joined with "; ". */
+  doneCriteria: string | null;
+  branch: string | null;
+  runtime: string | null;
+}
+
+/**
+ * True for raw participant ids that must never render as an actor name:
+ * `prs_` / `agt_` prefixes, or a bare 8-4-4-4-12 hex UUID (Cognito sub).
+ * Mirrors hq-sessions' `looks_like_opaque_id`.
+ */
+export function isOpaqueActorId(value: string): boolean {
+  const s = value.trim();
+  if (s.startsWith("prs_") || s.startsWith("agt_")) return true;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    s,
+  );
 }
 
 const VERB: Record<WorkSessionEventKind, string> = {
@@ -55,6 +75,18 @@ function optionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Criteria fields may be a string or an array of strings (joined "; "). */
+function criteriaString(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    const parts = value
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0);
+    return parts.length > 0 ? parts.join("; ") : null;
+  }
+  return optionalString(value);
 }
 
 /** `payload` may already be an object, or a JSON string that parses to one. */
@@ -107,8 +139,9 @@ export function parseWorkSessionEvent(
   const payload = asPayload(parsed.payload) ?? asPayload(event.payload);
   const storyId =
     optionalString(payload?.storyId) ?? storyIdFromThreadId(parsed.threadId);
-  const title =
-    optionalString(payload?.storyTitle) ?? optionalString(event.summary);
+  const storyTitle = optionalString(payload?.storyTitle);
+  const summary = optionalString(event.summary);
+  const title = storyTitle ?? summary;
 
   return {
     kind: event.kind,
@@ -117,5 +150,12 @@ export function parseWorkSessionEvent(
     title,
     verb: VERB[event.kind],
     at: optionalString(event.at),
+    storyTitle,
+    summary,
+    doneCriteria:
+      criteriaString(payload?.doneCriteria) ??
+      criteriaString(payload?.acceptanceCriteria),
+    branch: optionalString(payload?.branch),
+    runtime: optionalString(payload?.runtime),
   };
 }

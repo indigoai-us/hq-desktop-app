@@ -26,6 +26,11 @@ describe('parseWorkSessionEvent', () => {
       title: 'T-002 marked done on the board',
       verb: 'marked done',
       at: '2026-08-28T15:14:05.854Z',
+      storyTitle: null,
+      summary: 'T-002 marked done on the board',
+      doneCriteria: null,
+      branch: null,
+      runtime: null,
     });
   });
 

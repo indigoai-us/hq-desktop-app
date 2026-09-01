@@ -11,6 +11,11 @@ const DONE_ACTIVITY = {
   title: "T-002 marked done on the board",
   verb: "marked done",
   at: "2026-08-28T15:14:05.854Z",
+  storyTitle: null,
+  summary: "T-002 marked done on the board",
+  doneCriteria: null,
+  branch: null,
+  runtime: null,
 } as const;
 
 function sessionBody(
@@ -199,6 +204,41 @@ describe("parseWorkSessionEvent", () => {
   it("falls back to Someone when by is missing", () => {
     expect(parseWorkSessionEvent(sessionBody({ kind: "done" }))).toMatchObject({
       actor: "Someone",
+    });
+  });
+
+  it("extracts detail fields from the payload (criteria array joined)", () => {
+    const body = sessionBody(
+      { kind: "start", by: "Ada" },
+      {
+        payload: JSON.stringify({
+          storyId: "US-011",
+          storyTitle: "Dock badge",
+          doneCriteria: ["badge shows", " badge clears "],
+          branch: "wt/us-011-badge",
+          runtime: "claude-code",
+        }),
+      },
+    );
+    expect(parseWorkSessionEvent(body)).toMatchObject({
+      storyTitle: "Dock badge",
+      doneCriteria: "badge shows; badge clears",
+      branch: "wt/us-011-badge",
+      runtime: "claude-code",
+    });
+  });
+
+  it("accepts acceptanceCriteria as a doneCriteria fallback", () => {
+    const body = sessionBody(
+      { kind: "claim", by: "Ada" },
+      {
+        payload: JSON.stringify({
+          acceptanceCriteria: ["it works", "it is tested"],
+        }),
+      },
+    );
+    expect(parseWorkSessionEvent(body)).toMatchObject({
+      doneCriteria: "it works; it is tested",
     });
   });
 });
