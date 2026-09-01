@@ -114,7 +114,10 @@ describe('Windows production installer E2E', () => {
       'Dictionary[string,string]',
     );
     expect(installerHarness).toContain(
-      '[System.Text.Json.JsonSerializer]::Serialize($serializableManifest)',
+      '$serializableManifest.GetType()',
+    );
+    expect(installerHarness).toContain(
+      '[System.Text.Json.JsonSerializerOptions]::new()',
     );
     expect(installerHarness).toContain(
       'Snapshot-UninstallRegistry -Path $registryBackup',

@@ -66,7 +66,11 @@ function Write-InstallManifest([string]$Root, [string]$Path) {
     $normalized.Add("sha256", [string]$entry.sha256)
     $serializableManifest.Add($normalized)
   }
-  $json = [System.Text.Json.JsonSerializer]::Serialize($serializableManifest)
+  $json = [System.Text.Json.JsonSerializer]::Serialize(
+    [object]$serializableManifest,
+    $serializableManifest.GetType(),
+    [System.Text.Json.JsonSerializerOptions]::new()
+  )
   Set-Content -LiteralPath $Path -Value $json -Encoding utf8NoBOM -NoNewline
 }
 
