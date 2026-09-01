@@ -7,7 +7,11 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
-import { SETUP_CHANNEL_ID, SETUP_ROW_ID } from "../chat/setup-channel.js";
+import {
+  SETUP_CHANNEL_ID,
+  SETUP_HERO,
+  SETUP_ROW_ID,
+} from "../chat/setup-channel.js";
 
 function adapter(
   messaging: Partial<PlatformAdapter["messaging"]> = {},
@@ -95,7 +99,11 @@ describe("DesktopApp synthetic #setup channel", () => {
 
     const intro = host.querySelector('[data-testid="setup-channel-intro"]');
     expect(intro, "setup intro renders in the conversation area").toBeTruthy();
-    expect(intro?.textContent).toContain("What HQ Desktop is");
+    expect(intro?.textContent).toContain(SETUP_HERO.title);
+    expect(
+      host.querySelector('[data-testid="setup-resource-getting-started"]'),
+      "getting-started guide link renders",
+    ).toBeTruthy();
     expect(
       host.querySelector('[data-testid="setup-launch-claude"]'),
     ).toBeTruthy();

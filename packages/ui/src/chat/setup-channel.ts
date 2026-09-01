@@ -57,28 +57,117 @@ export interface SetupWelcomeMessage {
   links?: readonly SetupWelcomeLink[];
 }
 
-/** Prepopulated getting-started sequence rendered above the live #setup thread. */
+/** Public hqforwork.com destinations the welcome experience links to. */
+export const SETUP_URLS = {
+  gettingStarted: "https://hqforwork.com/getting-started",
+  book: "https://hqforwork.com/book",
+  training: "https://hqforwork.com/training",
+  docs: "https://docs.getindigo.ai",
+} as const;
+
+/** Hero copy rendered over the wallpaper at the top of #setup. */
+export const SETUP_HERO = {
+  eyebrow: "Welcome to HQ",
+  title: "Your team's operating system for AI.",
+  body: "HQ Desktop is the companion app for the HQ team AI operating system — messaging, sync, agents, and shared files in one place. Run /setup once and your workspace is ready for your whole team.",
+} as const;
+
+export type SetupResourceKind = "guide" | "book" | "training" | "docs";
+
+export interface SetupResource {
+  id: string;
+  kind: SetupResourceKind;
+  /** Short uppercase label (rendered as a mono eyebrow). */
+  eyebrow: string;
+  title: string;
+  description: string;
+  href: string;
+}
+
+/**
+ * Resource rows rendered beneath the hero — each opens in the system
+ * browser through the host's external-link path.
+ */
+export const SETUP_RESOURCES: readonly SetupResource[] = [
+  {
+    id: "getting-started",
+    kind: "guide",
+    eyebrow: "Guide",
+    title: "Getting started with HQ",
+    description:
+      "A step-by-step walkthrough from install to your first agent-run project.",
+    href: SETUP_URLS.gettingStarted,
+  },
+  {
+    id: "book",
+    kind: "book",
+    eyebrow: "Book",
+    title: "The HQ book, free",
+    description:
+      "How teams run on an AI operating system — the thinking behind HQ, in one read.",
+    href: SETUP_URLS.book,
+  },
+  {
+    id: "training",
+    kind: "training",
+    eyebrow: "Training",
+    title: "Free weekly onboarding training",
+    description:
+      "Join a live session with the HQ team and get your workspace set up together.",
+    href: SETUP_URLS.training,
+  },
+  {
+    id: "docs",
+    kind: "docs",
+    eyebrow: "Docs",
+    title: "HQ Docs",
+    description:
+      "Commands, concepts, and reference for the rest of the HQ surface.",
+    href: SETUP_URLS.docs,
+  },
+];
+
+/** Closing note under the resources — this channel is a real support line. */
+export const SETUP_SUPPORT_NOTE =
+  "This is a support channel. Messages typed here reach the HQ team — ask anything about setup, sync, or getting your workspace running.";
+
+/**
+ * Prepopulated getting-started sequence. The classic messaging surface
+ * (apps/sync SetupChannelView) renders this as chat bubbles; the live desktop
+ * shell renders the richer hero + resource layout from the constants above.
+ * Both derive from the same copy so they never drift.
+ */
 export const SETUP_WELCOME_MESSAGES: readonly SetupWelcomeMessage[] = [
   {
     id: "what-is-hq-desktop",
-    title: "What HQ Desktop is",
-    body: "HQ Desktop is the companion app for the HQ team AI operating system — messaging, sync, agents, and shared files in one place.",
+    title: SETUP_HERO.title,
+    body: SETUP_HERO.body,
   },
   {
     id: "get-started",
     title: "How to get started",
     body: "Open your HQ folder, run /setup in Claude Code or Codex, then connect your team. The buttons below launch that prompt for you.",
+    links: [
+      {
+        label: SETUP_RESOURCES[0].title,
+        href: SETUP_URLS.gettingStarted,
+      },
+    ],
   },
   {
     id: "resources",
-    title: "Resources",
-    body: "Guides, concepts, and the rest of the HQ surface live in the docs.",
-    links: [{ label: "HQ Docs", href: "https://docs.getindigo.ai" }],
+    title: "Learn HQ",
+    body: "The free book, weekly live onboarding training, and the docs.",
+    links: [
+      { label: "The HQ book", href: SETUP_URLS.book },
+      { label: "Weekly onboarding training", href: SETUP_URLS.training },
+      { label: "HQ Docs", href: SETUP_URLS.docs },
+    ],
   },
   {
     id: "support-channel",
     title: "This is a support channel",
-    body: "Messages typed here reach the HQ team. Ask anything about setup, sync, or getting your workspace running.",
+    body: SETUP_SUPPORT_NOTE,
   },
 ];
 
