@@ -68,11 +68,12 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain('NSIS uninstaller exited with code');
   });
 
-  it('upgrades a running prior stable build only after the helper observes parent exit', () => {
-    expect(workflow).toContain('Download prior stable NSIS package');
-    expect(workflow).toContain('Prepare prior and candidate versions');
+  it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
+    expect(workflow).toContain('Prepare bridge and target versions');
+    expect(workflow).toContain('Install PR bridge package');
+    expect(workflow).toContain('Build next synthetic NSIS updater');
     expect(workflow).toContain(
-      'Upgrade running prior version through the copied helper',
+      'Upgrade running PR bridge through its copied helper',
     );
     expect(installerHarness).toContain('--hq-update-helper');
     expect(installerHarness).toContain(
@@ -95,16 +96,32 @@ describe('Windows production installer E2E', () => {
     expect(workflow).toContain('-Action rollback');
     expect(installerHarness).toContain('$receipt.state -ne "rolled-back"');
     expect(installerHarness).toContain(
+      'Staged helper is not the installed parent binary',
+    );
+    expect(installerHarness).toContain(
       'Copy-Item -LiteralPath $installedApp -Destination $stagedHelper',
     );
+    expect(installerHarness).not.toContain('$HelperPath');
     expect(installerHarness).toContain(
-      'Remove-Item -LiteralPath $installedApp -Force',
+      'Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup',
     );
     expect(installerHarness).toContain(
-      'Rollback fixture did not remove the installed application',
+      'Export-UninstallRegistry -Path $registryBackup',
     );
     expect(installerHarness).toContain(
-      'Rollback did not restore the prior application binary',
+      'Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force',
+    );
+    expect(installerHarness).toContain(
+      'Rollback did not restore the complete prior installation',
+    );
+    expect(installerHarness).toContain(
+      'Rollback did not restore the exact prior uninstall registry metadata',
+    );
+    expect(installerHarness).toContain(
+      'Rollback left candidate-only registry metadata behind',
+    );
+    expect(installerHarness).toContain(
+      'Update rollback changed existing HQ shortcuts',
     );
   });
 
@@ -120,7 +137,11 @@ describe('Windows production installer E2E', () => {
     expect(windowsUpdate).toContain('quiesce_for_update(PROCESS_EXIT_TIMEOUT)');
     expect(windowsUpdate).toContain('app.exit(0)');
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');
-    expect(windowsUpdate).toContain('restore_original_executable(&helper, &original_exe)');
+    expect(windowsUpdate).toContain('restore_prior_installation(');
+    expect(windowsUpdate).toContain('copy_install_tree(&install_dir, &install_backup)');
+    expect(windowsUpdate).toContain('export_uninstall_registry(&uninstall_registry_backup)');
+    expect(windowsUpdate).toContain('restore_install_tree(');
+    expect(windowsUpdate).toContain('restore_uninstall_registry(');
     expect(windowsUpdate).toContain(
       'WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_PARAMETER)',
     );

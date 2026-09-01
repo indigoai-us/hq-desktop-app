@@ -523,10 +523,10 @@ jobs:
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
-      # Build a synthetic next patch so NSIS performs a real in-place upgrade.
-      # The prior package is the stable version recorded by this checkout; the
-      # candidate is this PR's code with only its version metadata advanced.
-      - name: Prepare prior and candidate versions
+      # Install this PR at one synthetic patch, then build the same PR at the
+      # next patch. The running parent and copied helper therefore contain the
+      # same updater implementation, exactly as they do in production.
+      - name: Prepare bridge and target versions
         id: versions
         shell: pwsh
         run: |
@@ -535,28 +535,15 @@ jobs:
           if ($parts.Count -ne 3) {
             throw "Expected stable X.Y.Z base version, got $baseVersion"
           }
-          $candidateVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
-          pnpm -C ../.. version:app --set-version $candidateVersion
+          $bridgeVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          $targetVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 2)"
+          pnpm -C ../.. version:app --set-version $bridgeVersion
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to stamp candidate version $candidateVersion"
+            throw "Failed to stamp bridge version $bridgeVersion"
           }
           "base=$baseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "candidate=$candidateVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Download prior stable NSIS package
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $downloadDir = Join-Path $env:RUNNER_TEMP "hq-prior-release"
-          New-Item -ItemType Directory -Path $downloadDir | Out-Null
-          $asset = "HQ_${{ steps.versions.outputs.base }}_x64-setup.exe"
-          gh release download "v${{ steps.versions.outputs.base }}" --repo indigoai-us/hq-desktop-app --pattern $asset --dir $downloadDir
-          $installer = Join-Path $downloadDir $asset
-          if (-not (Test-Path -LiteralPath $installer)) {
-            throw "Prior stable installer was not downloaded: $installer"
-          }
-          "PRIOR_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "bridge=$bridgeVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "target=$targetVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Install Recall sidecar deps
         run: pnpm run sidecar:install
@@ -589,7 +576,7 @@ jobs:
           }
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Build production MSI and NSIS installers
+      - name: Build bridge MSI and NSIS installers
         run: >-
           pnpm tauri build
           --target x86_64-pc-windows-msvc
@@ -637,27 +624,48 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
-      - name: Install prior stable package
-        id: install_prior
+      - name: Install PR bridge package
+        id: install_bridge
         shell: pwsh
         run: |
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          if (-not $installer) {
+            throw "Bridge NSIS installer was not produced"
+          }
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $env:PRIOR_INSTALLER -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action install -InstallerPath $installer.FullName -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Installed prior stable application: $app"
+          Write-Host "Installed PR bridge application: $app"
 
-      - name: Upgrade running prior version through the copied helper
+      - name: Build next synthetic NSIS updater
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
+          }
+          pnpm tauri build `
+            --target x86_64-pc-windows-msvc `
+            --bundles nsis `
+            --config src-tauri/tauri.windows.conf.json `
+            --config src-tauri/tauri.windows.release.conf.json `
+            --config src-tauri/tauri.windows.ci.conf.json `
+            --features e2e-automation
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build target NSIS updater"
+          }
+
+      - name: Upgrade running PR bridge through its copied helper
         id: upgrade
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.target }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
-            throw "Candidate NSIS installer was not produced"
+            throw "Target NSIS installer was not produced"
           }
-          $helper = Resolve-Path "src-tauri\target\x86_64-pc-windows-msvc\release\hq-sync-menubar.exe"
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -HelperPath $helper.Path -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Upgraded application: $app"
@@ -666,7 +674,7 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.candidate }}" -InstallDir $installDir
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.

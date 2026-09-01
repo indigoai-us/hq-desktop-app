@@ -6,8 +6,6 @@ param(
 
   [string]$InstallerPath,
 
-  [string]$HelperPath,
-
   [string]$TargetVersion,
 
   [Parameter(Mandatory)]
@@ -41,6 +39,59 @@ function Wait-Until([scriptblock]$Condition, [int]$TimeoutSeconds, [string]$Fail
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
   throw $FailureMessage
+}
+
+function Get-InstallManifest([string]$Root) {
+  return @(
+    Get-ChildItem -LiteralPath $Root -File -Recurse -Force |
+      ForEach-Object {
+        [ordered]@{
+          relative = [System.IO.Path]::GetRelativePath($Root, $_.FullName)
+          sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+        }
+      } |
+      Sort-Object -Property relative
+  )
+}
+
+function Write-InstallManifest([string]$Root, [string]$Path) {
+  $manifest = Get-InstallManifest -Root $Root
+  if ($manifest.Count -eq 0) {
+    throw "Installation backup is empty: $Root"
+  }
+  $json = ConvertTo-Json -InputObject $manifest -Compress -Depth 4 -AsArray
+  Set-Content -LiteralPath $Path -Value $json -Encoding utf8NoBOM -NoNewline
+}
+
+function Copy-InstallTree([string]$Source, [string]$Destination) {
+  New-Item -ItemType Directory -Path $Destination | Out-Null
+  Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+  }
+}
+
+function Export-UninstallRegistry([string]$Path) {
+  & reg.exe export "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" $Path /y | Out-Host
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Path)) {
+    throw "Could not export prior uninstall registry metadata"
+  }
+}
+
+function Get-ShortcutManifest([string]$InstalledApp) {
+  $roots = @(
+    [Environment]::GetFolderPath("Desktop"),
+    [Environment]::GetFolderPath("Programs")
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+  return @(
+    $roots | ForEach-Object {
+      Get-ChildItem -LiteralPath $_ -Filter "HQ.lnk" -File -Recurse -ErrorAction SilentlyContinue
+    } | ForEach-Object {
+      [ordered]@{
+        path = $_.FullName
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+      }
+    } | Sort-Object -Property path
+  )
 }
 
 $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
@@ -78,15 +129,14 @@ if ($Action -eq "install") {
 }
 
 if ($Action -eq "upgrade") {
-  if (-not $InstallerPath -or -not $HelperPath -or -not $TargetVersion) {
-    throw "InstallerPath, HelperPath, and TargetVersion are required for upgrade"
+  if (-not $InstallerPath -or -not $TargetVersion) {
+    throw "InstallerPath and TargetVersion are required for upgrade"
   }
   if (-not (Test-Path -LiteralPath $resolvedInstallDir)) {
     throw "InstallDir must contain the prior version before upgrade: $resolvedInstallDir"
   }
 
   $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
-  $resolvedHelper = (Resolve-Path -LiteralPath $HelperPath).Path
   $apps = @(Get-ChildItem -LiteralPath $resolvedInstallDir -Filter "hq-sync-menubar.exe" -File)
   if ($apps.Count -ne 1) {
     throw "Expected one prior-version application before upgrade, found $($apps.Count)"
@@ -98,10 +148,24 @@ if ($Action -eq "upgrade") {
   New-Item -ItemType Directory -Path $stageDir | Out-Null
   $stagedHelper = Join-Path $stageDir "hq-update-helper.exe"
   $stagedInstaller = Join-Path $stageDir "hq-update-installer.exe"
-  Copy-Item -LiteralPath $resolvedHelper -Destination $stagedHelper
+  $installBackup = Join-Path $stageDir "prior-install"
+  $installManifest = Join-Path $stageDir "prior-install-manifest.json"
+  $registryBackup = Join-Path $stageDir "prior-uninstall.reg"
+  # Production always copies the installed parent itself as the helper. The
+  # bridge package installed by this job contains the PR implementation, so
+  # this proves the same-version parent/helper path used by future updates.
+  Copy-Item -LiteralPath $installedApp -Destination $stagedHelper
   Copy-Item -LiteralPath $resolvedInstaller -Destination $stagedInstaller
+  Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup
+  Write-InstallManifest -Root $installBackup -Path $installManifest
+  Export-UninstallRegistry -Path $registryBackup
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedInstaller).Hash.ToLowerInvariant()
   $helperHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedHelper).Hash
+  if ($helperHash -ne $oldHash) {
+    throw "Staged helper is not the installed parent binary"
+  }
+  $expectedManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installManifest).Hash.ToLowerInvariant()
+  $expectedRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $registryBackup).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
 
@@ -119,6 +183,12 @@ if ($Action -eq "upgrade") {
     "--ready-file", $readyFile,
     "--receipt-file", $receiptFile,
     "--original-exe", $installedApp,
+    "--install-dir", $resolvedInstallDir,
+    "--install-backup", $installBackup,
+    "--install-manifest", $installManifest,
+    "--expected-manifest-sha256", $expectedManifestHash,
+    "--uninstall-registry-backup", $registryBackup,
+    "--expected-registry-sha256", $expectedRegistryHash,
     "--target-version", $TargetVersion
   )
   $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
@@ -175,25 +245,41 @@ if ($Action -eq "rollback") {
   if (-not (Test-Path -LiteralPath $installedApp)) {
     throw "Installed application is required for rollback: $installedApp"
   }
-  $beforeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedApp).Hash
+  $beforeManifest = ConvertTo-Json -InputObject (Get-InstallManifest -Root $resolvedInstallDir) -Compress -Depth 4 -AsArray
+  $beforeShortcuts = ConvertTo-Json -InputObject (Get-ShortcutManifest -InstalledApp $installedApp) -Compress -Depth 4 -AsArray
   $stageDir = Join-Path $env:RUNNER_TEMP "hq-update-rollback-e2e-$([Guid]::NewGuid().ToString('N'))"
   New-Item -ItemType Directory -Path $stageDir | Out-Null
   $stagedHelper = Join-Path $stageDir "hq-update-helper.exe"
   $failingInstaller = Join-Path $stageDir "hq-update-installer.exe"
-  # The production updater copies the currently installed executable before
-  # starting NSIS. Mirror that exact flow so the rollback identity assertion
-  # proves we restored the user's pre-update application.
+  $installBackup = Join-Path $stageDir "prior-install"
+  $installManifest = Join-Path $stageDir "prior-install-manifest.json"
+  $registryBackup = Join-Path $stageDir "prior-uninstall.reg"
   Copy-Item -LiteralPath $installedApp -Destination $stagedHelper
   Copy-Item -LiteralPath (Join-Path $env:WINDIR "System32\where.exe") -Destination $failingInstaller
-  # Simulate an installer that removed the application before failing. A
-  # successful rollback must recreate this exact binary from the staged helper.
-  Remove-Item -LiteralPath $installedApp -Force
-  if (Test-Path -LiteralPath $installedApp) {
-    throw "Rollback fixture did not remove the installed application"
-  }
+  Copy-InstallTree -Source $resolvedInstallDir -Destination $installBackup
+  Write-InstallManifest -Root $installBackup -Path $installManifest
+  Export-UninstallRegistry -Path $registryBackup
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $failingInstaller).Hash.ToLowerInvariant()
+  $expectedManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installManifest).Hash.ToLowerInvariant()
+  $expectedRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $registryBackup).Hash.ToLowerInvariant()
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
+
+  # Simulate an installer that destroyed every installed file and rewrote its
+  # Add/Remove Programs metadata before exiting non-zero. Rollback must restore
+  # the complete tree, not merely the main executable, and must remove values
+  # introduced by the failed candidate.
+  Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force
+  New-Item -ItemType Directory -Path $resolvedInstallDir | Out-Null
+  Set-Content -LiteralPath (Join-Path $resolvedInstallDir "failed-install.txt") -Value "corrupt"
+  & reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" /v DisplayVersion /t REG_SZ /d "broken" /f | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "Rollback fixture could not corrupt DisplayVersion"
+  }
+  & reg.exe add "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" /v HqRollbackFixture /t REG_SZ /d "broken" /f | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "Rollback fixture could not add candidate-only registry metadata"
+  }
   $helperArgs = @(
     "--hq-update-helper",
     "--parent-pid", ([uint32]::MaxValue),
@@ -202,6 +288,12 @@ if ($Action -eq "rollback") {
     "--ready-file", $readyFile,
     "--receipt-file", $receiptFile,
     "--original-exe", $installedApp,
+    "--install-dir", $resolvedInstallDir,
+    "--install-backup", $installBackup,
+    "--install-manifest", $installManifest,
+    "--expected-manifest-sha256", $expectedManifestHash,
+    "--uninstall-registry-backup", $registryBackup,
+    "--expected-registry-sha256", $expectedRegistryHash,
     "--target-version", $TargetVersion
   )
   $helper = Start-Process -FilePath $stagedHelper -ArgumentList $helperArgs -PassThru
@@ -216,9 +308,23 @@ if ($Action -eq "rollback") {
   if ($receipt.state -ne "rolled-back" -or $receipt.version -ne $TargetVersion) {
     throw "Unexpected rollback receipt: $($receipt | ConvertTo-Json -Compress)"
   }
-  $afterHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedApp).Hash
-  if ($afterHash -ne $beforeHash) {
-    throw "Rollback did not restore the prior application binary"
+  $afterManifest = ConvertTo-Json -InputObject (Get-InstallManifest -Root $resolvedInstallDir) -Compress -Depth 4 -AsArray
+  if ($afterManifest -ne $beforeManifest) {
+    throw "Rollback did not restore the complete prior installation"
+  }
+  $restoredRegistry = Join-Path $stageDir "verified-restored-uninstall.reg"
+  Export-UninstallRegistry -Path $restoredRegistry
+  $restoredRegistryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $restoredRegistry).Hash.ToLowerInvariant()
+  if ($restoredRegistryHash -ne $expectedRegistryHash) {
+    throw "Rollback did not restore the exact prior uninstall registry metadata"
+  }
+  & reg.exe query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" /v HqRollbackFixture *> $null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Rollback left candidate-only registry metadata behind"
+  }
+  $afterShortcuts = ConvertTo-Json -InputObject (Get-ShortcutManifest -InstalledApp $installedApp) -Compress -Depth 4 -AsArray
+  if ($afterShortcuts -ne $beforeShortcuts) {
+    throw "Update rollback changed existing HQ shortcuts"
   }
   Wait-Until -Condition {
     @(Get-Process -Name "hq-sync-menubar" -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installedApp }).Count -gt 0

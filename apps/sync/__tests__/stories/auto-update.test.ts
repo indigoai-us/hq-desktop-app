@@ -78,7 +78,7 @@ describe('master automatic-updates switch', () => {
     expect(windowsUpdater).toContain('quiesce_for_update');
     expect(windowsUpdater).toContain('let parent = open_parent(parent_pid)?;');
     expect(windowsUpdater).toContain('wait_for_parent(parent)?;');
-    expect(windowsUpdater).toContain('restore_original_executable');
+    expect(windowsUpdater).toContain('restore_prior_installation');
 
     // The hard version gate must route through that same coordinator rather
     // than reintroducing a direct Tauri install path.

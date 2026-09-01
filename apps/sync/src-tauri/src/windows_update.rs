@@ -5,8 +5,9 @@
 //! but hands installation to a copied, signed HQ executable. The helper waits
 //! for the parent to exit cleanly before NSIS can touch the installed files.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, SystemTime};
@@ -19,7 +20,9 @@ use ulid::Ulid;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WIN32_ERROR,
 };
-use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+use windows::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE,
+};
 
 use crate::util::logfile::log;
 
@@ -30,7 +33,15 @@ const EXPECTED_SHA_ARG: &str = "--expected-sha256";
 const READY_FILE_ARG: &str = "--ready-file";
 const RECEIPT_FILE_ARG: &str = "--receipt-file";
 const ORIGINAL_EXE_ARG: &str = "--original-exe";
-const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const INSTALL_DIR_ARG: &str = "--install-dir";
+const INSTALL_BACKUP_ARG: &str = "--install-backup";
+const INSTALL_MANIFEST_ARG: &str = "--install-manifest";
+const EXPECTED_MANIFEST_SHA_ARG: &str = "--expected-manifest-sha256";
+const UNINSTALL_REGISTRY_BACKUP_ARG: &str = "--uninstall-registry-backup";
+const EXPECTED_REGISTRY_SHA_ARG: &str = "--expected-registry-sha256";
+const UNINSTALL_REGISTRY_PATH: &str =
+    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ";
+const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const PARENT_EXIT_TIMEOUT_MS: u32 = 120_000;
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 const STALE_STAGING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -56,8 +67,21 @@ struct StagedUpdate {
     ready: PathBuf,
     receipt: PathBuf,
     original_exe: PathBuf,
+    install_dir: PathBuf,
+    install_backup: PathBuf,
+    install_manifest: PathBuf,
+    manifest_sha256: String,
+    uninstall_registry_backup: PathBuf,
+    registry_sha256: String,
     sha256: String,
     version: String,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupManifestEntry {
+    relative: PathBuf,
+    sha256: String,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -65,8 +89,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn file_sha256_hex(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| format!("read staged installer: {error}"))?;
-    Ok(sha256_hex(&bytes))
+    let mut file = File::open(path)
+        .map_err(|error| format!("open file for checksum {}: {error}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read file for checksum {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{digest:x}"))
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -79,6 +115,189 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("write {}: {error}", path.display()))?;
     file.sync_all()
         .map_err(|error| format!("sync {}: {error}", path.display()))
+}
+
+fn copy_install_tree(source: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        return Err(format!(
+            "installation backup target already exists: {}",
+            target.display()
+        ));
+    }
+    fs::create_dir_all(target)
+        .map_err(|error| format!("create installation backup {}: {error}", target.display()))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("read installation directory {}: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read installation entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("read installation entry type: {error}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_install_tree(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &target_path).map_err(|error| {
+                format!(
+                    "copy prior installation file {}: {error}",
+                    source_path.display()
+                )
+            })?;
+        } else {
+            return Err(format!(
+                "prior installation contains an unsupported link or special file: {}",
+                source_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_install_manifest(
+    root: &Path,
+    current: &Path,
+    entries: &mut Vec<BackupManifestEntry>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current)
+        .map_err(|error| format!("read installation backup {}: {error}", current.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read installation backup entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("read installation backup entry type: {error}"))?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_install_manifest(root, &path, entries)?;
+        } else if file_type.is_file() {
+            entries.push(BackupManifestEntry {
+                relative: path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("relativize installation backup path: {error}"))?
+                    .to_path_buf(),
+                sha256: file_sha256_hex(&path)?,
+            });
+        } else {
+            return Err(format!(
+                "installation backup contains an unsupported link or special file: {}",
+                path.display()
+            ));
+        }
+    }
+    entries.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(())
+}
+
+fn install_manifest(root: &Path) -> Result<Vec<BackupManifestEntry>, String> {
+    let mut entries = Vec::new();
+    collect_install_manifest(root, root, &mut entries)?;
+    if entries.is_empty() {
+        return Err("prior installation backup is empty".to_string());
+    }
+    Ok(entries)
+}
+
+fn write_install_manifest(backup: &Path, path: &Path) -> Result<String, String> {
+    let manifest = install_manifest(backup)?;
+    let bytes = serde_json::to_vec(&manifest)
+        .map_err(|error| format!("serialize installation backup manifest: {error}"))?;
+    write_new_file(path, &bytes)?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn read_verified_install_manifest(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<Vec<BackupManifestEntry>, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("read installation backup manifest: {error}"))?;
+    if expected_sha256.len() != 64 || !sha256_hex(&bytes).eq_ignore_ascii_case(expected_sha256) {
+        return Err("installation backup manifest checksum changed before rollback".to_string());
+    }
+    let mut manifest: Vec<BackupManifestEntry> = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse installation backup manifest: {error}"))?;
+    manifest.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(manifest)
+}
+
+fn verify_install_tree(
+    root: &Path,
+    expected: &[BackupManifestEntry],
+    label: &str,
+) -> Result<(), String> {
+    let actual = install_manifest(root)?;
+    if actual != expected {
+        return Err(format!(
+            "{label} does not match the complete prior installation manifest"
+        ));
+    }
+    Ok(())
+}
+
+fn registry_command() -> Command {
+    let mut command = Command::new("reg.exe");
+    command.creation_flags(CREATE_NO_WINDOW.0);
+    command
+}
+
+fn registry_key_exists() -> Result<bool, String> {
+    registry_command()
+        .args(["query", UNINSTALL_REGISTRY_PATH])
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| format!("query prior uninstall registry metadata: {error}"))
+}
+
+fn export_uninstall_registry(path: &Path) -> Result<(), String> {
+    if !registry_key_exists()? {
+        return Err("prior uninstall registry metadata is missing".to_string());
+    }
+    let status = registry_command()
+        .arg("export")
+        .arg(UNINSTALL_REGISTRY_PATH)
+        .arg(path)
+        .arg("/y")
+        .status()
+        .map_err(|error| format!("export prior uninstall registry metadata: {error}"))?;
+    if status.success() && path.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "export prior uninstall registry metadata exited with {status}"
+        ))
+    }
+}
+
+fn delete_uninstall_registry() -> Result<(), String> {
+    if !registry_key_exists()? {
+        return Ok(());
+    }
+    let status = registry_command()
+        .args(["delete", UNINSTALL_REGISTRY_PATH, "/f"])
+        .status()
+        .map_err(|error| format!("delete uninstall registry metadata: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "delete uninstall registry metadata exited with {status}"
+        ))
+    }
+}
+
+fn import_uninstall_registry(path: &Path) -> Result<(), String> {
+    let status = registry_command()
+        .arg("import")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("import uninstall registry metadata: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "import uninstall registry metadata exited with {status}"
+        ))
+    }
 }
 
 fn write_receipt(path: &Path, state: &str, version: &str, detail: Option<&str>) {
@@ -116,9 +335,20 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
 
         let original_exe = std::env::current_exe()
             .map_err(|error| format!("resolve current HQ executable: {error}"))?;
+        let install_dir = original_exe
+            .parent()
+            .ok_or_else(|| "current HQ executable has no installation directory".to_string())?
+            .to_path_buf();
         let helper = root.join("hq-update-helper.exe");
         fs::copy(&original_exe, &helper)
             .map_err(|error| format!("copy signed update helper: {error}"))?;
+        let install_backup = root.join("prior-install");
+        copy_install_tree(&install_dir, &install_backup)?;
+        let install_manifest = root.join("prior-install-manifest.json");
+        let manifest_sha256 = write_install_manifest(&install_backup, &install_manifest)?;
+        let uninstall_registry_backup = root.join("prior-uninstall.reg");
+        export_uninstall_registry(&uninstall_registry_backup)?;
+        let registry_sha256 = file_sha256_hex(&uninstall_registry_backup)?;
 
         let staged = StagedUpdate {
             root: root.clone(),
@@ -127,6 +357,12 @@ fn stage_update(bytes: &[u8], version: &str) -> Result<StagedUpdate, String> {
             ready: root.join("helper.ready"),
             receipt: root.join("receipt.json"),
             original_exe,
+            install_dir,
+            install_backup,
+            install_manifest,
+            manifest_sha256,
+            uninstall_registry_backup,
+            registry_sha256,
             sha256,
             version: version.to_string(),
         };
@@ -223,6 +459,18 @@ fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
         .arg(&staged.receipt)
         .arg(ORIGINAL_EXE_ARG)
         .arg(&staged.original_exe)
+        .arg(INSTALL_DIR_ARG)
+        .arg(&staged.install_dir)
+        .arg(INSTALL_BACKUP_ARG)
+        .arg(&staged.install_backup)
+        .arg(INSTALL_MANIFEST_ARG)
+        .arg(&staged.install_manifest)
+        .arg(EXPECTED_MANIFEST_SHA_ARG)
+        .arg(&staged.manifest_sha256)
+        .arg(UNINSTALL_REGISTRY_BACKUP_ARG)
+        .arg(&staged.uninstall_registry_backup)
+        .arg(EXPECTED_REGISTRY_SHA_ARG)
+        .arg(&staged.registry_sha256)
         .arg("--target-version")
         .arg(&staged.version)
         .spawn()
@@ -321,11 +569,9 @@ fn open_parent(parent_pid: u32) -> Result<Option<HANDLE>, String> {
         match OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
             Ok(parent) => Ok(Some(parent)),
             Err(error) if parent_open_error_means_exited(&error) => Ok(None),
-            Err(error) => {
-                Err(format!(
-                    "open HQ parent process {parent_pid} for synchronization: {error}"
-                ))
-            }
+            Err(error) => Err(format!(
+                "open HQ parent process {parent_pid} for synchronization: {error}"
+            )),
         }
     }
 }
@@ -345,17 +591,126 @@ fn wait_for_parent(parent: Option<HANDLE>) -> Result<(), String> {
     }
 }
 
-/// The helper executable is a byte-for-byte copy of the pre-update HQ binary.
-/// If NSIS fails after touching the install directory, put that known-working
-/// executable back before relaunching so the user is not stranded without an
-/// app or a manual recovery surface.
-fn restore_original_executable(helper: &Path, original_exe: &Path) -> Result<(), String> {
-    fs::copy(helper, original_exe)
-        .map_err(|error| format!("restore prior HQ executable: {error}"))?;
-    Command::new(original_exe)
-        .spawn()
-        .map_err(|error| format!("relaunch restored HQ executable: {error}"))?;
+fn restore_install_tree(
+    install_backup: &Path,
+    install_manifest: &Path,
+    expected_manifest_sha256: &str,
+    install_dir: &Path,
+) -> Result<(), String> {
+    let expected = read_verified_install_manifest(install_manifest, expected_manifest_sha256)?;
+    verify_install_tree(install_backup, &expected, "staged installation backup")?;
+
+    let install_parent = install_dir
+        .parent()
+        .ok_or_else(|| "HQ installation directory has no parent".to_string())?;
+    let recovery_id = Ulid::new();
+    let recovered = install_parent.join(format!(".hq-rollback-ready-{recovery_id}"));
+    let displaced = install_parent.join(format!(".hq-failed-install-{recovery_id}"));
+    copy_install_tree(install_backup, &recovered)?;
+    verify_install_tree(&recovered, &expected, "prepared rollback installation")?;
+
+    let had_install = install_dir.exists();
+    if had_install {
+        fs::rename(install_dir, &displaced)
+            .map_err(|error| format!("preserve failed HQ installation before rollback: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&recovered, install_dir) {
+        if had_install {
+            let _ = fs::rename(&displaced, install_dir);
+        }
+        let _ = fs::remove_dir_all(&recovered);
+        return Err(format!("activate restored HQ installation: {error}"));
+    }
+    if let Err(error) = verify_install_tree(install_dir, &expected, "restored installation") {
+        let _ = fs::remove_dir_all(install_dir);
+        if had_install {
+            let _ = fs::rename(&displaced, install_dir);
+        }
+        return Err(error);
+    }
+    if had_install {
+        if let Err(error) = fs::remove_dir_all(&displaced) {
+            log(
+                "updater",
+                &format!("could not clean failed HQ installation after rollback: {error}"),
+            );
+        }
+    }
     Ok(())
+}
+
+fn restore_uninstall_registry(prior_backup: &Path, expected_sha256: &str) -> Result<(), String> {
+    if expected_sha256.len() != 64
+        || !file_sha256_hex(prior_backup)?.eq_ignore_ascii_case(expected_sha256)
+    {
+        return Err("uninstall registry backup checksum changed before rollback".to_string());
+    }
+
+    let candidate_backup = prior_backup.with_file_name("failed-install-uninstall.reg");
+    let restored_probe = prior_backup.with_file_name("restored-uninstall.reg");
+    let candidate_existed = registry_key_exists()?;
+    if candidate_existed {
+        export_uninstall_registry(&candidate_backup)?;
+    }
+
+    let restore_result = (|| {
+        delete_uninstall_registry()?;
+        import_uninstall_registry(prior_backup)?;
+        export_uninstall_registry(&restored_probe)?;
+        if !file_sha256_hex(&restored_probe)?.eq_ignore_ascii_case(expected_sha256) {
+            return Err(
+                "restored uninstall registry metadata does not match its backup".to_string(),
+            );
+        }
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&restored_probe);
+    if let Err(error) = restore_result {
+        let _ = delete_uninstall_registry();
+        if candidate_existed {
+            let _ = import_uninstall_registry(&candidate_backup);
+        }
+        let _ = fs::remove_file(&candidate_backup);
+        return Err(error);
+    }
+    let _ = fs::remove_file(&candidate_backup);
+    Ok(())
+}
+
+/// `/UPDATE` leaves shortcuts and app-data registrations in place, but it can
+/// replace any installed file and its Add/Remove Programs metadata before a
+/// later step fails. Restore the byte-verified complete installation snapshot
+/// plus the exact uninstall registry subtree before relaunching the prior app.
+fn restore_prior_installation(
+    install_backup: &Path,
+    install_manifest: &Path,
+    expected_manifest_sha256: &str,
+    install_dir: &Path,
+    uninstall_registry_backup: &Path,
+    expected_registry_sha256: &str,
+    original_exe: &Path,
+) -> Result<(), String> {
+    restore_install_tree(
+        install_backup,
+        install_manifest,
+        expected_manifest_sha256,
+        install_dir,
+    )?;
+    let registry_result =
+        restore_uninstall_registry(uninstall_registry_backup, expected_registry_sha256);
+    let relaunch_result = Command::new(original_exe)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("relaunch restored HQ executable: {error}"));
+    match (registry_result, relaunch_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(registry_error), Ok(())) => Err(registry_error),
+        (Ok(()), Err(relaunch_error)) => Err(relaunch_error),
+        (Err(registry_error), Err(relaunch_error)) => {
+            Err(format!("{registry_error}; {relaunch_error}"))
+        }
+    }
 }
 
 fn run_helper(args: &[String]) -> Result<(), String> {
@@ -367,6 +722,12 @@ fn run_helper(args: &[String]) -> Result<(), String> {
     let ready = PathBuf::from(arg_value(args, READY_FILE_ARG)?);
     let receipt = PathBuf::from(arg_value(args, RECEIPT_FILE_ARG)?);
     let original_exe = PathBuf::from(arg_value(args, ORIGINAL_EXE_ARG)?);
+    let install_dir = PathBuf::from(arg_value(args, INSTALL_DIR_ARG)?);
+    let install_backup = PathBuf::from(arg_value(args, INSTALL_BACKUP_ARG)?);
+    let install_manifest = PathBuf::from(arg_value(args, INSTALL_MANIFEST_ARG)?);
+    let expected_manifest_sha = arg_value(args, EXPECTED_MANIFEST_SHA_ARG)?;
+    let uninstall_registry_backup = PathBuf::from(arg_value(args, UNINSTALL_REGISTRY_BACKUP_ARG)?);
+    let expected_registry_sha = arg_value(args, EXPECTED_REGISTRY_SHA_ARG)?;
     let version = arg_value(args, "--target-version")?;
     let helper = std::env::current_exe().map_err(|error| error.to_string())?;
     let helper_dir = helper
@@ -375,10 +736,34 @@ fn run_helper(args: &[String]) -> Result<(), String> {
     require_helper_sibling(helper_dir, &installer, "installer")?;
     require_helper_sibling(helper_dir, &ready, "ready marker")?;
     require_helper_sibling(helper_dir, &receipt, "receipt")?;
+    require_helper_sibling(helper_dir, &install_backup, "installation backup")?;
+    require_helper_sibling(
+        helper_dir,
+        &install_manifest,
+        "installation backup manifest",
+    )?;
+    require_helper_sibling(
+        helper_dir,
+        &uninstall_registry_backup,
+        "uninstall registry backup",
+    )?;
+    if original_exe.parent() != Some(install_dir.as_path()) {
+        return Err("original executable must live in the installation directory".to_string());
+    }
 
     let actual_sha = file_sha256_hex(&installer)?;
     if expected_sha.len() != 64 || !actual_sha.eq_ignore_ascii_case(&expected_sha) {
         return Err("staged installer checksum changed before launch".to_string());
+    }
+    if !install_backup.is_dir() {
+        return Err("complete prior installation backup is missing".to_string());
+    }
+    read_verified_install_manifest(&install_manifest, &expected_manifest_sha)?;
+    if expected_registry_sha.len() != 64
+        || !file_sha256_hex(&uninstall_registry_backup)?
+            .eq_ignore_ascii_case(&expected_registry_sha)
+    {
+        return Err("uninstall registry backup checksum changed before launch".to_string());
     }
     let parent = open_parent(parent_pid)?;
     write_new_file(&ready, b"ready")?;
@@ -397,7 +782,15 @@ fn run_helper(args: &[String]) -> Result<(), String> {
         }
         Ok(status) => {
             let detail = format!("NSIS exited with {status}");
-            match restore_original_executable(&helper, &original_exe) {
+            match restore_prior_installation(
+                &install_backup,
+                &install_manifest,
+                &expected_manifest_sha,
+                &install_dir,
+                &uninstall_registry_backup,
+                &expected_registry_sha,
+                &original_exe,
+            ) {
                 Ok(()) => {
                     write_receipt(&receipt, "rolled-back", &version, Some(&detail));
                     Err(detail)
@@ -410,7 +803,15 @@ fn run_helper(args: &[String]) -> Result<(), String> {
             }
         }
         Err(error) => {
-            match restore_original_executable(&helper, &original_exe) {
+            match restore_prior_installation(
+                &install_backup,
+                &install_manifest,
+                &expected_manifest_sha,
+                &install_dir,
+                &uninstall_registry_backup,
+                &expected_registry_sha,
+                &original_exe,
+            ) {
                 Ok(()) => {
                     write_receipt(&receipt, "rolled-back", &version, Some(&error));
                     Err(error)
@@ -473,11 +874,35 @@ mod tests {
     }
 
     #[test]
+    fn complete_install_backup_detects_a_missing_resource() {
+        let root = std::env::temp_dir().join(format!("hq-update-manifest-test-{}", Ulid::new()));
+        let source = root.join("installed");
+        let backup = root.join("backup");
+        let manifest_path = root.join("manifest.json");
+        fs::create_dir_all(source.join("recall-sdk-bridge")).unwrap();
+        fs::write(source.join("hq-sync-menubar.exe"), b"app").unwrap();
+        fs::write(source.join("uninstall.exe"), b"uninstaller").unwrap();
+        fs::write(
+            source.join("recall-sdk-bridge").join("bridge.mjs"),
+            b"bridge",
+        )
+        .unwrap();
+
+        copy_install_tree(&source, &backup).unwrap();
+        let manifest_sha = write_install_manifest(&backup, &manifest_path).unwrap();
+        let expected = read_verified_install_manifest(&manifest_path, &manifest_sha).unwrap();
+        verify_install_tree(&backup, &expected, "backup").unwrap();
+
+        fs::remove_file(backup.join("recall-sdk-bridge").join("bridge.mjs")).unwrap();
+        assert!(verify_install_tree(&backup, &expected, "backup").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn parent_open_only_treats_a_missing_pid_as_exited() {
         let missing_pid = windows::core::Error::from(ERROR_INVALID_PARAMETER);
-        let access_denied = windows::core::Error::from(
-            windows::Win32::Foundation::ERROR_ACCESS_DENIED,
-        );
+        let access_denied =
+            windows::core::Error::from(windows::Win32::Foundation::ERROR_ACCESS_DENIED);
 
         assert!(parent_open_error_means_exited(&missing_pid));
         assert!(!parent_open_error_means_exited(&access_denied));
@@ -493,17 +918,11 @@ mod tests {
             Some("rolled-back"),
             Duration::ZERO
         ));
-        assert!(should_cleanup_staging_dir(
-            Some("failed"),
-            Duration::ZERO
-        ));
+        assert!(should_cleanup_staging_dir(Some("failed"), Duration::ZERO));
         assert!(!should_cleanup_staging_dir(
             Some("installing"),
             Duration::ZERO
         ));
-        assert!(should_cleanup_staging_dir(
-            None,
-            STALE_STAGING_MAX_AGE
-        ));
+        assert!(should_cleanup_staging_dir(None, STALE_STAGING_MAX_AGE));
     }
 }
