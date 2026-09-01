@@ -25,6 +25,7 @@ vi.mock("@hq/ui", async (importOriginal) => {
 vi.mock("$lib/hq-pro-client.js", () => ({
   hqProFetch: vi.fn(),
   hqProApiUrl: vi.fn(() => "https://hq-pro.test"),
+  redirectToSigninWithCallback: vi.fn(),
 }));
 
 vi.mock("$lib/mesh-runtime", () => ({
@@ -32,6 +33,7 @@ vi.mock("$lib/mesh-runtime", () => ({
 }));
 
 import { mount, tick, unmount } from "svelte";
+import type { PlatformAdapter } from "@hq/platform";
 import type {
   BoardTabData,
   ChatSidebarApi,
@@ -40,7 +42,10 @@ import type {
   SelfIdentity,
 } from "@hq/ui";
 import { displayVersion } from "$lib/version.js";
-import { hqProFetch } from "$lib/hq-pro-client.js";
+import {
+  hqProFetch,
+  redirectToSigninWithCallback,
+} from "$lib/hq-pro-client.js";
 import { resetLiveRailHydrate } from "$lib/chat-adapter.js";
 import { tenantStorageKey } from "../../../../packages/ui/src/identity/tenant-storage.js";
 import Page from "./+page.svelte";
@@ -53,6 +58,7 @@ type CapturedDesktopAppProps = {
   searchRows: ConversationRow[];
   channelStatusByRow: (row: ConversationRow) => ChannelStatusModel | null;
   boardByRow: (row: ConversationRow) => BoardTabData | null;
+  adapter: PlatformAdapter;
 };
 
 let host: HTMLDivElement;
@@ -120,6 +126,18 @@ async function mountSignedInPage(): Promise<void> {
 }
 
 describe("hosted Work shell identity and tenancy", () => {
+  it("wires the page adapter's 401 handler to the callback-preserving redirect", async () => {
+    vi.mocked(hqProFetch).mockResolvedValue(
+      response({ error: "Unauthenticated" }, 401),
+    );
+
+    await mountSignedInPage();
+    vi.mocked(redirectToSigninWithCallback).mockClear();
+    await capturedProps().adapter.identity.whoami();
+
+    expect(redirectToSigninWithCallback).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the verified person uid instead of the Cognito account subject", async () => {
     vi.mocked(hqProFetch).mockImplementation(async (input) => {
       const url = urlOf(input);

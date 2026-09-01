@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment happy-dom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createBrowserTokenProvider,
   createHqProFetch,
   hqProApiUrl,
+  redirectToSigninWithCallback,
   type BrowserTokenProvider,
 } from "./hq-pro-client.js";
 
@@ -14,7 +17,33 @@ function tokenProvider(value: string | null): BrowserTokenProvider {
   };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  window.history.replaceState({}, "", "/");
+});
+
 describe("direct hq-pro browser transport", () => {
+  it("redirects with the complete callback URL and does not loop on auth routes", () => {
+    const assign = vi
+      .spyOn(window.location, "assign")
+      .mockImplementation(() => {});
+    window.history.replaceState(
+      {},
+      "",
+      "/?channel=chn_launch&reply=evt_1#thread",
+    );
+
+    redirectToSigninWithCallback();
+
+    expect(assign).toHaveBeenCalledWith(
+      "/auth/signin?callbackUrl=%2F%3Fchannel%3Dchn_launch%26reply%3Devt_1%23thread",
+    );
+
+    window.history.replaceState({}, "", "/auth/signin?callbackUrl=%2F");
+    redirectToSigninWithCallback();
+    expect(assign).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the documented development default only when no public URL is set", () => {
     expect(hqProApiUrl(undefined, true)).toBe("https://hqapi.hq.computer");
     expect(hqProApiUrl(undefined, false)).toBe("");

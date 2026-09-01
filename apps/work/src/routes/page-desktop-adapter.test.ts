@@ -16,7 +16,11 @@ describe("HQ Work desktop platform adapter", () => {
       "? createSyncPlatformAdapter({ invoke: tauriInvoke })",
     );
     expect(page).toContain(
-      ': new WebPlatformAdapter({ baseUrl: hqProApiUrl(), fetch: hqProFetch })',
+      `: new WebPlatformAdapter({
+        baseUrl: hqProApiUrl(),
+        fetch: hqProFetch,
+        onUnauthorized: redirectToSigninWithCallback,
+      })`,
     );
 
     const commands: string[] = [];

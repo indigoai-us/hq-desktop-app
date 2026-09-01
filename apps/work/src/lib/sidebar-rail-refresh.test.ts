@@ -24,6 +24,7 @@ vi.mock("@hq/ui", async (importOriginal) => {
 vi.mock("$lib/hq-pro-client.js", () => ({
   hqProFetch: vi.fn(),
   hqProApiUrl: vi.fn(() => "https://hq-pro.test"),
+  redirectToSigninWithCallback: vi.fn(),
 }));
 
 vi.mock("$lib/mesh-runtime", () => ({

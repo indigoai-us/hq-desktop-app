@@ -60,7 +60,11 @@
     loadWebVaultFilePreview,
     type LiveProjectMeta,
   } from "$lib/live-project";
-  import { hqProApiUrl, hqProFetch } from "$lib/hq-pro-client";
+  import {
+    hqProApiUrl,
+    hqProFetch,
+    redirectToSigninWithCallback,
+  } from "$lib/hq-pro-client";
   import { displayVersion } from "$lib/version";
   import {
     createTauriAttachmentHandlers,
@@ -90,7 +94,11 @@
 
   const adapter: PlatformAdapter = isTauriRuntime()
     ? createSyncPlatformAdapter({ invoke: tauriInvoke })
-    : new WebPlatformAdapter({ baseUrl: hqProApiUrl(), fetch: hqProFetch });
+    : new WebPlatformAdapter({
+        baseUrl: hqProApiUrl(),
+        fetch: hqProFetch,
+        onUnauthorized: redirectToSigninWithCallback,
+      });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);

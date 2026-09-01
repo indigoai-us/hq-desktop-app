@@ -28,7 +28,8 @@ export function hqProApiUrl(
   return dev ? DEV_DEFAULT_API_URL : "";
 }
 
-function redirectToSignin(): void {
+/** Preserve the complete browser route when an hq-pro request needs re-login. */
+export function redirectToSigninWithCallback(): void {
   if (typeof window === "undefined") return;
   if (window.location.pathname.startsWith("/auth/")) return;
   const callback = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -114,7 +115,7 @@ export function createHqProFetch(options: {
   tokenProvider?: BrowserTokenProvider;
   onUnauthorized?: () => void;
 } = {}): HqProFetch {
-  const onUnauthorized = options.onUnauthorized ?? redirectToSignin;
+  const onUnauthorized = options.onUnauthorized ?? redirectToSigninWithCallback;
   const fetchImpl = options.fetchImpl ?? runtimeFetch();
   const tokenProvider =
     options.tokenProvider ?? createBrowserTokenProvider({ fetchImpl });
