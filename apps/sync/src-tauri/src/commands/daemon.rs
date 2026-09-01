@@ -1446,6 +1446,10 @@ struct WatcherExitCaptureContext {
     runner_heap_used_mb: Option<u64>,
     runner_heap_total_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
+    /// Version from the exact `_npx` cache entry that supplies the watcher
+    /// target. The resolver is fail-soft and returns the fixed `unknown` token
+    /// for every absent, unreadable, malformed, or unsafe manifest.
+    runner_hq_cloud_version: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
     /// The durable session-end latch read at the exit boundary, consulted ONLY on
     /// the session-terminate/no-signal shape (`Unavailable` otherwise). A
@@ -1614,6 +1618,7 @@ impl Default for WatcherExitCaptureContext {
             runner_heap_used_mb: None,
             runner_heap_total_mb: None,
             runner_oom_frame_count: None,
+            runner_hq_cloud_version: "unknown".to_string(),
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
             cancellation_record_present: false,
@@ -1781,6 +1786,10 @@ fn watcher_exit_capture_context(
         runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
+        // Read this at the exit seam, rather than retaining a startup/spawn
+        // snapshot, so every event identifies the cache entry selected by this
+        // process and can never report a prior runner version after an upgrade.
+        runner_hq_cloud_version: hq_desktop_core::runner_target::runner_hq_cloud_version(),
         windows_terminator,
         session_end_latch,
         cancellation_record_present: cancellation_record.is_some(),
@@ -3402,6 +3411,13 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", resolved_rss_scope.to_string()));
+    // The resolved runner package version, or the fail-soft fixed `unknown`
+    // sentinel. This makes a watcher crash attributable to the actual npx
+    // cache entry without copying package.json content into telemetry.
+    tags.push((
+        "runner_hq_cloud_version",
+        context.runner_hq_cloud_version.clone(),
+    ));
     // The declared runner heap ceiling's provenance. Carried on EVERY exit —
     // including the Windows shim path where the tree sum is honestly withheld — so
     // a footprint is interpretable against the ceiling that bounded it and a
@@ -10592,6 +10608,11 @@ mod tests {
         assert_eq!(
             recorded_tag(heap_capture, "runner_stack_shape"),
             "node_oom_handler>v8_report_oom>v8_runtime"
+        );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_hq_cloud_version"),
+            "unknown",
+            "every watcher-exit event carries the runner version tag"
         );
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);

@@ -42,6 +42,7 @@
 //!   cross-process advisory lock as cache materialization, and only ever
 //!   touches the HQ-owned `_npx` entry for the pinned package.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha512};
@@ -49,6 +50,10 @@ use sha2::{Digest, Sha512};
 use crate::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use crate::paths;
 use crate::prewarm;
+
+const UNKNOWN_RUNNER_HQ_CLOUD_VERSION: &str = "unknown";
+const MAX_RUNNER_PACKAGE_JSON_BYTES: u64 = 64 * 1024;
+const MAX_RUNNER_HQ_CLOUD_VERSION_LEN: usize = 128;
 
 /// Fixed-vocabulary state of the runner target the watcher would exec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +352,63 @@ pub fn resolve_runner_target_in(npx_cache_dir: &Path, package_spec: &str) -> Opt
     }
 }
 
+/// Resolve the hq-cloud version from the exact `_npx` entry whose runner target
+/// npx selects. This is crash-report metadata only: every cache, file, JSON, or
+/// version-validation failure becomes the fixed `"unknown"` sentinel.
+pub fn runner_hq_cloud_version_in(npx_cache_dir: &Path, package_spec: &str) -> String {
+    let Some(target) = resolve_runner_target_in(npx_cache_dir, package_spec) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let Some(entry) = npx_entry_dir_for(npx_cache_dir, &target) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let manifest = entry
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cloud")
+        .join("package.json");
+    let Ok(file) = std::fs::File::open(manifest) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let mut contents = String::new();
+    let Ok(read) = file
+        .take(MAX_RUNNER_PACKAGE_JSON_BYTES + 1)
+        .read_to_string(&mut contents)
+    else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    if read > MAX_RUNNER_PACKAGE_JSON_BYTES as usize {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    }
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let Some(version) = manifest.get("version").and_then(|value| value.as_str()) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    if valid_runner_hq_cloud_version(version) {
+        version.to_string()
+    } else {
+        UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string()
+    }
+}
+
+/// Read the currently selected runner entry at the crash-report seam. This is
+/// intentionally uncached: a new desktop process may select a new npx entry,
+/// and diagnostics must describe that runner rather than a prior spawn.
+pub fn runner_hq_cloud_version() -> String {
+    npx_cache_dir().map_or_else(
+        || UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string(),
+        |cache_dir| runner_hq_cloud_version_in(&cache_dir, &pinned_package_spec()),
+    )
+}
+
+fn valid_runner_hq_cloud_version(value: &str) -> bool {
+    value.len() <= MAX_RUNNER_HQ_CLOUD_VERSION_LEN
+        && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && semver::Version::parse(value).is_ok()
+}
+
 fn runner_bin_in_entry(entry: &Path) -> PathBuf {
     entry.join("node_modules").join(".bin").join(RUNNER_BIN)
 }
@@ -500,6 +562,16 @@ mod tests {
         shim
     }
 
+    fn write_hq_cloud_manifest(entry: &Path, contents: &str) {
+        let manifest = entry
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cloud")
+            .join("package.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(manifest, contents).unwrap();
+    }
+
     /// Pins npm's `_npx` cache-key derivation against the entry observed in the
     /// HQ-DESKTOP-4K reproduction. If npm ever changes it, this fails loudly
     /// and `resolve_runner_target_in` falls back to its scan.
@@ -510,6 +582,25 @@ mod tests {
             "f72697f8e89f117e",
         );
         assert_eq!(npx_cache_entry_hash(&pinned_package_spec()).len(), 16);
+    }
+
+    /// npm derives `_npx` directories from the literal input spec. A floor bump
+    /// must therefore change this hash, or a cached runner can never pick up a
+    /// patch that still satisfies the previous tilde range.
+    #[test]
+    fn npx_cache_key_is_sha512_of_the_input_spec_and_changes_with_the_floor() {
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.0"),
+            "4df8f075c5c7872e",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.2"),
+            "93b7f3b16810b2ea",
+        );
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.0"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.2"),
+        );
     }
 
     #[test]
@@ -671,6 +762,61 @@ mod tests {
             &pinned_package_spec()
         )
         .is_none());
+    }
+
+    #[test]
+    fn runner_hq_cloud_version_reads_the_resolved_npx_entry_and_fails_soft() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("_npx");
+        let spec = "@indigoai-us/hq-cloud@~6.16.2";
+        let entry = cache.join(npx_cache_entry_hash(spec));
+        write_runner(&entry, 0o755);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.2"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.2");
+
+        // Every bad cache input is reporting-only and must fail soft rather than
+        // changing the watcher crash path.
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache.join("missing"), spec),
+            "unknown"
+        );
+
+        let missing_manifest = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.1"));
+        write_runner(&missing_manifest, 0o755);
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.1"),
+            "unknown"
+        );
+
+        let malformed = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.2"));
+        write_runner(&malformed, 0o755);
+        write_hq_cloud_manifest(&malformed, "not json");
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.2"),
+            "unknown"
+        );
+
+        let non_semver = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.3"));
+        write_runner(&non_semver, 0o755);
+        write_hq_cloud_manifest(
+            &non_semver,
+            r#"{"version":"FATAL ERROR: /Users/Ada/secret"}"#,
+        );
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.3"),
+            "unknown"
+        );
+
+        let too_long = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.4"));
+        write_runner(&too_long, 0o755);
+        write_hq_cloud_manifest(
+            &too_long,
+            &format!(r#"{{"version":"{}"}}"#, "9".repeat(129)),
+        );
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.4"),
+            "unknown"
+        );
     }
 
     /// The pre-spawn decision table, including every degrade-to-spawn case.
