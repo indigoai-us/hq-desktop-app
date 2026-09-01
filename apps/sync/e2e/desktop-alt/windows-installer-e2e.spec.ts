@@ -153,6 +153,8 @@ describe('Windows production installer E2E', () => {
     expect(parentOpen).toBeGreaterThan(-1);
     expect(readyMarker).toBeGreaterThan(parentOpen);
     expect(windowsUpdate).toContain('cleanup_update_staging_dirs();');
+    expect(windowsUpdate).toContain('cleanup_rollback_swap_dirs();');
+    expect(windowsUpdate).toContain('FAILED_INSTALL_PREFIX');
     expect(windowsUpdate).toContain('stop_helper_and_cleanup(&mut helper, &staged)');
     expect(updater).toContain('install_failure_is_sync_deferral');
     expect(updater).toContain(

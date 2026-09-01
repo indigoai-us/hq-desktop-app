@@ -45,6 +45,8 @@ const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const PARENT_EXIT_TIMEOUT_MS: u32 = 120_000;
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 const STALE_STAGING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const ROLLBACK_READY_PREFIX: &str = ".hq-rollback-ready-";
+const FAILED_INSTALL_PREFIX: &str = ".hq-failed-install-";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,6 +446,40 @@ fn cleanup_update_staging_dirs() {
     let _ = fs::remove_dir(&root);
 }
 
+fn is_rollback_swap_dir_name(name: &str) -> bool {
+    name.starts_with(ROLLBACK_READY_PREFIX) || name.starts_with(FAILED_INSTALL_PREFIX)
+}
+
+fn cleanup_rollback_swap_dirs() {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(install_parent) = current_exe
+        .parent()
+        .and_then(|install_dir| install_dir.parent())
+    else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(install_parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !is_rollback_swap_dir_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(&path) {
+            log(
+                "updater",
+                &format!(
+                    "could not clean rollback swap directory {}: {error}",
+                    path.display()
+                ),
+            );
+        }
+    }
+}
+
 fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
     Command::new(&staged.helper)
         .arg(HELPER_FLAG)
@@ -831,6 +867,7 @@ fn run_helper(args: &[String]) -> Result<(), String> {
 pub fn run_helper_if_requested() {
     let args: Vec<String> = std::env::args().collect();
     if !args.iter().any(|arg| arg == HELPER_FLAG) {
+        cleanup_rollback_swap_dirs();
         cleanup_update_staging_dirs();
         return;
     }
@@ -924,5 +961,13 @@ mod tests {
             Duration::ZERO
         ));
         assert!(should_cleanup_staging_dir(None, STALE_STAGING_MAX_AGE));
+    }
+
+    #[test]
+    fn rollback_swap_cleanup_is_limited_to_owned_prefixes() {
+        assert!(is_rollback_swap_dir_name(".hq-failed-install-01K5ABC"));
+        assert!(is_rollback_swap_dir_name(".hq-rollback-ready-01K5ABC"));
+        assert!(!is_rollback_swap_dir_name("HQ"));
+        assert!(!is_rollback_swap_dir_name(".hq-failed-install"));
     }
 }
