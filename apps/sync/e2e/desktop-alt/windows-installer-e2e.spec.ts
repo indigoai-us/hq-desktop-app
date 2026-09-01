@@ -131,6 +131,7 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain(
       'Rollback created NSIS uninstall metadata for an MSI-installed bridge',
     );
+    expect(installerHarness).toContain('$global:LASTEXITCODE = 0');
     expect(installerHarness).toContain(
       'Update rollback changed existing HQ shortcuts',
     );

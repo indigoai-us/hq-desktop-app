@@ -79,7 +79,9 @@ function Export-UninstallRegistry([string]$Path) {
 
 function Test-NsisUninstallRegistry {
   & reg.exe query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" *> $null
-  return $LASTEXITCODE -eq 0
+  $exists = $LASTEXITCODE -eq 0
+  $global:LASTEXITCODE = 0
+  return $exists
 }
 
 function Snapshot-UninstallRegistry([string]$Path) {
@@ -350,7 +352,9 @@ if ($Action -eq "rollback") {
     throw "Rollback created NSIS uninstall metadata for an MSI-installed bridge"
   }
   & reg.exe query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\HQ" /v HqRollbackFixture *> $null
-  if ($LASTEXITCODE -eq 0) {
+  $fixtureExists = $LASTEXITCODE -eq 0
+  $global:LASTEXITCODE = 0
+  if ($fixtureExists) {
     throw "Rollback left candidate-only registry metadata behind"
   }
   $afterShortcuts = ConvertTo-Json -InputObject (Get-ShortcutManifest -InstalledApp $installedApp) -Compress -Depth 4 -AsArray
