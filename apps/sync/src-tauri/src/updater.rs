@@ -116,6 +116,9 @@ struct PendingUpdateTransition {
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
+/// Betas iterate multiple times per day, so prerelease channels re-check every
+/// 30 minutes while stable keeps the 6h cadence.
+const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str = "Update deferred while a sync is active";
 pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
@@ -151,6 +154,13 @@ enum UpdateAnnouncement {
 
 fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bool {
     announcement == UpdateAnnouncement::TransientBanner
+}
+
+fn background_check_interval(channel: ReleaseChannel) -> Duration {
+    match channel {
+        ReleaseChannel::Stable => UPDATE_CHECK_INTERVAL,
+        ReleaseChannel::Beta | ReleaseChannel::Alpha => PRERELEASE_UPDATE_CHECK_INTERVAL,
+    }
 }
 
 fn background_update_action(
@@ -427,7 +437,7 @@ fn read_stored_release_channel() -> Option<String> {
 /// on-demand command should poll. Combines the stored preference with
 /// the indigo gate, then resolves to a `latest.json` URL via the
 /// `release_channel` module.
-async fn resolve_endpoint() -> ResolvedChannelEndpoint {
+async fn resolve_endpoint() -> (ReleaseChannel, ResolvedChannelEndpoint) {
     let stored = read_stored_release_channel();
     let is_indigo = feature_gate::is_indigo_user().await;
     let channel: ReleaseChannel = effective_channel(stored.as_deref(), is_indigo);
@@ -441,12 +451,13 @@ async fn resolve_endpoint() -> ResolvedChannelEndpoint {
             resolved.provenance
         ),
     );
-    resolved
+    (channel, resolved)
 }
 
 struct ChannelAwareUpdater {
     updater: tauri_plugin_updater::Updater,
     provenance: EndpointProvenance,
+    channel: ReleaseChannel,
 }
 
 /// Build a channel-aware `tauri_plugin_updater::Updater` for this
@@ -454,7 +465,7 @@ struct ChannelAwareUpdater {
 /// from `tauri.conf.json`; `app.updater_builder()` lets us override
 /// per-call so the same binary serves three channels without rebuild.
 async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, String> {
-    let resolved = resolve_endpoint().await;
+    let (channel, resolved) = resolve_endpoint().await;
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
     let updater = app
@@ -466,6 +477,7 @@ async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, S
     Ok(ChannelAwareUpdater {
         updater,
         provenance: resolved.provenance,
+        channel,
     })
 }
 
@@ -652,6 +664,104 @@ pub async fn is_indigo_user() -> bool {
 /// the event) were left with an unexpected manual Install prompt. An active sync
 /// defers the attempt for 30 seconds; an install failure falls back to the
 /// ordinary update notification so the user still has a recovery path.
+/// Menu-item id for the macOS app-menu "Check for Updates…" entry.
+#[cfg(target_os = "macos")]
+pub const MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu:check-for-updates";
+
+/// Build the macOS application menu with a "Check for Updates…" item under
+/// About, keeping the standard app/Edit/Window entries (the app previously
+/// ran on Tauri's implicit default menu). The item drives the exact same
+/// `check_for_updates` command the Settings → Updates pane and the background
+/// checker use — no separate update logic. On "update found" the command's own
+/// `update:available` event drives the existing update UI; on "up to date" we
+/// surface a native notification with the current version.
+#[cfg(target_os = "macos")]
+pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let check_item = MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…")
+        .build(app)?;
+    let app_menu = SubmenuBuilder::new(app, "HQ")
+        .about(Some(AboutMetadata::default()))
+        .separator()
+        .item(&check_item)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    // Standard Edit/Window menus so text fields and window shortcuts keep
+    // working once the implicit default menu is replaced.
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .close_window()
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &edit_menu, &window_menu])
+        .build()?;
+    app.set_menu(menu)?;
+
+    app.on_menu_event(|handle, event| {
+        if event.id().as_ref() != MENU_CHECK_FOR_UPDATES_ID {
+            return;
+        }
+        let handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            match check_for_updates(handle.clone()).await {
+                // Update found: `check_for_updates` already emitted
+                // `update:available`, which every existing surface (Settings
+                // row, banner, version pop-out) listens for.
+                Ok(Some(_)) => {}
+                Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
+                Err(e) => {
+                    log("updater", &format!("menu check_for_updates failed: {e}"));
+                    notify_manual_check(&handle, "Couldn\u{2019}t check for updates. Try again later.");
+                }
+            }
+        });
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn up_to_date_body(app: &AppHandle) -> String {
+    format!(
+        "You\u{2019}re up to date \u{2014} v{}",
+        app.package_info().version
+    )
+}
+
+/// Native confirmation for a user-initiated menu check. Notification (not a
+/// modal) so it works whether or not any app window is frontmost.
+#[cfg(target_os = "macos")]
+fn notify_manual_check(app: &AppHandle, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("HQ")
+        .body(body)
+        .show()
+    {
+        log("updater", &format!("manual update-check notification failed: {e}"));
+    }
+}
+
 pub fn setup_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -668,6 +778,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                     Ok(ticket) => match channel_aware_updater(&handle).await {
                         Ok(updater) => {
                             let authoritative = updater.provenance.absence_is_authoritative();
+                            next_check = background_check_interval(updater.channel);
                             match updater.updater.check().await {
                                 Ok(Some(update)) => {
                                     let info = discovered_update(
@@ -773,6 +884,13 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     }
                                 }
                                 Ok(None) => {
+                                    log(
+                                        "updater",
+                                        &format!(
+                                            "background check: up to date (current v{})",
+                                            handle.package_info().version
+                                        ),
+                                    );
                                     if let Err(e) =
                                         apply_absent_and_emit(&handle, ticket, authoritative)
                                     {
@@ -781,7 +899,10 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         );
                                     }
                                 }
-                                Err(e) => eprintln!("[updater] background check failed: {e}"),
+                                Err(e) => {
+                                    eprintln!("[updater] background check failed: {e}");
+                                    log("updater", &format!("background check failed: {e}"));
+                                }
                             }
                         }
                         Err(e) => {
@@ -905,6 +1026,22 @@ mod tests {
         drop(first);
 
         assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
+    }
+
+    #[test]
+    fn background_check_interval_is_shorter_for_prerelease_channels() {
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Stable),
+            Duration::from_secs(21_600)
+        );
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Beta),
+            Duration::from_secs(1_800)
+        );
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Alpha),
+            Duration::from_secs(1_800)
+        );
     }
 
     #[test]

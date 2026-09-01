@@ -14,6 +14,7 @@
 import type { Channel } from "./channels";
 import type { DmRequest } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
+import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
 
 export interface ContactsResponse {
@@ -125,10 +126,21 @@ export interface ConversationMessageWire {
   /** Reply count on a root. Absent on old rows and on replies themselves. */
   replyCount?: number;
   /**
-   * Optional last-reply timestamp. hq-pro list pages do not store this —
-   * callers must not require it.
+   * Optional last-reply timestamp. hq-pro list pages do not store this on the
+   * root row — it is DERIVED locally by folding the reply rows the same page
+   * already carries (see `foldReplyMetadata`). Callers must not require it.
    */
   lastReplyAt?: string | null;
+  /**
+   * Distinct reply authors on a root, first-appearance order. Like
+   * `lastReplyAt`, derived locally from the reply rows in the fetched page —
+   * hq-pro does not store participants on the root row.
+   */
+  replyAuthors?: Array<{
+    personUid: string;
+    displayName: string;
+    agent?: boolean;
+  }> | null;
 }
 
 /** Channel detail + newest-first message page (desktop `fetch_channel`). */
@@ -160,6 +172,12 @@ export interface SendReplyArgs {
   body: string;
   withPersonUid?: string;
   channelId?: string;
+  mentions?: Array<{
+    participantUid: string;
+    participantType: "human" | "agent";
+    displayName: string;
+    email?: string;
+  }>;
   attachments?: Array<{
     vaultPath: string;
     name: string;
@@ -309,6 +327,8 @@ export interface ChatWakeEvents {
     }>;
     /** When true, unreadCount is a delta to add, not an absolute replace. */
     delta?: boolean;
+    /** Newest inbound DM per counterpart — stamps rail rows for older days. */
+    activity?: InboxDmActivity[];
   };
   /** A 1:1 DM landed — ids only. Rail bumps unread when that pair is not open. */
   "dm:new-message": {

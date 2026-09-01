@@ -186,10 +186,9 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .filter(([relative, body]) => relative !== 'lib/messageMarkdown.ts' && body.includes('renderMessageBodyMarkdown'))
       .map(([relative]) => relative)
       .sort();
-    expect(renderers).toEqual([
-      'components/messaging/Conversation.svelte',
-      'components/messaging/ThreadPanel.svelte',
-    ]);
+    // ThreadPanel's pinned root now renders through the shared <Conversation/>
+    // primitive, so Conversation is the SOLE DM-markdown render surface.
+    expect(renderers).toEqual(['components/messaging/Conversation.svelte']);
 
     const threadPanelMounts = sources
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<ThreadPanel[\s/>]/.test(body))

@@ -126,20 +126,22 @@ export function scopeChipLabel(c: Channel): string {
   return c.companyName?.trim() || 'Company';
 }
 
-/** Resolve a channel's company display NAME for the unified rail chip. Tries the
- * channel's own `companyName`, then the caller's membership labels, and finally
- * the generic "Company" — it NEVER returns the raw `cmp_…` UID (the bug where a
- * channel row rendered `cmp_01KQ2RYAH…` as a pill). Personal/group channels have
- * no company chip and return null. */
+/** Resolve a channel's company display NAME for the unified rail chip. The
+ * caller's membership list keyed by the channel's authoritative `companyUid`
+ * wins; the channel's own `companyName` is only a server-denormalized snapshot
+ * that can go stale or mismatched, so it is a fallback. Last resort is the
+ * generic "Company" — it NEVER returns the raw `cmp_…` UID (the bug where a
+ * channel row rendered `cmp_01KQ2RYAH…` as a pill). Personal/group channels
+ * have no company chip and return null. */
 export function companyNameFor(c: Channel, companies: CompanyLabel[] = []): string | null {
   if (c.scope === 'personal' || c.scope === 'group') return null;
-  const fromChannel = c.companyName?.trim();
-  if (fromChannel) return fromChannel;
   const uid = c.companyUid?.trim();
   if (uid) {
     const fromList = companies.find((co) => co.companyUid === uid)?.companyName?.trim();
     if (fromList) return fromList;
   }
+  const fromChannel = c.companyName?.trim();
+  if (fromChannel) return fromChannel;
   return 'Company';
 }
 
@@ -175,8 +177,9 @@ export interface CompanyLabel {
  *      a channel for a company the caller can't currently enumerate still shows.
  *
  * Each group's channels are sorted by display name (case-insensitive). The
- * company display name is resolved from (in order): the channel's own
- * `companyName`, the `companies` lookup, then the raw companyUid.
+ * company display name is resolved from (in order): the `companies` lookup by
+ * the channel's authoritative companyUid, then the channel's own denormalized
+ * `companyName`, then the generic "Company" (never the raw companyUid).
  */
 export function groupChannels(
   channels: Channel[],
@@ -199,10 +202,12 @@ export function groupChannels(
   }
 
   const labelFor = (uid: string, sample: Channel | undefined): string => {
-    const fromChannel = sample?.companyName?.trim();
-    if (fromChannel) return fromChannel;
+    // The membership list keyed by the authoritative companyUid wins over the
+    // channel's server-denormalized `companyName` snapshot (can go stale).
     const fromList = companies.find((co) => co.companyUid === uid)?.companyName?.trim();
     if (fromList) return fromList;
+    const fromChannel = sample?.companyName?.trim();
+    if (fromChannel) return fromChannel;
     // Never surface the raw `cmp_…` UID as a header label.
     return 'Company';
   };
@@ -239,6 +244,22 @@ export function groupChannels(
   }
 
   return groups;
+}
+
+/** Collapse duplicate channel rows by channelId — first occurrence wins,
+ * original order preserved. Defensive against a server list that unions
+ * multiple sources (memberships, company project listings) without dedup:
+ * a duplicate channelId would render twice in the rail and collide with
+ * keyed-each blocks. Returns a new array. */
+export function dedupeChannelsById(list: Channel[]): Channel[] {
+  const seen = new Set<string>();
+  const out: Channel[] = [];
+  for (const c of list) {
+    if (seen.has(c.channelId)) continue;
+    seen.add(c.channelId);
+    out.push(c);
+  }
+  return out;
 }
 
 /** Total unread across all channels — feeds the popover badge accent. */

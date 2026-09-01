@@ -13,6 +13,7 @@
    */
   import { onMount, tick, untrack } from 'svelte';
   import NotificationRow from './NotificationRow.svelte';
+  import { resolutionForItem } from '../stores/widgetNotifications';
   import type { NotificationRowType } from './NotificationRow.svelte';
   import {
     type BannerPayloadLike,
@@ -1056,6 +1057,42 @@
       });
     });
   });
+  // ── Inline resolution (needs-attention rows) ─────────────────────────────
+  //
+  // Unattributed meetings used to be un-actionable from the notification
+  // surface: "Assign" only navigated to the Meetings window. The row now files
+  // the meeting itself through the same backend the Meetings window uses
+  // (`meetings_set_company`), and dismisses on success.
+  let companyOptionsList = $state<Array<{ value: string; label: string }>>([]);
+
+  async function loadCompanyOptions(): Promise<void> {
+    if (companyOptionsList.length > 0) return;
+    if (!hasTauri()) return;
+    const { listMemberships, companyOptions } = await import('../lib/meetingAttribution');
+    const memberships = await listMemberships();
+    companyOptionsList = companyOptions(memberships).map((o) => ({
+      value: o.companyUid,
+      label: o.label,
+    }));
+  }
+
+  async function resolveMeetingCompany(
+    item: WidgetStackItem,
+    meetingId: string,
+    companyId: string,
+  ): Promise<void> {
+    if (!hasTauri()) throw new Error('Assignment is unavailable here');
+    const { setMeetingCompany, setCompanyErrorMessage } = await import(
+      '../lib/meetingAttribution'
+    );
+    const result = await setMeetingCompany(meetingId, companyId);
+    if (!result.ok) {
+      throw new Error(setCompanyErrorMessage(result));
+    }
+    // Resolved — the row no longer needs attention.
+    applyStack(dismissItem(stack, item.id));
+    setReplyHold(item.id, false);
+  }
 </script>
 
 {#snippet miniCommunicationRow(row: { separator: string | null; item: WidgetStackItem })}
@@ -1069,7 +1106,6 @@
       ts={row.item.ts}
       unread={row.item.unread ?? false}
       badgeCount={conversationUnreadFor(row.item)}
-      comfortable
       hoverExpand={row.item.kind === 'dm' && !row.item.compactGroupCount}
       actionLabel={row.item.actionLabel ?? undefined}
       actionDisabled={actioningIds.has(row.item.id)}
@@ -1084,6 +1120,16 @@
         ? (emoji) => reactDm(row.item, emoji)
         : undefined}
       onholdchange={(h) => setReplyHold(row.item.id, h)}
+      resolvePrompt={resolutionForItem(row.item)?.prompt}
+      resolveOptions={companyOptionsList}
+      onresolveopen={resolutionForItem(row.item) ? () => loadCompanyOptions() : undefined}
+      onresolve={(() => {
+        const resolution = resolutionForItem(row.item);
+        return resolution
+          ? (companyId: string) =>
+              resolveMeetingCompany(row.item, resolution.meetingId, companyId)
+          : undefined;
+      })()}
     />
   </div>
 {/snippet}
@@ -1386,6 +1432,16 @@
             onreply={item.kind === 'dm' ? (text) => replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => reactDm(item, emoji) : undefined}
             onholdchange={(h) => setReplyHold(item.id, h)}
+            resolvePrompt={resolutionForItem(item)?.prompt}
+            resolveOptions={companyOptionsList}
+            onresolveopen={resolutionForItem(item) ? () => loadCompanyOptions() : undefined}
+            onresolve={(() => {
+              const resolution = resolutionForItem(item);
+              return resolution
+                ? (companyId: string) =>
+                    resolveMeetingCompany(item, resolution.meetingId, companyId)
+                : undefined;
+            })()}
           />
         </div>
       {/each}
@@ -1564,11 +1620,11 @@
   }
 
   .hl-header {
-    min-height: 60px;
+    min-height: 32px;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 11px 14px 10px 16px;
+    gap: 8px;
+    padding: 6px 12px 5px;
     border-bottom: 0.5px solid var(--row-border);
     box-sizing: border-box;
     flex-shrink: 0;
@@ -1579,21 +1635,22 @@
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 3px;
+    gap: 1px;
   }
 
   .hl-title {
-    color: var(--row-fg);
-    font-size: 14.5px;
-    font-weight: 680;
-    letter-spacing: -0.012em;
+    color: var(--row-muted);
+    font-size: 9.5px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .hl-summary {
     overflow: hidden;
     color: var(--row-muted);
-    font-size: 11px;
-    line-height: 1.25;
+    font-size: 10.5px;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1629,21 +1686,21 @@
   }
 
   .hl-section {
-    padding: 0 8px;
+    padding: 0 6px;
   }
 
   .hl-section + .hl-section {
-    margin-top: 7px;
-    padding-top: 7px;
+    margin-top: 4px;
+    padding-top: 4px;
     border-top: 0.5px solid var(--row-border);
   }
 
   .hl-section-label {
-    padding: 10px 8px 5px;
+    padding: 6px 8px 2px;
     color: var(--row-muted);
-    font-size: 9.5px;
-    font-weight: 680;
-    letter-spacing: 0.075em;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
@@ -1651,9 +1708,9 @@
   .hl-footer {
     display: flex;
     align-items: center;
-    gap: 6px;
-    min-height: 48px;
-    padding: 7px 10px;
+    gap: 4px;
+    min-height: 36px;
+    padding: 4px 8px;
     border-top: 0.5px solid var(--row-border);
     flex-shrink: 0;
     box-sizing: border-box;
@@ -1662,7 +1719,7 @@
   .hl-open-messages,
   .hl-open-desktop {
     min-width: 0;
-    height: 32px;
+    height: 28px;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -1809,13 +1866,13 @@
 
   /* Empty pinned list — one row of muted copy so a wordmark click always shows feedback. */
   .hl-empty {
-    min-height: 116px;
+    min-height: 64px;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     justify-content: center;
-    gap: 5px;
-    padding: 20px 24px;
+    gap: 4px;
+    padding: 12px 16px;
     color: var(--row-muted);
     box-sizing: border-box;
   }
@@ -1845,7 +1902,7 @@
   }
 
   .hl-history-feedback {
-    min-height: 116px;
+    min-height: 64px;
     justify-content: space-between;
   }
 
@@ -1932,9 +1989,9 @@
   }
 
   .hl-row :global(.nr) {
-    min-height: 58px;
+    min-height: 32px;
     padding-inline: 8px;
-    font-size: 12.5px;
+    font-size: 12px;
     border-radius: 0;
     background: transparent;
     color: var(--row-fg);
@@ -1970,10 +2027,9 @@
     letter-spacing: 0.02em;
   }
 
-  .hl-row :global(.nr-actor-pill),
-  .frost :global(.nr-actor-pill) {
+  .hl-row :global(.nr-actor),
+  .frost :global(.nr-actor) {
     max-width: min(16ch, 46%);
-    padding-inline: 5px;
   }
 
   .hl-row :global(.nr-open),
@@ -1995,7 +2051,7 @@
     color: var(--row-fg);
     width: 100%;
     padding-inline: 7px;
-    font-size: 12.5px;
+    font-size: 12px;
     box-sizing: border-box;
   }
 

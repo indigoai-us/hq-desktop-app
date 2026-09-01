@@ -93,6 +93,11 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           authenticated: options.signedIn ?? true,
           accountId: options.session?.accountId ?? 'acct_ada',
         };
+      case 'whoami':
+        if (options.identityFailure) {
+          throw new Error('identity service unavailable');
+        }
+        return options.session?.whoami ?? WHOAMI;
       case 'desktop_alt_consume_pending_route':
         return options.pendingRoute ?? null;
       case 'meetings_take_pending_focus':
@@ -153,6 +158,8 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
         };
       case 'list_packages':
         return { packs: [] };
+      case 'list_packages_cached':
+        return null;
       case 'meetings_list_upcoming':
         return [
           {

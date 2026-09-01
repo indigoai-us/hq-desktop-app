@@ -245,6 +245,14 @@ pub struct ChannelMessage {
     /// Optional file attachment card payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<MessageAttachment>,
+    /// Parent thread id when this row is a reply. Roots omit it (or echo their
+    /// own eventId). Absent-safe so older servers still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_event_id: Option<String>,
+    /// Reply count maintained on root rows. Absent on replies and on older
+    /// payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<u32>,
 }
 
 /// The full channel view: its metadata + a page of messages (newest-first).
@@ -582,6 +590,38 @@ mod tests {
         assert!(v.get("systemEvent").is_some());
         assert_eq!(v["attachment"]["vaultPath"], "companies/acme/notes.md");
         assert_eq!(v["attachment"]["sizeBytes"], 1024);
+        assert!(m.root_event_id.is_none());
+        assert!(m.reply_count.is_none());
+    }
+
+    #[test]
+    fn channel_message_thread_fields_round_trip() {
+        let minimal = r#"{
+            "eventId": "evt_min",
+            "fromPersonUid": "prs_a",
+            "body": "hi",
+            "createdAt": "2026-06-10T16:00:00Z",
+            "direction": "in"
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(minimal).expect("minimal message");
+        assert!(m.root_event_id.is_none());
+        assert!(m.reply_count.is_none());
+
+        let with_thread = r#"{
+            "eventId": "evt_root",
+            "fromPersonUid": "prs_a",
+            "body": "hi",
+            "createdAt": "2026-06-10T16:00:00Z",
+            "direction": "in",
+            "rootEventId": "evt_root",
+            "replyCount": 4
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(with_thread).expect("thread fields parse");
+        assert_eq!(m.root_event_id.as_deref(), Some("evt_root"));
+        assert_eq!(m.reply_count, Some(4));
+        let v = serde_json::to_value(&m).expect("serialize");
+        assert_eq!(v["rootEventId"], "evt_root");
+        assert_eq!(v["replyCount"], 4);
     }
 
     #[test]

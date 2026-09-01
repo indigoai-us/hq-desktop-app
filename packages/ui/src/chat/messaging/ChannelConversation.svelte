@@ -11,13 +11,14 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import MentionPicker from "./MentionPicker.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
@@ -26,6 +27,8 @@
     systemModelForMessage,
     type FileAttachmentModel,
   } from "./channelMessageModels";
+  import { parseWorkSessionEvent } from "./workSessionEvent";
+  import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
@@ -38,6 +41,7 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import { safeHref } from "../../common/markdown.js";
   import {
     toggleReaction,
     type ReactionAggregate,
@@ -99,7 +103,18 @@
      * the list API — omit unless the host already knows author + time.
      */
     replyPreviewByRoot?: Readonly<
-      Record<string, { author: string; at: string }>
+      Record<
+        string,
+        {
+          author: string;
+          at: string;
+          authors?: Array<{
+            personUid: string;
+            displayName: string;
+            agent?: boolean;
+          }>;
+        }
+      >
     >;
     /** Root currently open in ReplyPanel (highlight only). */
     activeRootEventId?: string | null;
@@ -120,6 +135,19 @@
     displayNameByUid?: Record<string, string>;
     /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
     attachmentValidator?: ChatAttachmentValidator;
+    /**
+     * Optional header rendered at the very top of the `.dm-thread` scroller
+     * (before empty-state / load-earlier). Used for Slack-style channel intros
+     * that scroll away with history.
+     */
+    header?: Snippet;
+    /**
+     * Optional status row rendered INSIDE the `.dm-thread` scroller, after the
+     * newest message (typing-indicator position). Must live in the scroll flow
+     * — `.chat-stage` is a horizontal flexbox, so a sibling of this component
+     * would lay out as a second column in the upper-right instead.
+     */
+    belowMessages?: Snippet;
   }
 
   let {
@@ -144,6 +172,8 @@
     avatarByUid = {},
     displayNameByUid = {},
     attachmentValidator = validateChatAttachment,
+    header,
+    belowMessages,
   }: Props = $props();
 
   /** Real avatar for a message's author, when the roster carried one. */
@@ -175,6 +205,25 @@
       personUid,
       displayName: span.textContent?.replace(/^@/, "").trim() || personUid,
     });
+  }
+
+  /** Delegated open for markdown/autolinked anchors injected as HTML. */
+  function onBodyLinkActivate(
+    event: MouseEvent | KeyboardEvent,
+    node: EventTarget | null,
+  ): boolean {
+    if (!(node instanceof Element)) return false;
+    const body = event.currentTarget;
+    if (!(body instanceof Element)) return false;
+    const anchor = node.closest("a[href]");
+    if (!anchor || !body.contains(anchor)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const href = safeHref(anchor.getAttribute("href") ?? "");
+    if (!href) return true;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+    return true;
   }
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -213,7 +262,19 @@
   const windowed = $derived(
     takeNewestWindow(rootMessages, { extra: extraOlder }),
   );
-  const timeline = $derived([...windowed.rows, ...localSends]);
+  /** First eventId wins so the keyed each never receives duplicate keys
+   *  (host page + optimistic localSends race). */
+  const timeline = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: ConversationMessageWire[] = [];
+    for (const msg of [...windowed.rows, ...localSends]) {
+      const id = (msg.eventId ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(msg);
+    }
+    return out;
+  });
 
   let replyText = $state("");
   let replyInputEl = $state<HTMLTextAreaElement | null>(null);
@@ -229,6 +290,46 @@
   let dragDepth = 0;
   let pasteCounter = 0;
   let scroller = $state<HTMLDivElement | null>(null);
+  /**
+   * Scroll ownership: the user wins. `stickToBottom` is the SINGLE gate for all
+   * programmatic scrolling. It starts true (land on the newest message at mount
+   * and on channel switch — the host remounts this component per channel) and
+   * flips false the moment the user scrolls up to read history, after which
+   * NOTHING may move their offset — not the host's periodic message refresh,
+   * not live arrivals, not a timeline merge.
+   */
+  let stickToBottom = $state(true);
+  /** New rows landed while scrolled up — drives the "jump to latest" pill. */
+  let hasUnseenBelow = $state(false);
+  /** Within this many px of the bottom still counts as pinned. */
+  const STICK_THRESHOLD_PX = 40;
+  /** scrollHeight captured immediately before an older-history prepend. */
+  let prependAnchorHeight = 0;
+
+  function scrollToBottom(): void {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  /** Recompute stickiness from the user's actual position on every scroll. */
+  function onThreadScroll(): void {
+    if (!scroller) return;
+    const distance =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottom = distance <= STICK_THRESHOLD_PX;
+    if (stickToBottom) hasUnseenBelow = false;
+  }
+
+  function jumpToLatest(): void {
+    stickToBottom = true;
+    hasUnseenBelow = false;
+    scrollToBottom();
+  }
+
+  /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
+  function showEarlier(): void {
+    prependAnchorHeight = scroller?.scrollHeight ?? 0;
+    extraOlder += TIMELINE_WINDOW;
+  }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
 
@@ -293,6 +394,59 @@
     );
   }
 
+  /**
+   * Work-mesh events carry `event.by`, which may be a person UID rather than
+   * a display name. Resolve it against the live roster map (same source the
+   * message rows use); when the actor is the sender, reuse messageAuthor.
+   * WorkMeshActivityRow itself falls back to "A teammate" for unresolved
+   * raw UIDs, so this never surfaces a UUID.
+   */
+  /** `event.by` UIDs may be bare Cognito subs while roster keys carry a
+   *  `prs_`/`agt_` prefix (or vice versa) — compare on the normalized form. */
+  function normalizeParticipantUid(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/^(prs_|agt_)/, "");
+  }
+
+  /** Normalized uid → display name, merged from the live roster map and the
+   *  channel's mention roster so sub-shaped actors still resolve. */
+  const workActorNameByUid = $derived.by(() => {
+    const map: Record<string, string> = {};
+    for (const candidate of mentionCandidates) {
+      const name = candidate.displayName?.trim();
+      const uid = normalizeParticipantUid(candidate.participantUid ?? "");
+      if (name && uid && !map[uid]) map[uid] = name;
+    }
+    for (const [uid, name] of Object.entries(displayNameByUid)) {
+      const trimmed = name?.trim();
+      const key = normalizeParticipantUid(uid);
+      if (trimmed && key) map[key] = trimmed;
+    }
+    return map;
+  });
+
+  function resolveWorkActor(
+    actor: string,
+    msg: ConversationMessageWire,
+  ): string {
+    const raw = actor.trim();
+    if (!raw) return raw;
+    const live =
+      displayNameByUid[raw]?.trim() ||
+      workActorNameByUid[normalizeParticipantUid(raw)];
+    if (live) return live;
+    const sender = (msg.fromPersonUid ?? "").trim();
+    if (
+      sender &&
+      normalizeParticipantUid(raw) === normalizeParticipantUid(sender)
+    ) {
+      return messageAuthor(msg);
+    }
+    return raw;
+  }
+
   function formatTime(iso: string): string {
     const d = new Date(iso);
     return Number.isNaN(d.getTime())
@@ -310,6 +464,25 @@
     const hr = Math.floor(min / 60);
     if (hr < 24) return `${hr}h ago`;
     return formatTime(iso);
+  }
+
+
+  /**
+   * Affordance data for a root. Prefers a ReplyPanel-sourced preview (freshest
+   * once a thread has been opened) and otherwise derives it from the row
+   * itself — `foldReplyMetadata` populates `lastReplyAt` / `replyAuthors` from
+   * the reply rows the timeline page already carried, so avatars + the
+   * last-reply stamp render on FIRST paint without opening the thread.
+   */
+  function replyMetaFor(msg: ConversationMessageWire): {
+    at: string | null;
+    authors: NonNullable<ConversationMessageWire["replyAuthors"]>;
+  } {
+    const preview = replyPreviewByRoot[msg.eventId];
+    const authors = preview?.authors?.length
+      ? preview.authors
+      : (msg.replyAuthors ?? []);
+    return { at: preview?.at ?? msg.lastReplyAt ?? null, authors };
   }
 
   function replyLabel(count: number): string {
@@ -669,10 +842,37 @@
     }
   }
 
-  // Stick to the bottom as the timeline grows.
+  /**
+   * Follow the newest message as the timeline grows — but ONLY while the user is
+   * pinned to the bottom. The host repolls messages every few seconds; before
+   * this was gated, every refresh slammed a history-reading user back down.
+   *
+   * Tracks the timeline identity (length + newest id) so a same-length refresh
+   * still follows for a pinned user. `stickToBottom` / bookkeeping are read via
+   * untrack so flipping the flag never re-runs the effect on its own.
+   */
+  let prevTimelineLength = 0;
   $effect(() => {
-    void timeline.length;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    const length = timeline.length;
+    void timeline.at(-1)?.eventId;
+    untrack(() => {
+      const el = scroller;
+      const grew = length > prevTimelineLength;
+      prevTimelineLength = length;
+      if (!el) return;
+      if (prependAnchorHeight > 0) {
+        // Older history was prepended: hold the user's VISUAL position by
+        // shifting scrollTop by exactly the height the prepend added.
+        el.scrollTop += el.scrollHeight - prependAnchorHeight;
+        prependAnchorHeight = 0;
+        return;
+      }
+      if (stickToBottom) {
+        el.scrollTop = el.scrollHeight;
+      } else if (grew) {
+        hasUnseenBelow = true;
+      }
+    });
   });
 </script>
 
@@ -695,8 +895,10 @@
       <div
         class="dm-thread"
         bind:this={scroller}
+        onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
+        {#if header}{@render header()}{/if}
         {#if timeline.length === 0 && !loading}
           <div
             class="dm-thread-empty"
@@ -711,7 +913,7 @@
             type="button"
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
-            onclick={() => (extraOlder += TIMELINE_WINDOW)}
+            onclick={showEarlier}
           >
             Show {windowed.hidden} earlier
             {windowed.hidden === 1 ? "message" : "messages"}
@@ -719,6 +921,7 @@
         {/if}
         {#each timeline as msg, index (msg.eventId)}
           {@const systemModel = systemModelForMessage(msg)}
+          {@const workActivity = parseWorkSessionEvent(msg.body ?? "")}
           {@const groupStart = startsGroup(index)}
           {#if startsNewDay(index)}
             <div
@@ -745,6 +948,7 @@
                 <IdentityMark
                   kind="agent"
                   label={messageAuthor(msg)}
+                  agentUid={msg.fromPersonUid}
                   size="regular"
                 />
               </span>
@@ -765,6 +969,14 @@
                 {/if}
               </div>
             </div>
+          {:else if workActivity}
+            <WorkMeshActivityRow
+              activity={{
+                ...workActivity,
+                actor: resolveWorkActor(workActivity.actor, msg),
+              }}
+              time={formatTime(msg.createdAt)}
+            />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
@@ -781,6 +993,7 @@
                       kind="agent"
                       label={messageAuthor(msg)}
                       avatarUrl={avatarFor(msg)}
+                      agentUid={msg.fromPersonUid}
                       size="regular"
                     />
                   {:else}
@@ -823,10 +1036,15 @@
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="dm-bubble-body selectable-text"
-                      onclick={(e) => onMentionActivate(e, e.target)}
+                      onclick={(e) => {
+                        if (onBodyLinkActivate(e, e.target)) return;
+                        onMentionActivate(e, e.target);
+                      }}
                       onkeydown={(e) => {
-                        if (e.key === "Enter" || e.key === " ")
+                        if (e.key === "Enter" || e.key === " ") {
+                          if (onBodyLinkActivate(e, e.target)) return;
                           onMentionActivate(e, e.target);
+                        }
                       }}
                     >
                       {#if isHeavyMessageBody(msg.body ?? "")}
@@ -863,7 +1081,7 @@
                   />
                 </div>
                 {#if (msg.replyCount ?? 0) > 0}
-                  {@const preview = replyPreviewByRoot[msg.eventId]}
+                  {@const preview = replyMetaFor(msg)}
                   <button
                     type="button"
                     class="dm-replies-count"
@@ -871,11 +1089,29 @@
                     aria-label={replyLabel(msg.replyCount ?? 0)}
                     onclick={() => openReply(msg.eventId)}
                   >
+                    {#if preview.authors.length}
+                      <span
+                        class="dm-replies-avatars"
+                        data-testid="reply-authors"
+                      >
+                        {#each preview.authors.slice(0, 3) as a (a.personUid || a.displayName)}
+                          <span class="dm-replies-avatar">
+                            <IdentityMark
+                              kind={a.agent ? "agent" : "person"}
+                              label={a.displayName}
+                              avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
+                                null}
+                              agentUid={a.personUid}
+                              size="small"
+                            />
+                          </span>
+                        {/each}
+                      </span>
+                    {/if}
                     {replyLabel(msg.replyCount ?? 0)}
-                    {#if preview}
+                    {#if preview.at}
                       <span class="dm-replies-preview">
-                        {preview.author}
-                        {formatRelative(preview.at)}
+                        Last reply {formatRelative(preview.at)}
                       </span>
                     {/if}
                   </button>
@@ -943,50 +1179,30 @@
             </div>
           {/if}
         {/each}
+        {#if belowMessages}{@render belowMessages()}{/if}
       </div>
+      {#if !stickToBottom}
+        <button
+          type="button"
+          class="new-messages-jump"
+          class:has-unseen={hasUnseenBelow}
+          data-testid="conversation-jump-latest"
+          onclick={jumpToLatest}
+        >
+          {hasUnseenBelow ? "New messages" : "Jump to latest"} ↓
+        </button>
+      {/if}
     </div>
   </div>
 
   <div class="dm-reply">
     <div class="dm-reply-composer">
       {#if showMentionPicker}
-        <div
-          class="mention-picker"
-          role="listbox"
-          aria-label="Mention someone"
-          data-testid="mention-picker"
-        >
-          {#if mentionHits.length === 0}
-            <div class="mention-empty">No one matches</div>
-          {:else}
-            {#each mentionHits as hit, index (hit.participantUid)}
-              <button
-                type="button"
-                class="mention-row"
-                class:selected={index === mentionHighlight}
-                role="option"
-                aria-selected={index === mentionHighlight}
-                onclick={() => applyMention(hit)}
-              >
-                <span
-                  class="mention-ava"
-                  class:agent={hit.participantType === "agent"}
-                  aria-hidden="true"
-                  >{hit.displayName.trim().slice(0, 1).toUpperCase() ||
-                    "?"}</span
-                >
-                <span class="mention-copy">
-                  <span class="mention-name">{hit.displayName}</span>
-                  <span class="mention-sub"
-                    >{hit.participantType === "agent"
-                      ? "Agent"
-                      : hit.email || "Teammate"}</span
-                  >
-                </span>
-              </button>
-            {/each}
-          {/if}
-        </div>
+        <MentionPicker
+          hits={mentionHits}
+          highlight={mentionHighlight}
+          onpick={applyMention}
+        />
       {:else if showAgentMenu}
         <div
           class="agent-menu"
@@ -1215,6 +1431,14 @@
 <style>
   .conversation {
     position: relative;
+    /* Own stacking context so z-indexed hover chrome (.dm-quick-react z2,
+       .dm-reply z1, .agent-menu z20, .drop-overlay z40) cannot paint into a
+       sibling pane. Isolation only — no extra overflow clip; EmojiPicker and
+       .agent-menu are inline absolute inside this pane and must stay visible.
+       .dm-msg is position:relative (z-index auto), so without this context its
+       box paints in the ancestor's positioned layer above an unpositioned
+       .reply-column — message text would cross the divider. */
+    isolation: isolate;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -1393,6 +1617,33 @@
     color: var(--t3);
     font-size: 13px;
     text-align: center;
+  }
+
+  /* Floating "jump to latest" pill — lives in the positioned wrap, NOT in the
+     scroller, so it holds still while history scrolls behind it. */
+  .new-messages-jump {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 2;
+    padding: 5px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--bg2, var(--bg1));
+    color: var(--t2, var(--t1));
+    font: 500 12px/1.3 var(--font-ui);
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--t1) 14%, transparent);
+  }
+  .new-messages-jump:hover {
+    background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
+    color: var(--t1);
+  }
+  .new-messages-jump.has-unseen {
+    border-color: var(--accent, var(--line));
+    color: var(--accent, var(--t1));
   }
 
   .dm-load-earlier {
@@ -1678,7 +1929,7 @@
   }
 
   .dm-bubble-body :global(a) {
-    color: var(--message-markdown-text);
+    color: var(--message-markdown-muted);
     text-decoration: underline;
     text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
     text-underline-offset: 0.125rem;
@@ -1850,8 +2101,10 @@
     border: 1px solid transparent;
     border-radius: 8px;
     background: transparent;
-    color: var(--link, #36c5f0);
-    font: 700 13px/1.3 var(--font-ui);
+    /* Neutral text tokens, not link blue: primary weight for the count, the
+       trailing preview stays muted (--t3 below). */
+    color: var(--t1);
+    font: 600 13px/1.3 var(--font-ui);
     cursor: pointer;
   }
 
@@ -1865,6 +2118,23 @@
   .dm-replies-preview {
     color: var(--t3);
     font-weight: 400;
+  }
+
+  /* Slack-style overlapping participant avatars, left of "N replies". */
+  .dm-replies-avatars {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .dm-replies-avatar {
+    display: inline-flex;
+    margin-left: -6px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px var(--v4-ground, var(--raised, #161618));
+  }
+
+  .dm-replies-avatar:first-child {
+    margin-left: 0;
   }
 
   /* Slack-style hover toolbar pinned to the message. */
@@ -1964,83 +2234,6 @@
     position: relative;
     display: flex;
     flex-direction: column;
-  }
-
-  .mention-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-height: 238px;
-    margin: 0 0 8px;
-    overflow-y: auto;
-    padding: 6px;
-    border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: #141418;
-    box-shadow: var(--pop-shadow);
-  }
-
-  .mention-empty {
-    padding: 10px 12px;
-    color: var(--t3);
-    font-size: 12px;
-  }
-
-  .mention-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    min-height: 46px;
-    padding: 6px 8px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .mention-row.selected,
-  .mention-row:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .mention-ava {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 14px;
-    background: #27272f;
-    color: #f4f4f5;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .mention-ava.agent {
-    background: #312e81;
-  }
-
-  .mention-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .mention-name {
-    color: #f4f4f5;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .mention-sub {
-    color: #8b8b95;
-    font-size: 11px;
   }
 
   .mention-input-frame {

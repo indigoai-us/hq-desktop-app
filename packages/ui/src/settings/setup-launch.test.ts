@@ -4,6 +4,7 @@ import {
   NO_AI_TOOLS,
   codexAvailable,
   resolveClaudeLaunchPath,
+  resolveCodexLaunchPath,
   SETUP_PROMPT,
   type AiTools,
 } from "./setup-launch";
@@ -36,6 +37,26 @@ describe("codexAvailable", () => {
     expect(codexAvailable(tools({ codex_cli: true }))).toBe(true);
     expect(codexAvailable(tools({ codex_desktop: true }))).toBe(false);
     expect(codexAvailable(null)).toBe(false);
+  });
+});
+
+describe("resolveCodexLaunchPath", () => {
+  it("prefers the ChatGPT desktop app when installed, even with a CLI", () => {
+    expect(
+      resolveCodexLaunchPath(tools({ codex_desktop: true, codex_cli: true })),
+    ).toBe("desktop");
+    expect(resolveCodexLaunchPath(tools({ codex_desktop: true }))).toBe(
+      "desktop",
+    );
+  });
+
+  it("falls back to the terminal CLI when only codex_cli is detected", () => {
+    expect(resolveCodexLaunchPath(tools({ codex_cli: true }))).toBe("cli");
+  });
+
+  it("returns none when nothing is detected or probing failed", () => {
+    expect(resolveCodexLaunchPath(NO_AI_TOOLS)).toBe("none");
+    expect(resolveCodexLaunchPath(null)).toBe("none");
   });
 });
 

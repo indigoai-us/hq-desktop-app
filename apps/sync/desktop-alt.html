@@ -4,8 +4,79 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HQ</title>
+    <style>
+      /*
+        Instant boot overlay. html/body stay unpainted so the finished UI can
+        use AppKit glass (window transparency). Only #hq-boot is opaque.
+
+        Light fill matches --page-bg (#eeeeee) in
+        apps/sync/src/styles/design-system.css. Dark uses #161616 (near
+        --page-bg #101010 / --pop-text #1d1d1d) so the transparent window is
+        never raw glass while JS/CSS load.
+      */
+      #hq-boot {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        background: #eeeeee;
+        color: rgba(0, 0, 0, 0.85);
+        color-scheme: light;
+        opacity: 0;
+        pointer-events: none;
+        user-select: none;
+        animation-name: hq-boot-fade-in;
+        animation-duration: 200ms;
+        animation-timing-function: ease-out;
+        /* Matches DEFAULT_SKELETON_DELAY_MS = 150 in
+           apps/sync/src/desktop-alt/lib/load-state.ts — fast loads that
+           dismiss within 150ms never show the loader. */
+        animation-delay: 150ms;
+        animation-fill-mode: forwards;
+      }
+      #hq-boot.hq-boot-done {
+        animation: none;
+        opacity: 0;
+        transition: opacity 200ms ease-out;
+      }
+      #hq-boot-mark {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-weight: 600;
+        font-size: 15px;
+        letter-spacing: 0.16em;
+        line-height: 1;
+        animation: hq-boot-pulse 1.6s ease-in-out infinite alternate;
+      }
+      @keyframes hq-boot-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes hq-boot-pulse {
+        from { opacity: 0.35; }
+        to { opacity: 0.9; }
+      }
+      @media (prefers-color-scheme: dark) {
+        #hq-boot {
+          background: #161616;
+          color: rgba(255, 255, 255, 0.85);
+          color-scheme: dark;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #hq-boot-mark {
+          animation: none;
+          opacity: 0.85;
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="hq-boot" aria-hidden="true">
+      <span id="hq-boot-mark">HQ</span>
+    </div>
     <div id="desktop-alt"></div>
     <script type="module" src="/src/desktop-alt/main.ts"></script>
   </body>

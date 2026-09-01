@@ -658,10 +658,60 @@ export function platformLabel(e: MeetingEvent): string {
 export function isPlausibleMeetingUrl(url: string): boolean {
   if (!url) return false;
   return (
-    /^https:\/\/[^\s/]*\.zoom\.us\/j\/[^\s]+/i.test(url) ||
+    /^https:\/\/(?:[^\s/]*\.)?zoom\.us\/j\/[^\s]+/i.test(url) ||
     /^https:\/\/meet\.google\.com\/[a-z-]+/i.test(url) ||
     /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(url) ||
     /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(url)
+  );
+}
+
+/**
+ * True when the event carries a real Zoom / Meet / Teams / Webex join link
+ * on `meetingUrl` or `hangoutLink`. Description/summary text is ignored so
+ * placeholder blocks ("Busy", "Office") with an unrelated URL elsewhere stay
+ * unlistable.
+ */
+export function hasJoinLink(event: MeetingEvent): boolean {
+  const url = eventMeetingUrl(event);
+  return typeof url === 'string' && url.length > 0 && isPlausibleMeetingUrl(url);
+}
+
+/**
+ * True when a recap already exists for the event: the attached bot finished
+ * (`sourceLanded` or `status === 'completed'`), or extracted signals landed
+ * on the event itself.
+ */
+export function hasRecap(event: MeetingEvent, bot: ScheduledBot | undefined): boolean {
+  if (bot && (bot.sourceLanded === true || bot.status === 'completed')) return true;
+  return extractedSignalLabels(event).length > 0;
+}
+
+/**
+ * Agenda membership: a notetaker could join now (has a join link), or the
+ * event has already ended and a recap is attached.
+ */
+export function isListableMeeting(
+  event: MeetingEvent,
+  bot: ScheduledBot | undefined,
+  now = new Date(),
+): boolean {
+  if (hasJoinLink(event)) return true;
+  const end = eventEnd(event);
+  return Boolean(end && end.getTime() < now.getTime() && hasRecap(event, bot));
+}
+
+/**
+ * Keep only events a notetaker could join, plus past events that already
+ * have a recap. Resolves each event's bot via `botForEvent`.
+ */
+export function filterListableMeetings(
+  events: MeetingEvent[],
+  botsByEventId: Map<string, ScheduledBot>,
+  scheduledBots: ScheduledBot[] = [],
+  now = new Date(),
+): MeetingEvent[] {
+  return events.filter((event) =>
+    isListableMeeting(event, botForEvent(event, botsByEventId, scheduledBots), now),
   );
 }
 

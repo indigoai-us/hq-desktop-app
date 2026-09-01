@@ -271,11 +271,40 @@ export function createSyncPlatformAdapter(
         if (!auth.value?.authenticated) {
           return failure('unauthenticated', 'Not signed in');
         }
-        // The API response binds the person UID and profile fields to the
-        // bearer used for this request. It also preserves the established
-        // profile fallback when a Cognito refresh omits the optional ID token.
-        const meResult = await hqProJson<unknown>('GET', WEB_PATHS.whoami);
-        if (!meResult.ok) return meResult;
+        // Native `whoami` binds the canonical `prs_*` person UID and profile
+        // fields to the signed-in session (Cognito claims + vault person
+        // entity). This is the ONLY identity path: the provisional REST route
+        // `GET /v1/identity/whoami` is served by the web console, not the
+        // bearer vault API the desktop calls, so it 404s here and never
+        // recovers on retry. Main briefly carried a 404-degrade fallback over
+        // that dead route (a1aab012) and then reverted it wholesale (d91bfc95),
+        // leaving main hard-gated on the 404 again — do not reintroduce it.
+        const meResult = await call<unknown>('whoami');
+        if (!meResult.ok) {
+          // Preserve the reverted fix's resilience intent (a1aab012): an account whose
+          // canonical person entity is PERMANENTLY absent must not hard-fail
+          // the whole account load with "Couldn't load your account" (it never
+          // recovers on retry). Fall back to the proven native session
+          // identity already fetched above. Every other failure still
+          // propagates so the shell keeps its handling: "Not signed in" →
+          // re-sign-in, transient vault errors → identity-error with Retry.
+          const nativeUid = auth.value.accountId?.trim();
+          const message = meResult.message?.toLowerCase() ?? '';
+          if (!message.includes('no person entity') || !nativeUid) {
+            return meResult;
+          }
+          // NOTE: on this fallback path `personUid` is the Cognito subject, not
+          // the server-issued `prs_*` person uid the success path returns. It is
+          // fine for rendering the account, but must not be assumed `prs_*` by
+          // recipient-scoped consumers (e.g. the realtime wake scope in
+          // hq-work-host.ts) — resolve the canonical `prs_*` uid natively before
+          // coupling any recipient-scope check to it.
+          return ok({
+            personUid: nativeUid,
+            email: auth.value.email?.trim() || '',
+            displayName: auth.value.displayName?.trim() || undefined,
+          });
+        }
         const currentAuth = await call<ShellAuthState>('get_auth_state');
         if (!currentAuth.ok) return currentAuth;
         if (
@@ -364,8 +393,13 @@ export function createSyncPlatformAdapter(
       // Owner-only server-side (403 otherwise); Sync already exposes the command.
       removeChannelMember: (channelId, personUid) =>
         call('remove_channel_member', { channelId, personUid }),
-      listContacts: async () => {
-        const result = await call<unknown>('list_contacts');
+      // A companyUid scopes the roster to one tenant via the already-registered
+      // list_company_members command (GET /v1/notify/contacts?companyUid=…).
+      listContacts: async (opts) => {
+        const companyUid = opts?.companyUid?.trim();
+        const result = companyUid
+          ? await call<unknown>('list_company_members', { companyUid })
+          : await call<unknown>('list_contacts');
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },
@@ -461,12 +495,13 @@ export function createSyncPlatformAdapter(
       sendReply: async (args) => {
         const invalid = validateSendReply(args);
         if (invalid) return invalid;
-        const extra = args as { attachments?: Json[] };
-        if (extra.attachments && extra.attachments.length > 0) {
-          const req = buildSendReplyRequest({
-            ...args,
-            attachments: extra.attachments,
-          });
+        const mentions = args.mentions;
+        const attachments = args.attachments;
+        if (
+          (mentions && mentions.length > 0) ||
+          (attachments && attachments.length > 0)
+        ) {
+          const req = buildSendReplyRequest(args);
           return hqProJson('POST', req.path, req.body);
         }
         return call('send_thread_reply', {
@@ -747,6 +782,7 @@ export function createSyncPlatformAdapter(
       getAuthorizedPreview: (path) =>
         call('get_authorized_file_preview', { path }),
       revealInFinder: (path) => call('reveal_authorized_file', { path }),
+      revealHqRoot: () => call('reveal_hq_root'),
     },
 
     agency: {
@@ -824,6 +860,8 @@ export function createSyncPlatformAdapter(
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
       launchClaudeCode: (path) => call('launch_claude_code', { path }),
+      launchCodexWorkspace: (path, prompt) =>
+        call('launch_codex_workspace', { path, prompt: prompt ?? null }),
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');
@@ -907,6 +945,7 @@ export function createSyncPlatformAdapter(
 
     packages: {
       listPackages: () => call('list_packages'),
+      listPackagesCached: () => call('list_packages_cached'),
       install: ({ source, registry }) =>
         call('install_package', {
           source,

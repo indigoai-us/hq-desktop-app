@@ -42,6 +42,53 @@ export interface InboxPairUnread {
   unreadCount: number;
 }
 
+/** Newest inbound DM per counterpart, derived from an inbox page's events. */
+export interface InboxDmActivity {
+  personUid: string;
+  lastMessageAt: string;
+  displayName?: string;
+}
+
+/**
+ * Per-pair last-message stamps from GET /v1/notify/inbox `events`.
+ * `pairUnreadsFromInboxPage` only derives unread counts; this keeps the
+ * timestamps the rail needs to show older-day DM rows.
+ */
+export function dmActivityFromInboxPage(
+  page: unknown,
+  opts?: { selfUid?: string },
+): InboxDmActivity[] {
+  const rec =
+    page && typeof page === "object" && !Array.isArray(page)
+      ? (page as Record<string, unknown>)
+      : null;
+  if (!rec) return [];
+  const events = Array.isArray(rec.events) ? rec.events : [];
+  const selfUid = opts?.selfUid?.trim() ?? "";
+  const latest = new Map<string, InboxDmActivity>();
+  for (const item of events) {
+    if (!item || typeof item !== "object") continue;
+    const uid =
+      typeof (item as { fromPersonUid?: unknown }).fromPersonUid === "string"
+        ? (item as { fromPersonUid: string }).fromPersonUid.trim()
+        : "";
+    if (!uid || uid === selfUid) continue;
+    const createdAt = (item as { createdAt?: unknown }).createdAt;
+    if (typeof createdAt !== "string" || !createdAt) continue;
+    const prev = latest.get(uid);
+    if (prev && createdAt <= prev.lastMessageAt) continue;
+    const displayName = (item as { fromDisplayName?: unknown }).fromDisplayName;
+    latest.set(uid, {
+      personUid: uid,
+      lastMessageAt: createdAt,
+      ...(typeof displayName === "string" && displayName
+        ? { displayName }
+        : {}),
+    });
+  }
+  return [...latest.values()];
+}
+
 /** Turn an inbox page into a one-row unread patch + the next exclusive since. */
 export function pairUnreadsFromInboxPage(
   page: unknown,

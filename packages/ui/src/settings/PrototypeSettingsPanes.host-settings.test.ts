@@ -5,6 +5,10 @@ import { mount, tick, unmount } from "svelte";
 import { failure, ok, unavailable, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
+
+// happy-dom ships no localStorage here; see the helper for why.
+const memoryStorage = installMemoryLocalStorage();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -50,7 +54,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
-  localStorage.clear();
+  memoryStorage.clear();
   vi.clearAllMocks();
 });
 

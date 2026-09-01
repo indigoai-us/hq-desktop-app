@@ -57,5 +57,9 @@ describe('NotificationFeed + NotificationRow popover theme tokens', () => {
     expect(feedSource).not.toContain('ReactionBar');
     expect(feedSource).not.toContain('notif-cluster-files');
     expect(feedSource).not.toContain('notif-message-btn');
+    expect(rowSource).not.toContain('nr-actor-pill');
+    expect(rowSource).not.toContain('nr-comfortable-copy');
+    expect(rowSource).not.toContain('nr-identity');
+    expect(rowSource).toContain('class="nr-actor"');
   });
 });

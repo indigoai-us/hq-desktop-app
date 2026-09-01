@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildSendReplyRequest,
   normalizeNotificationsFeed,
   type AdapterResult,
   type PlatformAdapter,
@@ -175,6 +176,7 @@ describe("PlatformAdapter contract", () => {
       adapter.updates.getVersions(),
       adapter.updates.checkCoreState(),
       adapter.packages.listPackages(),
+      adapter.packages.listPackagesCached(),
       adapter.sessions.listAgentSessions(),
     ]);
 
@@ -558,5 +560,29 @@ describe("PlatformAdapter contract", () => {
         },
       },
     ]);
+  });
+
+  it("buildSendReplyRequest includes mentions in the channel-scope body", () => {
+    const mentions = [
+      {
+        participantUid: "prs_stefan",
+        participantType: "human" as const,
+        displayName: "Stefan Johnson",
+        email: "stefan@getindigo.ai",
+      },
+    ];
+    const req = buildSendReplyRequest({
+      scope: "channel",
+      rootEventId: "evt_root",
+      body: "hey @Stefan Johnson",
+      channelId: "chn_1",
+      mentions,
+    });
+    expect(req.path).toBe("/v1/notify/channels/chn_1/messages");
+    expect(req.body).toEqual({
+      body: "hey @Stefan Johnson",
+      rootEventId: "evt_root",
+      mentions,
+    });
   });
 });

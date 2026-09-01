@@ -15,12 +15,14 @@
 //!
 //! Commands:
 //!   * `list_packages`          — read-only snapshot (content packs + registry)
+//!   * `list_packages_cached`   — last-known snapshot from `~/.hq/sync-packs-cache.json`
 //!   * `check_package_updates`  — slower probe; emits `packages:updates`
 //!   * `install_package`        — stream `hq install <source>` progress
 //!   * `update_package`         — stream `hq packs update <name>`
 //!   * `uninstall_package`      — `hq packs uninstall <name> --yes --json`
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -272,11 +274,102 @@ async fn gather_packages(check_updates: bool) -> PackagesView {
     }
 }
 
+/// Serialize a `PackagesView` snapshot for the on-disk popover cache.
+fn serialize_packages_cache(view: &PackagesView) -> Result<String, String> {
+    serde_json::to_string(view).map_err(|e| e.to_string())
+}
+
+/// Parse a cache-file body. `None` means missing-equivalent (corrupt / not an object).
+fn parse_packages_cache(raw: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(raw.trim())
+        .ok()
+        .filter(Value::is_object)
+}
+
+fn write_packages_cache_at(path: &Path, body: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create cache dir: {e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, body).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("write cache tmp: {e}")
+    })?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("commit cache: {e}")
+    })
+}
+
+/// Best-effort persist of a successful packs snapshot. Never fails the caller.
+fn write_packages_cache(view: &PackagesView) {
+    if view.packs.is_null() {
+        return;
+    }
+    let body = match serialize_packages_cache(view) {
+        Ok(body) => body,
+        Err(e) => {
+            log("packs-cache", &format!("serialize failed: {e}"));
+            return;
+        }
+    };
+    let path = match paths::packs_cache_json_path() {
+        Ok(path) => path,
+        Err(e) => {
+            log("packs-cache", &format!("path resolve failed: {e}"));
+            return;
+        }
+    };
+    if let Err(e) = write_packages_cache_at(&path, &body) {
+        log("packs-cache", &format!("write failed: {e}"));
+    }
+}
+
+fn read_packages_cache() -> Option<Value> {
+    let path = match paths::packs_cache_json_path() {
+        Ok(path) => path,
+        Err(e) => {
+            log("packs-cache", &format!("path resolve failed: {e}"));
+            return None;
+        }
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            log("packs-cache", &format!("read failed: {e}"));
+            return None;
+        }
+    };
+    match parse_packages_cache(&raw) {
+        Some(value) => Some(value),
+        None => {
+            log("packs-cache", "corrupt cache; deleting");
+            let _ = fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+fn spawn_refresh_packages_cache() {
+    tauri::async_runtime::spawn(async {
+        let view = gather_packages(false).await;
+        write_packages_cache(&view);
+    });
+}
+
 /// Read-only snapshot for the Packages window. Fast path — no update probing.
 #[tauri::command]
 pub async fn list_packages() -> Result<Value, String> {
     let view = gather_packages(false).await;
+    write_packages_cache(&view);
     serde_json::to_value(view).map_err(|e| e.to_string())
+}
+
+/// Instant last-known `list_packages` snapshot. `Ok(None)` when missing or corrupt.
+#[tauri::command]
+pub async fn list_packages_cached() -> Result<Option<Value>, String> {
+    Ok(read_packages_cache())
 }
 
 /// Slower probe (network per pack). Emits `packages:updates` with the fresh
@@ -429,7 +522,9 @@ pub async fn install_package(
     registry: Option<bool>,
 ) -> Result<(), String> {
     let args = install_package_args(&source, registry.unwrap_or(false));
-    stream_hq(&app, "install", &source, args).await
+    stream_hq(&app, "install", &source, args).await?;
+    spawn_refresh_packages_cache();
+    Ok(())
 }
 
 /// Update an installed content pack (re-install latest).
@@ -441,7 +536,9 @@ pub async fn update_package(app: AppHandle, name: String) -> Result<(), String> 
         name.clone(),
         "--yes".into(),
     ];
-    stream_hq(&app, "update", &name, args).await
+    stream_hq(&app, "update", &name, args).await?;
+    spawn_refresh_packages_cache();
+    Ok(())
 }
 
 /// Update every selected installed content pack sequentially. The named form
@@ -459,6 +556,7 @@ pub async fn update_packs(app: AppHandle, names: Vec<String>) -> Result<(), Stri
         ];
         stream_hq(&app, "update", &name, args).await?;
     }
+    spawn_refresh_packages_cache();
     Ok(())
 }
 
@@ -469,7 +567,9 @@ pub async fn update_packs(app: AppHandle, names: Vec<String>) -> Result<(), Stri
 #[tauri::command]
 pub async fn uninstall_package(name: String) -> Result<Value, String> {
     let _update_guard = crate::commands::process::begin_update_sensitive_operation()?;
-    run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await
+    let value = run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await?;
+    spawn_refresh_packages_cache();
+    Ok(value)
 }
 
 /// Background loop: first check 20s after launch, then every 6h. Unlike the
@@ -586,5 +686,35 @@ mod tests {
             install_package_args("registry:hq-pack-engineering", false),
             vec!["install", "registry:hq-pack-engineering", "--allow-hooks"],
         );
+    }
+
+    #[test]
+    fn packages_cache_round_trips_a_packages_view() {
+        let view = PackagesView {
+            packs: serde_json::json!({
+                "installed": [
+                    { "name": "engineering", "version": "1.4.0" }
+                ]
+            }),
+            registry: Some(serde_json::json!({ "offline": false })),
+            error: None,
+        };
+
+        let encoded = serialize_packages_cache(&view).expect("serialize");
+        let parsed = parse_packages_cache(&encoded).expect("round-trip");
+
+        assert_eq!(parsed["packs"]["installed"][0]["name"], "engineering");
+        assert_eq!(parsed["packs"]["installed"][0]["version"], "1.4.0");
+        assert_eq!(parsed["registry"]["offline"], false);
+        assert!(parsed["error"].is_null());
+    }
+
+    #[test]
+    fn packages_cache_parse_yields_none_for_corrupt_json() {
+        assert!(parse_packages_cache("not-json").is_none());
+        assert!(parse_packages_cache("{").is_none());
+        assert!(parse_packages_cache("").is_none());
+        assert!(parse_packages_cache("[]").is_none());
+        assert!(parse_packages_cache("null").is_none());
     }
 }

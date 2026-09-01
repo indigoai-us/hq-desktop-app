@@ -32,6 +32,10 @@
   let { messageId, reactions = [], ontoggle, compact = false }: Props = $props();
 
   let pickerOpen = $state(false);
+  // The "+" trigger element — passed to EmojiPicker, which portals itself to
+  // <body> and position:fixed-anchors to this button's viewport rect (with
+  // edge flipping) so no ancestor pane can clip or out-stack it.
+  let addButtonEl = $state<HTMLButtonElement | null>(null);
 
   function toggle(emoji: string): void {
     ontoggle(messageId, emoji);
@@ -62,6 +66,7 @@
     <button
       class="reaction-add"
       type="button"
+      bind:this={addButtonEl}
       onclick={() => (pickerOpen = !pickerOpen)}
       aria-haspopup="menu"
       aria-expanded={pickerOpen}
@@ -72,7 +77,7 @@
       <span class="reaction-add-plus" aria-hidden="true">+</span>
     </button>
     {#if pickerOpen}
-      <EmojiPicker onpick={pick} onclose={() => (pickerOpen = false)} />
+      <EmojiPicker anchor={addButtonEl} onpick={pick} onclose={() => (pickerOpen = false)} />
     {/if}
   </div>
 </div>

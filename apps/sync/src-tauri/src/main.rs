@@ -519,6 +519,7 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::auth::whoami,
             commands::auth::get_auth_session,
             commands::hq_pro::hq_pro_fetch,
             commands::vault_s3::vault_s3_put,
@@ -643,6 +644,7 @@ fn main() {
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
             commands::packages::list_packages,
+            commands::packages::list_packages_cached,
             commands::packages::check_package_updates,
             commands::packages::check_pack_update,
             commands::packages::install_package,
@@ -685,6 +687,7 @@ fn main() {
             commands::desktop_alt::get_company_file_content,
             commands::desktop_alt::get_authorized_file_preview,
             commands::desktop_alt::reveal_authorized_file,
+            commands::desktop_alt::reveal_hq_root,
             commands::desktop_alt::open_authorized_file_in_claude,
             commands::desktop_alt::list_hq_dir,
             commands::projects_local::get_local_projects,
@@ -843,6 +846,10 @@ fn main() {
         ])
         .setup(|app| {
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            // macOS app menu with "Check for Updates…" under About; replaces
+            // the implicit default menu. See updater::setup_app_menu.
+            #[cfg(target_os = "macos")]
+            updater::setup_app_menu(app)?;
             #[cfg(target_os = "windows")]
             {
                 // Prime the durable session-end latch's monotonic origin before

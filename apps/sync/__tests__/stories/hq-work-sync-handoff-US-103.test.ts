@@ -81,6 +81,8 @@ function mockInvoke(): SyncInvokeFn {
           accountId: 'acct_ada',
           expiresAt: '2099-01-01T00:00:00Z',
         };
+      case 'whoami':
+        return WHOAMI;
       case 'desktop_alt_is_admin':
         return true;
       case 'meetings_feature_enabled':
@@ -135,7 +137,9 @@ function mockInvoke(): SyncInvokeFn {
   };
 }
 
-async function flush(times = 12): Promise<void> {
+// 32 turns: the identity settle path gained await hops (timeout race +
+// reveal/tick) in the boot-loader change, so 12 no longer drains it.
+async function flush(times = 32): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
   flushSync();
 }
@@ -309,6 +313,34 @@ describe('US-103 embedded desktop window', () => {
       expect(shell).toBe('legacy');
       expect(await resolveDesktopAltShell(async () => false)).toBe('legacy');
       expect(calls).toEqual(['legacy']);
+    });
+
+    it('shows a branded loading mark until identity settles', async () => {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      let releaseWhoami: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseWhoami = resolve;
+      });
+      const inner = mockInvoke();
+      const invokeFn: SyncInvokeFn = async (cmd, args) => {
+        if (cmd === 'whoami') {
+          await gate;
+        }
+        return inner(cmd, args);
+      };
+      component = mount(HqWorkDesktopShell, {
+        target: host,
+        props: { invokeFn },
+      });
+      flushSync();
+      expect(host.querySelector('[data-testid="hq-work-boot"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="desktop-shell"]')).toBeNull();
+      expect(host.textContent).toContain('HQ');
+      releaseWhoami();
+      await flush();
+      expect(host.querySelector('[data-testid="hq-work-boot"]')).toBeNull();
+      expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
     });
 
     it('Given flag on, when the tray desktop-view action is clicked, then the embedded HQ Work shell renders', async () => {
@@ -488,14 +520,11 @@ describe('US-103 embedded desktop window', () => {
             ],
           };
         }
-        if (command === 'hq_pro_fetch' && hqProPath(args?.url).startsWith('/v1/identity/whoami')) {
+        if (command === 'whoami') {
           return {
-            status: 200,
-            body: JSON.stringify({
-              personUid: identity.personUid,
-              displayName: identity.displayName,
-              email: identity.email,
-            }),
+            personUid: identity.personUid,
+            displayName: identity.displayName,
+            email: identity.email,
           };
         }
         return fallback(command, args);

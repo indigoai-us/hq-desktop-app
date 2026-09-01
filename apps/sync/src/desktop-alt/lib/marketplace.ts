@@ -9,8 +9,11 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { PACK_DISPLAY_NAMES, prettifyPackName } from '../../../../../packages/ui/src/home/pack-display-name';
 
 import type { Workspace } from '../../lib/workspaces';
+
+export { PACK_DISPLAY_NAMES, prettifyPackName };
 
 /** One approved listing row (`MarketplaceListing` wire shape, US-005 public). */
 export interface MarketplaceListing {
@@ -45,49 +48,6 @@ export interface MarketplaceListing {
    * `listingDisplayName`. When the backend starts serving one it takes precedence.
    */
   displayName?: string | null;
-}
-
-// ---------------------------------------------------------------------------
-// Display names — turn package ids (`hq-pack-impeccable`) into friendly titles
-// ("Impeccable Design") for the cards + detail, without losing the real slug.
-// ---------------------------------------------------------------------------
-
-/**
- * Curated, brand-respecting display names keyed by pack slug. A pack not listed
- * here falls back to the generic `prettifyPackName` of its package name, so new
- * packs still read cleanly without a code change.
- */
-export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  engineering: 'Engineering',
-  gstack: 'gStack',
-  'pocock-skills': 'Matt Pocock Skills',
-  impeccable: 'Impeccable Design',
-  'magicpath-agent-skills': 'MagicPath',
-  // Acronym — the generic prettifier would title-case this to "Crm".
-  crm: 'CRM',
-};
-
-/** Words we keep lowercased when title-casing a derived name (unless leading). */
-const NAME_MINOR_WORDS = new Set(['and', 'for', 'the', 'of', 'to', 'a', 'an']);
-
-/**
- * Generic prettifier: strip a leading `hq-pack-` (or `hq-`) prefix, split on
- * `-`/`_`/space, and Title-Case the words (minor words stay lowercase unless
- * leading). Pure + DOM-free so it's unit-testable. Returns '' for empty input.
- */
-export function prettifyPackName(name: string): string {
-  const stripped = (name ?? '')
-    .trim()
-    .replace(/^hq-pack[-_]/i, '')
-    .replace(/^hq[-_]/i, '');
-  const words = stripped.split(/[-_\s]+/).filter(Boolean);
-  return words
-    .map((w, i) => {
-      const lower = w.toLowerCase();
-      if (i > 0 && NAME_MINOR_WORDS.has(lower)) return lower;
-      return lower.charAt(0).toUpperCase() + lower.slice(1);
-    })
-    .join(' ');
 }
 
 /**

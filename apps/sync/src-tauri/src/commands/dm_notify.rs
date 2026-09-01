@@ -52,12 +52,13 @@ use crate::util::logfile::log;
 pub use hq_desktop_core::dm_notify::{
     build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
     build_threads_url, classify_send_response, clear_in_flight, diff_requests,
-    dm_notifications_enabled, esc_thread_seg, normalize_scope, partition_unnotified,
-    read_cursor_entry_for_account, respond_action_path, respond_action_state, try_set_in_flight,
-    write_cursor_entry_for_account, ActiveConversationInner, ActiveConversationState,
-    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, PairUnread,
-    PairUnreadState, PendingDmEvents, RequestsListResponse, SeenChannelState, SeenRequestState,
-    SendDmOutcome, ThreadReply, ThreadResponse, ThreadView, UnreadDmState,
+    dm_notifications_enabled, effective_reply_count, esc_thread_seg, normalize_scope,
+    partition_unnotified, read_cursor_entry_for_account, respond_action_path, respond_action_state,
+    try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
+    ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
+    InboxResponse, PairUnread, PairUnreadState, PendingDmEvents, RequestsListResponse,
+    SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply, ThreadResponse, ThreadView,
+    UnreadDmState,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -2306,7 +2307,7 @@ async fn poll_active_thread(app: &AppHandle, base_url: &str, auth: &Notification
                     channel_id.as_deref(),
                     with_person_uid.as_deref(),
                     reply,
-                    view.reply_count,
+                    effective_reply_count(&view),
                 );
                 log(
                     LOG_TAG,
@@ -3167,6 +3168,8 @@ mod tests {
             prompt: None,
             created_at: "2026-09-01T00:00:00.000Z".to_string(),
             direction: "in".to_string(),
+            root_event_id: None,
+            reply_count: None,
         };
 
         let payload = thread_reply_wake_payload(

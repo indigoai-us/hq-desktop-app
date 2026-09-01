@@ -12,7 +12,9 @@ import {
   hqVersionLabel,
   isSyncNowAllowed,
   packsSummaryLabel,
+  parseInstalledPacks,
 } from "./core-popover-model";
+import { packDisplayName } from "./pack-display-name";
 
 describe("core-popover-model (US-016)", () => {
   describe("detectedCoreVersion", () => {
@@ -192,6 +194,53 @@ describe("G6: undetected core never pairs with green NO DRIFT", () => {
     expect(loading.packsSummary).toBe("Loading…");
     expect(loading.packsLoading).toBe(true);
   });
+
+  it("parseInstalledPacks accepts both wire shapes", () => {
+    expect(
+      parseInstalledPacks({
+        packs: {
+          installed: [
+            { name: " engineering ", version: "1.4.0" },
+            { name: "gstack", version: "2.1.0" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { name: "engineering", version: "1.4.0" },
+      { name: "gstack", version: "2.1.0" },
+    ]);
+    expect(
+      parseInstalledPacks([
+        { name: "engineering", version: "1.4.0" },
+        { name: "gstack", version: "2.1.0" },
+      ]),
+    ).toEqual([
+      { name: "engineering", version: "1.4.0" },
+      { name: "gstack", version: "2.1.0" },
+    ]);
+  });
+
+  it("parseInstalledPacks returns empty for empty and malformed input", () => {
+    expect(parseInstalledPacks(undefined)).toEqual([]);
+    expect(parseInstalledPacks(null)).toEqual([]);
+    expect(parseInstalledPacks({})).toEqual([]);
+    expect(parseInstalledPacks({ packs: { installed: [] } })).toEqual([]);
+    expect(parseInstalledPacks({ packs: { installed: "nope" } })).toEqual([]);
+    expect(parseInstalledPacks("engineering")).toEqual([]);
+    expect(parseInstalledPacks(5)).toEqual([]);
+    expect(
+      parseInstalledPacks({
+        packs: {
+          installed: [
+            null,
+            { name: "  " },
+            { name: "ok", version: "1.0.0" },
+            { version: "2.0.0" },
+          ],
+        },
+      }),
+    ).toEqual([{ name: "ok", version: "1.0.0" }]);
+  });
 });
 
 describe("G7: core pill dot tone", () => {
@@ -208,5 +257,104 @@ describe("G7: core pill dot tone", () => {
     expect(corePillDotTone({})).toBe("ok");
     expect(corePillDotTone({ syncState: "idle", conflictCount: 0 })).toBe("ok");
     expect(corePillDotTone({ syncState: "syncing" })).toBe("ok");
+  });
+});
+
+describe("core checking state (owner bug: healthy install shown as not detected)", () => {
+  it("labels an in-flight check as checking, never as not detected", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: null, driftCount: 0, needsRestore: false },
+      coreChecking: true,
+    });
+    expect(vm.hqVersionLabel).toBe("Checking HQ core\u2026");
+    expect(vm.driftPill).toBe("CHECKING");
+    expect(vm.driftPillTone).toBe("neutral");
+    expect(vm.coreDetected).toBe(false);
+  });
+
+  it("only claims not detected after the check resolved without a version", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: null, driftCount: 0, needsRestore: false },
+      coreChecking: false,
+    });
+    expect(vm.hqVersionLabel).toBe("HQ core not detected");
+    expect(vm.driftPill).toBe("NOT CHECKED");
+  });
+
+  it("a detected version wins over a stale checking flag", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: "15.0.118", driftCount: 0, needsRestore: false },
+      coreChecking: true,
+    });
+    expect(vm.hqVersionLabel).toBe("HQ core v15.0.118");
+    expect(vm.driftPill).toBe("NO DRIFT");
+    expect(vm.driftPillTone).toBe("ok");
+    expect(vm.coreDetected).toBe(true);
+  });
+
+  it("driftPillLabel/hqVersionLabel expose the checking arm directly", () => {
+    expect(driftPillLabel(0, false, true)).toBe("CHECKING");
+    expect(driftPillLabel(3, true, true)).toBe("3 drifted");
+    expect(hqVersionLabel(null, true)).toBe("Checking HQ core\u2026");
+    expect(hqVersionLabel(null, false)).toBe("HQ core not detected");
+  });
+});
+
+describe("parseInstalledPacks displayName / old cache", () => {
+  it("carries a string displayName through from the wire", () => {
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Pack" },
+      ]),
+    ).toEqual([
+      { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Pack" },
+    ]);
+  });
+
+  it("carries a string title through as displayName when displayName is absent", () => {
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", title: "Foo Title" },
+      ]),
+    ).toEqual([
+      { name: "hq-pack-foo", version: "1.0.0", displayName: "Foo Title" },
+    ]);
+  });
+
+  it("prefers displayName over title and ignores non-string hosted fields", () => {
+    expect(
+      parseInstalledPacks([
+        {
+          name: "hq-pack-foo",
+          version: "1.0.0",
+          displayName: "From displayName",
+          title: "From title",
+        },
+      ]),
+    ).toEqual([
+      {
+        name: "hq-pack-foo",
+        version: "1.0.0",
+        displayName: "From displayName",
+      },
+    ]);
+    expect(
+      parseInstalledPacks([
+        { name: "hq-pack-foo", version: "1.0.0", displayName: 12, title: true },
+      ]),
+    ).toEqual([{ name: "hq-pack-foo", version: "1.0.0" }]);
+  });
+
+  it("old-cache rows with only name+version still derive a display name, never blank", () => {
+    const packs = parseInstalledPacks([
+      { name: "hq-pack-client-service", version: "1.2.0" },
+    ]);
+    expect(packs).toEqual([
+      { name: "hq-pack-client-service", version: "1.2.0" },
+    ]);
+    expect(packs[0]).not.toHaveProperty("displayName");
+    const derived = packDisplayName(packs[0]!);
+    expect(derived).toBe("Client Service");
+    expect(derived).not.toBe("");
   });
 });

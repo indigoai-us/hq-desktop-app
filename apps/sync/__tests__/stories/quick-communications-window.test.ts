@@ -90,7 +90,7 @@ describe('quick communications window hierarchy', () => {
     expect(sidePane).toContain('class="qw-skeleton-row"');
     expect(sidePane).toContain('aria-label="Loading conversations"');
     expect(sidePane).toContain('aria-busy={loading || loadingChannels}');
-    expect(sidePane).toMatch(/\.conversation-row\s*\{[\s\S]*?min-height:\s*34px/);
+    expect(sidePane).toMatch(/\.conversation-row\s*\{[\s\S]*?min-height:\s*28px/);
   });
 
   it('keeps one native material, a browser fallback, and flat structural descendants', () => {

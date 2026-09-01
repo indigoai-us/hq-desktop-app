@@ -11,6 +11,7 @@ import {
   buildScopeOptions,
   clearDmDot,
   clearPairUnread,
+  collapseDuplicateGroupRows,
   companyLabelFor,
   conversationKindLabel,
   conversationQueryScore,
@@ -1212,6 +1213,79 @@ describe("G2: day grouping on real mixed conversation timestamps", () => {
   });
 });
 
+describe("inbox activity stamps older DMs into their true day bucket", () => {
+  it("contacts stamped with inbox activity from ~3 days ago land in that day's section, not today", () => {
+    const contacts: DmContactInput[] = [
+      dm({
+        personUid: "prs_jacob",
+        displayName: "Jacob Posel",
+      }),
+    ];
+    expect(
+      normalizeConversations([], contacts).some((r) => r.id === "dm:prs_jacob"),
+    ).toBe(false);
+
+    const threeDaysAgo = iso(msOnDay(3, 14));
+    const stamped = mergeContactsWithInbox(contacts, [
+      {
+        fromPersonUid: "prs_jacob",
+        fromDisplayName: "Jacob Posel",
+        createdAt: threeDaysAgo,
+      },
+    ]);
+    const rows = normalizeConversations([], stamped);
+    const dmRow = rows.find((r) => r.id === "dm:prs_jacob");
+    expect(dmRow).toBeTruthy();
+    expect(dmRow!.kind).toBe("dm");
+    expect(dmRow!.lastActivityAt).toBe(msOnDay(3, 14));
+
+    const grouped = groupByDay(rows, NOW);
+    expect(
+      grouped.sections
+        .find((s) => s.label.startsWith("TODAY"))
+        ?.rows.some((r) => r.id === "dm:prs_jacob") ?? false,
+    ).toBe(false);
+    expect(grouped.lastWeek.some((r) => r.id === "dm:prs_jacob")).toBe(false);
+    const home = grouped.sections.find((s) =>
+      s.rows.some((r) => r.id === "dm:prs_jacob"),
+    );
+    expect(home).toBeTruthy();
+    expect(home!.label).toBe(daySectionLabel(msOnDay(3, 14), NOW));
+    expect(home!.label.startsWith("TODAY")).toBe(false);
+  });
+
+  it("never drags a pair backwards when the contact's own stamp is newer", () => {
+    // The inbox only knows INBOUND DMs. A pair the owner messaged today must
+    // stay in TODAY even though the counterpart's last reply was days ago.
+    const today = msOnDay(0, 9);
+    const stamped = mergeContactsWithInbox(
+      [
+        dm({
+          personUid: "prs_jacob",
+          displayName: "Jacob Posel",
+          lastMessageAt: iso(today),
+        }),
+      ],
+      [
+        {
+          fromPersonUid: "prs_jacob",
+          fromDisplayName: "Jacob Posel",
+          createdAt: iso(msOnDay(3, 14)),
+        },
+      ],
+    );
+    const rows = normalizeConversations([], stamped);
+    const dmRow = rows.find((r) => r.id === "dm:prs_jacob");
+    expect(dmRow?.lastActivityAt).toBe(today);
+    const grouped = groupByDay(rows, NOW);
+    expect(
+      grouped.sections
+        .find((s) => s.label.startsWith("TODAY"))
+        ?.rows.some((r) => r.id === "dm:prs_jacob") ?? false,
+    ).toBe(true);
+  });
+});
+
 describe("mergeContactsWithInbox — 1:1 DMs are not channel-directory rows", () => {
   it("stamps lastMessageAt from the newest inbox event onto a roster contact", () => {
     const merged = mergeContactsWithInbox(
@@ -1511,5 +1585,146 @@ describe("G3: contacts directory never renders as sidebar conversation rows", ()
     expect(rows).toHaveLength(4);
     const hits = filterTypeahead(rows, "alan");
     expect(hits.map((r) => r.personUid)).toContain("prs_alan");
+  });
+});
+
+describe("collapseDuplicateGroupRows", () => {
+  function groupRow(
+    partial: Partial<ConversationRow> & { id: string },
+  ): ConversationRow {
+    return {
+      kind: "group",
+      title: "Jacob Posel",
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 0,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  const jacob = { personUid: "prs_jacob", displayName: "Jacob Posel" };
+  const caitlin = { personUid: "prs_caitlin", displayName: "Caitlin Hutchinson" };
+
+  it("collapses identical rosters to the most recently active row", () => {
+    const older = groupRow({
+      id: "ch:g-old",
+      channelId: "g-old",
+      lastActivityAt: msOnDay(0, 8),
+      members: [jacob],
+    });
+    const newer = groupRow({
+      id: "ch:g-new",
+      channelId: "g-new",
+      lastActivityAt: msOnDay(0, 10),
+      unreadDot: true,
+      members: [jacob],
+    });
+    const channelRow: ConversationRow = {
+      id: "ch:ops",
+      kind: "channel",
+      title: "ops",
+      companyUid: "cmp_a",
+      unreadDot: false,
+      lastActivityAt: msOnDay(0, 9),
+      pinned: false,
+      channelId: "ops",
+    };
+    const rows = collapseDuplicateGroupRows([channelRow, older, newer]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:ops", "ch:g-new"]);
+  });
+
+  it("keeps group rows with different rosters separate", () => {
+    const withJacob = groupRow({
+      id: "ch:g-jacob",
+      lastActivityAt: msOnDay(0, 10),
+      members: [jacob],
+    });
+    const withBoth = groupRow({
+      id: "ch:g-both",
+      title: "Jacob Posel, Caitlin Hutchinson",
+      lastActivityAt: msOnDay(0, 9),
+      members: [jacob, caitlin],
+    });
+    const rows = collapseDuplicateGroupRows([withJacob, withBoth]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:g-jacob", "ch:g-both"]);
+  });
+
+  it("leaves rows without member info untouched", () => {
+    const noMembers = groupRow({
+      id: "ch:g-empty",
+      lastActivityAt: msOnDay(0, 10),
+    });
+    const emptyMembers = groupRow({
+      id: "ch:g-blank",
+      lastActivityAt: msOnDay(0, 9),
+      members: [],
+    });
+    const unnamed = groupRow({
+      id: "ch:g-unnamed",
+      lastActivityAt: msOnDay(0, 8),
+      members: [{ personUid: "", displayName: "" }],
+    });
+    const rows = collapseDuplicateGroupRows([
+      noMembers,
+      emptyMembers,
+      unnamed,
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([
+      "ch:g-empty",
+      "ch:g-blank",
+      "ch:g-unnamed",
+    ]);
+  });
+
+  it("keys by display names when personUids are missing, ignoring order", () => {
+    const a = groupRow({
+      id: "ch:g-a",
+      lastActivityAt: msOnDay(0, 8),
+      members: [
+        { personUid: "", displayName: "Caitlin Hutchinson" },
+        { personUid: "", displayName: "Jacob Posel" },
+      ],
+    });
+    const b = groupRow({
+      id: "ch:g-b",
+      lastActivityAt: msOnDay(0, 11),
+      members: [
+        { personUid: "", displayName: "Jacob Posel" },
+        { personUid: "", displayName: "Caitlin Hutchinson" },
+      ],
+    });
+    const rows = collapseDuplicateGroupRows([a, b]);
+    expect(rows.map((row) => row.id)).toEqual(["ch:g-b"]);
+  });
+
+  it("normalizeConversations collapses duplicate group channels by roster", () => {
+    const rows = normalizeConversations(
+      [
+        channel({
+          channelId: "g-old",
+          name: "",
+          scope: "group",
+          lastActivityAt: iso(msOnDay(0, 8)),
+          members: [jacob],
+        }),
+        channel({
+          channelId: "g-new",
+          name: "",
+          scope: "group",
+          lastActivityAt: iso(msOnDay(0, 10)),
+          members: [jacob],
+        }),
+        channel({
+          channelId: "ops",
+          name: "ops",
+          lastActivityAt: iso(msOnDay(0, 9)),
+        }),
+      ],
+      [],
+    );
+    expect(rows.filter((row) => row.kind === "group")).toHaveLength(1);
+    expect(rows.find((row) => row.kind === "group")?.channelId).toBe("g-new");
+    expect(rows.find((row) => row.kind === "channel")?.channelId).toBe("ops");
   });
 });

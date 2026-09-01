@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount, flushSync } from "svelte";
 
 import IdentityMark from "./IdentityMark.svelte";
+import { agentAvatarAssets, agentAvatarFor } from "./agent-avatars";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -50,6 +51,72 @@ describe("IdentityMark avatar", () => {
     flushSync();
     expect(host.querySelector("img.avatar-img")).toBeNull();
     expect(host.querySelector(".monogram")).not.toBeNull();
+  });
+
+  it("prefers the assigned photo over the generated avatar for agents", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: {
+        kind: "agent",
+        label: "Parker",
+        avatarUrl: "https://cdn/agent.jpg",
+        agentUid: "agt_parker",
+      },
+    });
+    const img = host.querySelector("img.avatar-img") as HTMLImageElement | null;
+    expect(img?.getAttribute("src")).toBe("https://cdn/agent.jpg");
+  });
+
+  it("renders a deterministic generated avatar for a photo-less agent", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "agent", label: "Parker", agentUid: "agt_parker" },
+    });
+    const img = host.querySelector("img.avatar-img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(agentAvatarAssets).toContain(img?.getAttribute("src"));
+    expect(img?.getAttribute("src")).toBe(agentAvatarFor("agt_parker"));
+    expect(host.querySelector(".agent-glyph")).toBeNull();
+  });
+
+  it("keeps the ✦ glyph for agents with no uid", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "agent", label: "Parker" },
+    });
+    expect(host.querySelector("img.avatar-img")).toBeNull();
+    expect(host.querySelector(".agent-glyph")).not.toBeNull();
+  });
+
+  it("ignores agentUid for non-agent kinds (person keeps monogram)", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "person", label: "Ada Lovelace", agentUid: "agt_parker" },
+    });
+    expect(host.querySelector("img.avatar-img")).toBeNull();
+    expect(host.querySelector(".monogram")?.textContent).toBe("AL");
+  });
+
+  it("falls back to the ✦ glyph when the generated asset fails to load", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "agent", label: "Parker", agentUid: "agt_parker" },
+    });
+    const img = host.querySelector("img.avatar-img") as HTMLImageElement;
+    img.dispatchEvent(new Event("error"));
+    flushSync();
+    expect(host.querySelector("img.avatar-img")).toBeNull();
+    expect(host.querySelector(".agent-glyph")).not.toBeNull();
   });
 
   it("ignores avatarUrl for non-person/agent kinds (channel)", () => {

@@ -8,7 +8,7 @@
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { listen } from '@tauri-apps/api/event';
-  import { flushSync, onMount } from 'svelte';
+  import { flushSync, onMount, tick } from 'svelte';
   import {
     DesktopApp,
     createChatWakeBus,
@@ -34,6 +34,7 @@
   import { openApprovedExternalUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
+  import { dismissBootLoader } from './boot-loader';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
@@ -403,10 +404,26 @@
     });
   }
 
+  /** Hung whoami / listWorkspaces must not shimmer this window forever. */
+  const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
+
   onMount(() => {
     let cancelled = false;
     let latestLiveNavigation: 'meetings' | 'other' | null = null;
     let receivedLiveMeetingFocus = false;
+    let revealed = false;
+
+    const reveal = async () => {
+      if (cancelled || revealed) return;
+      revealed = true;
+      await tick();
+      if (!cancelled) dismissBootLoader();
+    };
+
+    // Race the initial session hydration with a timeout so a hung invoke
+    // cannot blank/spinner the boot loader forever; either way the shell's
+    // own lifecycle states take over once revealed.
+    const bootRevealTimeoutId = setTimeout(() => void reveal(), IDENTITY_SETTLE_TIMEOUT_MS);
 
     // The route must be restored before its optional meeting-focus payload.
     // Consume them in this order so a specific focus target is the final
@@ -446,6 +463,7 @@
     // app mounts. Deferring cold delivery until that boundary has settled keeps
     // a pending route/focus pair from racing a not-yet-attached renderer.
     void hydrateSession().finally(() => {
+      void reveal();
       if (!cancelled) void restoreInitialNavigation();
     });
 
@@ -509,6 +527,7 @@
 
     return () => {
       cancelled = true;
+      clearTimeout(bootRevealTimeoutId);
       hydration += 1;
       detachNavigation?.();
       detachNavigation = null;
@@ -532,7 +551,9 @@
 <div class="hq-work-embedded" data-testid="hq-work-embedded-shell">
   {#if lifecycle === 'loading'}
     <section class="lifecycle-state" data-testid="hq-work-loading" role="status">
-      Loading your HQ Work account…
+      <div class="hq-work-boot" data-testid="hq-work-boot" aria-busy="true" aria-live="polite">
+        <span class="hq-work-boot-mark">HQ</span>
+      </div>
     </section>
   {:else if lifecycle === 'signed-out'}
     <section class="lifecycle-state" data-testid="hq-work-signed-out" role="status">
@@ -674,5 +695,38 @@
     border-radius: 8px;
     color: #fef3c7;
     background: #3b2f10;
+  }
+  .hq-work-boot {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hq-work-boot-mark {
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.16em;
+    line-height: 1;
+    color: var(--c-text, var(--v4-text-1, currentColor));
+    animation: hq-work-boot-pulse 1.6s ease-in-out infinite alternate;
+  }
+
+  @keyframes hq-work-boot-pulse {
+    from {
+      opacity: 0.35;
+    }
+    to {
+      opacity: 0.9;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hq-work-boot-mark {
+      animation: none;
+      opacity: 0.85;
+    }
   }
 </style>

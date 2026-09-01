@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ReplyPanel from "./ReplyPanel.svelte";
-import type { ConversationApi } from "../chat-api";
+import type { ConversationApi, SendReplyArgs } from "../chat-api";
+import type { MentionTarget } from "../mentions.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -116,5 +117,72 @@ describe("ReplyPanel thread parity", () => {
     btn!.click();
     expect(opened).not.toBeNull();
     expect(opened!.personUid).toBe("prs_stefan");
+  });
+
+  it("shows the mention picker and sends mentions with the reply", async () => {
+    const sent: SendReplyArgs[] = [];
+    const mentionCandidates: MentionTarget[] = [
+      {
+        participantUid: "prs_stefan",
+        participantType: "human",
+        displayName: "Stefan Johnson",
+        email: "stefan@getindigo.ai",
+      },
+    ];
+    const h = mountPanel({
+      mentionCandidates,
+      api: {
+        fetchReplyThread: async () => ({
+          scope: "channel",
+          root,
+          replies: [reply],
+          replyCount: 1,
+        }),
+        sendReply: async (args: SendReplyArgs) => {
+          sent.push(args);
+        },
+      },
+    });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const composer = h.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    composer.value = "@Stefan";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    const picker = h.querySelector(
+      '[data-testid="mention-picker"]',
+    ) as HTMLElement | null;
+    expect(picker).not.toBeNull();
+    expect(picker?.textContent).toContain("Stefan Johnson");
+
+    const row = h.querySelector(".mention-row") as HTMLButtonElement | null;
+    expect(row).not.toBeNull();
+    row!.click();
+    await tick();
+    expect(composer.value).toContain("@Stefan Johnson");
+
+    const sendBtn = h.querySelector(
+      '[data-testid="reply-panel-send"]',
+    ) as HTMLButtonElement;
+    sendBtn.click();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toBe("@Stefan Johnson");
+    expect(sent[0]?.mentions).toEqual([
+      {
+        participantUid: "prs_stefan",
+        participantType: "human",
+        displayName: "Stefan Johnson",
+        email: "stefan@getindigo.ai",
+      },
+    ]);
   });
 });

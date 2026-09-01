@@ -209,11 +209,23 @@ State files: `.hq-sync.pid`, `.hq-sync-daemon.json` in the HQ folder.
 `src-tauri/icons/*` are generated, not hand-edited. Pipeline:
 
 ```
-src-tauri/icons/source/app-icon-master.png   full-bleed 1024 brand artwork
-  -> python3 scripts/generate-app-icon.py    puts it on Apple's icon grid
+src-tauri/icons/source/app-icon-master.png   1024 dock-ready artwork
+  -> python3 scripts/generate-app-icon.py    verifies the grid, passes through
   -> src-tauri/icons/app-icon.png            1024 canvas, grid-aligned
   -> pnpm tauri icon src-tauri/icons/app-icon.png -o src-tauri/icons
 ```
+
+The master is now exported dock-ready from the design file: already on Apple's
+grid, with its own continuous-curvature squircle and a soft drop shadow beneath
+the tile, as Apple's own template has. `generate-app-icon.py` detects that (the
+body already sits at the grid inset) and passes it through untouched — masking
+it again would inset it a second time and clip the shadow. Feed it full-bleed
+art, such as `source/app-icon-flat.png`, and it falls back to the original
+behaviour of shrinking to the body and masking with the grid squircle.
+
+Because the shadow legitimately extends past the grid, geometry is measured
+against the icon *body* — pixels at alpha >= 250 — not against any non-zero
+alpha, which would read the shadow as part of the tile.
 
 **macOS does NOT mask or inset app icons.** Whatever the bundle ships is drawn
 into the Dock tile verbatim, so the rounded-rect shape and the margin around it
@@ -230,15 +242,16 @@ rings, leaving faint alpha ~3px OUTSIDE the geometric edge (measured bbox
 ⚠ **`src-tauri/icons/app-icon.svg` is STALE — never regenerate from it.** It
 describes a near-black tile with a gradient wordmark; HQ actually ships a
 pink/violet gradient tile with a white wordmark (shipped raster mean opaque RGB
-~(212,141,227); the SVG rasterises to ~(52,44,50)). Running `tauri icon` against
+~(195,119,173); the SVG rasterises to ~(52,44,50)). Running `tauri icon` against
 it silently rebrands the app. The master PNG was recovered from the 1024x1024
 `ic10` representation inside the previously shipped `icon.icns`.
 
 `__tests__/stories/app-icon-grid.test.ts` decodes the generated PNG and asserts
-transparent corners, the exact grid inset, corner rounding, and that the mean
-colour is still the pink brand — so both a full-bleed regeneration and an
-accidental rebrand fail in CI. It also fails against the pre-fix icon (verified),
-so it is not a vacuous guard.
+transparent corners, the exact grid inset of the body, corner rounding, that the
+drop shadow stays soft and falls below the tile, and that the mean colour is
+still the pink/violet brand — so both a full-bleed regeneration and an
+accidental rebrand fail in CI. Verified non-vacuous: a full-bleed icon fails 5
+of its assertions and a near-black flat fill fails the colour assertion.
 
 Note the runtime `NSApp.applicationIconImage` override in `main.rs` still feeds
 the Dock `128x128@2x.png` (256px), which is exactly the Dock's max size

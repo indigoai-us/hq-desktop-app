@@ -3,6 +3,7 @@ import {
   type Channel,
   channelDisplayName,
   companyNameFor,
+  dedupeChannelsById,
   scopeChipLabel,
   isInvitedNotJoined,
   canPost,
@@ -217,6 +218,21 @@ describe('unread + upsert helpers', () => {
   });
 });
 
+describe('dedupeChannelsById', () => {
+  it('collapses duplicate channelIds keeping the first occurrence and order', () => {
+    const a = ch({ channelId: 'c1', name: 'first' });
+    const dup = ch({ channelId: 'c1', name: 'dup' });
+    const b = ch({ channelId: 'c2', name: 'second' });
+    expect(dedupeChannelsById([a, dup, b])).toEqual([a, b]);
+  });
+
+  it('returns the list unchanged when there are no duplicates', () => {
+    const a = ch({ channelId: 'c1', name: 'a' });
+    const b = ch({ channelId: 'c2', name: 'b' });
+    expect(dedupeChannelsById([a, b])).toEqual([a, b]);
+  });
+});
+
 describe('company label resolution never leaks a raw UID (REGRESSION)', () => {
   // The unified rail rendered `cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG` as a chip when the
   // server omitted companyName. A row must NEVER show the opaque cmp_ UID.
@@ -230,10 +246,21 @@ describe('company label resolution never leaks a raw UID (REGRESSION)', () => {
     expect(label).not.toContain('cmp_');
   });
 
-  it('companyNameFor resolves the server companyName when present', () => {
+  it('companyNameFor falls back to the server companyName when the UID is not in the memberships list', () => {
     expect(
       companyNameFor(
         ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID, companyName: 'Indigo' }),
+      ),
+    ).toBe('Indigo');
+  });
+
+  it('companyNameFor prefers the authoritative membership name over a stale denormalized companyName', () => {
+    // The channel row carries a wrong/stale server-denormalized companyName;
+    // the membership list keyed by the channel's companyUid is authoritative.
+    expect(
+      companyNameFor(
+        ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID, companyName: 'Golden Thread' }),
+        [{ companyUid: COMPANY_UID, companyName: 'Indigo' }],
       ),
     ).toBe('Indigo');
   });

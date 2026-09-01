@@ -7,6 +7,14 @@
   import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
   import { corePillDotTone } from "./core-popover-model.js";
+  import {
+    createLaunchActions,
+    type LaunchKey,
+  } from "../settings/launch-actions.js";
+  import { safeHref } from "../common/markdown.js";
+  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import Tooltip from "../common/Tooltip.svelte";
+  import Caret from "../common/Caret.svelte";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -72,6 +80,13 @@
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
+    /**
+     * Host external-URL opener (default browser). Same seam the message-body
+     * autolinks use (DesktopApp passes its Tauri plugin-shell opener); when
+     * absent we fall back to a noopener `window.open`. The webview MUST NOT
+     * navigate — never assign to location for these.
+     */
+    onopenurl?: (url: string) => void;
   }
 
   let {
@@ -88,6 +103,7 @@
     hydrationRefreshing = false,
     conflictCount = 0,
     conflictCompany = null,
+    hqFolderPath = null,
     onsync,
     oncancel,
     onretry,
@@ -107,6 +123,7 @@
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
+    onopenurl,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
@@ -209,6 +226,241 @@
   let coreOpen = $state(false);
   let coreContainer: HTMLDivElement | null = $state(null);
 
+  /**
+   * Launch menu (titlebar): opens the user's HQ folder in Claude Code /
+   * Codex (ChatGPT) / Grok Build. Reuses the exact SetupChannelIntro
+   * cascades via `createLaunchActions`, but with NO prefilled prompt — a
+   * plain workspace launch, not the `/setup` onboarding flow.
+   *
+   * The HQ folder path is lazy-loaded from `settings.getSetupStatus` on
+   * first open (same source SetupChannelIntro uses); the `hqFolderPath`
+   * prop, when provided by the host, wins and skips the fetch.
+   */
+  let launchOpen = $state(false);
+  let launchContainer: HTMLDivElement | null = $state(null);
+  let launchMenuEl: HTMLDivElement | null = $state(null);
+  let launchFolder = $state<string | null>(null);
+  /** Bottom-start by default; flipped to bottom-end when the menu would
+   *  overflow the right viewport edge (measured on open). */
+  let launchAlignEnd = $state(false);
+  let launching = $state<LaunchKey | null>(null);
+  let launchErrors = $state<Partial<Record<LaunchKey, string>>>({});
+
+  const resolvedLaunchFolder = $derived(
+    (hqFolderPath ?? launchFolder ?? "").trim(),
+  );
+
+  async function ensureLaunchFolder(): Promise<void> {
+    if (resolvedLaunchFolder || launchFolder !== null) return;
+    try {
+      const res = await adapter?.settings?.getSetupStatus?.();
+      const status =
+        res && res.ok ? (res.value as { hqFolderPath?: string } | null) : null;
+      launchFolder = status?.hqFolderPath?.trim() ?? "";
+    } catch {
+      launchFolder = "";
+    }
+  }
+
+  function toggleLaunch(): void {
+    launchOpen = !launchOpen;
+    if (launchOpen) {
+      coreOpen = false;
+      launchErrors = {};
+      void ensureLaunchFolder();
+    }
+  }
+
+  async function runLaunch(key: LaunchKey): Promise<void> {
+    if (launching) return;
+    await ensureLaunchFolder();
+    if (!resolvedLaunchFolder) {
+      launchErrors = {
+        ...launchErrors,
+        [key]: "HQ folder not configured yet — finish setup first.",
+      };
+      return;
+    }
+    launchErrors = { ...launchErrors, [key]: undefined };
+    launching = key;
+    try {
+      // Plain launch: no prompt argument, so Claude's deep link omits `q`
+      // and Codex's workspace opens without pre-typed text.
+      const actions = createLaunchActions({
+        shell: adapter.shell,
+        hqFolderPath: resolvedLaunchFolder,
+      });
+      const error =
+        key === "claude"
+          ? await actions.launchClaude()
+          : key === "codex"
+            ? await actions.launchCodex()
+            : await actions.launchGrok();
+      if (error) {
+        launchErrors = { ...launchErrors, [key]: error };
+      } else {
+        launchOpen = false;
+      }
+    } finally {
+      launching = null;
+    }
+  }
+
+  /** Viewport clamp: measure once per open; happy-dom rects are 0 so tests
+   *  keep the default bottom-start alignment. */
+  $effect(() => {
+    if (!launchOpen || !launchMenuEl) {
+      launchAlignEnd = false;
+      return;
+    }
+    const rect = launchMenuEl.getBoundingClientRect();
+    if (rect.width > 0 && rect.right > window.innerWidth - 12) {
+      launchAlignEnd = true;
+    }
+  });
+
+  /** Escape / outside-click close + ArrowUp/ArrowDown item nav (menu a11y). */
+  $effect(() => {
+    if (!launchOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (launchContainer && !launchContainer.contains(event.target)) {
+        launchOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        launchOpen = false;
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      const items = Array.from(
+        launchMenuEl?.querySelectorAll<HTMLButtonElement>(
+          "[role='menuitem']:not(:disabled)",
+        ) ?? [],
+      );
+      if (items.length === 0) return;
+      event.preventDefault();
+      const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        event.key === "ArrowDown"
+          ? items[(idx + 1) % items.length]
+          : items[(idx - 1 + items.length) % items.length];
+      next?.focus();
+    }
+
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  });
+
+  /**
+   * HQ Console (hq.computer) opens in the DEFAULT BROWSER, never the webview.
+   * Routed through the same host opener the message-body autolinks use
+   * (75b1bee1): safeHref-guarded, then `onopenurl`, then a noopener
+   * `window.open` fallback.
+   */
+  const HQ_CONSOLE_URL = HQ_CONSOLE_BASE;
+
+  function openHqConsole(): void {
+    coreOpen = false;
+    launchOpen = false;
+    const href = safeHref(HQ_CONSOLE_URL);
+    if (!href) return;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+  }
+
+  /**
+   * Open the user's CONFIGURED HQ folder in the OS file manager.
+   *
+   * The renderer passes NO path. `revealInFinder` speaks the HQ-RELATIVE
+   * contract (what FilePreviewPane correctly uses for a selected file), and
+   * that contract cannot express the HQ ROOT — an absolute `hqFolderPath` is
+   * rejected outright, which is what "invalid HQ-relative path" was. The host
+   * resolves the configured root itself, so this works for whatever folder
+   * THIS user configured, wherever it lives, on any OS. Nothing here is
+   * machine-specific and nothing is hardcoded.
+   *
+   * `hqFolderPath` is still read, but ONLY to decide the button's enabled
+   * state and tooltip — never as the reveal argument.
+   *
+   * Hidden entirely on hosts without local-file support (web), where the
+   * platform seam reports the command unavailable.
+   */
+  const canRevealFolder = $derived(
+    Boolean(adapter?.capabilities?.localFiles) ||
+      Boolean(adapter?.isAvailable?.("localFiles")),
+  );
+  let revealing = $state(false);
+  let revealError = $state<string | null>(null);
+
+  /**
+   * Config presence gates the control. `null` = still loading (allow the
+   * click; the handler awaits resolution), `""` = genuinely not configured.
+   */
+  const hqFolderConfigured = $derived(
+    hqFolderPath === null && launchFolder === null
+      ? null
+      : resolvedLaunchFolder.length > 0,
+  );
+
+  /**
+   * Resolve the configured HQ folder once on mount so the button shows its
+   * true enabled/disabled state immediately, rather than looking available
+   * and only failing on click.
+   */
+  $effect(() => {
+    if (canRevealFolder) void ensureLaunchFolder();
+  });
+
+  const revealTooltip = $derived(
+    revealError ??
+      (hqFolderConfigured === false
+        ? "HQ folder not configured"
+        : "Open HQ folder"),
+  );
+
+  async function revealHqFolder(): Promise<void> {
+    if (revealing) return;
+    coreOpen = false;
+    launchOpen = false;
+    revealing = true;
+    revealError = null;
+    try {
+      // Resolve config first purely to give a precise disabled/error message;
+      // the host does its own authoritative resolution.
+      await ensureLaunchFolder();
+      if (!resolvedLaunchFolder) {
+        revealError = "HQ folder not configured";
+        setTimeout(() => (revealError = null), 6000);
+        return;
+      }
+      const res = await adapter.files.revealHqRoot();
+      if (!res.ok) throw new Error(res.message ?? "Reveal is unavailable");
+    } catch (err) {
+      // Surface the REAL reason. A generic string is what hid both the
+      // wrong-command-name bug and the wrong-argument-contract bug.
+      console.error("titlebar: open HQ folder failed", err);
+      const detail = err instanceof Error ? err.message : String(err);
+      revealError = `Could not open HQ folder: ${detail}`;
+      setTimeout(() => (revealError = null), 6000);
+    } finally {
+      revealing = false;
+    }
+  }
+
+  const LAUNCH_ITEMS: ReadonlyArray<{ key: LaunchKey; label: string }> = [
+    { key: "claude", label: "Claude Code" },
+    { key: "codex", label: "Codex (ChatGPT)" },
+    { key: "grok", label: "Grok Build (terminal)" },
+  ];
+
   /** G7: amber dot while a conflict/attention item is pending; green when healthy. */
   const coreDotTone = $derived(
     corePillDotTone({
@@ -221,6 +473,7 @@
 
   function openCore(): void {
     coreOpen = !coreOpen;
+    if (coreOpen) launchOpen = false;
   }
 
   function isDragBlocker(target: EventTarget | null): boolean {
@@ -335,90 +588,225 @@
   ></div>
 
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
-    <button
-      type="button"
-      class="v4-icon-btn"
-      data-testid="titlebar-meetings"
-      aria-label="Meetings"
-      title="Meetings"
-      onclick={() => {
-        coreOpen = false;
-        onopenMeetings?.();
-      }}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect
-          x="1.75"
-          y="4.25"
-          width="8.5"
-          height="7.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path
-          d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
-    <button
-      type="button"
-      class="v4-icon-btn v4-notif-btn"
-      data-testid="titlebar-notifications"
-      aria-label={hasUnread ? "Notifications, unread" : "Notifications"}
-      title="Notifications"
-      onclick={() => {
-        coreOpen = false;
-        onopenNotifications?.();
-      }}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path
-          d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
-          stroke="currentColor"
-          stroke-width="1.2"
-          stroke-linecap="round"
-        />
-      </svg>
-      {#if hasUnread}
-        <span
-          class="v4-notif-dot"
-          data-testid="titlebar-notifications-badge"
-          aria-hidden="true"
-        ></span>
+    <div class="v4-launch-wrap" bind:this={launchContainer}>
+      <Tooltip label="Open your HQ folder in an AI tool" align="start">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-core-pill"
+            data-testid="titlebar-launch"
+            aria-haspopup="menu"
+            aria-expanded={launchOpen}
+            aria-label="Open HQ folder in an AI tool"
+            aria-describedby={describedBy || undefined}
+            onclick={toggleLaunch}
+          >
+            Launch
+            <Caret tone="var(--t3)" />
+          </button>
+        {/snippet}
+      </Tooltip>
+      {#if launchOpen}
+        <div
+          class="v4-launch-menu v4-popover-strong-surface"
+          class:align-end={launchAlignEnd}
+          role="menu"
+          aria-label="Launch HQ folder in"
+          data-testid="titlebar-launch-menu"
+          bind:this={launchMenuEl}
+        >
+          {#each LAUNCH_ITEMS as item (item.key)}
+            <button
+              type="button"
+              class="v4-launch-item"
+              role="menuitem"
+              data-testid={`titlebar-launch-${item.key}`}
+              disabled={launching !== null && launching !== item.key}
+              onclick={() => void runLaunch(item.key)}
+            >
+              <span class="v4-launch-item-label">
+                {launching === item.key ? `Opening ${item.label}…` : item.label}
+              </span>
+              {#if launchErrors[item.key]}
+                <span
+                  class="v4-launch-item-error"
+                  data-testid={`titlebar-launch-${item.key}-error`}
+                  >{launchErrors[item.key]}</span
+                >
+              {/if}
+            </button>
+          {/each}
+        </div>
       {/if}
-    </button>
-    {#if showCore}
-      <div class="v4-core-wrap" bind:this={coreContainer}>
+    </div>
+    {#if canRevealFolder}
+      <Tooltip label={revealTooltip}>
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            data-testid="titlebar-reveal-folder"
+            aria-label="Open HQ folder"
+            aria-describedby={describedBy || undefined}
+            disabled={revealing || hqFolderConfigured === false}
+            onclick={() => void revealHqFolder()}
+          >
+            <svg
+              class="v4-icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
+    {/if}
+    <Tooltip label="Open HQ Console">
+      {#snippet trigger(describedBy: string)}
         <button
           type="button"
-          class="v4-core-pill"
-          data-testid="titlebar-core-pill"
-          title="Core"
-          aria-expanded={coreOpen}
-          aria-haspopup="dialog"
-          aria-label="Open Core popover"
-          onclick={openCore}
+          class="v4-icon-btn"
+          data-testid="titlebar-console"
+          aria-label="Open HQ Console"
+          aria-describedby={describedBy || undefined}
+          onclick={openHqConsole}
         >
-          <span
-            class="v4-core-dot"
-            class:warn={coreDotTone === "warn"}
-            data-testid="titlebar-core-dot"
-            data-tone={coreDotTone}
-            aria-hidden="true">●</span
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
           >
-          Core
-          <span class="v4-core-caret" aria-hidden="true">⌄</span>
+            <circle
+              cx="8"
+              cy="8"
+              r="5.75"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <path
+              d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
         </button>
+      {/snippet}
+    </Tooltip>
+    <Tooltip label="Meetings">
+      {#snippet trigger(describedBy: string)}
+        <button
+          type="button"
+          class="v4-icon-btn"
+          data-testid="titlebar-meetings"
+          aria-label="Meetings"
+          aria-describedby={describedBy || undefined}
+          onclick={() => {
+            coreOpen = false;
+            onopenMeetings?.();
+          }}
+        >
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <rect
+              x="1.75"
+              y="4.25"
+              width="8.5"
+              height="7.5"
+              rx="1.5"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+            <path
+              d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      {/snippet}
+    </Tooltip>
+    <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"}>
+      {#snippet trigger(describedBy: string)}
+        <button
+          type="button"
+          class="v4-icon-btn v4-notif-btn"
+          data-testid="titlebar-notifications"
+          aria-label={hasUnread ? "Notifications, unread" : "Notifications"}
+          aria-describedby={describedBy || undefined}
+          onclick={() => {
+            coreOpen = false;
+            onopenNotifications?.();
+          }}
+        >
+          <svg
+            class="v4-icon"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          {#if hasUnread}
+            <span
+              class="v4-notif-dot"
+              data-testid="titlebar-notifications-badge"
+              aria-hidden="true"
+            ></span>
+          {/if}
+        </button>
+      {/snippet}
+    </Tooltip>
+    {#if showCore}
+      <div class="v4-core-wrap" bind:this={coreContainer}>
+        <Tooltip label="HQ Core: sync, packs, and updates" align="end">
+          {#snippet trigger(describedBy: string)}
+            <button
+              type="button"
+              class="v4-core-pill"
+              data-testid="titlebar-core-pill"
+              aria-expanded={coreOpen}
+              aria-haspopup="dialog"
+              aria-label="Open Core popover"
+              aria-describedby={describedBy || undefined}
+              onclick={openCore}
+            >
+              <span
+                class="v4-core-dot"
+                class:warn={coreDotTone === "warn"}
+                data-testid="titlebar-core-dot"
+                data-tone={coreDotTone}
+                aria-hidden="true">●</span
+              >
+              Core
+              <Caret tone="var(--t3)" />
+            </button>
+          {/snippet}
+        </Tooltip>
         {#if coreOpen}
           <CorePopover
             {adapter}
@@ -509,6 +897,81 @@
     flex: 0 0 auto;
   }
 
+  .v4-launch-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  /* Dropdown anchored bottom-start under the Launch pill (flips to
+     bottom-end via .align-end when it would overflow the viewport — measured
+     in the open $effect). Surface follows the RecipientPicker/VersionPopout
+     convention: --v4-popover-strong is NEAR-OPAQUE, because a nested
+     backdrop-filter is neutered outside its parent's backdrop root — a glass
+     --pop-bg/--btn-bg here lets the channel toolbar read straight through
+     the menu. z-index matches CorePopover so sibling chrome never overdraws
+     it. */
+  .v4-launch-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    max-width: calc(100vw - 24px);
+    padding: 4px;
+    border: 1px solid var(--panel-border, var(--line2));
+    border-radius: 10px;
+    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
+  }
+
+  /* Viewport clamp: right-align to the button when bottom-start overflows. */
+  .v4-launch-menu.align-end {
+    left: auto;
+    right: 0;
+  }
+
+  .v4-launch-item {
+    appearance: none;
+    -webkit-appearance: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .v4-launch-item:hover:not(:disabled),
+  .v4-launch-item:focus-visible {
+    background: var(--hover);
+  }
+
+  .v4-launch-item:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -2px;
+  }
+
+  .v4-launch-item:disabled {
+    color: var(--t3);
+    cursor: default;
+  }
+
+  .v4-launch-item-error {
+    color: var(--warn);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+  }
+
   .v4-core-pill {
     appearance: none;
     -webkit-appearance: none;
@@ -550,11 +1013,6 @@
     color: var(--warn);
   }
 
-  .v4-core-caret {
-    color: var(--t3);
-    font-size: 10px;
-    line-height: 1;
-  }
 
   /* Windows uses the native decorated title bar (system controls + Snap
      Layouts). The HQ toolbar sits below it — no macOS traffic-light gutter. */
@@ -624,6 +1082,15 @@
     background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
     box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
+  }
+
+  .v4-icon-btn:disabled {
+    color: var(--t3);
+    cursor: default;
+  }
+
+  .v4-icon-btn:disabled:hover {
+    background: transparent;
   }
 
   .v4-icon-btn:focus-visible {

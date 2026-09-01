@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { checkAllUpdates } from '../../lib/update-check';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { updateSettings } from '../../lib/settings-mutations';
@@ -280,25 +281,61 @@
     const generation = ++updateLoadGeneration;
     phase = 'checking';
     errorMessage = null;
-    try {
-      const [info] = await Promise.all([
-        invoke<UpdateInfo | null>('check_for_updates'),
-        refreshCoreInfo(),
-      ]);
-      if (generation !== updateLoadGeneration) return;
-      if (info?.version) {
-        latestVersion = info.version;
-        phase = 'idle';
-      } else {
-        latestVersion = null;
-        phase = 'idle';
-      }
-    } catch (err) {
-      if (generation !== updateLoadGeneration) return;
-      console.error('check_for_updates failed:', err);
+    // Both rows go busy inline: the app row via `phase`, the Core rows via
+    // the same loading flags the mount-time refresh uses.
+    const coreGeneration = ++coreLoadGeneration;
+    coreVersionLoading = true;
+    coreVersionError = false;
+    coreStateLoading = true;
+    coreStateError = false;
+    // Core's "Installed" version is a cheap local core.yaml read, outside the
+    // shared update orchestration (which owns update checks, not identity).
+    void invoke<string | null>('get_hq_version')
+      .then((value) => {
+        if (coreGeneration === coreLoadGeneration) coreVersion = value;
+      })
+      .catch((err) => {
+        if (coreGeneration !== coreLoadGeneration) return;
+        console.error('version-popout: HQ Core version refresh failed', err);
+        coreVersion = null;
+        coreVersionError = true;
+      })
+      .finally(() => {
+        if (coreGeneration === coreLoadGeneration) coreVersionLoading = false;
+      });
+    // Shared three-target orchestration — the same module the Settings →
+    // Updates pane and the macOS app-menu "Check for Updates…" path use, so
+    // no update-check logic is duplicated here. This popout renders the app
+    // and Core rows; the CLI target has no row on this surface, so its
+    // result is intentionally unused (the check itself is the same cheap
+    // registry read the 6h background cycle performs).
+    const results = await checkAllUpdates(
+      { invoke: (cmd) => invoke(cmd) },
+      {
+        onTargetDone: (r) => {
+          if (r.target !== 'core') return;
+          if (coreGeneration !== coreLoadGeneration) return;
+          coreStateLoading = false;
+          if (r.status === 'error') {
+            console.error('version-popout: HQ Core state refresh failed', r.error);
+            coreState = null;
+            coreStateError = true;
+          } else {
+            coreState = (r.detail as CoreState | null) ?? null;
+          }
+        },
+      },
+    );
+    if (generation !== updateLoadGeneration) return;
+    const app = results[0]; // checkAllUpdates returns stable [app, core, cli]
+    if (app.status === 'error') {
+      console.error('check_for_updates failed:', app.error);
       errorMessage = 'Check failed';
       phase = 'error';
+      return;
     }
+    latestVersion = (app.detail as UpdateInfo | undefined)?.version ?? null;
+    phase = 'idle';
   }
 
   async function handleRestartToUpdate() {

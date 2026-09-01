@@ -40,7 +40,12 @@ describe('US-017: version pop-out in desktop status bar', () => {
   });
 
   it('Check for updates / Restart to update invoke Tauri commands and surface status', () => {
-    expect(popout).toContain("'check_for_updates'");
+    // The manual check now routes through the shared three-target
+    // orchestration (src/lib/update-check.ts), which owns the
+    // 'check_for_updates' invoke; the popout imports it instead of
+    // invoking the command inline.
+    expect(popout).toContain("import { checkAllUpdates } from '../../lib/update-check'");
+    expect(popout).toContain('checkAllUpdates(');
     expect(popout).toContain("'install_update'");
     expect(popout).toContain('data-testid="version-popout-status"');
     expect(popout).toContain('data-testid="version-popout-check"');

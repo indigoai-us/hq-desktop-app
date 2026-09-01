@@ -50,3 +50,19 @@ export function resolveClaudeLaunchPath(
 export function codexAvailable(tools: AiTools | null): boolean {
   return Boolean(tools?.codex_cli);
 }
+
+export type CodexLaunchPath = "desktop" | "cli" | "none";
+
+/**
+ * Codex launch preference order, mirroring `resolveClaudeLaunchPath`:
+ * the ChatGPT desktop app's Codex surface first (workspace loaded via the
+ * bundled CLI's `codex app <path>`, `/setup` pre-typed via
+ * `codex://threads/new?prompt=`), a PATH-installed CLI in a terminal second,
+ * nothing when neither is detected. `codex_desktop` means the ChatGPT/Codex
+ * app bundle is installed — exactly the machines where `codex app` works.
+ */
+export function resolveCodexLaunchPath(tools: AiTools | null): CodexLaunchPath {
+  if (tools?.codex_desktop) return "desktop";
+  if (tools?.codex_cli) return "cli";
+  return "none";
+}

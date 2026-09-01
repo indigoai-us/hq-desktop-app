@@ -4,7 +4,9 @@ import {
   flattenRows,
   isValidEmail,
   matchesQuery,
+  resolveTypedRecipient,
   type ContactLike,
+  type SuggestionRow,
 } from './recipientPicker';
 
 describe('isValidEmail', () => {
@@ -144,5 +146,57 @@ describe('buildSuggestions', () => {
       companies: [],
     });
     expect(groups[0].rows[0].recipient.connectionState).toBe('none');
+  });
+});
+
+describe('resolveTypedRecipient', () => {
+  const row = (
+    email: string,
+    displayName?: string,
+    freeText = false,
+  ): SuggestionRow => ({
+    recipient: { personUid: freeText ? undefined : `prs_${email}`, email, displayName, connectionState: 'active' },
+    primary: displayName ?? email,
+    secondary: displayName ? email : null,
+    freeText,
+  });
+
+  it('returns null for an empty query', () => {
+    expect(resolveTypedRecipient([row('ada@x.com', 'Ada')], '')).toBeNull();
+    expect(resolveTypedRecipient([row('ada@x.com', 'Ada')], '   ')).toBeNull();
+  });
+
+  it('resolves a unique partial match (regression: typed-but-unclicked recipient)', () => {
+    const rows = [row('jacob@x.com', 'Jacob Posel')];
+    expect(resolveTypedRecipient(rows, 'Jacob')?.email).toBe('jacob@x.com');
+  });
+
+  it('prefers a unique exact name match among multiple partial matches', () => {
+    const rows = [row('jacob@x.com', 'Jacob Posel'), row('jacoby@x.com', 'Jacoby Shaddix')];
+    expect(resolveTypedRecipient(rows, 'jacob posel')?.email).toBe('jacob@x.com');
+  });
+
+  it('resolves a unique exact email match, case-insensitive', () => {
+    const rows = [row('jacob@x.com', 'Jacob Posel'), row('jane@x.com', 'Jane')];
+    expect(resolveTypedRecipient(rows, 'JACOB@X.COM')?.email).toBe('jacob@x.com');
+  });
+
+  it('returns null on ambiguous non-exact matches', () => {
+    const rows = [row('jacob@x.com', 'Jacob Posel'), row('jacoby@x.com', 'Jacoby Shaddix')];
+    expect(resolveTypedRecipient(rows, 'jaco')).toBeNull();
+  });
+
+  it('resolves a lone freeText email row', () => {
+    const rows = [row('new@person.com', undefined, true)];
+    expect(resolveTypedRecipient(rows, 'new@person.com')?.email).toBe('new@person.com');
+  });
+
+  it('ignores a freeText row when a real suggestion exists', () => {
+    const rows = [row('jacob@x.com', 'Jacob Posel'), row('jaco@typed.com', undefined, true)];
+    expect(resolveTypedRecipient(rows, 'jaco')?.email).toBe('jacob@x.com');
+  });
+
+  it('returns null when nothing matches', () => {
+    expect(resolveTypedRecipient([], 'nobody')).toBeNull();
   });
 });

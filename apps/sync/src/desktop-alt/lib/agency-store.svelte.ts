@@ -14,6 +14,7 @@ let messages = $state<AgencyMessage[]>([]);
 // The team whose Manager ⇄ Liaison conversation is shown + posted to.
 let selected = $state<{ company: string; team: string } | null>(null);
 let loading = $state(true);
+let messagesLoading = $state(true);
 let error = $state('');
 
 let started = false;
@@ -44,10 +45,12 @@ async function refresh(): Promise<void> {
       : [];
     error = '';
     loading = false;
+    messagesLoading = false;
   } catch (err) {
     console.error('agency refresh failed:', err);
     error = 'Could not load agency teams.';
     loading = false;
+    messagesLoading = false;
   }
 }
 
@@ -81,6 +84,13 @@ export async function submitAnswer(q: AgencyQuestion, answer: string): Promise<s
 /** Switch which team's conversation is shown; refreshes immediately. */
 export function selectAgencyTeam(company: string, team: string): void {
   selected = { company, team };
+  messagesLoading = true;
+  messages = [];
+  void refresh();
+}
+
+/** Re-run the poll after a surfaced load error. */
+export function retryAgencyRefresh(): void {
   void refresh();
 }
 
@@ -111,6 +121,9 @@ export const agencyStore = {
   },
   get loading() {
     return loading;
+  },
+  get messagesLoading() {
+    return messagesLoading;
   },
   get error() {
     return error;

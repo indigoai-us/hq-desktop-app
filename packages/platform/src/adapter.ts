@@ -242,6 +242,17 @@ export interface MessageSearchOptions {
   limit?: number;
 }
 
+/**
+ * Optional tenant scope for a contacts listing. Omitting `companyUid` returns
+ * every contact the caller can see across ALL their companies — correct for a
+ * global compose picker, WRONG for a channel-scoped mention roster, which must
+ * only ever offer members of the channel's own company.
+ */
+export interface ListContactsOptions {
+  /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
+  companyUid?: string | null;
+}
+
 /** Optional owner/admin scope for channel-directory listings. */
 export interface ListChannelsOptions {
   /** Company whose project channels the caller administers. */
@@ -266,6 +277,12 @@ export interface SendReplyArgs {
   body: string;
   withPersonUid?: string;
   channelId?: string;
+  mentions?: Array<{
+    participantUid: string;
+    participantType: "human" | "agent";
+    displayName: string;
+    email?: string;
+  }>;
   attachments?: Json[];
 }
 
@@ -378,6 +395,9 @@ export function buildSendReplyRequest(args: SendReplyArgs): {
     body: args.body,
     rootEventId: trimText(args.rootEventId),
   };
+  if (args.mentions && args.mentions.length > 0) {
+    body.mentions = args.mentions;
+  }
   if (args.attachments && args.attachments.length > 0) {
     body.attachments = args.attachments;
   }
@@ -429,7 +449,7 @@ export interface MessagingApi {
     channelId: string,
     personUid: string,
   ): AdapterPromise<Json>;
-  listContacts(): AdapterPromise<Json[]>;
+  listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
   markChannelRead(id: string): AdapterPromise<void>;
   markDmThreadRead(personUid: string): AdapterPromise<void>;
@@ -494,13 +514,7 @@ export interface MessagingApi {
     withPersonUid?: string;
     channelId?: string;
   }): AdapterPromise<ReplyThreadValue>;
-  sendReply(args: {
-    scope: "dm" | "channel";
-    rootEventId: string;
-    body: string;
-    withPersonUid?: string;
-    channelId?: string;
-  }): AdapterPromise<Json>;
+  sendReply(args: SendReplyArgs): AdapterPromise<Json>;
   /** GET /v1/notify/reactions — envelope `{ reactions }` or a bare list. */
   fetchReactions(messageScope: string, messageId: string): AdapterPromise<Json>;
   /** POST (add) or DELETE (remove) /v1/notify/reactions. */
@@ -629,6 +643,16 @@ export interface FilesApi {
   getAuthorizedPreview(path: string): AdapterPromise<Json>;
   /** Desktop-only capability: localFiles. */
   revealInFinder(path: string): AdapterPromise<void>;
+  /**
+   * Open the user's CONFIGURED HQ folder in the OS file manager.
+   *
+   * Takes no argument on purpose. `revealInFinder` speaks the HQ-RELATIVE
+   * path contract, which cannot express the HQ ROOT (an empty path is
+   * rejected, and an absolute one is rejected outright). The host resolves
+   * the configured root itself, so no renderer can hardcode or mis-resolve a
+   * machine-specific path.
+   */
+  revealHqRoot(): AdapterPromise<void>;
 }
 
 export interface AgencyApi {
@@ -664,6 +688,11 @@ export interface ShellApi {
   openClaudeCodeLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
   launchClaudeCode(path: string): AdapterPromise<void>;
+  /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
+   *  folder loaded as the workspace and an optional pre-typed composer prompt.
+   *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
+   *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
+  launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
   launchCliInTerminal(args: Json): AdapterPromise<void>;
   detectAiTools(): AdapterPromise<Json>;
   pickFolder(): AdapterPromise<string | null>;
@@ -723,6 +752,8 @@ export interface PackageInstallRequest {
 /** Desktop-only group (capability: canManagePackages). */
 export interface PackagesApi {
   listPackages(): AdapterPromise<Json[]>;
+  /** Instant last-known snapshot; null when no cache. */
+  listPackagesCached(): AdapterPromise<Json | null>;
   install(request: PackageInstallRequest): AdapterPromise<Json>;
   update(name: string): AdapterPromise<Json>;
   uninstall(name: string): AdapterPromise<void>;

@@ -59,10 +59,22 @@
     badgeCount?: number;
     /** Marks the actor as an AI agent — renders a subtle agent glyph after the name. */
     agentActor?: boolean;
-    /** Roomier two-line hierarchy for the widget communications panel. */
+    /** Slightly roomier one-line rows (desktop Inbox). Collapsed rows stay one line. */
     comfortable?: boolean;
-    /** Optional initials used by conversation rails instead of a generic glyph. */
+    /** Optional identity hint, surfaced in the collapsed-row tooltip only. */
     identityLabel?: string;
+    /**
+     * Inline resolution: when present the row renders a compact affordance
+     * that resolves the item in place (e.g. filing an unattributed meeting to
+     * a company) instead of only navigating elsewhere.
+     */
+    resolvePrompt?: string;
+    /** Options for the resolution picker; empty while they load. */
+    resolveOptions?: Array<{ value: string; label: string }>;
+    /** Loads options on first open. Errors surface inline. */
+    onresolveopen?: () => void | Promise<void>;
+    /** Commits the chosen option. Resolving successfully should dismiss the row. */
+    onresolve?: (value: string) => void | Promise<void>;
   }
 
   let {
@@ -87,6 +99,10 @@
     agentActor = false,
     comfortable = false,
     identityLabel,
+    resolvePrompt,
+    resolveOptions,
+    onresolveopen,
+    onresolve,
   }: Props = $props();
 
   let hovered = $state(false);
@@ -103,6 +119,11 @@
   let failedReaction = $state<string | null>(null);
   let openError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+  let resolveOpen = $state(false);
+  let resolveValue = $state('');
+  let resolvePending = $state(false);
+  let resolveLoading = $state(false);
+  let resolveError = $state<string | null>(null);
 
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
@@ -319,66 +340,96 @@
     }
   }
 
+  /** Row can be completed in place rather than only opened elsewhere. */
+  const resolvable = $derived(Boolean(resolvePrompt && onresolve));
+
+  async function openResolver(): Promise<void> {
+    if (resolveOpen) {
+      resolveOpen = false;
+      return;
+    }
+    resolveOpen = true;
+    resolveError = null;
+    if (!onresolveopen) return;
+    resolveLoading = true;
+    try {
+      await onresolveopen();
+    } catch (error) {
+      console.error('notification-row: resolve options failed', error);
+      resolveError = 'Couldn’t load options.';
+    } finally {
+      resolveLoading = false;
+    }
+  }
+
+  function submitResolve(): void {
+    if (!onresolve || !resolveValue || resolvePending) return;
+    resolveError = null;
+    resolvePending = true;
+    try {
+      const result = onresolve(resolveValue);
+      if (isPromiseLike(result)) {
+        void result
+          .then(() => {
+            resolveOpen = false;
+            resolveValue = '';
+          })
+          .catch((error) => {
+            console.error('notification-row: resolve failed', error);
+            resolveError = 'Couldn’t save that. Try again.';
+          })
+          .finally(() => {
+            resolvePending = false;
+          });
+        return;
+      }
+      resolveOpen = false;
+      resolveValue = '';
+    } catch (error) {
+      console.error('notification-row: resolve failed', error);
+      resolveError = 'Couldn’t save that. Try again.';
+    }
+    resolvePending = false;
+  }
+
+  function onResolveKeydown(e: KeyboardEvent): void {
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      resolveOpen = false;
+      resolveError = null;
+    }
+  }
+
   const REACT_EMOJI = ['👍', '❤️', '👀'] as const;
 </script>
 
 {#snippet primaryContent()}
-  {#if expanded}
-    <span class="nr-head">
-      <span class="nr-icon" aria-hidden="true">
-        {@render typeIcon(type)}
-      </span>
-      {#if unread}
-        <span class="nr-unread" aria-label="Unread"></span>
-      {/if}
-      <span class="nr-text nr-text-head">
-        {#if actor}<span class="nr-actor-pill" data-testid="notification-actor" title={actor}>{actor}</span>{/if}
-      </span>
-      <span class="nr-trail">
-        <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
-        <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
-      </span>
-    </span>
-    <span class="nr-body">{text}</span>
-  {:else if comfortable}
-    {#if identityLabel}
-      <span class="nr-identity" aria-hidden="true">{identityLabel}</span>
-    {:else}
-      <span class="nr-icon" aria-hidden="true">
-        {@render typeIcon(type)}
-      </span>
-    {/if}
-    {#if unread && badgeCount === 0}
-      <span class="nr-unread" aria-label="Unread"></span>
-    {/if}
-    <span class="nr-comfortable-copy">
-      <span class="nr-comfortable-top">
-        <span class="nr-comfortable-actor">
-          {actor ?? resolvedSourceLabel}
-          {#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}
-        </span>
-        <span class="nr-comfortable-context">{resolvedSourceLabel}</span>
-        {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-        <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
-      </span>
-      <span class="nr-comfortable-preview">{text}</span>
-    </span>
-  {:else}
-    <span class="nr-icon" aria-hidden="true">
-      {@render typeIcon(type)}
-    </span>
-    {#if unread && badgeCount === 0}
-      <span class="nr-unread" aria-label="Unread"></span>
-    {/if}
-    <span class="nr-text" title={actor ? `${actor}: ${text}` : text}>
-      {#if actor}<span class="nr-actor-pill" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
-    </span>
-    <span class="nr-trail">
-      {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
-      <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
-      <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
-    </span>
+  <!-- Locked one-line layout at all times. Hover reveals actions as an
+       overlay toolbar (Slack-style) so rows never resize and the list never
+       reflows (owner round-2 feedback). -->
+  <span class="nr-icon" aria-hidden="true">
+    {@render typeIcon(type)}
+  </span>
+  {#if unread && badgeCount === 0}
+    <span class="nr-unread" aria-label="Unread"></span>
   {/if}
+  <span
+    class="nr-text"
+    title={identityLabel
+      ? `${identityLabel} · ${actor ? `${actor}: ${text}` : text}`
+      : actor
+        ? `${actor}: ${text}`
+        : text}
+  >
+    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+  </span>
+  <span class="nr-trail">
+    {#if resolvable}<span class="nr-needs-action" data-testid="notification-needs-action" aria-hidden="true">Needs action</span>{/if}
+    {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
+    <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
+    <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
+  </span>
 {/snippet}
 
 <div
@@ -404,7 +455,6 @@
   {#if onopen}
     <button
       class="nr-primary-action"
-      class:nr-primary-expanded={expanded}
       type="button"
       aria-label={primaryActionLabel}
       aria-busy={openPending || actionPending}
@@ -417,12 +467,108 @@
       {/if}
     </button>
   {:else}
-    <div class="nr-primary-content" class:nr-primary-expanded={expanded}>
+    <div class="nr-primary-content">
       {@render primaryContent()}
     </div>
   {/if}
 
+  {#if resolvable}
+    <!-- Resolution affordance: the trigger occupies reserved space in the row
+         (never hover-revealed, so nothing shifts), and the picker itself is an
+         absolute overlay so opening it cannot grow the row. -->
+    <button
+      class="nr-resolve"
+      type="button"
+      data-testid="notification-resolve-trigger"
+      aria-expanded={resolveOpen}
+      aria-label={resolvePrompt}
+      onclick={() => void openResolver()}
+    >
+      {resolvePrompt}
+    </button>
+    {#if resolveOpen}
+      <div
+        class="nr-resolve-sheet"
+        data-testid="notification-resolve-sheet"
+        onkeydowncapture={onResolveKeydown}
+        role="presentation"
+      >
+        <select
+          class="nr-resolve-select"
+          data-testid="notification-resolve-select"
+          aria-label={resolvePrompt}
+          value={resolveValue}
+          onchange={(e) => {
+            resolveValue = (e.currentTarget as HTMLSelectElement).value;
+          }}
+          disabled={resolvePending || resolveLoading}
+        >
+          <option value="">{resolveLoading ? 'Loading…' : 'Choose…'}</option>
+          {#each resolveOptions ?? [] as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        <button
+          class="nr-resolve-save"
+          type="button"
+          data-testid="notification-resolve-save"
+          disabled={!resolveValue || resolvePending}
+          aria-busy={resolvePending}
+          onclick={() => submitResolve()}
+        >
+          {#if resolvePending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {resolvePending ? 'Saving…' : 'Save'}
+        </button>
+        {#if resolveError}
+          <span class="nr-resolve-error" data-testid="notification-resolve-error" role="alert">
+            {resolveError}
+          </span>
+        {/if}
+      </div>
+    {/if}
+  {/if}
+
   {#if expanded}
+    <!-- Slack-style hover toolbar: overlaid on the row's trailing edge so
+         revealing it never resizes the row or reflows the list. -->
+    <span class="nr-hoverbar" data-testid="notification-hoverbar">
+      {#each REACT_EMOJI as emoji (emoji)}
+        <button
+          class="nr-react"
+          type="button"
+          disabled={replyPending || reactionPending !== null}
+          aria-busy={reactionPending === emoji}
+          onclick={() => void react(emoji)}
+          aria-label={`React with ${emoji}`}
+        >
+          {#if reactionPending === emoji}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {:else}
+            {emoji}
+          {/if}
+        </button>
+      {/each}
+      {#if onaction}
+        <button
+          class="nr-message-action"
+          type="button"
+          data-testid="notification-message-action"
+          aria-label={actionLabel ?? 'Run message action'}
+          aria-busy={visibleActionPending}
+          disabled={actionDisabled || visibleActionPending}
+          onclick={() => void handleAction()}
+        >
+          {#if visibleActionPending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Action')}
+        </button>
+      {/if}
+    </span>
+    <!-- Quick-reply overlay anchored below the row — out of normal flow, so
+         opening it never pushes sibling rows (PRD US-007 stays reachable). -->
     <div
       class="nr-foot"
     >
@@ -442,38 +588,6 @@
         }}
         onkeydown={onReplyKeydown}
       />
-      {#if onaction}
-        <button
-          class="nr-message-action"
-          type="button"
-          data-testid="notification-message-action"
-          aria-label={actionLabel ?? 'Run message action'}
-          aria-busy={visibleActionPending}
-          disabled={actionDisabled || visibleActionPending}
-          onclick={() => void handleAction()}
-        >
-          {#if visibleActionPending}
-            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
-          {/if}
-          {visibleActionPending ? 'Working…' : (actionLabel ?? 'Action')}
-        </button>
-      {/if}
-      {#each REACT_EMOJI as emoji (emoji)}
-        <button
-          class="nr-react"
-          type="button"
-          disabled={replyPending || reactionPending !== null}
-          aria-busy={reactionPending === emoji}
-          onclick={() => void react(emoji)}
-          aria-label={`React with ${emoji}`}
-        >
-          {#if reactionPending === emoji}
-            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
-          {:else}
-            {emoji}
-          {/if}
-        </button>
-      {/each}
       {#if replyPending}
         <span class="nr-reply-status" data-testid="notification-reply-pending" aria-live="polite">Sending…</span>
       {/if}
@@ -643,11 +757,12 @@
 
 <style>
   .nr {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0;
-    min-height: 30px;
-    padding: 0 11px;
+    min-height: 32px;
+    padding: 0 10px;
     border-radius: 0;
     font-size: 12px;
     color: var(--popover-text);
@@ -656,8 +771,8 @@
   }
 
   .nr-comfortable {
-    min-height: 58px;
-    padding-block: 8px;
+    min-height: 36px;
+    padding-block: 2px;
   }
 
   .nr-has-error {
@@ -666,58 +781,8 @@
 
   .nr-comfortable .nr-primary-action,
   .nr-comfortable .nr-primary-content {
-    min-height: 42px;
-    gap: 11px;
-  }
-
-  .nr-comfortable-copy {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .nr-comfortable-top {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .nr-comfortable-actor {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--popover-text);
-    font-size: 12.5px;
-    font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .nr-comfortable-context {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--popover-text-muted);
-    font-size: 10.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .nr-comfortable-top .nr-ts {
-    margin-left: auto;
-  }
-
-  .nr-comfortable-preview {
-    display: -webkit-box;
-    overflow: hidden;
-    color: color-mix(in srgb, var(--popover-text) 78%, var(--popover-text-muted));
-    font-size: 11.5px;
-    font-weight: 450;
-    line-height: 1.32;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
+    min-height: 36px;
+    gap: 8px;
   }
 
   .nr-action-error {
@@ -738,14 +803,10 @@
     box-shadow: inset 0 -1px 0 var(--popover-divider);
   }
 
+  /* Hover/expanded message rows keep their exact one-line geometry — actions
+     arrive as overlays (.nr-hoverbar / .nr-foot), never by growing the row. */
   .nr-message.nr-expanded {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 7px;
-    padding: 9px 11px 10px;
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--popover-divider);
-    min-height: 0;
+    background: var(--popover-action-hover);
   }
 
   .nr-primary-action,
@@ -753,10 +814,10 @@
     align-self: stretch;
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 30px;
+    min-height: 32px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     margin: 0;
     padding: 0;
     border: 0;
@@ -786,15 +847,6 @@
     transform: scale(0.995);
   }
 
-  .nr-primary-expanded {
-    flex: 0 0 auto;
-    width: 100%;
-    min-height: 0;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 7px;
-  }
-
   /* Non-message hover / keyboard focus: tint + swap ts for actions */
   .nr:not(.nr-message):hover,
   .nr:not(.nr-message):focus-within {
@@ -810,50 +862,27 @@
     color: var(--popover-text-muted);
   }
 
-  .nr-identity {
-    width: 30px;
-    height: 30px;
-    flex: 0 0 30px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--popover-divider);
-    border-radius: 8px;
-    background: var(--popover-action-hover);
-    color: var(--popover-text);
-    font-size: 10px;
-    font-weight: 680;
-    letter-spacing: 0.02em;
-  }
-
+  /* Two weights only (owner round-2): regular for body/meta/timestamps,
+     semibold reserved for a person actor. Company/ambient actors are muted
+     regular text, not bold. */
   .nr-text {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-weight: 450;
+    font-weight: 400;
     color: var(--popover-text);
   }
 
-  .nr-actor-pill {
-    display: inline-block;
-    max-width: min(15ch, 42%);
-    padding: 1px 6px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--popover-action-hover);
+  .nr-actor {
+    font-weight: 600;
     color: var(--popover-text);
-    font-weight: 650;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    vertical-align: -2px;
-    white-space: nowrap;
   }
 
-  .nr-text-head {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .nr:not([data-type='message']):not([data-type='mention']) .nr-actor {
+    font-weight: 400;
+    color: var(--popover-text-muted);
   }
 
   .nr-trail {
@@ -879,7 +908,7 @@
     overflow: hidden;
     color: var(--popover-text-muted);
     font-size: 9.5px;
-    font-weight: 600;
+    font-weight: 400;
     letter-spacing: 0.035em;
     text-overflow: ellipsis;
     text-transform: uppercase;
@@ -896,17 +925,14 @@
 
   .nr-count {
     font-size: 10px;
-    font-weight: 600;
-    min-width: 16px;
-    height: 15px;
-    border: 1px solid var(--popover-divider, var(--pop-border));
-    border-radius: 8px;
-    background: var(--popover-action-hover);
-    color: var(--popover-text);
+    font-weight: 400;
+    color: var(--popover-text-muted);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0 4px;
+    padding: 0;
+    border: 0;
+    background: transparent;
     font-variant-numeric: tabular-nums;
   }
 
@@ -919,26 +945,36 @@
     margin-left: 3px;
   }
 
-  .nr-actions {
+  /* Hover actions overlay the row's trailing edge (Slack-style toolbar) on a
+     subtle backdrop — revealing them never changes row size or shifts the
+     timestamp/siblings. */
+  .nr-actions,
+  .nr-hoverbar {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    width: 0;
-    overflow: hidden;
+    padding: 2px 3px;
+    border-radius: 6px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 1px 4px color-mix(in srgb, var(--popover-text) 10%, transparent);
     opacity: 0;
     pointer-events: none;
-    margin-left: 0;
+    z-index: 2;
   }
 
   .nr:not(.nr-message):hover .nr-actions,
   .nr:not(.nr-message):focus-within .nr-actions,
   .nr-message:not(.nr-expanded):hover .nr-actions,
-  .nr-message:not(.nr-expanded):focus-within .nr-actions {
-    width: auto;
-    overflow: visible;
+  .nr-message:not(.nr-expanded):focus-within .nr-actions,
+  .nr-expanded .nr-hoverbar {
     opacity: 1;
     pointer-events: auto;
-    margin-left: 6px;
   }
 
   .nr-open,
@@ -949,7 +985,7 @@
     background: var(--popover-action-hover);
     color: var(--popover-text);
     font-size: 10.5px;
-    font-weight: 600;
+    font-weight: 400;
     font-family: inherit;
     border: none;
     cursor: pointer;
@@ -1015,33 +1051,121 @@
     height: 9px;
   }
 
-  /* Expanded message layout */
-  .nr-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
+  /* Needs-attention rows: muted regular label + a compact always-present
+     trigger. Both sit in normal flow so nothing moves on hover; only the
+     picker sheet is an overlay. */
+  .nr-needs-action {
+    color: var(--popover-text-muted);
+    font-size: 9.5px;
+    font-weight: 400;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 
-  .nr-head .nr-text {
-    flex: 1;
-  }
-
-  .nr-body {
-    white-space: normal;
-    font-size: 12px;
-    line-height: 1.45;
+  .nr-resolve {
+    flex: 0 0 auto;
+    height: 20px;
+    margin-left: 6px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 5px;
+    background: var(--popover-action-hover);
     color: var(--popover-text);
-    font-weight: 450;
-    padding-left: 22px; /* icon (12) + gap (10) */
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 400;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
   }
 
-  .nr-foot {
+  .nr-resolve:focus-visible {
+    outline: 1.5px solid var(--popover-text-muted);
+    outline-offset: 1px;
+  }
+
+  .nr-resolve-sheet {
+    position: absolute;
+    top: calc(100% - 1px);
+    left: 8px;
+    right: 8px;
+    z-index: 3;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding-left: 22px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 8px 20px color-mix(in srgb, var(--popover-text) 14%, transparent);
+    cursor: default;
+  }
+
+  .nr-resolve-select {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 7px;
+    border: 0.5px solid var(--popover-divider);
+    background: var(--popover-surface);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .nr-resolve-save {
+    flex: 0 0 auto;
+    height: 24px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 400;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .nr-resolve-save:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .nr-resolve-error {
+    flex: 1 0 100%;
+    color: var(--popover-danger, var(--popover-text));
+    font-size: 10px;
+    line-height: 1.3;
+  }
+
+  /* Quick-reply overlay — anchored below the row, out of normal flow so
+     opening it never pushes sibling rows. */
+  .nr-foot {
+    position: absolute;
+    top: calc(100% - 1px);
+    left: 8px;
+    right: 8px;
+    z-index: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 8px 20px color-mix(in srgb, var(--popover-text) 14%, transparent);
     cursor: default;
   }
 
@@ -1115,7 +1239,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
   }
 

@@ -48,9 +48,13 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(popout).toContain('z-index: 10000');
     expect(popout).toContain('top: 48px');
     expect(popout).toContain('--v4-popover-strong');
-    expect(popout).toContain("'check_for_updates'");
+    expect(popout).toContain("import { checkAllUpdates } from '../../lib/update-check'");
+    expect(popout).toContain('checkAllUpdates(');
     expect(popout).toContain("'check_core_state'");
     expect(popout).toContain("'get_hq_version'");
+    const updateCheck = readRepoFile('src/lib/update-check.ts');
+    expect(updateCheck).toContain("'check_for_updates'");
+    expect(updateCheck).toContain("'check_core_state'");
     expect(popout).toContain('Up to date');
     expect(popout).toContain('Check all updates');
     // Background-detected updates without a manual check.

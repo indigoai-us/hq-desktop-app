@@ -10,6 +10,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createTenantStorage } from "../identity/tenant-storage.js";
 import { writeSettingsPrefs } from "../settings/settings-prefs.js";
 import type { Workspace } from "../chat/workspaces.js";
+import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 
 function webAdapter(): PlatformAdapter {
   return {
@@ -22,6 +23,9 @@ function webAdapter(): PlatformAdapter {
   } as unknown as PlatformAdapter;
 }
 
+
+const memoryStorage = installMemoryLocalStorage();
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -29,7 +33,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
-  localStorage.clear();
+  memoryStorage.clear();
   document.documentElement.removeAttribute("data-ui-size");
   document.documentElement.style.removeProperty("--hq-window-opacity");
 });
@@ -135,7 +139,7 @@ describe("DesktopApp settings on web", () => {
 
   it("applies interface preferences from the active tenant storage at startup", async () => {
     writeSettingsPrefs({ uiSize: "large", windowOpacity: 96 });
-    const storage = createTenantStorage(localStorage, {
+    const storage = createTenantStorage(memoryStorage, {
       accountId: "acct_stefan",
       companyId: "all",
     });

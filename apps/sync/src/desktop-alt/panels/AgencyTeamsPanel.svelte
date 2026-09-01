@@ -1,10 +1,19 @@
 <script lang="ts">
   /** Mission Control — running hq-pack-agency teams + per-worker status. */
-  import { agencyStore } from '../lib/agency-store.svelte';
+  import { agencyStore, retryAgencyRefresh } from '../lib/agency-store.svelte';
   import { statusTone, relativeTime, shortDuration, type AgencyWorker } from '../lib/agency';
+  import { loadPhase } from '../lib/load-state';
+  import RowSkeleton from '../components/RowSkeleton.svelte';
 
   const teams = $derived(agencyStore.teams);
   const questions = $derived(agencyStore.questions);
+  const phase = $derived(
+    loadPhase({
+      loading: agencyStore.loading,
+      error: agencyStore.error,
+      count: teams.length,
+    }),
+  );
 
   function workerLabel(worker: string, instance: string): string {
     return instance === 'main' ? worker : `${worker}:${instance}`;
@@ -30,8 +39,17 @@
 <div class="atp">
   <header class="atp-head"><h2>Teams <span class="count">{teams.length}</span></h2></header>
 
-  {#if teams.length === 0}
-    <p class="empty">No agency teams running.</p>
+  {#if phase === 'loading'}
+    <div data-testid="agency-teams-skeleton">
+      <RowSkeleton rows={3} avatar={false} label="Loading teams" />
+    </div>
+  {:else if phase === 'error'}
+    <div class="empty load-error" data-testid="agency-teams-error">
+      <span>Couldn't load teams.</span>
+      <button type="button" class="retry" onclick={() => retryAgencyRefresh()}>Retry</button>
+    </div>
+  {:else if phase === 'empty'}
+    <p class="empty" data-testid="agency-teams-empty">No agency teams running.</p>
   {:else}
     <div class="teams">
       {#each teams as t (t.company + '/' + t.team)}
@@ -78,6 +96,22 @@
     padding: 0;
   }
   .empty { color: var(--v4-text-3); font-size: var(--text-base); margin: 8px 0; }
+  .load-error {
+    display: flex;
+    align-items: baseline;
+    gap: var(--v4-space-2);
+  }
+  .retry {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .retry:focus-visible { outline: 2px solid var(--v4-control-border); outline-offset: 2px; }
   .teams { display: flex; flex-direction: column; gap: 0; overflow-y: auto; }
   .team {
     border: 0;

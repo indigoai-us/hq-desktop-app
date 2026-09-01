@@ -72,8 +72,8 @@ export const WIDGET_ACTIVITY_BURST_WINDOW_MS = 6 * 60 * 60 * 1000;
 /** localStorage key for persisted widget recent history (US-015). */
 export const WIDGET_RECENT_STORAGE_KEY = 'hq-widget-recent-v1';
 
-/** Comfortable two-line row height in the mini communications panel. */
-export const WIDGET_HOVER_ROW_HEIGHT = 58;
+/** Collapsed one-line row height in the mini communications panel. */
+export const WIDGET_HOVER_ROW_HEIGHT = 32;
 
 /** Day-separator row height in the hover list. */
 export const WIDGET_HOVER_SEPARATOR_HEIGHT = 22;
@@ -88,13 +88,13 @@ export const WIDGET_HOVER_ROW_GAP = 1;
 export const WIDGET_HOVER_LIST_PADDING = 18;
 
 /** Orienting title and summary above mini-window conversations. */
-export const WIDGET_HOVER_HEADER_HEIGHT = 60;
+export const WIDGET_HOVER_HEADER_HEIGHT = 32;
 
 /**
  * Footer toolbar height inside the hover popup (Inbox + Desktop icon actions).
  * Includes top hairline gap + icon row + bottom pad.
  */
-export const WIDGET_HOVER_FOOTER_HEIGHT = 48;
+export const WIDGET_HOVER_FOOTER_HEIGHT = 36;
 
 /** NotificationRow-compatible type strings. */
 export type WidgetRowType =
@@ -289,6 +289,103 @@ export function setHeld(
 }
 
 /**
+ * Inline-resolution descriptor for a "needs attention" row.
+ *
+ * Deliberately small: notification items already declare `kind` / `actionId` /
+ * `data`, and this maps that declaration onto an affordance the row can render
+ * inline. Adding another resolvable kind means adding one case here plus the
+ * matching handler — no framework.
+ */
+export type NotificationResolution = {
+  /** Picker with a fixed option list resolved by the host surface. */
+  kind: 'company-picker';
+  /** Meeting (Recall bot) id to file. */
+  meetingId: string;
+  prompt: string;
+};
+
+/**
+ * Resolution an item can be completed with directly from the notification
+ * surface, or `null` when the row is display/navigate-only.
+ *
+ * Today: unattributed meetings ("Meeting needs a company"), which the backend
+ * resolves through `meetings_set_company` with just a meeting id + company id.
+ */
+export function resolutionForItem(item: {
+  kind: string;
+  actionId?: string | null;
+  clickActionId?: string | null;
+  data?: unknown;
+}): NotificationResolution | null {
+  const wantsAssign = item.actionId === 'assign' || item.clickActionId === 'assign';
+  if (item.kind !== 'meeting' || !wantsAssign) return null;
+  if (item.data === null || typeof item.data !== 'object') return null;
+  const meetingId = (item.data as Record<string, unknown>).meetingId;
+  if (typeof meetingId !== 'string' || meetingId === '') return null;
+  return { kind: 'company-picker', meetingId, prompt: 'File to company' };
+}
+
+/**
+ * Stable, source-independent id for a live banner row.
+ *
+ * The live `widget:notification` path used to mint a random `wn-<ts>-<n>` id
+ * while the history/timeline path (`notificationFeedData`) mints
+ * `dm:<eventId>` / `share:<eventId>` for the SAME underlying event. Because
+ * {@link mergeRecentWithHistory} and {@link prependRecent} dedupe by id, the
+ * two rows never collapsed and every notification rendered twice — with
+ * slightly different relative times (local arrival vs server `createdAt`).
+ *
+ * Deriving the same id here from the payload's own event id is the fix; the
+ * random `id` argument survives only as a fallback for payloads that carry no
+ * identity at all.
+ */
+export function stableBannerId(
+  kind: string,
+  data: unknown,
+  fallbackId: string,
+): string {
+  if (data === null || typeof data !== 'object') return fallbackId;
+  const record = data as Record<string, unknown>;
+  const eventId = typeof record.eventId === 'string' ? record.eventId : undefined;
+  if ((kind === 'dm' || kind === 'share') && eventId) {
+    return `${kind}:${eventId}`;
+  }
+  if (kind === 'meeting' && typeof record.meetingId === 'string' && record.meetingId) {
+    return `meeting:${record.meetingId}`;
+  }
+  if (eventId) return `${kind}:${eventId}`;
+  return fallbackId;
+}
+
+/**
+ * Fallback identity for rows that predate {@link stableBannerId} (already
+ * persisted in localStorage with a random `wn-*` id) or that arrive without an
+ * event id: same kind + same actor + same text.
+ *
+ * Deliberately timestamp-free. The whole point is matching a locally-stamped
+ * arrival row against its server-stamped history twin, whose `ts` differs by
+ * seconds — any time bucket would split the pair whenever they straddle a
+ * boundary. Only used to re-key legacy `wn-*` rows inside the capped recent
+ * list, never to drop distinct events.
+ */
+export function contentDedupeKey(item: {
+  kind: string;
+  actor?: string;
+  text: string;
+}): string {
+  return [
+    item.kind,
+    (item.actor ?? '').trim().toLowerCase(),
+    item.text.trim().toLowerCase(),
+  ].join('|');
+}
+
+/** True for ids minted by the legacy random live-row path. */
+export function isEphemeralRowId(id: string): boolean {
+  return id.startsWith('wn-');
+}
+
+/**
  * Map a banner payload into a stack item.
  * kind → row type: dm→message, share→share, update/meeting/unknown→system.
  */
@@ -331,7 +428,7 @@ export function bannerToStackItem(
       : undefined;
 
   return {
-    id: updateVersion ? `update:${updateVersion}` : id,
+    id: updateVersion ? `update:${updateVersion}` : stableBannerId(kind, payload.data, id),
     type,
     actor,
     text,
@@ -954,6 +1051,21 @@ export function mergeRecentWithHistory(
       continue;
     }
     byId.set(item.id, item);
+  }
+
+  // Defense in depth: rows already persisted with a legacy random `wn-*` id
+  // cannot match a history row by id, so collapse them by content first — the
+  // history row's trusted id wins, exactly like the update rewrite above.
+  const localByContent = new Map<string, WidgetStackItem>();
+  for (const item of byId.values()) {
+    if (!isEphemeralRowId(item.id)) continue;
+    localByContent.set(contentDedupeKey(item), item);
+  }
+  for (const item of historyItems) {
+    const legacy = localByContent.get(contentDedupeKey(item));
+    if (!legacy || legacy.id === item.id) continue;
+    byId.delete(legacy.id);
+    byId.set(item.id, { ...legacy, id: item.id });
   }
 
   for (const item of historyItems) {

@@ -549,27 +549,27 @@
   }
 
   .notifications-host :global(.nr) {
-    min-height: 56px;
-    padding: 8px;
+    min-height: 30px;
+    padding: 4px 8px;
     border-radius: 0;
     box-shadow: inset 0 -1px 0 var(--pop-divider);
     font-size: 13px;
   }
 
   .notifications-host :global(.nr-message.nr-expanded) {
-    padding-block: 12px;
+    padding-block: 8px;
   }
 
   .notifications-host :global(.nr-primary-action),
   .notifications-host :global(.nr-primary-content) {
-    gap: 10px;
+    gap: 8px;
   }
 
   .notifications-host :global(.nr-meta-type) {
     max-width: 15ch;
   }
 
-  .notifications-host :global(.nr-actor-pill) {
+  .notifications-host :global(.nr-actor) {
     max-width: min(18ch, 44%);
   }
 

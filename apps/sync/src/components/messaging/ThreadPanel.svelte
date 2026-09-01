@@ -23,10 +23,12 @@
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../../lib/listener-registry';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
-  import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
+  import AgentThinkingRow from './AgentThinkingRow.svelte';
   import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
+  import { effectiveReplyCount } from './thread-replies';
 
   // A thread message (root or reply) as returned by fetch_thread / carried on a
   // thread:new-reply event. Mirrors the Rust `ThreadReply` (camelCase).
@@ -37,7 +39,7 @@
   interface ThreadView {
     root: ThreadReplyRow;
     replies: ThreadReplyRow[];
-    replyCount: number;
+    replyCount?: number | null;
   }
 
   interface Props {
@@ -57,7 +59,7 @@
     onclose: () => void;
     // Bubbled up so the parent can bump the root bubble's live reply-count in the
     // main conversation as replies land here.
-    onreplycount?: (rootEventId: string, replyCount: number) => void;
+    onreplycount?: (rootEventId: string, replyCount: number, lastReplyAt?: string | null) => void;
   }
 
   let {
@@ -81,6 +83,7 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let sendGeneration = 0;
+  let optimisticSeq = 0;
 
   // Dedupe set so an optimistic append + the live thread:new-reply (or a reload)
   // don't double-render the same reply.
@@ -95,11 +98,33 @@
     scope === 'channel' ? channelScope(channelId ?? '') : dmScope(withPersonUid ?? ''),
   );
   let reactionsCtl = $state<ReactionController | null>(null);
+  let thinkingCtl = $state<AgentThinkingController | null>(null);
 
   $effect(() => {
     const s = reactionScope;
     const controller = new ReactionController(s, false);
     reactionsCtl = controller;
+    return () => controller.dispose();
+  });
+
+  // Agent-thinking indicator. Channel threads load the channel roster; DM
+  // threads supply an empty loader so a mention can never start a row.
+  $effect(() => {
+    const currentScope = scope;
+    const currentChannelId = channelId;
+    void rootEventId;
+    const controller = new AgentThinkingController(async () => {
+      if (currentScope !== 'channel' || !currentChannelId) return [];
+      const resp = await invoke<{ members: Array<{ personUid: string; displayName: string }> }>(
+        'list_channel_members',
+        { channelId: currentChannelId },
+      );
+      return (resp.members ?? []).map((m) => ({
+        personUid: m.personUid,
+        displayName: m.displayName,
+      }));
+    });
+    thinkingCtl = controller;
     return () => controller.dispose();
   });
 
@@ -117,6 +142,7 @@
     if (seenIds.has(r.eventId)) return;
     seenIds.add(r.eventId);
     replies = [...replies, r];
+    thinkingCtl?.noteIncoming([r]);
   }
 
   interface ThreadIdentity {
@@ -164,8 +190,14 @@
       const ordered = [...(view.replies ?? [])].reverse();
       seenIds = new Set(ordered.map((r) => r.eventId));
       replies = ordered;
-      replyCount = view.replyCount ?? ordered.length;
-      onreplycount?.(identity.rootEventId, replyCount);
+      thinkingCtl?.noteIncoming(replies);
+      replyCount = effectiveReplyCount(
+        view.replyCount,
+        view.root?.replyCount,
+        ordered.length,
+      );
+      const lastReplyAt = ordered.at(-1)?.createdAt ?? null;
+      onreplycount?.(identity.rootEventId, replyCount, lastReplyAt);
       // Register the open thread (+ already-seen reply ids) so the SINGLE poll
       // path emits thread:new-reply only for genuinely new replies.
       void invoke('set_active_thread', {
@@ -213,7 +245,7 @@
       // Optimistic append — the durable copy lands server-side and reconciles on
       // the next thread:new-reply / reload.
       const optimistic: ThreadReplyRow = {
-        eventId: `local-${identity.rootEventId}-${replies.length}-${text.length}`,
+        eventId: `local-${Date.now()}-${optimisticSeq++}`,
         fromPersonUid: 'me',
         fromEmail: '',
         fromDisplayName: 'You',
@@ -225,7 +257,8 @@
       };
       appendReply(optimistic);
       replyCount += 1;
-      onreplycount?.(identity.rootEventId, replyCount);
+      onreplycount?.(identity.rootEventId, replyCount, optimistic.createdAt);
+      void thinkingCtl?.noteOutgoing(text);
     } catch (err) {
       if (
         generation !== sendGeneration ||
@@ -233,6 +266,7 @@
       ) return;
       sendError = typeof err === 'string' ? err : 'Failed to send reply';
       console.error('thread-panel: send_thread_reply failed', err);
+      thinkingCtl?.noteSendFailed();
     } finally {
       if (
         generation === sendGeneration &&
@@ -292,12 +326,12 @@
           !identityIsCurrent(identity)
         ) return;
         appendReply(e.payload.reply);
-        if (typeof e.payload.replyCount === 'number') {
-          replyCount = e.payload.replyCount;
-        } else {
-          replyCount = replies.length;
-        }
-        onreplycount?.(identity.rootEventId, replyCount);
+        replyCount = Math.max(e.payload.replyCount ?? 0, replies.length);
+        onreplycount?.(
+          identity.rootEventId,
+          replyCount,
+          e.payload.reply.createdAt ?? null,
+        );
       },
     );
 
@@ -329,24 +363,17 @@
   </header>
 
   <div class="thread-root">
-    {#if root}
-      {#if showAuthors}
-        <span class="thread-root-author">{root.fromDisplayName}</span>
-      {/if}
-      <div class="thread-root-bubble">
-        <div class="thread-root-body selectable-text">{@html renderMessageBodyMarkdown(root.body)}</div>
-        {#if root.details}
-          <div class="thread-root-details">{root.details}</div>
-        {/if}
-      </div>
-      <span class="thread-root-label">
-        {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
-      </span>
-    {:else if loading}
-      <p class="thread-root-status">Loading thread…</p>
-    {:else if loadError}
-      <p class="thread-root-status thread-root-error" role="alert">{loadError}</p>
-    {/if}
+    <Conversation
+      messages={root ? [root] : []}
+      {showAuthors}
+      composer={false}
+      loading={loading && !root}
+      error={!root && loadError ? loadError : null}
+      onsend={async () => {}}
+    />
+    <span class="thread-root-label">
+      {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+    </span>
   </div>
 
   <div class="thread-body">
@@ -361,12 +388,20 @@
       onsend={sendReply}
       reactions={reactionsCtl?.map ?? {}}
       ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
-    />
+    >
+      {#snippet belowMessages()}
+        <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />
+      {/snippet}
+    </Conversation>
   </div>
 </aside>
 
 <style>
   .thread-panel {
+    position: relative;
+    /* Own stacking context so main-pane z-indexed hover chrome cannot paint
+       over this panel (and vice versa). */
+    isolation: isolate;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -412,314 +447,37 @@
     white-space: nowrap;
   }
 
-  /* Pinned root message at the top of the panel. */
+  /* Pinned root message at the top of the panel. isolation + overflow:clip
+     keep the inner overflow:visible hover toolbar from overlaying the reply list. */
   .thread-root {
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
-    padding: 0.875rem 1rem;
+    padding: 0;
     border-bottom: 1px solid var(--border, var(--pop-divider));
     background: transparent;
+    isolation: isolate;
+    overflow: clip;
   }
 
-  .thread-root-author {
-    font-size: var(--text-base);
-    font-weight: 600;
-    color: var(--muted, var(--pop-muted));
-  }
-
-  .thread-root-bubble {
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  .thread-root-body {
-    --message-markdown-text: var(--fg, var(--pop-text, #e8e8e8));
-    --message-markdown-muted: var(--muted, var(--pop-muted, #a0a0a0));
-    --message-markdown-border: var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14)));
-    --message-markdown-surface: var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)));
-    min-width: 0;
-    max-width: 100%;
-    margin: 0;
-    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
-    font-size: var(--text-base);
-    line-height: 1.55;
-    color: var(--message-markdown-text);
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: normal;
-  }
-
-  .thread-root-body > :global(:first-child) {
-    margin-top: 0;
-  }
-
-  .thread-root-body > :global(:last-child) {
-    margin-bottom: 0;
-  }
-
-  .thread-root-body :global(p) {
-    margin: 0.375rem 0;
-    color: inherit;
-  }
-
-  .thread-root-body :global(h1),
-  .thread-root-body :global(h2),
-  .thread-root-body :global(h3),
-  .thread-root-body :global(h4),
-  .thread-root-body :global(h5),
-  .thread-root-body :global(h6) {
-    margin: 1rem 0 0.4rem;
-    color: var(--message-markdown-text);
-    font-family: var(--font-display, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
-    font-weight: 650;
-    line-height: 1.18;
-    letter-spacing: -0.02em;
-  }
-
-  .thread-root-body :global(h1) {
-    font-size: 1.42em;
-  }
-
-  .thread-root-body :global(h2) {
-    font-size: 1.28em;
-  }
-
-  .thread-root-body :global(h3) {
-    font-size: 1.14em;
-  }
-
-  .thread-root-body :global(h4),
-  .thread-root-body :global(h5),
-  .thread-root-body :global(h6) {
-    font-size: 1em;
-  }
-
-  .thread-root-body :global(ul),
-  .thread-root-body :global(ol) {
-    margin: 0.625rem 0;
-    padding-left: 1.4rem;
-  }
-
-  .thread-root-body :global(li) {
-    margin: 0.3rem 0;
-    padding-left: 0.2rem;
-    line-height: 1.5;
-  }
-
-  .thread-root-body :global(li > ul),
-  .thread-root-body :global(li > ol) {
-    margin: 0.1875rem 0;
-  }
-
-  .thread-root-body :global(.task-list) {
-    padding-left: 0;
-    list-style: none;
-  }
-
-  .thread-root-body :global(.task-list-item) {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding-left: 0;
-  }
-
-  .thread-root-body :global(.task-list-item input) {
-    flex: 0 0 auto;
-    margin: 0.25em 0 0;
-    accent-color: var(--message-markdown-muted);
-  }
-
-  .thread-root-body :global(.task-list-content) {
-    min-width: 0;
-  }
-
-  .thread-root-body :global(a) {
-    color: var(--message-markdown-text);
-    text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
-    text-underline-offset: 0.125rem;
-  }
-
-  .thread-root-body :global(a:hover) {
-    text-decoration-color: currentColor;
-  }
-
-  .thread-root-body :global(a:focus-visible) {
-    outline: 2px solid currentColor;
-    outline-offset: 2px;
-  }
-
-  .thread-root-body :global(strong) {
-    color: var(--message-markdown-text);
-    font-weight: 650;
-  }
-
-  .thread-root-body :global(del) {
-    color: var(--message-markdown-muted);
-  }
-
-  .thread-root-body :global(code) {
-    padding: 0.0625rem 0.25rem;
-    border-radius: 4px;
-    background: var(--message-markdown-surface);
-    color: var(--message-markdown-text);
-    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: 0.92em;
-  }
-
-  .thread-root-body :global(pre) {
-    max-width: 100%;
-    margin: 0.625rem 0;
-    padding: 0.625rem 0.75rem;
-    overflow-x: auto;
-    border: 1px solid var(--message-markdown-border);
-    border-radius: 0;
-    background: var(--message-markdown-surface);
-    color: var(--message-markdown-text);
-    line-height: 1.5;
-    white-space: pre;
-    overflow-wrap: normal;
-    word-break: normal;
-    scrollbar-width: thin;
-    scrollbar-color: var(--message-markdown-muted) transparent;
-  }
-
-  .thread-root-body :global(pre code) {
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
-    color: inherit;
-    font-size: 0.9em;
-    white-space: inherit;
-  }
-
-  .thread-root-body :global(blockquote) {
-    margin: 0.625rem 0;
-    padding: 0.0625rem 0 0.0625rem 0.75rem;
-    border-left: 2px solid var(--message-markdown-border);
-    background: transparent;
-    color: var(--message-markdown-muted);
-  }
-
-  .thread-root-body :global(blockquote p) {
-    color: inherit;
-  }
-
-  .thread-root-body :global(hr) {
-    margin: 0.75rem 0;
-    border: 0;
-    border-top: 1px solid var(--message-markdown-border);
-  }
-
-  .thread-root-body :global(img) {
-    display: block;
-    max-width: 100%;
-    height: auto;
-    margin: 0.625rem 0;
-    border-radius: 0;
-  }
-
-  .thread-root-body :global(.markdown-table-scroll) {
-    width: 100%;
-    max-width: 100%;
-    margin: 0.625rem 0;
-    overflow-x: auto;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    scrollbar-width: thin;
-    scrollbar-color: var(--message-markdown-muted) transparent;
-  }
-
-  .thread-root-body :global(.markdown-table-scroll:focus-visible) {
-    outline: 2px solid var(--message-markdown-text);
-    outline-offset: 2px;
-  }
-
-  .thread-root-body :global(table) {
-    width: 100%;
-    min-width: max-content;
-    border-spacing: 0;
-    border-collapse: collapse;
-    color: inherit;
-    font-size: 0.9em;
-    line-height: 1.4;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .thread-root-body :global(th),
-  .thread-root-body :global(td) {
-    padding: 0.4375rem 0.625rem;
-    border-right: 1px solid var(--message-markdown-border);
-    border-bottom: 1px solid var(--message-markdown-border);
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .thread-root-body :global(th:first-child),
-  .thread-root-body :global(td:first-child) {
-    padding-left: 0;
-  }
-
-  .thread-root-body :global(th:last-child),
-  .thread-root-body :global(td:last-child) {
-    padding-right: 0;
-    border-right: 0;
-  }
-
-  .thread-root-body :global(tbody tr:last-child td) {
-    border-bottom: 0;
-  }
-
-  .thread-root-body :global(th) {
-    color: var(--message-markdown-text);
-    font-weight: 650;
-  }
-
-  .thread-root-body :global(.markdown-align-center) {
-    text-align: center;
-  }
-
-  .thread-root-body :global(.markdown-align-right) {
-    text-align: right;
-  }
-
-  .thread-root-details {
-    margin-top: 0.5rem;
-    font-size: var(--text-base);
-    line-height: 1.5;
-    color: var(--fg, var(--pop-text));
-    background: transparent;
-    border: 0;
-    border-top: 1px solid var(--border-strong, var(--c-field-border));
-    padding: 0.5rem 0 0;
-    border-radius: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
+  /* Shared Conversation uses flex:1; keep this pin sized to content, not a nested scroller.
+     overflow:visible lets the hover toolbar (top:-0.625rem) escape the inner scroller;
+     .thread-root clips it so it cannot paint over the reply list. */
+  .thread-root :global(.dm-thread-wrap),
+  .thread-root :global(.dm-thread) {
+    flex: none;
+    min-height: auto;
+    overflow: visible;
   }
 
   .thread-root-label {
-    margin-top: 0.25rem;
-    padding-top: 0.375rem;
+    padding: 0.25rem 1rem 0.5rem;
     border-top: 1px solid var(--border, var(--pop-divider));
     font-size: 0.6875rem;
     font-weight: 500;
     letter-spacing: 0;
     color: var(--muted, var(--pop-muted));
     text-transform: none;
-  }
-
-  .thread-root-status {
-    margin: 0;
-    font-size: var(--text-base);
-    color: var(--muted, var(--pop-muted));
-  }
-
-  .thread-root-error {
-    color: var(--red, var(--popover-danger));
   }
 
   /* The reply list + composer (shared <Conversation/>) flexes to fill. */

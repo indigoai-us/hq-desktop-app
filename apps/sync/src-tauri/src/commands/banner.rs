@@ -717,6 +717,7 @@ pub async fn preview_dm_banner(app: AppHandle) -> Result<(), String> {
         details: Some("This banner is a transparent Tauri webview with NSVisualEffectView vibrancy, pinned top-right. It auto-dismisses; hover to keep it.".to_string()),
         prompt: Some("Review the custom notification banner spike in repos/public/hq-sync and report on the feel vs native.".to_string()),
         created_at: "2026-05-29T00:00:00Z".to_string(),
+        root_event_id: None,
     };
     show_dm_banner(app, event).await
 }

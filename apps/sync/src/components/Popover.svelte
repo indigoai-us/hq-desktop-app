@@ -962,12 +962,12 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 38px;
+    min-height: 28px;
     padding: 0 8px;
     border-radius: 0;
-    font-size: 12.5px;
+    font-size: 12px;
     color: var(--pop-text);
-    transition: background-color 0.15s ease;
+    transition: background-color 120ms var(--ease-out, ease);
     box-sizing: border-box;
   }
 
@@ -998,14 +998,14 @@
     flex: 1;
     min-width: 0;
     display: -webkit-box;
-    padding: 7px 0;
-    line-height: 1.32;
+    padding: 4px 0;
+    line-height: 1.3;
     white-space: normal;
     overflow: hidden;
     text-overflow: ellipsis;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
     font-weight: 450;
     color: var(--pop-text);
   }
@@ -1108,12 +1108,12 @@
 
   .mbp-messages-entry {
     width: 100%;
-    min-height: 58px;
+    min-height: 30px;
     display: grid;
-    grid-template-columns: 20px minmax(0, 1fr) auto auto;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    padding: 4px 10px;
     border: 0;
     border-top: 0.5px solid var(--pop-divider);
     border-radius: 0;
@@ -1122,7 +1122,7 @@
     font-family: inherit;
     text-align: left;
     cursor: pointer;
-    transition: background-color 0.14s ease, color 0.14s ease;
+    transition: background-color 120ms var(--ease-out, ease), color 120ms var(--ease-out, ease);
   }
 
   .mbp-messages-entry:hover,
@@ -1140,8 +1140,8 @@
   }
 
   .mbp-messages-icon {
-    width: 20px;
-    height: 20px;
+    width: 14px;
+    height: 14px;
     display: grid;
     place-items: center;
     color: var(--pop-muted);
@@ -1149,35 +1149,37 @@
 
   .mbp-messages-copy {
     min-width: 0;
-    display: grid;
-    gap: 2px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
   }
 
   .mbp-messages-title {
-    font-size: 13.5px;
-    font-weight: 650;
+    font-size: 12px;
+    font-weight: 600;
     line-height: 1.2;
   }
 
   .mbp-messages-sub {
+    min-width: 0;
     overflow: hidden;
     color: var(--pop-muted);
-    font-size: 11.5px;
-    line-height: 1.25;
+    font-size: 10.5px;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .mbp-messages-count {
-    min-width: 22px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.3;
-    text-align: center;
+    min-width: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--pop-muted);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: right;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1241,7 +1243,7 @@
   }
 
   .mbp-sec {
-    padding: 6px 3px;
+    padding: 4px 3px;
     border-top: 0.5px solid var(--pop-divider);
   }
 
@@ -1250,24 +1252,25 @@
     align-items: center;
     gap: 6px;
     color: var(--pop-muted);
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: 0.45px;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    padding: 7px 4px 5px;
+    padding: 4px 4px 3px;
   }
 
   .mbp-unread-count {
-    min-width: 16px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: var(--pop-hover);
+    min-width: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--pop-muted);
-    font-size: 10px;
-    font-weight: 700;
+    font-size: 9.5px;
+    font-weight: 600;
     letter-spacing: 0;
     text-transform: none;
-    line-height: 1.3;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
   }
 
   .mbp-mini {
@@ -1343,14 +1346,14 @@
      timestamp hierarchy instead of spending the text lane on a second type
      label that is already communicated by the row icon. */
   .mbp-sec :global(.nr) {
-    min-height: 38px;
+    min-height: 28px;
     padding: 0 8px;
-    font-size: 12.5px;
+    font-size: 12px;
   }
 
   .mbp-sec :global(.nr-primary-action),
   .mbp-sec :global(.nr-primary-content) {
-    min-height: 38px;
+    min-height: 28px;
     gap: 8px;
   }
 
@@ -1358,18 +1361,14 @@
     display: none;
   }
 
-  .mbp-sec :global(.nr-actor-pill) {
-    max-width: min(12ch, 40%);
-    padding-inline: 5px;
-  }
-
   .mbp-sec :global(.nr-ts) {
-    font-size: 11px;
+    font-size: 10px;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .mbp-messages-entry,
-    .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon {
+    .mbp-messages-entry[aria-busy='true'] .mbp-messages-icon,
+    .snr {
       animation: none;
       transition: none;
     }

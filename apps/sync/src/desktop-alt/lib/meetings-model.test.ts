@@ -11,8 +11,12 @@ import {
   dayLabel,
   durationLabel,
   durationMinutes,
+  filterListableMeetings,
   groupByDay,
+  hasJoinLink,
+  hasRecap,
   isAuthError,
+  isListableMeeting,
   isPlausibleMeetingUrl,
   isRecurringMeeting,
   meetingUrlsMatch,
@@ -834,6 +838,114 @@ describe('meetings-model', () => {
       expect(isPlausibleMeetingUrl('https://example.com/not-a-meeting')).toBe(false);
       expect(isPlausibleMeetingUrl('http://meet.google.com/abc-defg-hij')).toBe(false);
       expect(isPlausibleMeetingUrl('zoom.us/j/123')).toBe(false);
+    });
+
+    it('accepts a bare-host Zoom join link (normalizeMeetingUrl output) and rejects a lookalike path', () => {
+      expect(isPlausibleMeetingUrl('https://zoom.us/j/123456789')).toBe(true);
+      expect(isPlausibleMeetingUrl('https://example.com/zoom.us/j/1')).toBe(false);
+    });
+  });
+
+  describe('listable meeting filter', () => {
+    const listNow = new Date(2026, 4, 27, 9, 0, 0);
+
+    function bot(overrides: Partial<ScheduledBot> = {}): ScheduledBot {
+      return {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        autoScheduled: true,
+        ...overrides,
+      };
+    }
+
+    function idsOf(events: MeetingEvent[]): string[] {
+      return filterListableMeetings(events, new Map(), [], listNow).map((event) => event.id);
+    }
+
+    it('keeps an event with a Zoom join link', () => {
+      const event = {
+        ...eventAt('zoom', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://zoom.us/j/123456789',
+      };
+      expect(hasJoinLink(event)).toBe(true);
+      expect(idsOf([event])).toEqual(['zoom']);
+    });
+
+    it('keeps an event with a Google Meet join link', () => {
+      const event = {
+        ...eventAt('meet', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      };
+      expect(idsOf([event])).toEqual(['meet']);
+    });
+
+    it('keeps an event with a Teams join link', () => {
+      const event = {
+        ...eventAt('teams', new Date(2026, 4, 27, 12, 0, 0)),
+        meetingUrl: 'https://teams.microsoft.com/l/meetup-join/xyz',
+      };
+      expect(idsOf([event])).toEqual(['teams']);
+    });
+
+    it('drops an event with no join link', () => {
+      const event = eventAt('no-link', new Date(2026, 4, 27, 12, 0, 0));
+      expect(hasJoinLink(event)).toBe(false);
+      expect(idsOf([event])).toEqual([]);
+    });
+
+    it('drops a Busy placeholder with no join link', () => {
+      const event = {
+        ...eventAt('busy', new Date(2026, 4, 27, 12, 0, 0)),
+        summary: 'Busy',
+      };
+      expect(idsOf([event])).toEqual([]);
+    });
+
+    it('does not treat a URL in summary/description-like text as a join link', () => {
+      const event = {
+        ...eventAt('busy-text-url', new Date(2026, 4, 27, 12, 0, 0)),
+        summary: 'Busy — see https://zoom.us/j/123456789',
+      };
+      expect(hasJoinLink(event)).toBe(false);
+      expect(idsOf([event])).toEqual([]);
+    });
+
+    it('keeps a past event with no join link when a completed recap bot is attached', () => {
+      const event = {
+        ...eventAt('past-recap', new Date(2026, 4, 27, 8, 0, 0)),
+        summary: 'Standup',
+      };
+      const recapBot = bot({
+        botId: 'bot-landed',
+        status: 'completed',
+        sourceLanded: true,
+        calendarEventId: event.id,
+      });
+      const botsByEventId = new Map([[event.id, recapBot]]);
+
+      expect(hasRecap(event, recapBot)).toBe(true);
+      expect(isListableMeeting(event, recapBot, listNow)).toBe(true);
+      expect(
+        filterListableMeetings([event], botsByEventId, [recapBot], listNow).map((row) => row.id),
+      ).toEqual(['past-recap']);
+    });
+
+    it('drops a future event with no join link even when a bot is attached', () => {
+      const event = {
+        ...eventAt('future-bot', new Date(2026, 4, 27, 12, 0, 0)),
+        summary: 'Office',
+      };
+      const scheduled = bot({
+        botId: 'bot-scheduled',
+        status: 'scheduled',
+        calendarEventId: event.id,
+      });
+      const botsByEventId = new Map([[event.id, scheduled]]);
+
+      expect(isListableMeeting(event, scheduled, listNow)).toBe(false);
+      expect(filterListableMeetings([event], botsByEventId, [scheduled], listNow)).toEqual([]);
     });
   });
 
