@@ -76,7 +76,8 @@ describe('master automatic-updates switch', () => {
     );
     expect(normalize(windowsUpdater)).toContain('let bytes = update .download(');
     expect(windowsUpdater).toContain('quiesce_for_update');
-    expect(windowsUpdater).toContain('wait_for_parent(parent_pid)');
+    expect(windowsUpdater).toContain('let parent = open_parent(parent_pid)?;');
+    expect(windowsUpdater).toContain('wait_for_parent(parent)?;');
     expect(windowsUpdater).toContain('restore_original_executable');
 
     // The hard version gate must route through that same coordinator rather
