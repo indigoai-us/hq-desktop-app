@@ -276,17 +276,16 @@ describe("native desktop auth session transitions", () => {
 
   it("remounts the desktop shell only for a real auth-session transition", async () => {
     await mountDesktop();
-    const initialMounts = desktopAppProps.mounts;
 
     await vi.waitFor(() => expect(capturedProps().self?.uid).toBe("prs_acct_a"));
-    expect(desktopAppProps.mounts).toBe(initialMounts);
+    expect(desktopAppProps.mounts).toBe(1);
 
     emitAuthSession({
       accountId: "acct_b",
       generation: 2,
       status: "active",
     });
-    await vi.waitFor(() => expect(desktopAppProps.mounts).toBe(initialMounts + 1));
+    await vi.waitFor(() => expect(desktopAppProps.mounts).toBe(2));
   });
 
   it("clears the old tenant synchronously and hydrates the new active tenant", async () => {
