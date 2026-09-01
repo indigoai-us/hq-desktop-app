@@ -318,6 +318,32 @@ describe("V4TitleBar cluster tooltips", () => {
     }
   });
 
+  it("renders both pill carets as centered SVG geometry, not the low-hanging ⌄ glyph", async () => {
+    // The Core pill only renders on hosts with sync/update/package support.
+    const adapter = makeAdapter({});
+    adapter.isAvailable = () => true;
+    await mountBar(adapter);
+    // Both dropdown pills (Launch + Core) must use the same caret treatment
+    // so they stay visually consistent.
+    for (const testid of ["titlebar-launch", "titlebar-core-pill"]) {
+      const pill = host.querySelector(`[data-testid="${testid}"]`);
+      expect(pill, `${testid} renders`).toBeTruthy();
+      const caret = pill?.querySelector(".v4-core-caret");
+      expect(caret, `${testid} has a caret`).toBeTruthy();
+      // Geometry, not a text glyph: U+2304 DOWN ARROWHEAD draws its ink low
+      // in the em box, so flex centering could never optically centre it.
+      expect(caret?.tagName.toLowerCase()).toBe("svg");
+      expect(pill?.textContent ?? "").not.toContain("⌄");
+      // Ink is centred in the viewBox (x 2.5→7.5, y 4→6.5 in a 10×10 box),
+      // which is what makes the optical centre match the label's.
+      expect(caret?.getAttribute("viewBox")).toBe("0 0 10 10");
+      // currentColor keeps dark/light working without an override.
+      expect(caret?.querySelector("path")?.getAttribute("stroke")).toBe(
+        "currentColor",
+      );
+    }
+  });
+
   it("waits for the hover dwell delay before showing on pointer enter", async () => {
     vi.useFakeTimers();
     try {

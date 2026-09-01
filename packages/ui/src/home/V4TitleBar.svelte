@@ -562,7 +562,20 @@
             onclick={toggleLaunch}
           >
             Launch
-            <span class="v4-core-caret" aria-hidden="true">⌄</span>
+            <svg
+              class="v4-core-caret"
+              viewBox="0 0 10 10"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M2.5 4 5 6.5 7.5 4"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
         {/snippet}
       </Tooltip>
@@ -763,7 +776,20 @@
                 aria-hidden="true">●</span
               >
               Core
-              <span class="v4-core-caret" aria-hidden="true">⌄</span>
+              <svg
+                class="v4-core-caret"
+                viewBox="0 0 10 10"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2.5 4 5 6.5 7.5 4"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
             </button>
           {/snippet}
         </Tooltip>
@@ -973,10 +999,25 @@
     color: var(--warn);
   }
 
+  /* Chevron as geometry, not a glyph.
+     The old caret was the text character U+2304 DOWN ARROWHEAD, whose ink is
+     drawn low inside its em box. The pill's `align-items: center` centers the
+     glyph's LINE BOX, not its ink, so the visible arrow hung below the
+     label's optical centre no matter how the flex row was aligned — and a
+     negative margin would only paper over it at one font size.
+     This path's ink spans y 4→6.5 in a 0 0 10 10 viewBox (optical centre
+     ~5.1, allowing for the stroke cap on the apex) and x 2.5→7.5, so the ink
+     centre coincides with the box centre. `display: block` takes the SVG off
+     the text baseline — inline SVGs sit on it by default, which reintroduces
+     exactly the low-hanging problem — leaving the flex row free to centre the
+     box. Sized in em so it tracks both supported font scales, and stroked
+     with currentColor so dark/light need no override. */
   .v4-core-caret {
+    flex: 0 0 auto;
+    display: block;
+    width: 0.85em;
+    height: 0.85em;
     color: var(--t3);
-    font-size: 10px;
-    line-height: 1;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
