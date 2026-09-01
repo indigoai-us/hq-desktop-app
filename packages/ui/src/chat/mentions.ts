@@ -14,6 +14,16 @@ export interface MentionTarget {
   participantType: MentionParticipantType;
   displayName: string;
   email?: string;
+  /** Owning company for this roster row, when the payload carries one. */
+  companyUid?: string;
+  /** Human-readable company label (resolved by the shell from companyUid). */
+  companyName?: string;
+  /**
+   * Display-only suffix set by {@link disambiguateMentionTargets} when another
+   * surviving target renders the same display name. Never part of the wire
+   * payload and never part of the "@Name" token.
+   */
+  disambiguator?: string;
 }
 
 export function mentionTypeForUid(uid: string): MentionParticipantType {
@@ -41,9 +51,11 @@ export function mentionTargetsFromContacts(
     displayName?: string | null;
     name?: string | null;
     email?: string | null;
+    companyUid?: string | null;
+    companyName?: string | null;
   }>,
 ): MentionTarget[] {
-  const byId = new Map<string, MentionTarget>();
+  const rows: MentionTarget[] = [];
   for (const contact of contacts) {
     const uid = (contact.personUid ?? contact.participantUid ?? "").trim();
     const displayName = (
@@ -61,14 +73,23 @@ export function mentionTargetsFromContacts(
       displayName ||
       (participantType === "agent" ? agentFallbackLabel(uid) : "");
     if (!label) continue;
-    byId.set(uid, {
+    rows.push({
       participantUid: uid,
       participantType,
       displayName: label,
       ...(contact.email?.trim() ? { email: contact.email.trim() } : {}),
+      // companyUid is the tenant this roster row belongs to — it is what lets
+      // the picker tell two same-named agents from different companies apart.
+      ...(contact.companyUid?.trim()
+        ? { companyUid: contact.companyUid.trim() }
+        : {}),
+      ...(contact.companyName?.trim()
+        ? { companyName: contact.companyName.trim() }
+        : {}),
     });
   }
-  return collapseDuplicateMentionTargets([...byId.values()]);
+  // Dedupe by participantUid only — same-uid rows merge, distinct uids survive.
+  return collapseDuplicateMentionTargets(rows);
 }
 
 /** Usable label for an agent whose roster row carries no name. */
@@ -81,33 +102,128 @@ export function agentFallbackLabel(uid: string): string {
 }
 
 /**
- * One picker row per identity the user can tell apart. Distinct emails stay
- * distinct. Same display name with no email collapses (Scouty-style dupes).
- * Prefer a human uid over an agent alias.
+ * One picker row per IDENTITY. `participantUid` is the only true identity, so
+ * it is the only dedupe key: two distinct uids ALWAYS both survive, even when
+ * they share a display name and carry no email.
+ *
+ * Keying on display name (the previous behaviour) silently dropped one of two
+ * same-named agents — e.g. a LiveRecover "Izzy" and an Indigo "Izzy" collapsed
+ * to one row whose winner was decided by Map insertion order. That is how a
+ * foreign-tenant agent got mentioned instead of the intended one, so a
+ * cross-tenant incident was invisible in the UI. Never key on display name.
+ *
+ * Rows that really are the same uid still merge, preferring the richer/human
+ * entry. Survivors that collide on display name get a rendered disambiguator
+ * (see {@link disambiguateMentionTargets}) rather than being dropped.
  */
 export function collapseDuplicateMentionTargets(
   targets: readonly MentionTarget[],
 ): MentionTarget[] {
-  const byKey = new Map<string, MentionTarget>();
+  const byUid = new Map<string, MentionTarget>();
   for (const target of targets) {
-    const email = (target.email ?? "").trim().toLowerCase();
-    const name = target.displayName.trim().toLowerCase();
+    const uid = target.participantUid.trim();
+    const email = (target.email ?? "").trim();
+    const name = target.displayName.trim();
+    // A row with no uid can never be mentioned, and a row with neither a name
+    // nor an email can never be rendered or matched.
+    if (!uid) continue;
     if (!name && !email) continue;
-    const key = email ? `email:${email}` : `name:${name}`;
-    const prev = byKey.get(key);
-    if (!prev) {
-      byKey.set(key, target);
-      continue;
-    }
-    const preferIncoming =
-      prev.participantType === "agent" && target.participantType === "human";
-    byKey.set(key, preferIncoming ? target : prev);
+    const prev = byUid.get(uid);
+    byUid.set(uid, prev ? mergeSameIdentity(prev, target) : target);
   }
-  return [...byKey.values()].sort(
+  return disambiguateMentionTargets([...byUid.values()]);
+}
+
+/** Merge two rows already known to be the SAME participantUid. */
+function mergeSameIdentity(
+  prev: MentionTarget,
+  next: MentionTarget,
+): MentionTarget {
+  // A human row beats an agent alias for the same uid (existing preference).
+  const preferNext =
+    prev.participantType === "agent" && next.participantType === "human";
+  const base = preferNext ? next : prev;
+  const other = preferNext ? prev : next;
+  const merged: MentionTarget = {
+    participantUid: base.participantUid,
+    participantType: base.participantType,
+    displayName: base.displayName.trim() || other.displayName,
+  };
+  // Fill each optional field from whichever row actually has it.
+  const email = (base.email ?? other.email ?? "").trim();
+  if (email) merged.email = email;
+  const companyUid = (base.companyUid ?? other.companyUid ?? "").trim();
+  if (companyUid) merged.companyUid = companyUid;
+  const companyName = (base.companyName ?? other.companyName ?? "").trim();
+  if (companyName) merged.companyName = companyName;
+  return merged;
+}
+
+/** Key a display-name collision on: what the user actually reads in the row. */
+function displayNameKey(target: MentionTarget): string {
+  return target.displayName.trim().toLowerCase();
+}
+
+/**
+ * Short, stable suffix of a uid — the last-resort disambiguator when a roster
+ * row carries no company at all. Better an opaque suffix than a dropped row.
+ */
+function shortUidSuffix(uid: string): string {
+  const bare = uid
+    .trim()
+    .replace(/^agent:/i, "")
+    .replace(/^(agt|prs|cmp|co)_/i, "");
+  const tail = bare || uid.trim();
+  return tail.length > 6 ? `…${tail.slice(-6)}` : tail;
+}
+
+/** The label that tells two same-named targets apart. Company name first. */
+export function mentionDisambiguatorFor(target: MentionTarget): string {
+  const companyName = target.companyName?.trim();
+  if (companyName) return companyName;
+  const companyUid = target.companyUid?.trim();
+  if (companyUid) return shortUidSuffix(companyUid);
+  const email = target.email?.trim();
+  if (email) return email;
+  return shortUidSuffix(target.participantUid);
+}
+
+/**
+ * Sort deterministically and attach a `disambiguator` to every target that
+ * shares its display name with another survivor. Idempotent: a target whose
+ * name no longer collides has any stale disambiguator cleared.
+ */
+export function disambiguateMentionTargets(
+  targets: readonly MentionTarget[],
+): MentionTarget[] {
+  const sorted = [...targets].sort(
     (a, b) =>
       a.displayName.localeCompare(b.displayName) ||
-      (a.email ?? "").localeCompare(b.email ?? ""),
+      (a.email ?? "").localeCompare(b.email ?? "") ||
+      // Same name and no email is exactly the cross-tenant case: fall through
+      // to the uid so ordering never depends on input/insertion order.
+      a.participantUid.localeCompare(b.participantUid),
   );
+  const counts = new Map<string, number>();
+  for (const target of sorted) {
+    const key = displayNameKey(target);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return sorted.map((target) => {
+    const collides = (counts.get(displayNameKey(target)) ?? 0) > 1;
+    if (!collides) {
+      if (target.disambiguator === undefined) return target;
+      const { disambiguator: _drop, ...rest } = target;
+      return rest;
+    }
+    return { ...target, disambiguator: mentionDisambiguatorFor(target) };
+  });
+}
+
+/** What the picker reads out: "Izzy (LiveRecover)" when the name collides. */
+export function mentionTargetLabel(target: MentionTarget): string {
+  const name = target.displayName.trim();
+  return target.disambiguator ? `${name} (${target.disambiguator})` : name;
 }
 
 /** GET /v1/notify/contacts envelope or a bare list. */
@@ -132,7 +248,16 @@ export function mergeMentionRosters(
       const prev = byId.get(uid);
       byId.set(
         uid,
-        prev ? { ...prev, ...row, email: prev.email ?? row.email } : row,
+        prev
+          ? {
+              ...prev,
+              ...row,
+              // A later list must not blank a field an earlier list filled.
+              email: prev.email ?? row.email,
+              companyUid: prev.companyUid ?? row.companyUid,
+              companyName: prev.companyName ?? row.companyName,
+            }
+          : row,
       );
     }
   }
@@ -154,8 +279,9 @@ export function filterMentionCandidates(
   return candidates
     .filter((candidate) => !selectedIds.has(candidate.participantUid))
     .filter((candidate) => {
+      // Include the company so typing the tenant narrows a name collision.
       const haystack =
-        `${candidate.displayName} ${candidate.email ?? ""}`.toLowerCase();
+        `${candidate.displayName} ${candidate.email ?? ""} ${candidate.companyName ?? ""} ${candidate.disambiguator ?? ""}`.toLowerCase();
       return query.length === 0 || haystack.includes(query);
     })
     .slice(0, 30);

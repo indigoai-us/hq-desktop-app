@@ -274,12 +274,15 @@ export function createSyncPlatformAdapter(
         }
         // Native `whoami` binds the canonical `prs_*` person UID and profile
         // fields to the signed-in session (Cognito claims + vault person
-        // entity). This replaces main's provisional REST leg
-        // (`GET /v1/identity/whoami` via hq_pro_fetch), which 404s on the
-        // bearer vault API and could only ever degrade (a1aab012).
+        // entity). This is the ONLY identity path: the provisional REST route
+        // `GET /v1/identity/whoami` is served by the web console, not the
+        // bearer vault API the desktop calls, so it 404s here and never
+        // recovers on retry. Main briefly carried a 404-degrade fallback over
+        // that dead route (a1aab012) and then reverted it wholesale (d91bfc95),
+        // leaving main hard-gated on the 404 again — do not reintroduce it.
         const meResult = await call<unknown>('whoami');
         if (!meResult.ok) {
-          // Preserve main's resilience intent (a1aab012): an account whose
+          // Preserve the reverted fix's resilience intent (a1aab012): an account whose
           // canonical person entity is PERMANENTLY absent must not hard-fail
           // the whole account load with "Couldn't load your account" (it never
           // recovers on retry). Fall back to the proven native session
@@ -391,8 +394,13 @@ export function createSyncPlatformAdapter(
       // Owner-only server-side (403 otherwise); Sync already exposes the command.
       removeChannelMember: (channelId, personUid) =>
         call('remove_channel_member', { channelId, personUid }),
-      listContacts: async () => {
-        const result = await call<unknown>('list_contacts');
+      // A companyUid scopes the roster to one tenant via the already-registered
+      // list_company_members command (GET /v1/notify/contacts?companyUid=…).
+      listContacts: async (opts) => {
+        const companyUid = opts?.companyUid?.trim();
+        const result = companyUid
+          ? await call<unknown>('list_company_members', { companyUid })
+          : await call<unknown>('list_contacts');
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },

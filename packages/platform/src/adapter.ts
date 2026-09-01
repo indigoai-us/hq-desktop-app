@@ -242,6 +242,17 @@ export interface MessageSearchOptions {
   limit?: number;
 }
 
+/**
+ * Optional tenant scope for a contacts listing. Omitting `companyUid` returns
+ * every contact the caller can see across ALL their companies — correct for a
+ * global compose picker, WRONG for a channel-scoped mention roster, which must
+ * only ever offer members of the channel's own company.
+ */
+export interface ListContactsOptions {
+  /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
+  companyUid?: string | null;
+}
+
 /** Optional owner/admin scope for channel-directory listings. */
 export interface ListChannelsOptions {
   /** Company whose project channels the caller administers. */
@@ -438,7 +449,7 @@ export interface MessagingApi {
     channelId: string,
     personUid: string,
   ): AdapterPromise<Json>;
-  listContacts(): AdapterPromise<Json[]>;
+  listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
   markChannelRead(id: string): AdapterPromise<void>;
   markDmThreadRead(personUid: string): AdapterPromise<void>;

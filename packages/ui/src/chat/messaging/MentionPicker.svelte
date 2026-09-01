@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { MentionTarget } from "../mentions.js";
+  import { mentionTargetLabel, type MentionTarget } from "../mentions.js";
   import { agentAvatarFor } from "./agent-avatars";
 
   interface Props {
@@ -31,6 +31,7 @@
         class:selected={index === highlight}
         role="option"
         aria-selected={index === highlight}
+        aria-label={mentionTargetLabel(hit)}
         onclick={() => onpick(hit)}
       >
         <span
@@ -45,7 +46,12 @@
               "?"}{/if}</span
         >
         <span class="mention-copy">
-          <span class="mention-name">{hit.displayName}</span>
+          <span class="mention-name"
+            >{hit.displayName}{#if hit.disambiguator}<span
+                class="mention-tag"
+                data-testid="mention-disambiguator">{hit.disambiguator}</span
+              >{/if}</span
+          >
           <span class="mention-sub"
             >{hit.participantType === "agent"
               ? "Agent"
@@ -134,9 +140,30 @@
   }
 
   .mention-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     color: #f4f4f5;
     font-size: 13px;
     font-weight: 600;
+  }
+
+  /* Tenant disambiguator — only rendered when two survivors share a name, so
+     the user can never mention the wrong company's agent by accident. */
+  .mention-tag {
+    flex: 0 1 auto;
+    overflow: hidden;
+    max-width: 140px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #c9c9d1;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .mention-sub {

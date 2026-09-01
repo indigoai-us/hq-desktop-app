@@ -90,6 +90,7 @@
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import {
+    disambiguateMentionTargets,
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
@@ -1415,12 +1416,40 @@
     void prefetchMeetings();
   }
 
-  onMount(() => {
+  /**
+   * The tenant the mention roster must be drawn from: the selected channel's
+   * own company, falling back to the selected company scope. An unscoped
+   * listContacts() seeds the picker with every company the user can see, which
+   * is how a foreign-tenant agent became mentionable from a channel that had
+   * nothing to do with it. Refetch whenever this changes — not once on mount.
+   */
+  const mentionRosterCompanyUid = $derived(
+    selectedRow?.companyUid?.trim() || tenantCompanyId?.trim() || null,
+  );
+
+  // Plain (non-reactive) marker for the scope whose response we will accept.
+  // Deliberately NOT $state: it is written inside the effect below, and making
+  // it reactive would re-trigger that effect.
+  let mentionRosterScope: string | null = null;
+
+  $effect(() => {
+    const scope = mentionRosterCompanyUid;
+    // The roster is tenant-scoped data. Clear the previous company's rows
+    // before the new fetch resolves so the picker can never offer a stale
+    // foreign-tenant target during the gap.
+    mentionRosterScope = scope;
+    liveMentionTargets = [];
     let cancelled = false;
-    void adapter.messaging.listContacts().then((res) => {
-      if (cancelled || !res.ok) return;
-      liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
-    });
+    void adapter.messaging
+      .listContacts(scope ? { companyUid: scope } : undefined)
+      .then((res) => {
+        // Per-channel race guard: a slow in-flight response for the PREVIOUS
+        // company must never overwrite the roster for the one now on screen.
+        // `cancelled` alone is not enough — check the scope we resolved for
+        // still matches the scope currently being displayed.
+        if (cancelled || mentionRosterScope !== scope || !res.ok) return;
+        liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
+      });
     return () => {
       cancelled = true;
     };
@@ -1433,15 +1462,24 @@
   });
 
   const mentionRoster = $derived(
-    mergeMentionRosters(
-      mentionCandidates,
-      liveMentionTargets,
-      mentionTargetsFromContacts(
-        Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
-          personUid,
-          displayName,
-        })),
-      ),
+    // Resolve companyUid → company label, then re-run disambiguation so two
+    // survivors that share a display name render "Izzy (LiveRecover)" vs
+    // "Izzy (Indigo)" instead of two identical, unpickable rows.
+    disambiguateMentionTargets(
+      mergeMentionRosters(
+        mentionCandidates,
+        liveMentionTargets,
+        mentionTargetsFromContacts(
+          Object.entries(identities ?? {}).map(([personUid, displayName]) => ({
+            personUid,
+            displayName,
+          })),
+        ),
+      ).map((target) => {
+        if (!target.companyUid || target.companyName) return target;
+        const name = companyDisplayName(target.companyUid, companyNames);
+        return name ? { ...target, companyName: name } : target;
+      }),
     ),
   );
 
