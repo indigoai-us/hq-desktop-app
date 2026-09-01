@@ -673,4 +673,64 @@ mod tests {
             assert_eq!(ReleaseChannel::from_pref(Some(s)), ch);
         }
     }
+
+    #[test]
+    fn beta_build_numbers_order_numerically() {
+        let (_, beta1) = parse_channel_from_tag("v0.10.170-beta.1").unwrap();
+        let (_, beta2) = parse_channel_from_tag("v0.10.170-beta.2").unwrap();
+        let (_, beta3) = parse_channel_from_tag("v0.10.170-beta.3").unwrap();
+        let (_, beta10) = parse_channel_from_tag("v0.10.170-beta.10").unwrap();
+        let (_, stable) = parse_channel_from_tag("v0.10.170").unwrap();
+
+        assert!(beta1 < beta3);
+        assert!(beta2 < beta10);
+        // Stable outranks its own prereleases.
+        assert!(beta3 < stable);
+    }
+
+    #[test]
+    fn pick_release_matches_live_2026_08_31_incident() {
+        // Exact GitHub releases state during the field incident where a
+        // beta.1 install had to reach beta.3.
+        let tags = vec![
+            "v0.10.170-beta.3".to_string(),
+            "v0.10.170-beta.2".to_string(),
+            "v0.10.170-beta.1".to_string(),
+            "v0.10.169".to_string(),
+            "v0.10.168".to_string(),
+            "v0.10.158-beta.1".to_string(),
+            "v0.10.158".to_string(),
+        ];
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Beta, &tags),
+            Some("v0.10.170-beta.3".to_string())
+        );
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Stable, &tags),
+            Some("v0.10.169".to_string())
+        );
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Alpha, &tags),
+            Some("v0.10.170-beta.3".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_endpoint_from_tags_targets_newest_beta_manifest() {
+        let tags = vec![
+            "v0.10.170-beta.3".to_string(),
+            "v0.10.170-beta.2".to_string(),
+            "v0.10.170-beta.1".to_string(),
+            "v0.10.169".to_string(),
+            "v0.10.168".to_string(),
+            "v0.10.158-beta.1".to_string(),
+            "v0.10.158".to_string(),
+        ];
+        let resolved = resolve_endpoint_from_tags(ReleaseChannel::Beta, &tags);
+        assert_eq!(
+            resolved.url,
+            "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.170-beta.3/latest.json"
+        );
+        assert_eq!(resolved.provenance, EndpointProvenance::ChannelRelease);
+    }
 }

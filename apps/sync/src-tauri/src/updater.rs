@@ -116,6 +116,9 @@ struct PendingUpdateTransition {
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
+/// Betas iterate multiple times per day, so prerelease channels re-check every
+/// 30 minutes while stable keeps the 6h cadence.
+const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +140,13 @@ enum UpdateAnnouncement {
 
 fn should_raise_transient_update_surface(announcement: UpdateAnnouncement) -> bool {
     announcement == UpdateAnnouncement::TransientBanner
+}
+
+fn background_check_interval(channel: ReleaseChannel) -> Duration {
+    match channel {
+        ReleaseChannel::Stable => UPDATE_CHECK_INTERVAL,
+        ReleaseChannel::Beta | ReleaseChannel::Alpha => PRERELEASE_UPDATE_CHECK_INTERVAL,
+    }
 }
 
 fn background_update_action(
@@ -418,7 +428,7 @@ fn read_stored_release_channel() -> Option<String> {
 /// on-demand command should poll. Combines the stored preference with
 /// the indigo gate, then resolves to a `latest.json` URL via the
 /// `release_channel` module.
-async fn resolve_endpoint() -> ResolvedChannelEndpoint {
+async fn resolve_endpoint() -> (ReleaseChannel, ResolvedChannelEndpoint) {
     let stored = read_stored_release_channel();
     let is_indigo = feature_gate::is_indigo_user().await;
     let channel: ReleaseChannel = effective_channel(stored.as_deref(), is_indigo);
@@ -432,12 +442,13 @@ async fn resolve_endpoint() -> ResolvedChannelEndpoint {
             resolved.provenance
         ),
     );
-    resolved
+    (channel, resolved)
 }
 
 struct ChannelAwareUpdater {
     updater: tauri_plugin_updater::Updater,
     provenance: EndpointProvenance,
+    channel: ReleaseChannel,
 }
 
 /// Build a channel-aware `tauri_plugin_updater::Updater` for this
@@ -445,7 +456,7 @@ struct ChannelAwareUpdater {
 /// from `tauri.conf.json`; `app.updater_builder()` lets us override
 /// per-call so the same binary serves three channels without rebuild.
 async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, String> {
-    let resolved = resolve_endpoint().await;
+    let (channel, resolved) = resolve_endpoint().await;
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
     let updater = app
@@ -457,6 +468,7 @@ async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, S
     Ok(ChannelAwareUpdater {
         updater,
         provenance: resolved.provenance,
+        channel,
     })
 }
 
@@ -725,6 +737,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                     Ok(ticket) => match channel_aware_updater(&handle).await {
                         Ok(updater) => {
                             let authoritative = updater.provenance.absence_is_authoritative();
+                            next_check = background_check_interval(updater.channel);
                             match updater.updater.check().await {
                                 Ok(Some(update)) => {
                                     let info = discovered_update(
@@ -821,6 +834,13 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     }
                                 }
                                 Ok(None) => {
+                                    log(
+                                        "updater",
+                                        &format!(
+                                            "background check: up to date (current v{})",
+                                            handle.package_info().version
+                                        ),
+                                    );
                                     if let Err(e) =
                                         apply_absent_and_emit(&handle, ticket, authoritative)
                                     {
@@ -829,7 +849,10 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         );
                                     }
                                 }
-                                Err(e) => eprintln!("[updater] background check failed: {e}"),
+                                Err(e) => {
+                                    eprintln!("[updater] background check failed: {e}");
+                                    log("updater", &format!("background check failed: {e}"));
+                                }
                             }
                         }
                         Err(e) => {
@@ -953,6 +976,22 @@ mod tests {
         drop(first);
 
         assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
+    }
+
+    #[test]
+    fn background_check_interval_is_shorter_for_prerelease_channels() {
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Stable),
+            Duration::from_secs(21_600)
+        );
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Beta),
+            Duration::from_secs(1_800)
+        );
+        assert_eq!(
+            background_check_interval(ReleaseChannel::Alpha),
+            Duration::from_secs(1_800)
+        );
     }
 
     #[test]
