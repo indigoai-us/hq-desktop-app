@@ -11,6 +11,7 @@
     createLaunchActions,
     type LaunchKey,
   } from "../settings/launch-actions.js";
+  import { safeHref } from "../common/markdown.js";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -76,6 +77,13 @@
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
+    /**
+     * Host external-URL opener (default browser). Same seam the message-body
+     * autolinks use (DesktopApp passes its Tauri plugin-shell opener); when
+     * absent we fall back to a noopener `window.open`. The webview MUST NOT
+     * navigate — never assign to location for these.
+     */
+    onopenurl?: (url: string) => void;
   }
 
   let {
@@ -112,6 +120,7 @@
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
+    onopenurl,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
@@ -347,6 +356,59 @@
     };
   });
 
+  /**
+   * HQ Console (hq.computer) opens in the DEFAULT BROWSER, never the webview.
+   * Routed through the same host opener the message-body autolinks use
+   * (75b1bee1): safeHref-guarded, then `onopenurl`, then a noopener
+   * `window.open` fallback.
+   */
+  const HQ_CONSOLE_URL = "https://hq.computer";
+
+  function openHqConsole(): void {
+    coreOpen = false;
+    launchOpen = false;
+    const href = safeHref(HQ_CONSOLE_URL);
+    if (!href) return;
+    if (onopenurl) onopenurl(href);
+    else window.open(href, "_blank", "noopener,noreferrer");
+  }
+
+  /**
+   * Reveal the HQ folder in the OS file manager via the same adapter seam the
+   * Files inspector uses (`adapter.files.revealInFinder`, FilePreviewPane).
+   * Hidden on hosts without local-file support (web); disabled until
+   * `hqFolderPath` resolves, mirroring the Launch pill.
+   */
+  const canRevealFolder = $derived(
+    Boolean(adapter?.capabilities?.localFiles) ||
+      Boolean(adapter?.isAvailable?.("localFiles")),
+  );
+  let revealing = $state(false);
+  let revealError = $state<string | null>(null);
+
+  async function revealHqFolder(): Promise<void> {
+    if (revealing) return;
+    coreOpen = false;
+    launchOpen = false;
+    revealing = true;
+    revealError = null;
+    try {
+      await ensureLaunchFolder();
+      if (!resolvedLaunchFolder) {
+        revealError = "HQ folder not configured yet";
+        return;
+      }
+      const res = await adapter.files.revealInFinder(resolvedLaunchFolder);
+      if (!res.ok) throw new Error(res.message ?? "Reveal is unavailable");
+    } catch (err) {
+      console.error("titlebar: reveal HQ folder failed", err);
+      revealError = "Could not open HQ folder";
+      setTimeout(() => (revealError = null), 4000);
+    } finally {
+      revealing = false;
+    }
+  }
+
   const LAUNCH_ITEMS: ReadonlyArray<{ key: LaunchKey; label: string }> = [
     { key: "claude", label: "Claude Code" },
     { key: "codex", label: "Codex (ChatGPT)" },
@@ -527,6 +589,50 @@
         </div>
       {/if}
     </div>
+    {#if canRevealFolder}
+      <button
+        type="button"
+        class="v4-icon-btn"
+        data-testid="titlebar-reveal-folder"
+        aria-label="Open HQ folder"
+        title={revealError ?? "Open HQ folder (Reveal in Finder)"}
+        disabled={revealing}
+        onclick={() => void revealHqFolder()}
+      >
+        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
+    <button
+      type="button"
+      class="v4-icon-btn"
+      data-testid="titlebar-console"
+      aria-label="Open HQ Console"
+      title="Open HQ Console"
+      onclick={openHqConsole}
+    >
+      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle
+          cx="8"
+          cy="8"
+          r="5.75"
+          stroke="currentColor"
+          stroke-width="1.2"
+        />
+        <path
+          d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
+          stroke="currentColor"
+          stroke-width="1.2"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
     <button
       type="button"
       class="v4-icon-btn"
@@ -891,6 +997,15 @@
     background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
     box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
+  }
+
+  .v4-icon-btn:disabled {
+    color: var(--t3);
+    cursor: default;
+  }
+
+  .v4-icon-btn:disabled:hover {
+    background: transparent;
   }
 
   .v4-icon-btn:focus-visible {

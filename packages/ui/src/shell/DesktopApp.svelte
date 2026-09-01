@@ -2122,6 +2122,7 @@
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
+    {onopenurl}
   />
 
   {#if embeddedNavigationError}

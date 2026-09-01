@@ -14,7 +14,10 @@ import { NO_AI_TOOLS, type AiTools } from "../settings/setup-launch";
 
 const ok = <T,>(value: T) => ({ ok: true as const, value });
 
-function makeAdapter(tools: Partial<AiTools>) {
+function makeAdapter(
+  tools: Partial<AiTools>,
+  caps: { localFiles?: boolean } = {},
+) {
   const shell = {
     detectAiTools: vi.fn(async () => ok({ ...NO_AI_TOOLS, ...tools })),
     openClaudeCodeLink: vi.fn(async (_url: string) => ok(undefined)),
@@ -28,9 +31,15 @@ function makeAdapter(tools: Partial<AiTools>) {
   };
   return {
     kind: "desktop" as const,
-    capabilities: { hasWindowControls: true },
+    capabilities: {
+      hasWindowControls: true,
+      localFiles: caps.localFiles ?? true,
+    },
     isAvailable: () => false,
     shell,
+    files: {
+      revealInFinder: vi.fn(async (_path: string) => ok(undefined)),
+    },
     settings: {
       getSetupStatus: vi.fn(async () => ok({ hqFolderPath: "/tmp/HQ" })),
     },
@@ -46,7 +55,10 @@ afterEach(async () => {
   host?.remove();
 });
 
-async function mountBar(adapter: ReturnType<typeof makeAdapter>) {
+async function mountBar(
+  adapter: ReturnType<typeof makeAdapter>,
+  extraProps: Record<string, unknown> = {},
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(V4TitleBar, {
@@ -56,6 +68,7 @@ async function mountBar(adapter: ReturnType<typeof makeAdapter>) {
       version: "0.0.0-test",
       syncState: "idle",
       watchedCount: 0,
+      ...extraProps,
     } as never,
   });
   await tick();
@@ -170,6 +183,78 @@ describe("V4TitleBar Launch menu", () => {
         adapter.shell.launchCliInTerminal.mock.calls[0]?.[0] ?? {},
       ).sort(),
     ).toEqual(["path", "tool"]);
+  });
+
+  it("renders the Console + folder actions in the cluster, between Launch and meetings", async () => {
+    await mountBar(makeAdapter({}));
+    const actions = host.querySelector(".v4-title-actions");
+    const console_ = host.querySelector('[data-testid="titlebar-console"]');
+    const folder = host.querySelector('[data-testid="titlebar-reveal-folder"]');
+    const meetings = host.querySelector('[data-testid="titlebar-meetings"]');
+    expect(actions?.contains(console_!)).toBe(true);
+    expect(actions?.contains(folder!)).toBe(true);
+    // Both sit left of the camera icon.
+    for (const el of [console_, folder]) {
+      expect(
+        el!.compareDocumentPosition(meetings!) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    expect(console_?.getAttribute("aria-label")).toBe("Open HQ Console");
+    expect(folder?.getAttribute("aria-label")).toBe("Open HQ folder");
+  });
+
+  it("Console opens https://hq.computer via the host opener, never the webview", async () => {
+    const onopenurl = vi.fn();
+    const beforeHref = window.location.href;
+    await mountBar(makeAdapter({}), { onopenurl });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="titlebar-console"]')
+      ?.click();
+    await tick();
+    expect(onopenurl).toHaveBeenCalledWith("https://hq.computer");
+    // The webview must not navigate.
+    expect(window.location.href).toBe(beforeHref);
+  });
+
+  it("Console falls back to a noopener window.open with no host opener", async () => {
+    const open = vi
+      .spyOn(window, "open")
+      .mockImplementation(() => null as unknown as Window);
+    await mountBar(makeAdapter({}));
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="titlebar-console"]')
+      ?.click();
+    await tick();
+    expect(open).toHaveBeenCalledWith(
+      "https://hq.computer",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
+  it("Open HQ folder reveals the resolved HQ folder path in the OS file manager", async () => {
+    const adapter = makeAdapter({});
+    await mountBar(adapter);
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="titlebar-reveal-folder"]',
+      )
+      ?.click();
+    await tick();
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    expect(adapter.files.revealInFinder).toHaveBeenCalledWith("/tmp/HQ");
+  });
+
+  it("hides the folder action on hosts without local file support (web)", async () => {
+    await mountBar(makeAdapter({}, { localFiles: false }));
+    expect(
+      host.querySelector('[data-testid="titlebar-reveal-folder"]'),
+    ).toBeNull();
+    // The Console link is host-agnostic and stays.
+    expect(host.querySelector('[data-testid="titlebar-console"]')).toBeTruthy();
   });
 
   it("shows a per-item error and keeps the menu open when a launch fails", async () => {
