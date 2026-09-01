@@ -141,4 +141,9 @@ export * from "./library/packages-model.js";
 export * as marketplace from "./marketplace/index.js";
 export * as projects from "./projects/index.js";
 export * as home from "./home/index.js";
+export {
+  PACK_DISPLAY_NAMES,
+  packDisplayName,
+  prettifyPackName,
+} from "./home/pack-display-name.js";
 export * as sessions from "./sessions/index.js";
