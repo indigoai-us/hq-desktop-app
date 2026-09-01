@@ -42,13 +42,121 @@
 //!   cross-process advisory lock as cache materialization, and only ever
 //!   touches the HQ-owned `_npx` entry for the pinned package.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha512};
 
 use crate::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use crate::paths;
 use crate::prewarm;
+
+const UNKNOWN_RUNNER_HQ_CLOUD_VERSION: &str = "unknown";
+const MAX_RUNNER_PACKAGE_JSON_BYTES: u64 = 64 * 1024;
+const MAX_RUNNER_HQ_CLOUD_VERSION_LEN: usize = 128;
+/// A startup probe must be long enough for a healthy Node process to boot, but
+/// never long enough to stall automatic sync. Match the repository's existing
+/// bounded version-probe deadline and process containment behavior.
+const NPM_CACHE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The provenance of the npm cache root retained for a watcher generation.
+///
+/// Repair needs a path even when npm cannot start, so it may use an assumed
+/// platform default. Attribution, however, may only inspect a root npm or the
+/// environment positively established.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NpmCacheRoot {
+    Established(PathBuf),
+    Assumed(PathBuf),
+}
+
+impl NpmCacheRoot {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Established(path) | Self::Assumed(path) => path,
+        }
+    }
+
+    fn established_path(&self) -> Option<&Path> {
+        match self {
+            Self::Established(path) => Some(path),
+            Self::Assumed(_) => None,
+        }
+    }
+}
+
+/// The runner invocation chosen for one watcher generation.
+///
+/// The npx variant retains both the repair root and whether it was positively
+/// established before spawn. An assumed platform default remains valid for
+/// repair, but is deliberately unavailable to child-environment injection and
+/// crash attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerSpawnTarget {
+    Local { script: String },
+    Npx { cache_root: NpmCacheRoot },
+}
+
+impl RunnerSpawnTarget {
+    /// Construct the compatibility target used only by the legacy args
+    /// builder. It deliberately skips the npm probe, so it cannot change
+    /// where a caller's npx command installs packages.
+    pub(crate) fn npx_with_assumed_cache_root() -> Self {
+        Self::Npx {
+            cache_root: NpmCacheRoot::Assumed(assumed_npm_cache_root()),
+        }
+    }
+
+    fn repair_npx_cache_dir(&self) -> Option<PathBuf> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Npx { cache_root } => Some(cache_root.path().join("_npx")),
+        }
+    }
+
+    fn attribution_npx_cache_dir(&self) -> Option<PathBuf> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Npx { cache_root } => cache_root
+                .established_path()
+                .map(|cache_root| cache_root.join("_npx")),
+        }
+    }
+
+    /// Cache root that npm or an explicit environment setting established for
+    /// this generation. Only this root may be injected into the npx child.
+    pub fn established_npm_cache_root(&self) -> Option<&Path> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Npx { cache_root } => cache_root.established_path(),
+        }
+    }
+}
+
+/// Return the non-empty local runner override selected by the watcher spawn
+/// builder. Keeping this decision here gives the spawn and attribution paths a
+/// single source of truth.
+pub fn local_runner_override() -> Option<String> {
+    std::env::var("HQ_CLOUD_LOCAL_RUNNER")
+        .ok()
+        .filter(|path| !path.is_empty())
+}
+
+/// Snapshot the exact runner source for a watcher generation before it starts.
+///
+/// This is intentionally called on the startup path, never from crash
+/// reporting. When npm's resolved cache cannot be established, the target
+/// retains an assumed platform default for repair; npx keeps its normal
+/// configuration and provenance remains `unknown`.
+pub fn runner_spawn_target() -> RunnerSpawnTarget {
+    match local_runner_override() {
+        Some(script) => RunnerSpawnTarget::Local { script },
+        None => RunnerSpawnTarget::Npx {
+            cache_root: npm_cache_root(),
+        },
+    }
+}
 
 /// Fixed-vocabulary state of the runner target the watcher would exec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,25 +343,126 @@ pub fn npx_cache_entry_hash(package_spec: &str) -> String {
         .collect()
 }
 
-/// Root of npm's cache, honouring an explicit `npm_config_cache` override.
-fn npm_cache_root() -> Option<PathBuf> {
-    if let Some(cache) = std::env::var_os("npm_config_cache") {
-        if !cache.is_empty() {
-            return Some(PathBuf::from(cache));
+enum NpmCacheEnvironment {
+    NotSet,
+    Resolved(PathBuf),
+    Uncertain,
+}
+
+/// Resolve the environment's `npm_config_cache` setting exactly as npm treats
+/// config names: case-insensitively. Multiple differently-cased values cannot
+/// be tied safely to the child npm process, so they deliberately do not
+/// establish an attribution root.
+fn npm_cache_root_from_environment<I>(environment: I) -> NpmCacheEnvironment
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    let mut selected: Option<std::ffi::OsString> = None;
+    for (name, value) in environment {
+        if !name
+            .to_string_lossy()
+            .eq_ignore_ascii_case("npm_config_cache")
+        {
+            continue;
+        }
+        if value.is_empty() {
+            return NpmCacheEnvironment::Uncertain;
+        }
+        match &selected {
+            None => selected = Some(value),
+            Some(existing) if existing == &value => {}
+            Some(_) => return NpmCacheEnvironment::Uncertain,
         }
     }
+    selected.map_or(NpmCacheEnvironment::NotSet, |cache| {
+        NpmCacheEnvironment::Resolved(PathBuf::from(cache))
+    })
+}
+
+/// Read the effective cache root from npm before a watcher starts.
+///
+/// `npm config get cache` applies the same current-working-directory, user,
+/// global, and built-in npmrc precedence as the npx command we run. The result
+/// is retained in [`RunnerSpawnTarget`] and injected into the child, so this
+/// subprocess is never needed from the crash path.
+fn npm_cache_root_from_npm() -> Option<PathBuf> {
+    let npm = paths::resolve_bin("npm");
+    let mut command = paths::spawn_command(&npm, &["config", "get", "cache"]);
+    command.env("PATH", paths::child_path());
+    npm_cache_root_from_npm_command(&mut command, NPM_CACHE_PROBE_TIMEOUT)
+}
+
+/// Run an npm cache probe with the same bounded process-tree containment used
+/// by the CLI version probes. A timeout, spawn failure, nonzero exit, or
+/// malformed output is not evidence about provenance and therefore returns no
+/// established root.
+fn npm_cache_root_from_npm_command(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<PathBuf> {
+    let output = crate::hq_cli_update::output_with_timeout(command, timeout).ok()??;
+    if !output.status.success() {
+        return None;
+    }
+    npm_cache_root_from_npm_output(&output.stdout)
+}
+
+/// Parse the single path that `npm config get cache` emitted after applying its
+/// npmrc precedence. Multiple lines or invalid text are not trustworthy runner
+/// provenance and therefore degrade to `unknown`.
+fn npm_cache_root_from_npm_output(output: &[u8]) -> Option<PathBuf> {
+    let output = std::str::from_utf8(output).ok()?;
+    let mut lines = output.split_terminator('\n');
+    let cache = lines.next()?;
+    let cache = cache.strip_suffix('\r').unwrap_or(cache);
+    if cache.is_empty() || lines.next().is_some() {
+        return None;
+    }
+    Some(PathBuf::from(cache))
+}
+
+/// Platform-default npm cache root for repair when no root was established.
+///
+/// This mirrors the previous cache-root fallback. A missing home directory is
+/// exceptionally rare, but still produces a relative `.npm` path so repair
+/// keeps its best-effort, never-refuse behavior instead of becoming unresolved.
+fn assumed_npm_cache_root() -> PathBuf {
     #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return Some(PathBuf::from(local_app_data).join("npm-cache"));
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        if !local_app_data.is_empty() {
+            return PathBuf::from(local_app_data).join("npm-cache");
         }
     }
-    paths::home_dir().map(|home| home.join(".npm"))
+    paths::home_dir()
+        .map(|home| home.join(".npm"))
+        .unwrap_or_else(|| PathBuf::from(".npm"))
+}
+
+/// Root of npm's cache, honouring case-insensitive environment configuration
+/// first and otherwise asking npm to apply its own npmrc precedence. Repair
+/// receives the platform default whenever neither source establishes a root;
+/// attribution treats that state as unknown.
+fn npm_cache_root_with<I, F>(environment: I, npm_probe: F) -> NpmCacheRoot
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    F: FnOnce() -> Option<PathBuf>,
+{
+    match npm_cache_root_from_environment(environment) {
+        NpmCacheEnvironment::Resolved(cache) => NpmCacheRoot::Established(cache),
+        NpmCacheEnvironment::Uncertain => NpmCacheRoot::Assumed(assumed_npm_cache_root()),
+        NpmCacheEnvironment::NotSet => npm_probe()
+            .map(NpmCacheRoot::Established)
+            .unwrap_or_else(|| NpmCacheRoot::Assumed(assumed_npm_cache_root())),
+    }
+}
+
+fn npm_cache_root() -> NpmCacheRoot {
+    npm_cache_root_with(std::env::vars_os(), npm_cache_root_from_npm)
 }
 
 /// Directory holding npx's per-spec package trees.
 pub fn npx_cache_dir() -> Option<PathBuf> {
-    npm_cache_root().map(|root| root.join("_npx"))
+    Some(npm_cache_root().path().join("_npx"))
 }
 
 /// Candidate filenames that establish presence on a host with no exec bit.
@@ -347,6 +556,83 @@ pub fn resolve_runner_target_in(npx_cache_dir: &Path, package_spec: &str) -> Opt
     }
 }
 
+/// Resolve only the deterministic `_npx/<hash>` entry for one package spec.
+///
+/// Attribution cannot use the repair path's unique-entry fallback: that entry
+/// may have been created for a previous pin and npx will not select it for the
+/// current launch. Presence of the runner shim establishes that the exact entry
+/// is complete enough to be the runner source; every other state is unknown.
+fn resolve_exact_runner_target_in(npx_cache_dir: &Path, package_spec: &str) -> Option<PathBuf> {
+    let entry = npx_cache_dir.join(npx_cache_entry_hash(package_spec));
+    if !entry.join("node_modules").is_dir() {
+        return None;
+    }
+    let target = runner_bin_in_entry(&entry);
+    presence_candidates(&target)
+        .iter()
+        .any(|candidate| candidate.symlink_metadata().is_ok())
+        .then_some(target)
+}
+
+/// Resolve the hq-cloud version from the exact `_npx` entry whose runner target
+/// npx selects. This is crash-report metadata only: every cache, file, JSON, or
+/// version-validation failure becomes the fixed `"unknown"` sentinel.
+pub fn runner_hq_cloud_version_in(npx_cache_dir: &Path, package_spec: &str) -> String {
+    let Some(target) = resolve_exact_runner_target_in(npx_cache_dir, package_spec) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let Some(entry) = npx_entry_dir_for(npx_cache_dir, &target) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let manifest = entry
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cloud")
+        .join("package.json");
+    let Ok(file) = std::fs::File::open(manifest) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let mut contents = String::new();
+    let Ok(read) = file
+        .take(MAX_RUNNER_PACKAGE_JSON_BYTES + 1)
+        .read_to_string(&mut contents)
+    else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    if read > MAX_RUNNER_PACKAGE_JSON_BYTES as usize {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    }
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    let Some(version) = manifest.get("version").and_then(|value| value.as_str()) else {
+        return UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string();
+    };
+    if valid_runner_hq_cloud_version(version) {
+        version.to_string()
+    } else {
+        UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string()
+    }
+}
+
+/// Read the hq-cloud version for the exact watcher target selected at startup.
+///
+/// The caller supplies the retained [`RunnerSpawnTarget`], not live process
+/// configuration, because crash reporting must not spawn npm or infer a runner
+/// from a cache that a later launch might select.
+pub fn runner_hq_cloud_version(target: &RunnerSpawnTarget) -> String {
+    target.attribution_npx_cache_dir().map_or_else(
+        || UNKNOWN_RUNNER_HQ_CLOUD_VERSION.to_string(),
+        |cache_dir| runner_hq_cloud_version_in(&cache_dir, &pinned_package_spec()),
+    )
+}
+
+fn valid_runner_hq_cloud_version(value: &str) -> bool {
+    value.len() <= MAX_RUNNER_HQ_CLOUD_VERSION_LEN
+        && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && semver::Version::parse(value).is_ok()
+}
+
 fn runner_bin_in_entry(entry: &Path) -> PathBuf {
     entry.join("node_modules").join(".bin").join(RUNNER_BIN)
 }
@@ -429,9 +715,9 @@ fn repair_runner_target(
 ///
 /// Never panics and never blocks beyond the materialization lock's existing
 /// bounded wait. Any failure degrades to a state the gate treats as "spawn".
-pub fn ensure_runner_target_runnable() -> RunnerTargetOutcome {
+pub fn ensure_runner_target_runnable_for(target: &RunnerSpawnTarget) -> RunnerTargetOutcome {
     let semantics = current_executable_semantics();
-    let Some(cache_dir) = npx_cache_dir() else {
+    let Some(cache_dir) = target.repair_npx_cache_dir() else {
         return RunnerTargetOutcome::unresolved();
     };
     let package_spec = pinned_package_spec();
@@ -457,16 +743,29 @@ pub fn ensure_runner_target_runnable() -> RunnerTargetOutcome {
     RunnerTargetOutcome { state, repair }
 }
 
+/// Compatibility wrapper for callers that do not retain a launch snapshot.
+/// Watcher startup uses [`ensure_runner_target_runnable_for`] so its repair
+/// target and crash provenance share one resolved cache directory.
+pub fn ensure_runner_target_runnable() -> RunnerTargetOutcome {
+    ensure_runner_target_runnable_for(&runner_spawn_target())
+}
+
 /// Probe only — no repair. Used at the Sentry capture seam so a 126/127 exit
 /// reports what the target actually is instead of the literal `"unknown"`.
-pub fn probe_runner_target() -> RunnerTargetState {
-    let Some(cache_dir) = npx_cache_dir() else {
+pub fn probe_runner_target_for(target: &RunnerSpawnTarget) -> RunnerTargetState {
+    let Some(cache_dir) = target.attribution_npx_cache_dir() else {
         return RunnerTargetState::Unresolved;
     };
     match resolve_runner_target_in(&cache_dir, &pinned_package_spec()) {
         Some(target) => probe_runner_target_at(&target, current_executable_semantics()),
         None => RunnerTargetState::Unresolved,
     }
+}
+
+/// Compatibility wrapper for non-watcher diagnostics. The watcher exit path
+/// uses [`probe_runner_target_for`] and never resolves npm configuration late.
+pub fn probe_runner_target() -> RunnerTargetState {
+    probe_runner_target_for(&runner_spawn_target())
 }
 
 #[cfg(test)]
@@ -500,6 +799,38 @@ mod tests {
         shim
     }
 
+    fn write_hq_cloud_manifest(entry: &Path, contents: &str) {
+        let manifest = entry
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cloud")
+            .join("package.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(manifest, contents).unwrap();
+    }
+
+    fn npm_cache_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        std::env::vars_os()
+            .filter(|(name, _)| {
+                name.to_string_lossy()
+                    .eq_ignore_ascii_case("npm_config_cache")
+            })
+            .collect()
+    }
+
+    fn clear_npm_cache_environment() {
+        for (name, _) in npm_cache_environment() {
+            std::env::remove_var(name);
+        }
+    }
+
+    fn restore_npm_cache_environment(prior: Vec<(std::ffi::OsString, std::ffi::OsString)>) {
+        clear_npm_cache_environment();
+        for (name, value) in prior {
+            std::env::set_var(name, value);
+        }
+    }
+
     /// Pins npm's `_npx` cache-key derivation against the entry observed in the
     /// HQ-DESKTOP-4K reproduction. If npm ever changes it, this fails loudly
     /// and `resolve_runner_target_in` falls back to its scan.
@@ -510,6 +841,25 @@ mod tests {
             "f72697f8e89f117e",
         );
         assert_eq!(npx_cache_entry_hash(&pinned_package_spec()).len(), 16);
+    }
+
+    /// npm derives `_npx` directories from the literal input spec. A floor bump
+    /// must therefore change this hash, or a cached runner can never pick up a
+    /// patch that still satisfies the previous tilde range.
+    #[test]
+    fn npx_cache_key_is_sha512_of_the_input_spec_and_changes_with_the_floor() {
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.0"),
+            "4df8f075c5c7872e",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.2"),
+            "93b7f3b16810b2ea",
+        );
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.0"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.2"),
+        );
     }
 
     #[test]
@@ -671,6 +1021,261 @@ mod tests {
             &pinned_package_spec()
         )
         .is_none());
+    }
+
+    #[test]
+    fn runner_hq_cloud_version_reads_the_resolved_npx_entry_and_fails_soft() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("_npx");
+        let spec = "@indigoai-us/hq-cloud@~6.16.2";
+        let entry = cache.join(npx_cache_entry_hash(spec));
+        write_runner(&entry, 0o755);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.2"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.2");
+        assert_eq!(
+            runner_hq_cloud_version(&RunnerSpawnTarget::Npx {
+                cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
+            }),
+            "6.16.2",
+            "the npx launch snapshot reports the version from its exact cache entry"
+        );
+
+        // Every bad cache input is reporting-only and must fail soft rather than
+        // changing the watcher crash path.
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache.join("missing"), spec),
+            "unknown"
+        );
+
+        let missing_manifest = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.1"));
+        write_runner(&missing_manifest, 0o755);
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.1"),
+            "unknown"
+        );
+
+        let missing_runner = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.5"));
+        write_hq_cloud_manifest(&missing_runner, r#"{"version":"9.9.5"}"#);
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.5"),
+            "unknown",
+            "a manifest without the exact runner shim is an incomplete cache entry"
+        );
+
+        let malformed = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.2"));
+        write_runner(&malformed, 0o755);
+        write_hq_cloud_manifest(&malformed, "not json");
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.2"),
+            "unknown"
+        );
+
+        let non_semver = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.3"));
+        write_runner(&non_semver, 0o755);
+        write_hq_cloud_manifest(
+            &non_semver,
+            r#"{"version":"FATAL ERROR: /Users/Ada/secret"}"#,
+        );
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.3"),
+            "unknown"
+        );
+
+        let too_long = cache.join(npx_cache_entry_hash("@indigoai-us/hq-cloud@~9.9.4"));
+        write_runner(&too_long, 0o755);
+        write_hq_cloud_manifest(
+            &too_long,
+            &format!(r#"{{"version":"{}"}}"#, "9".repeat(129)),
+        );
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, "@indigoai-us/hq-cloud@~9.9.4"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn local_runner_override_never_attributes_a_populated_npx_cache() {
+        use crate::test_support::ENV_MUTEX;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("npm-cache");
+        let cache = cache_root.join("_npx");
+        let spec = pinned_package_spec();
+        let entry = cache.join(npx_cache_entry_hash(&spec));
+        write_runner(&entry, 0o755);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.2"}"#);
+
+        let prior_local_runner = std::env::var_os("HQ_CLOUD_LOCAL_RUNNER");
+        let prior_npm_cache = npm_cache_environment();
+        clear_npm_cache_environment();
+        std::env::set_var("HQ_CLOUD_LOCAL_RUNNER", tmp.path().join("sync-runner.js"));
+        std::env::set_var("npm_config_cache", &cache_root);
+        let target = runner_spawn_target();
+        let actual = runner_hq_cloud_version(&target);
+        match prior_local_runner {
+            Some(value) => std::env::set_var("HQ_CLOUD_LOCAL_RUNNER", value),
+            None => std::env::remove_var("HQ_CLOUD_LOCAL_RUNNER"),
+        }
+        restore_npm_cache_environment(prior_npm_cache);
+
+        assert!(matches!(target, RunnerSpawnTarget::Local { .. }));
+        assert_eq!(actual, UNKNOWN_RUNNER_HQ_CLOUD_VERSION);
+    }
+
+    #[test]
+    fn attribution_refuses_a_unique_fallback_cache_entry_but_repair_keeps_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = "@indigoai-us/hq-cloud@~6.16.2";
+        let cache = tmp.path().join("_npx");
+        let stale_entry = cache.join("4df8f075c5c7872e");
+        write_runner(&stale_entry, 0o755);
+        write_hq_cloud_manifest(&stale_entry, r#"{"version":"6.16.0"}"#);
+
+        let repair_outcome = ensure_runner_target_runnable_for(&RunnerSpawnTarget::Npx {
+            cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
+        });
+        assert_eq!(
+            repair_outcome.state,
+            RunnerTargetState::Runnable,
+            "repair must retain its unique-entry fallback"
+        );
+        assert_eq!(
+            runner_hq_cloud_version_in(&cache, spec),
+            UNKNOWN_RUNNER_HQ_CLOUD_VERSION,
+            "attribution must never infer the current runner from a non-current cache entry"
+        );
+    }
+
+    #[test]
+    fn npx_cache_dir_honors_uppercase_and_mixed_case_environment_overrides() {
+        use crate::test_support::ENV_MUTEX;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prior = npm_cache_environment();
+        clear_npm_cache_environment();
+
+        let uppercase_cache = tmp.path().join("uppercase-cache");
+        std::env::set_var("NPM_CONFIG_CACHE", &uppercase_cache);
+        let uppercase_actual = npx_cache_dir();
+
+        clear_npm_cache_environment();
+        let mixed_case_cache = tmp.path().join("mixed-case-cache");
+        std::env::set_var("NpM_cOnFiG_cAcHe", &mixed_case_cache);
+        let mixed_case_actual = npx_cache_dir();
+
+        restore_npm_cache_environment(prior);
+
+        assert_eq!(uppercase_actual, Some(uppercase_cache.join("_npx")));
+        assert_eq!(mixed_case_actual, Some(mixed_case_cache.join("_npx")));
+    }
+
+    #[test]
+    fn npm_config_lookup_output_preserves_the_npmrc_resolved_cache_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let npmrc_resolved_cache = tmp.path().join("cache-from-npmrc");
+        let output = format!("{}\n", npmrc_resolved_cache.display());
+
+        assert_eq!(
+            npm_cache_root_from_npm_output(output.as_bytes()),
+            Some(npmrc_resolved_cache),
+            "the startup snapshot must retain npm's user/global/project npmrc result"
+        );
+        assert!(
+            npm_cache_root_from_npm_output(b"/first-cache\n/second-cache\n").is_none(),
+            "ambiguous npm output must not select a cache root"
+        );
+    }
+
+    /// An unavailable npm process must not turn off the preflight that repairs
+    /// a poisoned platform-default cache, but that assumed location is never
+    /// strong enough evidence to attribute a runner version.
+    #[cfg(unix)]
+    #[test]
+    fn assumed_default_cache_repairs_while_attribution_stays_unknown() {
+        use crate::test_support::ENV_MUTEX;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prior_home = std::env::var_os("HOME");
+        let prior_npm_cache = npm_cache_environment();
+        clear_npm_cache_environment();
+        std::env::set_var("HOME", tmp.path());
+
+        let target = RunnerSpawnTarget::Npx {
+            cache_root: npm_cache_root_with(
+                Vec::<(std::ffi::OsString, std::ffi::OsString)>::new(),
+                || None,
+            ),
+        };
+        let expected_root = tmp.path().join(".npm");
+        let entry = expected_root
+            .join("_npx")
+            .join(npx_cache_entry_hash(&pinned_package_spec()));
+        write_runner(&entry, 0o644);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.2"}"#);
+
+        let attributed_version = runner_hq_cloud_version(&target);
+        let repair_outcome = ensure_runner_target_runnable_for(&target);
+        let cache_root = match &target {
+            RunnerSpawnTarget::Npx {
+                cache_root: NpmCacheRoot::Assumed(cache_root),
+            } => cache_root.clone(),
+            other => panic!("expected an assumed npx cache root, got {other:?}"),
+        };
+
+        match prior_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        restore_npm_cache_environment(prior_npm_cache);
+
+        assert_eq!(cache_root, expected_root);
+        assert_eq!(attributed_version, UNKNOWN_RUNNER_HQ_CLOUD_VERSION);
+        assert_eq!(repair_outcome.repair, RunnerTargetRepair::ModeRestored);
+        assert_eq!(repair_outcome.state, RunnerTargetState::Runnable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_cache_probe_timeout_returns_unknown_and_reaps_the_child() {
+        use std::time::Instant;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let child_pid_path = tmp.path().join("npm-cache-probe-child.pid");
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & child=$!; printf '%s' \"$child\" > \"$1\"; wait")
+            .arg("npm-cache-probe")
+            .arg(&child_pid_path);
+
+        let started = Instant::now();
+        assert_eq!(
+            npm_cache_root_from_npm_command(&mut command, Duration::from_millis(50)),
+            None,
+            "a timed-out probe must not establish cache provenance"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the bounded cache probe must return promptly"
+        );
+
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .expect("the stub recorded its child process")
+            .trim()
+            .parse::<i32>()
+            .expect("the stub recorded a numeric child PID");
+        let reaped_by = Instant::now() + Duration::from_millis(500);
+        while unsafe { libc::kill(child_pid, 0) } == 0 && Instant::now() < reaped_by {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(child_pid, 0) },
+            0,
+            "the timeout containment must not leave the npm probe child running"
+        );
     }
 
     /// The pre-spawn decision table, including every degrade-to-spawn case.

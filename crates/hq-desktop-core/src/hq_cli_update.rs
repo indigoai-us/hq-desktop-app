@@ -252,7 +252,7 @@ impl Drop for VersionProbeContainment {
 /// Run a tiny version command with a hard process boundary. `Command::output`
 /// has no timeout and can strand both the process and its blocking worker; this
 /// helper kills and reaps the child before returning `None` on timeout.
-fn output_with_timeout(
+pub(crate) fn output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: Duration,
 ) -> std::io::Result<Option<Output>> {
