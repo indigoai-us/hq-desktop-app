@@ -280,6 +280,12 @@ pub const RUNNER_HEAP_CEILING_DEFAULT_MB: u32 = 3584;
 /// above inferred V8 demand because the app must pre-empt before the OS does.
 pub const OBSERVED_OS_KILL_FLOOR_MB: u32 = 5900;
 
+/// Assumed runaway whole-tree footprint growth for the hard safety threshold.
+/// 20 MB/s (1,200 MB/min) is deliberately conservative for an unbounded runner:
+/// it protects a full 30-second supervisor sampling gap rather than assuming the
+/// next sample catches a gradual leak immediately.
+pub const WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC: u32 = 20;
+
 /// Escape-hatch env var: a per-host integer-MB override of the declared runner
 /// old-space ceiling, so a user with a genuinely large workspace can raise it
 /// without a rebuild. An explicit `--max-old-space-size` in NODE_OPTIONS still
@@ -461,6 +467,18 @@ pub fn runner_heap_peak_used_bucket(used_mb: u64) -> &'static str {
 /// macOS jetsam SIGKILL or a Windows commit failure does.
 pub const WATCHER_FOOTPRINT_CEILING_MB: u32 = 4608;
 
+/// Absolute whole-tree footprint safety threshold (MB) that pre-empts on ONE
+/// comparable supervisor sample. The ordinary ceiling below intentionally needs
+/// two samples to ignore a healthy transient, but that would leave the 5,632 MB
+/// default-derived backstop only 268 MB below the observed 5,900 MB OS-kill
+/// floor. At the 30s supervisor cadence, 5,120 + (20 MB/s * 30s) = 5,720 MB,
+/// still below 5,900 MB and leaving 180 MB for termination after the sample.
+/// This hard ceiling therefore tolerates a 20 MB/s runaway for a complete missed
+/// sampling interval while preserving the ordinary backstop's anti-spike policy.
+/// It is absolute even for a user heap override: an override may not trade away
+/// the app's ability to pre-empt before the observed OS kill.
+pub const WATCHER_FOOTPRINT_HARD_CEILING_MB: u32 = 5120;
+
 /// Consecutive over-ceiling supervisor samples required before a pre-empt. At the
 /// 30s supervisor cadence this is ~60s of SUSTAINED over-ceiling footprint, so a
 /// single spike or a healthy pull that momentarily peaks near the mark never
@@ -495,11 +513,12 @@ pub enum FootprintCeilingDecision {
 
 /// Pure supervisor decision: given a fresh scoped footprint sample and the
 /// running over-ceiling streak, return the UPDATED streak and whether to
-/// pre-empt. ONLY a comparable (whole-tree / job) sample at or above the ceiling
-/// advances the streak; a withheld/shim sample, a missing sample, or one below
-/// the ceiling resets it to zero. Pre-empt only once the streak reaches the
-/// required consecutive count — never on a single spike, never on an unsampled or
-/// withheld footprint.
+/// pre-empt. A comparable (whole-tree / job) sample at or above the hard safety
+/// threshold pre-empts immediately. Otherwise, ONLY a comparable sample at or
+/// above the ordinary ceiling advances the streak; a withheld/shim sample, a
+/// missing sample, or one below the ceiling resets it to zero. Pre-empt the
+/// ordinary backstop only once the streak reaches the required consecutive count
+/// — never on a single spike, never on an unsampled or withheld footprint.
 pub fn footprint_ceiling_step(
     sample_kb: Option<u64>,
     scope_comparable: bool,
@@ -507,6 +526,10 @@ pub fn footprint_ceiling_step(
     prior_streak: u32,
     required_consecutive: u32,
 ) -> (u32, FootprintCeilingDecision) {
+    let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
+        return (0, FootprintCeilingDecision::Preempt);
+    }
     let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
     if !over {
         return (0, FootprintCeilingDecision::KeepRunning);
@@ -1622,6 +1645,25 @@ mod tests {
         assert_eq!(
             footprint_ceiling_step(None, true, ceiling_kb, required - 1, required),
             (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_hard_footprint_ceiling_preempts_one_comparable_sample() {
+        let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+        let ordinary_ceiling_kb = hard_ceiling_kb + 1;
+
+        // A hard safety breach bypasses the ordinary two-sample anti-spike
+        // backstop even when the ordinary ceiling itself has not been crossed.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_ceiling_kb),
+                true,
+                ordinary_ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            ),
+            (0, FootprintCeilingDecision::Preempt)
         );
     }
 

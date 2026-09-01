@@ -622,8 +622,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
             Some(value.is_empty() || value.parse::<u64>().is_ok())
         }
-        // Bucketed V8 heap-used reading from the final pre-OOM GC line. The exact
-        // MB number is retained only as a numeric extra; this tag is deliberately
+        // Bucketed maximum V8 heap-used reading across pre-OOM GC lines. The final
+        // GC reading remains only as a numeric extra; this tag is deliberately
         // closed vocabulary so it remains content-safe and low-cardinality.
         "runner_heap_peak_used_bucket" => Some(matches!(
             value,

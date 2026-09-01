@@ -37,6 +37,7 @@ import { assertContentSafeDiagnostics } from './windows-reliability-harness';
 
 // repoRoot is apps/sync, so the shared crate sources are read via '../../crates'.
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
+const coreDaemonSource = readRepoFile('../../crates/hq-desktop-core/src/daemon.rs');
 const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const syncSource = readRepoFile('src-tauri/src/commands/sync.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
@@ -61,6 +62,15 @@ function sliceBetween(
   }
   return source.slice(start, end + endAnchor.length);
 }
+
+/** Read the production default instead of letting this artifact model drift. */
+function declaredU32Constant(name: string): number {
+  const match = coreDaemonSource.match(new RegExp(`pub const ${name}: u32 = (\\d+);`));
+  if (!match) throw new Error(`missing declared core constant: ${name}`);
+  return Number(match[1]);
+}
+
+const RUNNER_HEAP_CEILING_DEFAULT_MB = declaredU32Constant('RUNNER_HEAP_CEILING_DEFAULT_MB');
 
 describe('watcher heap-OOM attribution — source contracts', () => {
   it('retains heap-OOM evidence at the shared record_stderr_line seam', () => {
@@ -415,7 +425,7 @@ function simulateHeapOomEnvelope(
     // The declared runner heap ceiling now rides EVERY watcher exit (auto-sync
     // watcher unbounded-memory cluster), so a heap OOM is interpretable against
     // the ceiling that bounded it. The scope-withholding assertions are unchanged.
-    extras.runner_heap_ceiling_mb = 2048;
+    extras.runner_heap_ceiling_mb = RUNNER_HEAP_CEILING_DEFAULT_MB;
     tags.runner_heap_ceiling_source = 'declared_default';
     lastRss = renderLastRss(rss, resolvedScope);
   }
@@ -450,7 +460,7 @@ describe('watcher heap-OOM attribution — shipped Sentry envelope', () => {
     expect(event.message).toContain('last_rss=48MB (tree, sampled 8s before exit)');
     expect(event.message).not.toMatch(/last_rss=\d+KB \(sampled/);
     // …and the declared runner heap ceiling now rides the heap-OOM exit too.
-    expect(event.extras.runner_heap_ceiling_mb).toBe(2048);
+    expect(event.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
     expect(event.tags.runner_heap_ceiling_source).toBe('declared_default');
     assertContentSafeDiagnostics(event);
   });

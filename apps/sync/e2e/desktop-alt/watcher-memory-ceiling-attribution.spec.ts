@@ -239,9 +239,22 @@ interface SentryEnvelopeEvent {
 }
 
 const MEMORY_TOKEN = 'runner:memory-exhausted';
-// Declared ceiling constants, mirrored from hq-desktop-core::daemon.
-const RUNNER_HEAP_CEILING_DEFAULT_MB = 2048;
-const WATCHER_FOOTPRINT_CEILING_MB = 4608;
+/** Read a Rust u32 constant from the shipping core source instead of mirroring it. */
+function declaredU32Constant(name: string): number {
+  const match = coreDaemonSource.match(new RegExp(`pub const ${name}: u32 = (\\d+);`));
+  if (!match) throw new Error(`missing declared core constant: ${name}`);
+  return Number(match[1]);
+}
+
+// Keep this artifact model tied to the production heap, headroom, and reactive
+// footprint-attribution constants rather than duplicating their numeric values.
+const RUNNER_HEAP_CEILING_DEFAULT_MB = declaredU32Constant('RUNNER_HEAP_CEILING_DEFAULT_MB');
+const WATCHER_FOOTPRINT_CEILING_MB = declaredU32Constant('WATCHER_FOOTPRINT_CEILING_MB');
+const WATCHER_FOOTPRINT_HEADROOM_MB = declaredU32Constant('WATCHER_FOOTPRINT_HEADROOM_MB');
+
+function effectiveWatcherFootprintCeilingMb(heapCeilingMb: number): number {
+  return Math.max(WATCHER_FOOTPRINT_CEILING_MB, heapCeilingMb + WATCHER_FOOTPRINT_HEADROOM_MB);
+}
 
 /** Mirror of `termination_fingerprint_token_for_host`. */
 function hostToken(code: number | null, signal: number | null, host: Host): string {
@@ -269,7 +282,7 @@ interface MemoryEvidence {
 
 /** Mirror of `MemoryExhaustionEvidence::is_attributed` + the emit-seam gate. */
 function isMemoryAttributed(ev: MemoryEvidence): boolean {
-  const ceilingKb = WATCHER_FOOTPRINT_CEILING_MB * 1024;
+  const ceilingKb = effectiveWatcherFootprintCeilingMb(RUNNER_HEAP_CEILING_DEFAULT_MB) * 1024;
   const footprintAtOrAboveCeiling =
     ev.comparableFootprintKb !== null && ev.comparableFootprintKb >= ceilingKb;
   return ev.heapOomClass || footprintAtOrAboveCeiling || ev.supervisorPreempt;
@@ -332,7 +345,7 @@ const SIGKILL_5_9GB: WatcherExit = {
   code: null,
   signal: 9,
   host: 'posix',
-  // The OS killed the tree at 5.9GB (≥ the 4.5GB declared footprint ceiling).
+  // The OS killed the tree at 5.9GB (≥ the derived footprint-attribution gate).
   evidence: { heapOomClass: false, comparableFootprintKb: Math.round(5.9 * 1024 * 1024), supervisorPreempt: false },
   rssScope: 'tree',
 };
