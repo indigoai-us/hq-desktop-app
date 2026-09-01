@@ -47,6 +47,12 @@ export interface BuildCorePopoverInput {
   packsExpanded?: boolean;
   /** Wall clock for ago labels (tests inject). */
   now?: number;
+  /**
+   * True while the popover's version read is still in flight. "Not yet
+   * checked" must never render as "not detected" — the checking state gets
+   * its own neutral label/pill until the read actually resolves.
+   */
+  coreChecking?: boolean;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -146,7 +152,10 @@ export function conflictAgoLabel(
 export function driftPillLabel(
   count: number,
   coreDetected: boolean = true,
+  checking: boolean = false,
 ): string {
+  // A check still in flight is neither healthy nor undetected.
+  if (checking && !coreDetected) return "CHECKING";
   // G6: "HQ core not detected" must never pair with a green NO DRIFT — an
   // undetected core was never checked, so the pill reads neutral instead.
   if (!coreDetected) return "NOT CHECKED";
@@ -187,9 +196,14 @@ export function coreNeedsRestore(
   return Boolean(versionBehind) || Math.max(0, Math.floor(driftCount)) > 0;
 }
 
-export function hqVersionLabel(version: string | null | undefined): string {
+export function hqVersionLabel(
+  version: string | null | undefined,
+  checking: boolean = false,
+): string {
   if (version && version.trim()) return `HQ core v${version.trim()}`;
-  return "HQ core not detected";
+  // Only claim "not detected" after a check actually resolved without a
+  // version; while the read is in flight the row stays neutral.
+  return checking ? "Checking HQ core\u2026" : "HQ core not detected";
 }
 
 /** Keep the independently detected CLI version out of Core health UI. */
@@ -286,6 +300,8 @@ export function buildCorePopoverViewModel(
   const core = input.core ?? null;
   const driftCount = Math.max(0, Math.floor(core?.driftCount ?? 0));
   const coreDetected = Boolean(core?.hqVersion && core.hqVersion.trim());
+  // Checking is only meaningful until a version is known.
+  const coreChecking = Boolean(input.coreChecking) && !coreDetected;
   const packs = [...(input.packs ?? [])];
   const packsLoading = Boolean(input.packsLoading) && packs.length === 0;
   const cloudPaused = Boolean(input.cloudPaused);
@@ -294,9 +310,9 @@ export function buildCorePopoverViewModel(
     conflictRows,
     conflictHeader: conflictHeaderLabel(conflictCount, ago),
     conflictCount,
-    hqVersionLabel: hqVersionLabel(core?.hqVersion),
+    hqVersionLabel: hqVersionLabel(core?.hqVersion, coreChecking),
     coreDetected,
-    driftPill: driftPillLabel(driftCount, coreDetected),
+    driftPill: driftPillLabel(driftCount, coreDetected, coreChecking),
     driftPillTone: driftPillTone(driftCount, coreDetected),
     driftCount,
     driftOpenable: driftCount > 0,

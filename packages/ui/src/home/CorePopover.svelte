@@ -99,6 +99,12 @@
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
   let loadError = $state<string | null>(null);
+  /**
+   * True while the open-time version/state read is in flight. Drives the
+   * neutral "Checking HQ core…" / CHECKING presentation — the popover must
+   * never claim "not detected" before the read has actually resolved.
+   */
+  let coreLoading = $state(false);
   /** Updates/packages are desktop-only; web renders the degraded row. */
   let updatesUnavailable = $state(false);
   let disposed = false;
@@ -159,6 +165,7 @@
       conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: modelCore,
       appVersion,
+      coreChecking: coreLoading,
       updateAvailable: modelUpdateAvailable,
       packs: modelPacks,
       packsLoading,
@@ -182,8 +189,10 @@
       updateAvailable = false;
       packs = [];
       packsLoading = false;
+      coreLoading = false;
       return;
     }
+    coreLoading = true;
     let hadCache = false;
     try {
       const cachedResult = await adapter.packages.listPackagesCached();
@@ -201,23 +210,33 @@
       // on a true first run (no cache, fetch in flight).
       if (packs.length === 0 && !hadCache) packsLoading = true;
       const packagesPromise = adapter.packages.listPackages();
-      const [versionsResult, stateResult, pendingResult] = await Promise.all([
-        adapter.updates.getVersions(),
-        adapter.updates.checkCoreState(),
-        adapter.updates.getPendingUpdate(),
-      ]);
+      // Kick all three reads together, but commit the cheap local version
+      // read the moment it lands. checkCoreState can involve a slow scan or
+      // network lookup — gating the version behind it is exactly what made
+      // an installed core read "not detected" for the whole check window.
+      const statePromise = adapter.updates.checkCoreState();
+      const pendingPromise = adapter.updates.getPendingUpdate();
+      const versionsResult = await adapter.updates.getVersions();
+      if (disposed || generation !== loadGeneration) return;
       updatesUnavailable =
         !versionsResult.ok && versionsResult.reason === "unavailable";
-      const version = versionsResult.ok
+      hqVersion = versionsResult.ok
         ? detectedCoreVersion(versionsResult.value)
         : null;
+      // The version read resolved — from here "no version" genuinely means
+      // "not detected", so the checking presentation ends.
+      coreLoading = false;
+      const [stateResult, pendingResult] = await Promise.all([
+        statePromise,
+        pendingPromise,
+      ]);
+      if (disposed || generation !== loadGeneration) return;
       const state = stateResult.ok
         ? (stateResult.value as unknown as CoreStateWire | null)
         : null;
       const pending = pendingResult.ok
         ? (pendingResult.value as unknown as UpdateInfo | null)
         : null;
-      hqVersion = version;
       coreState = state;
       const pendingVersion =
         pending && typeof pending === "object" && "version" in pending
@@ -225,7 +244,6 @@
           : null;
       updateAvailable = Boolean(pendingVersion);
 
-      if (disposed || generation !== loadGeneration) return;
       const packagesResult = await packagesPromise;
       if (disposed || generation !== loadGeneration) return;
       if (packagesResult.ok) {
@@ -247,6 +265,10 @@
       console.error("core-popover: refresh failed", err);
       if (!hadCache) loadError = "Could not load Core status";
       packsLoading = false;
+    } finally {
+      // Whatever path we exited through, never leave the neutral checking
+      // presentation stuck for this (still-current) load.
+      if (!disposed && generation === loadGeneration) coreLoading = false;
     }
   }
 

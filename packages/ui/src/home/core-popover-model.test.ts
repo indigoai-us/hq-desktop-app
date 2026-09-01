@@ -258,3 +258,43 @@ describe("G7: core pill dot tone", () => {
     expect(corePillDotTone({ syncState: "syncing" })).toBe("ok");
   });
 });
+
+describe("core checking state (owner bug: healthy install shown as not detected)", () => {
+  it("labels an in-flight check as checking, never as not detected", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: null, driftCount: 0, needsRestore: false },
+      coreChecking: true,
+    });
+    expect(vm.hqVersionLabel).toBe("Checking HQ core\u2026");
+    expect(vm.driftPill).toBe("CHECKING");
+    expect(vm.driftPillTone).toBe("neutral");
+    expect(vm.coreDetected).toBe(false);
+  });
+
+  it("only claims not detected after the check resolved without a version", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: null, driftCount: 0, needsRestore: false },
+      coreChecking: false,
+    });
+    expect(vm.hqVersionLabel).toBe("HQ core not detected");
+    expect(vm.driftPill).toBe("NOT CHECKED");
+  });
+
+  it("a detected version wins over a stale checking flag", () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: "15.0.118", driftCount: 0, needsRestore: false },
+      coreChecking: true,
+    });
+    expect(vm.hqVersionLabel).toBe("HQ core v15.0.118");
+    expect(vm.driftPill).toBe("NO DRIFT");
+    expect(vm.driftPillTone).toBe("ok");
+    expect(vm.coreDetected).toBe(true);
+  });
+
+  it("driftPillLabel/hqVersionLabel expose the checking arm directly", () => {
+    expect(driftPillLabel(0, false, true)).toBe("CHECKING");
+    expect(driftPillLabel(3, true, true)).toBe("3 drifted");
+    expect(hqVersionLabel(null, true)).toBe("Checking HQ core\u2026");
+    expect(hqVersionLabel(null, false)).toBe("HQ core not detected");
+  });
+});
