@@ -7,6 +7,10 @@ import {
 
 type ShellIdentityAdapter = Pick<PlatformAdapter, "kind" | "identity">;
 
+export interface HydrateDesktopSelfOptions {
+  sleep?: (ms: number) => Promise<void>;
+}
+
 export interface TauriAttachmentHandlers {
   putAttachmentObject: PutChatAttachment;
   getAttachmentObject: (url: string, maxBytes?: number) => Promise<Response>;
@@ -41,20 +45,29 @@ export async function signOutFromShell({
 export async function hydrateDesktopSelf(
   hostSelf: SelfIdentity | null,
   adapter: ShellIdentityAdapter,
+  options: HydrateDesktopSelfOptions = {},
 ): Promise<SelfIdentity | null> {
   if (!hostSelf && adapter.kind === "web") return null;
-  try {
-    const result = await adapter.identity.whoami();
-    return result.ok
-      ? toSelfIdentity({
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const attempts = adapter.kind === "web" ? 3 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const result = await adapter.identity.whoami();
+      if (result.ok) {
+        return toSelfIdentity({
           uid: result.value.personUid,
           email: result.value.email,
           displayName: result.value.displayName,
-        })
-      : adapter.kind === "desktop" ? hostSelf : null;
-  } catch {
-    return adapter.kind === "desktop" ? hostSelf : null;
+        });
+      }
+    } catch {
+      // A valid hosted session can outlive a transient whoami request failure.
+    }
+    if (attempt < attempts - 1) await sleep((attempt + 1) * 100);
   }
+  return adapter.kind === "desktop" ? hostSelf : null;
 }
 
 export function createTauriAttachmentHandlers(

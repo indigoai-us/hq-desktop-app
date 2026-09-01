@@ -59,6 +59,61 @@ describe("desktop shell identity", () => {
     expect(whoami).toHaveBeenCalledOnce();
   });
 
+  it("retries a transient hosted whoami failure before hydrating identity", async () => {
+    const whoami = vi
+      .fn<PlatformAdapter["identity"]["whoami"]>()
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce(
+        ok({
+          personUid: "prs_web",
+          email: "web@example.com",
+          displayName: "Web Person",
+        }),
+      );
+    const sleep = vi.fn(async (_ms: number) => undefined);
+
+    await expect(
+      hydrateDesktopSelf(
+        {
+          uid: "prs_server",
+          email: "server@example.com",
+          displayName: "Server Person",
+        },
+        identityAdapter("web", whoami),
+        { sleep },
+      ),
+    ).resolves.toEqual({
+      uid: "prs_web",
+      email: "web@example.com",
+      displayName: "Web Person",
+    });
+    expect(whoami).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(100);
+  });
+
+  it("bounds hosted whoami retries after persistent failures", async () => {
+    const whoami = vi.fn(async () => {
+      throw new Error("network unavailable");
+    });
+    const sleep = vi.fn(async (_ms: number) => undefined);
+
+    await expect(
+      hydrateDesktopSelf(
+        {
+          uid: "prs_server",
+          email: "server@example.com",
+          displayName: "Server Person",
+        },
+        identityAdapter("web", whoami),
+        { sleep },
+      ),
+    ).resolves.toBeNull();
+    expect(whoami).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 100);
+    expect(sleep).toHaveBeenNthCalledWith(2, 200);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps an unsigned web shell signed out without a whoami round trip", async () => {
     const whoami = vi.fn(async () =>
       ok({ personUid: "prs_unexpected", email: "unexpected@example.com" }),
@@ -86,6 +141,26 @@ describe("desktop shell identity", () => {
     await expect(
       hydrateDesktopSelf(null, identityAdapter("desktop", whoami)),
     ).resolves.toBeNull();
+  });
+
+  it("returns the desktop host identity immediately when native whoami fails", async () => {
+    const whoami = vi.fn(async () => {
+      throw new Error("native identity unavailable");
+    });
+    const sleep = vi.fn(async (_ms: number) => undefined);
+    const hostSelf = {
+      uid: "prs_desktop",
+      email: "desktop@example.com",
+      displayName: "Desktop Person",
+    };
+
+    await expect(
+      hydrateDesktopSelf(hostSelf, identityAdapter("desktop", whoami), {
+        sleep,
+      }),
+    ).resolves.toEqual(hostSelf);
+    expect(whoami).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
 
