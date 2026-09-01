@@ -4,6 +4,8 @@
    * colored monogram, name, and role pill. Memberships are account-owned;
    * this embedded view does not claim a per-company native sync setting.
    */
+  import { onMount } from "svelte";
+  import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { companyConsoleUrl, HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { companyAvatarWash, settingsCompanyLists } from "./shell-settings-model.js";
@@ -12,6 +14,7 @@
 
   interface Props {
     companies?: Workspace[] | null;
+    adapter?: PlatformAdapter | null;
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     personalLabel?: string | null;
     onopenconsole?: (url: string) => Promise<void> | void;
@@ -20,13 +23,27 @@
 
   let {
     companies = [],
+    adapter = null,
     personalLabel = null,
     onopenconsole,
     consoleBase = HQ_CONSOLE_BASE,
   }: Props = $props();
 
   const lists = $derived(settingsCompanyLists(companies, personalLabel));
+  let personalSyncState = $state<"synced" | "local" | "unavailable">("synced");
   let externalError = $state<string | null>(null);
+
+  onMount(() => {
+    if (!adapter?.isAvailable("canSync")) return;
+    void adapter.settings.getSettings().then((result) => {
+      if (!result.ok) {
+        personalSyncState = "unavailable";
+        return;
+      }
+      const settings = result.value as Record<string, unknown>;
+      personalSyncState = settings.personalSyncEnabled === false ? "local" : "synced";
+    });
+  });
   function companyUrl(slug: string): string {
     const base = consoleBase.replace(/\/$/, "");
     if (base === HQ_CONSOLE_BASE) return companyConsoleUrl(slug);
@@ -114,7 +131,17 @@
         <span class="co-name">{lists.personal.name}</span>
         <span class="co-role">Owner</span>
       </div>
-      <span class="co-state">Local vault</span>
+      <span
+        class:on={personalSyncState === "synced"}
+        class="co-state"
+        data-testid="settings-personal-sync-state"
+      >
+        {personalSyncState === "synced"
+          ? "Synced"
+          : personalSyncState === "local"
+            ? "Local"
+            : "Unavailable"}
+      </span>
     </div>
   {/if}
 </div>
