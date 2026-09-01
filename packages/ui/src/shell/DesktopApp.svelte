@@ -1326,6 +1326,8 @@
         channelId: pending.channelId,
         personUid: null,
         replyRootEventId: pending.replyRootEventId,
+        title: pending.title,
+        companyUid: pending.companyUid,
       },
       { preserveView: pending.automatic && view !== "conversation" },
     );
@@ -1341,6 +1343,30 @@
       { preserveView: target.automatic === true && view !== "conversation" },
     );
   }
+
+  /**
+   * Self-heal a placeholder selection. `selectedRow` is a snapshot taken at
+   * open time; when the channel was opened before the directory listed it
+   * (a just-created channel, a deep link, a notification), the snapshot is a
+   * stub — possibly titled with the raw `chn_…` id — and nothing ever
+   * refreshed it, so the header stayed wrong until the user clicked away and
+   * back. Once the real row shows up under the same id, adopt it in place.
+   * Never touches `view`, replies, or focus: only the row's metadata changes.
+   */
+  $effect(() => {
+    const rows = searchRows;
+    const current = untrack(() => selectedRow);
+    if (!current) return;
+    const real = rows.find((row) => row.id === current.id);
+    if (!real || real === current) return;
+    if (
+      real.title === current.title &&
+      (real.companyUid ?? null) === (current.companyUid ?? null)
+    ) {
+      return;
+    }
+    selectedRow = real;
+  });
 
   $effect(() => {
     const scope = messageScope;
@@ -2143,6 +2169,8 @@
         createdAt: detail.createdAt ?? null,
         replyRootEventId: reply,
         automatic: detail.automatic === true,
+        title: detail.title ?? null,
+        companyUid: detail.companyUid ?? null,
       });
     }
     function onMessagePerson(event: Event): void {

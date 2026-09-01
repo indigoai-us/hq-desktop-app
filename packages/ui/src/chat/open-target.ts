@@ -31,6 +31,15 @@ export interface OpenChannelOptions {
   replyRootEventId?: string | null;
   /** True only for the sidebar's initial automatic directory selection. */
   automatic?: boolean;
+  /**
+   * Display name to paint while the directory has not caught up yet. A
+   * just-created channel is opened before any row list contains it; without
+   * this the stub row (and the header) shows the raw `chn_…` id until the
+   * user navigates away and back.
+   */
+  title?: string | null;
+  /** Workspace of the channel, for the same stub. */
+  companyUid?: string | null;
 }
 
 export interface PendingChannelOpen {
@@ -39,12 +48,17 @@ export interface PendingChannelOpen {
   createdAt: string | null;
   replyRootEventId: string | null;
   automatic: boolean;
+  title: string | null;
+  companyUid: string | null;
 }
 
 export interface ConversationDeepLink {
   channelId: string | null;
   personUid: string | null;
   replyRootEventId: string | null;
+  /** Optional display hints for a channel the row list does not have yet. */
+  title?: string | null;
+  companyUid?: string | null;
 }
 
 let pendingChannelId: string | null = null;
@@ -52,6 +66,8 @@ let pendingChannelMessageId: string | null = null;
 let pendingChannelCreatedAt: string | null = null;
 let pendingReplyRootEventId: string | null = null;
 let pendingChannelAutomatic = false;
+let pendingChannelTitle: string | null = null;
+let pendingChannelCompanyUid: string | null = null;
 let pendingDmRequests = false;
 /** Optional pairKey to open a specific request; null opens the first pending. */
 let pendingDmRequestPairKey: string | null = null;
@@ -70,6 +86,8 @@ export function requestChannelOpen(
   pendingChannelCreatedAt = trimOrNull(options.createdAt);
   pendingReplyRootEventId = trimOrNull(options.replyRootEventId);
   pendingChannelAutomatic = options.automatic === true;
+  pendingChannelTitle = trimOrNull(options.title);
+  pendingChannelCompanyUid = trimOrNull(options.companyUid);
   try {
     window.dispatchEvent(
       new CustomEvent(OPEN_CHANNEL_EVENT, {
@@ -79,6 +97,8 @@ export function requestChannelOpen(
           createdAt: pendingChannelCreatedAt,
           replyRootEventId: pendingReplyRootEventId,
           automatic: pendingChannelAutomatic,
+          title: pendingChannelTitle,
+          companyUid: pendingChannelCompanyUid,
         },
       }),
     );
@@ -97,12 +117,16 @@ export function takePendingChannelOpen(): PendingChannelOpen | null {
     createdAt: pendingChannelCreatedAt,
     replyRootEventId: pendingReplyRootEventId,
     automatic: pendingChannelAutomatic,
+    title: pendingChannelTitle,
+    companyUid: pendingChannelCompanyUid,
   };
   pendingChannelId = null;
   pendingChannelMessageId = null;
   pendingChannelCreatedAt = null;
   pendingReplyRootEventId = null;
   pendingChannelAutomatic = false;
+  pendingChannelTitle = null;
+  pendingChannelCompanyUid = null;
   return snapshot;
 }
 
@@ -200,8 +224,9 @@ export function conversationRowForDeepLink(
     return {
       id: `ch:${link.channelId}`,
       kind: "channel",
-      title: link.channelId,
-      companyUid: null,
+      // Prefer the caller's display hint: a raw `chn_…` id is a last resort.
+      title: trimOrNull(link.title) ?? link.channelId,
+      companyUid: trimOrNull(link.companyUid),
       unreadDot: false,
       lastActivityAt: 0,
       pinned: false,

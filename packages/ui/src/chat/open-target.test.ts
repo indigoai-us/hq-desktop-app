@@ -101,6 +101,8 @@ describe("requestChannelOpen replyRootEventId", () => {
         createdAt: null,
         replyRootEventId: "evt_root",
         automatic: false,
+        title: null,
+        companyUid: null,
       },
     ]);
     expect(takePendingChannelOpen()).toEqual({
@@ -109,6 +111,8 @@ describe("requestChannelOpen replyRootEventId", () => {
       createdAt: null,
       replyRootEventId: "evt_root",
       automatic: false,
+      title: null,
+      companyUid: null,
     });
     expect(takePendingChannel()).toBeNull();
   });
@@ -127,6 +131,8 @@ describe("requestChannelOpen replyRootEventId", () => {
         createdAt: null,
         replyRootEventId: null,
         automatic: true,
+        title: null,
+        companyUid: null,
       },
     ]);
     expect(takePendingChannelOpen()?.automatic).toBe(true);
@@ -161,6 +167,89 @@ describe("conversationRowForDeepLink", () => {
       id: "ch:chn_missing",
       kind: "channel",
       channelId: "chn_missing",
+    });
+  });
+
+  it("stubs a missing channel with the raw id only when no title hint exists", () => {
+    // Reported: a just-created channel opened before the directory listed it
+    // painted `chn_01M1…` in the header until the user clicked away and back.
+    expect(
+      conversationRowForDeepLink({
+        channelId: "chn_new",
+        personUid: null,
+        replyRootEventId: null,
+      })?.title,
+    ).toBe("chn_new");
+    expect(
+      conversationRowForDeepLink({
+        channelId: "chn_new",
+        personUid: null,
+        replyRootEventId: null,
+        title: "  hq-create-channel-test ",
+        companyUid: "cmp_indigo",
+      }),
+    ).toMatchObject({
+      id: "ch:chn_new",
+      title: "hq-create-channel-test",
+      companyUid: "cmp_indigo",
+    });
+  });
+
+  it("a real directory row still wins over the hint", () => {
+    const existing = {
+      id: "ch:chn_new",
+      kind: "channel" as const,
+      title: "from-directory",
+      companyUid: "cmp_indigo",
+      unreadDot: false,
+      lastActivityAt: 1,
+      pinned: false,
+      channelId: "chn_new",
+    };
+    expect(
+      conversationRowForDeepLink(
+        {
+          channelId: "chn_new",
+          personUid: null,
+          replyRootEventId: null,
+          title: "hint",
+        },
+        [existing],
+      ),
+    ).toBe(existing);
+  });
+});
+
+describe("requestChannelOpen title hint", () => {
+  it("carries title + companyUid through the stash and the window event", () => {
+    const seen: unknown[] = [];
+    const onEvent = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(OPEN_CHANNEL_EVENT, onEvent);
+    try {
+      requestChannelOpen("chn_new", {
+        title: "hq-create-channel-test",
+        companyUid: "cmp_indigo",
+      });
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onEvent);
+    }
+    expect(seen[0]).toMatchObject({
+      channelId: "chn_new",
+      title: "hq-create-channel-test",
+      companyUid: "cmp_indigo",
+    });
+    const pending = takePendingChannelOpen();
+    expect(pending).toMatchObject({
+      channelId: "chn_new",
+      title: "hq-create-channel-test",
+      companyUid: "cmp_indigo",
+    });
+    // Cleared after take — a later unrelated open must not inherit the hint.
+    requestChannelOpen("chn_other");
+    expect(takePendingChannelOpen()).toMatchObject({
+      channelId: "chn_other",
+      title: null,
+      companyUid: null,
     });
   });
 });

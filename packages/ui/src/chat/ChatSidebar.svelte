@@ -16,6 +16,7 @@
   import {
     clearChannelUnread,
     type Channel,
+    humanizeChannelName,
     upsertChannel,
     applyChannelMessageWake,
     shouldBumpChannelUnread,
@@ -574,7 +575,16 @@
   function closeCreate(openChannelId?: string): void {
     createOpen = false;
     plusBtnEl?.focus();
-    if (openChannelId) requestChannelOpen(openChannelId);
+    if (!openChannelId) return;
+    // A just-created channel is opened before the directory feed lists it, so
+    // the shell would stub a row titled with the raw id. Hand it the name we
+    // already have (from the optimistic upsert) so the header is right on
+    // first paint, not only after the user clicks away and back.
+    const known = channels.find((c) => c.channelId === openChannelId);
+    requestChannelOpen(openChannelId, {
+      title: known ? humanizeChannelName(known.name) : null,
+      companyUid: known?.companyUid ?? null,
+    });
   }
 
   /** Optimistic rail insert for a just-created channel: paint now, reconcile,
