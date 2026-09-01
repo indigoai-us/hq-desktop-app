@@ -24,6 +24,7 @@ import {
   groupByType,
   historySearchScopeLabel,
   initialsFor,
+  isStrictlyRicherConversationRow,
   loadPins,
   loadShowFilter,
   normalizeChannel,
@@ -110,6 +111,44 @@ function memoryStorage(seed: Record<string, string> = {}): Storage {
     },
   } as Storage;
 }
+
+describe("isStrictlyRicherConversationRow", () => {
+  const stub: ConversationRow = {
+    id: "ch:chn_atlas",
+    kind: "channel",
+    title: "",
+    companyUid: null,
+    unreadDot: false,
+    lastActivityAt: 0,
+    pinned: false,
+  };
+  const enriched: ConversationRow = {
+    ...stub,
+    title: "Atlas",
+    companyUid: "cmp_acme",
+    channelId: "chn_atlas",
+    channelScope: "project",
+    projectId: "atlas",
+    membership: "joined",
+  };
+
+  it("adopts metadata that fills gaps without dropping known values", () => {
+    expect(isStrictlyRicherConversationRow(enriched, stub)).toBe(true);
+  });
+
+  it("does not adopt an identical row, a row that drops metadata, or a different conversation", () => {
+    expect(isStrictlyRicherConversationRow(enriched, enriched)).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow(
+        { ...enriched, companyUid: null },
+        enriched,
+      ),
+    ).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow({ ...enriched, id: "ch:chn_other" }, stub),
+    ).toBe(false);
+  });
+});
 
 describe("normalizeChannel / normalizeDm", () => {
   it("maps company channels with numeric unread and no DM-style assumptions", () => {

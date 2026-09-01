@@ -138,7 +138,10 @@
     uploadChatAttachments,
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
-  import type { ConversationRow } from "../chat/sidebar-model.js";
+  import {
+    isStrictlyRicherConversationRow,
+    type ConversationRow,
+  } from "../chat/sidebar-model.js";
   import {
     mergeFetchedTimeline,
     mergeTimelineMessages,
@@ -442,7 +445,12 @@
     const next = initialRow;
     if (!next) return;
     untrack(() => {
-      if (!selectedRow) selectedRow = next;
+      if (
+        !selectedRow ||
+        isStrictlyRicherConversationRow(next, selectedRow)
+      ) {
+        selectedRow = next;
+      }
     });
   });
   let pendingReplyRootId = $state<string | null>(
