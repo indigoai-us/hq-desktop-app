@@ -357,3 +357,120 @@ describe('Round-2 polish — calm typography and no-reflow hover (source contrac
     }
   });
 });
+
+describe('Actionable rows — resolving "needs attention" items in place', () => {
+  it('renders a resolution trigger and picker, calls the assignment, and reports busy + error states', async () => {
+    const onresolveopen = vi.fn();
+    let settle: ((value: void) => void) | undefined;
+    let reject: ((reason: Error) => void) | undefined;
+    const onresolve = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((_, r) => { reject = r; }),
+      )
+      .mockImplementationOnce(
+        () => new Promise<void>((res) => { settle = res; }),
+      );
+
+    mountRow({
+      type: 'system',
+      text: 'Meeting needs a company — "Amir Tor…" isn’t filed yet.',
+      ts: Date.now() - 60_000,
+      resolvePrompt: 'File to company',
+      resolveOptions: [
+        { value: 'cmp_indigo', label: 'Indigo' },
+        { value: 'cmp_alive', label: 'Alive' },
+      ],
+      onresolveopen,
+      onresolve,
+    });
+
+    const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+    // The needs-action marker and trigger occupy reserved space in the row —
+    // not hover-revealed — so nothing shifts (round-2 no-reflow rule).
+    expect(row.querySelector('[data-testid="notification-needs-action"]')).toBeTruthy();
+    const trigger = row.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-resolve-trigger"]',
+    )!;
+    expect(trigger).toBeTruthy();
+    expect(trigger.textContent?.trim()).toBe('File to company');
+    expect(row.querySelector('[data-testid="notification-resolve-sheet"]')).toBeNull();
+
+    trigger.click();
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+    expect(onresolveopen).toHaveBeenCalledTimes(1);
+
+    const select = row.querySelector<HTMLSelectElement>(
+      '[data-testid="notification-resolve-select"]',
+    )!;
+    expect([...select.options].map((o) => o.value)).toEqual([
+      '',
+      'cmp_indigo',
+      'cmp_alive',
+    ]);
+    const save = row.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-resolve-save"]',
+    )!;
+    // Nothing chosen yet — saving is unavailable.
+    expect(save.disabled).toBe(true);
+
+    const selectProto = Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      'value',
+    );
+    selectProto?.set?.call(select, 'cmp_indigo');
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(save.disabled).toBe(false);
+
+    // Failure keeps the sheet open with an inline error.
+    save.click();
+    flushSync();
+    expect(onresolve).toHaveBeenCalledWith('cmp_indigo');
+    expect(save.getAttribute('aria-busy')).toBe('true');
+    reject!(new Error('nope'));
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    flushSync();
+    expect(
+      row.querySelector('[data-testid="notification-resolve-error"]')?.textContent,
+    ).toContain('Couldn’t save');
+    expect(row.querySelector('[data-testid="notification-resolve-sheet"]')).toBeTruthy();
+
+    // Success closes the picker — the host dismisses the resolved row.
+    const retry = row.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-resolve-save"]',
+    )!;
+    expect(retry.disabled).toBe(false);
+    retry.click();
+    flushSync();
+    expect(onresolve).toHaveBeenCalledTimes(2);
+    settle!();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    flushSync();
+    expect(onresolve).toHaveBeenCalledTimes(2);
+    expect(row.querySelector('[data-testid="notification-resolve-sheet"]')).toBeNull();
+  });
+
+  it('stays a plain row when no resolution is declared', () => {
+    mountRow({ type: 'system', text: 'Nothing to do here', ts: Date.now() });
+    const row = host.querySelector<HTMLElement>('[data-testid="notification-row"]')!;
+    expect(row.querySelector('[data-testid="notification-resolve-trigger"]')).toBeNull();
+    expect(row.querySelector('[data-testid="notification-needs-action"]')).toBeNull();
+  });
+
+  it('keeps the picker out of normal flow so opening it cannot reflow the list', () => {
+    const style = rowSource.slice(rowSource.indexOf('<style>'));
+    const idx = style.indexOf('.nr-resolve-sheet {');
+    expect(idx).toBeGreaterThan(-1);
+    const block = style.slice(idx, style.indexOf('}', idx));
+    expect(block).toContain('position: absolute');
+    // Trigger itself is in flow but fixed-size — it never changes row height.
+    const trigIdx = style.indexOf('.nr-resolve {');
+    const trigBlock = style.slice(trigIdx, style.indexOf('}', trigIdx));
+    expect(trigBlock).toContain('height: 20px');
+    expect(trigBlock).toContain('font-weight: 400');
+  });
+});

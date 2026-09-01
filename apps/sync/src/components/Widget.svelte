@@ -13,6 +13,7 @@
    */
   import { onMount, tick, untrack } from 'svelte';
   import NotificationRow from './NotificationRow.svelte';
+  import { resolutionForItem } from '../stores/widgetNotifications';
   import type { NotificationRowType } from './NotificationRow.svelte';
   import {
     type BannerPayloadLike,
@@ -1056,6 +1057,42 @@
       });
     });
   });
+  // ── Inline resolution (needs-attention rows) ─────────────────────────────
+  //
+  // Unattributed meetings used to be un-actionable from the notification
+  // surface: "Assign" only navigated to the Meetings window. The row now files
+  // the meeting itself through the same backend the Meetings window uses
+  // (`meetings_set_company`), and dismisses on success.
+  let companyOptionsList = $state<Array<{ value: string; label: string }>>([]);
+
+  async function loadCompanyOptions(): Promise<void> {
+    if (companyOptionsList.length > 0) return;
+    if (!hasTauri()) return;
+    const { listMemberships, companyOptions } = await import('../lib/meetingAttribution');
+    const memberships = await listMemberships();
+    companyOptionsList = companyOptions(memberships).map((o) => ({
+      value: o.companyUid,
+      label: o.label,
+    }));
+  }
+
+  async function resolveMeetingCompany(
+    item: WidgetStackItem,
+    meetingId: string,
+    companyId: string,
+  ): Promise<void> {
+    if (!hasTauri()) throw new Error('Assignment is unavailable here');
+    const { setMeetingCompany, setCompanyErrorMessage } = await import(
+      '../lib/meetingAttribution'
+    );
+    const result = await setMeetingCompany(meetingId, companyId);
+    if (!result.ok) {
+      throw new Error(setCompanyErrorMessage(result));
+    }
+    // Resolved — the row no longer needs attention.
+    applyStack(dismissItem(stack, item.id));
+    setReplyHold(item.id, false);
+  }
 </script>
 
 {#snippet miniCommunicationRow(row: { separator: string | null; item: WidgetStackItem })}
@@ -1083,6 +1120,16 @@
         ? (emoji) => reactDm(row.item, emoji)
         : undefined}
       onholdchange={(h) => setReplyHold(row.item.id, h)}
+      resolvePrompt={resolutionForItem(row.item)?.prompt}
+      resolveOptions={companyOptionsList}
+      onresolveopen={resolutionForItem(row.item) ? () => loadCompanyOptions() : undefined}
+      onresolve={(() => {
+        const resolution = resolutionForItem(row.item);
+        return resolution
+          ? (companyId: string) =>
+              resolveMeetingCompany(row.item, resolution.meetingId, companyId)
+          : undefined;
+      })()}
     />
   </div>
 {/snippet}
@@ -1385,6 +1432,16 @@
             onreply={item.kind === 'dm' ? (text) => replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => reactDm(item, emoji) : undefined}
             onholdchange={(h) => setReplyHold(item.id, h)}
+            resolvePrompt={resolutionForItem(item)?.prompt}
+            resolveOptions={companyOptionsList}
+            onresolveopen={resolutionForItem(item) ? () => loadCompanyOptions() : undefined}
+            onresolve={(() => {
+              const resolution = resolutionForItem(item);
+              return resolution
+                ? (companyId: string) =>
+                    resolveMeetingCompany(item, resolution.meetingId, companyId)
+                : undefined;
+            })()}
           />
         </div>
       {/each}

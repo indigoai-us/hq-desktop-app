@@ -63,6 +63,18 @@
     comfortable?: boolean;
     /** Optional identity hint, surfaced in the collapsed-row tooltip only. */
     identityLabel?: string;
+    /**
+     * Inline resolution: when present the row renders a compact affordance
+     * that resolves the item in place (e.g. filing an unattributed meeting to
+     * a company) instead of only navigating elsewhere.
+     */
+    resolvePrompt?: string;
+    /** Options for the resolution picker; empty while they load. */
+    resolveOptions?: Array<{ value: string; label: string }>;
+    /** Loads options on first open. Errors surface inline. */
+    onresolveopen?: () => void | Promise<void>;
+    /** Commits the chosen option. Resolving successfully should dismiss the row. */
+    onresolve?: (value: string) => void | Promise<void>;
   }
 
   let {
@@ -87,6 +99,10 @@
     agentActor = false,
     comfortable = false,
     identityLabel,
+    resolvePrompt,
+    resolveOptions,
+    onresolveopen,
+    onresolve,
   }: Props = $props();
 
   let hovered = $state(false);
@@ -103,6 +119,11 @@
   let failedReaction = $state<string | null>(null);
   let openError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+  let resolveOpen = $state(false);
+  let resolveValue = $state('');
+  let resolvePending = $state(false);
+  let resolveLoading = $state(false);
+  let resolveError = $state<string | null>(null);
 
   const isMessage = $derived(type === 'message');
   /** Draft or focus keeps the message expanded even on transient hover-out. */
@@ -319,6 +340,67 @@
     }
   }
 
+  /** Row can be completed in place rather than only opened elsewhere. */
+  const resolvable = $derived(Boolean(resolvePrompt && onresolve));
+
+  async function openResolver(): Promise<void> {
+    if (resolveOpen) {
+      resolveOpen = false;
+      return;
+    }
+    resolveOpen = true;
+    resolveError = null;
+    if (!onresolveopen) return;
+    resolveLoading = true;
+    try {
+      await onresolveopen();
+    } catch (error) {
+      console.error('notification-row: resolve options failed', error);
+      resolveError = 'Couldn’t load options.';
+    } finally {
+      resolveLoading = false;
+    }
+  }
+
+  function submitResolve(): void {
+    if (!onresolve || !resolveValue || resolvePending) return;
+    resolveError = null;
+    resolvePending = true;
+    try {
+      const result = onresolve(resolveValue);
+      if (isPromiseLike(result)) {
+        void result
+          .then(() => {
+            resolveOpen = false;
+            resolveValue = '';
+          })
+          .catch((error) => {
+            console.error('notification-row: resolve failed', error);
+            resolveError = 'Couldn’t save that. Try again.';
+          })
+          .finally(() => {
+            resolvePending = false;
+          });
+        return;
+      }
+      resolveOpen = false;
+      resolveValue = '';
+    } catch (error) {
+      console.error('notification-row: resolve failed', error);
+      resolveError = 'Couldn’t save that. Try again.';
+    }
+    resolvePending = false;
+  }
+
+  function onResolveKeydown(e: KeyboardEvent): void {
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      resolveOpen = false;
+      resolveError = null;
+    }
+  }
+
   const REACT_EMOJI = ['👍', '❤️', '👀'] as const;
 </script>
 
@@ -343,6 +425,7 @@
     {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
   </span>
   <span class="nr-trail">
+    {#if resolvable}<span class="nr-needs-action" data-testid="notification-needs-action" aria-hidden="true">Needs action</span>{/if}
     {#if badgeCount > 0}<span class="nr-count" data-testid="unread-count" aria-label="{badgeCount} unread">{badgeCount}</span>{/if}
     <span class="nr-meta-type" data-testid="notification-source">{resolvedSourceLabel}</span>
     <time class="nr-ts" datetime={timestampIso} title={timestampTitle}>{relativeTime(ts)}</time>
@@ -387,6 +470,64 @@
     <div class="nr-primary-content">
       {@render primaryContent()}
     </div>
+  {/if}
+
+  {#if resolvable}
+    <!-- Resolution affordance: the trigger occupies reserved space in the row
+         (never hover-revealed, so nothing shifts), and the picker itself is an
+         absolute overlay so opening it cannot grow the row. -->
+    <button
+      class="nr-resolve"
+      type="button"
+      data-testid="notification-resolve-trigger"
+      aria-expanded={resolveOpen}
+      aria-label={resolvePrompt}
+      onclick={() => void openResolver()}
+    >
+      {resolvePrompt}
+    </button>
+    {#if resolveOpen}
+      <div
+        class="nr-resolve-sheet"
+        data-testid="notification-resolve-sheet"
+        onkeydowncapture={onResolveKeydown}
+        role="presentation"
+      >
+        <select
+          class="nr-resolve-select"
+          data-testid="notification-resolve-select"
+          aria-label={resolvePrompt}
+          value={resolveValue}
+          onchange={(e) => {
+            resolveValue = (e.currentTarget as HTMLSelectElement).value;
+          }}
+          disabled={resolvePending || resolveLoading}
+        >
+          <option value="">{resolveLoading ? 'Loading…' : 'Choose…'}</option>
+          {#each resolveOptions ?? [] as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        <button
+          class="nr-resolve-save"
+          type="button"
+          data-testid="notification-resolve-save"
+          disabled={!resolveValue || resolvePending}
+          aria-busy={resolvePending}
+          onclick={() => submitResolve()}
+        >
+          {#if resolvePending}
+            <span class="nr-spinner nr-spinner-small" aria-hidden="true"></span>
+          {/if}
+          {resolvePending ? 'Saving…' : 'Save'}
+        </button>
+        {#if resolveError}
+          <span class="nr-resolve-error" data-testid="notification-resolve-error" role="alert">
+            {resolveError}
+          </span>
+        {/if}
+      </div>
+    {/if}
   {/if}
 
   {#if expanded}
@@ -908,6 +1049,103 @@
   .nr-spinner-small {
     width: 9px;
     height: 9px;
+  }
+
+  /* Needs-attention rows: muted regular label + a compact always-present
+     trigger. Both sit in normal flow so nothing moves on hover; only the
+     picker sheet is an overlay. */
+  .nr-needs-action {
+    color: var(--popover-text-muted);
+    font-size: 9.5px;
+    font-weight: 400;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .nr-resolve {
+    flex: 0 0 auto;
+    height: 20px;
+    margin-left: 6px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 5px;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 400;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .nr-resolve:focus-visible {
+    outline: 1.5px solid var(--popover-text-muted);
+    outline-offset: 1px;
+  }
+
+  .nr-resolve-sheet {
+    position: absolute;
+    top: calc(100% - 1px);
+    left: 8px;
+    right: 8px;
+    z-index: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--popover-surface);
+    box-shadow:
+      inset 0 0 0 0.5px var(--popover-divider),
+      0 8px 20px color-mix(in srgb, var(--popover-text) 14%, transparent);
+    cursor: default;
+  }
+
+  .nr-resolve-select {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 7px;
+    border: 0.5px solid var(--popover-divider);
+    background: var(--popover-surface);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .nr-resolve-save {
+    flex: 0 0 auto;
+    height: 24px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--popover-action-hover);
+    color: var(--popover-text);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 400;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .nr-resolve-save:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .nr-resolve-error {
+    flex: 1 0 100%;
+    color: var(--popover-danger, var(--popover-text));
+    font-size: 10px;
+    line-height: 1.3;
   }
 
   /* Quick-reply overlay — anchored below the row, out of normal flow so
