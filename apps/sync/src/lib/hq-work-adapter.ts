@@ -315,8 +315,11 @@ export function createSyncPlatformAdapter(
     },
 
     messaging: {
-      listChannels: async () => {
-        const result = await call<unknown>('list_channels');
+      listChannels: async (opts) => {
+        const result = await call<unknown>('list_channels', {
+          companyUid: opts?.companyUid,
+          includeCompanyProjects: opts?.includeCompanyProjects,
+        });
         if (!result.ok) return result;
         return ok(
           unwrapNamedArray(result.value, ['channels']).map(asChannelSummary),

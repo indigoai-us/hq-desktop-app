@@ -232,6 +232,14 @@ export interface MessageSearchOptions {
   limit?: number;
 }
 
+/** Optional owner/admin scope for channel-directory listings. */
+export interface ListChannelsOptions {
+  /** Company whose project channels the caller administers. */
+  companyUid?: string;
+  /** Include project channels even when the caller is not a member. */
+  includeCompanyProjects?: boolean;
+}
+
 /** Reply-thread partition. Distinct from GET /v1/notify/thread (1:1 DM list). */
 export type ReplyThreadScope = "dm" | "channel";
 
@@ -394,7 +402,7 @@ export function normalizeReplyThreadValue(value: unknown): ReplyThreadValue {
 }
 
 export interface MessagingApi {
-  listChannels(): AdapterPromise<ChannelSummary[]>;
+  listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
   createChannel(payload: Json): AdapterPromise<Json>;
   /** POST /v1/notify/channels/{id}/members — add a person to a channel. */

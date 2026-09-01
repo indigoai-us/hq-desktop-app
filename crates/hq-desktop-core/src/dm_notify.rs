@@ -787,7 +787,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_thread_registry_keeps_other_window_on_selective_cleanup() {
+    fn active_thread_registry_keeps_other_window_seen_reply_suppression_on_selective_cleanup() {
         let state = ActiveThreadState::new();
         let mut threads = state.0.lock().unwrap();
         threads.insert(
@@ -796,6 +796,7 @@ mod tests {
                 root_event_id: Some("evt_messages".to_string()),
                 scope: "dm".to_string(),
                 with_person_uid: Some("prs_peer".to_string()),
+                seen_reply_ids: ["evt_messages_seen".to_string()].into_iter().collect(),
                 ..Default::default()
             },
         );
@@ -805,6 +806,7 @@ mod tests {
                 root_event_id: Some("evt_desktop".to_string()),
                 scope: "channel".to_string(),
                 channel_id: Some("chn_1".to_string()),
+                seen_reply_ids: ["evt_desktop_seen".to_string()].into_iter().collect(),
                 ..Default::default()
             },
         );
@@ -817,6 +819,12 @@ mod tests {
                 .get("messages")
                 .and_then(|thread| thread.root_event_id.as_deref()),
             Some("evt_messages"),
+        );
+        assert!(
+            threads
+                .get("messages")
+                .is_some_and(|thread| thread.seen_reply_ids.contains("evt_messages_seen")),
+            "clearing desktop-alt must not make the Messages window re-emit an already seen reply"
         );
     }
 
