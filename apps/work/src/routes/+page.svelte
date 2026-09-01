@@ -7,7 +7,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, untrack } from "svelte";
+  import { onMount } from "svelte";
   import {
     TauriPlatformAdapter,
     WebPlatformAdapter,
@@ -59,6 +59,10 @@
     type LiveProjectMeta,
   } from "$lib/live-project";
   import { hqProApiUrl, hqProFetch } from "$lib/hq-pro-client";
+  import {
+    createTauriAttachmentHandlers,
+    hydrateDesktopSelf,
+  } from "$lib/desktop-shell";
 
   let { data } = $props();
 
@@ -90,6 +94,8 @@
   const adapter: PlatformAdapter = isTauriRuntime()
     ? new TauriPlatformAdapter({ invoke: tauriInvoke })
     : new WebPlatformAdapter({ baseUrl: hqProApiUrl(), fetch: hqProFetch });
+  const attachmentHandlers =
+    adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);
   const wakes = createChatWakeBus();
   let notificationWakeSeq = $state(0);
@@ -97,14 +103,15 @@
   // Self identity from the VERIFIED session (uid = Cognito sub). Null when
   // the session has no uid. This is the ONLY host-supplied identity — the
   // shared shell does the "you" tagging + admin gating from it.
-  const self = toSelfIdentity(data.user ?? null);
+  const hostSelf = toSelfIdentity(data.user ?? null);
+  let self = $state(hostSelf);
   const personUid = $derived(self?.uid ?? "");
   const shallow = $derived(readShallowCache(personUid));
-  seedConversationCacheFromRail(shallow);
-  const sidebarApi = createChatSidebarApi(
-    adapter,
-    shallow.directory,
-    personUid,
+  $effect(() => {
+    seedConversationCacheFromRail(shallow);
+  });
+  const sidebarApi = $derived(
+    createChatSidebarApi(adapter, shallow.directory, personUid),
   );
 
   let companies = $state(
@@ -150,6 +157,7 @@
   }
 
   onMount(async () => {
+    self = await hydrateDesktopSelf(hostSelf, adapter);
     if (!self) return;
     try {
       const res = await adapter.identity.listWorkspaces();
@@ -163,8 +171,8 @@
     await refreshWorkThreads(companies);
   });
 
-  onMount(() => {
-    if (!untrack(() => self)) return;
+  $effect(() => {
+    if (!self) return;
     const mesh = startWebMesh({
       wakes,
       fetchImpl: hqProFetch,
@@ -347,6 +355,8 @@
     {filesByRow}
     loadFilePreview={loadVaultFilePreview}
     {channelStatusByRow}
+    putAttachmentObject={attachmentHandlers?.putAttachmentObject}
+    getAttachmentObject={attachmentHandlers?.getAttachmentObject}
     identities={identitiesFromContacts(shallow.contacts)}
     mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
     coreFixtures={false}

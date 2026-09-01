@@ -6,7 +6,12 @@
 
 import type { AuthConfig } from "./types.js";
 
-/** Hosted-UI flow needs the domain + client id + an origin to return to. */
+/** Hosted-UI flow needs the domain, client id, issuer, and an origin to return to. */
 export function isSigninConfigured(config: AuthConfig): boolean {
-  return Boolean(config.hostedUiDomain && config.clientId && config.appOrigin);
+  return Boolean(
+    config.hostedUiDomain &&
+      config.clientId &&
+      config.issuer &&
+      config.appOrigin,
+  );
 }

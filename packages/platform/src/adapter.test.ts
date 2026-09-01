@@ -58,8 +58,11 @@ function makeTauriAdapter() {
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ key: cmd });
     switch (cmd) {
-      case "whoami":
-        return WHOAMI;
+      case "hq_pro_fetch":
+        if (args?.url === "/v1/identity/whoami") {
+          return { status: 200, body: JSON.stringify(WHOAMI) };
+        }
+        throw new Error(`unknown hq-pro path: ${String(args?.url)}`);
       case "list_channels":
         return CHANNELS;
       case "fetch_notifications":
@@ -188,6 +191,45 @@ describe("PlatformAdapter contract", () => {
       code: "invoke",
       message: "command failed",
     });
+  });
+
+  it("routes desktop identity and memberships through the authenticated hq-pro command", async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd !== "hq_pro_fetch") {
+          throw new Error(`unexpected command: ${cmd}`);
+        }
+        if (args?.url === "/v1/identity/whoami") {
+          return { status: 200, body: JSON.stringify(WHOAMI) };
+        }
+        if (args?.url === "/membership/me") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              memberships: [{ companyUid: "cmp_1", companyName: "One" }],
+            }),
+          };
+        }
+        throw new Error(`unexpected hq-pro path: ${String(args?.url)}`);
+      },
+    });
+
+    expect(expectOk(await adapter.identity.whoami())).toEqual(WHOAMI);
+    expect(expectOk(await adapter.identity.listWorkspaces())).toEqual([
+      { companyUid: "cmp_1", companyName: "One" },
+    ]);
+    expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: "/v1/identity/whoami", method: "GET", body: null },
+      },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: "/membership/me", method: "GET", body: null },
+      },
+    ]);
   });
 
   it("desktop toggleReaction routes through hq_pro_fetch (POST add / DELETE remove), never a toggle_reaction command", async () => {

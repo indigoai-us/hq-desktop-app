@@ -84,6 +84,44 @@ describe("verifyIdToken (data-driven test-JWKS seam)", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("reuses a remote JWKS resolver for repeated verification with one injected fetch", async () => {
+    const { token, jwks } = await mintSession({ sub: "cached-fetch-user" });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(jwks)));
+    const options = { fetch: fetchMock as unknown as typeof fetch };
+
+    await expect(verifyIdToken(config(), token, options)).resolves.toEqual(
+      expect.objectContaining({ sub: "cached-fetch-user" }),
+    );
+    await expect(verifyIdToken(config(), token, options)).resolves.toEqual(
+      expect.objectContaining({ sub: "cached-fetch-user" }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps remote JWKS resolvers isolated by injected fetch", async () => {
+    const first = await mintSession({ sub: "first-fetch-user" });
+    const second = await mintSession({ sub: "second-fetch-user" });
+    const firstFetch = vi.fn(async () =>
+      new Response(JSON.stringify(first.jwks)),
+    );
+    const secondFetch = vi.fn(async () =>
+      new Response(JSON.stringify(second.jwks)),
+    );
+
+    await expect(
+      verifyIdToken(config(), first.token, {
+        fetch: firstFetch as unknown as typeof fetch,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ sub: "first-fetch-user" }));
+    await expect(
+      verifyIdToken(config(), second.token, {
+        fetch: secondFetch as unknown as typeof fetch,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ sub: "second-fetch-user" }));
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("returns null when issuer or clientId is unset (unconfigured)", async () => {
     const { token, jwks } = await mintSession({ sub: "u" });
     expect(

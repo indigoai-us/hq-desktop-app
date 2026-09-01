@@ -42,10 +42,11 @@ describe("isSigninConfigured", () => {
     issuer: "https://issuer",
     appOrigin: "https://work.hq.computer",
   };
-  it("is true only with domain + clientId + appOrigin", () => {
+  it("is true only with domain, clientId, issuer, and appOrigin", () => {
     expect(isSigninConfigured(base)).toBe(true);
     expect(isSigninConfigured({ ...base, appOrigin: "" })).toBe(false);
     expect(isSigninConfigured({ ...base, hostedUiDomain: "" })).toBe(false);
     expect(isSigninConfigured({ ...base, clientId: "" })).toBe(false);
+    expect(isSigninConfigured({ ...base, issuer: "" })).toBe(false);
   });
 });

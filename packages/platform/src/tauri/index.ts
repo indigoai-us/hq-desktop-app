@@ -27,6 +27,22 @@ const MEETINGS_USE_CLOUD = unavailable(
   "Meetings go through hq-pro REST via the desktop composite adapter.",
 );
 
+function membershipRowsFromPayload(value: unknown): Json[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is Json =>
+        typeof item === "object" && item !== null && !Array.isArray(item),
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["memberships", "companies", "workspaces"] as const) {
+      if (Array.isArray(record[key])) return membershipRowsFromPayload(record[key]);
+    }
+  }
+  return [];
+}
+
 export type InvokeFn = (
   cmd: string,
   args?: Record<string, unknown>,
@@ -118,10 +134,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   }
 
   readonly identity: PlatformAdapter["identity"] = {
-    whoami: () => this.call("whoami"),
+    whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) => this.call("has_feature", { flag }),
-    listWorkspaces: () => this.call("list_workspaces"),
+    listWorkspaces: async () => {
+      const result = await this.hqProJson<Json>("GET", "/membership/me");
+      if (!result.ok) return result;
+      return ok(membershipRowsFromPayload(result.value));
+    },
     getProfile: () => this.hqProJson("GET", "/v1/profile"),
     updateProfile: (input) => this.hqProJson("PUT", "/v1/profile", input),
   };

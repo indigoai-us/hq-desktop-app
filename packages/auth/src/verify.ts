@@ -25,6 +25,10 @@ export interface VerifyIdTokenOptions {
 }
 
 let cachedRemoteJwks: { url: string; getKey: JWTVerifyGetKey } | null = null;
+const cachedInjectedRemoteJwks = new WeakMap<
+  typeof fetch,
+  Map<string, JWTVerifyGetKey>
+>();
 
 function jwksForConfig(
   config: AuthConfig,
@@ -34,21 +38,26 @@ function jwksForConfig(
     return createLocalJWKSet(config.testJwks);
   }
   const url = `${config.issuer}/.well-known/jwks.json`;
-  if (!fetchImpl && cachedRemoteJwks && cachedRemoteJwks.url === url) {
+  if (fetchImpl) {
+    let cachedByUrl = cachedInjectedRemoteJwks.get(fetchImpl);
+    if (!cachedByUrl) {
+      cachedByUrl = new Map();
+      cachedInjectedRemoteJwks.set(fetchImpl, cachedByUrl);
+    }
+    const cached = cachedByUrl.get(url);
+    if (cached) return cached;
+    const getKey = createRemoteJWKSet(new URL(url), {
+      [customFetch]: async (jwksUrl, opts) =>
+        fetchImpl(jwksUrl, opts as RequestInit),
+    });
+    cachedByUrl.set(url, getKey);
+    return getKey;
+  }
+  if (cachedRemoteJwks && cachedRemoteJwks.url === url) {
     return cachedRemoteJwks.getKey;
   }
-  const getKey = createRemoteJWKSet(
-    new URL(url),
-    fetchImpl
-      ? {
-          [customFetch]: async (jwksUrl, opts) =>
-            fetchImpl(jwksUrl, opts as RequestInit),
-        }
-      : undefined,
-  );
-  if (!fetchImpl) {
-    cachedRemoteJwks = { url, getKey };
-  }
+  const getKey = createRemoteJWKSet(new URL(url));
+  cachedRemoteJwks = { url, getKey };
   return getKey;
 }
 
