@@ -473,8 +473,17 @@
   const switcherResults = $derived(
     filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
   );
+  // Compose ("new message") never targets the synthetic #setup support row:
+  // it is pinned first in the rail, so with an empty/debounced query it would
+  // be the default first suggestion and a fast type-then-send would misroute
+  // the draft to channelId "setup" instead of the intended conversation.
+  const composeRows = $derived(
+    liveSwitcherRows.filter(
+      (row) => row.kind !== "channel" || !isSetupChannel(row.id),
+    ),
+  );
   const composeResults = $derived(
-    filterSwitcher(liveSwitcherRows, newMessageQueryDebounced).slice(0, 200),
+    filterSwitcher(composeRows, newMessageQueryDebounced).slice(0, 200),
   );
   /** "Create channel #name" offer when the typed channel doesn't exist. */
   const composeCreateName = $derived(
@@ -858,7 +867,7 @@
     const generation = composeGeneration;
     const picked =
       composeRecipient ??
-      filterSwitcher(liveSwitcherRows, newMessageQuery)[0] ??
+      filterSwitcher(composeRows, newMessageQuery)[0] ??
       null;
     if (picked) {
       const body = composeBody;

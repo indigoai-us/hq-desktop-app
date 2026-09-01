@@ -74,6 +74,45 @@ describe("ChatSidebar new-message modal", () => {
     ).toBeNull();
   });
 
+  it("excludes the synthetic #setup channel from compose suggestions", async () => {
+    // Regression: the pinned #setup row sits first in the rail, so with an
+    // empty (or not-yet-debounced) query it used to be the FIRST compose
+    // suggestion — a fast type-then-send misrouted the draft to channelId
+    // "setup" instead of the intended conversation (US-103 compose test).
+    host = document.createElement("div");
+    host.className = "desktop-shell chat-shell";
+    document.body.appendChild(host);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: createFixtureChatSidebarApi(),
+        seedDirectory: [
+          {
+            channelId: "chn_existing",
+            name: "existing",
+            scope: "company",
+            lastActivityAt: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    await tick();
+    await tick();
+
+    (
+      host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement
+    )?.click();
+    await tick();
+
+    const suggestions = Array.from(
+      document.querySelectorAll('[data-testid="chat-compose-suggestion"]'),
+    );
+    expect(suggestions.length).toBeGreaterThan(0);
+    for (const node of suggestions) {
+      expect(node.textContent).not.toMatch(/#?\bsetup\b/i);
+    }
+  });
+
   it("offers create-channel for an unknown channel name and sends the draft as the first message", async () => {
     host = document.createElement("div");
     host.className = "desktop-shell chat-shell";
