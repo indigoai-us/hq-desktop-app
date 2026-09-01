@@ -101,7 +101,7 @@ if ($Action -eq "upgrade") {
   Copy-Item -LiteralPath $resolvedHelper -Destination $stagedHelper
   Copy-Item -LiteralPath $resolvedInstaller -Destination $stagedInstaller
   $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedInstaller).Hash.ToLowerInvariant()
-  $candidateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedHelper).Hash
+  $helperHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedHelper).Hash
   $readyFile = Join-Path $stageDir "helper.ready"
   $receiptFile = Join-Path $stageDir "receipt.json"
 
@@ -149,12 +149,14 @@ if ($Action -eq "upgrade") {
     throw "Unexpected update receipt: $($receipt | ConvertTo-Json -Compress)"
   }
   $upgradedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedApp).Hash
-  if ($upgradedHash -ne $candidateHash) {
-    throw "Upgraded application does not match the candidate binary"
-  }
   if ($upgradedHash -eq $oldHash) {
     throw "Upgrade left the prior-version binary in place"
   }
+  $installedVersion = (Get-Item -LiteralPath $installedApp).VersionInfo.ProductVersion
+  if (-not $installedVersion -or -not $installedVersion.StartsWith($TargetVersion, [StringComparison]::Ordinal)) {
+    throw "Upgraded application version '$installedVersion' does not match target '$TargetVersion'"
+  }
+  Write-Host "Upgrade identity: old=$oldHash helper=$helperHash installed=$upgradedHash version=$installedVersion"
 
   Get-Process -Name "hq-sync-menubar" -ErrorAction SilentlyContinue | ForEach-Object {
     if ($_.Path -eq $installedApp) {

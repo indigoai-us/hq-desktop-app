@@ -82,7 +82,11 @@ describe('Windows production installer E2E', () => {
       'Update helper exited while the prior-version parent was still running',
     );
     expect(installerHarness).toContain(
-      'Upgraded application does not match the candidate binary',
+      'Upgrade left the prior-version binary in place',
+    );
+    expect(installerHarness).toContain('.VersionInfo.ProductVersion');
+    expect(installerHarness).toContain(
+      "does not match target '$TargetVersion'",
     );
     expect(installerHarness).toContain('$receipt.state -ne "installed"');
     expect(workflow).toContain(
