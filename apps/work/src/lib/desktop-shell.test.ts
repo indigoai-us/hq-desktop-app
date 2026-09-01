@@ -39,7 +39,7 @@ describe("desktop shell identity", () => {
     expect(whoami).toHaveBeenCalledOnce();
   });
 
-  it("keeps a server-verified web identity without a whoami round trip", async () => {
+  it("uses caller-scoped whoami for a signed-in web identity", async () => {
     const whoami = vi.fn(async () =>
       ok({ personUid: "prs_unexpected", email: "unexpected@example.com" }),
     );
@@ -51,8 +51,12 @@ describe("desktop shell identity", () => {
 
     await expect(
       hydrateDesktopSelf(hostSelf, identityAdapter("web", whoami)),
-    ).resolves.toBe(hostSelf);
-    expect(whoami).not.toHaveBeenCalled();
+    ).resolves.toEqual({
+      uid: "prs_unexpected",
+      email: "unexpected@example.com",
+      displayName: null,
+    });
+    expect(whoami).toHaveBeenCalledOnce();
   });
 
   it("keeps an unsigned web shell signed out without a whoami round trip", async () => {
@@ -209,7 +213,13 @@ describe("Tauri attachment handlers", () => {
       /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(tauriInvoke\)\s*:\s*null/,
     );
     expect(source).toMatch(/let self = \$state\(hostSelf\)/);
-    expect(source).toMatch(/self = await hydrateDesktopSelf\(hostSelf, adapter\)/);
+    expect(source).toMatch(
+      /const \[hydratedSelf\] = await Promise\.all\(\[\s*hydrateDesktopSelf\(hostSelf, adapter\)/,
+    );
+    expect(source).toMatch(/self = hydratedSelf/);
+    expect(source).toMatch(/await tauriInvoke\("get_auth_session"\)/);
+    expect(source).toContain("{tenantAccountId}");
+    expect(source).toContain("{tenantGeneration}");
     expect(source).toMatch(
       /\$effect\(\(\) => \{\s*seedConversationCacheFromRail\(shallow\);\s*\}\)/,
     );

@@ -59,12 +59,14 @@
     type LiveProjectMeta,
   } from "$lib/live-project";
   import { hqProApiUrl, hqProFetch } from "$lib/hq-pro-client";
+  import { displayVersion } from "$lib/version";
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
     signOutFromShell,
   } from "$lib/desktop-shell";
   import { tauriInvoke } from "$lib/tauri-invoke";
+  import workPackage from "../../package.json";
 
   let { data } = $props();
 
@@ -93,11 +95,18 @@
   const wakes = createChatWakeBus();
   let notificationWakeSeq = $state(0);
 
-  // Self identity from the VERIFIED session (uid = Cognito sub). Null when
-  // the session has no uid. This is the ONLY host-supplied identity — the
-  // shared shell does the "you" tagging + admin gating from it.
+  // The Cognito subject owns the web storage partition. The shared shell's
+  // person identity is hydrated from caller-scoped whoami below.
   const hostSelf = toSelfIdentity(data.user ?? null);
+  const hostAccountId =
+    typeof data.user?.sub === "string" && data.user.sub.trim()
+      ? data.user.sub.trim()
+      : null;
   let self = $state(hostSelf);
+  let tenantAccountId = $state<string | null>(
+    adapter.kind === "web" ? hostAccountId : null,
+  );
+  let tenantGeneration = $state(0);
   const personUid = $derived(self?.uid ?? "");
   const shallow = $derived(readShallowCache(personUid));
   $effect(() => {
@@ -117,6 +126,41 @@
   const projectMetaPending = new Set<string>();
   const projectMetaMiss = new Set<string>();
   let projectMetaTick = $state(0);
+
+  function nativeTenantFromSession(
+    value: unknown,
+  ): { accountId: string | null; generation: number } | null {
+    if (!value || typeof value !== "object") return null;
+    const session = value as Record<string, unknown>;
+    const accountId =
+      typeof session.accountId === "string" && session.accountId.trim()
+        ? session.accountId.trim()
+        : null;
+    const generation = session.generation;
+    if (
+      session.status !== "active" ||
+      typeof generation !== "number" ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1
+    ) {
+      return null;
+    }
+    return { accountId, generation };
+  }
+
+  async function hydrateNativeTenant(): Promise<void> {
+    if (adapter.kind !== "desktop") return;
+    try {
+      const session = nativeTenantFromSession(
+        await tauriInvoke("get_auth_session"),
+      );
+      if (!session) return;
+      tenantAccountId = session.accountId;
+      tenantGeneration = session.generation;
+    } catch {
+      /* keep the no-op storage facade until native establishes a tenant */
+    }
+  }
 
   async function refreshWorkThreads(roster: Workspace[]): Promise<void> {
     const uids = [
@@ -150,7 +194,11 @@
   }
 
   onMount(async () => {
-    self = await hydrateDesktopSelf(hostSelf, adapter);
+    const [hydratedSelf] = await Promise.all([
+      hydrateDesktopSelf(hostSelf, adapter),
+      hydrateNativeTenant(),
+    ]);
+    self = hydratedSelf;
     if (!self) return;
     try {
       const res = await adapter.identity.listWorkspaces();
@@ -285,10 +333,10 @@
     void loadLiveProjectMeta(
       { ...row, projectId: projectId || row.projectId },
       companyLabelFor(row.companyUid),
-    ).then((meta) => {
+    ).then(({ meta, definitiveMiss }) => {
       projectMetaPending.delete(key);
       if (meta) projectMeta.set(key, meta);
-      else projectMetaMiss.add(key);
+      else if (definitiveMiss) projectMetaMiss.add(key);
       projectMetaTick += 1;
     });
     return null;
@@ -328,7 +376,9 @@
           }
         : EMPTY_OVERLAY;
       return statusForRow(row, overlay, () => null, {
-        workThreads,
+        workThreads: workThreads.filter(
+          (thread) => thread.companyUid === row.companyUid,
+        ),
         identities: identitiesFromContacts(shallow.contacts),
       });
     },
@@ -367,7 +417,7 @@
 <div class="shell-root">
   <DesktopApp
     {adapter}
-    version="0.10.41"
+    version={displayVersion(`v${workPackage.version}`)}
     {sidebarApi}
     {notificationsApi}
     {messagesByRow}
@@ -385,6 +435,8 @@
     {wakes}
     {companies}
     {self}
+    {tenantAccountId}
+    {tenantGeneration}
     {initialRow}
     {initialReplyRootEventId}
     {seedDirectory}

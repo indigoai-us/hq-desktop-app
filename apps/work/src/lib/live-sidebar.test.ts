@@ -67,7 +67,7 @@ describe("mergeLiveContacts", () => {
 });
 
 describe("mergeWorkProjectsIntoDirectory", () => {
-  it("adds work-mesh slugs that are not already notify-channel rows", () => {
+  it("keeps work-feed-only projects out of the chat directory", () => {
     const rows = mergeWorkProjectsIntoDirectory(
       [
         {
@@ -93,7 +93,37 @@ describe("mergeWorkProjectsIntoDirectory", () => {
     );
     expect(rows.map((r) => r.projectId ?? r.channelId)).toEqual([
       "hq-work-mono",
-      "indigo-marketing",
+    ]);
+    expect(rows.find((row) => row.projectId === "indigo-marketing")).toBeUndefined();
+  });
+
+  it("enriches the existing notify row without replacing its channel id", () => {
+    const rows = mergeWorkProjectsIntoDirectory(
+      [
+        {
+          channelId: "chn_project_1",
+          type: "project",
+          scope: "project",
+          projectId: "hq-work-mono",
+          name: "Project hq-work-mono abcd",
+          lastActivityAt: "2026-08-16T00:00:00.000Z",
+        },
+      ],
+      [
+        {
+          projectId: "hq-work-mono",
+          companyUid: "cmp_1",
+          lastActivityAt: "2026-08-17T01:00:00.000Z",
+        },
+      ],
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        channelId: "chn_project_1",
+        projectId: "hq-work-mono",
+        lastActivityAt: "2026-08-17T01:00:00.000Z",
+      }),
     ]);
   });
 });

@@ -250,40 +250,7 @@ export function mergeWorkProjectsIntoDirectory(
   rows: ChannelDirectoryRow[],
   items: readonly WorkFeedItem[] = [],
 ): ChannelDirectoryRow[] {
-  const seen = new Set<string>();
-  for (const row of rows) {
-    const id = (row.channelId ?? "").trim().toLowerCase();
-    const project = (row.projectId ?? "").trim().toLowerCase();
-    if (id) seen.add(id);
-    if (project) seen.add(project);
-  }
-  const latest = new Map<string, WorkFeedItem>();
-  for (const item of items) {
-    const key = item.projectId.trim().toLowerCase();
-    if (!key) continue;
-    const prev = latest.get(key);
-    if (
-      !prev ||
-      String(item.lastActivityAt ?? "") > String(prev.lastActivityAt ?? "")
-    ) {
-      latest.set(key, item);
-    }
-  }
-  const extras: ChannelDirectoryRow[] = [];
-  for (const item of latest.values()) {
-    const key = item.projectId.trim().toLowerCase();
-    if (seen.has(key)) continue;
-    extras.push({
-      channelId: item.projectId,
-      type: "project",
-      scope: "project",
-      companyUid: item.companyUid,
-      projectId: item.projectId,
-      name: item.projectId,
-      lastActivityAt: item.lastActivityAt,
-    });
-  }
-  return extras.length === 0 ? rows : [...rows, ...extras];
+  return applyHonestDirectoryActivity(rows, items, rows);
 }
 
 export function workItemsAsChannels(

@@ -33,19 +33,30 @@ export interface LiveProjectMeta {
   status: ChannelStatusModel | null;
 }
 
+export interface LiveProjectMetaLoad {
+  meta: LiveProjectMeta | null;
+  definitiveMiss: boolean;
+}
+
 function rec(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
 
-async function fetchJson(path: string): Promise<unknown | null> {
+type JsonFetchResult =
+  | { kind: "ok"; value: unknown }
+  | { kind: "not-found"; value: null }
+  | { kind: "error"; value: null };
+
+async function fetchJson(path: string): Promise<JsonFetchResult> {
   try {
     const res = await hqProFetch(path);
-    if (!res.ok) return null;
-    return await res.json();
+    if (res.status === 404) return { kind: "not-found", value: null };
+    if (!res.ok) return { kind: "error", value: null };
+    return { kind: "ok", value: await res.json() };
   } catch {
-    return null;
+    return { kind: "error", value: null };
   }
 }
 
@@ -68,7 +79,7 @@ export async function listVaultProjectFiles(
 ): Promise<ChannelFileItemModel[]> {
   if (!companyUid || !projectId) return [];
   const prefix = `projects/${projectId}/`;
-  const raw = await fetchJson(
+  const { value: raw } = await fetchJson(
     `/v1/files/list?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}`,
   );
   const files: MeshProjectFile[] = [];
@@ -202,12 +213,12 @@ export function metaFromProjectView(
 export async function loadLiveProjectMeta(
   row: ConversationRow,
   companyLabel?: string | null,
-): Promise<LiveProjectMeta | null> {
+): Promise<LiveProjectMetaLoad> {
   const projectId = (row.projectId ?? "").trim();
   const companyUid = (row.companyUid ?? "").trim();
   const channelId = (row.channelId ?? "").trim();
   if (!channelId.startsWith("chn_") && (!projectId || !companyUid)) {
-    return null;
+    return { meta: null, definitiveMiss: true };
   }
 
   const [viewRaw, membersRaw, sessionsRaw] = await Promise.all([
@@ -215,38 +226,49 @@ export async function loadLiveProjectMeta(
       ? fetchJson(
           `/v1/work-mesh/projects/${encodeURIComponent(projectId)}?companyUid=${encodeURIComponent(companyUid)}`,
         )
-      : Promise.resolve(null),
+      : Promise.resolve({ kind: "not-found", value: null } as const),
     channelId.startsWith("chn_")
       ? fetchJson(
           `/v1/notify/channels/${encodeURIComponent(channelId)}/members`,
         )
-      : Promise.resolve(null),
+      : Promise.resolve({ kind: "not-found", value: null } as const),
     projectId && companyUid
       ? fetchJson(
           `/v1/work-mesh/work-sessions?companyUid=${encodeURIComponent(companyUid)}&projectId=${encodeURIComponent(projectId)}`,
         )
-      : Promise.resolve(null),
+      : Promise.resolve({ kind: "not-found", value: null } as const),
   ]);
 
-  const view = parseMeshProjectView(viewRaw);
-  const members = parseChannelMembers(membersRaw);
-  const sessions = parseWorkSessions(sessionsRaw);
+  const view = parseMeshProjectView(viewRaw.value);
+  const members = parseChannelMembers(membersRaw.value);
+  const sessions = parseWorkSessions(sessionsRaw.value);
   if (view) {
     const meta = metaFromProjectView(view, members, sessions, companyLabel);
-    if (meta.files.length > 0) return meta;
+    if (meta.files.length > 0) return { meta, definitiveMiss: false };
     const vaultFiles = await listVaultProjectFiles(companyUid, projectId);
-    return { ...meta, files: vaultFiles };
+    return { meta: { ...meta, files: vaultFiles }, definitiveMiss: false };
   }
-  if (members.length === 0 && sessions.length === 0) return null;
+  if (members.length === 0 && sessions.length === 0) {
+    return {
+      meta: null,
+      definitiveMiss:
+        viewRaw.kind === "not-found" &&
+        membersRaw.kind === "not-found" &&
+        sessionsRaw.kind === "not-found",
+    };
+  }
   return {
-    board: null,
-    files: [],
-    status: buildChannelStatusModel({
-      project: { id: projectId, title: row.title },
-      members,
-      serverSessions: sessions,
-      companyLabel,
-    }),
+    meta: {
+      board: null,
+      files: [],
+      status: buildChannelStatusModel({
+        project: { id: projectId, title: row.title },
+        members,
+        serverSessions: sessions,
+        companyLabel,
+      }),
+    },
+    definitiveMiss: false,
   };
 }
 
