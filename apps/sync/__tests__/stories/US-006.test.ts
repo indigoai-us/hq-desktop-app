@@ -192,7 +192,12 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     const page = normalize(meetingsPage);
     const agenda = normalize(meetingsAgenda);
     expect(meetingsStore).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
-    expect(page).toContain('const upcomingEvents = $derived([...events].sort(sortByStart))');
+    // Linkless placeholder blocks (Busy / Office / Home) are filtered at the
+    // data layer before sorting, so every downstream derivation sees only
+    // meetings a notetaker could join (or past ones with a recap).
+    expect(page).toContain(
+      'const upcomingEvents = $derived( filterListableMeetings(events, botsByEventId, scheduledBots).sort(sortByStart), )',
+    );
     expect(page).toContain('const dayGroups = $derived(groupByDay(upcomingEvents))');
     expect(page).toContain('const upNext = $derived(pickUpNext(upcomingEvents))');
     expect(page).toContain('const signalTotals = $derived(totalSignalCounts(upcomingEvents))');
