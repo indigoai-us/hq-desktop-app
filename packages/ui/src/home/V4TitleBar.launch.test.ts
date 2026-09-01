@@ -328,7 +328,7 @@ describe("V4TitleBar cluster tooltips", () => {
     for (const testid of ["titlebar-launch", "titlebar-core-pill"]) {
       const pill = host.querySelector(`[data-testid="${testid}"]`);
       expect(pill, `${testid} renders`).toBeTruthy();
-      const caret = pill?.querySelector(".v4-core-caret");
+      const caret = pill?.querySelector('[data-testid="caret"]');
       expect(caret, `${testid} has a caret`).toBeTruthy();
       // Geometry, not a text glyph: U+2304 DOWN ARROWHEAD draws its ink low
       // in the em box, so flex centering could never optically centre it.

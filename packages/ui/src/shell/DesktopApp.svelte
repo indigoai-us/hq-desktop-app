@@ -196,6 +196,7 @@
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
+  import Caret from "../common/Caret.svelte";
 
   interface Props {
     /** Platform seam — forwarded to the title-bar Core popover. */
@@ -2445,9 +2446,7 @@
                     <span class="member-count-num"
                       >{memberPillCount || "·"}</span
                     >
-                    <span class="member-count-chevron" aria-hidden="true"
-                      >⌄</span
-                    >
+                    <Caret tone="var(--t3)" size="0.9em" />
                   </button>
                   {#if membersOpen && selectedRow}
                     <ChannelStatusPopover
@@ -2945,11 +2944,6 @@
     font-weight: 500;
   }
 
-  .member-count-chevron {
-    color: var(--t3);
-    font-size: 11px;
-    line-height: 1;
-  }
 
   .member-pill-wrap {
     position: relative;

@@ -99,6 +99,7 @@
   } from "./sidebar-modal-fixtures";
   import "./tokens.css";
   import "./chat-tokens.css";
+  import Caret from "../common/Caret.svelte";
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -1625,7 +1626,7 @@
           >
         {/if}
         {scopeLabel}
-        <span class="chat-scope-caret" aria-hidden="true">⌄</span>
+        <Caret tone="var(--t3)" />
       </button>
       {#if scopeMenuOpen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2886,12 +2887,6 @@
     opacity: 0.65;
   }
 
-  .chat-scope-caret {
-    flex: 0 0 auto;
-    color: var(--t3);
-    font-size: 10px;
-    line-height: 1;
-  }
 
   /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
      no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
