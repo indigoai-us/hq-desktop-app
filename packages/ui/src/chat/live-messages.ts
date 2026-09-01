@@ -37,6 +37,100 @@ export function isReplyMessage(
   return rootEventId.length > 0 && rootEventId !== row.eventId;
 }
 
+/**
+ * Fold the reply rows a fetched page already carries onto their root rows:
+ * `lastReplyAt` (newest reply time) and `replyAuthors` (distinct, in
+ * first-appearance order). hq-pro stores only `replyCount` on the root and
+ * returns replies as ordinary rows in the SAME channel/DM partition page, so
+ * this derives the Slack-style affordance data with NO extra fetch.
+ *
+ * Pure and order-independent: replies may be mapped before or after their
+ * root. Roots with no replies in the page are returned untouched (count-only
+ * rendering), never half-populated.
+ */
+export function foldReplyMetadata(
+  rows: readonly ConversationMessageWire[],
+): ConversationMessageWire[] {
+  const repliesByRoot = new Map<string, ConversationMessageWire[]>();
+  for (const row of rows) {
+    if (!isReplyMessage(row)) continue;
+    const rootId = (row.rootEventId ?? "").trim();
+    if (!rootId) continue;
+    const list = repliesByRoot.get(rootId);
+    if (list) list.push(row);
+    else repliesByRoot.set(rootId, [row]);
+  }
+  if (repliesByRoot.size === 0) return rows.slice();
+
+  return rows.map((row) => {
+    const replies = repliesByRoot.get(row.eventId);
+    if (!replies || isReplyMessage(row)) return row;
+    const ordered = [...replies].sort((a, b) =>
+      a.createdAt === b.createdAt
+        ? a.eventId < b.eventId
+          ? -1
+          : 1
+        : a.createdAt < b.createdAt
+          ? -1
+          : 1,
+    );
+    let replyAuthors = [...(row.replyAuthors ?? [])];
+    for (const reply of ordered) {
+      replyAuthors = appendReplyAuthor(replyAuthors, reply);
+    }
+    const newest = ordered[ordered.length - 1]?.createdAt ?? null;
+    return {
+      ...row,
+      // A page only ever adds replies, so never move lastReplyAt backwards.
+      lastReplyAt: laterIso(newest, row.lastReplyAt ?? null),
+      ...(replyAuthors.length > 0 ? { replyAuthors } : {}),
+    };
+  });
+}
+
+/** Later of two ISO stamps; tolerant of blank/unparseable values. */
+export function laterIso(
+  candidate: string | null | undefined,
+  current: string | null | undefined,
+): string | null {
+  const next = (candidate ?? "").trim();
+  const prev = (current ?? "").trim();
+  if (!next) return prev || null;
+  if (!prev) return next;
+  const nextTs = Date.parse(next);
+  const prevTs = Date.parse(prev);
+  if (!Number.isFinite(nextTs)) return prev;
+  if (!Number.isFinite(prevTs) || nextTs >= prevTs) return next;
+  return prev;
+}
+
+/** Append a reply's author to a distinct, first-appearance-ordered list.
+ *  Keyed by personUid, falling back to the display name for uid-less rows. */
+export function appendReplyAuthor(
+  authors: NonNullable<ConversationMessageWire["replyAuthors"]>,
+  reply: Pick<
+    ConversationMessageWire,
+    "fromPersonUid" | "fromDisplayName" | "fromEmail"
+  >,
+): NonNullable<ConversationMessageWire["replyAuthors"]> {
+  const personUid = (reply.fromPersonUid ?? "").trim();
+  const displayName =
+    (reply.fromDisplayName ?? "").trim() || (reply.fromEmail ?? "").trim();
+  const key = personUid || displayName;
+  if (!key) return authors;
+  if (authors.some((a) => (a.personUid || a.displayName) === key)) {
+    return authors;
+  }
+  return [
+    ...authors,
+    {
+      personUid,
+      displayName: displayName || personUid,
+      ...(personUid.startsWith("agt_") ? { agent: true } : {}),
+    },
+  ];
+}
+
 /** Newest-first page size used when hydrating the main timeline. */
 export const TIMELINE_ROOT_PAGE_SIZE = 50;
 /** Extra newest-first pages fetched when the first page is mostly replies. */
@@ -79,6 +173,10 @@ export async function collectTimelineRoots(options: {
   const pageSize = options.pageSize ?? TIMELINE_ROOT_PAGE_SIZE;
   const maxExtraPages = options.maxExtraPages ?? TIMELINE_ROOT_MAX_EXTRA_PAGES;
   const roots: ConversationMessageWire[] = [];
+  // Reply rows seen across every fetched page. A reply is always NEWER than
+  // its root, so any root in this newest-first window has all of its replies
+  // in the same window — collected here and folded onto the roots below.
+  const replyRows: ConversationMessageWire[] = [];
   const seen = new Set<string>();
   let cursor: string | null = options.initialCursor ?? null;
   const maxPages = 1 + Math.max(0, maxExtraPages);
@@ -92,7 +190,11 @@ export async function collectTimelineRoots(options: {
       page.messages !== undefined ? page.messages : page,
     );
     for (const row of mapped) {
-      if (isReplyMessage(row) || seen.has(row.eventId)) continue;
+      if (isReplyMessage(row)) {
+        replyRows.push(row);
+        continue;
+      }
+      if (seen.has(row.eventId)) continue;
       seen.add(row.eventId);
       roots.push(row);
     }
@@ -102,7 +204,12 @@ export async function collectTimelineRoots(options: {
         : null;
   }
 
-  return { roots, nextCursor: cursor };
+  return {
+    roots: foldReplyMetadata([...roots, ...replyRows]).filter(
+      (row) => !isReplyMessage(row),
+    ),
+    nextCursor: cursor,
+  };
 }
 
 function parseWireReactions(
@@ -249,8 +356,9 @@ export function normalizeConversationMessages(
 
 /** REST returns newest-first; ChannelConversation wants oldest → newest. */
 export function messagesForDisplay(raw: unknown): ConversationMessageWire[] {
-  return [...normalizeConversationMessages(raw)]
-    .reverse()
+  // Fold FIRST: the reply rows carry the author + time the root affordance
+  // needs, and are discarded on the next line.
+  return foldReplyMetadata([...normalizeConversationMessages(raw)].reverse())
     .filter((row) => !isReplyMessage(row));
 }
 
@@ -298,12 +406,23 @@ export function mergeTimelineMessages(
       changed = true;
       continue;
     }
+    // Reply metadata is derived per page, so a catch-up page that carries the
+    // root but not its replies must not wipe what an earlier page folded.
+    let replyAuthors = [...(prev.replyAuthors ?? [])];
+    for (const author of row.replyAuthors ?? []) {
+      replyAuthors = appendReplyAuthor(replyAuthors, {
+        fromPersonUid: author.personUid,
+        fromDisplayName: author.displayName,
+      });
+    }
     byId.set(row.eventId, {
       ...prev,
       ...row,
       attachments: mergeAttachmentFields(prev.attachments, row.attachments),
       mentions: row.mentions ?? prev.mentions,
       reactions: row.reactions ?? prev.reactions,
+      lastReplyAt: laterIso(row.lastReplyAt, prev.lastReplyAt),
+      ...(replyAuthors.length > 0 ? { replyAuthors } : {}),
     });
     changed = true;
   }

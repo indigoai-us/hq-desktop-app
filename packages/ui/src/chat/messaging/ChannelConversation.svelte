@@ -461,6 +461,25 @@
     return formatTime(iso);
   }
 
+
+  /**
+   * Affordance data for a root. Prefers a ReplyPanel-sourced preview (freshest
+   * once a thread has been opened) and otherwise derives it from the row
+   * itself — `foldReplyMetadata` populates `lastReplyAt` / `replyAuthors` from
+   * the reply rows the timeline page already carried, so avatars + the
+   * last-reply stamp render on FIRST paint without opening the thread.
+   */
+  function replyMetaFor(msg: ConversationMessageWire): {
+    at: string | null;
+    authors: NonNullable<ConversationMessageWire["replyAuthors"]>;
+  } {
+    const preview = replyPreviewByRoot[msg.eventId];
+    const authors = preview?.authors?.length
+      ? preview.authors
+      : (msg.replyAuthors ?? []);
+    return { at: preview?.at ?? msg.lastReplyAt ?? null, authors };
+  }
+
   function replyLabel(count: number): string {
     return count === 1 ? "1 reply" : `${count} replies`;
   }
@@ -1029,7 +1048,7 @@
                   />
                 </div>
                 {#if (msg.replyCount ?? 0) > 0}
-                  {@const preview = replyPreviewByRoot[msg.eventId]}
+                  {@const preview = replyMetaFor(msg)}
                   <button
                     type="button"
                     class="dm-replies-count"
@@ -1037,7 +1056,7 @@
                     aria-label={replyLabel(msg.replyCount ?? 0)}
                     onclick={() => openReply(msg.eventId)}
                   >
-                    {#if preview?.authors?.length}
+                    {#if preview.authors.length}
                       <span
                         class="dm-replies-avatars"
                         data-testid="reply-authors"
@@ -1057,7 +1076,7 @@
                       </span>
                     {/if}
                     {replyLabel(msg.replyCount ?? 0)}
-                    {#if preview}
+                    {#if preview.at}
                       <span class="dm-replies-preview">
                         Last reply {formatRelative(preview.at)}
                       </span>

@@ -55,6 +55,10 @@
     sendStatus?: "sending" | "failed";
     rootEventId?: string | null;
     replyCount?: number;
+    /** Derived by `foldReplyMetadata` from the reply rows in the fetched
+     *  page — drives the avatar stack + last-reply stamp on first render. */
+    lastReplyAt?: string | null;
+    replyAuthors?: ConversationMessageWire["replyAuthors"];
   }
 
   /** Windowed timeline: newest window only; scroll-back pages via cursor. */
@@ -84,6 +88,8 @@
       direction: wire.direction === "out" ? "out" : "in",
       rootEventId: wire.rootEventId,
       replyCount: wire.replyCount,
+      lastReplyAt: wire.lastReplyAt,
+      replyAuthors: wire.replyAuthors,
     };
   }
 
@@ -338,6 +344,25 @@
     return timeLabel(iso);
   }
 
+
+  /**
+   * Affordance data for a root. Prefers a ReplyPanel-sourced preview (freshest
+   * once a thread has been opened) and otherwise derives it from the row
+   * itself — `foldReplyMetadata` populates `lastReplyAt` / `replyAuthors` from
+   * the reply rows the timeline page already carried, so avatars + the
+   * last-reply stamp render on FIRST paint without opening the thread.
+   */
+  function replyMetaFor(msg: MessageRow): {
+    at: string | null;
+    authors: NonNullable<ConversationMessageWire["replyAuthors"]>;
+  } {
+    const preview = replyPreviewByRoot[msg.eventId];
+    const authors = preview?.authors?.length
+      ? preview.authors
+      : (msg.replyAuthors ?? []);
+    return { at: preview?.at ?? msg.lastReplyAt ?? null, authors };
+  }
+
   function replyLabel(count: number): string {
     return count === 1 ? "1 reply" : `${count} replies`;
   }
@@ -467,7 +492,7 @@
                     Reply
                   </button>
                   {#if (m.replyCount ?? 0) > 0}
-                    {@const preview = replyPreviewByRoot[m.eventId]}
+                    {@const preview = replyMetaFor(m)}
                     <button
                       type="button"
                       class="conv-replies-count"
@@ -475,7 +500,7 @@
                       aria-label={replyLabel(m.replyCount ?? 0)}
                       onclick={() => openReply(m.eventId)}
                     >
-                      {#if preview?.authors?.length}
+                      {#if preview.authors.length}
                         <span
                           class="conv-replies-avatars"
                           data-testid="reply-authors"
@@ -493,7 +518,7 @@
                         </span>
                       {/if}
                       {replyLabel(m.replyCount ?? 0)}
-                      {#if preview}
+                      {#if preview.at}
                         <span class="conv-replies-preview">
                           Last reply {formatRelative(preview.at)}
                         </span>

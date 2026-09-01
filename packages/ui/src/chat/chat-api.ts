@@ -125,10 +125,21 @@ export interface ConversationMessageWire {
   /** Reply count on a root. Absent on old rows and on replies themselves. */
   replyCount?: number;
   /**
-   * Optional last-reply timestamp. hq-pro list pages do not store this —
-   * callers must not require it.
+   * Optional last-reply timestamp. hq-pro list pages do not store this on the
+   * root row — it is DERIVED locally by folding the reply rows the same page
+   * already carries (see `foldReplyMetadata`). Callers must not require it.
    */
   lastReplyAt?: string | null;
+  /**
+   * Distinct reply authors on a root, first-appearance order. Like
+   * `lastReplyAt`, derived locally from the reply rows in the fetched page —
+   * hq-pro does not store participants on the root row.
+   */
+  replyAuthors?: Array<{
+    personUid: string;
+    displayName: string;
+    agent?: boolean;
+  }> | null;
 }
 
 /** Channel detail + newest-first message page (desktop `fetch_channel`). */
