@@ -30,6 +30,9 @@ const STORE = read('src/desktop-alt/lib/live-session-store.svelte.ts');
 const ADAPTER = read('src/components/sessions/transcript-adapter.ts');
 const TRANSCRIPT = read('src/components/sessions/SessionTranscript.svelte');
 const COMPOSER = read('src/components/sessions/SessionComposer.svelte');
+const MENTIONS = read('src/components/sessions/mentions.ts');
+const MAIN_RS = read('src-tauri/src/main.rs');
+const MENTIONS_RS = read('src-tauri/src/commands/session_mentions.rs');
 
 describe('US-SESSIONS-A — the route', () => {
   it('DesktopRoute carries a sessions kind with an optional id', () => {
@@ -395,5 +398,54 @@ describe('the agent is never silently busy', () => {
     expect(transcript).toContain("tools: 'Working…'");
     // Elapsed seconds only after a grace period, so quick turns stay quiet.
     expect(transcript).toMatch(/statusElapsed >= 4/);
+  });
+});
+
+describe('US-SESSIONS-A — @mentions: teammates and fleet agents from the composer', () => {
+  it('the composer owns the @ popover and the chips, over the same slot as the slash menu', () => {
+    expect(COMPOSER).toContain("import MentionPicker from './MentionPicker.svelte'");
+    expect(COMPOSER).toContain('<MentionPicker');
+    expect(COMPOSER).toContain('data-testid="session-mention-chips"');
+    expect(COMPOSER).toContain('data-testid="session-mention-remove"');
+    // Mention precedence: the slash menu yields to an @ token under the caret.
+    expect(COMPOSER).toContain('const menuOpen = $derived(!mentionOpen && matches.length > 0)');
+    // The chips are the DM list — the send carries exactly what is visible.
+    expect(COMPOSER).toContain('onsend?.(text, attached, chips)');
+  });
+
+  it('the page loads the directory per company and DMs only AFTER the session send', () => {
+    expect(PAGE).toContain(
+      "from '../../components/sessions/mentions'",
+    );
+    expect(PAGE).toContain('loadMentionCandidates(wanted)');
+    expect(PAGE).toContain('{mentionCandidates}');
+    expect(PAGE).toContain('async function onmentionsend(');
+    const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
+    const body = fn.slice(0, fn.indexOf('\n  }\n'));
+    expect(body.indexOf('await liveSessionStore.send(')).toBeLessThan(
+      body.indexOf('await onmentionsend(sessionId, text, mentions)'),
+    );
+    expect(body.indexOf('await liveSessionStore.startAndSend(')).toBeLessThan(
+      body.indexOf('if (started) await onmentionsend(started, text, mentions)'),
+    );
+    // A failed session send returns before any DM goes out.
+    expect(body).toContain("actionError = err instanceof Error ? err.message : String(err);\n        return;");
+  });
+
+  it('routes both Tauri calls through mentions.ts, never a raw invoke on the page', () => {
+    expect(PAGE).not.toContain('invoke(');
+    expect(MENTIONS).toContain("invoke<MentionCandidate[]>('session_mention_candidates'");
+    expect(MENTIONS).toContain("invoke<MentionDelivery[]>('session_mention_notify'");
+  });
+
+  it('registers the two commands and composes the existing directory + DM paths', () => {
+    expect(MAIN_RS).toContain('commands::session_mentions::session_mention_candidates');
+    expect(MAIN_RS).toContain('commands::session_mentions::session_mention_notify');
+    expect(MENTIONS_RS).toContain('messages::list_company_members(company_uid)');
+    expect(MENTIONS_RS).toContain('dm_notify::post_dm_payload(&payload, "SESSION_MENTION_DM")');
+    // No new HTTP endpoints, no transcript in the payload.
+    expect(MENTIONS_RS).not.toContain('/v1/agents');
+    expect(MENTIONS_RS).not.toContain('replay');
+    expect(MENTIONS_RS).toContain('"details": details');
   });
 });

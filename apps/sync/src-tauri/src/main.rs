@@ -678,6 +678,10 @@ fn main() {
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
             commands::agent_session::agent_session_slash_commands,
+            // Sessions composer `@`-mentions: the company directory + the DM
+            // fan-out that runs after a mentioned message is sent.
+            commands::session_mentions::session_mention_candidates,
+            commands::session_mentions::session_mention_notify,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,

@@ -8,6 +8,7 @@ export { default as ActivityRow } from './ActivityRow.svelte';
 export { default as AgentBadge } from './AgentBadge.svelte';
 export { default as Avatar } from './Avatar.svelte';
 export { default as DayDivider } from './DayDivider.svelte';
+export { default as MentionPicker } from './MentionPicker.svelte';
 export { default as MessageRow } from './MessageRow.svelte';
 export { default as MessageTimeline } from './MessageTimeline.svelte';
 export { default as PermissionCard } from './PermissionCard.svelte';
@@ -117,3 +118,26 @@ export {
   slashQueryFor,
 } from './slash-commands';
 export type { SlashQuery } from './slash-commands';
+
+export {
+  addMention,
+  applyMention,
+  deliveryStatusLine,
+  draftHasMention,
+  filterMentionCandidates,
+  loadMentionCandidates,
+  mentionQueryAt,
+  mentionSummary,
+  mentionToken,
+  notifyMentions,
+  pruneMentions,
+  removeMention,
+} from './mentions';
+export type {
+  Mention,
+  MentionCandidate,
+  MentionDelivery,
+  MentionKind,
+  MentionQuery,
+  NotifyMentionsArgs,
+} from './mentions';

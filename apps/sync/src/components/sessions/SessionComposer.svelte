@@ -23,10 +23,28 @@
    * popover with its top sliced off.
    *
    * All autocomplete decisions come from the pure helpers in
-   * `./slash-commands`, and every model name comes from `./session-models`;
-   * this component owns only the DOM and the keyboard.
+   * `./slash-commands` and `./mentions`, and every model name comes from
+   * `./session-models`; this component owns only the DOM and the keyboard.
+   *
+   * `@`-mentions: an `@` at a word start opens `MentionPicker` over the same
+   * slot the slash menu uses (the two never show together — a mention token
+   * under the caret wins). Picking inserts `@Display Name` AND keeps a chip
+   * under the textarea that says who will be DMed; the chip has an × and a
+   * mention whose text was deleted loses its chip, so nothing is ever DMed
+   * that the user cannot see promised right under their draft.
    */
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import MentionPicker from './MentionPicker.svelte';
+  import {
+    addMention,
+    applyMention,
+    filterMentionCandidates,
+    mentionQueryAt,
+    pruneMentions,
+    removeMention,
+    type Mention,
+    type MentionCandidate,
+  } from './mentions';
   import { filterSlashCommands, applySlashCommand } from './slash-commands';
   import type { SessionCommand } from './session-events';
   import type { ComposerImage, SessionModel, SessionToolId } from './session-models';
@@ -84,7 +102,13 @@
     /** Footer: the HQ folder's basename. The whole footer. */
     hqFolder?: string;
 
-    onsend?: (text: string, images: ComposerImage[]) => void;
+    /** Who `@` can mention in the session's company (people + fleet agents). */
+    mentionCandidates?: MentionCandidate[];
+    /** The last mention fan-out's outcome, e.g. "DM'd Corey Epstein". */
+    mentionStatus?: { text: string; error: boolean } | null;
+
+    /** `mentions` are the chips still showing at send time — the DM list. */
+    onsend?: (text: string, images: ComposerImage[], mentions: Mention[]) => void;
     onstop?: () => void;
     oncompany?: (slug: string | null) => void;
     onmodel?: (value: string | null) => void;
@@ -112,6 +136,8 @@
     newSessionPending = false,
     overridesDeferred = false,
     hqFolder = '',
+    mentionCandidates = [],
+    mentionStatus = null,
     onsend,
     onstop,
     oncompany,
@@ -132,8 +158,30 @@
   let lastDraft = $state('');
   let openMenu = $state<MenuName | null>(null);
 
+  // --- @mentions ------------------------------------------------------------
+  /** Where the caret is, mirrored from the textarea on every edit/move. */
+  let caret = $state(0);
+  /** Every mention picked so far; `chips` is the subset the draft still names. */
+  let mentions = $state<Mention[]>([]);
+  let mentionHighlighted = $state(0);
+  /** Dismissed with Escape; re-armed as soon as the draft changes. */
+  let mentionSuppressed = $state(false);
+
+  const mentionQuery = $derived(mentionSuppressed ? null : mentionQueryAt(draft, caret));
+  const mentionMatches = $derived(
+    mentionQuery ? filterMentionCandidates(mentionCandidates, mentionQuery.query) : [],
+  );
+  const mentionOpen = $derived(mentionQuery !== null && mentionMatches.length > 0);
+  const mentionIndex = $derived(
+    mentionMatches.length === 0
+      ? 0
+      : Math.min(Math.max(mentionHighlighted, 0), mentionMatches.length - 1),
+  );
+  const chips = $derived(pruneMentions(mentions, draft));
+
   const matches = $derived(suppressed ? [] : filterSlashCommands(draft, commands));
-  const menuOpen = $derived(matches.length > 0);
+  // A mention token under the caret takes the slot; the slash menu yields.
+  const menuOpen = $derived(!mentionOpen && matches.length > 0);
   const safeIndex = $derived(
     matches.length === 0 ? 0 : Math.min(Math.max(highlighted, 0), matches.length - 1),
   );
@@ -201,7 +249,38 @@
     lastDraft = draft;
     suppressed = false;
     highlighted = 0;
+    mentionSuppressed = false;
+    mentionHighlighted = 0;
   });
+
+  /** Mirror the textarea's caret so the `@` query follows the cursor. */
+  function syncCaret() {
+    const el = textarea;
+    if (!el) return;
+    const at = el.selectionStart;
+    caret = typeof at === 'number' ? at : draft.length;
+  }
+
+  async function pickMention(candidate: MentionCandidate) {
+    const query = mentionQuery;
+    if (!query) return;
+    const next = applyMention(draft, query, candidate);
+    draft = next.draft;
+    mentions = addMention(mentions, candidate);
+    mentionSuppressed = true;
+    caret = next.caret;
+    await tick();
+    const el = textarea;
+    if (el) {
+      if (typeof el.setSelectionRange === 'function') el.setSelectionRange(next.caret, next.caret);
+      el.focus();
+    }
+  }
+
+  function dropMention(uid: string) {
+    mentions = removeMention(mentions, uid);
+    textarea?.focus();
+  }
 
   function toggleMenu(name: MenuName, event: MouseEvent) {
     // Without this the window listener below would close the menu the same
@@ -230,14 +309,41 @@
   function submit() {
     const text = draft.trim();
     if (!text || disabled) return;
-    onsend?.(text, attached);
+    onsend?.(text, attached, chips);
     draft = '';
     attached = [];
     attachError = '';
     suppressed = false;
+    mentions = [];
+    mentionSuppressed = false;
+    caret = 0;
   }
 
   function onKeydown(event: KeyboardEvent) {
+    if (mentionOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        mentionHighlighted = (mentionIndex + 1) % mentionMatches.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        mentionHighlighted = (mentionIndex - 1 + mentionMatches.length) % mentionMatches.length;
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        const chosen = mentionMatches[mentionIndex];
+        if (chosen) void pickMention(chosen);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        mentionSuppressed = true;
+        return;
+      }
+    }
+
     if (menuOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -329,6 +435,15 @@
     <p class="composer-notice" role="alert" data-testid="session-composer-notice">{notice}</p>
   {/if}
 
+  {#if mentionOpen}
+    <MentionPicker
+      candidates={mentionMatches}
+      highlighted={mentionIndex}
+      onpick={(candidate) => void pickMention(candidate)}
+      onhover={(index) => (mentionHighlighted = index)}
+    />
+  {/if}
+
   {#if menuOpen}
     <ul
       class="slash-menu"
@@ -389,11 +504,36 @@
         aria-label="Message the agent"
         data-testid="session-composer-input"
         onkeydown={onKeydown}
+        onkeyup={syncCaret}
+        oninput={syncCaret}
+        onclick={syncCaret}
+        onselect={syncCaret}
       ></textarea>
       {#if canSend && !working}
         <span class="enter-hint" aria-hidden="true">⏎</span>
       {/if}
     </div>
+
+    {#if chips.length > 0}
+      <div class="mention-chips" data-testid="session-mention-chips">
+        <span class="mention-chips-label">Will DM</span>
+        {#each chips as mention (mention.uid)}
+          <span class="mention-chip" data-testid="session-mention-chip" data-uid={mention.uid}>
+            <span class="mention-chip-name">{mention.displayName}</span>
+            <button
+              type="button"
+              class="mention-chip-remove"
+              aria-label={`Don't DM ${mention.displayName}`}
+              title={`Don't DM ${mention.displayName}`}
+              data-testid="session-mention-remove"
+              onclick={() => dropMention(mention.uid)}
+            >
+              ✕
+            </button>
+          </span>
+        {/each}
+      </div>
+    {/if}
 
     <div class="controls" data-testid="session-composer-controls">
       <div class="cluster">
@@ -676,6 +816,16 @@
     {/if}
     {#if attachError}
       <span class="foot-note error" data-testid="session-attach-error">{attachError}</span>
+    {/if}
+    {#if mentionStatus}
+      <span
+        class="foot-note"
+        class:error={mentionStatus.error}
+        role={mentionStatus.error ? 'alert' : undefined}
+        data-testid="session-mention-status"
+      >
+        {mentionStatus.text}
+      </span>
     {/if}
   </div>
 </div>
@@ -1012,6 +1162,57 @@
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 11px;
     cursor: pointer;
+  }
+
+  /* --- @mention chips --------------------------------------------------- */
+
+  /* The chip is the promise: one row under the draft naming every recipient
+     the send will DM, each removable. It reads as a sentence ("Will DM Corey
+     Epstein"), because the action it announces leaves the app. */
+  .mention-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin: 0 0 2px;
+    padding: 0 4px;
+  }
+
+  .mention-chips-label {
+    font-size: 11px;
+    color: var(--v4-text-3);
+  }
+
+  .mention-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 4px 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-2);
+    font-size: 11px;
+  }
+
+  .mention-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--v4-text-3);
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .mention-chip-remove:hover {
+    color: var(--v4-text-1);
+    background: var(--v4-active-row);
   }
 
   /* --- footer ----------------------------------------------------------- */
