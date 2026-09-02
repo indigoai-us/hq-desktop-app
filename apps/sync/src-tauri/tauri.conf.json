@@ -35,6 +35,8 @@
         "decorations": true,
         "transparent": true,
         "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 24 },
         "url": "desktop-alt.html",
         "visible": false,
         "create": false

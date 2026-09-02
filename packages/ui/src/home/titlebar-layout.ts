@@ -8,8 +8,8 @@
  * Back control clears the lights instead of sitting under them.
  *
  * Keep the Rust copy in `apps/sync/src-tauri/src/titlebar_layout.rs` and the
- * desktop-alt window `trafficLightPosition` in lockstep when that file lands
- * — pinned by the source-contract test in
+ * desktop-alt window `trafficLightPosition` in lockstep — pinned by the
+ * source-contract test in
  * `apps/sync/e2e/desktop-alt/titlebar-traffic-lights.spec.ts`.
  */
 
