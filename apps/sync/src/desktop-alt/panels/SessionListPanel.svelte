@@ -1,7 +1,11 @@
 <script lang="ts">
   /**
-   * Left column of the Sessions page: what this app is driving right now, and
-   * what it drove before.
+   * The sessions drawer: what this app is driving right now, and what it drove
+   * before.
+   *
+   * It is an OVERLAY, not a column. A chat surface earns its width by not
+   * spending it on navigation, so this slides over the conversation, closes on
+   * Escape or a scrim click, and closes itself the moment you pick something.
    *
    * TWO stores, deliberately, because they answer two different questions:
    *   - `liveSessionStore.sessions` is the in-app registry — sessions THIS app
@@ -21,11 +25,12 @@
   interface Props {
     activeSessionId?: string;
     onselect?: (sessionId: string) => void;
-    onnew?: () => void;
     onresume?: (session: AgentSession) => void;
+    /** Dismiss the drawer — scrim, Escape, or a chosen row. */
+    onclose?: () => void;
   }
 
-  let { activeSessionId, onselect, onnew, onresume }: Props = $props();
+  let { activeSessionId, onselect, onresume, onclose }: Props = $props();
 
   /** How many history rows to show before the "show more" reveal. */
   const HISTORY_PAGE = 12;
@@ -58,158 +63,173 @@
     sessionsStore.sessions.filter((session) => !liveIds.has(session.id)),
   );
   const visibleHistory = $derived(history.slice(0, historyLimit));
+
+  function choose(sessionId: string) {
+    onselect?.(sessionId);
+    onclose?.();
+  }
+
+  function resume(session: AgentSession) {
+    onresume?.(session);
+    onclose?.();
+  }
+
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') onclose?.();
+  }
 </script>
 
-<aside class="session-list" data-testid="session-list-panel" aria-label="Sessions">
-  <div class="list-head">
-    <span class="list-title">Sessions</span>
-    <button type="button" class="new" data-testid="session-new" onclick={() => onnew?.()}>
-      New session
-    </button>
-  </div>
+<svelte:window onkeydown={onKeydown} />
 
-  <section class="group" aria-labelledby="session-live-heading">
-    <h3 id="session-live-heading" class="group-head">
-      Live <span class="count">{live.length}</span>
-    </h3>
+<div class="drawer-layer" data-testid="session-list-panel">
+  <button
+    type="button"
+    class="scrim"
+    aria-label="Close sessions"
+    data-testid="sessions-drawer-scrim"
+    onclick={() => onclose?.()}
+  ></button>
 
-    {#if liveSessionStore.listError}
-      <p class="group-note" role="alert">{liveSessionStore.listError}</p>
-    {:else if live.length === 0}
-      <p class="group-note">No session running in the app yet.</p>
-    {:else}
-      <ul class="rows">
-        {#each live as session (session.sessionId)}
-          <li>
-            <button
-              type="button"
-              class="row"
-              class:selected={session.sessionId === activeSessionId}
-              data-testid="session-live-row"
-              data-session-id={session.sessionId}
-              aria-current={session.sessionId === activeSessionId ? 'true' : undefined}
-              onclick={() => onselect?.(session.sessionId)}
-            >
-              <span class="row-top">
-                <span class={`pill phase-${session.phase}`} data-testid="session-phase-pill">
-                  {PHASE_LABEL[session.phase]}
+  <aside class="drawer" aria-label="Sessions">
+    <section class="group" aria-labelledby="session-live-heading">
+      <h3 id="session-live-heading" class="group-head">
+        Live <span class="count">{live.length}</span>
+      </h3>
+
+      {#if liveSessionStore.listError}
+        <p class="group-note" role="alert">{liveSessionStore.listError}</p>
+      {:else if live.length === 0}
+        <p class="group-note">No session running in the app yet.</p>
+      {:else}
+        <ul class="rows">
+          {#each live as session (session.sessionId)}
+            <li>
+              <button
+                type="button"
+                class="row"
+                class:selected={session.sessionId === activeSessionId}
+                data-testid="session-live-row"
+                data-session-id={session.sessionId}
+                aria-current={session.sessionId === activeSessionId ? 'true' : undefined}
+                onclick={() => choose(session.sessionId)}
+              >
+                <span class="row-top">
+                  <span class={`dot phase-${session.phase}`} data-testid="session-phase-pill"
+                    aria-label={PHASE_LABEL[session.phase]}></span>
+                  <span class="row-title">{session.company ?? 'No company'}</span>
+                  {#if session.pendingCount > 0}
+                    <span class="pending-chip">{session.pendingCount}</span>
+                  {/if}
                 </span>
-                <span class="row-title">{session.company ?? 'No company'}</span>
-                {#if session.pendingCount > 0}
-                  <span class="pending-chip">{session.pendingCount}</span>
+                <span class="row-meta">
+                  <span class="mono">{session.model ?? 'default model'}</span>
+                  <span class="mono">{relativeActivity(session.lastActivityAt, now)}</span>
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
+    <section class="group" aria-labelledby="session-history-heading">
+      <h3 id="session-history-heading" class="group-head">
+        History <span class="count">{history.length}</span>
+      </h3>
+
+      {#if sessionsStore.loading}
+        <p class="group-note">Looking for sessions on this machine…</p>
+      {:else if history.length === 0}
+        <p class="group-note">Nothing else on this machine.</p>
+      {:else}
+        <ul class="rows">
+          {#each visibleHistory as session (session.id)}
+            <li class="history-row" data-testid="session-history-row">
+              <span class="row-top">
+                <span class="row-title">{session.company || 'No company'}</span>
+                {#if session.tool === 'claude'}
+                  <button
+                    type="button"
+                    class="resume"
+                    data-testid="session-resume"
+                    onclick={() => resume(session)}
+                  >
+                    Resume
+                  </button>
                 {/if}
               </span>
               <span class="row-meta">
-                <span class="mono">{session.model ?? 'default model'}</span>
+                <span class="mono">{session.model || session.tool}</span>
                 <span class="mono">{relativeActivity(session.lastActivityAt, now)}</span>
               </span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
-
-  <section class="group" aria-labelledby="session-history-heading">
-    <h3 id="session-history-heading" class="group-head">
-      History <span class="count">{history.length}</span>
-    </h3>
-
-    {#if sessionsStore.loading}
-      <p class="group-note">Looking for sessions on this machine…</p>
-    {:else if history.length === 0}
-      <p class="group-note">No other sessions observed on this machine.</p>
-    {:else}
-      <ul class="rows">
-        {#each visibleHistory as session (session.id)}
-          <li class="history-row" data-testid="session-history-row" data-session-id={session.id}>
-            <div class="row static">
-              <span class="row-top">
-                <span class="pill tool">{session.tool}</span>
-                <span class="row-title">{session.project || session.company || session.cwd}</span>
-              </span>
-              <span class="row-meta">
-                <span class="mono">{session.company || 'no company'}</span>
-                <span class="mono">{relativeActivity(session.lastActivityAt, now)}</span>
-              </span>
-            </div>
-            {#if session.tool === 'claude'}
-              <button
-                type="button"
-                class="resume"
-                data-testid="session-resume"
-                onclick={() => onresume?.(session)}
-              >
-                Resume
-              </button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-      {#if history.length > visibleHistory.length}
-        <button
-          type="button"
-          class="more"
-          data-testid="session-history-more"
-          onclick={() => (historyLimit += HISTORY_PAGE)}
-        >
-          Show {Math.min(HISTORY_PAGE, history.length - visibleHistory.length)} more
-        </button>
+            </li>
+          {/each}
+        </ul>
+        {#if history.length > visibleHistory.length}
+          <button
+            type="button"
+            class="more"
+            onclick={() => (historyLimit += HISTORY_PAGE)}
+          >
+            Show more
+          </button>
+        {/if}
       {/if}
-    {/if}
-  </section>
-</aside>
+    </section>
+  </aside>
+</div>
 
 <style>
-  .session-list {
+  .drawer-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+  }
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: var(--ws-scrim, rgba(0, 0, 0, 0.32));
+    cursor: default;
+  }
+
+  .drawer {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-4);
-    min-height: 0;
+    gap: var(--v4-space-3);
+    width: 264px;
+    max-width: 78%;
+    height: 100%;
     overflow-y: auto;
-    padding: var(--v4-space-3);
+    padding: var(--v4-space-3) var(--v4-space-2);
     border-right: 1px solid var(--v4-hairline);
+    /* The v4 popover surface is deliberately translucent and expects its own
+       glass filter — without the filter it reads as a thin wash over the chat
+       rather than a panel sitting above it. */
+    background: var(--v4-popover-strong, var(--v4-popover, var(--v4-raised)));
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    box-shadow: var(--v4-shadow-popover, none);
     font-family: var(--font-sans);
-  }
-
-  .list-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--v4-space-2);
-  }
-
-  .list-title {
-    font-size: var(--type-body);
-    font-weight: 500;
-    color: var(--v4-text-1);
-  }
-
-  .new {
-    height: var(--v4-row-h);
-    padding: 0 var(--v4-space-3);
-    border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-    font-family: inherit;
-    font-size: var(--type-metadata);
-    cursor: pointer;
   }
 
   .group {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-2);
-    min-width: 0;
+    gap: 4px;
   }
 
   .group-head {
     display: flex;
-    align-items: center;
-    gap: var(--v4-space-2);
+    align-items: baseline;
+    gap: 6px;
     margin: 0;
-    font-size: var(--type-metadata);
+    padding: 0 var(--v4-space-2);
+    font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -217,76 +237,105 @@
   }
 
   .count {
-    font-variant-numeric: tabular-nums;
-    color: var(--v4-idle);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    letter-spacing: 0;
   }
 
   .group-note {
     margin: 0;
+    padding: 4px var(--v4-space-2);
     font-size: var(--type-metadata);
-    line-height: 1.4;
     color: var(--v4-text-3);
   }
 
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .row {
+  .row,
+  .history-row {
     display: flex;
     flex-direction: column;
     gap: 2px;
     width: 100%;
     padding: 6px var(--v4-space-2);
-    border: 1px solid transparent;
+    border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font-family: inherit;
     text-align: left;
+  }
+
+  .row {
     cursor: pointer;
   }
 
-  .row.static {
-    cursor: default;
-  }
-
-  button.row:hover {
-    background: var(--v4-control-faint);
-  }
-
-  button.row.selected {
-    border-color: var(--v4-hairline);
+  .row:hover {
     background: var(--v4-active-row);
+  }
+
+  .row.selected {
+    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
   }
 
   .row-top {
     display: flex;
     align-items: center;
-    gap: var(--v4-space-2);
+    gap: 6px;
     min-width: 0;
   }
 
   .row-title {
     flex: 1;
     min-width: 0;
-    font-size: var(--type-body);
+    font-size: var(--type-metadata);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-text-3);
+  }
+
+  .dot.phase-working,
+  .dot.phase-needsYou {
+    background: var(--v4-text-1);
+  }
+
+  .dot.phase-ended {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--v4-text-3);
+  }
+
+  .pending-chip {
+    flex: none;
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint, var(--v4-active-row));
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    line-height: 15px;
+    text-align: center;
+    color: var(--v4-text-2);
+  }
+
   .row-meta {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--v4-space-2);
-    font-size: var(--type-metadata);
+    gap: 8px;
+    padding-left: 12px;
+    font-size: 11px;
     color: var(--v4-text-3);
   }
 
@@ -297,71 +346,28 @@
     white-space: nowrap;
   }
 
-  .pill {
-    flex: none;
-    padding: 1px 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    font-size: 10px;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-    color: var(--v4-text-2);
-  }
-
-  .pill.phase-working {
-    border-color: var(--v4-ok);
-    color: var(--v4-ok);
-  }
-
-  .pill.phase-needsYou {
-    border-color: var(--v4-warn);
-    color: var(--v4-warn);
-  }
-
-  .pill.phase-ended {
-    color: var(--v4-idle);
-  }
-
-  .pending-chip {
-    flex: none;
-    min-width: 16px;
-    padding: 0 4px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-warn, var(--v4-control-faint));
-    color: var(--v4-primary-fg);
-    font-size: 10px;
-    font-variant-numeric: tabular-nums;
-    text-align: center;
-  }
-
-  .history-row {
-    display: flex;
-    align-items: center;
-    gap: var(--v4-space-2);
-  }
-
-  .history-row .row {
-    flex: 1;
-    min-width: 0;
-  }
-
   .resume,
   .more {
     flex: none;
-    height: var(--v4-row-h);
-    padding: 0 var(--v4-space-2);
+    height: 20px;
+    padding: 0 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-raised);
+    border-radius: var(--v4-radius-pill);
+    background: transparent;
     color: var(--v4-text-2);
     font-family: inherit;
-    font-size: var(--type-metadata);
+    font-size: 11px;
     cursor: pointer;
   }
 
   .resume:hover,
   .more:hover {
-    color: var(--v4-text-1);
     background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .more {
+    align-self: flex-start;
+    margin: 4px 0 0 var(--v4-space-2);
   }
 </style>

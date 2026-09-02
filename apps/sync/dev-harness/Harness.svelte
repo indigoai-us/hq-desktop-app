@@ -5,6 +5,7 @@
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
+  import SessionsPage from '../src/desktop-alt/pages/SessionsPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
@@ -248,6 +249,9 @@
   // Otherwise the popover mounts in its idle fixture state.
   // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
+  // The routed session for ?view=sessions, owned here so the harness performs
+  // the same navigate-and-remount the real shells do.
+  let harnessSessionId = $state(params.get('session'));
   if (view === 'widget') {
     localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY);
   }
@@ -269,7 +273,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home'
+      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -407,6 +411,28 @@
   <div class="conversation-stage" style="justify-content: center; background: var(--bg, #161616);">
     <CreateChannel onclose={() => {}} oncreated={() => {}} />
   </div>
+{:else if view === 'sessions'}
+  <!-- The in-app Sessions chat. `?session=` mounts a live transcript (folded
+       tool row, inline permission card, usage footer); omit it for the
+       chat-first empty state that starts a session on the first message.
+       Resize the viewport to ~1180x760. -->
+  <div class="sessions-stage">
+    <!-- `{#key}` mirrors the real shells, which remount the page on every
+         route change. That is what makes the first-send path testable here:
+         the message must survive the remount it triggers. -->
+    {#key harnessSessionId}
+      <SessionsPage
+        sessionId={harnessSessionId ?? undefined}
+        onopensession={(id) => {
+          harnessSessionId = id || null;
+          const next = new URL(window.location.href);
+          if (id) next.searchParams.set('session', id);
+          else next.searchParams.delete('session');
+          window.history.replaceState(null, '', next);
+        }}
+      />
+    {/key}
+  </div>
 {:else if view === 'company'}
   <!-- The desktop window's company page (default Board tab). Sized to the
        real desktop content area; data-window='desktop-alt' activates the
@@ -483,6 +509,15 @@
   .window {
     border-radius: var(--radius-popover, 8px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Sessions is a full-bleed page in the real shell: it owns its own height
+     and its own scroll, so the stage gives it the viewport and nothing else. */
+  .sessions-stage {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
   }
 
   /* Desktop window content area (company page). desktop-alt.css paints the

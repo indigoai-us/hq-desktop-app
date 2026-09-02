@@ -7,6 +7,10 @@
    * so this card renders every question in the request and submits once. Values
    * are option LABELS (what `QuestionAnswer.values` carries), not indices.
    *
+   * Once answered the card COLLAPSES to a single line ("Answered · All") —
+   * the decision stays visible as history without holding a screenful of
+   * radio buttons open forever.
+   *
    * Presentation-pure: props in, one callback out.
    */
   import type { SessionQuestion } from './session-events';
@@ -15,13 +19,15 @@
     requestId: string;
     questions: SessionQuestion[];
     busy?: boolean;
+    /** The one-line answer summary, once this client has answered. */
+    resolution?: string | null;
     onsubmit?: (
       requestId: string,
       answers: { questionId: string; values: string[] }[],
     ) => void;
   }
 
-  let { requestId, questions, busy = false, onsubmit }: Props = $props();
+  let { requestId, questions, busy = false, resolution = null, onsubmit }: Props = $props();
 
   /** questionId → picked option labels. Rebuilt whenever the request changes. */
   let picks = $state<Record<string, string[]>>({});
@@ -68,6 +74,15 @@
   }
 </script>
 
+{#if resolution}
+  <p
+    class="question-resolved"
+    data-testid="session-question-resolved"
+    data-request-id={requestId}
+  >
+    {resolution}
+  </p>
+{:else}
 <section
   class="question-card"
   data-testid="session-question-card"
@@ -128,8 +143,18 @@
     {/if}
   </div>
 </section>
+{/if}
 
 <style>
+  .question-resolved {
+    margin: 0;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .question-card {
     display: flex;
     flex-direction: column;

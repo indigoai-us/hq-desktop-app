@@ -28,6 +28,8 @@ const APP = read('src/desktop-alt/DesktopApp.svelte');
 const PAGE = read('src/desktop-alt/pages/SessionsPage.svelte');
 const STORE = read('src/desktop-alt/lib/live-session-store.svelte.ts');
 const ADAPTER = read('src/components/sessions/transcript-adapter.ts');
+const TRANSCRIPT = read('src/components/sessions/SessionTranscript.svelte');
+const COMPOSER = read('src/components/sessions/SessionComposer.svelte');
 
 describe('US-SESSIONS-A — the route', () => {
   it('DesktopRoute carries a sessions kind with an optional id', () => {
@@ -92,8 +94,9 @@ describe('US-SESSIONS-A — DesktopApp wiring', () => {
   });
 });
 
-describe('US-SESSIONS-A — the page composes its three panes', () => {
-  it('imports the list panel, the transcript, and the composer', () => {
+describe('US-SESSIONS-A — the page composes the chat surface', () => {
+  it('imports the strip, the drawer, the transcript, and the composer', () => {
+    expect(PAGE).toContain("import SessionsStrip from '../../components/sessions/SessionsStrip.svelte'");
     expect(PAGE).toContain("import SessionListPanel from '../panels/SessionListPanel.svelte'");
     expect(PAGE).toContain(
       "import SessionTranscript from '../../components/sessions/SessionTranscript.svelte'",
@@ -101,18 +104,23 @@ describe('US-SESSIONS-A — the page composes its three panes', () => {
     expect(PAGE).toContain(
       "import SessionComposer from '../../components/sessions/SessionComposer.svelte'",
     );
-    expect(PAGE).toContain(
-      "import NewSessionPanel from '../../components/sessions/NewSessionPanel.svelte'",
-    );
   });
 
-  it('renders the pending cards through the transcript, above the composer', () => {
+  it('renders the transcript above the composer', () => {
     const transcriptAt = PAGE.indexOf('<SessionTranscript');
     const composerAt = PAGE.indexOf('<SessionComposer');
     expect(transcriptAt).toBeGreaterThan(-1);
     expect(composerAt).toBeGreaterThan(transcriptAt);
-    expect(read('src/components/sessions/SessionTranscript.svelte')).toContain('<PermissionCard');
-    expect(read('src/components/sessions/SessionTranscript.svelte')).toContain('<QuestionCard');
+  });
+
+  it('renders decision cards INLINE in the transcript, at their position', () => {
+    expect(TRANSCRIPT).toContain('<PermissionCard');
+    expect(TRANSCRIPT).toContain('<QuestionCard');
+    // Not a tray pinned above the composer: the card is a block in the stream,
+    // so it appears where the agent actually asked.
+    expect(TRANSCRIPT).toContain("block.type === 'permissionCard'");
+    expect(TRANSCRIPT).toContain("block.type === 'questionCard'");
+    expect(PAGE).not.toContain('<PermissionCard');
   });
 
   it('drives every session action through the store, never a raw invoke', () => {
@@ -121,6 +129,95 @@ describe('US-SESSIONS-A — the page composes its three panes', () => {
     expect(PAGE).toContain('liveSessionStore.answerQuestion');
     expect(PAGE).toContain('liveSessionStore.interrupt');
     expect(PAGE).toContain('liveSessionStore.send');
+  });
+});
+
+describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
+  it('has no start-a-session panel left to mount', () => {
+    // The owner's verdict was explicit: no extra screens, no model-selection
+    // step. The panel is gone, not merely unrouted.
+    expect(() => read('src/components/sessions/NewSessionPanel.svelte')).toThrow();
+    expect(PAGE).not.toContain('NewSessionPanel');
+    expect(read('src/components/sessions/index.ts')).not.toContain('NewSessionPanel');
+  });
+
+  it('starts the session from the FIRST MESSAGE rather than a form', () => {
+    expect(PAGE).toContain('liveSessionStore.startAndSend');
+    expect(STORE).toContain('async function startAndSend');
+    // start → send → navigate, in that order, inside the store.
+    const fn = STORE.slice(STORE.indexOf('async function startAndSend'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body.indexOf('await start(spec)')).toBeLessThan(body.indexOf("'agent_session_send'"));
+    expect(PAGE).toContain('onopensession?.(started)');
+  });
+
+  it('keeps company / model / effort / permission as composer pills', () => {
+    for (const testid of [
+      'session-pill-company',
+      'session-pill-model',
+      'session-pill-effort',
+      'session-pill-permission',
+    ]) {
+      expect(COMPOSER, `composer is missing the ${testid} pill`).toContain(testid);
+    }
+    expect(COMPOSER).toContain("placeholder = 'Do anything…'");
+  });
+
+  it('remembers the last company under the agreed localStorage key', () => {
+    expect(read('src/components/sessions/session-models.ts')).toContain(
+      "'hq.sessions.lastCompany'",
+    );
+    expect(PAGE).toContain('LAST_COMPANY_KEY');
+  });
+
+  it('names the exact remedy for each preflight blocker', () => {
+    expect(PAGE).toContain('claude login');
+    expect(PAGE).toContain('claudeAvailable');
+    expect(PAGE).toContain('claudeLoggedIn');
+    expect(PAGE).toContain('hooksReady');
+    // One inline notice above the composer — not a screen that replaces it.
+    expect(PAGE).toContain('{notice}');
+    expect(COMPOSER).toContain('session-composer-notice');
+  });
+});
+
+describe('US-SESSIONS-A — the transcript reads as a chat', () => {
+  it('renders the operator right and the agent as plain prose', () => {
+    expect(TRANSCRIPT).toContain('session-user-bubble');
+    expect(TRANSCRIPT).toContain('session-assistant-prose');
+    expect(TRANSCRIPT).toContain('renderMessageBodyMarkdown');
+    // No avatar, no author header, no per-row timestamp gutter.
+    expect(TRANSCRIPT).not.toContain('<Avatar');
+    expect(TRANSCRIPT).not.toContain('formatTime(');
+    expect(TRANSCRIPT).not.toContain('<MessageTimeline');
+  });
+
+  it('folds each run of tool work into one expandable row', () => {
+    expect(TRANSCRIPT).toContain('<ToolGroupRow');
+    const row = read('src/components/sessions/ToolGroupRow.svelte');
+    expect(row).toContain('aria-expanded');
+    expect(row).toContain('session-tool-group');
+    expect(ADAPTER).toContain('export function toolGroupSummary');
+  });
+
+  it('keeps the reader in charge of the viewport', () => {
+    expect(TRANSCRIPT).toContain('session-jump-to-latest');
+    expect(TRANSCRIPT).toContain('pinned');
+  });
+});
+
+describe('US-SESSIONS-A — timestamps are observed, never invented', () => {
+  it('the store stamps live events and leaves replayed ones unstamped', () => {
+    expect(STORE).toContain('entry.receivedAt.push(Date.now())');
+    expect(STORE).toContain('const stamps = incoming.map(() => null)');
+  });
+
+  it('the adapter synthesizes no clock of its own', () => {
+    // The bug this replaces: `startedAt + index * stepMs` produced a real-looking
+    // "Thursday, January 1 12:00 AM" divider on every replayed transcript.
+    expect(ADAPTER).not.toContain('DEFAULT_STARTED_AT');
+    expect(ADAPTER).not.toContain('stepMs');
+    expect(ADAPTER).toContain('receivedAt');
   });
 });
 

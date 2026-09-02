@@ -14,6 +14,16 @@ export interface SessionCommand {
   argumentHint?: string;
 }
 
+/**
+ * One image riding a user turn (Rust `ImageAttachment`). Raw base64 with NO
+ * data-URL prefix — the backend prepends nothing, so a `data:image/png;base64,`
+ * head here would be sent to the model as part of the payload.
+ */
+export interface ImageAttachment {
+  mediaType: string;
+  base64: string;
+}
+
 export interface PermissionSuggestion {
   /** Free-form suggestion payload as the agent host emits it. */
   [key: string]: unknown;
