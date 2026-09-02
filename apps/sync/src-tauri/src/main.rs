@@ -687,6 +687,10 @@ fn main() {
             commands::hq_context::hq_vault_files,
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
+            // Open / Share / Deploy on files a session produced.
+            commands::session_artifacts::session_artifact_stat,
+            commands::session_artifacts::session_artifact_open,
+            commands::session_artifacts::session_artifact_share,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,

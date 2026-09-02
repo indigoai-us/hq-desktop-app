@@ -13,17 +13,40 @@
    * Presentation-pure: props in, no callbacks needed — the disclosure is local
    * state, because whether a row is open is nobody else's business.
    */
-  import type { ToolCallSummary } from './transcript-adapter';
+  import ArtifactRow from './ArtifactRow.svelte';
+  import type { ArtifactActions } from './session-artifacts';
+  import type { ToolArtifact, ToolCallSummary } from './transcript-adapter';
 
   interface Props {
     summary: string;
     calls: ToolCallSummary[];
     running?: boolean;
+    /** Files the turn produced — listed, with actions, only when expanded. */
+    artifacts?: ToolArtifact[];
+    /** How an artifact row acts. Absent → the files are listed without actions. */
+    artifactActions?: ArtifactActions | null;
   }
 
-  let { summary, calls, running = false }: Props = $props();
+  let {
+    summary,
+    calls,
+    running = false,
+    artifacts = [],
+    artifactActions = null,
+  }: Props = $props();
 
   let open = $state(false);
+
+  /**
+   * The collapsed line already says "edited N files" for Claude's file tools;
+   * a Codex patch counts as "used 1 tool", so the file count is added there
+   * and nowhere it is already said.
+   */
+  const summaryLine = $derived(
+    artifacts.length > 0 && !/\bfiles?\b/.test(summary)
+      ? `${summary} · ${artifacts.length} ${artifacts.length === 1 ? 'file' : 'files'}`
+      : summary,
+  );
 </script>
 
 <div class="tool-group" data-testid="session-tool-group" data-running={running ? 'true' : 'false'}>
@@ -42,7 +65,7 @@
     {#if running}
       <span class="spinner" aria-hidden="true"></span>
     {/if}
-    <span class="summary-text">{summary}</span>
+    <span class="summary-text">{summaryLine}</span>
   </button>
 
   {#if open}
@@ -66,6 +89,20 @@
         {/if}
       {/each}
     </ul>
+    {#if artifacts.length > 0}
+      <ul class="artifacts" data-testid="session-tool-artifacts">
+        {#each artifacts as artifact (artifact.path)}
+          {#if artifactActions}
+            <ArtifactRow {artifact} actions={artifactActions} />
+          {:else}
+            <li class="artifact-plain" data-testid="session-artifact" data-path={artifact.path}>
+              <span class="call-name">{artifact.name}</span>
+              <span class="call-detail" title={artifact.path}>{artifact.path}</span>
+            </li>
+          {/if}
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </div>
 
@@ -183,6 +220,26 @@
 
   .call-outcome {
     padding-left: 16px;
+  }
+
+  .artifacts {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 0 4px;
+    padding: 0 0 0 16px;
+    list-style: none;
+  }
+
+  .artifact-plain {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--v4-text-3);
   }
 
   .call-outcome pre {
