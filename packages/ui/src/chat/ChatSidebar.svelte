@@ -65,6 +65,7 @@
     clearPairUnread,
     conversationKindLabel,
     distinctDmPeople,
+    duplicateHumanDmTitles,
     formatSearchHitTime,
     groupByDay,
     groupByType,
@@ -100,6 +101,7 @@
     takeRailConversations,
     pickAutoOpenConversation,
     pickSettledBootConversation,
+    railRowScopeLabel,
     togglePin,
     type CompanyScope,
     type ConversationRow,
@@ -125,6 +127,11 @@
     raceTimeout,
   } from "./boot-timeout.js";
   import { shouldReportShellReady } from "./shell-ready.js";
+  import {
+    parseSettingsPrefs,
+    readSettingsPrefs,
+    SETTINGS_PREFS_KEY,
+  } from "../settings/settings-prefs.js";
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -224,6 +231,21 @@
     typeof window !== "undefined" ? window.localStorage : null,
     { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
   );
+
+  function readShowScopeLabels(): boolean {
+    try {
+      const scoped = storage.getItem(SETTINGS_PREFS_KEY);
+      if (scoped != null) {
+        return parseSettingsPrefs(JSON.parse(scoped) as unknown)
+          .showSidebarScopeLabels;
+      }
+    } catch {
+      /* tenant partition missing or junk */
+    }
+    return readSettingsPrefs().showSidebarScopeLabels;
+  }
+
+  let showScopeLabels = $state(readShowScopeLabels());
 
   let channels = $state<Channel[]>(
     loadConversationCache(storage)?.channels ?? [],
@@ -538,6 +560,7 @@
     Math.max(0, filteredRows.length - railRows.length),
   );
   const people = $derived(distinctDmPeople(allRows));
+  const duplicateHumanTitles = $derived(duplicateHumanDmTitles(allRows));
   const liveSwitcherRows = $derived(
     switcherRowsFromConversations([...directoryRows, ...browseRows], (uid) => {
       if (!uid) return "";
@@ -2323,14 +2346,24 @@
 {/snippet}
 
 {#snippet conversationRow(row: ConversationRow)}
+  {@const scopeLabel = railRowScopeLabel(row, {
+    scope,
+    companies: scopeCompanies,
+    enabled: showScopeLabels,
+    duplicateHumanTitles,
+  })}
+  {@const hasBadge =
+    (row.unreadCount != null && row.unreadCount > 0) || row.unreadDot}
   <div role="listitem" class="chat-li">
     <button
       type="button"
       class="chat-row"
       class:unread={!!row.unreadCount || row.unreadDot}
       class:active={activeId === row.id}
+      class:has-badge={hasBadge}
       data-kind={row.kind}
       data-conversation-id={row.id}
+      title={scopeLabel?.text}
       onclick={() => void openRow(row)}
       oncontextmenu={(e) => openContextMenu(row, e)}
     >
@@ -2362,7 +2395,24 @@
       {#if draftIdSet.has(row.id)}
         {@render draftMark()}
       {/if}
-      <span class="chat-row-title">{row.title}</span>
+      <span class="chat-row-copy">
+        <span class="chat-row-title">{row.title}</span>
+        {#if scopeLabel}
+          <span
+            class="chat-row-scope"
+            data-testid="chat-row-scope"
+            data-kind={scopeLabel.kind}
+            title={scopeLabel.text}>{scopeLabel.text}</span
+          >
+        {/if}
+      </span>
+      {#if scopeLabel}
+        <span
+          class="chat-row-reveal"
+          data-testid="chat-row-reveal"
+          aria-hidden="true">{scopeLabel.text}</span
+        >
+      {/if}
       {#if row.unreadCount != null && row.unreadCount > 0}
         <span
           class="chat-unread-badge"
@@ -2741,6 +2791,7 @@
   }
 
   .chat-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -2790,6 +2841,68 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .chat-row-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .chat-row-copy .chat-row-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-scope {
+    flex: 0 1000 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .chat-row-reveal {
+    display: none;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--elevated);
+    box-shadow: -10px 0 8px 0 var(--elevated);
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.3;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
+  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
+  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
+    display: inline-block;
+  }
+
+  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
+  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
+  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
+    visibility: hidden;
   }
 
   .chat-row-draft {
