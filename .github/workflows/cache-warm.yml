@@ -20,10 +20,14 @@
 # tauri-driver` below, whose ~/.cargo/bin entry the bridge build republishes as
 # an artifact so the E2E job needs no Rust toolchain at all.
 #
-# The cache key rust-cache computes includes runner OS/arch, the shared-key,
-# a hash of rustc version + CARGO_*/RUST* env vars, and the lockfiles. Each
-# job here must mirror the runner image, toolchain targets, env, and cargo
-# invocation of the job it warms exactly.
+# The cache key rust-cache computes includes runner OS/arch (`os.type()` +
+# `os.arch()`, e.g. Windows_NT-x64 / Darwin-arm64), the shared-key, a hash of
+# rustc version + CARGO_*/RUST* env vars, and the lockfiles — not core count
+# or the runner name. An 8-core and a 2-core runner that share an image still
+# share the key; these jobs still use the same labels as the jobs they warm
+# (hq-mac-m2-5core / hq-win-8core) so image, toolchain, env, and cargo
+# invocation stay identical. That equivalence is also why the E2E job, left on
+# windows-latest because it compiles nothing, needs no warmer of its own.
 #
 # No secrets: --no-bundle skips bundling, signing, notarization, and updater
 # signing. rust-cache stores only registry sources and dependency artifacts
@@ -60,7 +64,7 @@ env:
 jobs:
   release-macos:
     name: Warm release macOS universal
-    runs-on: macos-14
+    runs-on: hq-mac-m2-5core
     timeout-minutes: 90
     defaults:
       run:
@@ -138,7 +142,7 @@ jobs:
 
   release-windows:
     name: Warm release ${{ matrix.target }}
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 90
     defaults:
       run:
@@ -233,7 +237,7 @@ jobs:
 
   windows-check-debug:
     name: Warm windows-check debug
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 90
     defaults:
       run:
@@ -294,7 +298,7 @@ jobs:
 
   windows-installer-release:
     name: Warm windows-installer release
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 90
     defaults:
       run:

@@ -298,7 +298,7 @@ jobs:
   macos:
     name: Build macOS universal
     needs: validate
-    runs-on: macos-14
+    runs-on: hq-mac-m2-5core
     timeout-minutes: 90
     defaults:
       run:
@@ -721,7 +721,7 @@ jobs:
   windows:
     name: Build Windows ${{ matrix.target }}
     needs: validate
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 90
     permissions:
       contents: read

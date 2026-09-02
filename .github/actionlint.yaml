@@ -1,0 +1,6 @@
+# GitHub-hosted larger runners in the indigoai-us org. actionlint treats any
+# label outside its built-in GitHub-hosted set as unknown unless listed here.
+self-hosted-runner:
+  labels:
+    - hq-win-8core
+    - hq-mac-m2-5core

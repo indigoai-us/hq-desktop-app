@@ -8,7 +8,7 @@
 // `if:` reports Success instead, which is what branch protection needs.
 //
 // So the workflow now triggers on every pull request, and the two expensive
-// windows-latest jobs are gated on this matcher. Nothing runs that did not run
+// Windows jobs are gated on this matcher. Nothing runs that did not run
 // before; the difference is that irrelevant PRs get a green skip instead of an
 // eternal pending.
 //

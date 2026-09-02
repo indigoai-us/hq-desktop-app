@@ -15,7 +15,7 @@
 # reported") on any pull request that does not match, so such a PR can never
 # merge. A job skipped by a job-level `if:` reports Success instead. The
 # workflow therefore runs on every pull request and the two expensive
-# windows-latest jobs are gated on the `changes` job below, which applies the
+# Windows jobs are gated on the `changes` job below, which applies the
 # same path list via scripts/windows-check-relevant.mjs. No PR that used to run
 # the gate stops running it; irrelevant PRs get a green skip that costs no
 # Windows minutes instead of an eternal pending.
@@ -40,7 +40,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Cheap ubuntu gate that decides whether the two windows-latest jobs below
+  # Cheap ubuntu gate that decides whether the two Windows jobs below
   # have anything to check. A manual dispatch always runs them.
   changes:
     name: Windows-relevant changes
@@ -96,7 +96,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: cargo check (x86_64-pc-windows-msvc)
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     defaults:
       run:
         working-directory: apps/sync
@@ -518,7 +518,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Build bridge installers (x64 MSI + NSIS)
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 45
     defaults:
       run:
@@ -692,7 +692,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Build target updater (x64 NSIS)
-    runs-on: windows-latest
+    runs-on: hq-win-8core
     timeout-minutes: 45
     defaults:
       run:
@@ -786,6 +786,12 @@ jobs:
   # `needs.changes.outputs.windows == 'true'` term still evaluates to false when
   # the gate does not apply (and when `changes` itself failed, since its outputs
   # are then empty), so the intended skip-reports-Success path is unchanged.
+  #
+  # Deliberately still on `windows-latest` while the three compiling jobs moved
+  # to hq-win-8core. This job runs no compiler -- it downloads the two installers
+  # and tauri-driver as artifacts and drives msedgedriver -- so extra cores buy
+  # it nothing, and larger hosted runners are billed per-minute even on a public
+  # repo where windows-latest is free.
   windows-installer-e2e:
     needs: [changes, build-bridge-installers, build-target-updater]
     if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
