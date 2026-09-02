@@ -315,6 +315,11 @@ export function createHybridSidebarApi(
       }
       return { contacts: [...(getContacts?.() ?? [])] };
     },
+    // The company roster has no cache equivalent (the D7 cross-company confirm
+    // needs the live tenant-scoped list) — forward it when the host has it.
+    ...(live.listCompanyMembers
+      ? { listCompanyMembers: live.listCompanyMembers.bind(live) }
+      : {}),
     listDmRequests: () => live.listDmRequests(),
     listChannels: (args) => live.listChannels(args),
     markDmThreadRead: async (personUid) => {
@@ -336,7 +341,9 @@ export function createHybridSidebarApi(
     sendDm: (args) => live.sendDm(args),
     ...(persist?.sendDmToEmail
       ? { sendDmToEmail: persist.sendDmToEmail.bind(persist) }
-      : {}),
+      : live.sendDmToEmail
+        ? { sendDmToEmail: live.sendDmToEmail.bind(live) }
+        : {}),
     searchMessages: (args) => live.searchMessages(args),
   };
 }

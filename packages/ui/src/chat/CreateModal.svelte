@@ -187,6 +187,9 @@
 
   let createdChannelId = $state<string | null>(null);
   let createdSlug = $state("");
+  /** The name actually sent on create — `channelName` can lag behind a slug
+   *  edit submitted with Enter before the field blurred. */
+  let createdName = $state("");
   let issues = $state<Issue[]>([]);
 
   let dialogEl = $state<HTMLDivElement | null>(null);
@@ -667,7 +670,7 @@
     | { title: string; companyUid: string | null }
     | undefined {
     if (!createdChannelId) return undefined;
-    const title = channelName.trim() || createdSlug;
+    const title = createdName.trim() || createdSlug;
     return title ? { title, companyUid: companyUid || null } : undefined;
   }
 
@@ -985,10 +988,16 @@
    * so it must never block a safe retry.
    */
   async function createdChannelAlreadyExists(name: string): Promise<boolean> {
+    // Only rows in the create target count: a same-named channel in another
+    // workspace is not evidence that THIS create committed.
+    const inTarget = (row: ConversationRow): boolean =>
+      companyUid ? row.companyUid === companyUid : !row.companyUid;
     if (
       channelExistsWithName(
         name,
-        rows.filter((row) => row.kind !== "dm").map((row) => ({ name: row.title })),
+        rows
+          .filter((row) => row.kind !== "dm" && inTarget(row))
+          .map((row) => ({ name: row.title })),
       )
     ) {
       return true;
@@ -1061,6 +1070,9 @@
     // `asMintedChannelId` rejects anything that is not `chn_*`; a project slug
     // leaking through here previously produced CHANNEL_NOT_FOUND on send.
     if (!channelId.startsWith("chn_")) {
+      // The server DID answer 2xx — a channel may well exist. Lock the button
+      // so a second click cannot POST a second create.
+      createUnconfirmed = true;
       createError = "The server returned an unusable channel id.";
       creating = false;
       return;
@@ -1068,6 +1080,7 @@
 
     createdChannelId = channelId;
     createdSlug = slug;
+    createdName = name;
 
     // Paint the rail NOW, before the member loop, so the channel is visible
     // immediately. Deliberately not awaited — the reconcile behind it must not
@@ -1275,9 +1288,9 @@
   function offersRetry(issue: Issue): boolean {
     if (issue.reason === "invite-failed") return true;
     if (issue.reason === "first-message-failed") return true;
-    if (issue.reason === "member-not-owner" || issue.reason === "member-other") {
-      return true;
-    }
+    // The server refused on ROLE — a retry from the same account is a dead end.
+    if (issue.reason === "member-not-owner") return false;
+    if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
 </script>
@@ -1378,17 +1391,9 @@
         role="listbox"
         aria-label="Results"
       >
-        {#if findKind === "email"}
-          <div class="create-group" role="presentation">No match</div>
-          <p
-            class="create-note"
-            role="status"
-            data-testid="chat-create-no-match"
-          >
-            No one on HQ matches that address. Add them from a channel's members
-            instead.
-          </p>
-        {:else}
+        <!-- Only options and presentational headings may live inside the
+             listbox; the empty/no-match notes render after it. -->
+        {#if findKind !== "email"}
           {#each renderItems as item (item.kind === "heading" ? `h:${item.label}` : item.kind === "create" ? "create-row" : item.row.key)}
             {#if item.kind === "heading"}
               <div class="create-group" role="presentation">{item.label}</div>
@@ -1439,13 +1444,24 @@
                 >
               </button>
             {/if}
-          {:else}
-            <p class="create-note">
-              {queryDebounced.trim() ? "No matches" : "No conversations"}
-            </p>
           {/each}
         {/if}
       </div>
+      {#if findKind === "email"}
+        <div class="create-group" role="presentation">No match</div>
+        <p
+          class="create-note"
+          role="status"
+          data-testid="chat-create-no-match"
+        >
+          No one on HQ matches that address. Add them from a channel's members
+          instead.
+        </p>
+      {:else if renderItems.length === 0}
+        <p class="create-note" data-testid="chat-create-empty">
+          {queryDebounced.trim() ? "No matches" : "No conversations"}
+        </p>
+      {/if}
     {:else if step === "create"}
       <div class="create-body" inert={confirmSubject !== null}>
         <div class="create-field">

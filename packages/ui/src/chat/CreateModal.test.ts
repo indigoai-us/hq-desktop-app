@@ -471,10 +471,8 @@ describe("CreateModal submit", () => {
 
   it("refuses a channel id the timeline could not open", async () => {
     const onclose = vi.fn();
-    open({
-      api: stubApi({ createChannel: async () => ({ channelId: "growth" }) }),
-      onclose,
-    });
+    const createChannel = vi.fn(async () => ({ channelId: "growth" }));
+    open({ api: stubApi({ createChannel }), onclose });
     await tick();
     await gotoCreate("Growth");
     $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
@@ -485,6 +483,108 @@ describe("CreateModal submit", () => {
       "unusable channel id",
     );
     expect(onclose).not.toHaveBeenCalled();
+    // The server answered 2xx, so a channel may exist: a second click must not
+    // POST a second create.
+    const button = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain("Creation unconfirmed");
+    button.click();
+    await tick();
+    expect(createChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not lock retry because another workspace has a same-named channel", async () => {
+    const createChannel = vi.fn(async () => {
+      throw new Error("upstream timeout");
+    });
+    open({
+      api: stubApi({ createChannel }),
+      rows: [
+        channelRow({
+          id: "ch:chn_other",
+          channelId: "chn_other",
+          title: "Growth",
+          companyUid: "cmp_other",
+        }),
+      ],
+    });
+    await tick();
+    await gotoCreate("Growth");
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')).toBeTruthy();
+    });
+    expect($('[data-testid="chat-channel-error"]')?.textContent).toContain(
+      "you can try again",
+    );
+    const button = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain("Create channel");
+  });
+
+  it("locks retry when the create target now lists the name", async () => {
+    const createChannel = vi.fn(async () => {
+      throw new Error("upstream timeout");
+    });
+    // The post-failure lookup finds the name in the TARGET workspace (the
+    // server committed before answering) — retry would create a duplicate.
+    const listChannels = vi.fn(async () => ({
+      channels: [
+        { channelId: "chn_growth", id: "chn_growth", name: "Growth", scope: "company" as const },
+      ],
+    }));
+    open({ api: stubApi({ createChannel, listChannels }) });
+    await tick();
+    await gotoCreate("Growth");
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')).toBeTruthy();
+    });
+    expect($('[data-testid="chat-channel-error"]')?.textContent).toContain(
+      "retry is disabled",
+    );
+    expect(listChannels).toHaveBeenCalledWith(
+      expect.objectContaining({ companyUid: "cmp_indigo" }),
+    );
+    const button = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
+    expect(button.disabled).toBe(true);
+    button.click();
+    await tick();
+    expect(createChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the name that was actually submitted when Enter fires before slug blur", async () => {
+    const addChannelMember = vi
+      .fn<(channelId: string, uid: string) => Promise<void>>()
+      .mockRejectedValue(new Error("RECIPIENT_NOT_FOUND"));
+    const createChannel = vi.fn(async () => ({ channelId: "chn_new" }));
+    const onclose = vi.fn();
+    open({
+      api: stubApi({ addChannelMember, createChannel }),
+      rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
+      contacts: [{ personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_indigo" }],
+      onclose,
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kai");
+    const slug = $<HTMLInputElement>('[data-testid="chat-channel-slug"]')!;
+    type(slug, "growth-ops");
+    await tick();
+    // Enter in the slug field submits without a blur — `channelName` is stale.
+    press(slug, "Enter");
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-summary"]')).toBeTruthy();
+    });
+    expect(createChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "growth-ops" }),
+    );
+    $<HTMLButtonElement>('[data-testid="chat-create-summary-done"]')?.click();
+    await tick();
+    expect(onclose).toHaveBeenCalledWith(
+      "chn_new",
+      expect.objectContaining({ title: "growth-ops" }),
+    );
   });
 
   it("hides the first-message field when the host cannot send one", async () => {
@@ -999,6 +1099,27 @@ describe("CreateModal in-flight and summary", () => {
     expect(addChannelMember).toHaveBeenCalledTimes(2);
   });
 
+  it("offers no retry when the server refused on role", async () => {
+    const addChannelMember = vi
+      .fn<(channelId: string, uid: string) => Promise<void>>()
+      .mockRejectedValue(new Error("CHANNEL_NOT_OWNER"));
+    open({
+      api: stubApi({ addChannelMember }),
+      rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
+      contacts: [{ personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_indigo" }],
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kai");
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-summary"]')).toBeTruthy();
+    });
+    const row = $('[data-testid="chat-create-summary-row"]')!;
+    expect(row.textContent).toContain("only the channel owner can add people");
+    expect($('[data-testid="chat-create-summary-action"]')).toBeNull();
+  });
+
   // Regression: nothing adds an email invitee to the channel when they accept
   // the connection request, but both the form and the summary said it would
   // happen automatically.
@@ -1037,6 +1158,34 @@ describe("CreateModal in-flight and summary", () => {
 });
 
 describe("CreateModal accessibility", () => {
+  // Regression: the empty/no-match notes were direct children of the listbox,
+  // which may only contain options (and presentational group headings).
+  it("keeps status notes out of the results listbox", async () => {
+    open({ rows: [personRow()] });
+    await tick();
+    const listbox = () => document.getElementById("create-results")!;
+    const offending = () =>
+      Array.from(listbox().children).filter((child) => {
+        const role = child.getAttribute("role");
+        return role !== "option" && role !== "presentation";
+      });
+
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "a@b.co");
+    await settleQuery();
+    const note = $('[data-testid="chat-create-no-match"]')!;
+    expect(note.getAttribute("role")).toBe("status");
+    expect(listbox().contains(note)).toBe(false);
+    expect(offending()).toHaveLength(0);
+
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "zzzz-nope");
+    await settleQuery();
+    // A create row is offered for a plain name, so force a real empty state via
+    // a personal-scope-only query with no candidates: assert structure only.
+    expect(offending()).toHaveLength(0);
+    const empty = $('[data-testid="chat-create-empty"]');
+    if (empty) expect(listbox().contains(empty)).toBe(false);
+  });
+
   // Regression: the live slug preview and the collision verdict were rendered
   // with no id, no role and no live region — the modal had none at all.
   it("describes the slug field with its verdict and announces changes", async () => {

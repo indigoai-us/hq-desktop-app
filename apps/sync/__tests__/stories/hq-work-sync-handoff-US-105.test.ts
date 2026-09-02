@@ -586,6 +586,29 @@ describe('US-105 embedded feature-parity QA', () => {
       });
     });
 
+    // Regression: the roster went through `adapter.company.listMembers`, which
+    // takes a company SLUG. Handed a companyUid it fetched the wrong thing on
+    // the Tauri/web adapters and silently disabled the cross-company confirm.
+    it('listCompanyMembers goes through the uid-scoped contacts feed, not company.listMembers', async () => {
+      const listContacts = vi.fn(async () => ({
+        ok: true as const,
+        value: { contacts: [{ personUid: 'prs_kai' }] },
+      }));
+      const listMembers = vi.fn(async () => ({
+        ok: true as const,
+        value: [{ personUid: 'prs_wrong' }],
+      }));
+      const fake = {
+        messaging: { listContacts },
+        company: { listMembers },
+      } as unknown as Parameters<typeof createHqWorkSidebarApi>[0];
+      expect(
+        await createHqWorkSidebarApi(fake).listCompanyMembers?.('cmp_indigo'),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+      expect(listContacts).toHaveBeenCalledWith({ companyUid: 'cmp_indigo' });
+      expect(listMembers).not.toHaveBeenCalled();
+    });
+
     it('listCompanyMembers accepts a bare array and degrades to empty', async () => {
       const bare = makeAdapter(async (cmd) =>
         cmd === 'list_company_members'

@@ -984,6 +984,11 @@ pub fn delete_channel_error_message(status: u16, body: Option<&serde_json::Value
     if status == 404 && !has_code && gateway_not_found {
         return DELETE_CHANNEL_UNSUPPORTED_MSG.to_string();
     }
+    // A coded body without an `error` string (handled above) still gets the
+    // status fallback; a 5xx is transient, so tell the user to retry.
+    if status >= 500 {
+        return format!("Delete failed (status {status}). Try again.");
+    }
     format!("Delete failed (status {status})")
 }
 
@@ -1274,10 +1279,48 @@ mod tests {
     }
 
     #[test]
+    fn delete_channel_error_keeps_409_group_dm_refusal() {
+        let body = serde_json::json!({
+            "error": "Group DMs cannot be deleted",
+            "code": "CHANNEL_GROUP_NOT_DELETABLE"
+        });
+        assert_eq!(
+            delete_channel_error_message(409, Some(&body)),
+            "Group DMs cannot be deleted"
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_passes_through_coded_503_retryable_text() {
+        let body = serde_json::json!({
+            "error": "Channel delete did not finish. Try again.",
+            "code": "CHANNEL_DELETE_INCOMPLETE"
+        });
+        assert_eq!(
+            delete_channel_error_message(503, Some(&body)),
+            "Channel delete did not finish. Try again."
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_body_less_5xx_asks_to_retry() {
+        assert_eq!(
+            delete_channel_error_message(503, None),
+            "Delete failed (status 503). Try again."
+        );
+        // A coded 5xx with no `error` string still gets the retry hint.
+        let coded_only = serde_json::json!({ "code": "CHANNEL_DELETE_INCOMPLETE" });
+        assert_eq!(
+            delete_channel_error_message(503, Some(&coded_only)),
+            "Delete failed (status 503). Try again."
+        );
+    }
+
+    #[test]
     fn delete_channel_error_falls_back_to_status() {
         assert_eq!(
             delete_channel_error_message(500, None),
-            "Delete failed (status 500)"
+            "Delete failed (status 500). Try again."
         );
         let unrelated = serde_json::json!({ "message": "Forbidden" });
         assert_eq!(

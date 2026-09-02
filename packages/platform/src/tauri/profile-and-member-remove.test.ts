@@ -78,6 +78,55 @@ describe("TauriPlatformAdapter channel delete", () => {
       expect(res.message).toBe(DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
     }
   });
+
+  it("keeps a code-less 404 that carries a server error string", async () => {
+    const { adapter } = makeAdapter({ error: "Channel was already removed" }, 404);
+    const res = await adapter.messaging.deleteChannel("chn_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("http-404");
+      expect(res.message).toBe("Channel was already removed");
+    }
+  });
+
+  it("keeps the 409 group-DM refusal text", async () => {
+    const { adapter } = makeAdapter(
+      { error: "Group DMs cannot be deleted", code: "CHANNEL_GROUP_NOT_DELETABLE" },
+      409,
+    );
+    const res = await adapter.messaging.deleteChannel("chn_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("CHANNEL_GROUP_NOT_DELETABLE");
+      expect(res.message).toBe("Group DMs cannot be deleted");
+    }
+  });
+
+  it("passes through a coded 503 CHANNEL_DELETE_INCOMPLETE retryable text", async () => {
+    const { adapter } = makeAdapter(
+      {
+        error: "Channel delete did not finish. Try again.",
+        code: "CHANNEL_DELETE_INCOMPLETE",
+      },
+      503,
+    );
+    const res = await adapter.messaging.deleteChannel("chn_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("CHANNEL_DELETE_INCOMPLETE");
+      expect(res.message).toBe("Channel delete did not finish. Try again.");
+    }
+  });
+
+  it("does not map a body-less 503 to the unsupported message", async () => {
+    const { adapter } = makeAdapter(null, 503);
+    const res = await adapter.messaging.deleteChannel("chn_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("http-503");
+      expect(res.message).not.toBe(DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+    }
+  });
 });
 
 describe("TauriPlatformAdapter profile", () => {
