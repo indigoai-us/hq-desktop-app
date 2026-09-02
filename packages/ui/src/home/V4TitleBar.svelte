@@ -3,6 +3,10 @@
   import type { SettingsTab } from "../settings/settings-sections.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { getV4TitleBarModel, type V4HydrationIssue } from "./model.js";
+  import {
+    TITLEBAR_HEIGHT_PX,
+    TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX,
+  } from "./titlebar-layout.js";
   import { titlebarDayDate } from "../chat/sidebar-model.js";
   import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
@@ -127,6 +131,13 @@
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
+
+  /**
+   * Shared with the native traffic-light offset (see titlebar-layout.ts).
+   * The overlay lights are positioned so their centre sits on this bar's
+   * content centre — do not move the wordmark/date to meet the lights.
+   */
+  const titlebarChromeStyle = `--v4-titlebar-height: ${TITLEBAR_HEIGHT_PX}px; --v4-traffic-light-gutter: ${TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX}px;`;
 
   /**
    * Platform capability seam (not hardcoded): only hosts that draw native
@@ -528,6 +539,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <header
   class="v4-titlebar chat-shell"
+  style={titlebarChromeStyle}
   aria-label="Window chrome"
   data-tauri-drag-region
   onpointerdown={startWindowDrag}
@@ -844,8 +856,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    flex: 0 0 48px;
-    height: 48px;
+    flex: 0 0 var(--v4-titlebar-height);
+    height: var(--v4-titlebar-height);
     overflow: visible;
     padding: 0 16px 0 0;
     border-bottom: 1px solid var(--line);
@@ -861,10 +873,11 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 8px;
-    /* 78px left inset clears the overlay traffic lights (macOS). Platform-
-       conditional: hosts without native window controls (web) drop it so the
-       wordmark is flush-left — see `.no-window-controls`. */
-    padding-left: 78px;
+    /* Leading gutter clears the overlay traffic lights (macOS). Shared with
+       the native trafficLightPosition inset via `--v4-traffic-light-gutter`
+       (titlebar-layout.ts). Hosts without native window controls (web) drop
+       it so the wordmark is flush-left — see `.no-window-controls`. */
+    padding-left: var(--v4-traffic-light-gutter);
   }
 
   /* Web / no OS window controls: wordmark + DAY·DATE flush-left. */

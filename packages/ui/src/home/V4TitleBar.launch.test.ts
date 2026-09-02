@@ -98,6 +98,16 @@ async function openMenuAndClick(
 }
 
 describe("V4TitleBar Launch menu", () => {
+  it("paints the shared titlebar height and traffic-light gutter on the header", async () => {
+    await mountBar(makeAdapter({}));
+    const header = host.querySelector<HTMLElement>(".v4-titlebar");
+    expect(header).toBeTruthy();
+    expect(header?.style.getPropertyValue("--v4-titlebar-height")).toBe("48px");
+    expect(header?.style.getPropertyValue("--v4-traffic-light-gutter")).toBe(
+      "78px",
+    );
+  });
+
   it("renders the Launch button immediately to the LEFT of the meetings icon", async () => {
     await mountBar(makeAdapter({}));
     const launch = host.querySelector('[data-testid="titlebar-launch"]');

@@ -70,6 +70,18 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     );
   });
 
+  it('centres the overlay traffic lights on the titlebar content centre line', () => {
+    expect(desktopAlt.hiddenTitle).toBe(true);
+    expect(desktopAlt.trafficLightPosition).toEqual({ x: 20, y: 24 });
+    expect(desktopCommandSource).toContain('.hidden_title(true)');
+    expect(desktopCommandSource).toContain(
+      '.traffic_light_position(tauri::LogicalPosition::new',
+    );
+    expect(desktopCommandSource).toContain(
+      'crate::titlebar_layout::traffic_light_position',
+    );
+  });
+
   it('enforces a packaged image CSP that cannot auto-load remote tracking images', () => {
     const csp = conf.app?.security?.csp;
 

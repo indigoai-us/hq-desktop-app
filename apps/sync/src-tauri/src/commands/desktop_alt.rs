@@ -724,8 +724,16 @@ pub async fn open_desktop_alt_window_inner(
     #[cfg(target_os = "macos")]
     {
         let first_page_finished = AtomicBool::new(false);
+        let (traffic_x, traffic_y) = crate::titlebar_layout::traffic_light_position(
+            crate::titlebar_layout::TITLEBAR_HEIGHT_PX,
+        );
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
+            // wry's traffic-light inset only sticks on Overlay + hidden title.
+            .hidden_title(true)
+            // Native lights sit on the same centre line as the wordmark/date.
+            // Shared with `packages/ui/src/home/titlebar-layout.ts`.
+            .traffic_light_position(tauri::LogicalPosition::new(traffic_x, traffic_y))
             .on_page_load(move |loaded_window, payload| {
                 if payload.event() != tauri::webview::PageLoadEvent::Finished
                     || first_page_finished.swap(true, Ordering::AcqRel)

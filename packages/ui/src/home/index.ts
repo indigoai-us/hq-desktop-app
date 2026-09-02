@@ -11,6 +11,7 @@ export * from "./home-model.js";
 export * from "./core-popover-model.js";
 export * from "./pack-display-name.js";
 export * from "./model.js";
+export * from "./titlebar-layout.js";
 export * from "./story-mutation-guard.js";
 export * from "./relative-time.js";
 export * from "./copy-prompts.js";

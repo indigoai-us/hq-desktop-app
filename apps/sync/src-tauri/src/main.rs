@@ -7,6 +7,7 @@ mod commands;
 mod events;
 #[cfg(target_os = "macos")]
 mod glass;
+mod titlebar_layout;
 mod tray;
 mod tray_helper;
 mod updater;
