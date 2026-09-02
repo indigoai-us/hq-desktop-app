@@ -33,7 +33,7 @@ use hq_desktop_core::agent_session::registry::{
     LiveSession, PendingRequest, Replay, SessionRegistry, SessionSummary,
 };
 use hq_desktop_core::agent_session::types::{
-    PermissionDecision, QuestionAnswer, SessionPhase, SessionSpec, SessionTool,
+    PermissionDecision, QuestionAnswer, SessionEvent, SessionPhase, SessionSpec, SessionTool,
 };
 use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::claude_launch::check_hq_hooks_ready;
@@ -99,6 +99,17 @@ fn state() -> Arc<Mutex<SessionState>> {
 /// desktop record uses.
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Unix milliseconds — the stamp every buffered event carries.
+///
+/// Separate from [`now_iso`] rather than parsed back out of it: the registry is
+/// deliberately clock-free and takes the instant as a number, and a numeric
+/// stamp is what the UI needs to draw a day divider without re-parsing a
+/// string on every event. A pre-1970 clock cannot produce a sensible stamp, so
+/// it saturates at 0 instead of wrapping.
+pub fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -279,10 +290,56 @@ pub async fn agent_session_send(
 
     let state = state();
     let mut guard = state.lock().await;
-    guard.send(&session_id, Outbound::Line(line))?;
-    if let Some(session) = guard.registry.get_mut(&session_id) {
+    record_and_queue_user_turn(
+        &mut guard,
+        &claude::AppSink(app),
+        &session_id,
+        &text,
+        line,
+        attachments.len() as u32,
+    )
+}
+
+/// Buffer the operator's turn, then queue the line that carries it.
+///
+/// Split out of [`agent_session_send`] so the driver's end-to-end test can run
+/// the REAL ordering against a real child instead of restating it. The order is
+/// the point: the CLI acknowledges nothing when a user line lands, so this is
+/// the only place the transcript can learn what was asked, and recording it
+/// under the same lock — ahead of the write — is what guarantees a replayed
+/// session reads user → agent rather than agent alone.
+pub(crate) fn record_and_queue_user_turn(
+    guard: &mut SessionState,
+    sink: &dyn SessionEventSink,
+    session_id: &str,
+    text: &str,
+    line: String,
+    image_count: u32,
+) -> Result<(), String> {
+    // Refuse before recording: a turn buffered for a session that cannot
+    // receive it would show in the transcript as something the operator said
+    // and the agent ignored.
+    if !guard.has_channel(session_id) {
+        return Err(format!("Session {session_id} is not running."));
+    }
+
+    if let Some(session) = guard.registry.get_mut(session_id) {
+        let event = SessionEvent::UserMessage {
+            text: text.to_owned(),
+            // The bytes stay out of the ring: they are megabytes of base64 the
+            // model has already seen, and buffering them would evict real
+            // transcript to hold a picture nothing re-reads.
+            image_count,
+        };
+        if let Some(outcome) = session.on_event(event.clone(), now_iso(), now_ms()) {
+            sink.emit_event(session_id, outcome.seq, outcome.received_at_ms, &event);
+        }
+    }
+
+    guard.send(session_id, Outbound::Line(line))?;
+    if let Some(session) = guard.registry.get_mut(session_id) {
         if let Some(change) = session.on_user_send(now_iso()) {
-            claude::AppSink(app).emit_phase(&session_id, change);
+            sink.emit_phase(session_id, change);
         }
     }
     Ok(())

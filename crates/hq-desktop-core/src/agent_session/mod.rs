@@ -20,7 +20,8 @@ pub use claude_normalize::ClaudeNormalizer;
 pub use claude_wire::{frame_from_value, CanUseTool, Frame};
 pub use registry::{
     decide_can_use_tool, AutoDecision, EventOutcome, EventRing, LiveSession, NeedsYou,
-    PendingRequest, PhaseChange, Replay, SessionRegistry, SessionSummary, MAX_LIVE_SESSIONS,
+    PendingRequest, PhaseChange, Replay, ReplayEntry, SessionRegistry, SessionSummary,
+    MAX_LIVE_SESSIONS,
 };
 pub use types::{
     DoneStatus, PermissionDecision, PermissionMode, Question, QuestionAnswer, QuestionOption,

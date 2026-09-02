@@ -15,18 +15,21 @@
 //     `usage` rides the composer footer and the rest is simply not news.
 // Every event kind is still consumed; "not a row" is a decision, not a drop.
 //
-// TIMESTAMPS — the events carry no wall-clock of their own. The store stamps
-// `receivedAt` as each LIVE event arrives and passes it here; a REPLAYED event
-// has no honest time, so it gets `null` and never contributes a day divider.
-// Inventing a time for it (the previous adapter's `startedAt + index * step`)
-// is what produced the fake "Thursday, January 1 12:00 AM" divider.
+// TIMESTAMPS — an event's arrival instant is supplied by the caller in
+// `receivedAt`, never synthesized here. The backend now stamps every buffered
+// event with `receivedAtMs`, so both live and replayed events arrive dated;
+// `null` remains legal and means "unknown", which keeps that event out of the
+// day-divider decision. Inventing a time (the previous adapter's
+// `startedAt + index * step`) is what produced the fake "Thursday, January 1
+// 12:00 AM" divider.
 //
-// USER TURNS — the backend event stream carries NO user-message event (see
-// `SESSION_EVENT_KINDS`), so the operator's own words never come back from
-// `agent_session_replay`. The store mirrors each send locally and passes them
-// in as `userTurns`; this fold interleaves them by the event index they were
-// sent at. That mirror is the ONLY reason a sent message survives the page
-// remount that follows the first send.
+// USER TURNS — two sources, one bubble. The backend records a `userMessage`
+// event as it writes the turn to the CLI, so a replayed transcript contains
+// the operator's own words. The store ALSO mirrors each send locally, in
+// `userTurns`, so the bubble appears the instant Enter is pressed rather than
+// after a round trip. The store drops its mirror for a session as soon as
+// backend `userMessage` events land, so the two never both render; this fold
+// simply honours whichever it is given.
 
 import type {
   PermissionSuggestion,
@@ -475,6 +478,17 @@ export function foldSessionEvents(
       // technical narration a chat surface should not open with.
       case 'started':
         break;
+
+      // The operator's own turn, as the backend recorded it. Rendered exactly
+      // like a mirrored one — a user turn is the hardest boundary in the
+      // transcript, so it closes whatever the agent had open.
+      case 'userMessage': {
+        closeProse();
+        closeGroup();
+        retireThought();
+        push({ type: 'userBubble', id: `user-ev-${index}`, text: event.text, at });
+        break;
+      }
 
       case 'textDelta': {
         if (event.parentToolUseId) {

@@ -146,6 +146,20 @@ pub enum SessionEvent {
         /// Protocol capabilities the CLI advertises (`interrupt_receipt_v1`, …).
         capabilities: Vec<String>,
     },
+    /// A turn the OPERATOR sent.
+    ///
+    /// Not produced by the CLI — the app records its own side of the
+    /// conversation as it writes it, so the replay buffer holds a dialogue
+    /// rather than a monologue and a reopened session still shows what the
+    /// user asked for.
+    ///
+    /// Only the count of attached images is kept. The bytes are megabytes of
+    /// base64 that the ring would evict real transcript to hold, and the model
+    /// has already seen them.
+    UserMessage {
+        text: String,
+        image_count: u32,
+    },
     /// A streamed fragment of assistant text.
     TextDelta {
         text: String,
@@ -241,6 +255,13 @@ mod tests {
                     }],
                     permission_mode: Some("default".into()),
                     capabilities: vec!["interrupt_receipt_v1".into()],
+                },
+            ),
+            (
+                "userMessage",
+                SessionEvent::UserMessage {
+                    text: "do the thing".into(),
+                    image_count: 2,
                 },
             ),
             (
@@ -350,7 +371,7 @@ mod tests {
     fn every_session_event_variant_round_trips_with_a_camel_case_tag() {
         let samples = sample_events();
         // Guard against a variant being added to the enum without a sample.
-        assert_eq!(samples.len(), 14, "one sample per SessionEvent variant");
+        assert_eq!(samples.len(), 15, "one sample per SessionEvent variant");
         for (tag, event) in samples {
             let raw = roundtrip(&event);
             assert_eq!(raw["kind"], tag, "wire tag for {event:?}");
@@ -366,6 +387,15 @@ mod tests {
         .expect("serialize");
         assert_eq!(raw["parentToolUseId"], "toolu_1");
         assert!(raw.get("parent_tool_use_id").is_none());
+
+        let raw = serde_json::to_value(SessionEvent::UserMessage {
+            text: "hi".into(),
+            image_count: 3,
+        })
+        .expect("serialize");
+        assert_eq!(raw["kind"], "userMessage");
+        assert_eq!(raw["imageCount"], 3);
+        assert!(raw.get("image_count").is_none());
 
         let raw = serde_json::to_value(SessionEvent::Usage {
             input_tokens: 1,

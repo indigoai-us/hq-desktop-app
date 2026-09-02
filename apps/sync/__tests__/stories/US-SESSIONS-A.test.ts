@@ -207,9 +207,14 @@ describe('US-SESSIONS-A — the transcript reads as a chat', () => {
 });
 
 describe('US-SESSIONS-A — timestamps are observed, never invented', () => {
-  it('the store stamps live events and leaves replayed ones unstamped', () => {
-    expect(STORE).toContain('entry.receivedAt.push(Date.now())');
-    expect(STORE).toContain('const stamps = incoming.map(() => null)');
+  it('the store takes its stamps from the backend rather than its own clock', () => {
+    // The backend stamps every buffered event with `receivedAtMs` and reports
+    // the same instant live and on replay, so a reopened transcript is dated
+    // by when things happened. `Date.now()` survives only as the fallback for
+    // a payload that carries no stamp at all.
+    expect(STORE).toContain('entry.receivedAt.push(receivedAtMs ?? Date.now())');
+    expect(STORE).toContain('entry.receivedAtMs');
+    expect(STORE).toContain('receivedAtMs: number');
   });
 
   it('the adapter synthesizes no clock of its own', () => {

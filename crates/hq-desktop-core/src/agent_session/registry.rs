@@ -51,10 +51,28 @@ pub const MAX_LIVE_SESSIONS: usize = 4;
 
 struct RingEntry {
     seq: u64,
+    /// Unix milliseconds the event was recorded, supplied by the caller (this
+    /// module stays clock-free). Stored per entry rather than derived at
+    /// replay because a replayed transcript's only honest time is the one it
+    /// was stamped with when it arrived.
+    received_at_ms: u64,
     event: SessionEvent,
     /// Serialized size, measured once at push. Measuring on eviction instead
     /// would let a re-serialization difference drift the running total.
     size: usize,
+}
+
+/// One replayed event: its seq, when it arrived, and the event itself.
+///
+/// A struct rather than the tuple this used to be, because a positional
+/// `(seq, receivedAtMs, event)` triple on the wire is exactly the shape a
+/// TypeScript consumer mis-destructures silently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayEntry {
+    pub seq: u64,
+    pub received_at_ms: u64,
+    pub event: SessionEvent,
 }
 
 /// Outcome of [`EventRing::push`].
@@ -62,6 +80,9 @@ struct RingEntry {
 pub struct Pushed {
     /// The sequence number assigned to the pushed event.
     pub seq: u64,
+    /// The stamp the event was recorded with, echoed back so a caller emits
+    /// the same instant it buffered rather than reading the clock twice.
+    pub received_at_ms: u64,
     /// Present when this push evicted older events. Carries the CUMULATIVE
     /// drop count for the session, so a consumer that missed an earlier marker
     /// still learns the true total.
@@ -72,10 +93,10 @@ pub struct Pushed {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Replay {
-    /// `(seq, event)` pairs with `seq >= since_seq`, oldest first. When
-    /// `truncated` is set the first pair is a [`SessionEvent::Truncated`]
-    /// marker standing in for the dropped span.
-    pub events: Vec<(u64, SessionEvent)>,
+    /// Entries with `seq >= since_seq`, oldest first. When `truncated` is set
+    /// the first entry is a [`SessionEvent::Truncated`] marker standing in for
+    /// the dropped span.
+    pub events: Vec<ReplayEntry>,
     /// The seq to pass as `since_seq` next time. Contiguous by construction:
     /// `replay(0)` then `replay(next_seq)` never repeats or skips an event.
     pub next_seq: u64,
@@ -100,9 +121,11 @@ pub struct EventRing {
     next_seq: u64,
     max_events: usize,
     max_bytes: usize,
-    /// `(seq of the last dropped event, cumulative dropped)`. `None` until the
-    /// first eviction.
-    truncation: Option<(u64, u64)>,
+    /// `(seq of the last dropped event, its stamp, cumulative dropped)`.
+    /// `None` until the first eviction. The stamp is carried so the
+    /// materialized marker is dated by the span it stands in for rather than
+    /// by the moment someone happened to ask for a replay.
+    truncation: Option<(u64, u64, u64)>,
 }
 
 impl Default for EventRing {
@@ -156,18 +179,25 @@ impl EventRing {
 
     /// Total events dropped by eviction so far.
     pub fn dropped(&self) -> u64 {
-        self.truncation.map(|(_, dropped)| dropped).unwrap_or(0)
+        self.truncation.map(|(_, _, dropped)| dropped).unwrap_or(0)
     }
 
-    /// Append one event, evicting from the front until both bounds hold.
-    pub fn push(&mut self, event: SessionEvent) -> Pushed {
+    /// Append one event stamped with `received_at_ms` (unix ms), evicting from
+    /// the front until both bounds hold.
+    pub fn push(&mut self, event: SessionEvent, received_at_ms: u64) -> Pushed {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let size = serialized_size(&event);
-        self.entries.push_back(RingEntry { seq, event, size });
+        self.entries.push_back(RingEntry {
+            seq,
+            received_at_ms,
+            event,
+            size,
+        });
         self.bytes = self.bytes.saturating_add(size);
         Pushed {
             seq,
+            received_at_ms,
             truncated: self.evict(),
         }
     }
@@ -178,6 +208,7 @@ impl EventRing {
     fn evict(&mut self) -> Option<SessionEvent> {
         let mut dropped = 0u64;
         let mut last_dropped_seq = 0u64;
+        let mut last_dropped_at = 0u64;
         while self.entries.len() > self.max_events
             || (self.bytes > self.max_bytes && self.entries.len() > 1)
         {
@@ -186,29 +217,36 @@ impl EventRing {
             };
             self.bytes = self.bytes.saturating_sub(front.size);
             last_dropped_seq = front.seq;
+            last_dropped_at = front.received_at_ms;
             dropped += 1;
         }
         if dropped == 0 {
             return None;
         }
         let total = self.dropped().saturating_add(dropped);
-        self.truncation = Some((last_dropped_seq, total));
+        self.truncation = Some((last_dropped_seq, last_dropped_at, total));
         Some(SessionEvent::Truncated { dropped: total })
     }
 
     /// Everything with `seq >= since_seq`, plus the cursor to continue from.
     pub fn replay(&self, since_seq: u64) -> Replay {
-        let truncated = matches!(self.truncation, Some((marker_seq, _)) if since_seq <= marker_seq);
-        let mut events: Vec<(u64, SessionEvent)> = Vec::new();
-        if let (true, Some((marker_seq, dropped))) = (truncated, self.truncation) {
-            events.push((marker_seq, SessionEvent::Truncated { dropped }));
+        let truncated =
+            matches!(self.truncation, Some((marker_seq, _, _)) if since_seq <= marker_seq);
+        let mut events: Vec<ReplayEntry> = Vec::new();
+        if let (true, Some((marker_seq, marker_at, dropped))) = (truncated, self.truncation) {
+            events.push(ReplayEntry {
+                seq: marker_seq,
+                received_at_ms: marker_at,
+                event: SessionEvent::Truncated { dropped },
+            });
         }
-        events.extend(
-            self.entries
-                .iter()
-                .filter(|entry| entry.seq >= since_seq)
-                .map(|entry| (entry.seq, entry.event.clone())),
-        );
+        events.extend(self.entries.iter().filter(|entry| entry.seq >= since_seq).map(
+            |entry| ReplayEntry {
+                seq: entry.seq,
+                received_at_ms: entry.received_at_ms,
+                event: entry.event.clone(),
+            },
+        ));
         Replay {
             events,
             next_seq: self.next_seq,
@@ -281,6 +319,9 @@ pub struct NeedsYou {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventOutcome {
     pub seq: u64,
+    /// The stamp the event was buffered with — the same instant a live
+    /// emission must carry, so a listener and a later replay agree.
+    pub received_at_ms: u64,
     pub phase_change: Option<PhaseChange>,
     pub needs_you: Option<NeedsYou>,
     /// Set when recording this event evicted older ones.
@@ -375,12 +416,18 @@ impl LiveSession {
     }
 
     /// Record one normalized event: buffer it, advance the phase, and report
-    /// whether a human is now needed.
+    /// whether a human is now needed. `received_at_ms` is unix milliseconds,
+    /// supplied by the caller so this module stays clock-free.
     ///
     /// `None` means the event was suppressed — today only a second
     /// [`SessionEvent::Exited`], which must never be recorded twice (the read
     /// loop's EOF branch and the reaper can both observe the same exit).
-    pub fn on_event(&mut self, event: SessionEvent, now: String) -> Option<EventOutcome> {
+    pub fn on_event(
+        &mut self,
+        event: SessionEvent,
+        now: String,
+        received_at_ms: u64,
+    ) -> Option<EventOutcome> {
         if self.ended && matches!(event, SessionEvent::Exited { .. }) {
             return None;
         }
@@ -460,10 +507,11 @@ impl LiveSession {
 
         // Buffer AFTER the phase bookkeeping but BEFORE returning, so `seq` and
         // the phase edge describe the same event.
-        let pushed = self.buffer.push(event);
+        let pushed = self.buffer.push(event, received_at_ms);
         let phase_change = phase_target.and_then(|target| self.transition(target));
         Some(EventOutcome {
             seq: pushed.seq,
+            received_at_ms: pushed.received_at_ms,
             phase_change,
             needs_you,
             truncated: pushed.truncated,
@@ -514,6 +562,8 @@ impl LiveSession {
             phase: self.phase,
             company: self.spec.company.clone(),
             model: self.model.clone(),
+            effort: self.spec.effort.clone(),
+            permission_mode: self.spec.permission_mode,
             cwd: self.spec.cwd.clone(),
             started_at: self.started_at.clone(),
             last_activity_at: self.last_activity_at.clone(),
@@ -557,6 +607,10 @@ pub struct SessionSummary {
     pub phase: SessionPhase,
     pub company: Option<String>,
     pub model: Option<String>,
+    /// The reasoning effort the session was launched with, when one was chosen.
+    pub effort: Option<String>,
+    /// How this session answers tool-permission requests.
+    pub permission_mode: PermissionMode,
     pub cwd: String,
     pub started_at: String,
     pub last_activity_at: String,
@@ -679,6 +733,18 @@ mod tests {
         "2026-09-01T00:00:01Z".into()
     }
 
+    /// A fixed wall clock for the tests. `ms(n)` is distinguishable per event
+    /// so an assertion about WHICH event's stamp survived is meaningful.
+    const T0: u64 = 1_780_000_000_000;
+
+    fn ms(n: u64) -> u64 {
+        T0 + n
+    }
+
+    fn now_ms() -> u64 {
+        T0
+    }
+
     fn text(body: &str) -> SessionEvent {
         SessionEvent::TextDelta {
             text: body.into(),
@@ -722,11 +788,11 @@ mod tests {
     fn the_ring_wraps_on_the_count_bound_and_records_a_truncation_marker() {
         let mut ring = EventRing::with_bounds(3, RING_MAX_BYTES);
         for i in 0..3 {
-            assert!(ring.push(text(&format!("t{i}"))).truncated.is_none());
+            assert!(ring.push(text(&format!("t{i}")), ms(i)).truncated.is_none());
         }
         assert_eq!(ring.len(), 3);
 
-        let pushed = ring.push(text("t3"));
+        let pushed = ring.push(text("t3"), ms(3));
         assert_eq!(pushed.seq, 3);
         assert_eq!(
             pushed.truncated,
@@ -737,7 +803,7 @@ mod tests {
         assert_eq!(ring.dropped(), 1);
 
         // The marker accumulates rather than resetting.
-        let pushed = ring.push(text("t4"));
+        let pushed = ring.push(text("t4"), ms(4));
         assert_eq!(pushed.truncated, Some(SessionEvent::Truncated { dropped: 2 }));
         assert_eq!(ring.dropped(), 2);
     }
@@ -747,7 +813,7 @@ mod tests {
         // One event is ~50 bytes serialized; a 200-byte cap holds a handful.
         let mut ring = EventRing::with_bounds(10_000, 200);
         for i in 0..40 {
-            ring.push(text(&format!("payload-{i}")));
+            ring.push(text(&format!("payload-{i}")), ms(i));
         }
         assert!(
             ring.bytes() <= 200,
@@ -761,7 +827,7 @@ mod tests {
     #[test]
     fn the_ring_keeps_one_event_even_when_it_alone_exceeds_the_byte_bound() {
         let mut ring = EventRing::with_bounds(10, 8);
-        ring.push(text(&"x".repeat(500)));
+        ring.push(text(&"x".repeat(500)), ms(0));
         assert_eq!(ring.len(), 1, "an over-large event is retained, not dropped to nothing");
         assert_eq!(ring.replay(0).events.len(), 1);
     }
@@ -770,21 +836,22 @@ mod tests {
     fn replay_is_contiguous_across_successive_cursors() {
         let mut ring = EventRing::new();
         for i in 0..10 {
-            ring.push(text(&format!("t{i}")));
+            ring.push(text(&format!("t{i}")), ms(i));
         }
         let first = ring.replay(0);
         assert_eq!(first.events.len(), 10);
         assert!(!first.truncated);
         assert_eq!(first.next_seq, 10);
-        assert_eq!(first.events[0].0, 0);
+        assert_eq!(first.events[0].seq, 0);
+        assert_eq!(first.events[0].received_at_ms, ms(0), "the stamp travels with the event");
 
         for i in 10..15 {
-            ring.push(text(&format!("t{i}")));
+            ring.push(text(&format!("t{i}")), ms(i));
         }
         let second = ring.replay(first.next_seq);
         assert_eq!(second.next_seq, 15);
         assert!(!second.truncated);
-        let seqs: Vec<u64> = second.events.iter().map(|(seq, _)| *seq).collect();
+        let seqs: Vec<u64> = second.events.iter().map(|entry| entry.seq).collect();
         assert_eq!(seqs, vec![10, 11, 12, 13, 14], "no gap, no repeat");
     }
 
@@ -792,17 +859,21 @@ mod tests {
     fn replay_reports_truncation_only_to_callers_whose_cursor_fell_off_the_back() {
         let mut ring = EventRing::with_bounds(3, RING_MAX_BYTES);
         for i in 0..6 {
-            ring.push(text(&format!("t{i}")));
+            ring.push(text(&format!("t{i}")), ms(i));
         }
         // Retained: seqs 3,4,5. Dropped: 0,1,2 (marker seq 2, dropped 3).
         let full = ring.replay(0);
         assert!(full.truncated);
         assert_eq!(
             full.events[0],
-            (2, SessionEvent::Truncated { dropped: 3 }),
-            "the gap is materialized in-band, at the last dropped seq"
+            ReplayEntry {
+                seq: 2,
+                received_at_ms: ms(2),
+                event: SessionEvent::Truncated { dropped: 3 },
+            },
+            "the gap is materialized in-band, at the last dropped seq and its stamp"
         );
-        let seqs: Vec<u64> = full.events.iter().map(|(seq, _)| *seq).collect();
+        let seqs: Vec<u64> = full.events.iter().map(|entry| entry.seq).collect();
         assert_eq!(seqs, vec![2, 3, 4, 5], "monotonic even with the marker");
 
         let caught_up = ring.replay(3);
@@ -817,7 +888,7 @@ mod tests {
         let mut s = session("s1");
         assert_eq!(s.phase, SessionPhase::Starting);
 
-        let out = s.on_event(started(), now()).expect("recorded");
+        let out = s.on_event(started(), now(), now_ms()).expect("recorded");
         assert_eq!(
             out.phase_change,
             Some(PhaseChange {
@@ -837,11 +908,11 @@ mod tests {
         );
 
         // Text does not move the phase.
-        let out = s.on_event(text("hi"), now()).expect("recorded");
+        let out = s.on_event(text("hi"), now(), now_ms()).expect("recorded");
         assert_eq!(out.phase_change, None);
         assert_eq!(s.phase, SessionPhase::Working);
 
-        let out = s.on_event(permission("req_1", "Write"), now()).expect("recorded");
+        let out = s.on_event(permission("req_1", "Write"), now(), now_ms()).expect("recorded");
         assert_eq!(
             out.phase_change,
             Some(PhaseChange {
@@ -864,7 +935,7 @@ mod tests {
         );
         assert!(s.pending.is_empty());
 
-        let out = s.on_event(turn_done(), now()).expect("recorded");
+        let out = s.on_event(turn_done(), now(), now_ms()).expect("recorded");
         assert_eq!(
             out.phase_change,
             Some(PhaseChange {
@@ -877,10 +948,10 @@ mod tests {
     #[test]
     fn a_second_parked_request_keeps_the_session_needing_you() {
         let mut s = session("s1");
-        s.on_event(started(), now());
+        s.on_event(started(), now(), now_ms());
         s.on_user_send(now());
-        s.on_event(permission("req_1", "Write"), now());
-        s.on_event(permission("req_2", "Bash"), now());
+        s.on_event(permission("req_1", "Write"), now(), now_ms());
+        s.on_event(permission("req_2", "Bash"), now(), now_ms());
         assert_eq!(s.pending.len(), 2);
 
         assert_eq!(
@@ -896,7 +967,7 @@ mod tests {
     #[test]
     fn a_question_request_parks_with_its_header_as_the_summary() {
         let mut s = session("s1");
-        s.on_event(started(), now());
+        s.on_event(started(), now(), now_ms());
         let out = s
             .on_event(
                 SessionEvent::QuestionRequest {
@@ -913,6 +984,7 @@ mod tests {
                     }],
                 },
                 now(),
+                now_ms(),
             )
             .expect("recorded");
         let needs = out.needs_you.expect("needs-you");
@@ -937,9 +1009,9 @@ mod tests {
     #[test]
     fn exit_drops_pendings_and_is_recorded_exactly_once() {
         let mut s = session("s1");
-        s.on_event(started(), now());
+        s.on_event(started(), now(), now_ms());
         s.on_user_send(now());
-        s.on_event(permission("req_1", "Write"), now());
+        s.on_event(permission("req_1", "Write"), now(), now_ms());
         assert_eq!(s.pending.len(), 1);
 
         let out = s
@@ -949,6 +1021,7 @@ mod tests {
                     signal: None,
                 },
                 now(),
+                now_ms(),
             )
             .expect("first exit is recorded");
         assert_eq!(
@@ -967,7 +1040,8 @@ mod tests {
                     code: Some(1),
                     signal: None
                 },
-                now()
+                now(),
+                now_ms()
             )
             .is_none(),
             "a second exit is suppressed"
@@ -977,7 +1051,7 @@ mod tests {
             .replay(0)
             .events
             .into_iter()
-            .filter(|(_, e)| matches!(e, SessionEvent::Exited { .. }))
+            .filter(|entry| matches!(entry.event, SessionEvent::Exited { .. }))
             .count();
         assert_eq!(exits, 1, "exactly one Exited in the transcript");
     }
@@ -985,15 +1059,16 @@ mod tests {
     #[test]
     fn ended_is_terminal_for_later_frames() {
         let mut s = session("s1");
-        s.on_event(started(), now());
+        s.on_event(started(), now(), now_ms());
         s.on_event(
             SessionEvent::Exited {
                 code: Some(0),
                 signal: None,
             },
             now(),
+            now_ms(),
         );
-        let out = s.on_event(turn_done(), now()).expect("still buffered");
+        let out = s.on_event(turn_done(), now(), now_ms()).expect("still buffered");
         assert_eq!(out.phase_change, None);
         assert_eq!(s.phase, SessionPhase::Ended);
         assert_eq!(s.on_user_send(now()), None);
@@ -1053,6 +1128,7 @@ mod tests {
                     signal: None,
                 },
                 now(),
+                now_ms(),
             )
             .expect("recorded");
         assert_eq!(registry.live_count(), 1);
@@ -1067,10 +1143,10 @@ mod tests {
         let mut registry = SessionRegistry::new();
         registry.insert(session("s1")).unwrap();
         let s = registry.get_mut("s1").unwrap();
-        s.on_event(started(), now());
+        s.on_event(started(), now(), now_ms());
         s.on_user_send(now());
-        s.on_event(text("hi"), now());
-        s.on_event(permission("req_1", "Write"), now());
+        s.on_event(text("hi"), now(), now_ms());
+        s.on_event(permission("req_1", "Write"), now(), now_ms());
 
         let rows = registry.snapshot();
         assert_eq!(rows.len(), 1);
@@ -1100,9 +1176,116 @@ mod tests {
             "lastActivityAt",
             "lastSeq",
             "pendingCount",
+            "effort",
+            "permissionMode",
         ] {
             assert!(raw.get(key).is_some(), "missing {key} in {raw}");
         }
         assert!(raw.get("session_id").is_none());
+        assert!(raw.get("permission_mode").is_none());
+        assert_eq!(raw["permissionMode"], "prompt");
+    }
+
+    #[test]
+    fn the_summary_carries_the_effort_and_permission_mode_the_session_was_launched_with() {
+        let mut registry = SessionRegistry::new();
+        let mut high = spec("s1", PermissionMode::BypassAll);
+        high.effort = Some("high".into());
+        registry
+            .insert(LiveSession::new(high, "2026-09-01T00:00:00Z".into()))
+            .unwrap();
+
+        let row = &registry.snapshot()[0];
+        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.permission_mode, PermissionMode::BypassAll);
+
+        // A session launched without an effort reports none rather than a
+        // fabricated default.
+        let mut plain = SessionRegistry::new();
+        plain.insert(session("s2")).unwrap();
+        assert_eq!(plain.snapshot()[0].effort, None);
+        assert_eq!(plain.snapshot()[0].permission_mode, PermissionMode::Prompt);
+    }
+
+    // ── timestamps + the operator's own turns ───────────────────────────────
+
+    #[test]
+    fn every_recorded_event_is_stamped_with_the_instant_it_was_recorded() {
+        let mut s = session("s1");
+        let first = s.on_event(started(), now(), ms(10)).expect("recorded");
+        assert_eq!(first.received_at_ms, ms(10), "the outcome echoes the stamp");
+        s.on_event(text("hi"), now(), ms(20)).expect("recorded");
+        s.on_event(turn_done(), now(), ms(30)).expect("recorded");
+
+        let stamps: Vec<u64> = s
+            .buffer
+            .replay(0)
+            .events
+            .iter()
+            .map(|entry| entry.received_at_ms)
+            .collect();
+        assert_eq!(
+            stamps,
+            vec![ms(10), ms(20), ms(30)],
+            "each event keeps its own arrival instant, not the replay's"
+        );
+    }
+
+    #[test]
+    fn a_user_message_is_buffered_ahead_of_the_reply_it_provoked() {
+        // The gap this closes: the buffer used to hold only the agent's half,
+        // so `agent_session_replay` returned a monologue and a reopened
+        // session lost every question the operator had asked.
+        let mut s = session("s1");
+        s.on_event(started(), now(), ms(0));
+        s.on_event(
+            SessionEvent::UserMessage {
+                text: "do the thing".into(),
+                image_count: 1,
+            },
+            now(),
+            ms(1),
+        )
+        .expect("recorded");
+        s.on_user_send(now());
+        s.on_event(text("on it"), now(), ms(2));
+
+        let events: Vec<SessionEvent> = s
+            .buffer
+            .replay(0)
+            .events
+            .into_iter()
+            .map(|entry| entry.event)
+            .collect();
+        assert!(
+            matches!(
+                &events[1],
+                SessionEvent::UserMessage { text, image_count }
+                    if text == "do the thing" && *image_count == 1
+            ),
+            "the operator's turn is in the transcript: {:?}",
+            events[1]
+        );
+        assert!(
+            matches!(&events[2], SessionEvent::TextDelta { text, .. } if text == "on it"),
+            "and it sits BEFORE the agent's answer: {events:?}"
+        );
+        // A user turn is transcript content, not a phase edge — `on_user_send`
+        // is what moves the session to Working.
+        assert_eq!(s.phase, SessionPhase::Working);
+    }
+
+    #[test]
+    fn the_truncation_marker_is_dated_by_the_span_it_stands_in_for() {
+        let mut ring = EventRing::with_bounds(2, RING_MAX_BYTES);
+        for i in 0..5 {
+            ring.push(text(&format!("t{i}")), ms(i));
+        }
+        // Retained: 3, 4. Dropped: 0, 1, 2 — the marker takes seq 2's stamp.
+        let replay = ring.replay(0);
+        assert!(replay.truncated);
+        assert_eq!(replay.events[0].received_at_ms, ms(2));
+        assert_eq!(replay.events[1].received_at_ms, ms(3));
+        assert_eq!(replay.events[2].received_at_ms, ms(4));
     }
 }

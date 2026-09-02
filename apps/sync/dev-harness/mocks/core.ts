@@ -537,19 +537,23 @@ const HARNESS_WORKSPACES: Workspace[] = [
 // already answered, and the usage line the composer footer reads.
 const SESSION_ID = 'sess_7f3ab21c';
 
+/** A fixed wall clock so the scripted transcript is deterministic. */
+const AGENT_SESSION_T0 = Date.parse('2026-09-02T14:00:00Z');
+
 const AGENT_SESSION_EVENTS: [number, unknown][] = [
   [0, { kind: 'started', sessionId: SESSION_ID, tool: 'claude', model: 'claude-fable-5-1[1m]', cwd: '/Users/corey/Documents/HQ', tools: ['Bash', 'Read', 'Edit'], commands: [{ name: 'handoff', description: 'End the session cleanly' }] }],
-  [1, { kind: 'toolCall', id: 't1', name: 'Bash', input: { command: 'git -C repos/private/hq-desktop-app status --short' } }],
-  [2, { kind: 'toolResult', id: 't1', isError: false, content: ' M apps/sync/src/desktop-alt/pages/SessionsPage.svelte' }],
-  [3, { kind: 'toolCall', id: 't2', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionTranscript.svelte' } }],
-  [4, { kind: 'toolResult', id: 't2', isError: false, content: '143 lines read' }],
-  [5, { kind: 'toolCall', id: 't3', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
-  [6, { kind: 'toolResult', id: 't3', isError: false, content: '313 lines read' }],
-  [7, { kind: 'toolCall', id: 't4', name: 'Edit', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
-  [8, { kind: 'toolResult', id: 't4', isError: false, content: 'edited' }],
-  [9, { kind: 'assistantMessage', text: "The composer is now a single rounded bar. Company, model and effort are **pills on the bar itself**, so there is no setup step before the first message.\n\nOne thing to confirm before I keep going: the permission pill defaults to `Prompt`." }],
-  [10, { kind: 'permissionRequest', requestId: 'req_written', toolName: 'Write', input: { file_path: 'apps/sync/src/components/sessions/ToolGroupRow.svelte' }, suggestions: [] }],
-  [11, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }],
+  [1, { kind: 'userMessage', text: 'Make the composer one bar — company, model and effort as pills on it.', imageCount: 0 }],
+  [2, { kind: 'toolCall', id: 't1', name: 'Bash', input: { command: 'git -C repos/private/hq-desktop-app status --short' } }],
+  [3, { kind: 'toolResult', id: 't1', isError: false, content: ' M apps/sync/src/desktop-alt/pages/SessionsPage.svelte' }],
+  [4, { kind: 'toolCall', id: 't2', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionTranscript.svelte' } }],
+  [5, { kind: 'toolResult', id: 't2', isError: false, content: '143 lines read' }],
+  [6, { kind: 'toolCall', id: 't3', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [7, { kind: 'toolResult', id: 't3', isError: false, content: '313 lines read' }],
+  [8, { kind: 'toolCall', id: 't4', name: 'Edit', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [9, { kind: 'toolResult', id: 't4', isError: false, content: 'edited' }],
+  [10, { kind: 'assistantMessage', text: "The composer is now a single rounded bar. Company, model and effort are **pills on the bar itself**, so there is no setup step before the first message.\n\nOne thing to confirm before I keep going: the permission pill defaults to `Prompt`." }],
+  [11, { kind: 'permissionRequest', requestId: 'req_written', toolName: 'Write', input: { file_path: 'apps/sync/src/components/sessions/ToolGroupRow.svelte' }, suggestions: [] }],
+  [12, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }],
 ];
 
 
@@ -1396,12 +1400,18 @@ This final paragraph verifies spacing after a thematic break.
       lastActivityAt: '2026-09-02T14:06:00Z',
       lastSeq: AGENT_SESSION_EVENTS.length,
       pendingCount: 1,
+      effort: null,
+      permissionMode: 'prompt',
     },
   ],
   agent_session_replay: (args) => {
     const since = Number(args?.sinceSeq ?? 0);
     return {
-      events: AGENT_SESSION_EVENTS.filter(([seq]) => seq >= since),
+      events: AGENT_SESSION_EVENTS.filter(([seq]) => seq >= since).map(([seq, event]) => ({
+        seq,
+        receivedAtMs: AGENT_SESSION_T0 + seq * 30_000,
+        event,
+      })),
       nextSeq: AGENT_SESSION_EVENTS.length,
       truncated: false,
     };
