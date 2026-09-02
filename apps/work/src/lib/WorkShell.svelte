@@ -66,6 +66,7 @@
     subscribeProjectMetaInvalidations,
   } from "./project-meta-cache";
   import {
+    createHqProFetch,
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
@@ -82,7 +83,16 @@
   import { tauriListen } from "./tauri-listen";
   import workPackage from "../../package.json";
 
-  let { data } = $props();
+  type WorkShellProps = {
+    data: { user?: Parameters<typeof toSelfIdentity>[0] };
+    runtimeKind?: "desktop" | "web";
+    apiUrl?: string;
+  };
+
+  // A non-SvelteKit host can supply its runtime kind and public API URL. The
+  // Work route supplies the latter from SvelteKit's dynamic public env; the
+  // exported shell itself deliberately has no SvelteKit virtual-module edge.
+  let { data, runtimeKind, apiUrl }: WorkShellProps = $props();
 
   type TauriWindow = Window & {
     __TAURI__?: {
@@ -100,14 +110,19 @@
     );
   }
 
-  const adapter: PlatformAdapter = isTauriRuntime()
+  const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
+  const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);
+  const adapter: PlatformAdapter = runtime === "desktop"
     ? createSyncPlatformAdapter({ invoke: tauriInvoke })
     : new WebPlatformAdapter({
-        baseUrl: hqProApiUrl(),
+        baseUrl: resolveHqProApiUrl(),
         fetch: hqProFetch,
         onUnauthorized: redirectToSigninWithCallback,
       });
-  const workFetch: HqProFetch = hqProFetch;
+  const workFetch: HqProFetch =
+    apiUrl === undefined
+      ? hqProFetch
+      : createHqProFetch({ baseUrl: resolveHqProApiUrl });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);

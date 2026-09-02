@@ -8,8 +8,6 @@
  * placed in page data, localStorage, or a URL.
  */
 
-import { env } from "$env/dynamic/public";
-
 const DEV_DEFAULT_API_URL = "https://hqapi.hq.computer";
 
 export type HqProFetch = typeof globalThis.fetch;
@@ -20,7 +18,7 @@ export interface BrowserTokenProvider {
 }
 
 export function hqProApiUrl(
-  configured = env.PUBLIC_HQ_PRO_API_URL,
+  configured?: string,
   dev = import.meta.env.DEV,
 ): string {
   const value = configured?.trim().replace(/\/+$/, "");
@@ -110,7 +108,7 @@ function directUrl(input: RequestInfo | URL, baseUrl: string): string {
  * than through a second, stale proxy routing table.
  */
 export function createHqProFetch(options: {
-  baseUrl?: string;
+  baseUrl?: string | (() => string);
   fetchImpl?: typeof globalThis.fetch;
   tokenProvider?: BrowserTokenProvider;
   onUnauthorized?: () => void;
@@ -125,7 +123,12 @@ export function createHqProFetch(options: {
     const requestWithCurrentToken = async (): Promise<Response | null> => {
       const token = await tokenProvider.getToken();
       if (!token) return null;
-      target ??= directUrl(input, options.baseUrl ?? hqProApiUrl());
+      target ??= directUrl(
+        input,
+        typeof options.baseUrl === "function"
+          ? options.baseUrl()
+          : (options.baseUrl ?? hqProApiUrl()),
+      );
       const headers = new Headers(
         init?.headers ?? (input instanceof Request ? input.headers : undefined),
       );
