@@ -42,6 +42,7 @@ export * from "./chat/dm-requests.js";
 export * from "./chat/workspaces.js";
 export * from "./chat/pending-conversation.js";
 export * from "./chat/open-target.js";
+export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
