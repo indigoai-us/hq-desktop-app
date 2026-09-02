@@ -1,10 +1,15 @@
 //! Portable Win32 path simplification.
 //!
-//! Copy path, Explorer Reveal, and HQ-path persist/resolve share this helper
-//! so a reserved DOS name, trailing dot/space, `.`/`..`, oversize component,
-//! or MAX_PATH-length path keeps the `\\?\` prefix. Implemented as string
-//! checks (not `dunce::simplified`) so Linux/macOS CI can lock the Windows
-//! contract; dunce no-ops off Windows.
+//! Copy path, Explorer Reveal, HQ-path persist/resolve, and the Claude Code
+//! deep link share this helper so a reserved DOS name, trailing dot/space,
+//! `.`/`..`, oversize component, or MAX_PATH-length path keeps the `\\?\`
+//! prefix. Implemented as string checks (not `dunce::simplified`) so
+//! Linux/macOS CI can lock the Windows contract; dunce no-ops off Windows.
+//!
+//! Lives in `hq-desktop-core` because `claude_launch` — which canonicalizes a
+//! path and then hands it to another application — needs it, and the core
+//! crate cannot depend on the Tauri app. `apps/sync/src-tauri` re-exports it
+//! as `crate::util::win32_path`, so existing call sites are unchanged.
 
 const WINDOWS_LEGACY_MAX_UTF16: usize = 260;
 
@@ -91,7 +96,7 @@ fn win32_legacy_is_safe(legacy: &str) -> bool {
 
 /// Strip Windows' internal verbatim prefix (`\\?\C:\…`, `\\?\UNC\…`) only when
 /// the remainder is a safe legacy Win32 path.
-pub(crate) fn strip_windows_verbatim_prefix(path: &str) -> String {
+pub fn strip_windows_verbatim_prefix(path: &str) -> String {
     const UNC: &[u8] = br"\\?\UNC\";
     const VERBATIM: &str = r"\\?\";
     let bytes = path.as_bytes();

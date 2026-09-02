@@ -6,13 +6,16 @@
 pub use hq_desktop_core::{
     client_info, feature_gate, hq_resolver, ignore, logfile, meeting_ledger, paths,
     recordings_ledger, release_channel,
+    // Portable `\\?\` strip used by Copy path, Explorer Reveal, HQ-path
+    // persist, and the Claude Code deep link. It moved into the core crate so
+    // `claude_launch` — which canonicalizes, then hands the path to another
+    // application — shares this exact implementation instead of a second copy.
+    win32_path,
 };
 
 // Journal remains as an app-local facade; test_support stays app-local.
 pub mod journal;
 
-// Portable `\\?\` strip used by Copy path, Explorer Reveal, and HQ-path persist.
-pub mod win32_path;
 
 // TLS transport builder for the MQTT-over-WSS connections (dm_mqtt, outpost).
 // App-local because it's specific to this app's rumqttc usage.
