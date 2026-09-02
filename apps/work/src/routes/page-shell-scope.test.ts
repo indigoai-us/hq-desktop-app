@@ -48,7 +48,7 @@ import {
 } from "$lib/hq-pro-client.js";
 import { resetLiveRailHydrate } from "$lib/chat-adapter.js";
 import { tenantStorageKey } from "../../../../packages/ui/src/identity/tenant-storage.js";
-import Page from "./+page.svelte";
+import Page from "../lib/WorkShell.svelte";
 
 type CapturedDesktopAppProps = {
   self: SelfIdentity | null;

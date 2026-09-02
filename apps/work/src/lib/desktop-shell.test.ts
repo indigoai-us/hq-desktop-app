@@ -359,7 +359,7 @@ describe("Tauri attachment handlers", () => {
 
   it("wires reactive desktop identity and native attachment handlers only for the desktop shell", async () => {
     const source = await readFile(
-      new URL("../routes/+page.svelte", import.meta.url),
+      new URL("./WorkShell.svelte", import.meta.url),
       "utf8",
     );
 
