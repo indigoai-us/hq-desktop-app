@@ -63,3 +63,5 @@ pub mod workspaces;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+pub mod agent_session;
