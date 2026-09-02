@@ -9,6 +9,8 @@
    */
   import type { StatusPersonRow } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
+  import AvatarPackPicker from "../avatars/AvatarPackPicker.svelte";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -17,10 +19,26 @@
     self?: SelfIdentity | null;
     /** Optional real avatar (currently only known for self). */
     avatarUrl?: string | null;
+    /** Owner/admin of this agent: show the pack picker. */
+    editable?: boolean;
+    packs?: AvatarPack[] | null;
+    saving?: boolean;
+    saveError?: string | null;
+    onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
     onclose?: () => void;
   }
 
-  let { member, self = null, avatarUrl = null, onclose }: Props = $props();
+  let {
+    member,
+    self = null,
+    avatarUrl = null,
+    editable = false,
+    packs = null,
+    saving = false,
+    saveError = null,
+    onsaveavatar,
+    onclose,
+  }: Props = $props();
 
   const you = $derived(isSelf(member.personUid, self));
   // Prefer an explicitly-passed photo, else the member row's own avatar.
@@ -86,6 +104,18 @@
         <div class="pp-field">
           <dt>About</dt>
           <dd data-testid="member-profile-about">{about}</dd>
+        </div>
+      {/if}
+      {#if editable}
+        <div class="pp-picker" data-testid="member-profile-avatar-picker">
+          <AvatarPackPicker
+            agentUid={member.personUid}
+            currentSrc={photo}
+            {packs}
+            {saving}
+            error={saveError}
+            onsave={onsaveavatar}
+          />
         </div>
       {/if}
       {#if member.email}
@@ -207,6 +237,12 @@
     color: var(--t3);
     font-size: 12px;
     text-transform: capitalize;
+  }
+
+  .pp-picker {
+    width: 100%;
+    margin-top: 8px;
+    text-align: left;
   }
 
   .pp-fields {

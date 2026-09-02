@@ -83,4 +83,21 @@ describe("WebPlatformAdapter profile", () => {
       },
     });
   });
+
+  it("PATCHes /v1/agents/{uid}/profile", async () => {
+    const { adapter, calls } = makeAdapter({
+      uid: "agt_scout",
+      profile: { avatarBase64: "QUJD" },
+      slackUpdated: false,
+    });
+    const res = await adapter.identity.updateAgentProfile("agt_scout", {
+      avatarBase64: "QUJD",
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: "PATCH",
+      path: "/v1/agents/agt_scout/profile",
+      body: { avatarBase64: "QUJD" },
+    });
+  });
 });
