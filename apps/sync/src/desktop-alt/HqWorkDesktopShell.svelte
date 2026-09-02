@@ -17,6 +17,8 @@
     settingsProfileFromSelf,
     toSelfIdentity,
     workspacesFromMembershipRows,
+    type ConversationRow,
+    type RowExtrasResolver,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
@@ -32,6 +34,15 @@
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
+  import ProjectSessionsHoverCard from './components/ProjectSessionsHoverCard.svelte';
+  import { projectLinksStore } from './lib/project-links-store.svelte';
+  import {
+    newSessionParam,
+    rowExtrasFor,
+    PROJECT_CHANNEL_LINKED_EVENT,
+    type ProjectChannelLinked,
+    type ProjectLink,
+  } from './lib/session-project-links';
   import { openApprovedExternalUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
@@ -111,6 +122,52 @@
         }
       : {},
   );
+
+  /**
+   * Project channels ↔ sessions. The shared sidebar paints a badge, a hover
+   * card and a "New session" action on project-channel rows through the
+   * generic `rowExtras` seam; what those mean comes from this host's
+   * `session_project_links` store, keyed by company slug. A new resolver on
+   * every store change is what makes the rows repaint.
+   */
+  const companySlugByUid = $derived(
+    new Map(
+      (companies ?? [])
+        .filter((company) => company.cloudUid)
+        .map((company) => [company.cloudUid as string, company.slug]),
+    ),
+  );
+  function companyOfLink(link: ProjectLink, byCompany: Record<string, ProjectLink[]>): string | null {
+    return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
+  }
+  const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
+    if (!sessionsEnabled || lifecycle !== 'ready') return null;
+    const byCompany = projectLinksStore.byCompany;
+    const slugByUid = companySlugByUid;
+    return (row: ConversationRow) => {
+      const slug = row.companyUid ? slugByUid.get(row.companyUid) : undefined;
+      const links = slug ? (byCompany[slug] ?? []) : Object.values(byCompany).flat();
+      return rowExtrasFor(row, links, ProjectSessionsHoverCard, (link) => {
+        const company = slug ?? companyOfLink(link, byCompany);
+        if (!company) return;
+        navigation.navigate({
+          kind: 'extra',
+          page: 'sessions',
+          param: newSessionParam(company, link.project),
+        });
+      });
+    };
+  });
+  // The store runs only while the shell is ready and Sessions is on; it
+  // follows the workspace list (start is idempotent) and stops on teardown.
+  $effect(() => {
+    if (lifecycle !== 'ready' || !sessionsEnabled) return;
+    const slugs = (companies ?? [])
+      .filter((company) => company.kind === 'company' && company.slug !== 'personal')
+      .map((company) => company.slug);
+    projectLinksStore.start(slugs);
+    return () => projectLinksStore.stop();
+  });
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -557,6 +614,26 @@
       if (next) acceptAuthSession(next);
     }).catch(() => () => {});
 
+    // A project channel was just created (or found) from the Sessions page:
+    // paint its row now and let the directory reconcile confirm it.
+    const onProjectChannelLinked = (event: Event) => {
+      if (cancelled) return;
+      const detail = (event as CustomEvent<ProjectChannelLinked>).detail;
+      const companyUid =
+        (companies ?? []).find((company) => company.slug === detail?.company)?.cloudUid ?? null;
+      if (detail?.channelId && detail.channelName) {
+        wakes.emit?.('channel:updated', {
+          channelId: detail.channelId,
+          name: detail.channelName,
+          scope: 'company',
+          companyUid,
+          membership: 'joined',
+        });
+      }
+      wakes.emit?.('channel:unread-changed', undefined);
+    };
+    window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
+
     const revalidateOnRecovery = () => {
       if (!cancelled) requestRevalidation({ automatic: true });
     };
@@ -585,6 +662,7 @@
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       }
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
+      window.removeEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
       window.removeEventListener('pageshow', revalidateOnRecovery);
@@ -655,6 +733,7 @@
       hydrateLiveMessages={true}
       coreFixtures={false}
       {extraPages}
+      {rowExtras}
       putAttachmentObject={putVaultObject}
       getAttachmentObject={getVaultObject}
       onsignout={signOut}

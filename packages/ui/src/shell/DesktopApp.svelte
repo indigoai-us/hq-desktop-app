@@ -148,6 +148,7 @@
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import type { ConversationRow } from "../chat/sidebar-model.js";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
   import {
     mergeFetchedTimeline,
     mergeTimelineMessages,
@@ -360,6 +361,12 @@
         }>;
       }
     >;
+    /**
+     * Host decoration for sidebar rows (badge, hover card, context-menu
+     * actions) — the row-level twin of `extraPages`. The shell passes it to
+     * the sidebar untouched; see `chat/row-extras.ts`.
+     */
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -407,6 +414,7 @@
     putAttachmentObject,
     getAttachmentObject,
     extraPages,
+    rowExtras = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -2389,6 +2397,7 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
+          {rowExtras}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",

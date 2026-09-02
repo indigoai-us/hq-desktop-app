@@ -30,6 +30,7 @@
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
+  import type { RowExtrasResolver } from "./row-extras";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -144,6 +145,8 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => void;
+    /** Host decoration per row: badge, hover card, context-menu actions. */
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -166,6 +169,7 @@
     onselect,
     oncompanyscopechange,
     onsignout,
+    rowExtras = null,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -335,6 +339,32 @@
     x: number;
     y: number;
   } | null>(null);
+  /** The row whose host hover card is showing, anchored to the row's box. */
+  let hoverCard = $state<{ row: ConversationRow; x: number; y: number } | null>(null);
+  let hoverHideTimer: ReturnType<typeof setTimeout> | null = null;
+  const HOVER_HIDE_DELAY_MS = 180;
+
+  function showHoverCard(row: ConversationRow, anchor: HTMLElement): void {
+    if (!rowExtras?.(row)?.hoverCard) return;
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+    const box = anchor.getBoundingClientRect();
+    hoverCard = { row, x: box.right + 6, y: box.top };
+  }
+
+  /** Delayed so the pointer can cross the gap into the card itself. */
+  function scheduleHoverCardHide(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = setTimeout(() => {
+      hoverCard = null;
+      hoverHideTimer = null;
+    }, HOVER_HIDE_DELAY_MS);
+  }
+
+  function keepHoverCard(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+  }
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   let scopeMenuEl: HTMLDivElement | null = $state(null);
@@ -2200,7 +2230,39 @@
           ? "Unpin conversation"
           : "Pin conversation"}
       </button>
+      {#each rowExtras?.(contextMenu.row)?.actions ?? [] as action (action.id)}
+        <button
+          type="button"
+          class="chat-popover-row"
+          role="menuitem"
+          data-testid={`chat-context-action-${action.id}`}
+          onclick={() => {
+            contextMenu = null;
+            action.onselect();
+          }}
+        >
+          {action.label}
+        </button>
+      {/each}
     </div>
+  {/if}
+
+  {#if hoverCard}
+    {@const HoverCard = rowExtras?.(hoverCard.row)?.hoverCard}
+    {#if HoverCard}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="chat-row-hover-card"
+        data-testid="chat-row-hover-card"
+        data-conversation-id={hoverCard.row.id}
+        use:portal
+        style="left:{hoverCard.x}px; top:{hoverCard.y}px;"
+        onmouseenter={keepHoverCard}
+        onmouseleave={scheduleHoverCardHide}
+      >
+        <HoverCard row={hoverCard.row} />
+      </div>
+    {/if}
   {/if}
 
   {#if historyOpen}
@@ -2785,7 +2847,14 @@
 />
 
 {#snippet conversationRow(row: ConversationRow)}
-  <div role="listitem" class="chat-li">
+  {@const extras = rowExtras?.(row) ?? null}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    role="listitem"
+    class="chat-li"
+    onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
+    onmouseleave={scheduleHoverCardHide}
+  >
     <button
       type="button"
       class="chat-row"
@@ -2822,6 +2891,11 @@
         </span>
       {/if}
       <span class="chat-row-title">{row.title}</span>
+      {#if extras?.badge}
+        <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
+          {extras.badge}
+        </span>
+      {/if}
       {#if row.unreadCount != null && row.unreadCount > 0}
         <span
           class="chat-unread-badge"
@@ -3507,6 +3581,32 @@
   }
 
   /* Cursor-anchored right-click menu (portaled to .desktop-shell). */
+  /* Host row decoration (`rowExtras`): a quiet badge after the title, and a
+     card the host mounts beside the hovered row. */
+  .chat-row-extra-badge {
+    flex: none;
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--v4-text-3, var(--text-3));
+    background: var(--v4-active-row, rgba(127, 127, 127, 0.14));
+    white-space: nowrap;
+  }
+
+  .chat-row-hover-card {
+    position: fixed;
+    z-index: 60;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--side-bg, var(--v4-glass-bg, #1c1f24));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+  }
+
   .chat-context-menu {
     position: fixed;
     z-index: 70;

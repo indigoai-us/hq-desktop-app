@@ -103,6 +103,13 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
+  import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
+  import { projectLinksStore } from '../lib/project-links-store.svelte';
+  import {
+    linkForProject,
+    projectNameFor,
+    projectSlugFor,
+  } from '../lib/session-project-links';
   import '../../components/sessions/sessions-tokens.css';
 
   interface Props {
@@ -112,9 +119,19 @@
     onopensession?: (sessionId: string) => void;
     /** Open a channel by id after a share — the shell's own route mechanism. */
     onopenchannel?: (channelId: string) => void;
+    /** A fresh chat pre-bound to this company (the sidebar's "New session"). */
+    initialCompany?: string | null;
+    /** …and to this project (directory slug), once the project list is in. */
+    initialProject?: string | null;
   }
 
-  let { sessionId, onopensession, onopenchannel }: Props = $props();
+  let {
+    sessionId,
+    onopensession,
+    onopenchannel,
+    initialCompany = null,
+    initialProject = null,
+  }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
@@ -172,6 +189,27 @@
   let projectsCompany = $state<string | null | undefined>(undefined);
   /** "Run /startwork on first message" — default on, remembered. */
   let startworkEnabled = $state(readStartworkEnabled());
+
+  // --- a route-bound fresh chat (`new?company=…&project=…`) -------------------
+  /** Applied once: the route's company wins over the remembered pill. */
+  let routeApplied = $state(false);
+  /** The route's project slug, resolved to a pill name once projects load. */
+  let routeProjectPending = $state<string | null>(null);
+  $effect(() => {
+    if (routeApplied) return;
+    routeApplied = true;
+    if (initialCompany) {
+      company = initialCompany;
+      companySeeded = true;
+    }
+    routeProjectPending = initialCompany && initialProject ? initialProject : null;
+  });
+  $effect(() => {
+    const slug = routeProjectPending;
+    if (!slug || projectsLoading || projectsCompany !== company) return;
+    routeProjectPending = null;
+    project = projectNameFor(projects, slug);
+  });
 
   // --- the `/` picker's HQ catalog --------------------------------------------
   let catalog = $state<SkillCatalog | null>(null);
@@ -421,6 +459,11 @@
   });
   const phase = $derived(liveSessionStore.phase);
   const summary = $derived(liveSessionStore.summary);
+
+  /** The live session's project link (channel + siblings), for the strip pill. */
+  const projectLink = $derived(
+    linkForProject(projectLinksStore.linksFor(summary?.company ?? company), summary?.project ?? null),
+  );
 
   /**
    * Opening an existing session binds the pills to THAT session once.
@@ -723,6 +766,8 @@
       tool,
       cwd: '',
       company,
+      // The pill holds a prd NAME; the session binds to the directory slug.
+      project: projectSlugFor(projects, project),
       model,
       effort,
       resume,
@@ -986,6 +1031,12 @@
     tool={summary?.tool ?? tool}
     menuEnabled={Boolean(sessionId) && !ended}
     {menuResult}
+    projectLabel={sessionId ? (summary?.project ?? null) : null}
+    projectLinked={Boolean(projectLink?.channelId)}
+    onopenproject={() => {
+      const channelId = projectLink?.channelId;
+      if (channelId) onopenchannel?.(channelId);
+    }}
     onopeninapp={() => void handleOpenInApp()}
     onshare={() => (shareOpen = true)}
     onend={() => void handleEndSession()}
@@ -1065,6 +1116,11 @@
       </button>
     </div>
   {/if}
+
+  <ProjectCreatedCard
+    sessionId={sessionId ?? null}
+    onopenchannel={(channelId) => onopenchannel?.(channelId)}
+  />
 
   <div class="composer-dock">
     <SessionComposer

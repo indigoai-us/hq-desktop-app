@@ -590,6 +590,21 @@ impl LiveSession {
     /// Session-scoped and immediate: `decide_can_use_tool` reads the spec, so
     /// this alone is what makes `bypassAll` stop parking prompts. Whether the
     /// CLI is also told is the driver's business.
+    /// Bind (or rebind) the session to a company project. Returns whether
+    /// anything changed, so a caller can skip a redundant meta rewrite. A
+    /// blank slug is "no project".
+    pub fn bind_project(&mut self, project: Option<&str>) -> bool {
+        let next = project
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned);
+        if self.spec.project == next {
+            return false;
+        }
+        self.spec.project = next;
+        true
+    }
+
     pub fn set_permission_mode(&mut self, mode: PermissionMode) {
         self.spec.permission_mode = mode;
     }
@@ -600,6 +615,7 @@ impl LiveSession {
             tool: self.spec.tool,
             phase: self.phase,
             company: self.spec.company.clone(),
+            project: self.spec.project.clone(),
             model: self.model.clone(),
             requested_model: self.spec.model.clone(),
             effort: self.spec.effort.clone(),
@@ -646,6 +662,9 @@ pub struct SessionSummary {
     pub tool: SessionTool,
     pub phase: SessionPhase,
     pub company: Option<String>,
+    /// The company project this session is bound to (directory slug), when
+    /// the composer picked one or HQ created one during the session.
+    pub project: Option<String>,
     pub model: Option<String>,
     /// The model the OPERATOR asked for (the composer's catalog value), which
     /// is not what `model` reports — that is the id the CLI resolved. Only a
@@ -763,6 +782,7 @@ mod tests {
             tool: SessionTool::Claude,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
+            project: None,
             model: Some("haiku".into()),
             effort: None,
             resume: None,
@@ -1423,5 +1443,29 @@ mod tests {
         assert_eq!(replay.events[0].received_at_ms, ms(2));
         assert_eq!(replay.events[1].received_at_ms, ms(3));
         assert_eq!(replay.events[2].received_at_ms, ms(4));
+    }
+
+    /// A session binds to a company project either at start (the composer's
+    /// pick) or later, when HQ creates one mid-session. The binding rides the
+    /// summary — the sidebar's session badges and the strip's project pill
+    /// both read it from there — and a blank slug means "no project".
+    #[test]
+    fn project_binding_reaches_the_summary_and_reports_real_changes_only() {
+        let mut s = session("s1");
+        assert_eq!(s.summary().project, None);
+
+        assert!(s.bind_project(Some("launch")));
+        assert_eq!(s.summary().project.as_deref(), Some("launch"));
+        assert_eq!(s.spec.project.as_deref(), Some("launch"));
+
+        // Same slug again: nothing moved, so nothing to persist.
+        assert!(!s.bind_project(Some("  launch ")));
+        // Rebinding to the project HQ just created is a real change.
+        assert!(s.bind_project(Some("onboarding-v2")));
+        assert_eq!(s.summary().project.as_deref(), Some("onboarding-v2"));
+        // Blank clears.
+        assert!(s.bind_project(Some("   ")));
+        assert_eq!(s.summary().project, None);
+        assert!(!s.bind_project(None));
     }
 }

@@ -203,6 +203,10 @@ struct SessionMetaOut {
     /// id is only known once the child's `init` frame lands, after this file
     /// is written.
     cli_session_id: Option<String>,
+    /// The company project the session is bound to (directory slug). The
+    /// history reader already parses this key; the sidebar's project links
+    /// read it from disk for sessions that are no longer live.
+    project: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -352,6 +356,7 @@ pub async fn agent_session_start(
         spec.company.as_deref(),
         spec.tool,
         cli_session_id.as_deref(),
+        spec.project.as_deref(),
     ) {
         log(LOG_TAG, &format!("session={session_id} meta write failed: {e}"));
     }
@@ -753,6 +758,7 @@ fn write_session_meta(
     company: Option<&str>,
     tool: SessionTool,
     cli_session_id: Option<&str>,
+    project: Option<&str>,
 ) -> Result<(), String> {
     let dir = hq_root.join("workspace").join("sessions").join(session_id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -770,9 +776,87 @@ fn write_session_meta(
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_owned),
+        project: project
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned),
     };
     let yaml = serde_yaml::to_string(&meta).map_err(|e| format!("serialize meta: {e}"))?;
     std::fs::write(dir.join("meta.yaml"), yaml).map_err(|e| format!("write meta.yaml: {e}"))
+}
+
+/// Rewrite ONLY the `project` key of an existing meta.yaml, keeping every
+/// other key (including ones this app never wrote) intact. Used when HQ
+/// creates a project mid-session and the session is bound to it after the
+/// fact.
+fn update_session_meta_project(
+    hq_root: &Path,
+    session_id: &str,
+    project: &str,
+) -> Result<(), String> {
+    // A session id is a client-minted token, never a path.
+    if session_id.contains(['/', '\\']) || session_id == "." || session_id == ".." {
+        return Err("invalid session id".to_string());
+    }
+    let path = hq_root
+        .join("workspace")
+        .join("sessions")
+        .join(session_id)
+        .join("meta.yaml");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read meta.yaml: {e}"))?;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(&raw).map_err(|e| format!("parse meta.yaml: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("meta.yaml is not a mapping".to_string());
+    };
+    map.insert(
+        serde_yaml::Value::String("project".into()),
+        serde_yaml::Value::String(project.trim().to_string()),
+    );
+    let yaml = serde_yaml::to_string(&doc).map_err(|e| format!("serialize meta: {e}"))?;
+    std::fs::write(&path, yaml).map_err(|e| format!("write meta.yaml: {e}"))
+}
+
+/// The process-wide registry, for sibling modules' tests that need to seed a
+/// live session without spawning a child.
+#[cfg(test)]
+pub(crate) fn test_registry() -> Arc<Mutex<SessionState>> {
+    state()
+}
+
+/// Every session the registry is driving — for the project-links join and
+/// the project watch, which run outside a command.
+pub(crate) async fn live_session_summaries() -> Vec<SessionSummary> {
+    state().lock().await.registry.snapshot()
+}
+
+/// Bind a live session to a company project: the registry (so every summary
+/// reports it at once) and its meta.yaml (so the binding outlives the
+/// process). Returns whether the registry binding changed; a meta write
+/// failure is reported but does not undo the in-memory binding.
+pub(crate) async fn bind_session_project(
+    hq_root: &Path,
+    session_id: &str,
+    project: &str,
+) -> Result<bool, String> {
+    let changed = {
+        let state = state();
+        let mut guard = state.lock().await;
+        let session = guard
+            .registry
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Session {session_id} is not running."))?;
+        session.bind_project(Some(project))
+    };
+    if changed {
+        if let Err(e) = update_session_meta_project(hq_root, session_id, project) {
+            log(
+                LOG_TAG,
+                &format!("session={session_id} meta project write failed: {e}"),
+            );
+        }
+    }
+    Ok(changed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -794,6 +878,7 @@ mod tests {
             tool: SessionTool::Codex,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
+            project: None,
             model: None,
             effort: None,
             resume: None,
@@ -834,13 +919,23 @@ mod tests {
     fn session_meta_uses_the_keys_the_history_reader_parses() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        write_session_meta(&root, "sess-1", Some("indigo"), SessionTool::Claude, None)
-            .expect("write");
+        write_session_meta(
+            &root,
+            "sess-1",
+            Some("indigo"),
+            SessionTool::Claude,
+            None,
+            Some("launch"),
+        )
+        .expect("write");
 
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-1/meta.yaml"))
             .expect("read");
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
         assert_eq!(parsed["company_slug"].as_str(), Some("indigo"));
+        // The composer's project pick lands under the key the history reader
+        // and the project-links join both parse.
+        assert_eq!(parsed["project"].as_str(), Some("launch"));
         assert!(
             parsed["started_at"].as_str().is_some_and(|t| t.ends_with('Z')),
             "started_at must be ISO-8601 UTC: {raw}"
@@ -848,11 +943,13 @@ mod tests {
 
         // A company-less session writes a null slug rather than omitting the
         // key, which the reader's `#[serde(default)]` handles either way.
-        write_session_meta(&root, "sess-2", Some("   "), SessionTool::Claude, None).expect("write");
+        write_session_meta(&root, "sess-2", Some("   "), SessionTool::Claude, None, Some(" "))
+            .expect("write");
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-2/meta.yaml"))
             .expect("read");
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
         assert!(parsed["company_slug"].is_null(), "blank slug is not a company");
+        assert!(parsed["project"].is_null(), "blank project is no project");
         assert_eq!(parsed["tool"].as_str(), Some("claude"));
         assert!(
             parsed["cli_session_id"].is_null(),
@@ -866,6 +963,7 @@ mod tests {
             Some("indigo"),
             SessionTool::Codex,
             Some("01a06218-e436-7963-827b-6103963b4320"),
+            None,
         )
         .expect("write");
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-3/meta.yaml"))
@@ -876,6 +974,81 @@ mod tests {
             parsed["cli_session_id"].as_str(),
             Some("01a06218-e436-7963-827b-6103963b4320")
         );
+    }
+
+    /// Binding a project after the fact (HQ created one mid-session) rewrites
+    /// only the `project` key: the company, tool and start time — and any key
+    /// a newer HQ wrote that this app knows nothing about — survive.
+    #[test]
+    fn a_late_project_binding_rewrites_only_the_project_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_session_meta(&root, "sess-4", Some("indigo"), SessionTool::Claude, None, None)
+            .expect("write");
+        let path = root.join("workspace/sessions/sess-4/meta.yaml");
+        let mut raw = std::fs::read_to_string(&path).expect("read");
+        raw.push_str("repo: hq-desktop-app\n");
+        std::fs::write(&path, raw).expect("append");
+
+        update_session_meta_project(&root, "sess-4", "draft").expect("update");
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
+        assert_eq!(parsed["project"].as_str(), Some("draft"));
+        assert_eq!(parsed["company_slug"].as_str(), Some("indigo"));
+        assert_eq!(parsed["tool"].as_str(), Some("claude"));
+        assert_eq!(parsed["repo"].as_str(), Some("hq-desktop-app"));
+        assert!(parsed["started_at"].as_str().is_some());
+
+        // Rebinding overwrites; a path-shaped id is refused; a missing session
+        // is an error rather than a file conjured from nothing.
+        update_session_meta_project(&root, "sess-4", "onboarding").expect("rebind");
+        let raw = std::fs::read_to_string(&path).expect("read");
+        assert!(raw.contains("project: onboarding"), "{raw}");
+        assert!(update_session_meta_project(&root, "../sess-4", "x").is_err());
+        assert!(update_session_meta_project(&root, "missing", "x").is_err());
+    }
+
+    #[tokio::test]
+    async fn binding_a_live_session_updates_the_registry_and_reports_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let session_id = format!("bind-{}", uuid::Uuid::new_v4());
+        let spec = SessionSpec {
+            session_id: session_id.clone(),
+            tool: SessionTool::Claude,
+            cwd: "/hq".into(),
+            company: Some("indigo".into()),
+            project: None,
+            model: None,
+            effort: None,
+            resume: None,
+            permission_mode: PermissionMode::Prompt,
+        };
+        state()
+            .lock()
+            .await
+            .registry
+            .insert(LiveSession::new(spec, now_iso()))
+            .expect("insert");
+        write_session_meta(&root, &session_id, Some("indigo"), SessionTool::Claude, None, None)
+            .expect("write");
+
+        assert_eq!(bind_session_project(&root, &session_id, "draft").await, Ok(true));
+        assert_eq!(bind_session_project(&root, &session_id, "draft").await, Ok(false));
+        let bound = live_session_summaries()
+            .await
+            .into_iter()
+            .find(|s| s.session_id == session_id)
+            .expect("listed");
+        assert_eq!(bound.project.as_deref(), Some("draft"));
+        let raw = std::fs::read_to_string(
+            root.join("workspace/sessions").join(&session_id).join("meta.yaml"),
+        )
+        .expect("read");
+        assert!(raw.contains("project: draft"), "{raw}");
+        assert!(bind_session_project(&root, "nope", "draft").await.is_err());
+
+        state().lock().await.registry.remove(&session_id);
     }
 
     #[tokio::test]

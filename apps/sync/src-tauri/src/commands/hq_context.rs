@@ -185,7 +185,7 @@ pub async fn hq_share_to_channel_preflight(company: String) -> Result<SharePrefl
 }
 
 /// Map a company slug to its `cmp_*` cloud UID via `companies/manifest.yaml`.
-fn company_cloud_uid(hq_root: &std::path::Path, company: &str) -> Option<String> {
+pub(crate) fn company_cloud_uid(hq_root: &std::path::Path, company: &str) -> Option<String> {
     let company = company.trim();
     if company.is_empty() {
         return None;

@@ -560,6 +560,7 @@ mod tests {
             tool: SessionTool::Claude,
             cwd: "/work".into(),
             company: None,
+            project: None,
             model: None,
             effort: None,
             resume: resume.map(str::to_owned),

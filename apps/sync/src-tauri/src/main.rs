@@ -693,6 +693,9 @@ fn main() {
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
             commands::session_share_channel::session_share_to_channel,
+            // Project channels ↔ sessions: the join behind the sidebar's
+            // session badges / hover cards and the strip's project pill.
+            commands::session_project_links::session_project_links,
             // Open / Share / Deploy on files a session produced.
             commands::session_artifacts::session_artifact_stat,
             commands::session_artifacts::session_artifact_open,
@@ -1099,6 +1102,11 @@ fn main() {
             // stays fresh without a manual refresh — same independent-timer
             // pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
+
+            // Project watch: notices a `prd.json` HQ writes while a session is
+            // live, binds the session to it and emits
+            // `agent-session:project-created` so the chat can offer a channel.
+            commands::session_project_links::setup_project_watch(app.handle().clone());
 
             // Agent CLI children spawned by `hq_desktop_core::stdio` join the
             // same process registry `terminate_all_for_exit` drains on quit.
