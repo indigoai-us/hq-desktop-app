@@ -66,11 +66,10 @@
     subscribeProjectMetaInvalidations,
   } from "./project-meta-cache";
   import {
-    createHqProFetch,
+    configureHqProApiUrl,
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
-    type HqProFetch,
   } from "./hq-pro-client";
   import { displayVersion } from "./version";
   import {
@@ -111,6 +110,7 @@
   }
 
   const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
+  configureHqProApiUrl(apiUrl);
   const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);
   const adapter: PlatformAdapter = runtime === "desktop"
     ? createSyncPlatformAdapter({ invoke: tauriInvoke })
@@ -119,10 +119,7 @@
         fetch: hqProFetch,
         onUnauthorized: redirectToSigninWithCallback,
       });
-  const workFetch: HqProFetch =
-    apiUrl === undefined
-      ? hqProFetch
-      : createHqProFetch({ baseUrl: resolveHqProApiUrl });
+  const workFetch = hqProFetch;
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);

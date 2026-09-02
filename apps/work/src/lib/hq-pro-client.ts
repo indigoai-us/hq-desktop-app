@@ -9,6 +9,7 @@
  */
 
 const DEV_DEFAULT_API_URL = "https://hqapi.hq.computer";
+let configuredHqProApiUrl: string | undefined;
 
 export type HqProFetch = typeof globalThis.fetch;
 
@@ -17,8 +18,13 @@ export interface BrowserTokenProvider {
   clear(): void;
 }
 
+/** Set by a host before the shared browser transport makes its first request. */
+export function configureHqProApiUrl(configured: string | undefined): void {
+  configuredHqProApiUrl = configured;
+}
+
 export function hqProApiUrl(
-  configured?: string,
+  configured = configuredHqProApiUrl,
   dev = import.meta.env.DEV,
 ): string {
   const value = configured?.trim().replace(/\/+$/, "");

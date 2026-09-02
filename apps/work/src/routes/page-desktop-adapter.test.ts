@@ -71,8 +71,8 @@ describe("HQ Work desktop platform adapter", () => {
     expect(page).toContain(
       "const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);",
     );
-    expect(page).toContain("? hqProFetch");
-    expect(page).toContain("createHqProFetch({ baseUrl: resolveHqProApiUrl })");
+    expect(page).toContain("configureHqProApiUrl(apiUrl);");
+    expect(page).toContain("const workFetch = hqProFetch;");
     expect(page).toContain("loadWorkThreads(roster, workFetch)");
 
     const commands: string[] = [];
