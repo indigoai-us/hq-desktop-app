@@ -118,8 +118,8 @@ export interface UsageEvent {
   kind: 'usage';
   inputTokens: number;
   outputTokens: number;
-  costUsd?: number;
-  durationMs?: number;
+  costUsd?: number | null;
+  durationMs?: number | null;
 }
 
 export interface RateLimitEvent {

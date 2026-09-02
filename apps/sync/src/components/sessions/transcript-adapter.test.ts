@@ -606,3 +606,18 @@ describe('foldSessionEvents — day dividers use REAL time only', () => {
     expect(blocks[0]!.at).toBeNull();
   });
 });
+
+describe('usage without a dollar cost (Codex)', () => {
+  it('folds a usage event whose costUsd/durationMs are null without throwing', () => {
+    const events: SessionEvent[] = [
+      { kind: 'started', sessionId: 's', tool: 'codex', model: 'gpt-5.6', cwd: '/hq', tools: [], commands: [] },
+      { kind: 'textDelta', text: 'hello' },
+      { kind: 'assistantMessage', text: 'hello' },
+      { kind: 'usage', inputTokens: 10, outputTokens: 5, costUsd: null, durationMs: null } as SessionEvent,
+      { kind: 'turnDone', status: 'success' },
+    ];
+    const state = foldSessionEvents(events);
+    expect(state.lastUsage?.label).toBe('10 in · 5 out');
+    expect(state.blocks.some((b) => b.type === 'assistantProse')).toBe(true);
+  });
+});
