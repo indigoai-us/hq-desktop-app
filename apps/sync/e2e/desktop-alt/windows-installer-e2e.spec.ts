@@ -55,7 +55,25 @@ describe('Windows production installer E2E', () => {
   it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
     expect(workflow).toContain('Install PR bridge NSIS package');
-    expect(workflow).toContain('bundle\\nsis');
+    // The two installers are built in parallel jobs and travel to the E2E job
+    // as artifacts, so the gate no longer reads them out of bundle\nsis in
+    // place. What still has to hold is that NSIS output -- not the MSI -- is
+    // what gets installed, and that each build publishes exactly the
+    // version-suffixed setup.exe the E2E job then looks for.
+    expect(workflow).toContain(
+      'release/bundle/nsis/*_${{ steps.versions.outputs.bridge }}_x64-setup.exe',
+    );
+    expect(workflow).toContain(
+      'release/bundle/nsis/*_${{ steps.versions.outputs.target }}_x64-setup.exe',
+    );
+    expect(workflow).toContain('name: windows-installer-bridge');
+    expect(workflow).toContain('name: windows-installer-target');
+    expect(workflow).toContain(
+      '-Filter "*_$($env:BRIDGE_VERSION)_x64-setup.exe"',
+    );
+    expect(workflow).toContain(
+      '-Filter "*_$($env:TARGET_VERSION)_x64-setup.exe"',
+    );
     expect(workflow).toContain('-Action upgrade');
     expect(workflow).toContain(
       'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
@@ -71,7 +89,17 @@ describe('Windows production installer E2E', () => {
   });
 
   it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
-    expect(workflow).toContain('Prepare bridge and target versions');
+    expect(workflow).toContain('Derive synthetic bridge and target versions');
+    // Both builds derive the pair from one script, and the E2E job consumes the
+    // bridge build's outputs rather than recomputing them -- a third derivation
+    // could silently disagree and hunt for an installer nobody built.
+    expect(workflow).toContain('scripts/windows-e2e-versions.mjs');
+    expect(workflow).toContain(
+      'BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}',
+    );
+    expect(workflow).toContain(
+      'TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}',
+    );
     expect(workflow).toContain('Install PR bridge NSIS package');
     expect(workflow).toContain(
       'Roll back NSIS-installed bridge after an installer failure',
