@@ -345,20 +345,35 @@ export async function runArtifactSmoke({
   }
 }
 
-export async function loadLatestJson(source, fetchImpl = fetch) {
+export async function loadLatestJson(
+  source,
+  fetchImpl = fetch,
+  { attempts = 5, retryDelayMs = 2_000 } = {},
+) {
   const raw = String(source ?? "").trim();
   if (!raw) {
     throw smokeError("--latest-json is required");
   }
   if (/^https?:\/\//i.test(raw)) {
-    const response = await fetchImpl(raw, {
-      signal: AbortSignal.timeout(30_000),
-      headers: { "user-agent": "hq-desktop-macos-artifact-smoke" },
-    });
-    if (!response.ok) {
-      throw smokeError(`latest.json HTTP ${response.status} from ${raw}`);
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await fetchImpl(raw, {
+          signal: AbortSignal.timeout(30_000),
+          headers: { "user-agent": "hq-desktop-macos-artifact-smoke" },
+        });
+        if (!response.ok) {
+          throw smokeError(`latest.json HTTP ${response.status} from ${raw}`);
+        }
+        return await response.json();
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) {
+          await delay(retryDelayMs);
+        }
+      }
     }
-    return response.json();
+    throw lastError;
   }
   return JSON.parse(await readFile(raw, "utf8"));
 }
