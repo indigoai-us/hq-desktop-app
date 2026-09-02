@@ -31,7 +31,7 @@
     createHqWorkSidebarApi,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
-  import { openApprovedExternalUrl } from './external-open';
+  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
   import { dismissBootLoader } from './boot-loader';
@@ -613,7 +613,7 @@
       getAttachmentObject={getVaultObject}
       onsignout={signOut}
       onOpenConsole={openApprovedExternalUrl}
-      onopenurl={openApprovedExternalUrl}
+      onopenurl={openBrowserUrl}
       onactivethreadchange={setActiveReplyThread}
       onembeddednavigationready={() => {
         detachNavigation?.();

@@ -41,7 +41,11 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
-  import { safeHref } from "../../common/markdown.js";
+  import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../../common/external-links.js";
   import {
     toggleReaction,
     type ReactionAggregate,
@@ -207,23 +211,15 @@
     });
   }
 
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
-  function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-    node: EventTarget | null,
-  ): boolean {
-    if (!(node instanceof Element)) return false;
-    const body = event.currentTarget;
-    if (!(body instanceof Element)) return false;
-    const anchor = node.closest("a[href]");
-    if (!anchor || !body.contains(anchor)) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const href = safeHref(anchor.getAttribute("href") ?? "");
-    if (!href) return true;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-    return true;
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "message",
+    });
   }
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -877,6 +873,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="conversation chat-shell"
   data-testid="conversation-view"
@@ -884,6 +881,12 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onclick={onBodyLinkActivate}
+  onauxclick={onBodyLinkActivate}
+  oncontextmenu={onBodyLinkActivate}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
+  }}
 >
   {#if dragActive}
     <div class="drop-overlay" data-testid="composer-drop-overlay">
@@ -1037,12 +1040,12 @@
                     <div
                       class="dm-bubble-body selectable-text"
                       onclick={(e) => {
-                        if (onBodyLinkActivate(e, e.target)) return;
+                        if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
                       }}
                       onkeydown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
-                          if (onBodyLinkActivate(e, e.target)) return;
+                          if (onBodyLinkActivate(e)) return;
                           onMentionActivate(e, e.target);
                         }
                       }}
@@ -1424,6 +1427,13 @@
       resolveUrl={resolveAttachmentUrl}
       {onreleaseurl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>

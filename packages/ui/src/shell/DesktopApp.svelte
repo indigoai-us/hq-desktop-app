@@ -90,6 +90,11 @@
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import LinkContextMenu from "../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
     mentionTargetsFromContacts,
@@ -519,6 +524,7 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
@@ -2072,6 +2078,14 @@
     onOpenSettings?.();
   }
 
+  function onShellLinkEvent(event: Event): void {
+    handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "shell",
+    });
+  }
+
   function closeSettings(): void {
     view = "conversation";
     settingsSection = null;
@@ -2291,7 +2305,18 @@
   });
 </script>
 
-<div class="desktop-shell chat-shell" data-testid="desktop-shell">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="desktop-shell chat-shell"
+  data-testid="desktop-shell"
+  onclick={onShellLinkEvent}
+  onauxclick={onShellLinkEvent}
+  oncontextmenu={onShellLinkEvent}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
+  }}
+>
   <V4TitleBar
     {adapter}
     {version}
@@ -2835,6 +2860,13 @@
       resolveUrl={resolveTrayUrl}
       onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>
