@@ -107,6 +107,10 @@
     ) => Promise<ChannelFilePreview>;
     /** Mirrors the safe user shape supplied by +layout.server on the web. */
     hostIdentity?: WorkShellHostIdentity | null;
+    /** Native host-owned storage partition for the authenticated account. */
+    hostTenantAccountId?: string | null;
+    /** Native host-owned boundary for changes to that storage partition. */
+    hostTenantGeneration?: number;
     /** Desktop hosts can supply their tested native command seam. */
     invoke?: InvokeFn;
     /** Desktop hosts can supply their tested native event seam. */
@@ -153,6 +157,8 @@
     onUnauthorized,
     loadFilePreview: hostLoadFilePreview,
     hostIdentity,
+    hostTenantAccountId,
+    hostTenantGeneration,
     invoke: hostInvoke,
     listen: hostListen,
     wakes: hostWakes,
@@ -239,6 +245,20 @@
       { accountId: tenantAccountId, companyId: "all" },
     ),
   );
+  $effect(() => {
+    if (!hostOwnsNativeSession) return;
+    const nextGeneration = hostTenantGeneration ?? 0;
+    if (nextGeneration < tenantGeneration) return;
+    const nextAccountId = hostTenantAccountId?.trim() || null;
+    if (
+      nextGeneration === tenantGeneration &&
+      nextAccountId === tenantAccountId
+    ) {
+      return;
+    }
+    tenantAccountId = nextAccountId;
+    tenantGeneration = nextGeneration;
+  });
   $effect(() => {
     shallow = readShallowCache(personUid);
   });

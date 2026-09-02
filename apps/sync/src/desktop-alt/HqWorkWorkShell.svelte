@@ -282,6 +282,8 @@
               ...(self.displayName ? { name: self.displayName } : {}),
             }
           : null,
+        hostTenantAccountId: authAccountId,
+        hostTenantGeneration: authGeneration,
       });
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
