@@ -6,6 +6,7 @@
    * presigned URL; file preview remains in a company-scoped project channel.
    */
   import type { PlatformAdapter } from "@hq/platform";
+  import PageHeader from "../shell/PageHeader.svelte";
 
   interface ShareEvent {
     id: string;
@@ -124,15 +125,14 @@
 </script>
 
 <section class="shared-files" aria-label="Shared files" data-testid="shared-files-overlay">
-  <header class="shared-files-header">
-    <button type="button" class="shared-files-back" onclick={() => onback?.()}>Back</button>
-    <div>
-      <h1>Shared files</h1>
-      <p data-testid="shared-files-scope">
-        Files are shown from share-scoped notifications. Open a company project to preview a file.
-      </p>
-    </div>
-  </header>
+  <PageHeader
+    title="Shared files"
+    subtitle="Files are shown from share-scoped notifications. Open a company project to preview a file."
+    subtitleTestId="shared-files-scope"
+    backTestId="shared-files-back"
+    onback={() => onback?.()}
+    variant="embedded"
+  />
 
   {#if loading}
     <p class="shared-files-status" data-testid="shared-files-loading" role="status">Loading shared files…</p>
@@ -180,13 +180,16 @@
 </section>
 
 <style>
-  .shared-files { height: 100%; overflow: auto; padding: 24px; color: var(--t1); background: var(--v4-bg, var(--desktop-bg, #0c0c0c)); }
-  .shared-files-header { display: flex; align-items: flex-start; gap: 14px; max-width: 760px; margin: 0 auto 24px; }
-  .shared-files-header h1, .shared-files-header p { margin: 0; }
-  .shared-files-header h1 { font-size: 18px; }
-  .shared-files-header p { margin-top: 4px; color: var(--t3); font-size: 13px; }
-  .shared-files-back, .shared-files-status button { border: 1px solid var(--line2); border-radius: 6px; padding: 5px 9px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-  .shared-files-status, .shared-files-list { max-width: 760px; margin: 0 auto; }
+  .shared-files {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: auto;
+    color: var(--t1);
+    background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
+  }
+  .shared-files-status button { border: 1px solid var(--line2); border-radius: 6px; padding: 5px 9px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .shared-files-status, .shared-files-list { max-width: 760px; margin: 16px auto 24px; padding: 0 20px; }
   .shared-files-status { color: var(--t2); }
   .shared-files-list { display: grid; gap: 8px; padding: 0; list-style: none; }
   .shared-files-list li { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
