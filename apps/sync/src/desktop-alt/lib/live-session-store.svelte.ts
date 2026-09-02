@@ -64,7 +64,7 @@ import {
   type UserTurnMeta,
 } from '../../components/sessions/transcript-adapter';
 import type { SkillCatalog } from '../../components/sessions/slash-commands';
-import type { ProjectEntry } from '../../components/sessions/startwork';
+import type { ProjectEntry, ProjectViewer } from '../../components/sessions/startwork';
 import type {
   ContextLoaders,
   MeetingEntry,
@@ -804,9 +804,29 @@ function hqSkillCatalog(company: string | null): Promise<SkillCatalog> {
   return promise;
 }
 
-/** A company's projects, newest `prd.json` first. */
+/** A company's projects, most recent activity first, archived ones flagged. */
 function hqCompanyProjects(company: string): Promise<ProjectEntry[]> {
   return invoke<ProjectEntry[]>('hq_company_projects', { company });
+}
+
+let selfCache: Promise<ProjectViewer | null> | null = null;
+
+/**
+ * Who is signed in, for the project picker's "Mine" chip: the email off the
+ * local Cognito claims (`get_auth_state` decodes the stored token — no
+ * network). Null when signed out; a failure is null too, never an error, so
+ * the picker still opens with the plain owner chips.
+ */
+function hqSelf(): Promise<ProjectViewer | null> {
+  if (selfCache) return selfCache;
+  const promise = invoke<{ authenticated?: boolean; email?: string | null }>('get_auth_state')
+    .then((state) => {
+      const email = state?.authenticated ? (state.email?.trim() ?? '') : '';
+      return email ? { email } : null;
+    })
+    .catch(() => null);
+  selfCache = promise;
+  return promise;
 }
 
 function hqRecentMeetings(company: string, limit = 50): Promise<MeetingEntry[]> {
@@ -1045,6 +1065,7 @@ export const liveSessionStore = {
   slashCommands,
   hqSkillCatalog,
   hqCompanyProjects,
+  hqSelf,
   hqRecentMeetings,
   hqSignals,
   hqVaultFiles,

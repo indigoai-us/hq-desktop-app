@@ -30,6 +30,10 @@
    * `/` opens `SlashPicker` — HQ workers, HQ skills by scope, and the CLI's
    * own commands — over the slot the `@` picker uses (the two never show
    * together; a mention token under the caret wins). The draft is the search.
+   * A pick leaves a COMMAND CHIP above the draft — the kind pill and the name
+   * (`design · mockup`, `/handoff`) — for as long as the draft still starts
+   * with the picked token. The chip is a label, never the payload: the text
+   * sent is the draft, verbatim.
    *
    * `@`-mentions: an `@` at a word start opens `MentionPicker`. Picking
    * inserts `@Display Name` AND keeps a chip under the textarea that says who
@@ -75,15 +79,19 @@
   } from './mentions';
   import {
     applyPickerRow,
+    chipLabel,
+    kindLabel,
     pushRecentSlash,
     readRecentSlash,
     rememberRecentSlash,
+    rowKind,
     slashQueryFor,
+    type PickerKind,
     type PickerRow,
     type RecentSlash,
     type SkillCatalog,
   } from './slash-commands';
-  import type { ProjectEntry } from './startwork';
+  import type { ProjectEntry, ProjectViewer } from './startwork';
   import type { SessionCommand } from './session-events';
   import type {
     ComposerImage,
@@ -106,6 +114,14 @@
 
   /** Which pill's popover is open. One at a time — they share the same row. */
   type MenuName = 'permission' | 'company' | 'tool' | 'model' | 'effort' | 'attach';
+
+  /** The picked slash command, as the chip above the draft names it. */
+  interface CommandToken {
+    /** Exactly what the picker inserted (with its trailing space). */
+    insert: string;
+    kind: PickerKind;
+    label: string;
+  }
 
   /** A context chip: the pick, plus its read text (or why it has none yet). */
   interface ContextChip extends ContextAttachment {
@@ -139,6 +155,8 @@
     projects?: ProjectEntry[];
     projectsLoading?: boolean;
     projectsError?: string;
+    /** Who is signed in — the project picker's "Mine" chip. */
+    viewer?: ProjectViewer | null;
     /** "Run /startwork on first message". */
     startworkEnabled?: boolean;
     models?: SessionModel[];
@@ -218,6 +236,7 @@
     projects = [],
     projectsLoading = false,
     projectsError = '',
+    viewer = null,
     startworkEnabled = true,
     models = [],
     model = null,
@@ -260,6 +279,8 @@
   // --- / picker ---------------------------------------------------------------
   let slashPicker = $state<{ handleKey: (event: KeyboardEvent) => boolean } | null>(null);
   let recent = $state<RecentSlash[]>(readRecentSlash());
+  /** The last pick; `commandChip` is it only while the draft still starts with it. */
+  let commandToken = $state<CommandToken | null>(null);
 
   // --- @mentions ------------------------------------------------------------
   /** Where the caret is, mirrored from the textarea on every edit/move. */
@@ -285,6 +306,11 @@
       : Math.min(Math.max(mentionHighlighted, 0), mentionMatches.length - 1),
   );
   const chips = $derived(pruneMentions(mentions, draft));
+  const commandChip = $derived(
+    commandToken && draft.trimStart().startsWith(commandToken.insert.trimEnd())
+      ? commandToken
+      : null,
+  );
 
   /** The draft is ONE `/token` — the picker's query is what follows the slash. */
   const slashQuery = $derived(suppressed ? null : slashQueryFor(draft));
@@ -361,6 +387,10 @@
     suppressed = false;
     mentionSuppressed = false;
     mentionHighlighted = 0;
+    // A token edited out of the draft does not come back on the next keystroke.
+    if (commandToken && !draft.trimStart().startsWith(commandToken.insert.trimEnd())) {
+      commandToken = null;
+    }
   });
 
   /** Mirror the textarea's caret so the `@` query follows the cursor. */
@@ -420,17 +450,51 @@
     }
   }
 
-  /** A picker row lands in the draft and at the top of Recent. */
+  /** A picker row lands in the draft, as a chip above it, and at the top of Recent. */
   function pickRow(row: PickerRow) {
+    const kind = rowKind(row);
     draft = applyPickerRow(draft, row);
+    commandToken = { insert: row.insert, kind, label: chipLabel(row.insert, kind) };
     recent = pushRecentSlash(recent, {
       name: row.name,
       description: row.description,
       insert: row.insert,
+      kind,
     });
     rememberRecentSlash(recent);
     suppressed = true;
     textarea?.focus();
+  }
+
+  /** The chip's ×: the token leaves the draft, whatever followed it stays. */
+  function dropCommand() {
+    const token = commandToken;
+    if (!token) return;
+    const rest = draft.trimStart().slice(token.insert.trimEnd().length).trimStart();
+    commandToken = null;
+    draft = rest;
+    suppressed = true;
+    textarea?.focus();
+  }
+
+  /**
+   * A fresh draft — the strip's "+" and the new-session route: the text, the
+   * images, the mention and context chips and the command chip all go; the
+   * pills (company, tool, model…) stay, they are props.
+   */
+  export function reset(): void {
+    draft = '';
+    attached = [];
+    attachError = '';
+    suppressed = false;
+    mentions = [];
+    mentionSuppressed = false;
+    caret = 0;
+    contextChips = [];
+    contextError = '';
+    commandToken = null;
+    openMenu = null;
+    void tick().then(autosize);
   }
 
   /** The picker's search box typed: the draft follows it. */
@@ -504,6 +568,7 @@
     caret = 0;
     contextChips = [];
     contextError = '';
+    commandToken = null;
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -652,6 +717,30 @@
           </li>
         {/each}
       </ul>
+    {/if}
+
+    {#if commandChip}
+      <div class="command-row" data-testid="session-command-chips">
+        <span
+          class={`command-chip kind-${commandChip.kind}`}
+          data-testid="session-command-chip"
+          data-kind={commandChip.kind}
+          data-insert={commandChip.insert}
+        >
+          <span class="command-chip-kind">{kindLabel(commandChip.kind)}</span>
+          <span class="command-chip-name">{commandChip.label}</span>
+          <button
+            type="button"
+            class="command-chip-remove"
+            aria-label={`Remove ${commandChip.label}`}
+            title={`Remove ${commandChip.label}`}
+            data-testid="session-command-remove"
+            onclick={dropCommand}
+          >
+            ✕
+          </button>
+        </span>
+      </div>
     {/if}
 
     <div class="text-row">
@@ -840,6 +929,7 @@
                    opens the project pane, and the toggle stays put. -->
               <div
                 class="menu menu-wide"
+                class:menu-projects={companyPane === 'projects'}
                 role="menu"
                 data-testid="session-menu-company"
                 data-pane={companyPane}
@@ -918,6 +1008,7 @@
                     selected={project}
                     loading={projectsLoading}
                     error={projectsError}
+                    {viewer}
                     onpick={(name) => {
                       onproject?.(name);
                       closeMenus();
@@ -1341,6 +1432,14 @@
     min-width: 260px;
   }
 
+  /* The project pane is a real list: wider, taller, and it scrolls its own
+     rows under a fixed search + filter head. */
+  .menu-projects {
+    min-width: 420px;
+    max-height: 480px;
+    overflow: hidden;
+  }
+
   .menu-rule {
     height: 1px;
     margin: 3px 4px;
@@ -1482,6 +1581,100 @@
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 11px;
     cursor: pointer;
+  }
+
+  /* --- the command chip --------------------------------------------------- */
+
+  /* The picked slash command, named above the draft in the same kind colours
+     the picker used — worker: filled; worker skill: outlined; skill: secondary;
+     command: neutral. The draft underneath keeps the literal text. */
+  .command-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 0 0 4px;
+    padding: 0 4px;
+  }
+
+  .command-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    max-width: 100%;
+    padding: 0 4px 0 4px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-1);
+    font-size: 12px;
+  }
+
+  .command-chip-kind {
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: var(--v4-radius-pill);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .command-chip.kind-worker .command-chip-kind,
+  .command-chip.kind-worker-skill .command-chip-kind {
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+  }
+
+  .command-chip.kind-worker-skill {
+    border-color: var(--v4-primary-bg);
+  }
+
+  .command-chip.kind-skill {
+    background: var(--v4-secondary-bg);
+    border-color: transparent;
+    color: var(--v4-secondary-fg);
+  }
+
+  .command-chip.kind-skill .command-chip-kind {
+    border-color: color-mix(in srgb, currentColor 30%, transparent);
+  }
+
+  .command-chip.kind-cli .command-chip-kind {
+    border-color: var(--v4-hairline);
+    color: var(--v4-text-3);
+  }
+
+  .command-chip-name {
+    min-width: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .command-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--v4-text-3);
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .command-chip-remove:hover {
+    color: var(--v4-text-1);
+    background: var(--v4-active-row);
   }
 
   /* --- @mention + context chips ----------------------------------------- */

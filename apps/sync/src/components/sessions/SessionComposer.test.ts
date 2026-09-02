@@ -451,3 +451,21 @@ describe('openModelMenu — the transcript’s "Choose a model" lands here', () 
     expect(must('session-pill-model').getAttribute('aria-expanded')).toBe('true');
   });
 });
+
+describe('reset — a fresh draft for a new session', () => {
+  it('clears the text and the attached images, but not the pills', () => {
+    render({ company: 'indigo', companies: [{ slug: 'indigo', displayName: 'Indigo' }] });
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'half a thought';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+    (component as unknown as { reset: () => void }).reset();
+    flushSync();
+    expect(input.value).toBe('');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(at('session-composer-attachments')).toBeNull();
+    // The company pill is a prop: it stays.
+    expect(must('session-pill-company').textContent).toContain('Indigo');
+  });
+});

@@ -129,6 +129,13 @@ export interface SkillCatalog {
 
 export type PickerGroup = 'recent' | 'workers' | 'skills' | 'cli';
 
+/**
+ * What a row IS, for the kind pill and the chip a pick leaves in the composer:
+ * a worker (drill in), one of a worker's skills (`/run w s`), an HQ skill, or
+ * a command the CLI itself announced.
+ */
+export type PickerKind = 'worker' | 'worker-skill' | 'skill' | 'cli';
+
 /** One row the picker can show. `insert === ''` means "drill in" (a worker). */
 export interface PickerRow {
   id: string;
@@ -146,7 +153,66 @@ export interface PickerRow {
 }
 
 /** Rows shown per group before the "more…" affordance. */
-export const PICKER_PAGE = 60;
+export const PICKER_PAGE = 8;
+
+/** The kind a row renders as — see [`PickerKind`]. Recent rows infer theirs. */
+export function rowKind(row: Pick<PickerRow, 'group' | 'insert' | 'workerId'> & { kind?: PickerKind }): PickerKind {
+  if (row.kind) return row.kind;
+  if (row.group === 'workers') return row.insert === '' && row.workerId ? 'worker' : 'worker-skill';
+  if (row.group === 'skills') return 'skill';
+  if (row.group === 'cli') return 'cli';
+  return kindFromInsert(row.insert);
+}
+
+/** Best guess for a remembered pick that predates the kind field. */
+export function kindFromInsert(insert: string): PickerKind {
+  return /^\s*\/run\s+\S+\s+\S+/.test(insert) ? 'worker-skill' : 'skill';
+}
+
+export function kindLabel(kind: PickerKind): string {
+  switch (kind) {
+    case 'worker':
+      return 'worker';
+    case 'worker-skill':
+      return 'worker skill';
+    case 'skill':
+      return 'skill';
+    case 'cli':
+      return 'command';
+  }
+}
+
+/**
+ * The chip text a pick leaves above the draft: `design · mockup` for a worker
+ * skill, the bare invocation otherwise. The DRAFT keeps the exact command —
+ * the chip only names it.
+ */
+export function chipLabel(insert: string, kind: PickerKind): string {
+  const token = insert.trim();
+  if (kind === 'worker-skill') {
+    const match = /^\/run\s+(\S+)\s+(\S+)/.exec(token);
+    if (match) return `${match[1]} · ${match[2]}`;
+  }
+  return token;
+}
+
+/** The scope chips the Skills filter row offers, before the tag union. */
+export type ScopeFilter = 'company' | 'personal' | 'core' | 'package';
+
+export const SCOPE_FILTERS: ReadonlyArray<{ id: ScopeFilter; label: string }> = [
+  { id: 'company', label: 'Company' },
+  { id: 'personal', label: 'Personal' },
+  { id: 'core', label: 'Core' },
+  { id: 'package', label: 'Packages' },
+];
+
+/** A skill row belongs to a scope chip. `company` means ANY company scope. */
+export function scopeFilterMatches(row: Pick<PickerRow, 'scope'>, filter: ScopeFilter | null): boolean {
+  if (!filter) return true;
+  const scope = row.scope ?? 'core';
+  if (filter === 'company') return scope.startsWith('company:');
+  return scope === filter;
+}
 
 const lowerCase = (value: string) => value.toLocaleLowerCase('en-US');
 
@@ -314,7 +380,11 @@ export interface RecentSlash {
   name: string;
   description: string;
   insert: string;
+  /** Absent on picks remembered before the kind pill existed. */
+  kind?: PickerKind;
 }
+
+const KINDS: ReadonlyArray<PickerKind> = ['worker', 'worker-skill', 'skill', 'cli'];
 
 export function readRecentSlash(): RecentSlash[] {
   try {
@@ -333,6 +403,7 @@ export function readRecentSlash(): RecentSlash[] {
         name: entry.name,
         description: typeof entry.description === 'string' ? entry.description : '',
         insert: entry.insert,
+        kind: KINDS.includes(entry.kind as PickerKind) ? entry.kind : kindFromInsert(entry.insert),
       }))
       .slice(0, RECENT_SLASH_LIMIT);
   } catch {
@@ -357,7 +428,7 @@ export function rememberRecentSlash(recent: ReadonlyArray<RecentSlash>): void {
   }
 }
 
-export function recentRows(recent: ReadonlyArray<RecentSlash>): PickerRow[] {
+export function recentRows(recent: ReadonlyArray<RecentSlash>): Array<PickerRow & { kind: PickerKind }> {
   return recent.map((entry) => ({
     id: `recent:${entry.insert}`,
     name: entry.name,
@@ -365,6 +436,7 @@ export function recentRows(recent: ReadonlyArray<RecentSlash>): PickerRow[] {
     insert: entry.insert,
     group: 'recent',
     tags: [],
+    kind: entry.kind ?? kindFromInsert(entry.insert),
   }));
 }
 

@@ -335,9 +335,12 @@ describe('the company pill: project level and the /startwork toggle', () => {
     expect(oncompany).toHaveBeenCalledWith('ridge');
     expect(must('session-menu-company').getAttribute('data-pane')).toBe('projects');
     const picker = must('session-project-picker');
-    expect(picker.firstElementChild?.getAttribute('data-testid')).toBe('session-project-none');
-    expect(all('session-project-count').map((node) => node.textContent?.trim())).toEqual(['3/12', '2/2']);
-    click(all('session-project-item')[0]!);
+    expect(
+      picker.querySelector('[role="listbox"]')?.firstElementChild?.getAttribute('data-testid'),
+    ).toBe('session-project-none');
+    // With no activity timestamps the stable fallback is project name.
+    expect(all('session-project-count').map((node) => node.textContent?.trim())).toEqual(['2/2', '3/12']);
+    click(all('session-project-item')[1]!);
     expect(onproject).toHaveBeenCalledWith('sessions');
     expect(at('session-menu-company')).toBeNull();
   });
