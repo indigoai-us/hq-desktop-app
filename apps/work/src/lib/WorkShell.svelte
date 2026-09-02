@@ -33,6 +33,7 @@
     type ConversationRow,
     type BoardTabData,
     type ChannelFileItemModel,
+    type ChannelFilePreview,
     type ChannelStatusModel,
     type ChatSidebarApi,
     type Workspace,
@@ -70,6 +71,7 @@
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
+    type HqProFetch,
   } from "./hq-pro-client";
   import { displayVersion } from "./version";
   import {
@@ -82,16 +84,41 @@
   import { tauriListen } from "./tauri-listen";
   import workPackage from "../../package.json";
 
+  type WorkShellHostIdentity = {
+    sub?: string | null;
+    email?: string | null;
+    name?: string | null;
+  };
+
   type WorkShellProps = {
-    data: { user?: Parameters<typeof toSelfIdentity>[0] };
+    data: { user?: WorkShellHostIdentity | null };
     runtimeKind?: "desktop" | "web";
     apiUrl?: string;
+    /** Native hosts replace the browser's cookie-backed hq-pro transport. */
+    fetch?: HqProFetch;
+    /** Native hosts must not navigate a static bundle to SvelteKit sign-in. */
+    onUnauthorized?: () => void;
+    /** Native hosts fetch Vault bytes through their bounded transport. */
+    loadFilePreview?: (
+      item: ChannelFileItemModel,
+      selectedCompanyUid: string | null,
+    ) => Promise<ChannelFilePreview>;
+    /** Mirrors the safe user shape supplied by +layout.server on the web. */
+    hostIdentity?: WorkShellHostIdentity | null;
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
   // Work route supplies the latter from SvelteKit's dynamic public env; the
   // exported shell itself deliberately has no SvelteKit virtual-module edge.
-  let { data, runtimeKind, apiUrl }: WorkShellProps = $props();
+  let {
+    data,
+    runtimeKind,
+    apiUrl,
+    fetch: hostFetch,
+    onUnauthorized,
+    loadFilePreview: hostLoadFilePreview,
+    hostIdentity,
+  }: WorkShellProps = $props();
 
   type TauriWindow = Window & {
     __TAURI__?: {
@@ -112,14 +139,17 @@
   const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
   configureHqProApiUrl(apiUrl);
   const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);
+  // The hosted route leaves this undefined, retaining the original singleton
+  // and its single browser token cache. Native hosts must supply their
+  // authenticated command bridge because a static build has no /api routes.
+  const workFetch: HqProFetch = hostFetch ?? hqProFetch;
   const adapter: PlatformAdapter = runtime === "desktop"
     ? createSyncPlatformAdapter({ invoke: tauriInvoke })
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
-        fetch: hqProFetch,
-        onUnauthorized: redirectToSigninWithCallback,
+        fetch: workFetch,
+        onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
-  const workFetch = hqProFetch;
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);
@@ -129,10 +159,12 @@
 
   // The Cognito subject owns the web storage partition. The shared shell's
   // person identity is hydrated from caller-scoped whoami below.
-  const hostSelf = toSelfIdentity(data.user ?? null);
+  const suppliedHostIdentity = hostIdentity ?? data.user ?? null;
+  const hostSelf = toSelfIdentity(suppliedHostIdentity);
   const hostAccountId =
-    typeof data.user?.sub === "string" && data.user.sub.trim()
-      ? data.user.sub.trim()
+    typeof suppliedHostIdentity?.sub === "string" &&
+    suppliedHostIdentity.sub.trim()
+      ? suppliedHostIdentity.sub.trim()
       : null;
   let self = $state(hostSelf);
   let tenantAccountId = $state<string | null>(
@@ -446,6 +478,7 @@
     },
   );
   const loadFilePreview = (item: ChannelFileItemModel) =>
+    hostLoadFilePreview?.(item, selectedCompanyUid) ??
     loadWebVaultFilePreview(item, selectedCompanyUid, { fetch: workFetch });
   const channelStatusByRow = $derived(
     (row: ConversationRow): ChannelStatusModel | null => {

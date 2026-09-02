@@ -122,4 +122,58 @@ describe("web Vault file preview company scope", () => {
     });
     expect(fetchMock).not.toHaveBeenCalledWith("https://vault.test/brief.md");
   });
+
+  it("routes the default preview presign through a host-supplied transport", async () => {
+    if (component) await unmount(component);
+    const nativeFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ results: [{ url: "https://vault.test/native.md" }] }),
+        { status: 200 },
+      ),
+    );
+    const fetchMock = vi.fn(async () =>
+      new Response("# Native brief", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    component = mount(Page, {
+      target: host,
+      props: { data: { user: null }, fetch: nativeFetch },
+    });
+    const props = capturedProps();
+    props.onselectrow(selectedRow);
+
+    await expect(
+      props.loadFilePreview({ ...otherCompanyFile, companyUid: "cmp_a" }),
+    ).resolves.toEqual({ kind: "text", text: "# Native brief" });
+    expect(nativeFetch).toHaveBeenCalledWith(
+      "/v1/files/presign",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(hqProFetch).not.toHaveBeenCalled();
+  });
+
+  it("uses a host-supplied file preview loader when present", async () => {
+    if (component) await unmount(component);
+    const nativePreview = vi.fn(async () => ({
+      kind: "text" as const,
+      text: "# Native loader",
+    }));
+    component = mount(Page, {
+      target: host,
+      props: { data: { user: null }, loadFilePreview: nativePreview },
+    });
+    const props = capturedProps();
+    props.onselectrow(selectedRow);
+
+    await expect(
+      props.loadFilePreview({ ...otherCompanyFile, companyUid: "cmp_a" }),
+    ).resolves.toEqual({ kind: "text", text: "# Native loader" });
+    expect(nativePreview).toHaveBeenCalledWith(
+      expect.objectContaining({ companyUid: "cmp_a" }),
+      "cmp_a",
+    );
+  });
 });

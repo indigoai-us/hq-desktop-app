@@ -64,15 +64,16 @@ describe("HQ Work desktop platform adapter", () => {
     expect(page).toContain(
       `: new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
-        fetch: hqProFetch,
-        onUnauthorized: redirectToSigninWithCallback,
+        fetch: workFetch,
+        onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       })`,
     );
     expect(page).toContain(
       "const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);",
     );
     expect(page).toContain("configureHqProApiUrl(apiUrl);");
-    expect(page).toContain("const workFetch = hqProFetch;");
+    expect(page).toContain("const workFetch: HqProFetch = hostFetch ?? hqProFetch;");
+    expect(page).toContain("const suppliedHostIdentity = hostIdentity ?? data.user ?? null;");
     expect(page).toContain("loadWorkThreads(roster, workFetch)");
 
     const commands: string[] = [];

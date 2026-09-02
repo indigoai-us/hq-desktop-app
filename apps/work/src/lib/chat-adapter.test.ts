@@ -509,6 +509,31 @@ describe("createChatSidebarApi", () => {
     expect(hqProFetch).toHaveBeenCalledWith("/v1/work-mesh/work");
   });
 
+  it("normalizes both platform search result shapes to the UI envelope", async () => {
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    const bareResults = [{ eventId: "evt_native", body: "Native result" }];
+    const envelopedResults = [{ eventId: "evt_web", body: "Web result" }];
+    adapter.messaging.searchMessages = vi
+      .fn()
+      .mockResolvedValueOnce(ok(bareResults))
+      .mockResolvedValueOnce(ok({ results: envelopedResults }));
+    const api = createChatSidebarApi(adapter);
+
+    await expect(api.searchMessages({ q: "native" })).resolves.toEqual({
+      results: bareResults,
+    });
+    await expect(api.searchMessages({ q: "web" })).resolves.toEqual({
+      results: envelopedResults,
+    });
+  });
+
   it("forwards a compose DM's recipient and body to the platform adapter", async () => {
     const sendDm = vi.fn(async () => ok({}));
     const adapter = stubAdapter(async () =>
