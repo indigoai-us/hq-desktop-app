@@ -11,6 +11,7 @@
 // never persisted, and never re-rendered from history.
 
 import { invoke } from '@tauri-apps/api/core';
+import { contentToText } from './session-events';
 
 /** Rust `ArtifactStat` — what one produced path is right now. */
 export interface ArtifactStat {
@@ -45,9 +46,12 @@ export const SHARE_VAULT_ONLY_HINT = 'Only company vault files can be shared';
  * The user turn that asks the session to deploy `path`. Quoted only when the
  * path needs it, so the common case reads exactly like what an operator types.
  */
-export function deployCommandFor(path: string): string {
-  const needsQuotes = /[\s"']/.test(path);
-  const arg = needsQuotes ? `"${path.replace(/(["\\])/g, '\\$1')}"` : path;
+export function deployCommandFor(path: unknown): string {
+  // The path comes off a folded tool call; a non-string is a `/deploy` with
+  // nothing after it, not a crash in the click handler.
+  const text = contentToText(path);
+  const needsQuotes = /[\s"']/.test(text);
+  const arg = needsQuotes ? `"${text.replace(/(["\\])/g, '\\$1')}"` : text;
   return `/deploy ${arg}`;
 }
 

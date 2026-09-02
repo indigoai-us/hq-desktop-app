@@ -17,7 +17,11 @@
 //
 //   - [hard] **slug**: rule summary. Full text: `companies/co/policies/slug.md`.
 //
-// No I/O, no state, no regex: text in, digest out.
+// No I/O, no state, no regex: text in, digest out. `text` is taken as
+// `unknown` because it comes off the wire; anything that is not a string
+// parses as an empty digest rather than as a crash.
+
+import { contentToText } from './session-events';
 
 /** One policy a hook said applies to the session. */
 export interface PolicyEntry {
@@ -115,8 +119,8 @@ function pushEntry(digest: PolicyDigest, slug: string, hard: boolean, excerpt: s
  * Entries are deduped by slug within the text (first mention keeps its
  * excerpt; `hard` is true if ANY mention said so).
  */
-export function parsePolicyDigest(text: string): PolicyDigest {
-  const lines = text.split('\n');
+export function parsePolicyDigest(text: unknown): PolicyDigest {
+  const lines = contentToText(text).split('\n');
   const digest = emptyPolicyDigest();
   let inCompanyBlock = false;
 

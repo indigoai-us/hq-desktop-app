@@ -345,12 +345,18 @@ fn map_item(phase: Phase, item: &Value) -> Vec<SessionEvent> {
                 let exit_code = field(item, &["exitCode", "exit_code"])
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
+                // A command that printed nothing completes with
+                // `"aggregatedOutput": null`. The transcript reads `content`
+                // as text, so "no output" is the empty string — a JSON null
+                // here is what crashed the desktop window on `null.split`.
+                let content = field(item, &["aggregatedOutput", "aggregated_output"])
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
                 vec![SessionEvent::ToolResult {
                     id,
                     is_error: status != "completed" || exit_code != 0,
-                    content: field(item, &["aggregatedOutput", "aggregated_output"])
-                        .cloned()
-                        .unwrap_or(Value::Null),
+                    content,
                     parent_tool_use_id: None,
                 }]
             }
@@ -591,6 +597,39 @@ mod tests {
                 parent_tool_use_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_silent_command_completion_carries_an_empty_string_not_null() {
+        // Regression: the owner's most recent session crashed the desktop
+        // window because a completed command with no output reached the
+        // transcript as `content: null`. Both spellings — the key present as
+        // null, and the key absent — must become `""`.
+        let null_output = COMMAND_COMPLETED.replace(
+            "\"aggregatedOutput\":\"core.yaml\\ndocs\\nhook-tests\\n\"",
+            "\"aggregatedOutput\":null",
+        );
+        assert_ne!(null_output, COMMAND_COMPLETED, "fixture no longer carries the output");
+        assert_eq!(
+            normalize(&null_output),
+            vec![SessionEvent::ToolResult {
+                id: "exec-ab8b7fc6".into(),
+                is_error: false,
+                content: Value::String(String::new()),
+                parent_tool_use_id: None,
+            }]
+        );
+
+        let absent = COMMAND_COMPLETED.replace(
+            "\"aggregatedOutput\":\"core.yaml\\ndocs\\nhook-tests\\n\",",
+            "",
+        );
+        assert_ne!(absent, COMMAND_COMPLETED, "fixture no longer carries the key");
+        assert!(matches!(
+            normalize(&absent).as_slice(),
+            [SessionEvent::ToolResult { content: Value::String(s), is_error: false, .. }]
+                if s.is_empty()
+        ));
     }
 
     #[test]

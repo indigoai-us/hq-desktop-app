@@ -30,11 +30,21 @@
 // after a round trip. The store drops its mirror for a session as soon as
 // backend `userMessage` events land, so the two never both render; this fold
 // simply honours whichever it is given.
+//
+// HOSTILE PAYLOADS — the wire is not the types. A `toolResult.content` is a
+// Rust `serde_json::Value` and arrives as `null`, a string, an array of blocks
+// or an object; every `Option<_>` arrives as `null`. Every string method on an
+// event field therefore reads through `contentToText`, and the fold of each
+// event is guarded: an event that still manages to throw is recorded in
+// `foldErrors` and becomes ONE quiet line ("1 event could not be displayed"),
+// never a blank window. The one time this was not true, opening the owner's
+// most recent session crashed the whole desktop app on `null.split`.
 
-import type {
-  PermissionSuggestion,
-  SessionEvent,
-  SessionQuestion,
+import {
+  contentToText,
+  type PermissionSuggestion,
+  type SessionEvent,
+  type SessionQuestion,
 } from './session-events';
 import type { WsMember } from './session-types';
 import { formatDayLabel } from './session-types';
@@ -329,6 +339,24 @@ export interface UsageSummary {
   label: string;
 }
 
+/** One event the fold could not render — recorded, never fatal. */
+export interface FoldError {
+  /** Position in the event stream. */
+  index: number;
+  /** The event's `kind`, or `unknown` when even that could not be read. */
+  kind: string;
+  error: string;
+}
+
+/** The block id of the one line that stands in for every fold error. */
+export const FOLD_ERRORS_BLOCK_ID = 'fold-errors';
+
+/** "1 event could not be displayed (toolResult)" — the line those errors earn. */
+export function foldErrorLabel(errors: ReadonlyArray<FoldError>): string {
+  const kinds = [...new Set(errors.map((error) => error.kind))].join(', ');
+  return `${plural(errors.length, 'event', 'events')} could not be displayed (${kinds})`;
+}
+
 export interface TranscriptState {
   blocks: ChatBlock[];
   /** Cards still awaiting an answer, in arrival order. */
@@ -348,6 +376,12 @@ export interface TranscriptState {
   checkpointPrompts: number;
   /** Where the latest `/handoff` turn stands: none sent, running, or written. */
   handoff: 'none' | 'running' | 'done';
+  /**
+   * Events that threw while folding, in stream order. Non-empty means the
+   * transcript is missing something and says so in one line; it never means
+   * the transcript failed to render.
+   */
+  foldErrors: FoldError[];
 }
 
 /** The state of a transcript with nothing in it. */
@@ -361,6 +395,7 @@ export function emptyTranscript(): TranscriptState {
     checkpointDue: false,
     checkpointPrompts: 0,
     handoff: 'none',
+    foldErrors: [],
   };
 }
 
@@ -504,11 +539,57 @@ function artifactName(path: string): string {
 const OUTCOME_LINES = 12;
 const OUTCOME_CHARS = 1200;
 
-function clipOutcome(content: string): string {
-  const lines = content.split('\n');
+function clipOutcome(content: unknown): string {
+  // `content` is a `serde_json::Value` on the wire: null, string, blocks, object.
+  const lines = contentToText(content).split('\n');
   const head = lines.slice(0, OUTCOME_LINES).join('\n');
   const clipped = head.length > OUTCOME_CHARS ? `${head.slice(0, OUTCOME_CHARS)}…` : head;
   return lines.length > OUTCOME_LINES ? `${clipped}\n…` : clipped;
+}
+
+// ---------------------------------------------------------------------------
+// Wire coercions — what the types promise, made true
+// ---------------------------------------------------------------------------
+
+/** A number the wire may have sent as `null`, a string, or not at all. */
+function finiteOr0(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** A `permissionRequest`'s suggestions as the list the card expects — the wire says `Value`. */
+function suggestionsOf(value: unknown): PermissionSuggestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is PermissionSuggestion => typeof entry === 'object' && entry !== null,
+  );
+}
+
+/** A `questionRequest`'s questions with every field the card reads made safe to read. */
+function questionsOf(value: unknown): SessionQuestion[] {
+  if (!Array.isArray(value)) return [];
+  const out: SessionQuestion[] = [];
+  value.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object') return;
+    const record = raw as Record<string, unknown>;
+    const options = Array.isArray(record.options)
+      ? record.options
+          .filter((option) => option && typeof option === 'object')
+          .map((option) => {
+            const entry = option as Record<string, unknown>;
+            return typeof entry.description === 'string'
+              ? { label: contentToText(entry.label), description: entry.description }
+              : { label: contentToText(entry.label) };
+          })
+      : [];
+    out.push({
+      id: contentToText(record.id) || `q${index}`,
+      header: contentToText(record.header),
+      text: contentToText(record.text),
+      options,
+      multiSelect: record.multiSelect === true,
+    });
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +647,7 @@ export function foldSessionEvents(
   let checkpointDue = false;
   let checkpointPrompts = 0;
   let handoff: TranscriptState['handoff'] = 'none';
+  const foldErrors: FoldError[] = [];
 
   /** The assistant prose row currently streaming at the top level, if any. */
   let openProse: Extract<ChatBlock, { type: 'assistantProse' }> | null = null;
@@ -763,15 +845,14 @@ export function foldSessionEvents(
       closeGroup();
       retireThought();
       resetTurnErrors();
-      noteUserTurn(turn.text);
-      push(userBlock(turn.id, turn.text, turn, turn.at));
+      const text = contentToText(turn.text);
+      noteUserTurn(text);
+      push(userBlock(turn.id, text, turn, turn.at));
     }
   }
 
-  events.forEach((event, index) => {
-    drainTurns(index);
-    const at = receivedAt[index] ?? null;
-
+  /** Fold ONE event. Anything it throws is caught by the loop below. */
+  function foldOne(event: SessionEvent, index: number, at: number | null): void {
     switch (event.kind) {
       // `started` is not news: the strip already names the company and model,
       // and a "Started claude (opus) in /Users/…" banner is exactly the
@@ -783,12 +864,13 @@ export function foldSessionEvents(
       // like a mirrored one — a user turn is the hardest boundary in the
       // transcript, so it closes whatever the agent had open.
       case 'userMessage': {
+        const text = contentToText(event.text);
         closeProse();
         closeGroup();
         retireThought();
         resetTurnErrors();
-        noteUserTurn(event.text);
-        push(userBlock(`ev-${index}`, event.text, turnMeta[event.text] ?? {}, at));
+        noteUserTurn(text);
+        push(userBlock(`ev-${index}`, text, turnMeta[text] ?? {}, at));
         break;
       }
 
@@ -796,8 +878,9 @@ export function foldSessionEvents(
       // chip in the strip, the checkpoint prompt above the composer — not
       // something the operator said or the agent answered.
       case 'hookNotice': {
-        policies = mergePolicyDigest(policies, parsePolicyDigest(event.text));
-        if (isCheckpointDirective(event.text)) {
+        const text = contentToText(event.text);
+        policies = mergePolicyDigest(policies, parsePolicyDigest(text));
+        if (isCheckpointDirective(text)) {
           checkpointDue = true;
           checkpointPrompts += 1;
         }
@@ -805,8 +888,9 @@ export function foldSessionEvents(
       }
 
       case 'textDelta': {
+        const text = contentToText(event.text);
         if (event.parentToolUseId) {
-          subAgentCall(event.parentToolUseId, at).output += event.text;
+          subAgentCall(event.parentToolUseId, at).output += text;
           break;
         }
         retireThought();
@@ -815,14 +899,14 @@ export function foldSessionEvents(
         // CLI's narration of that failure is the error line, not a paragraph.
         if (turnModelError) break;
         if (openProse) {
-          openProse.text += event.text;
+          openProse.text += text;
           absorbModelError(openProse.text, index, at);
         } else {
-          if (absorbModelError(event.text, index, at)) break;
+          if (absorbModelError(text, index, at)) break;
           const prose: Extract<ChatBlock, { type: 'assistantProse' }> = {
             type: 'assistantProse',
             id: `say-${index}`,
-            text: event.text,
+            text,
             streaming: true,
             at,
           };
@@ -833,25 +917,26 @@ export function foldSessionEvents(
       }
 
       case 'assistantMessage': {
+        const text = contentToText(event.text);
         if (event.parentToolUseId) {
-          subAgentCall(event.parentToolUseId, at).output = event.text;
+          subAgentCall(event.parentToolUseId, at).output = text;
           break;
         }
         retireThought();
         closeGroup();
         if (turnModelError) break;
-        if (absorbModelError(event.text, index, at)) break;
+        if (absorbModelError(text, index, at)) break;
         if (openProse) {
           // The finalized text is authoritative — the deltas were a preview of
           // exactly this string, so it replaces rather than appends.
-          openProse.text = event.text;
+          openProse.text = text;
           openProse.streaming = false;
           openProse = null;
         } else {
           push({
             type: 'assistantProse',
             id: `say-${index}`,
-            text: event.text,
+            text,
             streaming: false,
             at,
           });
@@ -860,15 +945,16 @@ export function foldSessionEvents(
       }
 
       case 'thinkingDelta': {
+        const text = contentToText(event.text);
         if (openThought) {
-          openThought.text += event.text;
+          openThought.text += text;
           break;
         }
         closeProse();
         const thought: Extract<ChatBlock, { type: 'thinking' }> = {
           type: 'thinking',
           id: `think-${index}`,
-          text: event.text,
+          text,
           at,
         };
         openThought = thought;
@@ -879,17 +965,20 @@ export function foldSessionEvents(
       case 'toolCall': {
         retireThought();
         closeProse();
+        // A call with no id still gets a row; a call with no name is "Tool".
+        const id = contentToText(event.id) || `call-${index}`;
+        const name = contentToText(event.name) || 'Tool';
         const call: ToolCallSummary = {
-          id: event.id,
-          name: event.name,
+          id,
+          name,
           detail: describeToolInput(event.input),
           status: 'running',
           outcome: '',
           output: '',
         };
-        const produced = toolArtifactPaths(event.name, event.input);
+        const produced = toolArtifactPaths(name, event.input);
         if (produced.length > 0) call.artifactPath = produced[0];
-        callsById.set(event.id, call);
+        callsById.set(id, call);
         const group = groupFor(at);
         group.calls.push(call);
         if (produced.length > 0) {
@@ -901,23 +990,24 @@ export function foldSessionEvents(
       }
 
       case 'toolResult': {
-        const call = callsById.get(event.id);
+        const id = contentToText(event.id);
+        const call = callsById.get(id);
         if (call) {
-          call.status = event.isError ? 'error' : 'ok';
+          call.status = event.isError === true ? 'error' : 'ok';
           call.outcome = clipOutcome(event.content);
           break;
         }
         // A result whose call fell outside the replay window still deserves a
         // row rather than silent loss.
         const orphan: ToolCallSummary = {
-          id: event.id,
+          id: id || `result-${index}`,
           name: 'Tool',
-          detail: event.id,
-          status: event.isError ? 'error' : 'ok',
+          detail: id,
+          status: event.isError === true ? 'error' : 'ok',
           outcome: clipOutcome(event.content),
           output: '',
         };
-        callsById.set(event.id, orphan);
+        callsById.set(orphan.id, orphan);
         groupFor(at).calls.push(orphan);
         break;
       }
@@ -926,24 +1016,27 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
-        const resolution = resolutions[event.requestId] ?? null;
+        const requestId = contentToText(event.requestId) || `perm-${index}`;
+        const toolName = contentToText(event.toolName) || 'Tool';
+        const suggestions = suggestionsOf(event.suggestions);
+        const resolution = resolutions[requestId] ?? null;
         push({
           type: 'permissionCard',
-          id: `perm-${event.requestId}`,
-          requestId: event.requestId,
-          toolName: event.toolName,
+          id: `perm-${requestId}`,
+          requestId,
+          toolName,
           input: event.input,
-          suggestions: event.suggestions,
+          suggestions,
           resolution,
           at,
         });
         if (!resolution) {
           pending.push({
             type: 'permission',
-            requestId: event.requestId,
-            toolName: event.toolName,
+            requestId,
+            toolName,
             input: event.input,
-            suggestions: event.suggestions,
+            suggestions,
           });
         }
         break;
@@ -953,21 +1046,19 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
-        const resolution = resolutions[event.requestId] ?? null;
+        const requestId = contentToText(event.requestId) || `question-${index}`;
+        const questions = questionsOf(event.questions);
+        const resolution = resolutions[requestId] ?? null;
         push({
           type: 'questionCard',
-          id: `question-${event.requestId}`,
-          requestId: event.requestId,
-          questions: event.questions,
+          id: `question-${requestId}`,
+          requestId,
+          questions,
           resolution,
           at,
         });
         if (!resolution) {
-          pending.push({
-            type: 'question',
-            requestId: event.requestId,
-            questions: event.questions,
-          });
+          pending.push({ type: 'question', requestId, questions });
         }
         break;
       }
@@ -975,13 +1066,13 @@ export function foldSessionEvents(
       // Not a row: the last turn's cost belongs on the composer footer, where
       // it is available without pushing the conversation up.
       case 'usage': {
-        lastUsage = {
-          inputTokens: event.inputTokens,
-          outputTokens: event.outputTokens,
-          costUsd: event.costUsd,
-          durationMs: event.durationMs,
-          label: usageLabel(event),
+        const usage = {
+          inputTokens: finiteOr0(event.inputTokens),
+          outputTokens: finiteOr0(event.outputTokens),
+          costUsd: typeof event.costUsd === 'number' ? event.costUsd : null,
+          durationMs: typeof event.durationMs === 'number' ? event.durationMs : null,
         };
+        lastUsage = { ...usage, label: usageLabel(usage) };
         break;
       }
 
@@ -989,12 +1080,12 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
+        const message = contentToText(event.message);
+        const resetsAt = contentToText(event.resetsAt);
         errorLine(
           index,
           at,
-          event.resetsAt
-            ? `Rate limited: ${event.message} (resets ${event.resetsAt})`
-            : `Rate limited: ${event.message}`,
+          resetsAt ? `Rate limited: ${message} (resets ${resetsAt})` : `Rate limited: ${message}`,
           'warn',
         );
         break;
@@ -1006,7 +1097,7 @@ export function foldSessionEvents(
         push({
           type: 'divider',
           id: `truncated-${index}`,
-          label: `${event.dropped} older events dropped`,
+          label: `${finiteOr0(event.dropped)} older events dropped`,
           at,
         });
         break;
@@ -1032,17 +1123,18 @@ export function foldSessionEvents(
           // The turn's failure was already said: an `error` event with the
           // same sentence, or the one `model_not_found` line. "Turn failed: …"
           // repeating it is the third copy the owner saw.
+          const error = contentToText(event.error);
           const already =
-            (event.error !== undefined && turnErrors.has(normalizeErrorText(event.error))) ||
-            (turnModelError !== null && isModelNotFoundText(event.error));
-          if (event.error && isModelNotFoundText(event.error)) {
+            (error !== '' && turnErrors.has(normalizeErrorText(error))) ||
+            (turnModelError !== null && isModelNotFoundText(error));
+          if (error && isModelNotFoundText(error)) {
             modelNotFoundLine(index, at);
           } else if (!already) {
             push({
               type: 'error',
               id: `turn-${index}`,
               tone: 'error',
-              text: `Turn failed${event.error ? `: ${event.error}` : ''}.`,
+              text: `Turn failed${error ? `: ${error}` : ''}.`,
               at,
             });
           }
@@ -1054,11 +1146,13 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
-        if (event.code === MODEL_NOT_FOUND_CODE || isModelNotFoundText(event.message)) {
+        const message = contentToText(event.message);
+        const code = typeof event.code === 'string' ? event.code : undefined;
+        if (code === MODEL_NOT_FOUND_CODE || isModelNotFoundText(message)) {
           modelNotFoundLine(index, at);
           break;
         }
-        errorLine(index, at, event.message, 'error', event.code);
+        errorLine(index, at, message, 'error', code);
         break;
       }
 
@@ -1071,11 +1165,35 @@ export function foldSessionEvents(
         break;
       }
     }
+  }
+
+  events.forEach((event, index) => {
+    drainTurns(index);
+    const at = receivedAt[index] ?? null;
+    // One hostile event is one recorded error, never a blank window. The kind
+    // is read inside the guard too: a payload can be hostile all the way down.
+    let kind = 'unknown';
+    try {
+      kind = contentToText((event as { kind?: unknown } | null)?.kind) || 'unknown';
+      foldOne(event, index, at);
+    } catch (err) {
+      foldErrors.push({ index, kind, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // Anything the operator sent after the last event we have folded (the common
   // case for the very first send: the bubble exists before any reply does).
   drainTurns(events.length);
+
+  // Everything that could not be shown, said once, quietly, at the end.
+  if (foldErrors.length > 0) {
+    blocks.push({
+      type: 'divider',
+      id: FOLD_ERRORS_BLOCK_ID,
+      label: foldErrorLabel(foldErrors),
+      at: null,
+    });
+  }
 
   for (const block of blocks) {
     if (block.type === 'toolGroup') {
@@ -1099,6 +1217,7 @@ export function foldSessionEvents(
     checkpointDue,
     checkpointPrompts,
     handoff,
+    foldErrors,
   };
 
   /**

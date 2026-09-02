@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FOLD_ERRORS_BLOCK_ID,
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
   SESSION_AGENT_UID,
@@ -8,6 +9,7 @@ import {
   SESSION_SELF_UID,
   describeToolInput,
   emptyTranscript,
+  foldErrorLabel,
   foldSessionEvents,
   isModelNotFoundText,
   toolArtifactPaths,
@@ -17,7 +19,12 @@ import {
   type ToolCallSummary,
   type UserTurn,
 } from './transcript-adapter';
-import { SESSION_EVENT_KINDS, type SessionEvent } from './session-events';
+import {
+  CONTENT_TEXT_CAP,
+  SESSION_EVENT_KINDS,
+  contentToText,
+  type SessionEvent,
+} from './session-events';
 
 const started: SessionEvent = {
   kind: 'started',
@@ -83,6 +90,7 @@ describe('foldSessionEvents — purity and determinism', () => {
       checkpointDue: false,
       checkpointPrompts: 0,
       handoff: 'none',
+      foldErrors: [],
     });
     expect(foldSessionEvents([])).toEqual(emptyTranscript());
   });
@@ -1091,5 +1099,260 @@ describe('foldSessionEvents — an error said once is said once', () => {
   it('carries the CLI’s code on the block', () => {
     const { blocks } = foldSessionEvents([{ kind: 'error', message: 'boom', code: 'E1' }]);
     expect((blocks[0] as Extract<ChatBlock, { type: 'error' }>).code).toBe('E1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile payloads — the wire is not the types
+// ---------------------------------------------------------------------------
+
+/** An event whose `text` cannot even be READ — the most hostile payload there is. */
+function eventWithThrowingText(kind: 'textDelta' | 'assistantMessage'): SessionEvent {
+  const event = { kind } as unknown as SessionEvent;
+  Object.defineProperty(event, 'text', {
+    enumerable: true,
+    get() {
+      throw new Error('payload exploded');
+    },
+  });
+  return event;
+}
+
+/** A tool group's expanded rows, for the outcome assertions. */
+function calls(blocks: ChatBlock[]): ToolCallSummary[] {
+  return groups(blocks).flatMap((group) => group.calls);
+}
+
+describe('contentToText', () => {
+  it('reads null and undefined as nothing', () => {
+    expect(contentToText(null)).toBe('');
+    expect(contentToText(undefined)).toBe('');
+  });
+
+  it('returns a string verbatim', () => {
+    expect(contentToText('a\nb')).toBe('a\nb');
+    expect(contentToText('')).toBe('');
+  });
+
+  it('joins Claude text blocks — the shape a real tool_result carries', () => {
+    expect(
+      contentToText([
+        { type: 'text', text: 'first' },
+        { type: 'text', text: 'second' },
+      ]),
+    ).toBe('first\nsecond');
+    expect(contentToText(['plain', { type: 'text', text: 'block' }])).toBe('plain\nblock');
+  });
+
+  it('renders any other array or object as compact JSON', () => {
+    expect(contentToText({ ok: true })).toBe('{"ok":true}');
+    expect(contentToText([{ type: 'image', source: 'x' }])).toBe('[{"type":"image","source":"x"}]');
+    expect(contentToText({ changes: [{ path: '/a', kind: 'add' }] })).toBe(
+      '{"changes":[{"path":"/a","kind":"add"}]}',
+    );
+  });
+
+  it('caps a huge payload at 4 KB', () => {
+    const huge = { blob: 'x'.repeat(CONTENT_TEXT_CAP * 3) };
+    const text = contentToText(huge);
+    expect(text.length).toBe(CONTENT_TEXT_CAP + 1);
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('stringifies scalars and survives a payload JSON cannot serialize', () => {
+    expect(contentToText(42)).toBe('42');
+    expect(contentToText(false)).toBe('false');
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => contentToText(cyclic)).not.toThrow();
+    expect(contentToText(cyclic)).toBe('[object Object]');
+  });
+});
+
+describe('foldSessionEvents — a null or non-string payload never crashes the window', () => {
+  // The owner's most recent session opened to a blank window with
+  // `null is not an object (evaluating 'content.split')`: a `toolResult` whose
+  // `content` was JSON null. Every shape the Rust `Value` can take is folded
+  // here, and every one renders.
+  const call: SessionEvent = { kind: 'toolCall', id: 'c1', name: 'Bash', input: { command: 'ls' } };
+
+  it('folds a toolResult whose content is null as a call with no outcome', () => {
+    const state = foldSessionEvents([
+      { kind: 'userMessage', text: 'run it', imageCount: 0 },
+      call,
+      { kind: 'toolResult', id: 'c1', isError: false, content: null },
+      { kind: 'assistantMessage', text: 'done' },
+    ]);
+    expect(types(state.blocks)).toEqual(['userBubble', 'toolGroup', 'assistantProse']);
+    expect(calls(state.blocks)).toEqual([
+      expect.objectContaining({ id: 'c1', status: 'ok', outcome: '' }),
+    ]);
+    expect(state.foldErrors).toEqual([]);
+  });
+
+  it('folds Claude content blocks into the outcome text', () => {
+    const state = foldSessionEvents([
+      call,
+      {
+        kind: 'toolResult',
+        id: 'c1',
+        isError: false,
+        content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }],
+      },
+    ]);
+    expect(calls(state.blocks)[0]!.outcome).toBe('a\nb');
+    expect(state.foldErrors).toEqual([]);
+  });
+
+  it('folds an object result (a Codex fileChange) as compact JSON', () => {
+    const state = foldSessionEvents([
+      call,
+      { kind: 'toolResult', id: 'c1', isError: false, content: { ok: true } },
+    ]);
+    expect(calls(state.blocks)[0]!.outcome).toBe('{"ok":true}');
+    expect(state.foldErrors).toEqual([]);
+  });
+
+  it('gives an orphaned null-content result a row too', () => {
+    const state = foldSessionEvents([
+      { kind: 'toolResult', id: 'gone', isError: true, content: null },
+    ]);
+    expect(calls(state.blocks)).toEqual([
+      expect.objectContaining({ id: 'gone', name: 'Tool', status: 'error', outcome: '' }),
+    ]);
+  });
+
+  it('folds a malformed toolCall — no input, null name — as a "Tool" row', () => {
+    const malformed = { kind: 'toolCall', id: 'x1', name: null, input: undefined } as unknown as SessionEvent;
+    const state = foldSessionEvents([
+      malformed,
+      { kind: 'toolResult', id: 'x1', isError: false, content: 'fine' },
+      { kind: 'assistantMessage', text: 'after' },
+    ]);
+    expect(state.foldErrors).toEqual([]);
+    expect(calls(state.blocks)).toEqual([
+      expect.objectContaining({ id: 'x1', name: 'Tool', detail: '', status: 'ok', outcome: 'fine' }),
+    ]);
+    expect(proseText(state.blocks)).toEqual(['after']);
+  });
+
+  it('folds every string field arriving as null, on every kind, without throwing', () => {
+    const nulls = [
+      { kind: 'userMessage', text: null, imageCount: null },
+      { kind: 'textDelta', text: null, parentToolUseId: null },
+      { kind: 'thinkingDelta', text: null },
+      { kind: 'assistantMessage', text: null, parentToolUseId: null },
+      { kind: 'toolCall', id: null, name: null, input: null, parentToolUseId: null },
+      { kind: 'toolResult', id: null, isError: null, content: null, parentToolUseId: null },
+      { kind: 'permissionRequest', requestId: null, toolName: null, input: null, suggestions: null },
+      { kind: 'questionRequest', requestId: null, questions: null },
+      { kind: 'questionRequest', requestId: 'q2', questions: [{ id: null, header: null, text: null, options: null, multiSelect: null }] },
+      { kind: 'usage', inputTokens: null, outputTokens: null, costUsd: null, durationMs: null },
+      { kind: 'rateLimit', message: null, resetsAt: null },
+      { kind: 'hookNotice', hookEvent: null, hookName: null, text: null },
+      { kind: 'turnDone', status: 'error', error: null, sessionId: null },
+      { kind: 'error', message: null, code: null },
+      { kind: 'exited', code: null, signal: null },
+      { kind: 'truncated', dropped: null },
+    ] as unknown as SessionEvent[];
+    const covered = new Set(nulls.map((event) => event.kind));
+    expect([...SESSION_EVENT_KINDS].filter((kind) => kind !== 'started' && !covered.has(kind))).toEqual([]);
+
+    let state!: ReturnType<typeof foldSessionEvents>;
+    expect(() => {
+      state = foldSessionEvents(nulls, { userTurns: [turn({ text: null as unknown as string })] });
+    }).not.toThrow();
+    expect(state.foldErrors).toEqual([]);
+    expect(state.lastUsage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: null,
+      durationMs: null,
+      label: '0 in · 0 out',
+    });
+    // The cards still exist, with safe-to-read fields.
+    expect(state.pending.map((card) => card.type)).toEqual(['permission', 'question', 'question']);
+    const question = state.pending[2];
+    expect(question).toMatchObject({ type: 'question', requestId: 'q2' });
+    expect((question as Extract<typeof question, { type: 'question' }>).questions).toEqual([
+      { id: 'q0', header: '', text: '', options: [], multiSelect: false },
+    ]);
+  });
+
+  it('keeps permission suggestions a list whatever the wire sent', () => {
+    const state = foldSessionEvents([
+      { kind: 'permissionRequest', requestId: 'p1', toolName: 'Bash', input: {}, suggestions: { not: 'a list' } },
+      { kind: 'permissionRequest', requestId: 'p2', toolName: 'Bash', input: {}, suggestions: [{ type: 'addRules' }, null, 'x'] },
+    ]);
+    const cards = state.blocks.filter(
+      (block): block is Extract<ChatBlock, { type: 'permissionCard' }> => block.type === 'permissionCard',
+    );
+    expect(cards.map((card) => card.suggestions)).toEqual([[], [{ type: 'addRules' }]]);
+  });
+});
+
+describe('foldSessionEvents — an event that still throws is one quiet line, not a crash', () => {
+  const before: SessionEvent = { kind: 'assistantMessage', text: 'before' };
+  const after: SessionEvent = { kind: 'assistantMessage', text: 'after' };
+
+  it('records the failure and renders the rest of the transcript', () => {
+    let state!: ReturnType<typeof foldSessionEvents>;
+    expect(() => {
+      state = foldSessionEvents([before, eventWithThrowingText('textDelta'), after]);
+    }).not.toThrow();
+
+    expect(state.foldErrors).toEqual([{ index: 1, kind: 'textDelta', error: 'payload exploded' }]);
+    expect(proseText(state.blocks)).toEqual(['before', 'after']);
+    const line = state.blocks[state.blocks.length - 1]!;
+    expect(line).toEqual({
+      type: 'divider',
+      id: FOLD_ERRORS_BLOCK_ID,
+      label: '1 event could not be displayed (textDelta)',
+      at: null,
+    });
+  });
+
+  it('says it ONCE for several failures, naming each kind', () => {
+    const state = foldSessionEvents([
+      eventWithThrowingText('textDelta'),
+      before,
+      eventWithThrowingText('assistantMessage'),
+      eventWithThrowingText('textDelta'),
+      after,
+    ]);
+    expect(state.foldErrors.map((error) => [error.index, error.kind])).toEqual([
+      [0, 'textDelta'],
+      [2, 'assistantMessage'],
+      [3, 'textDelta'],
+    ]);
+    expect(proseText(state.blocks)).toEqual(['before', 'after']);
+    const lines = state.blocks.filter((block) => block.id === FOLD_ERRORS_BLOCK_ID);
+    expect(lines).toHaveLength(1);
+    expect((lines[0] as Extract<ChatBlock, { type: 'divider' }>).label).toBe(
+      '3 events could not be displayed (textDelta, assistantMessage)',
+    );
+  });
+
+  it('survives an event that is not even an object', () => {
+    const garbage = [null, undefined, 42, 'text', { kind: 'nonsense' }] as unknown as SessionEvent[];
+    let state!: ReturnType<typeof foldSessionEvents>;
+    expect(() => {
+      state = foldSessionEvents([before, ...garbage, after]);
+    }).not.toThrow();
+    // An unknown kind is simply not a row; a non-object is a recorded error.
+    expect(proseText(state.blocks)).toEqual(['before', 'after']);
+    expect(state.foldErrors.every((error) => typeof error.error === 'string')).toBe(true);
+  });
+
+  it('labels the line grammatically', () => {
+    expect(foldErrorLabel([{ index: 0, kind: 'toolResult', error: 'x' }])).toBe(
+      '1 event could not be displayed (toolResult)',
+    );
+    expect(
+      foldErrorLabel([
+        { index: 0, kind: 'toolResult', error: 'x' },
+        { index: 4, kind: 'toolResult', error: 'y' },
+      ]),
+    ).toBe('2 events could not be displayed (toolResult)');
   });
 });

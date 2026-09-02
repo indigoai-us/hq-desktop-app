@@ -15,6 +15,7 @@
    */
   import ArtifactRow from './ArtifactRow.svelte';
   import type { ArtifactActions } from './session-artifacts';
+  import { contentToText } from './session-events';
   import type { ToolArtifact, ToolCallSummary } from './transcript-adapter';
 
   interface Props {
@@ -42,11 +43,21 @@
    * a Codex patch counts as "used 1 tool", so the file count is added there
    * and nowhere it is already said.
    */
-  const summaryLine = $derived(
-    artifacts.length > 0 && !/\bfiles?\b/.test(summary)
-      ? `${summary} · ${artifacts.length} ${artifacts.length === 1 ? 'file' : 'files'}`
-      : summary,
-  );
+  const summaryLine = $derived.by(() => {
+    const line = contentToText(summary);
+    return artifacts.length > 0 && !/\bfiles?\b/.test(line)
+      ? `${line} · ${artifacts.length} ${artifacts.length === 1 ? 'file' : 'files'}`
+      : line;
+  });
+
+  /**
+   * The expanded row's text for a call: its result's head, else what a
+   * sub-agent streamed under it. Read through `contentToText` because a call
+   * summary is built from wire payloads, and the wire is not the types.
+   */
+  function outcomeOf(call: ToolCallSummary): string {
+    return contentToText(call.outcome) || contentToText(call.output);
+  }
 </script>
 
 <div class="tool-group" data-testid="session-tool-group" data-running={running ? 'true' : 'false'}>
@@ -81,11 +92,11 @@
               ✓
             {/if}
           </span>
-          <span class="call-name">{call.name}</span>
-          <span class="call-detail">{call.detail}</span>
+          <span class="call-name">{contentToText(call.name)}</span>
+          <span class="call-detail">{contentToText(call.detail)}</span>
         </li>
-        {#if call.outcome || call.output}
-          <li class="call-outcome"><pre>{call.outcome || call.output}</pre></li>
+        {#if outcomeOf(call)}
+          <li class="call-outcome"><pre>{outcomeOf(call)}</pre></li>
         {/if}
       {/each}
     </ul>

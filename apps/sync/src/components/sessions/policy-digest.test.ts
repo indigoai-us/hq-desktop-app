@@ -145,3 +145,16 @@ describe('policyCountLabel', () => {
     expect(policyCountLabel(parsePolicyDigest(FIXTURE))).toBe('6 (4 hard)');
   });
 });
+
+describe('parsePolicyDigest — a notice that is not a string', () => {
+  it('parses null, undefined and an object as an empty digest instead of throwing', () => {
+    expect(parsePolicyDigest(null)).toEqual(emptyPolicyDigest());
+    expect(parsePolicyDigest(undefined)).toEqual(emptyPolicyDigest());
+    expect(parsePolicyDigest({ text: '> Policy `x` applies here: y' })).toEqual(emptyPolicyDigest());
+  });
+
+  it('still reads Claude text blocks, which is how a wrapped notice arrives', () => {
+    const digest = parsePolicyDigest([{ type: 'text', text: '> Policy `x` applies here: y' }]);
+    expect(digest.entries).toEqual([{ slug: 'x', hard: false, excerpt: 'y' }]);
+  });
+});

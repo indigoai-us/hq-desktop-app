@@ -1100,3 +1100,102 @@ describe('liveSessionStore.shareToChannel — the dialog’s one outward call', 
     ).rejects.toBe('Command session_share_to_channel not found');
   });
 });
+
+describe('a replay with a null or non-string payload never takes the page down', () => {
+  // The owner's most recent session: a real-looking replay page — a started
+  // frame, the operator's turn, a command, its result with `content: null`
+  // (a Codex command that printed nothing; a Claude result with no `content`
+  // key), the answer. Folding it used to throw `null.split` through the
+  // store's getter into the page and blank the whole window.
+  const realLooking: [number, SessionEvent][] = [
+    [0, started],
+    [1, { kind: 'userMessage', text: 'list the repo', imageCount: 0 }],
+    [2, { kind: 'toolCall', id: 'exec-1', name: 'Bash', input: { command: 'ls' } }],
+    [3, { kind: 'toolResult', id: 'exec-1', isError: false, content: null }],
+    [4, { kind: 'toolCall', id: 'exec-2', name: 'Read', input: { file_path: '/repo/a.md' } }],
+    [5, { kind: 'toolResult', id: 'exec-2', isError: false, content: [{ type: 'text', text: 'a\nb' }] }],
+    [6, { kind: 'assistantMessage', text: 'Two files.' }],
+    [7, { kind: 'usage', inputTokens: 10, outputTokens: 2, costUsd: null, durationMs: null }],
+    [8, { kind: 'turnDone', status: 'success', error: null, sessionId: null }],
+  ];
+
+  it('folds the whole page and renders every row around the null result', async () => {
+    mockBackend({ 0: page(realLooking, 9) });
+
+    await expect(liveSessionStore.open(SESSION)).resolves.toBeUndefined();
+
+    const transcript = liveSessionStore.transcript;
+    expect(transcript.blocks.map((block) => block.type)).toEqual([
+      'userBubble',
+      'toolGroup',
+      'assistantProse',
+    ]);
+    expect(bubbleText()).toEqual(['list the repo']);
+    expect(proseText()).toEqual(['Two files.']);
+    const group = transcript.blocks[1] as { calls: { id: string; outcome: string; status: string }[] };
+    expect(group.calls).toEqual([
+      expect.objectContaining({ id: 'exec-1', status: 'ok', outcome: '' }),
+      expect.objectContaining({ id: 'exec-2', status: 'ok', outcome: 'a\nb' }),
+    ]);
+    expect(transcript.lastUsage?.label).toBe('10 in · 2 out');
+    expect(transcript.foldErrors).toEqual([]);
+    expect(liveSessionStore.error).toBe('');
+  });
+
+  it('survives a live null-content event landing on top of the replay', async () => {
+    mockBackend({ 0: page(realLooking.slice(0, 3), 3) });
+    await liveSessionStore.open(SESSION);
+
+    expect(() =>
+      emit(AGENT_SESSION_EVENT, {
+        sessionId: SESSION,
+        seq: 3,
+        event: { kind: 'toolResult', id: 'exec-1', isError: false, content: null },
+      }),
+    ).not.toThrow();
+    expect(() => liveSessionStore.transcript).not.toThrow();
+    expect(liveSessionStore.transcript.blocks.map((block) => block.type)).toEqual([
+      'userBubble',
+      'toolGroup',
+    ]);
+  });
+
+  it('degrades an event that still throws to one line, logged to the console once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const hostile = { kind: 'textDelta' } as unknown as SessionEvent;
+      Object.defineProperty(hostile, 'text', {
+        enumerable: true,
+        get() {
+          throw new Error('hostile payload');
+        },
+      });
+      mockBackend({
+        0: page(
+          [
+            [0, started],
+            [1, { kind: 'assistantMessage', text: 'before' }],
+            [2, hostile],
+            [3, { kind: 'assistantMessage', text: 'after' }],
+          ],
+          4,
+        ),
+      });
+
+      await expect(liveSessionStore.open(SESSION)).resolves.toBeUndefined();
+
+      // Read it several times: the console line is once per session, not per read.
+      const first = liveSessionStore.transcript;
+      void liveSessionStore.blocks;
+      void liveSessionStore.pending;
+      expect(first.foldErrors).toEqual([{ index: 2, kind: 'textDelta', error: 'hostile payload' }]);
+      expect(proseText()).toEqual(['before', 'after']);
+      const last = first.blocks[first.blocks.length - 1] as { type: string; label: string };
+      expect(last).toMatchObject({ type: 'divider', label: '1 event could not be displayed (textDelta)' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(SESSION);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

@@ -82,12 +82,14 @@ export type {
 } from './session-events';
 
 export {
+  FOLD_ERRORS_BLOCK_ID,
   SESSION_AGENT_UID,
   SESSION_MEMBERS,
   SESSION_SELF_UID,
   TOOL_CATEGORIES,
   describeToolInput,
   emptyTranscript,
+  foldErrorLabel,
   foldSessionEvents,
   toolArtifactPaths,
   toolCategory,
@@ -96,6 +98,7 @@ export {
 export type {
   CardResolution,
   ChatBlock,
+  FoldError,
   FoldOptions,
   PendingCard,
   ToolArtifact,

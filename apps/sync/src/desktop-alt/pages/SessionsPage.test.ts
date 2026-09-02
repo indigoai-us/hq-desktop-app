@@ -51,6 +51,7 @@ import {
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
 } from '../../components/sessions/transcript-adapter';
+import { liveSessionStore } from '../lib/live-session-store.svelte';
 
 /** The real Claude handshake shape. */
 const CLAUDE_CATALOG = [
@@ -405,5 +406,105 @@ describe('a live session', () => {
     backend.replay = [];
     render({ sessionId: 'sess-1' });
     await vi.waitFor(() => expect(text('sessions-strip-title')).toBe('indigo · Claude'));
+  });
+});
+
+describe('a session whose replay carries a null or hostile payload', () => {
+  // The owner's crash: opening the most recent session from history blanked
+  // the whole desktop window with `null is not an object (evaluating
+  // 'content.split')`. The page is mounted for real against exactly that page
+  // of events and must render the conversation.
+  function live(): SessionSummary {
+    return {
+      sessionId: 'sess-1',
+      tool: 'claude',
+      phase: 'idle',
+      company: 'indigo',
+      model: 'opus',
+      requestedModel: 'opus',
+      effort: null,
+      permissionMode: 'prompt',
+      cwd: '/Users/x/HQ',
+      startedAt: '2026-09-02T00:00:00.000Z',
+      lastActivityAt: '2026-09-02T00:00:00.000Z',
+      lastSeq: 0,
+      pendingCount: 0,
+    };
+  }
+
+  it('renders the transcript around a toolResult whose content is null', async () => {
+    backend.list = [live()];
+    backend.replay = [
+      { kind: 'started', sessionId: 'cli-1', tool: 'claude', model: 'opus', cwd: '/Users/x/HQ', tools: [], commands: [] },
+      { kind: 'userMessage', text: 'list the repo', imageCount: 0 },
+      { kind: 'toolCall', id: 'c1', name: 'Bash', input: { command: 'ls' } },
+      { kind: 'toolResult', id: 'c1', isError: false, content: null },
+      { kind: 'assistantMessage', text: 'Two files.' },
+      { kind: 'turnDone', status: 'success', error: null, sessionId: null },
+    ];
+    render({ sessionId: 'sess-1' });
+    await vi.waitFor(() => expect(at('session-assistant-prose')).not.toBeNull());
+
+    expect(text('session-user-bubble')).toBe('list the repo');
+    expect(text('session-assistant-prose')).toContain('Two files.');
+    expect(at('session-tool-group')).not.toBeNull();
+    expect(at('session-divider')).toBeNull();
+  });
+
+  it('shows one quiet line for an event that cannot be displayed, and everything else', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const hostile = { kind: 'textDelta' } as unknown as SessionEvent;
+      Object.defineProperty(hostile, 'text', {
+        enumerable: true,
+        get() {
+          throw new Error('hostile payload');
+        },
+      });
+      backend.list = [live()];
+      backend.replay = [
+        { kind: 'userMessage', text: 'hello', imageCount: 0 },
+        { kind: 'assistantMessage', text: 'before' },
+        hostile,
+        { kind: 'assistantMessage', text: 'after' },
+      ];
+      render({ sessionId: 'sess-1' });
+      await vi.waitFor(() => expect(at('session-divider')).not.toBeNull());
+
+      const prose = [...host.querySelectorAll('[data-testid="session-assistant-prose"]')].map(
+        (node) => node.textContent?.trim(),
+      );
+      expect(prose).toEqual(['before', 'after']);
+      expect(host.querySelectorAll('[data-testid="session-divider"]')).toHaveLength(1);
+      expect(text('session-divider')).toBe('1 event could not be displayed (textDelta)');
+      expect(at('session-inline-error')).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the page up even if the store’s transcript read itself throws', async () => {
+    // Belt to the store's braces: a throw from the transcript getter must not
+    // reach the shell's error boundary through the page's `$derived`.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const original = Object.getOwnPropertyDescriptor(liveSessionStore, 'transcript')!;
+    try {
+      backend.list = [live()];
+      backend.replay = [{ kind: 'userMessage', text: 'hello', imageCount: 0 }];
+      Object.defineProperty(liveSessionStore, 'transcript', {
+        configurable: true,
+        get() {
+          throw new Error('store exploded');
+        },
+      });
+      expect(() => render({ sessionId: 'sess-1' })).not.toThrow();
+      await settle();
+      expect(at('session-composer-input')).not.toBeNull();
+      expect(error).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(liveSessionStore, 'transcript', original);
+      error.mockRestore();
+    }
   });
 });

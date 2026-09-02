@@ -145,3 +145,14 @@ describe('chips', () => {
     expect(ATTACHMENT_CHARS * MAX_ATTACHMENTS).toBeLessThanOrEqual(MAX_CONTEXT_CHARS);
   });
 });
+
+describe('splitContextBlocks — a recorded turn that is not a string', () => {
+  it('splits null and undefined into an empty turn instead of throwing', () => {
+    expect(splitContextBlocks(null)).toEqual({ text: '', attachments: [] });
+    expect(splitContextBlocks(undefined)).toEqual({ text: '', attachments: [] });
+  });
+
+  it('reads an object as its JSON, so nothing is silently lost', () => {
+    expect(splitContextBlocks({ text: 'hi' })).toEqual({ text: '{"text":"hi"}', attachments: [] });
+  });
+});
