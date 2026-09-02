@@ -28,15 +28,16 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use hq_desktop_core::agent_session::claude_wire::{
-    answers_updated_input, allow_response, control_response_line, deny_response, user_message_line,
-    user_message_line_with_images,
+    answers_updated_input, allow_response, control_response_line, deny_response,
+    set_permission_mode_request_line, user_message_line, user_message_line_with_images,
 };
 use hq_desktop_core::agent_session::codex_wire::{approval_reply, user_input, user_input_reply};
 use hq_desktop_core::agent_session::registry::{
     LiveSession, PendingRequest, Replay, SessionRegistry, SessionSummary,
 };
 use hq_desktop_core::agent_session::types::{
-    PermissionDecision, QuestionAnswer, SessionEvent, SessionPhase, SessionSpec, SessionTool,
+    PermissionDecision, PermissionMode, QuestionAnswer, SessionEvent, SessionPhase, SessionSpec,
+    SessionTool, TurnOverrides,
 };
 use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::claude_launch::check_hq_hooks_ready;
@@ -360,12 +361,19 @@ pub async fn agent_session_start(
 }
 
 /// Send a user turn (or steer an in-flight one).
+///
+/// `overrides` carries the composer's model / effort pills when they no longer
+/// match the live session. Changing a model or a thinking effort must never
+/// start a new chat — only a company change forks, because a company is what
+/// binds the session's context — so they are applied to the session IN PLACE
+/// on the tool that can honour them.
 #[tauri::command]
 pub async fn agent_session_send(
     app: tauri::AppHandle,
     session_id: String,
     text: String,
     images: Option<Vec<ImageAttachment>>,
+    overrides: Option<TurnOverrides>,
 ) -> Result<(), String> {
     ensure_in_app_sessions_allowed()?;
     let attachments: Vec<(String, String)> = images
@@ -376,10 +384,28 @@ pub async fn agent_session_send(
     let state = state();
     let mut guard = state.lock().await;
 
+    let tool = session_tool(&guard, &session_id)?;
+
+    // BEFORE the turn is queued: the driver reads the options when it builds
+    // the `turn/start`, so an instruction that arrived after the line would
+    // land one turn late.
+    //
+    // Codex ONLY. A running `claude --print` is pinned to the model and effort
+    // it was launched with, and recording a change the child cannot honour
+    // would make the session list — and the strip's title — name a model that
+    // is not answering. The UI tells that operator their choice lands on their
+    // next session instead.
+    if let (Some(overrides), SessionTool::Codex) = (overrides, tool) {
+        if let Some(session) = guard.registry.get_mut(&session_id) {
+            session.apply_turn_overrides(&overrides);
+        }
+        guard.send(&session_id, Outbound::SetTurnOptions(overrides))?;
+    }
+
     // Slash commands need no client-side expansion on either CLI: both execute
     // them from a plain user turn (verified against claude 2.1.247 and
     // codex-cli 0.144.1).
-    let line = match session_tool(&guard, &session_id)? {
+    let line = match tool {
         SessionTool::Claude if attachments.is_empty() => user_message_line(&text),
         SessionTool::Claude => user_message_line_with_images(&text, &attachments),
         // Codex takes the turn's `input` array; JSON keeps the attachments
@@ -554,6 +580,42 @@ pub async fn agent_session_interrupt(session_id: String) -> Result<(), String> {
     // The driver marks the normalizer interrupted before it writes the request
     // — the ordering is why this is an instruction rather than two calls.
     state().lock().await.send(&session_id, Outbound::Interrupt)
+}
+
+/// Change how tool-permission requests are answered, WITHOUT starting a new
+/// session.
+///
+/// Two halves, because the two CLIs gate at different layers:
+///   - HQ's own gate moves immediately (`decide_can_use_tool` reads the spec),
+///     which is what makes `bypassAll` stop parking prompts on both tools;
+///   - the CLI's gate is told too — Claude over its control channel, Codex by
+///     rebinding the `approvalPolicy` its next `turn/start` carries.
+///
+/// Claude's `set_permission_mode` is best-effort: a CLI that refuses the
+/// subtype answers with an error `control_response`, which the normalizer maps
+/// to nothing rather than to a red transcript. The user-visible behaviour is
+/// already correct without it, because HQ answers `can_use_tool` itself.
+#[tauri::command]
+pub async fn agent_session_set_permission_mode(
+    session_id: String,
+    mode: PermissionMode,
+) -> Result<(), String> {
+    ensure_in_app_sessions_allowed()?;
+    let state = state();
+    let mut guard = state.lock().await;
+
+    let tool = session_tool(&guard, &session_id)?;
+    if let Some(session) = guard.registry.get_mut(&session_id) {
+        session.set_permission_mode(mode);
+    }
+    let message = match tool {
+        SessionTool::Claude => Outbound::Line(set_permission_mode_request_line(
+            &format!("perm_{}", uuid::Uuid::new_v4()),
+            mode,
+        )),
+        SessionTool::Codex => Outbound::SetPermissionMode(mode),
+    };
+    guard.send(&session_id, message)
 }
 
 /// End a session: EOF on stdin, then a bounded wait, then a kill.

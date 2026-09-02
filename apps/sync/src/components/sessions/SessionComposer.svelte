@@ -34,9 +34,8 @@
     EFFORT_OPTIONS,
     TOOL_OPTIONS,
     firstSentence,
+    modelMenuRows,
     modelPillLabel,
-    modelRowLabel,
-    selectableModels,
   } from './session-models';
 
   interface CompanyOption {
@@ -73,8 +72,14 @@
     /** Preflight says the Codex CLI is on this machine. */
     codexAvailable?: boolean;
 
-    /** The pills now describe a DIFFERENT session than the live one. */
+    /** The COMPANY pill now describes a different session than the live one. */
     newSessionPending?: boolean;
+    /**
+     * The model / effort pills moved on a CLI that cannot be rebound
+     * mid-session (Claude), so the choice lands on the next session rather
+     * than on the next turn. Codex takes both per turn and never sets this.
+     */
+    overridesDeferred?: boolean;
 
     /** Footer: the HQ folder's basename. The whole footer. */
     hqFolder?: string;
@@ -105,6 +110,7 @@
     tool = 'claude',
     codexAvailable = false,
     newSessionPending = false,
+    overridesDeferred = false,
     hqFolder = '',
     onsend,
     onstop,
@@ -138,14 +144,17 @@
    * silently offering a menu the current selection is missing from.
    */
   const pickable = $derived.by(() => {
-    const offered = selectableModels(models);
+    // Already deduped by id and disambiguated where two ids share a name — the
+    // Codex catalog ships several models per version and used to render three
+    // identical "GPT 5.6" rows.
+    const offered = modelMenuRows(models, tool);
     if (model !== null && !offered.some((entry) => entry.value === model)) {
       return [...offered, { value: model, label: model } satisfies SessionModel];
     }
     return offered;
   });
 
-  const modelLabel = $derived(modelPillLabel(models, model, resolvedModel));
+  const modelLabel = $derived(modelPillLabel(models, model, resolvedModel, tool));
   const effortLabel = $derived(
     EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'Auto',
   );
@@ -565,7 +574,7 @@
                     closeMenus();
                   }}
                 >
-                  <span class="menu-label">{modelRowLabel(option)}</span>
+                  <span class="menu-label">{option.label}</span>
                   {#if firstSentence(option.description)}
                     <span class="menu-sub">{firstSentence(option.description)}</span>
                   {/if}
@@ -655,6 +664,10 @@
     {#if newSessionPending}
       <span class="foot-note" data-testid="session-new-session-hint">
         Next message starts a new session
+      </span>
+    {:else if overridesDeferred}
+      <span class="foot-note" data-testid="session-overrides-deferred-hint">
+        Model/effort apply to your next session
       </span>
     {:else if working}
       <span class="foot-note" data-testid="session-composer-steer-hint">

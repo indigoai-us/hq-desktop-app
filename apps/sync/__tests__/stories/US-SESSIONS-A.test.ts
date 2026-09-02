@@ -193,13 +193,16 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     const MODELS = read('src/components/sessions/session-models.ts');
     expect(MODELS).toContain('export function friendlyModelName');
     expect(MODELS).toContain('export function selectableModels');
+    expect(MODELS).toContain('export function modelMenuRows');
     expect(COMPOSER).toContain('modelPillLabel');
     expect(COMPOSER).toContain('session-menu-model');
     // The pill's own <select> overlay is gone: menus are anchored popovers so
     // they cannot be clipped by the transcript's scroll container.
     expect(COMPOSER).not.toContain('<select');
     expect(COMPOSER).toContain('bottom: calc(100% + 6px)');
-    // The strip names the model the same way the pill does.
+    // The strip names the model the same way the pill does — which for Codex
+    // means the catalog's own display name, not the friendly mapper's version.
+    expect(PAGE).toContain('modelPillLabel');
     expect(PAGE).toContain('friendlyModelName');
   });
 
@@ -307,6 +310,7 @@ describe('US-SESSIONS-A — the event contract is fully handled', () => {
       'agent_session_respond_permission',
       'agent_session_answer_question',
       'agent_session_interrupt',
+      'agent_session_set_permission_mode',
       'agent_session_end',
       'agent_session_list',
       'agent_session_replay',
@@ -319,16 +323,54 @@ describe('US-SESSIONS-A — the event contract is fully handled', () => {
 
 describe('follow-ups stay in the live session', () => {
   it('forks a new session only when the user changed a pill, never by comparing values', () => {
-    const page = readFileSync(
-      new URL('../../src/desktop-alt/pages/SessionsPage.svelte', import.meta.url),
-      'utf8',
-    );
     // The live summary reports the CLI's resolved model id while the pill holds
     // the catalog value; comparing them forked the chat on every follow-up.
-    expect(page).toContain('const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);');
-    expect(page).not.toMatch(/summary\.model \?\? null\) !== model/);
-    expect(page).toContain('function markPillsDirty(changed: boolean)');
-    expect(page).toContain('pillsDirty = false;');
+    expect(PAGE).toContain('const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);');
+    expect(PAGE).not.toMatch(/summary\.model \?\? null\) !== model/);
+    expect(PAGE).toContain('function markPillsDirty(changed: boolean)');
+    expect(PAGE).toContain('pillsDirty = false;');
+  });
+
+  it('ONLY a company (or tool) change forks — never model, effort, or permission', () => {
+    // "Selecting a new thinking mode started a new chat, which it should not."
+    // A company binds the session's context and cannot be rebound on a running
+    // child; everything else moves in place.
+    const dirtying = [...PAGE.matchAll(/markPillsDirty\(([^)]*)\)/g)]
+      .map((match) => match[1]!.trim())
+      .filter((argument) => argument !== 'changed: boolean');
+    expect(dirtying.sort()).toEqual(['next !== tool', 'slug !== company']);
+
+    // The moved pills ride the next send instead.
+    expect(PAGE).toContain('pendingOverrides');
+    expect(PAGE).toContain('liveSessionStore.send(text, attachments, pendingOverrides)');
+    expect(PAGE).toContain('liveSessionStore.setPermissionMode(mode)');
+    expect(STORE).toContain('overrides: TurnOverrides | null = null');
+  });
+
+  it('tells a Claude operator where a model/effort change actually lands', () => {
+    // Claude runs one `--print` process per session and cannot be moved off the
+    // model it was launched with; Codex takes both per `turn/start`.
+    expect(PAGE).toContain("summary?.tool === 'claude'");
+    expect(PAGE).toContain('overridesDeferred');
+    expect(COMPOSER).toContain('Model/effort apply to your next session');
+    expect(COMPOSER).toContain('session-overrides-deferred-hint');
+  });
+});
+
+describe('the status tail is honest about a slow first turn', () => {
+  it('a handshake announcement never retires a session that is already working', () => {
+    const registry = readFileSync(
+      new URL(
+        '../../../../crates/hq-desktop-core/src/agent_session/registry.rs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    // Codex's first turn is 30-50s of hooks and bookkeeping, and its `Started`
+    // is recorded by the driver task AFTER the operator can have pressed Enter.
+    // Letting it set Idle unconditionally parked the strip at "Idle" — and
+    // dropped the status tail — for the whole turn.
+    expect(registry).toContain('if self.phase == SessionPhase::Starting {');
   });
 });
 

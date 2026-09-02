@@ -298,9 +298,78 @@ export function selectableModels(models: ReadonlyArray<SessionModel>): SessionMo
   return models.filter((entry) => entry.value !== null);
 }
 
-/** One menu row's label — derived from the id, which is the authoritative name. */
-export function modelRowLabel(entry: SessionModel): string {
+/**
+ * One menu row's label.
+ *
+ * For Claude the id IS the authoritative name — `claude-opus-4-8` reads as
+ * "Opus 4.8" and the catalog's own label ("Opus") is the lossier of the two.
+ *
+ * For Codex it is the other way around. Codex ships several distinct models
+ * per version — `gpt-5.6-sol`, `gpt-5.6-codex`, `gpt-5.6-codex-mini` — and the
+ * friendly mapper collapses every one of them to "GPT 5.6", which put three
+ * identical rows in the menu. Its `model/list` already carries the name a
+ * person should read ("GPT-5.6-Sol", "GPT-5.6-Codex"), so that is used
+ * VERBATIM, and the mapper is only the fallback for a row that carried no
+ * `displayName` at all (which `readSessionModels` reports by falling the label
+ * back to the id).
+ */
+export function modelRowLabel(
+  entry: SessionModel,
+  tool: SessionToolId = 'claude',
+): string {
+  if (tool === 'codex') {
+    const display = shortenModelLabel(entry.label);
+    if (display && display !== entry.value) return display;
+  }
   return friendlyModelName(entry.value) || shortenModelLabel(entry.label);
+}
+
+/**
+ * The rows the model menu renders: selectable, deduped by id, and never two
+ * with the same words on them.
+ *
+ * The dedupe is by `value` because the id is what a choice sends — two rows
+ * that send the same thing are one row. The label pass is the backstop for a
+ * catalog that ships two DIFFERENT ids under one display name: rather than
+ * offer a menu where the same words mean two things, the colliding rows carry
+ * a short suffix taken from their own ids.
+ */
+export function modelMenuRows(
+  models: ReadonlyArray<SessionModel>,
+  tool: SessionToolId = 'claude',
+): SessionModel[] {
+  const rows: SessionModel[] = [];
+  const seen = new Set<string>();
+  for (const entry of selectableModels(models)) {
+    const key = entry.value as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ ...entry, label: modelRowLabel(entry, tool) });
+  }
+
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.label, (counts.get(row.label) ?? 0) + 1);
+  return rows.map((row) =>
+    (counts.get(row.label) ?? 0) > 1
+      ? { ...row, label: `${row.label} (${idSuffix(row.value)})` }
+      : row,
+  );
+}
+
+/**
+ * The part of a model id that distinguishes it from its siblings: everything
+ * after the family, minus the version digits. `gpt-5.6-codex-mini` →
+ * `codex-mini`. An id with nothing left to say falls back to itself, which is
+ * ugly but never ambiguous.
+ */
+function idSuffix(value: string | null): string {
+  if (!value) return '';
+  const parts = value
+    .split(/[-_.]/)
+    .filter(Boolean)
+    .filter((part) => !/^\d+$/.test(part));
+  const tail = parts.slice(1);
+  return tail.length > 0 ? tail.join('-') : value;
 }
 
 /**
@@ -315,15 +384,23 @@ export function modelPillLabel(
   models: ReadonlyArray<SessionModel>,
   model: string | null,
   resolvedModel: string | null = null,
+  tool: SessionToolId = 'claude',
 ): string {
   if (model !== null) {
-    const friendly = friendlyModelName(model);
-    if (friendly) return friendly;
     const hit = models.find((entry) => entry.value === model);
-    return hit ? shortenModelLabel(hit.label) : model;
+    if (hit) return modelRowLabel(hit, tool);
+    return friendlyModelName(model) || model;
   }
+  // The CLI resolved a model of its own. Name it the way the menu would, so a
+  // Codex pill reads "GPT-5.6-Codex" rather than the mapper's "GPT 5.6".
+  const resolvedHit =
+    resolvedModel === null
+      ? undefined
+      : models.find((entry) => entry.value === resolvedModel);
+  if (resolvedHit) return modelRowLabel(resolvedHit, tool);
   const resolved = friendlyModelName(resolvedModel);
   if (resolved) return resolved;
+  if (resolvedModel) return resolvedModel;
   const hint = defaultModelHint(models.find((entry) => entry.value === null)?.description);
   if (hint) return hint;
   return 'Recommended';
