@@ -21,6 +21,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod notify;
 
 use std::collections::HashMap;
 use std::path::Path;

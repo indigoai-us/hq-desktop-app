@@ -102,6 +102,13 @@ static PROMPT_PENDING: AtomicUsize = AtomicUsize::new(0);
 /// (avoids needing a new tray icon PNG for the share-notify feature).
 static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Count of in-app agent sessions currently parked on the human (`needsYou`).
+/// Recomputed from the session registry on every phase change by
+/// `commands::agent_session::notify`, never incremented — a counter would drift
+/// the first time a parked session ended. When > 0 the tray tooltip gains a
+/// " · N session(s) need you" suffix, composed with the share suffix.
+static SESSION_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::SeqCst) > 0
@@ -1152,16 +1159,34 @@ fn setup_sync_listeners(app: &AppHandle) {
 /// `set_share_badge`, and `clear_share_badge` so the tooltip is always
 /// consistent with both the tray state and the share badge.
 fn refresh_tray_tooltip(app: &AppHandle) {
-    let state = get_current_state();
-    let count = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
-    let tooltip = if count > 0 {
-        format!("{} · {} new share(s)", state.tooltip(), count)
-    } else {
-        state.tooltip().to_string()
-    };
+    let tooltip = compose_tray_tooltip(
+        get_current_state().tooltip(),
+        SHARE_BADGE_COUNT.load(Ordering::SeqCst),
+        SESSION_BADGE_COUNT.load(Ordering::SeqCst),
+    );
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tooltip.as_str()));
     }
+}
+
+/// Compose the tooltip from the tray state plus every badge suffix. Split out
+/// of `refresh_tray_tooltip` (which needs an `AppHandle`) so the composition
+/// rule is unit-testable, and written as one function so a new badge cannot be
+/// added in a way that silently replaces an existing suffix.
+fn compose_tray_tooltip(base: &str, share_count: usize, session_count: usize) -> String {
+    let mut tooltip = base.to_string();
+    if share_count > 0 {
+        tooltip.push_str(&format!(" · {share_count} new share(s)"));
+    }
+    if session_count > 0 {
+        let noun = if session_count == 1 {
+            "session needs"
+        } else {
+            "sessions need"
+        };
+        tooltip.push_str(&format!(" · {session_count} {noun} you"));
+    }
+    tooltip
 }
 
 /// Mark N unacknowledged share events. Updates the tray tooltip suffix.
@@ -1176,6 +1201,21 @@ pub fn set_share_badge(app: &AppHandle, count: usize) {
 pub fn clear_share_badge(app: &AppHandle) {
     SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
     refresh_tray_tooltip(app);
+}
+
+/// Mark N in-app agent sessions as parked on the human. Updates the tray
+/// tooltip suffix; `0` clears it. Call from
+/// `commands::agent_session::notify::refresh_badge`, which derives the count
+/// from a fresh registry snapshot.
+pub fn set_session_badge(app: &AppHandle, count: usize) {
+    SESSION_BADGE_COUNT.store(count, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
+}
+
+/// Clear the session badge outright (e.g. the last session ended).
+#[allow(dead_code)]
+pub fn clear_session_badge(app: &AppHandle) {
+    set_session_badge(app, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1405,6 +1445,43 @@ mod tests {
         assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 0);
         // Restore — best-effort in parallel test runs.
         SHARE_BADGE_COUNT.store(before, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_session_badge_tooltip_suffix() {
+        assert_eq!(compose_tray_tooltip("HQ — Idle", 0, 0), "HQ — Idle");
+        assert_eq!(
+            compose_tray_tooltip("HQ — Idle", 0, 1),
+            "HQ — Idle · 1 session needs you"
+        );
+        assert_eq!(
+            compose_tray_tooltip("HQ — Idle", 0, 2),
+            "HQ — Idle · 2 sessions need you"
+        );
+    }
+
+    #[test]
+    fn test_session_badge_composes_with_share_badge() {
+        // Both suffixes must survive together — a new badge must never
+        // overwrite the share badge that shipped first.
+        assert_eq!(
+            compose_tray_tooltip("HQ — Syncing…", 3, 2),
+            "HQ — Syncing… · 3 new share(s) · 2 sessions need you"
+        );
+        assert_eq!(
+            compose_tray_tooltip("HQ — Idle", 1, 0),
+            "HQ — Idle · 1 new share(s)"
+        );
+    }
+
+    #[test]
+    fn test_session_badge_count_atomic() {
+        let before = SESSION_BADGE_COUNT.load(Ordering::SeqCst);
+        SESSION_BADGE_COUNT.store(2, Ordering::SeqCst);
+        assert_eq!(SESSION_BADGE_COUNT.load(Ordering::SeqCst), 2);
+        SESSION_BADGE_COUNT.store(0, Ordering::SeqCst);
+        assert_eq!(SESSION_BADGE_COUNT.load(Ordering::SeqCst), 0);
+        SESSION_BADGE_COUNT.store(before, Ordering::SeqCst);
     }
 
     #[test]

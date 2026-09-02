@@ -1,6 +1,11 @@
 import { safeUnlisten } from './listener-registry';
 
-export type NotificationActionKind = 'dm' | 'share' | 'update' | 'meeting';
+export type NotificationActionKind =
+  | 'dm'
+  | 'share'
+  | 'update'
+  | 'meeting'
+  | 'session';
 
 export interface BannerActionEvent {
   requestId: string;
