@@ -9,4 +9,5 @@
 # CI, which is why frontend CI could not install this repo at all.
 packages:
   - "apps/sync"
+  - "apps/work"
   - "packages/*"

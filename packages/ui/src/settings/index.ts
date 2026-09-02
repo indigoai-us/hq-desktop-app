@@ -8,6 +8,22 @@ export * from "./setup-launch";
 export * from "./launch-actions";
 export * from "./claude-code-link";
 export * from "./pending-update";
+export * from "./update-presentation";
+export {
+  updateStore,
+  checkDesktopUpdates,
+  downloadDesktopUpdate,
+  restartToUpdate,
+  hydrateDownloadedUpdate,
+  resetUpdateStore,
+  reportDownloadProgress,
+  markDownloaded,
+  markInstallStarted,
+  reportInstallFailed,
+  setAutoUpdateEnabled,
+  applyAvailableUpdate,
+  orchestrationAdapterFrom,
+} from "./update-store.svelte.js";
 export * from "./appearance-seam";
 
 export { default as SettingsPage } from "./SettingsPage.svelte";

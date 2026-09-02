@@ -28,6 +28,22 @@ const MEETINGS_USE_CLOUD = unavailable(
   "Meetings go through hq-pro REST via the desktop composite adapter.",
 );
 
+function membershipRowsFromPayload(value: unknown): Json[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is Json =>
+        typeof item === "object" && item !== null && !Array.isArray(item),
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["memberships", "companies", "workspaces"] as const) {
+      if (Array.isArray(record[key])) return membershipRowsFromPayload(record[key]);
+    }
+  }
+  return [];
+}
+
 export type InvokeFn = (
   cmd: string,
   args?: Record<string, unknown>,
@@ -97,7 +113,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
    * sync fetch_reply_thread / send_reply command.
    */
   private async hqProJson<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -145,12 +161,22 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   }
 
   readonly identity: PlatformAdapter["identity"] = {
-    whoami: () => this.call("whoami"),
+    whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) => this.call("has_feature", { flag }),
-    listWorkspaces: () => this.call("list_workspaces"),
+    listWorkspaces: async () => {
+      const result = await this.hqProJson<Json>("GET", "/membership/me");
+      if (!result.ok) return result;
+      return ok(membershipRowsFromPayload(result.value));
+    },
     getProfile: () => this.hqProJson("GET", "/v1/profile"),
     updateProfile: (input) => this.hqProJson("PUT", "/v1/profile", input),
+    updateAgentProfile: (agentUid, input) =>
+      this.hqProJson(
+        "PATCH",
+        `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -484,6 +510,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     },
     checkForUpdates: () => this.call("check_for_updates"),
     installUpdate: () => this.call("install_update"),
+    downloadUpdate: () => this.call("download_update"),
+    installDownloadedUpdate: () => this.call("install_downloaded_update"),
+    getDownloadedUpdate: () => this.call("get_downloaded_update"),
     getPendingUpdate: () => this.call("get_pending_update"),
     checkCoreState: () => this.call("check_core_state"),
     installCoreUpdate: () => this.call("install_hq_core_update"),

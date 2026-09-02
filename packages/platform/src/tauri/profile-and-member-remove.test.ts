@@ -58,4 +58,23 @@ describe("TauriPlatformAdapter profile", () => {
       },
     });
   });
+
+  it("PATCHes agent profile through hq_pro_fetch", async () => {
+    const { adapter, calls } = makeAdapter({
+      uid: "agt_scout",
+      profile: { avatarBase64: "QUJD" },
+    });
+    const res = await adapter.identity.updateAgentProfile("agt_scout", {
+      avatarBase64: "QUJD",
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      cmd: "hq_pro_fetch",
+      args: {
+        url: "/v1/agents/agt_scout/profile",
+        method: "PATCH",
+        body: JSON.stringify({ avatarBase64: "QUJD" }),
+      },
+    });
+  });
 });

@@ -45,6 +45,16 @@
   } from "../settings/ShellSettings.svelte";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
+  import { avatarBase64FromFile } from "../settings/avatar-image.js";
+  import { canEditAgentProfile } from "../avatars/can-edit.js";
+  import { loadRegisteredPacks } from "../avatars/load-pack.js";
+  import {
+    avatarsFromContactPayload,
+    composeAvatarByUid,
+    fetchBytesWith,
+    saveAgentAvatar,
+  } from "../avatars/save-agent-avatar.js";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
   import {
@@ -90,6 +100,11 @@
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import LinkContextMenu from "../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
     mentionTargetsFromContacts,
@@ -141,13 +156,19 @@
     fileCompanyScope,
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
-  import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
+  import {
+    chatAttachmentValidatorForPlatform,
+    conversationPairKey,
+  } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
     uploadChatAttachments,
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
-  import type { ConversationRow } from "../chat/sidebar-model.js";
+  import {
+    isStrictlyRicherConversationRow,
+    type ConversationRow,
+  } from "../chat/sidebar-model.js";
   import {
     composerPlaceholderFor,
     DIRECT_MESSAGE_PLACEHOLDER,
@@ -467,7 +488,12 @@
     const next = initialRow;
     if (!next) return;
     untrack(() => {
-      if (!selectedRow) selectedRow = next;
+      if (
+        !selectedRow ||
+        isStrictlyRicherConversationRow(next, selectedRow)
+      ) {
+        selectedRow = next;
+      }
     });
   });
 
@@ -508,6 +534,7 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
@@ -860,6 +887,12 @@
   let channelRosterById = $state<
     Record<string, ReturnType<typeof parseChannelMembers>>
   >({});
+  let contactAvatarByUid = $state<Record<string, string>>({});
+  let avatarOverridesByUid = $state<Record<string, string>>({});
+  let rosterWakeSeq = $state(0);
+  let agentAvatarSaving = $state(false);
+  let agentAvatarSaveError = $state<string | null>(null);
+  let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
 
   async function loadChannelRoster(channelId: string): Promise<void> {
     const id = channelId.trim();
@@ -879,18 +912,37 @@
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
-   *  roster plus the signed-in user's own profile. Feeds chat/thread/panel
-   *  photos — including agent DMs whose photo arrived on a channel roster. */
-  const avatarByUid = $derived.by(() => {
-    const map: Record<string, string> = {};
-    for (const roster of Object.values(channelRosterById)) {
-      for (const m of roster) {
-        if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
-      }
-    }
-    if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
-    return map;
-  });
+   *  roster, the contacts list, the signed-in user's own profile, and any
+   *  just-saved override. Feeds chat/thread/panel photos — including agent
+   *  DMs whose photo arrived on a channel roster or contacts. */
+  const avatarByUid = $derived(
+    composeAvatarByUid({
+      rosters: Object.values(channelRosterById).flat(),
+      contacts: contactAvatarByUid,
+      selfUid: self?.uid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+    }),
+  );
+
+  const canEditOpenAgent = $derived(
+    canEditAgentProfile({
+      agentUid: openProfileMember?.personUid,
+      agentCompanyUid: selectedRow?.companyUid,
+      companies,
+      isAdmin,
+    }),
+  );
+
+  const canEditSelectedAgent = $derived(
+    selectedRow?.kind === "dm" &&
+      canEditAgentProfile({
+        agentUid: selectedRow.personUid,
+        agentCompanyUid: selectedRow.companyUid,
+        companies,
+        isAdmin,
+      }),
+  );
 
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
@@ -921,6 +973,75 @@
 
   function closeMemberProfile(): void {
     openProfileMember = null;
+    agentAvatarSaveError = null;
+  }
+
+  function openAgentProfileFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim();
+    if (!uid) return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow?.email?.trim() || null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+    });
+  }
+
+  async function refreshAvatarsAfterSave(): Promise<void> {
+    const ids = Object.keys(channelRosterById);
+    await Promise.all(ids.map((id) => loadChannelRoster(id)));
+    try {
+      const contactsRes = await adapter.messaging.listContacts();
+      if (contactsRes.ok) {
+        contactAvatarByUid = {
+          ...contactAvatarByUid,
+          ...avatarsFromContactPayload(contactsRes.value),
+        };
+      }
+    } catch {
+      /* keep the optimistic override */
+    }
+    rosterWakeSeq += 1;
+  }
+
+  async function saveOpenAgentAvatar(selection: AvatarSelection): Promise<void> {
+    const uid = openProfileMember?.personUid?.trim();
+    if (!uid || agentAvatarSaving) return;
+    agentAvatarSaving = true;
+    agentAvatarSaveError = null;
+    try {
+      const packs =
+        loadedAvatarPacks ??
+        (await loadRegisteredPacks()).map((row) => row.pack);
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(uid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) =>
+          avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (agentUid, input) =>
+          adapter.identity.updateAgentProfile(agentUid, input),
+      });
+      avatarOverridesByUid = {
+        ...avatarOverridesByUid,
+        [uid]: saved.previewDataUrl,
+      };
+      if (openProfileMember) {
+        openProfileMember = {
+          ...openProfileMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      await refreshAvatarsAfterSave();
+    } catch (err) {
+      agentAvatarSaveError =
+        err instanceof Error ? err.message : "Could not save the avatar.";
+    } finally {
+      agentAvatarSaving = false;
+    }
   }
 
   /** Resolve a message author against the live roster to enrich email/role. */
@@ -2061,6 +2182,14 @@
     onOpenSettings?.();
   }
 
+  function onShellLinkEvent(event: Event): void {
+    handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "shell",
+    });
+  }
+
   function closeSettings(): void {
     view = "conversation";
     settingsSection = null;
@@ -2280,7 +2409,18 @@
   });
 </script>
 
-<div class="desktop-shell chat-shell" data-testid="desktop-shell">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="desktop-shell chat-shell"
+  data-testid="desktop-shell"
+  onclick={onShellLinkEvent}
+  onauxclick={onShellLinkEvent}
+  oncontextmenu={onShellLinkEvent}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
+  }}
+>
   <V4TitleBar
     {adapter}
     {version}
@@ -2357,6 +2497,8 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
+          {rosterWakeSeq}
+          onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2491,6 +2633,16 @@
             </div>
 
             <div class="channel-header-trailing">
+              {#if canEditSelectedAgent}
+                <button
+                  type="button"
+                  class="edit-profile-btn"
+                  data-testid="agent-edit-profile"
+                  onclick={openAgentProfileFromHeader}
+                >
+                  Edit profile
+                </button>
+              {/if}
               {#if isProjectChannel}
                 <nav
                   class="project-tabs"
@@ -2707,6 +2859,7 @@
                   onopenattachment={openAttachmentTray}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}
                   {displayNameByUid}
@@ -2729,6 +2882,11 @@
                     member={openProfileMember}
                     {self}
                     avatarUrl={profilePanelAvatarUrl}
+                    editable={canEditOpenAgent}
+                    packs={loadedAvatarPacks}
+                    saving={agentAvatarSaving}
+                    saveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
                   />
                 </div>
@@ -2755,6 +2913,7 @@
                     onopenattachment={openAttachmentTray}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                    attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     onactivethreadchange={onactivethreadchange}
@@ -2822,6 +2981,13 @@
       resolveUrl={resolveTrayUrl}
       onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>
@@ -3048,6 +3214,28 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
+  }
+
+  .edit-profile-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font: 500 12px/1.45 inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .edit-profile-btn:hover {
+    color: var(--t1);
+  }
+
+  .edit-profile-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
   }
 
   .project-tabs {

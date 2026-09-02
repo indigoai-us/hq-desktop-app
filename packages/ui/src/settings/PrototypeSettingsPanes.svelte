@@ -1,8 +1,18 @@
 <script lang="ts">
+  import { type AdapterResult } from "./update-orchestration";
+  import { appRowStatusLabel } from "./update-presentation";
   import {
-    createUpdateCheckRunner,
-    type AdapterResult,
-  } from "./update-orchestration";
+    appRowActions,
+  } from "./update-presentation";
+  import {
+    checkDesktopUpdates,
+    downloadDesktopUpdate,
+    hydrateDownloadedUpdate,
+    orchestrationAdapterFrom,
+    restartToUpdate,
+    setAutoUpdateEnabled,
+    updateStore,
+  } from "./update-store.svelte";
   import {
     channelDowngradeNotice,
     channelOptions,
@@ -49,6 +59,7 @@
   } from "../meetings/meetings-store.svelte";
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
+  import AvatarPackSettings from "../avatars/AvatarPackSettings.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -106,8 +117,8 @@
   let calendarConnectWarn = $state(false);
   let calendarDisconnectingId = $state<string | null>(null);
   let appVersion = $state(version);
-  let coreVersion = $state<string | null>(null);
-  let cliVersion = $state<string | null>(null);
+  const coreVersion = $derived(updateStore.coreVersion);
+  const cliVersion = $derived(updateStore.cliVersion);
   let hqFolder = $state<string | null>(null);
   let customHqRoot = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
@@ -158,18 +169,26 @@
   let pendingControls = $state<string[]>([]);
   let nativeReadGeneration = 0;
   let nativeReconcileAfterWrites = false;
-  let versionsReadGeneration = 0;
-  const updateCheckRunner = createUpdateCheckRunner();
-  // "failed" covers a timed-out/hung check: the pane must show a real failed
-  // state with a retry affordance rather than an endless CHECKING.
-  let appUpdateStatus = $state<
-    "checking" | "up-to-date" | "available" | "unchecked" | "failed"
-  >("unchecked");
-  let coreUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
-  let cliUpdateStatus = $state<"checking" | "up-to-date" | "available" | "unchecked" | "unlocated" | "failed">("unchecked");
-  let coreProbeError = $state<string | null>(null);
-  let cliProbeError = $state<string | null>(null);
-  let versionsRefreshing = $state(false);
+  // Shared with the titlebar Core mini-menu — one store, one checker.
+  const appUpdateStatus = $derived(updateStore.appStatus);
+  const coreUpdateStatus = $derived(updateStore.coreStatus);
+  const cliUpdateStatus = $derived(updateStore.cliStatus);
+  const coreProbeError = $derived(updateStore.coreProbeError);
+  const cliProbeError = $derived(updateStore.cliProbeError);
+  const versionsRefreshing = $derived(updateStore.checking);
+  const appRowLabel = $derived(
+    appRowStatusLabel({
+      status: appUpdateStatus,
+      installPhase: updateStore.installPhase,
+      downloadPercent: updateStore.downloadPercent,
+    }),
+  );
+  const appRowAction = $derived(
+    appRowActions({
+      status: appUpdateStatus,
+      installPhase: updateStore.installPhase,
+    }),
+  );
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
   // that release_channel.rs `effective_channel` already resolves.
@@ -179,7 +198,7 @@
   let channelSaving = $state(false);
   let channelError = $state<string | null>(null);
   /** Newest version offered by the selected channel, when the host reports one. */
-  let channelLatestVersion = $state<string | null>(null);
+  const channelLatestVersion = $derived(updateStore.availableVersion);
   const releaseChannelOptions = $derived(channelOptions(availableChannels));
   const selectedReleaseChannel = $derived(
     selectedChannel(releaseChannelPref, effectiveChannel),
@@ -402,6 +421,7 @@
     }
     native = next;
     nativeLoaded = true;
+    setAutoUpdateEnabled(next.autoUpdate);
   }
 
   $effect(() => {
@@ -632,23 +652,9 @@
     if (res.ok) notifPermission = String(res.value);
   }
 
-  function asRecord(value: unknown): Record<string, unknown> | null {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  }
-
-  function probeFailure(value: unknown): string | null {
-    const probe = asRecord(value);
-    if (probe?.status !== "failed") return null;
-    const detail = typeof probe.message === "string" ? probe.message.trim() : "";
-    return detail || "The native version probe failed.";
-  }
-
-  async function refreshVersions(): Promise<void> {
-    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
-    const updates = adapter.updates;
-    const orchAdapter = {
+  function updateOrchAdapter() {
+    const updates = adapter!.updates;
+    return orchestrationAdapterFrom({
       getVersions: () =>
         updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
       checkForUpdates: () =>
@@ -657,67 +663,57 @@
         updates.checkCoreState() as Promise<AdapterResult<unknown>>,
       checkCliUpdate: () =>
         updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
-    };
-    // Focus / wake events must not pile up concurrent scans. A second call
-    // while one is in flight shares the same promise and does not bump the
-    // generation (which would strand the first caller's busy flag).
-    if (updateCheckRunner.isRunning()) {
-      await updateCheckRunner.run(orchAdapter);
-      return;
-    }
-    const generation = ++versionsReadGeneration;
-    versionsRefreshing = true;
-    appUpdateStatus = "checking";
-    coreUpdateStatus = "checking";
-    cliUpdateStatus = "checking";
-    coreProbeError = null;
-    cliProbeError = null;
-    try {
-      const refreshedAppVersion = refreshAppVersion
-        ? await refreshAppVersion().catch(() => null)
-        : null;
-      if (generation !== versionsReadGeneration) return;
-      appVersion =
-        typeof refreshedAppVersion === "string" && refreshedAppVersion.trim()
-          ? refreshedAppVersion.trim()
-          : version;
-      // ONE orchestration for every trigger (mount, focus, native events,
-      // the explicit button, and a channel change). Each row commits as its
-      // own check settles and every call is time-bounded, so a slow or hung
-      // check can no longer pin all three rows on CHECKING forever.
-      const outcome = await updateCheckRunner.run(orchAdapter, {
-        onRow: (row, status) => {
-          if (generation !== versionsReadGeneration) return;
-          // The app row has no "unlocated" arm (there is no path to
-          // locate) — fold it into "unchecked".
-          if (row === "app")
-            appUpdateStatus = status === "unlocated" ? "unchecked" : status;
-          else if (row === "core") coreUpdateStatus = status;
-          else cliUpdateStatus = status;
-        },
-        onVersions: (versions) => {
-          if (generation !== versionsReadGeneration) return;
-          coreVersion = versions.coreVersion;
-          cliVersion = versions.cliVersion;
-          coreProbeError = versions.coreProbeError;
-          cliProbeError = versions.cliProbeError;
-        },
-      });
-      if (generation !== versionsReadGeneration) return;
-      coreVersion = outcome.coreVersion;
-      cliVersion = outcome.cliVersion;
-      coreProbeError = outcome.coreProbeError;
-      cliProbeError = outcome.cliProbeError;
-      appUpdateStatus =
-        outcome.appStatus === "unlocated" ? "unchecked" : outcome.appStatus;
-      coreUpdateStatus = outcome.coreStatus;
-      cliUpdateStatus = outcome.cliStatus;
-      channelLatestVersion = outcome.appStatus === "available" ? channelLatestVersion : null;
-    } finally {
-      // Unconditional: a superseded generation, a thrown adapter, or a timed
-      // out check all land here, so the pane always leaves the busy state.
-      if (generation === versionsReadGeneration) versionsRefreshing = false;
-    }
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+  }
+
+  async function queueDesktopUpdate(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    await downloadDesktopUpdate(updateOrchAdapter());
+  }
+
+  async function restartDesktopUpdate(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    await restartToUpdate(updateOrchAdapter());
+  }
+
+  async function refreshVersions(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    const updates = adapter.updates;
+    void hydrateDownloadedUpdate(updateOrchAdapter()).catch(() => {});
+    const orchAdapter = orchestrationAdapterFrom({
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+    const versionPromise = refreshAppVersion
+      ? refreshAppVersion().catch(() => null)
+      : Promise.resolve(null);
+    // Kick the shared checker immediately so a slow app-version read cannot
+    // pin the rows on NOT CHECKED. The Core mini-menu uses this same call.
+    const checkPromise = checkDesktopUpdates(orchAdapter);
+    const refreshedAppVersion = await versionPromise;
+    appVersion =
+      typeof refreshedAppVersion === "string" && refreshedAppVersion.trim()
+        ? refreshedAppVersion.trim()
+        : version;
+    await checkPromise;
   }
 
   async function loadReleaseChannel(): Promise<void> {
@@ -1044,6 +1040,7 @@
         <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
+    <AvatarPackSettings {storage} />
   {:else if section === "appearance"}
     <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
     <div class="set-row">
@@ -1352,7 +1349,26 @@
           </div>
         {/if}
       </div>
-      <span class="mono" class:ok={appUpdateStatus === "up-to-date"}>{appUpdateStatus === "checking" ? "CHECKING" : appUpdateStatus === "available" ? "UPDATE AVAILABLE" : appUpdateStatus === "up-to-date" ? "UP TO DATE" : appUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="update-row-end">
+        {#if appRowAction.showDownload}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-app-download"
+            title={updateStore.installError ?? undefined}
+            onclick={() => void queueDesktopUpdate()}
+          >Download &amp; install</button>
+        {:else if appRowAction.showRestart}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-app-restart"
+            title={updateStore.installError ?? undefined}
+            onclick={() => void restartDesktopUpdate()}
+          >Restart to update</button>
+        {/if}
+        <span class="mono" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
+      </span>
     </div>
     <div class="set-row">
       <div>
@@ -1578,6 +1594,12 @@
     gap: 6px;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .update-row-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .chip {

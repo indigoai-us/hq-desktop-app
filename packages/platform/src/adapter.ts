@@ -221,6 +221,31 @@ export interface UpdateProfileInput {
   avatarBase64?: string;
 }
 
+/**
+ * PATCH /v1/agents/{uid}/profile body. At least one field must be present.
+ * Avatars are uploaded bytes (`avatarBase64`); hq-pro does not accept an
+ * external image URL here.
+ */
+export interface UpdateAgentProfileInput {
+  displayName?: string;
+  title?: string;
+  description?: string;
+  avatarBase64?: string;
+}
+
+export interface AgentProfileWire {
+  displayName?: string;
+  title?: string;
+  description?: string;
+  avatarBase64?: string;
+}
+
+export interface UpdateAgentProfileResult {
+  uid: string;
+  profile: AgentProfileWire;
+  slackUpdated?: boolean;
+}
+
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   isAdmin(): AdapterPromise<boolean>;
@@ -233,6 +258,14 @@ export interface IdentityApi {
   updateProfile(input: UpdateProfileInput): AdapterPromise<{
     profile: MemberProfileWire | null;
   }>;
+  /**
+   * PATCH /v1/agents/{agentUid}/profile — owner/admin merge of displayName /
+   * title / description / avatarBase64 onto `metadata.agentConfig.profile`.
+   */
+  updateAgentProfile(
+    agentUid: string,
+    input: UpdateAgentProfileInput,
+  ): AdapterPromise<UpdateAgentProfileResult>;
 }
 
 export interface MessageSearchOptions {
@@ -739,6 +772,13 @@ export interface UpdatesApi {
   getVersions(): AdapterPromise<VersionInfo>;
   checkForUpdates(): AdapterPromise<Json>;
   installUpdate(): AdapterPromise<void>;
+  /** Queued update, phase 1: verify + download in the background (progress
+   *  arrives on the host `update:progress` event), staging the package. */
+  downloadUpdate(): AdapterPromise<Json>;
+  /** Queued update, phase 2: install the staged package and restart. */
+  installDownloadedUpdate(): AdapterPromise<void>;
+  /** The staged-but-not-installed package, if any (hydrates "Restart to update"). */
+  getDownloadedUpdate(): AdapterPromise<Json | null>;
   getPendingUpdate(): AdapterPromise<Json | null>;
   checkCoreState(): AdapterPromise<Json>;
   installCoreUpdate(): AdapterPromise<void>;

@@ -149,6 +149,10 @@
     seedDirectory?: ChannelDirectoryRow[] | null;
     /** personUid → presigned avatar URL from loaded channel rosters. */
     avatarByUid?: Record<string, string> | null;
+    /** Bump to refetch contacts (after an agent profile save). */
+    rosterWakeSeq?: number;
+    /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
+    onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -157,7 +161,7 @@
     /** Synchronously clears/rekeys the parent when a company tenant changes. */
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
   }
@@ -176,6 +180,8 @@
     tenantCompanyId = null,
     seedDirectory = null,
     avatarByUid = null,
+    rosterWakeSeq = 0,
+    onavatarmap,
     oncommand,
     onnavigateMessages,
     onopenSettings,
@@ -1360,6 +1366,24 @@
     }
   }
 
+  $effect(() => {
+    const map: Record<string, string> = {};
+    for (const contact of contacts) {
+      const uid = contact.personUid?.trim();
+      const url = contact.avatarUrl?.trim();
+      if (uid && url) map[uid] = url;
+    }
+    untrack(() => onavatarmap?.(map));
+  });
+
+  $effect(() => {
+    const seq = rosterWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshLists();
+    });
+  });
+
   /** Peers already asked about — one thread read per bare uid, ever. */
   const dmNameLookupsTried = new Set<string>();
 
@@ -1745,10 +1769,31 @@
   }
 
   let signOutConfirmOpen = $state(false);
+  let signOutError = $state<string | null>(null);
+  let signingOut = $state(false);
 
   function signOut() {
     footerMenuOpen = false;
+    signOutError = null;
     signOutConfirmOpen = true;
+  }
+
+  async function confirmSignOut(): Promise<void> {
+    if (signingOut) return;
+    signOutError = null;
+    if (!onsignout) {
+      signOutError = "Sign out is unavailable in this host.";
+      return;
+    }
+    signingOut = true;
+    try {
+      await onsignout();
+      signOutConfirmOpen = false;
+    } catch (error) {
+      signOutError = `Couldn’t sign out: ${String(error)}`;
+    } finally {
+      signingOut = false;
+    }
   }
 
   function openSettings() {
@@ -2915,15 +2960,15 @@
 
 <ConfirmDialog
   open={signOutConfirmOpen}
-  title="Sign out"
-  message="Sign out of HQ Work on this machine?"
+  title={signOutError ? "Couldn’t sign out" : "Sign out"}
+  message={signOutError ?? "Sign out of HQ Work on this machine?"}
   confirmLabel="Sign out"
   danger
-  oncancel={() => (signOutConfirmOpen = false)}
-  onconfirm={() => {
+  oncancel={() => {
     signOutConfirmOpen = false;
-    onsignout?.();
+    signOutError = null;
   }}
+  onconfirm={() => void confirmSignOut()}
 />
 
 {#snippet conversationRow(row: ConversationRow)}

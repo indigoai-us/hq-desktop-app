@@ -752,6 +752,10 @@ pub async fn open_desktop_alt_window_inner(
         }
     }
 
+    // target=_blank / window.open from message HTML must not spawn a webview.
+    // Allowed http(s)/mailto URLs open in the default browser instead.
+    builder = crate::util::external_links::deny_webview_new_windows(builder, &app);
+
     let _window = builder.build().map_err(|e| e.to_string())?;
 
     // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a

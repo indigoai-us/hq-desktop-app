@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
@@ -34,7 +34,7 @@ describe('settings write boundary', () => {
     ).toBe(false);
   });
 
-  it('allows direct save_settings calls only in the serialized mutation owner', () => {
+  it('keeps the direct save_settings call in the shared serialized mutation owner', () => {
     const srcRoot = join(process.cwd(), 'src');
     const writers = sourceFiles(srcRoot)
       .filter((path) =>
@@ -45,8 +45,16 @@ describe('settings write boundary', () => {
 
     expect(
       writers,
-      `Direct save_settings writers must route through lib/settings-mutations.ts; found: ${writers.join(', ') || 'none'}`,
-    ).toEqual(['lib/settings-mutations.ts']);
-    expect(readRepoFile('src/lib/settings-mutations.ts')).toContain("'save_settings'");
+      `Sync source must delegate save_settings to the shared mutation owner; found: ${writers.join(', ') || 'none'}`,
+    ).toEqual([]);
+    expect(
+      readFileSync(
+        resolve(process.cwd(), '../../packages/platform/src/tauri/settings-mutations.ts'),
+        'utf8',
+      ),
+    ).toContain("'save_settings'");
+    expect(readRepoFile('src/lib/settings-mutations.ts')).toContain(
+      'updateInjectedSettings',
+    );
   });
 });

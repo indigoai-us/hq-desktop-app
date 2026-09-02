@@ -7,6 +7,21 @@
 
 export const MAX_CHAT_ATTACHMENTS = 5;
 export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/** Vercel accepts at most 4.5 MB request bodies; leave boundary headroom. */
+export const WEB_CHAT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+
+export type ChatAttachmentValidationErrorCode =
+  | "attachment-too-large"
+  | "attachment-unsupported-type";
+
+export interface ChatAttachmentValidationError {
+  code: ChatAttachmentValidationErrorCode;
+  message: string;
+}
+
+export type ChatAttachmentValidator = (
+  file: File,
+) => ChatAttachmentValidationError | null;
 
 export type ChatAttachmentKind = "image" | "file";
 
@@ -102,15 +117,102 @@ export function attachmentKindForContentType(
     : "file";
 }
 
-export function isAllowedChatAttachment(file: File): string | null {
-  if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
-    return `${file.name} is larger than 25 MB`;
+/** True when a pending composer file should render an image thumbnail. */
+export function isImageFile(file: File): boolean {
+  return attachmentKindForContentType(contentTypeForFile(file)) === "image";
+}
+
+/** Clipboard/screenshot names that would collide if pasted more than once. */
+const GENERIC_PASTE_NAME = /^(image)(\.[a-z0-9]+)?$/i;
+
+/**
+ * Files from a paste or drop. Prefer `files`; some WebKit pastes only
+ * populate `items` with `kind === "file"`.
+ */
+export function filesFromDataTransfer(
+  data:
+    | {
+        files?: FileList | File[] | null;
+        items?: DataTransferItemList | DataTransferItem[] | null;
+      }
+    | null
+    | undefined,
+): File[] {
+  if (!data) return [];
+  const listed = data.files ? Array.from(data.files) : [];
+  if (listed.length > 0) return listed;
+  const items = data.items ? Array.from(data.items) : [];
+  const files: File[] = [];
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile?.();
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+/**
+ * Pasted screenshots arrive as clipboard files all named `image.png` (or
+ * `image.jpg`). Give each a unique name so (name, size) dedupe and vault
+ * paths stay distinct.
+ */
+export function namePastedImageFile(
+  file: File,
+  sequence: number,
+  now = new Date(),
+): File {
+  const originalName = file.name.trim() || "image.png";
+  if (!isImageFile(file) || !GENERIC_PASTE_NAME.test(originalName)) {
+    return file;
+  }
+  const type = contentTypeForFile(file);
+  const ext =
+    type.split("/")[1]?.replace("jpeg", "jpg") ||
+    file.name.split(".").pop()?.toLowerCase() ||
+    "png";
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return new File([file], `pasted-${stamp}-${sequence}.${ext}`, { type });
+}
+
+export function validateChatAttachment(
+  file: File,
+  maxBytes = MAX_CHAT_ATTACHMENT_BYTES,
+): ChatAttachmentValidationError | null {
+  if (file.size > maxBytes) {
+    return {
+      code: "attachment-too-large",
+      message: `${file.name} is larger than ${maxBytes / (1024 * 1024)} MB`,
+    };
   }
   const type = contentTypeForFile(file);
   if (!IMAGE_TYPES.has(type) && !FILE_TYPES.has(type)) {
-    return `${file.name} isn't a supported file type`;
+    return {
+      code: "attachment-unsupported-type",
+      message: `${file.name} isn't a supported file type`,
+    };
   }
   return null;
+}
+
+export function validateWebChatAttachment(
+  file: File,
+): ChatAttachmentValidationError | null {
+  const error = validateChatAttachment(file, WEB_CHAT_ATTACHMENT_MAX_BYTES);
+  if (error?.code !== "attachment-too-large") return error;
+  return {
+    ...error,
+    message: `${file.name} is larger than 4 MB, the web upload limit`,
+  };
+}
+
+export function chatAttachmentValidatorForPlatform(
+  platform: "web" | "desktop",
+): ChatAttachmentValidator {
+  return platform === "web" ? validateWebChatAttachment : validateChatAttachment;
+}
+
+export function isAllowedChatAttachment(file: File): string | null {
+  return validateChatAttachment(file)?.message ?? null;
 }
 
 export function buildChatAttachmentVaultPath(args: {

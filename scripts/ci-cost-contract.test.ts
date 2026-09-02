@@ -75,7 +75,15 @@ describe("superseded runs are cancelled", () => {
 });
 
 describe("windows jobs cache Rust artifacts with rust-cache", () => {
-  const windowsJobs = ["windows-check", "windows-installer-e2e"] as const;
+  // Every Windows job that actually compiles. windows-installer-e2e is
+  // deliberately absent: it consumes prebuilt installers plus a prebuilt
+  // tauri-driver.exe as artifacts and runs no cargo at all, so restoring a
+  // multi-GB dependency cache into it would be pure download time.
+  const windowsJobs = [
+    "windows-check",
+    "build-bridge-installers",
+    "build-target-updater",
+  ] as const;
 
   it("never caches a raw target/ directory with actions/cache", () => {
     // actions/cache has no pruning: it archives every intermediate artifact in
@@ -115,18 +123,102 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     });
   }
 
-  it("gives the check and installer jobs disjoint cache keys", () => {
-    // The check job builds the debug profile; the installer job builds
-    // release. Sharing a key (or a restore-keys fallback across them) makes
-    // each job restore the other's profile and rebuild from scratch anyway.
-    const check = jobBody(windowsCheckWorkflow, "windows-check");
-    const installer = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+  const keyOf = (body: string) => /\n\s+shared-key: (\S+)\n/.exec(body)?.[1];
 
-    const keyOf = (body: string) => /\n\s+shared-key: (\S+)\n/.exec(body)?.[1];
+  it("gives the check and installer jobs disjoint cache keys", () => {
+    // The check job builds the debug profile; the installer builds release.
+    // Sharing a key (or a restore-keys fallback across them) makes each job
+    // restore the other's profile and rebuild from scratch anyway.
+    const check = jobBody(windowsCheckWorkflow, "windows-check");
+    const installer = jobBody(windowsCheckWorkflow, "build-bridge-installers");
 
     expect(keyOf(check)).toBeDefined();
     expect(keyOf(installer)).toBeDefined();
     expect(keyOf(check)).not.toEqual(keyOf(installer));
+  });
+
+  it("lets exactly one of the two release builds write the shared entry", () => {
+    // The two installer builds run in parallel off the same profile, the same
+    // lockfiles and the same RUST*/CARGO* env, so rust-cache computes an
+    // identical key for both. Two writers just race for one entry; a second
+    // shared-key would double the footprint against an already-oversubscribed
+    // 10 GB repo budget. One writer, one reader.
+    const bridge = jobBody(windowsCheckWorkflow, "build-bridge-installers");
+    const target = jobBody(windowsCheckWorkflow, "build-target-updater");
+
+    expect(keyOf(bridge)).toEqual(keyOf(target));
+    expect(bridge).not.toContain("save-if:");
+    expect(target).toContain("save-if: false");
+  });
+});
+
+describe("the installer gate splits its two release builds", () => {
+  // Both builds are mandatory -- windows-installer-e2e.ps1 asserts the upgraded
+  // binary has a different SHA256 AND a ProductVersion matching the target, so
+  // neither can be replaced by reinstalling the same artifact. They are also
+  // independent, and running them back to back put ~22 minutes of compile on
+  // the critical path of a required status check.
+  it("runs the bridge and target builds in parallel", () => {
+    const bridge = jobBody(windowsCheckWorkflow, "build-bridge-installers");
+    const target = jobBody(windowsCheckWorkflow, "build-target-updater");
+
+    // Either depending on the other reintroduces the serial critical path.
+    expect(bridge).toContain("needs: changes");
+    expect(bridge).not.toContain("build-target-updater");
+    expect(target).toContain("needs: changes");
+    expect(target).not.toContain("build-bridge-installers");
+  });
+
+  it("keeps the E2E job free of any Rust toolchain or cargo invocation", () => {
+    // It consumes artifacts: two NSIS installers and tauri-driver.exe.
+    const e2e = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+
+    expect(e2e).not.toContain("dtolnay/rust-toolchain");
+    expect(e2e).not.toContain("Swatinem/rust-cache");
+    expect(e2e).not.toContain("cargo ");
+    expect(e2e).toContain("uses: actions/download-artifact@v4");
+  });
+
+  it("fails the required check when a build job did not succeed", () => {
+    // GitHub reports a required check that was SKIPPED as satisfied. A job
+    // skipped because its `needs` failed is therefore indistinguishable from a
+    // job skipped because the path gate said no -- and a broken installer build
+    // would merge green. `always()` starts the job anyway so a guard step can
+    // turn that into a real red.
+    const e2e = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+
+    expect(e2e).toContain("if: ${{ always() &&");
+    expect(e2e).toContain(
+      "if: ${{ needs.build-bridge-installers.result != 'success' || needs.build-target-updater.result != 'success' }}",
+    );
+
+    // The guard has to be the first step, before anything that could fail or
+    // pass for its own reasons.
+    const steps = e2e.slice(e2e.indexOf("\n    steps:"));
+    expect(steps.indexOf("Fail when an installer build job did not succeed"))
+      .toBeLessThan(steps.indexOf("uses: actions/checkout@v4"));
+  });
+
+  it("derives both synthetic versions from one tested script", () => {
+    // The two build jobs never exchange the arithmetic -- each derives it on
+    // its own runner. Divergence would surface as "installer was not produced"
+    // with no hint that two jobs had computed different numbers.
+    const bridge = jobBody(windowsCheckWorkflow, "build-bridge-installers");
+    const target = jobBody(windowsCheckWorkflow, "build-target-updater");
+
+    for (const body of [bridge, target]) {
+      expect(body).toContain("node ../../scripts/windows-e2e-versions.mjs");
+    }
+
+    // And the E2E job reads them from the build job rather than recomputing.
+    const e2e = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+    expect(e2e).not.toContain("windows-e2e-versions.mjs");
+    expect(e2e).toContain(
+      "BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}",
+    );
+    expect(e2e).toContain(
+      "TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}",
+    );
   });
 });
 

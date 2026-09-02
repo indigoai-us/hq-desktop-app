@@ -11,6 +11,7 @@
 
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
@@ -38,7 +39,10 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isAllowedChatAttachment,
+    filesFromDataTransfer,
+    namePastedImageFile,
+    validateChatAttachment,
+    type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
   import {
@@ -47,7 +51,11 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
-  import { safeHref } from "../../common/markdown.js";
+  import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../../common/external-links.js";
   import type {
     ChatWakeBus,
     ConversationApi,
@@ -127,6 +135,8 @@
     avatarByUid?: Record<string, string>;
     /** personUid → live roster display name (profile override). */
     displayNameByUid?: Record<string, string>;
+    /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
+    attachmentValidator?: ChatAttachmentValidator;
     /** Open a person's profile panel when their name/avatar/mention is clicked. */
     onopenprofile?: (author: {
       personUid: string;
@@ -159,6 +169,7 @@
     onactivethreadchange,
     avatarByUid = {},
     displayNameByUid = {},
+    attachmentValidator = validateChatAttachment,
     onopenprofile,
     mentionCandidates = [],
     onopenurl,
@@ -191,23 +202,15 @@
     });
   }
 
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
-  function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-    node: EventTarget | null,
-  ): boolean {
-    if (!(node instanceof Element)) return false;
-    const body = event.currentTarget;
-    if (!(body instanceof Element)) return false;
-    const anchor = node.closest("a[href]");
-    if (!anchor || !body.contains(anchor)) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const href = safeHref(anchor.getAttribute("href") ?? "");
-    if (!href) return true;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-    return true;
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "message",
+    });
   }
 
   function storedMentions(
@@ -239,7 +242,7 @@
   let localSeq = 0;
   let seenIds = $state(new Set<string>());
   let localReactions = $state<ReactionMap>({});
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -475,9 +478,9 @@
         errors.push(`You can attach up to ${MAX_CHAT_ATTACHMENTS} files`);
         break;
       }
-      const reason = isAllowedChatAttachment(file);
-      if (reason) {
-        errors.push(reason);
+      const error = attachmentValidator(file);
+      if (error) {
+        errors.push(error.message);
         continue;
       }
       if (
@@ -496,22 +499,15 @@
     attachError = null;
   }
 
-  /** Pasted screenshots all arrive named "image.png" — make each unique. */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
     if (!onuploadfiles) return;
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -712,11 +708,20 @@
   });
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
   class="reply-panel"
   aria-label="Thread"
   data-testid="reply-panel"
   data-root-event-id={rootEventId}
+  onclick={onBodyLinkActivate}
+  onauxclick={onBodyLinkActivate}
+  oncontextmenu={onBodyLinkActivate}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
+  }}
 >
   <header class="reply-header">
     <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
@@ -765,12 +770,12 @@
             <div
               class="reply-md"
               onclick={(e) => {
-                if (onBodyLinkActivate(e, e.target)) return;
+                if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
               }}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
-                  if (onBodyLinkActivate(e, e.target)) return;
+                  if (onBodyLinkActivate(e)) return;
                   onMentionActivate(e, e.target);
                 }
               }}
@@ -908,12 +913,12 @@
                 <div
                   class="reply-md"
                   onclick={(e) => {
-                    if (onBodyLinkActivate(e, e.target)) return;
+                    if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);
                   }}
                   onkeydown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e, e.target)) return;
+                      if (onBodyLinkActivate(e)) return;
                       onMentionActivate(e, e.target);
                     }
                   }}
@@ -1009,24 +1014,12 @@
         />
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="reply-pending" data-testid="reply-panel-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            <span class="reply-chip">
-              <span class="reply-chip-name">{file.name}</span>
-              <button
-                type="button"
-                class="reply-chip-remove"
-                aria-label={`Remove ${file.name}`}
-                onclick={() => removePendingFile(i)}
-              >
-                ×
-              </button>
-            </span>
-          {/each}
-          {#if attachError}
-            <span class="reply-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          testid="reply-panel-pending"
+          onremove={removePendingFile}
+        />
       {/if}
       <textarea
         class="reply-input"
@@ -1101,6 +1094,13 @@
       </div>
     </div>
   </div>
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
+    />
+  {/if}
 </aside>
 
 <style>
@@ -1419,44 +1419,6 @@
     font-size: 11px;
     font-weight: 400;
     cursor: pointer;
-  }
-
-  .reply-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .reply-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 200px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .reply-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .reply-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .reply-attach {

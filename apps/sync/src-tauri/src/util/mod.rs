@@ -29,5 +29,8 @@ pub mod webview2_automation;
 // when tray activation would otherwise toggle-hide a buried-but-visible window.
 pub mod window_focus;
 
+// Route http(s)/mailto out of the webview; deny other navigations and new windows.
+pub mod external_links;
+
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -360,6 +360,13 @@ fn main() {
             surface_existing_instance(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
+                .on_navigation(|webview, url| {
+                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -423,6 +430,7 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(updater::DownloadedUpdate::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -609,6 +617,9 @@ fn main() {
             updater::check_for_updates,
             updater::get_pending_update,
             updater::install_update,
+            updater::download_update,
+            updater::install_downloaded_update,
+            updater::get_downloaded_update,
             updater::available_channels,
             updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,

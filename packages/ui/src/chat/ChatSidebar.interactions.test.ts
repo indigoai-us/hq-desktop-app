@@ -155,6 +155,41 @@ describe("ChatSidebar sign out", () => {
     await tick();
     expect(onsignout).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the confirmation open and surfaces a rejected sign-out callback", async () => {
+    const onsignout = vi.fn(async () => {
+      throw new Error("native token store unavailable");
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [seedRow],
+        accountLabel: "Stefan Johnson",
+        onsignout,
+      },
+    });
+    await tick();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-user-card"]')
+      ?.click();
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="chat-sign-out"]')
+      ?.click();
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(onsignout).toHaveBeenCalledOnce();
+      expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeTruthy();
+      expect(document.body.textContent).toContain(
+        "Couldn’t sign out: Error: native token store unavailable",
+      );
+    });
+  });
 });
 
 describe("ChatSidebar filters", () => {
