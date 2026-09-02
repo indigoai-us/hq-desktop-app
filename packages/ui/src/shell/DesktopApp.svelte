@@ -61,7 +61,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -339,6 +339,27 @@
      * Vault buckets do not grant browser CORS to raw presigned URLs.
      */
     getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
+    /**
+     * Host-registered destinations, keyed by page id. The shared shell knows
+     * nothing about a page beyond its palette copy and its component: each
+     * entry gains a `command-go-<id>` palette row and becomes reachable as an
+     * embedded-navigation `{ kind: "extra", page: "<id>" }` target. `param` is
+     * the page's own opaque selection, echoed back through `onnavigate`.
+     *
+     * This is the ONLY seam a host uses to add its own full-column surface —
+     * `packages/ui` must never import a host's page or platform SDK.
+     */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        detail?: string;
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (param: string | null) => void;
+        }>;
+      }
+    >;
   }
 
   let {
@@ -385,6 +406,7 @@
     onselectrow,
     putAttachmentObject,
     getAttachmentObject,
+    extraPages,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -434,7 +456,12 @@
     | "meetings"
     | "library"
     | "shared-files"
+    | "extra"
   >("conversation");
+  /** Host-registered destination currently shown when `view === "extra"`. */
+  let extraPageId = $state<string | null>(null);
+  /** The extra page's own opaque selection (deep-link param). */
+  let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -530,6 +557,16 @@
       detail: "Open settings",
       action: () => openSettings(),
     });
+    // Host-registered destinations. The shell contributes only the row; the
+    // host decides which pages exist (and therefore does its own gating).
+    for (const [id, page] of Object.entries(extraPages ?? {})) {
+      nav.push({
+        id: `command-go-${id}`,
+        label: page.label,
+        detail: page.detail ?? page.label,
+        action: () => openExtraPage(id),
+      });
+    }
     if (!isWeb) {
       nav.push({
         id: "command-go-marketplace",
@@ -2018,6 +2055,26 @@
     projectAboutOpen = false;
   }
 
+  /**
+   * Open a host-registered destination. An id the host never registered is a
+   * routing bug, not a blank screen: report it through the same navigation
+   * error banner an unsupported native route uses.
+   */
+  function openExtraPage(id: string, param: string | null = null): void {
+    if (!extraPages?.[id]) {
+      embeddedNavigationError = `Unknown destination: ${id}`;
+      return;
+    }
+    extraPageId = id;
+    extraPageParam = param;
+    view = "extra";
+    settingsSection = null;
+    meetingFocusRequest = null;
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+  }
+
   function toggleNotifications(): void {
     view = view === "notifications" ? "conversation" : "notifications";
     meetingFocusRequest = null;
@@ -2084,6 +2141,9 @@
           displayName: "",
           replyRootEventId: target.replyRootEventId,
         });
+        return;
+      case "extra":
+        openExtraPage(target.page, target.param ?? null);
         return;
       case "unsupported":
         embeddedNavigationError = `${target.reason}: ${target.route}`;
@@ -2370,6 +2430,22 @@
               meetingFocusRequest = null;
             }}
           />
+        {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
+          <!-- Host-registered destination: a full-bleed surface in the main
+               column, exactly like Meetings. Keyed on id + param so a page
+               that treats its param as a mount-time selection still remounts
+               when a deep link changes it. -->
+          {@const Page = extraPages[extraPageId].component}
+          <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
+            {#key `${extraPageId}:${extraPageParam ?? ""}`}
+              <Page
+                param={extraPageParam}
+                onnavigate={(next: string | null) => {
+                  extraPageParam = next;
+                }}
+              />
+            {/key}
+          </div>
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
@@ -2841,6 +2917,16 @@
     min-width: 0;
     min-height: 0;
     padding: 0;
+    overflow: hidden;
+  }
+
+  /* Host-registered destination: same full-bleed box Meetings occupies. */
+  .extra-page-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
     overflow: hidden;
   }
 

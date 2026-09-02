@@ -8,7 +8,7 @@
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { listen } from '@tauri-apps/api/event';
-  import { flushSync, onMount, tick } from 'svelte';
+  import { flushSync, onMount, tick, type ComponentProps } from 'svelte';
   import {
     DesktopApp,
     createChatWakeBus,
@@ -31,6 +31,7 @@
     createHqWorkSidebarApi,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
+  import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
   import { openApprovedExternalUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
@@ -87,6 +88,29 @@
   // Incrementing, rather than storing an update payload, guarantees the pane
   // re-reads each authoritative command after every native state edge.
   let updateWakeSeq = $state(0);
+  // In-app Claude Code sessions (MenubarPrefs.inAppSessions). The Rust-side
+  // `HQ_DEV_IN_APP_SESSIONS=1` escape hatch is read in the backend only and
+  // never reaches the webview, so a dev build registers the destination too —
+  // otherwise the flag would be unreachable from the UI on the very machine
+  // that enabled it. Same gate the classic desktop-alt shell applies.
+  let inAppSessionsOn = $state(false);
+  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
+  /**
+   * Host-registered destinations for the shared shell. Sessions is Sync-only:
+   * `@hq/ui` never imports the page, it just mounts what it is handed.
+   */
+  type HostExtraPages = NonNullable<ComponentProps<typeof DesktopApp>['extraPages']>;
+  const extraPages = $derived<HostExtraPages>(
+    sessionsEnabled
+      ? {
+          sessions: {
+            label: 'Sessions',
+            detail: 'Run a Claude Code session inside the app',
+            component: SessionsExtraPage,
+          },
+        }
+      : {},
+  );
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -228,6 +252,26 @@
     }
   }
 
+  /**
+   * `inAppSessions` is a machine preference, not tenant data, so a superseded
+   * or failed read leaves the last known value alone rather than yanking a
+   * destination the user turned on. Guarded by the same request/generation
+   * lease as every other hydration read.
+   */
+  async function refreshSessionsPreference(
+    request: number,
+    generation = authGeneration,
+  ): Promise<void> {
+    try {
+      const result = await bounded(adapter.settings.getSettings(), 'Settings lookup');
+      if (request !== hydration || generation !== authGeneration) return;
+      if (!result.ok) return;
+      inAppSessionsOn = result.value?.inAppSessions === true;
+    } catch {
+      // Best-effort: the destination keeps its last known state.
+    }
+  }
+
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
     lifecycle = 'loading';
@@ -281,6 +325,7 @@
       });
       lifecycle = 'ready';
       void refreshWorkspaces(request, expectedGeneration);
+      void refreshSessionsPreference(request, expectedGeneration);
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -609,6 +654,7 @@
       settingsProfile={settingsProfileFromSelf(self)}
       hydrateLiveMessages={true}
       coreFixtures={false}
+      {extraPages}
       putAttachmentObject={putVaultObject}
       getAttachmentObject={getVaultObject}
       onsignout={signOut}
