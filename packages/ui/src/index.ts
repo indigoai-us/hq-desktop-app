@@ -46,6 +46,12 @@ export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export {
+  DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+  CONVERSATION_BOOT_GRACE_MS,
+  BootTimeoutError,
+  raceTimeout,
+} from "./chat/boot-timeout.js";
 export * from "./chat/create-flow.js";
 export * from "./chat/channel-create-scope.js";
 export * from "./chat/channel-status-model.js";

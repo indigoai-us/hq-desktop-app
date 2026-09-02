@@ -16,6 +16,7 @@ import {
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
+import { isSetupChannel } from "./setup-channel";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -1168,6 +1169,28 @@ export function pickAutoOpenConversation(
     if (!best || row.lastActivityAt > best.lastActivityAt) best = row;
   }
   return best;
+}
+
+/**
+ * Conversation to open once first-paint fetches have settled (or timed out).
+ * Real rows still win. If the rail is only the synthetic #setup channel,
+ * open that rather than leaving the conversation pane on an infinite skeleton.
+ */
+export function pickSettledBootConversation(
+  rows: readonly ConversationRow[],
+  selectedId?: string | null,
+): ConversationRow | null {
+  if ((selectedId ?? "").trim()) return null;
+  const live = pickAutoOpenConversation(
+    rows.filter((row) => !isSetupChannel(row.channelId)),
+    selectedId,
+  );
+  if (live) return live;
+  for (const row of rows) {
+    if (row.browseOnly) continue;
+    if (isSetupChannel(row.channelId)) return row;
+  }
+  return null;
 }
 
 /** Cap the authoritative directory dump before it hits sidebar state. */

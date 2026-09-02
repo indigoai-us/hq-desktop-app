@@ -32,4 +32,21 @@ describe('desktop workspace is the only launch surface', () => {
     expect(hqWorkHandoffEnabled(false)).toBe(true);
     expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
   });
+
+  it('does not let leftover stagingChannel / hqWorkHandoff keys pick a different shell', () => {
+    expect(
+      resolveLaunchShell({
+        email: 'michel@other-company.com',
+        companyUid: 'cmp_acme',
+        hqWorkHandoff: false,
+      }),
+    ).toBe('desktop-alt');
+    expect(
+      resolveLaunchShell({
+        email: 'michel@other-company.com',
+        companyUid: 'cmp_acme',
+        hqWorkHandoff: true,
+      }),
+    ).toBe('desktop-alt');
+  });
 });

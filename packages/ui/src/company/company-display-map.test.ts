@@ -131,6 +131,62 @@ describe("workspacesFromMembershipRows", () => {
     expect(out[1].state).toBe("synced");
   });
 
+  it("keeps a personal-only membership list (no company) as personal, not a fake company", () => {
+    const out = workspacesFromMembershipRows({
+      workspaces: [
+        {
+          slug: "personal",
+          displayName: "Michel Triana",
+          kind: "personal",
+          state: "personal",
+          cloudUid: "prs_michel",
+          membershipStatus: null,
+          role: null,
+        },
+      ],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "personal",
+      state: "personal",
+      displayName: "Michel Triana",
+      cloudUid: "prs_michel",
+    });
+  });
+
+  it("keeps every company in a multi-company membership list", () => {
+    const out = workspacesFromMembershipRows({
+      workspaces: [
+        {
+          slug: "personal",
+          displayName: "Michel Triana",
+          kind: "personal",
+          state: "personal",
+          cloudUid: "prs_michel",
+        },
+        {
+          slug: "acme",
+          displayName: "Acme",
+          kind: "company",
+          state: "synced",
+          cloudUid: "cmp_acme",
+          membershipStatus: "active",
+          role: "member",
+        },
+        {
+          slug: "widgets",
+          displayName: "Widgets Co",
+          kind: "company",
+          state: "synced",
+          cloudUid: "cmp_widgets",
+          membershipStatus: "active",
+          role: "admin",
+        },
+      ],
+    });
+    expect(out.map((w) => w.slug)).toEqual(["personal", "acme", "widgets"]);
+  });
+
   it("dedupes by uid, drops rows without one, and never labels with a raw uid", () => {
     const out = workspacesFromMembershipRows([
       { companyUid: "cmp_a", companyName: "A" },
