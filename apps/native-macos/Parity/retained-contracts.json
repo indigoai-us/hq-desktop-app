@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "source": "audited origin/main contract delta",
+    "commit": "605115c9e083dc3d6d8dfe2d67c1aa84250b7161"
+  },
+  "commands": [
+    {
+      "symbol": "commands::auth::begin_reauth",
+      "module": "commands::auth",
+      "name": "begin_reauth",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::workspaces::set_workspace_sync_enabled",
+      "module": "commands::workspaces",
+      "name": "set_workspace_sync_enabled",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/v4/SidebarSyncMode.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::take_pending_messages_target",
+      "module": "commands::messages",
+      "name": "take_pending_messages_target",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    }
+  ],
+  "events": [
+    {
+      "name": "auth:reauth-required",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ]
+    }
+  ]
+}

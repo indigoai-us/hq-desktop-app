@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "windows": [
+    {"id": "main", "title": "HQ", "size": [1180, 760], "owner": "native", "visualRequired": true},
+    {"id": "menubar", "title": "HQ", "size": [296, 360], "owner": "native", "visualRequired": true},
+    {"id": "onboarding", "title": "Set up HQ", "size": [780, 620], "owner": "native", "visualRequired": true},
+    {"id": "sign-in", "title": "Sign in to HQ", "size": [520, 440], "owner": "native", "visualRequired": true},
+    {"id": "recovery", "title": "HQ Recovery", "size": [620, 460], "owner": "native", "visualRequired": true},
+    {"id": "meetings", "title": "HQ Meetings", "size": [460, 600], "owner": "native", "visualRequired": true},
+    {"id": "meeting-permissions", "title": "Meeting Permissions", "size": [640, 700], "owner": "native", "visualRequired": true},
+    {"id": "dm-detail", "title": "Conversation", "size": [820, 640], "owner": "native", "visualRequired": true},
+    {"id": "share-detail", "title": "Shared with you", "size": [640, 560], "owner": "native", "visualRequired": true},
+    {"id": "messages", "title": "Messages", "size": [720, 560], "owner": "native", "visualRequired": true, "legacyDefect": "runtime-orphaned"},
+    {"id": "banner", "title": "HQ Notification", "size": [366, 104], "owner": "native", "visualRequired": true},
+    {"id": "widget", "title": "HQ Widget", "size": [340, 480], "owner": "native", "visualRequired": true},
+    {"id": "activity", "title": "Recent Changes", "size": [560, 460], "owner": "native", "visualRequired": true},
+    {"id": "drift", "title": "HQ Core Changes", "size": [560, 480], "owner": "native", "visualRequired": true},
+    {"id": "new-files", "title": "New Files", "size": [500, 400], "owner": "native", "visualRequired": true, "legacyDefect": "no-renderer"},
+    {"id": "notification-history", "title": "Notifications", "size": [680, 620], "owner": "native", "visualRequired": true},
+    {"id": "settings", "title": "HQ Settings", "size": [760, 620], "owner": "native", "visualRequired": true}
+  ]
+}
+

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "routes": [
+    {"id": "home", "owner": "native", "feature": "Home", "visualRequired": true},
+    {"id": "mission-control", "owner": "native", "feature": "MissionControl", "visualRequired": true},
+    {"id": "inbox", "owner": "native", "feature": "Inbox", "visualRequired": true},
+    {"id": "meetings", "owner": "native", "feature": "Meetings", "visualRequired": true},
+    {"id": "marketplace", "owner": "native", "feature": "Marketplace", "visualRequired": true},
+    {"id": "moderation", "owner": "native", "feature": "Marketplace/Moderation", "visualRequired": true},
+    {"id": "library:skills", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "library:workers", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "library:installed", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "library:profile", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "files", "owner": "native", "feature": "Files", "visualRequired": true},
+    {"id": "settings:sync", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "settings:notifications", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "settings:widget", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "settings:updates", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "settings:general", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "settings:meetings", "owner": "native", "feature": "Settings", "visualRequired": true},
+    {"id": "company:{slug}:overview", "owner": "native", "feature": "Company", "visualRequired": true},
+    {"id": "company:{slug}:goals", "owner": "native", "feature": "Company", "visualRequired": true},
+    {"id": "company:{slug}:projects", "owner": "native", "feature": "Projects", "visualRequired": true},
+    {"id": "company:{slug}:skills", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "company:{slug}:workers", "owner": "native", "feature": "Library", "visualRequired": true},
+    {"id": "company:{slug}:knowledge", "owner": "native", "feature": "Files", "visualRequired": true},
+    {"id": "company:{slug}:team", "owner": "native", "feature": "Company", "visualRequired": true},
+    {"id": "company:{slug}:activity", "owner": "native", "feature": "Company/More", "visualRequired": true},
+    {"id": "company:{slug}:deployments", "owner": "native", "feature": "Company/More", "visualRequired": true},
+    {"id": "company:{slug}:secrets", "owner": "native", "feature": "Company/More", "visualRequired": true},
+    {"id": "company:{slug}:settings", "owner": "native", "feature": "Company/More", "visualRequired": true},
+    {"id": "project:{company}:{project}", "owner": "native", "feature": "Projects", "visualRequired": true},
+    {"id": "task:{company}:{project}:{task}", "owner": "native", "feature": "Projects", "visualRequired": true}
+  ]
+}
+

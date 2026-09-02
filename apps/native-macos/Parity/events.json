@@ -1,0 +1,612 @@
+{
+  "generatedAt": "2026-07-27T01:14:32.772Z",
+  "source": "apps/sync/src/**/*.{svelte,ts}",
+  "retainedContracts": {
+    "source": "audited origin/main contract delta",
+    "commit": "605115c9e083dc3d6d8dfe2d67c1aa84250b7161"
+  },
+  "listenerCount": 70,
+  "events": [
+    {
+      "name": "activity:append",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/ActivityLog.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "activity:list",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/ActivityLog.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "auth:reauth-required",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "banner:event",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/BannerNotification.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform event"
+    },
+    {
+      "name": "channel:new-message",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/messaging/ChannelView.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "channel:updated",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/messaging/ChannelView.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "content:progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "core-state:changed",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "desktop:navigate",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + HQRouteParser"
+    },
+    {
+      "name": "dm:detail-event",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/DmDetail.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "dm:inbox-open",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/DmDetail.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "dm:new-events",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/DmThreadPane.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "dm:request-new",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "dm:request-update",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "dm:unread-summary",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/QuickWindowSidePane.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/desktop-alt/v4/V4Sidebar.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "drift:report",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/DriftDetail.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "hq-cli-update:available",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "hq-cli-update:cleared",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "install:progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "marketplace:install-complete",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/MarketplacePanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "marketplace:install-error",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/MarketplacePanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "marketplace:install-progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/MarketplacePanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "marketplace:publish-progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/SubmitPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "meeting:closed",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "meeting:detected",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "meetings-window:action",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "meetings-window:request-snapshot",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "meetings:focus-meeting",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/MeetingsWindow.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "message:reaction",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/DmThreadPane.svelte",
+        "apps/sync/src/components/ShareMainPane.svelte",
+        "apps/sync/src/components/messaging/ChannelView.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/components/messaging/ThreadPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "messages:open-conversation",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "notification:banner-action",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppStore typed notification action reducer"
+    },
+    {
+      "name": "notification:dm-action",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppStore typed notification action reducer"
+    },
+    {
+      "name": "notification:meeting-action",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": "HQAppStore typed notification action reducer"
+    },
+    {
+      "name": "notification:share-action",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppStore typed notification action reducer"
+    },
+    {
+      "name": "pack-update:available",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "pack-update:cleared",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "packages:complete",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "packages:error",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "packages:progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "packages:updates",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "popover:meetings-snapshot",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": "HQSecondaryWindowActionRegistry + HQAppStore scene state"
+    },
+    {
+      "name": "popover:opened",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/Popover.svelte"
+      ],
+      "nativeReplacement": "MenuBarExtra scene lifecycle"
+    },
+    {
+      "name": "recording:ended",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "recording:error",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "recording:started",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "share:events-list",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/ShareDetail.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:auth-error",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:complete",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/QuickWindowSidePane.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/lib/library-refresh.test.ts",
+        "apps/sync/src/desktop-alt/lib/library-refresh.ts",
+        "apps/sync/src/desktop-alt/v4/V4Sidebar.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:conflict",
+      "disposition": "retired",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "Retired: the current sync runner reports aggregate conflicts via sync:complete { conflicts, aborted } and no longer emits per-file hashes"
+    },
+    {
+      "name": "sync:error",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:external-idle",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:external-progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:fanout-plan",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:personal-first-push-complete",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:personal-first-push-progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:personal-first-push-scan",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:plan",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:progress",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:setup-needed",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "sync:totals",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "thread:new-reply",
+      "disposition": "engine",
+      "frontendListeners": [
+        "apps/sync/src/components/messaging/ThreadPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "name": "tray:check-for-updates",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + HQNativeUpdaterService"
+    },
+    {
+      "name": "tray:open-desktop",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + SwiftUI openWindow"
+    },
+    {
+      "name": "tray:open-settings",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + SwiftUI Settings scene"
+    },
+    {
+      "name": "tray:sign-out",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + HQAppStore"
+    },
+    {
+      "name": "tray:sync-now",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": "HQAppAction + HQAppStore"
+    },
+    {
+      "name": "update:available",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte"
+      ],
+      "nativeReplacement": "HQNativeUpdaterService.onStateChange"
+    },
+    {
+      "name": "widget:click-away",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform event"
+    },
+    {
+      "name": "widget:notification",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform event"
+    },
+    {
+      "name": "widget:occlusion",
+      "disposition": "native",
+      "frontendListeners": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform event"
+    }
+  ]
+}

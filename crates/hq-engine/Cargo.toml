@@ -1,0 +1,24 @@
+[package]
+name = "hq-engine"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+flate2 = "1"
+hq-desktop-core = { path = "../hq-desktop-core" }
+hq-engine-protocol = { path = "../hq-engine-protocol" }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha1 = "0.10"
+sha2 = "0.10"
+tar = "0.4"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

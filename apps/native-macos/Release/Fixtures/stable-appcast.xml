@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>HQ Stable Updates</title>
+    <link>https://github.com/indigoai-us/hq-desktop-app/releases/download/sparkle-stable/appcast.xml</link>
+    <description>HQ stable release updates.</description>
+    <language>en</language>
+    <item>
+      <title>HQ 0.11.0</title>
+      <pubDate>Sun, 26 Jul 2026 18:00:00 +0000</pubDate>
+      <sparkle:releaseNotesLink>https://github.com/indigoai-us/hq-desktop-app/releases/tag/v0.11.0</sparkle:releaseNotesLink>
+      <enclosure
+        url="https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.11.0/HQ_0.11.0_aarch64.app.tar.gz"
+        length="4242"
+        type="application/octet-stream"
+        sparkle:version="11000"
+        sparkle:shortVersionString="0.11.0"
+        sparkle:edSignature="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      />
+    </item>
+  </channel>
+</rss>

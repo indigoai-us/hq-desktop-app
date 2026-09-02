@@ -1,0 +1,372 @@
+name: HQNative
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.2
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CLANG_ENABLE_MODULES: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: HQ
+    INFOPLIST_KEY_CFBundleName: HQ
+    INFOPLIST_KEY_CFBundleShortVersionString: "0.10.21"
+    INFOPLIST_KEY_CFBundleVersion: "10021"
+    INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+    INFOPLIST_KEY_LSMinimumSystemVersion: "13.0"
+    INFOPLIST_KEY_NSAppleEventsUsageDescription: HQ opens your chosen editor and terminal when you ask it to.
+    INFOPLIST_KEY_NSCameraUsageDescription: HQ can detect and record meetings only when you enable meeting capture.
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: HQ can capture meeting audio only when you enable meeting recording.
+    INFOPLIST_KEY_NSScreenCaptureUsageDescription: HQ can detect active meeting windows only when you enable meeting detection.
+    MARKETING_VERSION: "0.10.21"
+    CURRENT_PROJECT_VERSION: "10021"
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+targets:
+  HQNative:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    info:
+      path: Config/HQNative-Info.plist
+      properties:
+        CFBundleDevelopmentRegion: "$(DEVELOPMENT_LANGUAGE)"
+        CFBundleDisplayName: HQ
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIconFile: icon
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: HQ
+        CFBundlePackageType: "$(PRODUCT_BUNDLE_PACKAGE_TYPE)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        HQValidationOnlyBuild: "$(HQ_NATIVE_VALIDATION_BUILD)"
+        LSApplicationCategoryType: public.app-category.productivity
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSAppleEventsUsageDescription: HQ opens your chosen editor and terminal when you ask it to.
+        NSCameraUsageDescription: HQ can detect and record meetings only when you enable meeting capture.
+        NSMicrophoneUsageDescription: HQ can capture meeting audio only when you enable meeting recording.
+        NSScreenCaptureUsageDescription: HQ can detect active meeting windows only when you enable meeting detection.
+        SUAllowsAutomaticUpdates: false
+        SUAutomaticallyUpdate: false
+        SUEnableAutomaticChecks: true
+        SUFeedURL: "https://github.com/indigoai-us/hq-desktop-app/releases/download/sparkle-stable/appcast.xml"
+        SUPublicEDKey: "$(SPARKLE_PUBLIC_ED_KEY)"
+        SUScheduledCheckInterval: 21600
+    sources:
+      - path: Sources
+      - path: Resources/icon.icns
+        buildPhase: resources
+    entitlements:
+      path: Config/HQNative.entitlements
+    dependencies:
+      - package: Sparkle
+    settings:
+      base:
+        ARCHS: arm64
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_NAME: HQ
+        PRODUCT_MODULE_NAME: HQNative
+        PRODUCT_BUNDLE_IDENTIFIER: ai.indigo.hq-sync-menubar
+        INFOPLIST_KEY_CFBundleIconFile: icon
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: ai.indigo.hq.native.preview
+    preBuildScripts:
+      - name: Validate Sparkle Update Key
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+
+          if [[ "$CONFIGURATION" != "Release" ]]; then
+            exit 0
+          fi
+
+          public_key="${SPARKLE_PUBLIC_ED_KEY:-}"
+          validation_public_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          if [[ "${HQ_NATIVE_VALIDATION_BUILD:-}" == "1" ]]; then
+            if [[ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]]; then
+              echo "error: Validation-only Release builds require CODE_SIGNING_ALLOWED=NO." >&2
+              exit 1
+            fi
+            if [[ "$public_key" != "$validation_public_key" ]]; then
+              echo "error: Validation-only Release builds require the deterministic nonshipping Sparkle test key." >&2
+              exit 1
+            fi
+          elif [[ "$public_key" == "$validation_public_key" ]]; then
+            echo "error: The deterministic validation key is forbidden in a production Release." >&2
+            exit 1
+          fi
+
+          if [[ ! "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+            echo "error: Sparkle public key is required for Release and must be a 32-byte Ed25519 key encoded as base64." >&2
+            exit 1
+          fi
+
+          decoded_length="$(
+            /usr/bin/printf '%s' "$public_key" \
+              | /usr/bin/base64 --decode \
+              | /usr/bin/wc -c \
+              | /usr/bin/tr -d ' '
+          )"
+          if [[ "$decoded_length" != "32" ]]; then
+            echo "error: Sparkle public key is required for Release and must decode to exactly 32 bytes." >&2
+            exit 1
+          fi
+    postBuildScripts:
+      - name: Build and Embed HQ Engine
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+
+          repository_root="$SRCROOT/../.."
+          cargo_arguments=(
+            build
+            -p hq-engine-sidecar
+            --target aarch64-apple-darwin
+          )
+          cargo_profile="debug"
+
+          if [[ "$CONFIGURATION" == "Release" ]]; then
+            cargo_arguments+=(--release)
+            cargo_profile="release"
+          fi
+
+          /usr/bin/env cargo \
+            "${cargo_arguments[@]}" \
+            --manifest-path "$repository_root/Cargo.toml"
+
+          source_binary="$repository_root/target/aarch64-apple-darwin/$cargo_profile/hq-engine-sidecar"
+          destination_binary="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/hq-engine-sidecar"
+          /bin/mkdir -p "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH"
+          /bin/cp -f "$source_binary" "$destination_binary"
+          /bin/chmod 755 "$destination_binary"
+
+          if [[ "$CONFIGURATION" == "Release" \
+            && "${HQ_NATIVE_VALIDATION_BUILD:-}" != "1" \
+            && -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
+            echo "error: Production Release requires a Developer ID signing identity." >&2
+            exit 1
+          fi
+
+          if [[ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]]; then
+            timestamp_argument="--timestamp=none"
+            if [[ "$CONFIGURATION" == "Release" \
+              && "${HQ_NATIVE_VALIDATION_BUILD:-}" != "1" ]]; then
+              timestamp_argument="--timestamp"
+            fi
+            /usr/bin/codesign \
+              --force \
+              --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+              --options runtime \
+              "$timestamp_argument" \
+              "$destination_binary"
+          fi
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/hq-engine-sidecar
+      - name: Build and Embed Native Recall Runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+
+          repository_root="$SRCROOT/../.."
+          sdk_root="$repository_root/apps/sync/sidecar/recall-sdk-bridge/node_modules/@recallai/desktop-sdk"
+          source_helper="$sdk_root/desktop_sdk_macos_exe"
+          source_frameworks="$sdk_root/Frameworks"
+          destination_macos="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH"
+          destination_frameworks="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          destination_helper="$destination_macos/hq-recall-runtime"
+          destination_gstreamer="$destination_frameworks/GStreamer.framework"
+
+          required_sources=(
+            "$source_helper"
+            "$source_frameworks/GStreamer.framework"
+            "$source_frameworks/liblibbot_desktop_rs.dylib"
+            "$source_frameworks/libui_recorder.dylib"
+          )
+          for source_path in "${required_sources[@]}"; do
+            if [[ ! -e "$source_path" ]]; then
+              echo "error: Missing native Recall SDK component: $source_path" >&2
+              exit 1
+            fi
+          done
+
+          /bin/mkdir -p "$destination_macos" "$destination_frameworks"
+          case "$destination_gstreamer" in
+            "$TARGET_BUILD_DIR"/*/GStreamer.framework) ;;
+            *)
+              echo "error: Refusing to replace an unresolved Recall framework path." >&2
+              exit 1
+              ;;
+          esac
+          /bin/rm -rf "$destination_gstreamer"
+          /usr/bin/ditto "$source_frameworks/GStreamer.framework" "$destination_gstreamer"
+          /bin/cp -f "$source_helper" "$destination_helper"
+          /bin/cp -f \
+            "$source_frameworks/liblibbot_desktop_rs.dylib" \
+            "$destination_frameworks/liblibbot_desktop_rs.dylib"
+          /bin/cp -f \
+            "$source_frameworks/libui_recorder.dylib" \
+            "$destination_frameworks/libui_recorder.dylib"
+          /bin/chmod 755 "$destination_helper"
+
+          runtime_files=(
+            "$destination_helper"
+            "$destination_frameworks/liblibbot_desktop_rs.dylib"
+            "$destination_frameworks/libui_recorder.dylib"
+          )
+          runtime_manifest="$TARGET_TEMP_DIR/hq-recall-runtime-files.txt"
+          /usr/bin/find "$destination_gstreamer" -type f -print > "$runtime_manifest"
+          while IFS= read -r runtime_file; do
+            runtime_files+=("$runtime_file")
+          done < "$runtime_manifest"
+
+          macho_files=()
+          for runtime_file in "${runtime_files[@]}"; do
+            description="$(/usr/bin/file -b "$runtime_file")"
+            if [[ "$description" != *"Mach-O"* ]]; then
+              continue
+            fi
+            architectures="$(/usr/bin/lipo -archs "$runtime_file")"
+            if [[ " $architectures " != *" arm64 "* ]]; then
+              echo "error: Recall runtime component has no arm64 slice: $runtime_file" >&2
+              exit 1
+            fi
+            if [[ "$architectures" != "arm64" ]]; then
+              thin_path="${runtime_file}.arm64-thin"
+              /usr/bin/lipo -thin arm64 "$runtime_file" -output "$thin_path"
+              /bin/mv -f "$thin_path" "$runtime_file"
+            fi
+            if [[ "$(/usr/bin/lipo -archs "$runtime_file")" != "arm64" ]]; then
+              echo "error: Recall runtime component is not arm64-only: $runtime_file" >&2
+              exit 1
+            fi
+            macho_files+=("$runtime_file")
+          done
+
+          if /usr/bin/codesign -dv \
+            "$destination_frameworks/libui_recorder.dylib" \
+            >/dev/null 2>&1; then
+            /usr/bin/codesign --remove-signature \
+              "$destination_frameworks/libui_recorder.dylib"
+          fi
+          /usr/bin/install_name_tool \
+            -id "@rpath/libui_recorder.dylib" \
+            "$destination_frameworks/libui_recorder.dylib"
+
+          sign_identity="${EXPANDED_CODE_SIGN_IDENTITY:--}"
+          recall_entitlements="$SRCROOT/Config/HQRecallRuntime.entitlements"
+          if [[ ! -f "$recall_entitlements" ]]; then
+            echo "error: Missing Recall hardened-runtime entitlements." >&2
+            exit 1
+          fi
+          timestamp_argument="--timestamp=none"
+          if [[ "$CONFIGURATION" == "Release" \
+            && "${HQ_NATIVE_VALIDATION_BUILD:-}" != "1" ]]; then
+            if [[ "$sign_identity" == "-" ]]; then
+              echo "error: Production Release requires a Developer ID signing identity." >&2
+              exit 1
+            fi
+            timestamp_argument="--timestamp"
+          fi
+          for macho_file in "${macho_files[@]}"; do
+            if [[ "$macho_file" == "$destination_helper" ]]; then
+              continue
+            fi
+            /usr/bin/codesign \
+              --force \
+              --sign "$sign_identity" \
+              --options runtime \
+              "$timestamp_argument" \
+              "$macho_file"
+          done
+          /usr/bin/codesign \
+            --force \
+            --sign "$sign_identity" \
+            --options runtime \
+            "$timestamp_argument" \
+            "$destination_gstreamer"
+          /usr/bin/codesign \
+            --force \
+            --sign "$sign_identity" \
+            --options runtime \
+            "$timestamp_argument" \
+            --entitlements "$recall_entitlements" \
+            "$destination_helper"
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/hq-recall-runtime
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/liblibbot_desktop_rs.dylib
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libui_recorder.dylib
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/GStreamer.framework/Versions/1.0/GStreamer
+    scheme:
+      testTargets:
+        - HQNativeTests
+        - HQNativeUITests
+      gatherCoverageData: true
+      commandLineArguments:
+        "-ApplePersistenceIgnoreState YES": true
+  HQNativeTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: HQNative
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        PRODUCT_BUNDLE_IDENTIFIER: ai.indigo.hq.native.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HQ.app/Contents/MacOS/HQ"
+  HQNativeUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: HQNative
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.indigo.hq.native.uitests
+        GENERATE_INFOPLIST_FILE: YES
+  HQEngineContractTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/HQEngineProtocolTests.swift
+      - path: Tests/HQEngineMessageRouterTests.swift
+      - path: Tests/HQEngineClientTests.swift
+      - path: Tests/HQEngineProcessTransportTests.swift
+    dependencies:
+      - target: HQNative
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        PRODUCT_BUNDLE_IDENTIFIER: ai.indigo.hq.native.engine-contract-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HQ.app/Contents/MacOS/HQ"
+schemes:
+  HQEngineContract:
+    build:
+      targets:
+        HQNative: all
+        HQEngineContractTests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - HQEngineContractTests

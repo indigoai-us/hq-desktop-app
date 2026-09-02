@@ -1,0 +1,2755 @@
+{
+  "generatedAt": "2026-07-27T01:14:32.770Z",
+  "source": "apps/sync/src-tauri/src/main.rs",
+  "retainedContracts": {
+    "source": "audited origin/main contract delta",
+    "commit": "605115c9e083dc3d6d8dfe2d67c1aa84250b7161"
+  },
+  "registeredCount": 278,
+  "frontendOnlyCount": 0,
+  "commands": [
+    {
+      "symbol": "commands::activity::activity_window_ready",
+      "module": "commands::activity",
+      "name": "activity_window_ready",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::add_claude_trusted_folder",
+      "module": "commands::compat",
+      "name": "add_claude_trusted_folder",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::agency::answer_agency_question",
+      "module": "commands::agency",
+      "name": "answer_agency_question",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/agency-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::widget::apply_widget_settings",
+      "module": "commands::widget",
+      "name": "apply_widget_settings",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/WidgetSettings.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "updater::available_channels",
+      "module": "updater",
+      "name": "available_channels",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::banner::banner_action",
+      "module": "commands::banner",
+      "name": "banner_action",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/BannerNotification.svelte",
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::banner::banner_window_ready",
+      "module": "commands::banner",
+      "name": "banner_window_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/BannerNotification.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::auth::begin_reauth",
+      "module": "commands::auth",
+      "name": "begin_reauth",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::content::cancel_content_download",
+      "module": "commands::content",
+      "name": "cancel_content_download",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::cancel_install",
+      "module": "commands::install_deps",
+      "name": "cancel_install",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::process::cancel_process",
+      "module": "commands::process",
+      "name": "cancel_process",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sync::cancel_sync",
+      "module": "commands::sync",
+      "name": "cancel_sync",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::check_ai_tools",
+      "module": "commands::compat",
+      "name": "check_ai_tools",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::hq_core_state::check_core_state",
+      "module": "commands::hq_core_state",
+      "name": "check_core_state",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/DriftDetail.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::check_dep",
+      "module": "commands::install_deps",
+      "name": "check_dep",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "updater::check_for_updates",
+      "module": "updater",
+      "name": "check_for_updates",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::hq_cli_update::check_hq_cli_update",
+      "module": "commands::hq_cli_update",
+      "name": "check_hq_cli_update",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::check_pack_update",
+      "module": "commands::packages",
+      "name": "check_pack_update",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::check_package_updates",
+      "module": "commands::packages",
+      "name": "check_package_updates",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_directory::check_writable",
+      "module": "commands::install_directory",
+      "name": "check_writable",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::claim_creator_handle",
+      "module": "commands::marketplace",
+      "name": "claim_creator_handle",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::workspaces::claim_pending_company_invite",
+      "module": "commands::workspaces",
+      "name": "claim_pending_company_invite",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::claude_desktop_installed",
+      "module": "commands::compat",
+      "name": "claude_desktop_installed",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::checksums::compute_checksums",
+      "module": "commands::checksums",
+      "name": "compute_checksums",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::configure_claude_settings_path",
+      "module": "commands::install_deps",
+      "name": "configure_claude_settings_path",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::workspaces::connect_workspace_to_cloud",
+      "module": "commands::workspaces",
+      "name": "connect_workspace_to_cloud",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/WorkspaceList.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::create_channel",
+      "module": "commands::messages",
+      "name": "create_channel",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/CreateChannel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_directory::create_directory",
+      "module": "commands::install_directory",
+      "name": "create_directory",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::create_group_dm",
+      "module": "commands::messages",
+      "name": "create_group_dm",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/CreateChannel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::create_symlink",
+      "module": "commands::compat",
+      "name": "create_symlink",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::daemon::daemon_status",
+      "module": "commands::daemon",
+      "name": "daemon_status",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::decide_creator_application",
+      "module": "commands::marketplace",
+      "name": "decide_creator_application",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::decide_moderation_listing",
+      "module": "commands::marketplace",
+      "name": "decide_moderation_listing",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::desktop_alt_consume_pending_route",
+      "module": "commands::desktop_alt",
+      "name": "desktop_alt_consume_pending_route",
+      "disposition": "retired",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "Native navigation and test harness"
+    },
+    {
+      "symbol": "commands::desktop_alt::desktop_alt_dev_audit_render",
+      "module": "commands::desktop_alt",
+      "name": "desktop_alt_dev_audit_render",
+      "disposition": "retired",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "Native navigation and test harness"
+    },
+    {
+      "symbol": "commands::desktop_alt::desktop_alt_enabled",
+      "module": "commands::desktop_alt",
+      "name": "desktop_alt_enabled",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::desktop_alt_is_admin",
+      "module": "commands::desktop_alt",
+      "name": "desktop_alt_is_admin",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/panels/ModerationPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::new_files::detail_window_ready",
+      "module": "commands::new_files",
+      "name": "detail_window_ready",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::ai_tools::detect_ai_tools",
+      "module": "commands::ai_tools",
+      "name": "detect_ai_tools",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_directory::detect_hq",
+      "module": "commands::install_directory",
+      "name": "detect_hq",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::device_fingerprint",
+      "module": "commands::compat",
+      "name": "device_fingerprint",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::banner::dismiss_banner",
+      "module": "commands::banner",
+      "name": "dismiss_banner",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/BannerNotification.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::dm_notify::dm_detail_window_ready",
+      "module": "commands::dm_notify",
+      "name": "dm_detail_window_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/DmDetail.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::download_staging_tarball",
+      "module": "commands::compat",
+      "name": "download_staging_tarball",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::drift_detail::drift_window_ready",
+      "module": "commands::drift_detail",
+      "name": "drift_window_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/DriftDetail.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::telemetry::emit_desktop_telemetry_if_opted_in",
+      "module": "commands::telemetry",
+      "name": "emit_desktop_telemetry_if_opted_in",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::long_paths::enable_long_paths",
+      "module": "commands::long_paths",
+      "name": "enable_long_paths",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::ensure_shims",
+      "module": "commands::install_deps",
+      "name": "ensure_shims",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::content::fetch_and_extract_template",
+      "module": "commands::content",
+      "name": "fetch_and_extract_template",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::fetch_channel",
+      "module": "commands::messages",
+      "name": "fetch_channel",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelView.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::fetch_dm_thread",
+      "module": "commands::dm_notify",
+      "name": "fetch_dm_thread",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/DmThreadPane.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::notification_history::fetch_notification_history",
+      "module": "commands::notification_history",
+      "name": "fetch_notification_history",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/lib/notificationFeedData.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::fetch_reactions",
+      "module": "commands::messages",
+      "name": "fetch_reactions",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/reactionController.svelte.ts",
+        "apps/sync/src/lib/shareReactionController.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::fetch_thread",
+      "module": "commands::dm_notify",
+      "name": "fetch_thread",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ThreadPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::activity::get_activity_log",
+      "module": "commands::activity",
+      "name": "get_activity_log",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/ActivityLog.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/lib/notificationFeedData.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::auth::get_auth_state",
+      "module": "commands::auth",
+      "name": "get_auth_state",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::autostart::get_autostart_enabled",
+      "module": "commands::autostart",
+      "name": "get_autostart_enabled",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_activity",
+      "module": "commands::desktop_alt",
+      "name": "get_company_activity",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/company-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_board",
+      "module": "commands::desktop_alt",
+      "name": "get_company_board",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/company-board.svelte.ts",
+        "apps/sync/src/desktop-alt/lib/company-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::get_company_crm_projection",
+      "module": "commands::projects_local",
+      "name": "get_company_crm_projection",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/crm/crm-account-view.test.ts",
+        "apps/sync/src/lib/crm/crm-projection.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_crm_projection_vault",
+      "module": "commands::desktop_alt",
+      "name": "get_company_crm_projection_vault",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/crm/crm-account-view.test.ts",
+        "apps/sync/src/lib/crm/crm-projection.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_deployments",
+      "module": "commands::desktop_alt",
+      "name": "get_company_deployments",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_file_content",
+      "module": "commands::desktop_alt",
+      "name": "get_company_file_content",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/components/FilePreviewPane.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_file_tree",
+      "module": "commands::desktop_alt",
+      "name": "get_company_file_tree",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_project_creators",
+      "module": "commands::desktop_alt",
+      "name": "get_company_project_creators",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_secrets",
+      "module": "commands::desktop_alt",
+      "name": "get_company_secrets",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_summary",
+      "module": "commands::desktop_alt",
+      "name": "get_company_summary",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/company-store.svelte.ts",
+        "apps/sync/src/desktop-alt/lib/company-summary.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::get_company_team_telemetry",
+      "module": "commands::desktop_alt",
+      "name": "get_company_team_telemetry",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/TeamPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::config::get_config",
+      "module": "commands::config",
+      "name": "get_config",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/ShareMainPane.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/components/StoryDetailPanel.svelte",
+        "apps/sync/src/desktop-alt/lib/agent-workflow.ts",
+        "apps/sync/src/desktop-alt/pages/CompanyGoalsPage.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyProjectsPage.svelte",
+        "apps/sync/src/desktop-alt/pages/ProjectDetailView.svelte",
+        "apps/sync/src/desktop-alt/panels/ActivityPanel.svelte",
+        "apps/sync/src/desktop-alt/panels/CompanyKnowledgePanel.svelte",
+        "apps/sync/src/desktop-alt/panels/SecretsPanel.svelte",
+        "apps/sync/src/desktop-alt/v4/StoryPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::get_creator_profile",
+      "module": "commands::marketplace",
+      "name": "get_creator_profile",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::hq_core_update::get_hq_version",
+      "module": "commands::hq_core_update",
+      "name": "get_hq_version",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::library_local::get_library_company",
+      "module": "commands::library_local",
+      "name": "get_library_company",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/library.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::library_local::get_library_root",
+      "module": "commands::library_local",
+      "name": "get_library_root",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/library.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::library_local::get_library_skill_detail",
+      "module": "commands::library_local",
+      "name": "get_library_skill_detail",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/library.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::library_local::get_library_worker_detail",
+      "module": "commands::library_local",
+      "name": "get_library_worker_detail",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/library.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::lifecycle::get_lifecycle_state",
+      "module": "commands::lifecycle",
+      "name": "get_lifecycle_state",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::get_local_company_goals",
+      "module": "commands::projects_local",
+      "name": "get_local_company_goals",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::get_local_project_prd",
+      "module": "commands::projects_local",
+      "name": "get_local_project_prd",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::get_local_project_readme",
+      "module": "commands::projects_local",
+      "name": "get_local_project_readme",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::get_local_projects",
+      "module": "commands::projects_local",
+      "name": "get_local_projects",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::get_marketplace_listing",
+      "module": "commands::marketplace",
+      "name": "get_marketplace_listing",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::get_my_creator",
+      "module": "commands::marketplace",
+      "name": "get_my_creator",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "updater::get_pending_update",
+      "module": "updater",
+      "name": "get_pending_update",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::settings::get_settings",
+      "module": "commands::settings",
+      "name": "get_settings",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/WidgetSettings.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyPage.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::content::get_staging_source",
+      "module": "commands::content",
+      "name": "get_staging_source",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sync_mode::get_sync_mode",
+      "module": "commands::sync_mode",
+      "name": "get_sync_mode",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SyncModeToggle.svelte",
+        "apps/sync/src/desktop-alt/v4/SidebarSyncMode.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::status::get_sync_status",
+      "module": "commands::status",
+      "name": "get_sync_status",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/Popover.svelte",
+        "apps/sync/src/components/SyncStats.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::get_unread_summary",
+      "module": "commands::messages",
+      "name": "get_unread_summary",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::get_use_staging_source",
+      "module": "commands::compat",
+      "name": "get_use_staging_source",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::git_init",
+      "module": "commands::install_stages",
+      "name": "git_init",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::git_probe_user",
+      "module": "commands::install_stages",
+      "name": "git_probe_user",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::auth::has_stored_token",
+      "module": "commands::auth",
+      "name": "has_stored_token",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::home_dir",
+      "module": "commands::compat",
+      "name": "home_dir",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::install_stages::import_existing_setup",
+      "module": "commands::install_stages",
+      "name": "import_existing_setup",
+      "disposition": "retired",
+      "frontendCallers": [],
+      "nativeReplacement": "Retired: the legacy command is an explicit unwired TODO/no-op"
+    },
+    {
+      "symbol": "commands::install_deps::install_claude_code",
+      "module": "commands::install_deps",
+      "name": "install_claude_code",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::install_default_packages",
+      "module": "commands::install_stages",
+      "name": "install_default_packages",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_deps",
+      "module": "commands::install_deps",
+      "name": "install_deps",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_gh",
+      "module": "commands::install_deps",
+      "name": "install_gh",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_git",
+      "module": "commands::install_deps",
+      "name": "install_git",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_homebrew",
+      "module": "commands::install_deps",
+      "name": "install_homebrew",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_hq_cli",
+      "module": "commands::install_deps",
+      "name": "install_hq_cli",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::hq_cli_update::install_hq_cli_update",
+      "module": "commands::hq_cli_update",
+      "name": "install_hq_cli_update",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::hq_core_update::install_hq_core_update",
+      "module": "commands::hq_core_update",
+      "name": "install_hq_core_update",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::install_marketplace_pack",
+      "module": "commands::marketplace",
+      "name": "install_marketplace_pack",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::install_menubar_app",
+      "module": "commands::install_stages",
+      "name": "install_menubar_app",
+      "disposition": "retired",
+      "frontendCallers": [],
+      "nativeReplacement": "Retired: the unified native app already ships its MenuBarExtra"
+    },
+    {
+      "symbol": "commands::install_deps::install_node",
+      "module": "commands::install_deps",
+      "name": "install_node",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::install_package",
+      "module": "commands::packages",
+      "name": "install_package",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_pnpm",
+      "module": "commands::install_deps",
+      "name": "install_pnpm",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_qmd",
+      "module": "commands::install_deps",
+      "name": "install_qmd",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_deps::install_rsync",
+      "module": "commands::install_deps",
+      "name": "install_rsync",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "updater::install_update",
+      "module": "updater",
+      "name": "install_update",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::install_deps::install_yq",
+      "module": "commands::install_deps",
+      "name": "install_yq",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::invite_to_channel",
+      "module": "commands::messages",
+      "name": "invite_to_channel",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelRoster.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::first_run::is_first_run",
+      "module": "commands::first_run",
+      "name": "is_first_run",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/lifecycle.test.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "updater::is_indigo_user",
+      "module": "updater",
+      "name": "is_indigo_user",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::long_paths::is_long_paths_enabled",
+      "module": "commands::long_paths",
+      "name": "is_long_paths_enabled",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::is_primary_instance",
+      "module": "commands::compat",
+      "name": "is_primary_instance",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::join_channel",
+      "module": "commands::messages",
+      "name": "join_channel",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelView.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::keychain_delete",
+      "module": "commands::compat",
+      "name": "keychain_delete",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::keychain_get",
+      "module": "commands::compat",
+      "name": "keychain_get",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::keychain_set",
+      "module": "commands::compat",
+      "name": "keychain_set",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::launch::launch_claude_code",
+      "module": "commands::launch",
+      "name": "launch_claude_code",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::launch_claude_desktop",
+      "module": "commands::compat",
+      "name": "launch_claude_desktop",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::launch::launch_cli_in_terminal",
+      "module": "commands::launch",
+      "name": "launch_cli_in_terminal",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::launch_codex_desktop",
+      "module": "commands::compat",
+      "name": "launch_codex_desktop",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::launch_menubar_app",
+      "module": "commands::compat",
+      "name": "launch_menubar_app",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::agency::list_agency_chat",
+      "module": "commands::agency",
+      "name": "list_agency_chat",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/agency-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::agency::list_agency_questions",
+      "module": "commands::agency",
+      "name": "list_agency_questions",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/agency-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::agency::list_agency_teams",
+      "module": "commands::agency",
+      "name": "list_agency_teams",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/agency-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sessions::list_agent_sessions",
+      "module": "commands::sessions",
+      "name": "list_agent_sessions",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/sessions-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::list_channel_members",
+      "module": "commands::messages",
+      "name": "list_channel_members",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelRoster.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::list_channels",
+      "module": "commands::messages",
+      "name": "list_channels",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::list_company_members",
+      "module": "commands::messages",
+      "name": "list_company_members",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/RecipientPicker.svelte",
+        "apps/sync/src/components/raw-id-display.test.ts",
+        "apps/sync/src/desktop-alt/panels/TeamPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::list_contacts",
+      "module": "commands::messages",
+      "name": "list_contacts",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/components/messaging/RecipientPicker.svelte",
+        "apps/sync/src/desktop-alt/panels/TeamPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::list_creator_applications",
+      "module": "commands::marketplace",
+      "name": "list_creator_applications",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::widget::list_displays",
+      "module": "commands::widget",
+      "name": "list_displays",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/WidgetSettings.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::dm_notify::list_dm_requests",
+      "module": "commands::dm_notify",
+      "name": "list_dm_requests",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::desktop_alt::list_hq_dir",
+      "module": "commands::desktop_alt",
+      "name": "list_hq_dir",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/ProjectDetailView.svelte",
+        "apps/sync/src/desktop-alt/panels/CompanyKnowledgePanel.svelte",
+        "apps/sync/src/desktop-alt/v4/FilesModeSidebar.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sessions::claude::list_local_claude_sessions",
+      "module": "commands::sessions::claude",
+      "name": "list_local_claude_sessions",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sessions::codex::list_local_codex_sessions",
+      "module": "commands::sessions::codex",
+      "name": "list_local_codex_sessions",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::list_marketplace_listings",
+      "module": "commands::marketplace",
+      "name": "list_marketplace_listings",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::list_moderation_queue",
+      "module": "commands::marketplace",
+      "name": "list_moderation_queue",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::list_packages",
+      "module": "commands::packages",
+      "name": "list_packages",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sessions::history::list_session_history",
+      "module": "commands::sessions::history",
+      "name": "list_session_history",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::workspaces::list_syncable_workspaces",
+      "module": "commands::workspaces",
+      "name": "list_syncable_workspaces",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/panels/MarketplacePanel.svelte",
+        "apps/sync/src/desktop-alt/v4/V4Sidebar.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::make_dir",
+      "module": "commands::compat",
+      "name": "make_dir",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::first_run::mark_auto_sync_notice_shown",
+      "module": "commands::first_run",
+      "name": "mark_auto_sync_notice_shown",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::mark_channel_read",
+      "module": "commands::messages",
+      "name": "mark_channel_read",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelView.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::first_run::mark_first_run_complete",
+      "module": "commands::first_run",
+      "name": "mark_first_run_complete",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/Onboarding.svelte",
+        "apps/sync/src/lib/lifecycle.test.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::meeting_detect_feature_enabled",
+      "module": "commands::recall_sdk",
+      "name": "meeting_detect_feature_enabled",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/permissionState.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_cancel_bot",
+      "module": "commands::meetings",
+      "name": "meetings_cancel_bot",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_check_bot_for_url",
+      "module": "commands::meetings",
+      "name": "meetings_check_bot_for_url",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_clear_prompt_badge",
+      "module": "commands::meetings",
+      "name": "meetings_clear_prompt_badge",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": "HQNativeActionRegistry.clearMeetingPromptBadge + HQAppStore saturating badge state"
+    },
+    {
+      "symbol": "commands::meetings::meetings_feature_enabled",
+      "module": "commands::meetings",
+      "name": "meetings_feature_enabled",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/MeetingsPage.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_invite_bot",
+      "module": "commands::meetings",
+      "name": "meetings_invite_bot",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_join_bot_now",
+      "module": "commands::meetings",
+      "name": "meetings_join_bot_now",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_list_accounts",
+      "module": "commands::meetings",
+      "name": "meetings_list_accounts",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::meetings_list_active_detections",
+      "module": "commands::recall_sdk",
+      "name": "meetings_list_active_detections",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::meetings_list_active_recordings",
+      "module": "commands::recall_sdk",
+      "name": "meetings_list_active_recordings",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_list_calendars_for_account",
+      "module": "commands::meetings",
+      "name": "meetings_list_calendars_for_account",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_list_memberships",
+      "module": "commands::meetings",
+      "name": "meetings_list_memberships",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/components/messaging/CreateChannel.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/components/messaging/RecipientPicker.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte",
+        "apps/sync/src/lib/activeMeetings.ts",
+        "apps/sync/src/lib/meetingAttribution.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_list_scheduled_bots",
+      "module": "commands::meetings",
+      "name": "meetings_list_scheduled_bots",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts",
+        "apps/sync/src/lib/meetingAttribution.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_list_upcoming",
+      "module": "commands::meetings",
+      "name": "meetings_list_upcoming",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::meetings::meetings_notify_detected",
+      "module": "commands::meetings",
+      "name": "meetings_notify_detected",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::permissions::meetings_permissions_state",
+      "module": "commands::permissions",
+      "name": "meetings_permissions_state",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/lib/permissionState.svelte.ts"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::meetings::meetings_set_company",
+      "module": "commands::meetings",
+      "name": "meetings_set_company",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/meetingAttribution.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "tray::meetings_set_prompt_badge",
+      "module": "tray",
+      "name": "meetings_set_prompt_badge",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::meetings::meetings_take_pending_focus",
+      "module": "commands::meetings",
+      "name": "meetings_take_pending_focus",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte"
+      ],
+      "nativeReplacement": "HQNativeActionRegistry.takePendingMeetingFocus + HQAppStore one-shot scene focus state"
+    },
+    {
+      "symbol": "commands::compat::menubar_installed",
+      "module": "commands::compat",
+      "name": "menubar_installed",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::messages::messages_window_ready",
+      "module": "commands::messages",
+      "name": "messages_window_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::notifications::notification_permission_state",
+      "module": "commands::notifications",
+      "name": "notification_permission_state",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::notifications::notification_request_permission",
+      "module": "commands::notifications",
+      "name": "notification_request_permission",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::oauth::oauth_cancel_listen",
+      "module": "commands::oauth",
+      "name": "oauth_cancel_listen",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SignInPrompt.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::oauth::oauth_exchange_code",
+      "module": "commands::oauth",
+      "name": "oauth_exchange_code",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SignInPrompt.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::oauth::oauth_listen_for_code",
+      "module": "commands::oauth",
+      "name": "oauth_listen_for_code",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SignInPrompt.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::activity::open_activity_log",
+      "module": "commands::activity",
+      "name": "open_activity_log",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::app::open_claude_code_link",
+      "module": "commands::app",
+      "name": "open_claude_code_link",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/OpenInClaudeCodeButton.svelte",
+        "apps/sync/src/components/ShareMainPane.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte",
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/desktop-alt/components/OpenFileInClaudeCode.svelte",
+        "apps/sync/src/desktop-alt/lib/agent-workflow.ts",
+        "apps/sync/src/desktop-alt/pages/CompanyGoalsPage.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyPage.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyProjectsPage.svelte",
+        "apps/sync/src/desktop-alt/pages/ProjectDetailView.svelte",
+        "apps/sync/src/desktop-alt/panels/SecretsPanel.svelte",
+        "apps/sync/src/desktop-alt/v4/StoryPanel.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::desktop_alt::open_desktop_alt_window",
+      "module": "commands::desktop_alt",
+      "name": "open_desktop_alt_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::open_developer_settings",
+      "module": "commands::compat",
+      "name": "open_developer_settings",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::dm_notify::open_dm_detail",
+      "module": "commands::dm_notify",
+      "name": "open_dm_detail",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::drift_detail::open_drift_detail",
+      "module": "commands::drift_detail",
+      "name": "open_drift_detail",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::conflicts::open_in_editor",
+      "module": "commands::conflicts",
+      "name": "open_in_editor",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/DriftDetail.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/v4/StoryPanel.svelte",
+        "apps/sync/src/stores/conflicts.ts"
+      ],
+      "nativeReplacement": "HQAppStore.validatedWorkspaceURL + NSWorkspace default application"
+    },
+    {
+      "symbol": "commands::dm_notify::open_inbox_window",
+      "module": "commands::dm_notify",
+      "name": "open_inbox_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Popover.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/desktop-alt/pages/InboxPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::long_paths::open_long_paths_settings",
+      "module": "commands::long_paths",
+      "name": "open_long_paths_settings",
+      "disposition": "windows-only",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::permissions::open_meeting_permissions_window",
+      "module": "commands::permissions",
+      "name": "open_meeting_permissions_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::meetings::open_meetings_window",
+      "module": "commands::meetings",
+      "name": "open_meetings_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/MeetingIcon.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::messages::open_messages_window",
+      "module": "commands::messages",
+      "name": "open_messages_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/ShareMainPane.svelte",
+        "apps/sync/src/desktop-alt/pages/InboxPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::new_files::open_new_files_detail",
+      "module": "commands::new_files",
+      "name": "open_new_files_detail",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::notification_history::open_notification_history",
+      "module": "commands::notification_history",
+      "name": "open_notification_history",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::packages::open_packages_window",
+      "module": "commands::packages",
+      "name": "open_packages_window",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::app::open_settings_window",
+      "module": "commands::app",
+      "name": "open_settings_window",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::share_notify::open_share_detail",
+      "module": "commands::share_notify",
+      "name": "open_share_detail",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::packages::packages_window_ready",
+      "module": "commands::packages",
+      "name": "packages_window_ready",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::permissions::permissions_force_native_register",
+      "module": "commands::permissions",
+      "name": "permissions_force_native_register",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingPermissionsWindow.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::permissions::permissions_open_settings",
+      "module": "commands::permissions",
+      "name": "permissions_open_settings",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingPermissionsWindow.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::install_stages::personalize_hq",
+      "module": "commands::install_stages",
+      "name": "personalize_hq",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::pick_avatar_file",
+      "module": "commands::marketplace",
+      "name": "pick_avatar_file",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": "HQNativeFilePicker NSOpenPanel file-only image UTI selection"
+    },
+    {
+      "symbol": "commands::folder_picker::pick_folder",
+      "module": "commands::folder_picker",
+      "name": "pick_folder",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::marketplace::pick_pack_directory",
+      "module": "commands::marketplace",
+      "name": "pick_pack_directory",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": "HQNativeFilePicker NSOpenPanel folder-only selection"
+    },
+    {
+      "symbol": "commands::dm_notify::poll_dm_inbox",
+      "module": "commands::dm_notify",
+      "name": "poll_dm_inbox",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::share_notify::poll_shared_with_me",
+      "module": "commands::share_notify",
+      "name": "poll_shared_with_me",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::telemetry::post_telemetry_opt_in",
+      "module": "commands::telemetry",
+      "name": "post_telemetry_opt_in",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::banner::preview_dm_banner",
+      "module": "commands::banner",
+      "name": "preview_dm_banner",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::banner::preview_meeting_banner",
+      "module": "commands::banner",
+      "name": "preview_meeting_banner",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::banner::preview_share_banner",
+      "module": "commands::banner",
+      "name": "preview_share_banner",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::banner::preview_update_banner",
+      "module": "commands::banner",
+      "name": "preview_update_banner",
+      "disposition": "native",
+      "frontendCallers": [],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::marketplace::publish_marketplace_pack",
+      "module": "commands::marketplace",
+      "name": "publish_marketplace_pack",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::app::quit_app",
+      "module": "commands::app",
+      "name": "quit_app",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/SignInPrompt.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::install_manifest::read_install_manifest",
+      "module": "commands::install_manifest",
+      "name": "read_install_manifest",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/GlobalErrorBoundary.svelte",
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::read_text_file",
+      "module": "commands::compat",
+      "name": "read_text_file",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::recheck_primary_instance",
+      "module": "commands::compat",
+      "name": "recheck_primary_instance",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_dependencies",
+      "module": "commands::install_manifest",
+      "name": "record_dependencies",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_import",
+      "module": "commands::install_manifest",
+      "name": "record_import",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_install_complete",
+      "module": "commands::install_manifest",
+      "name": "record_install_complete",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::record_marketplace_install",
+      "module": "commands::marketplace",
+      "name": "record_marketplace_install",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_packs",
+      "module": "commands::install_manifest",
+      "name": "record_packs",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_step_failure",
+      "module": "commands::install_manifest",
+      "name": "record_step_failure",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_step_ok",
+      "module": "commands::install_manifest",
+      "name": "record_step_ok",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_manifest::record_step_start",
+      "module": "commands::install_manifest",
+      "name": "record_step_start",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte",
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::auth::refresh_tokens",
+      "module": "commands::auth",
+      "name": "refresh_tokens",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::register_search_index",
+      "module": "commands::install_stages",
+      "name": "register_search_index",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::remove_channel_member",
+      "module": "commands::messages",
+      "name": "remove_channel_member",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelRoster.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::request_creator_access",
+      "module": "commands::marketplace",
+      "name": "request_creator_access",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::banner::resize_banner",
+      "module": "commands::banner",
+      "name": "resize_banner",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/BannerNotification.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::widget::resize_widget",
+      "module": "commands::widget",
+      "name": "resize_widget",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::conflicts::resolve_conflict",
+      "module": "commands::conflicts",
+      "name": "resolve_conflict",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/stores/conflicts.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_directory::resolve_hq_path",
+      "module": "commands::install_directory",
+      "name": "resolve_hq_path",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/GlobalErrorBoundary.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::respond_dm_request",
+      "module": "commands::dm_notify",
+      "name": "respond_dm_request",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/DmRequestCard.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::hq_core_drift::restore_from_upstream",
+      "module": "commands::hq_core_drift",
+      "name": "restore_from_upstream",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/DriftDetail.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::launch::reveal_folder",
+      "module": "commands::launch",
+      "name": "reveal_folder",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/GlobalErrorBoundary.svelte",
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::hq_core_staging::run_replace_from_staging",
+      "module": "commands::hq_core_staging",
+      "name": "run_replace_from_staging",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::settings::save_settings",
+      "module": "commands::settings",
+      "name": "save_settings",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/WidgetSettings.svelte",
+        "apps/sync/src/desktop-alt/components/VersionPopout.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::agency::send_agency_message",
+      "module": "commands::agency",
+      "name": "send_agency_message",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/agency-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::send_channel_message",
+      "module": "commands::messages",
+      "name": "send_channel_message",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ChannelView.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::send_dm",
+      "module": "commands::dm_notify",
+      "name": "send_dm",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/DmThreadPane.svelte",
+        "apps/sync/src/components/NotificationFeed.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::send_dm_to_email",
+      "module": "commands::dm_notify",
+      "name": "send_dm_to_email",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ComposeMessage.svelte",
+        "apps/sync/src/components/messaging/MessagesShell.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::send_thread_reply",
+      "module": "commands::dm_notify",
+      "name": "send_thread_reply",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ThreadPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::set_active_conversation",
+      "module": "commands::dm_notify",
+      "name": "set_active_conversation",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/reactionController.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::dm_notify::set_active_thread",
+      "module": "commands::dm_notify",
+      "name": "set_active_thread",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/messaging/ThreadPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::autostart::set_autostart_enabled",
+      "module": "commands::autostart",
+      "name": "set_autostart_enabled",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::hq_cli_update::set_hq_cli_update_dismissed",
+      "module": "commands::hq_cli_update",
+      "name": "set_hq_cli_update_dismissed",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_directory::set_hq_install_path",
+      "module": "commands::install_directory",
+      "name": "set_hq_install_path",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/OnboardingWizard.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::set_local_project_status",
+      "module": "commands::projects_local",
+      "name": "set_local_project_status",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::projects_local::set_local_story_passes",
+      "module": "commands::projects_local",
+      "name": "set_local_story_passes",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/local-projects.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::first_run::set_main_window_vibrancy",
+      "module": "commands::first_run",
+      "name": "set_main_window_vibrancy",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Onboarding.svelte"
+      ],
+      "nativeReplacement": "HQAppStore.mainWindowVibrancyEnabled + NSVisualEffectView material"
+    },
+    {
+      "symbol": "commands::content::set_staging_source",
+      "module": "commands::content",
+      "name": "set_staging_source",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/onboarding/SetupScreen.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sync_mode::set_sync_mode",
+      "module": "commands::sync_mode",
+      "name": "set_sync_mode",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SyncModeToggle.svelte",
+        "apps/sync/src/desktop-alt/v4/SidebarSyncMode.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "tray::set_tray_state",
+      "module": "tray",
+      "name": "set_tray_state",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::dm_notify::set_watched_shares",
+      "module": "commands::dm_notify",
+      "name": "set_watched_shares",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/shareReactionController.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::widget::set_widget_focusable",
+      "module": "commands::widget",
+      "name": "set_widget_focusable",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::workspaces::set_workspace_sync_enabled",
+      "module": "commands::workspaces",
+      "name": "set_workspace_sync_enabled",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/v4/SidebarSyncMode.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::share_notify::share_detail_window_ready",
+      "module": "commands::share_notify",
+      "name": "share_detail_window_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/ShareDetail.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::first_run::should_show_auto_sync_notice",
+      "module": "commands::first_run",
+      "name": "should_show_auto_sync_notice",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::banner::show_main_window",
+      "module": "commands::banner",
+      "name": "show_main_window",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/components/Widget.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::first_run::show_main_window_at_tray",
+      "module": "commands::first_run",
+      "name": "show_main_window_at_tray",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Onboarding.svelte"
+      ],
+      "nativeReplacement": "HQNativeApp MenuBarExtra + HQAppStore.showMainWindowAtTray activation"
+    },
+    {
+      "symbol": "commands::auth::sign_out",
+      "module": "commands::auth",
+      "name": "sign_out",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::process::spawn_process",
+      "module": "commands::process",
+      "name": "spawn_process",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::daemon::start_daemon",
+      "module": "commands::daemon",
+      "name": "start_daemon",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::install_stages::start_initial_cloud_sync",
+      "module": "commands::install_stages",
+      "name": "start_initial_cloud_sync",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::oauth::start_oauth_login",
+      "module": "commands::oauth",
+      "name": "start_oauth_login",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/SignInPrompt.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::start_recall_sdk",
+      "module": "commands::recall_sdk",
+      "name": "start_recall_sdk",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingPermissionsWindow.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::start_recording",
+      "module": "commands::recall_sdk",
+      "name": "start_recording",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::sync::start_sync",
+      "module": "commands::sync",
+      "name": "start_sync",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/DesktopApp.svelte",
+        "apps/sync/src/desktop-alt/pages/CompanyPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::daemon::stop_daemon",
+      "module": "commands::daemon",
+      "name": "stop_daemon",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::recall_sdk::stop_recording",
+      "module": "commands::recall_sdk",
+      "name": "stop_recording",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/lib/activeMeetings.test.ts",
+        "apps/sync/src/lib/activeMeetings.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::feedback::submit_bug_report",
+      "module": "commands::feedback",
+      "name": "submit_bug_report",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/components/MeetingsWindow.svelte",
+        "apps/sync/src/desktop-alt/lib/meetings-store.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::messages::take_pending_messages_target",
+      "module": "commands::messages",
+      "name": "take_pending_messages_target",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/DesktopApp.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::messages::toggle_reaction",
+      "module": "commands::messages",
+      "name": "toggle_reaction",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/lib/reactionController.svelte.ts",
+        "apps/sync/src/lib/shareReactionController.svelte.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::uninstall_package",
+      "module": "commands::packages",
+      "name": "uninstall_package",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::update_creator_profile",
+      "module": "commands::marketplace",
+      "name": "update_creator_profile",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::update_package",
+      "module": "commands::packages",
+      "name": "update_package",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/panels/InstalledPacksPanel.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::packages::update_packs",
+      "module": "commands::packages",
+      "name": "update_packs",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/App.svelte",
+        "apps/sync/src/desktop-alt/pages/SettingsPage.svelte"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::upload_creator_avatar",
+      "module": "commands::marketplace",
+      "name": "upload_creator_avatar",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::widget::widget_ready",
+      "module": "commands::widget",
+      "name": "widget_ready",
+      "disposition": "native",
+      "frontendCallers": [
+        "apps/sync/src/components/Widget.svelte"
+      ],
+      "nativeReplacement": "SwiftUI/AppKit platform service"
+    },
+    {
+      "symbol": "commands::compat::write_file",
+      "module": "commands::compat",
+      "name": "write_file",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::compat::write_menubar_hq_path",
+      "module": "commands::compat",
+      "name": "write_menubar_hq_path",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::telemetry::write_menubar_telemetry_pref",
+      "module": "commands::telemetry",
+      "name": "write_menubar_telemetry_pref",
+      "disposition": "engine",
+      "frontendCallers": [],
+      "nativeReplacement": null
+    },
+    {
+      "symbol": "commands::marketplace::yank_marketplace_listing",
+      "module": "commands::marketplace",
+      "name": "yank_marketplace_listing",
+      "disposition": "engine",
+      "frontendCallers": [
+        "apps/sync/src/desktop-alt/lib/marketplace.ts"
+      ],
+      "nativeReplacement": null
+    }
+  ],
+  "frontendOnlyCommands": []
+}
