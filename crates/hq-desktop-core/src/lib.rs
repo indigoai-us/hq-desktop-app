@@ -55,6 +55,7 @@ pub mod share_notify;
 pub mod skill_catalog;
 pub mod staging;
 pub mod status;
+pub mod stdio;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;

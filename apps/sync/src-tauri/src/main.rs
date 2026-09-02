@@ -1063,6 +1063,10 @@ fn main() {
             // pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
 
+            // Agent CLI children spawned by `hq_desktop_core::stdio` join the
+            // same process registry `terminate_all_for_exit` drains on quit.
+            commands::agent_stdio::install_stdio_process_registrar();
+
             // Outpost sessions subscriber + box status (US-011). Subscribes to
             // the per-person `hq/{personUid}/sessions` realtime topic (reusing the
             // dm_mqtt MQTT-over-WSS credential/presign pattern), parses the remote

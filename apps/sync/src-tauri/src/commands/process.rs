@@ -648,6 +648,53 @@ pub fn register_process(handle: &str, pid: u32) {
     let _ = register_process_gen(handle, pid);
 }
 
+/// Record the Windows Job Object that owns `handle`'s process tree.
+///
+/// The Unix exit drain only needs a pid: the child leads its own process group
+/// and `terminate_pids_for_exit` signals the negated pid, taking the whole
+/// tree. Windows has no process groups, so a bare pid lets the drain terminate
+/// the child and orphan everything it spawned. The job handle is the missing
+/// half, and it has to land on the same registry entry the drain reads.
+///
+/// Children spawned *by this module* get their job through
+/// [`ChildContainment::attach_to_entry`], which is the same field write. This
+/// entry point exists for a child spawned elsewhere — `hq_desktop_core::stdio`
+/// creates its own job at spawn and hands the handle over through the
+/// registrar seam (see `commands::agent_stdio`). Ownership transfers with the
+/// call: `deregister_process` → `close_process_entry` closes it.
+///
+/// When the handle is unknown — it was deregistered between spawn and this
+/// call — the handle is closed here instead of leaked. With
+/// `KILL_ON_JOB_CLOSE` that also tears down the tree, which is the right
+/// outcome for a child nothing is tracking any more.
+#[cfg(target_os = "windows")]
+pub fn register_job_handle(handle: &str, job: isize) {
+    // The registry lock is released before the fallback below: `CloseHandle`
+    // on a KILL_ON_JOB_CLOSE job terminates a process tree, and no teardown
+    // that heavyweight belongs inside this mutex.
+    let attached = {
+        let mut registry = process_registry().lock().unwrap();
+        match registry.active.get_mut(handle) {
+            Some(entry) => {
+                debug_assert!(entry.job_handle.is_none());
+                entry.job_handle = Some(job);
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !attached {
+        log(
+            "process",
+            &format!("register_job_handle: no active entry for {handle}; closing the job"),
+        );
+        unsafe {
+            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn close_process_entry(entry: ProcessEntry) {
     if let Some(job) = entry.job_handle {
