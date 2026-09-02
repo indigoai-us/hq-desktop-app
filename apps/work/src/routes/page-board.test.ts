@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 describe("hosted Board tab", () => {
   it("does not paint work-mesh activity as Board stories", () => {
     const src = readFileSync(
-      fileURLToPath(new URL("./+page.svelte", import.meta.url)),
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
       "utf8",
     );
     expect(src).not.toContain("boardFromWorkItems");

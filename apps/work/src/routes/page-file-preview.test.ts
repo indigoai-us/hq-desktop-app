@@ -29,7 +29,7 @@ vi.mock("$lib/hq-pro-client.js", () => ({
 
 import { mount, unmount } from "svelte";
 import type { ChannelFileItemModel, ConversationRow } from "@hq/ui";
-import Page from "./+page.svelte";
+import Page from "../lib/WorkShell.svelte";
 import { hqProFetch } from "$lib/hq-pro-client.js";
 
 const selectedRow: ConversationRow = {

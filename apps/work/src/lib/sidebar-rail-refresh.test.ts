@@ -39,7 +39,7 @@ import {
 } from "$lib/browser-cache.js";
 import { resetLiveRailHydrate } from "$lib/chat-adapter.js";
 import { hqProFetch } from "$lib/hq-pro-client.js";
-import Page from "../routes/+page.svelte";
+import Page from "./WorkShell.svelte";
 
 type CapturedDesktopAppProps = {
   self: SelfIdentity | null;

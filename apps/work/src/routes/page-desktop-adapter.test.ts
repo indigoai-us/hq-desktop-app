@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 describe("HQ Work desktop platform adapter", () => {
   it("constructs the shared Sync adapter and maps Board reads to the host command", async () => {
     const page = readFileSync(
-      fileURLToPath(new URL("./+page.svelte", import.meta.url)),
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
       "utf8",
     );
 
