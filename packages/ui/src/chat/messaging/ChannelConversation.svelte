@@ -210,9 +210,9 @@
     return (uid && avatarByUid[uid]) || null;
   }
 
-  /** Emit an author-profile-open when we have a human personUid to resolve. */
+  /** Emit an author-profile-open when we have a personUid to resolve. */
   function openAuthorProfile(msg: ConversationMessageWire): void {
-    if (!onopenprofile || isAgent(msg)) return;
+    if (!onopenprofile) return;
     const personUid = (msg.fromPersonUid ?? "").trim();
     if (!personUid) return;
     onopenprofile({ personUid, displayName: messageAuthor(msg) });
@@ -1054,7 +1054,7 @@
               <div class="dm-msg-column">
                 {#if groupStart}
                   <div class="dm-msg-meta">
-                    {#if onopenprofile && !isAgent(msg) && (msg.fromPersonUid ?? "").trim()}
+                    {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
                       <button
                         type="button"
                         class="dm-msg-author dm-msg-author-btn"

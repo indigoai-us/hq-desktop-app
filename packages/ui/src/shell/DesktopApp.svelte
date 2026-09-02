@@ -51,6 +51,7 @@
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
+  import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadRegisteredPacks } from "../avatars/load-pack.js";
@@ -940,8 +941,9 @@
     };
   }
 
-  // ── Member profile panel + remove-member (Slack-style right panel) ──────────
+  // ── Member profile / agent detail (Slack-style right panel) ───────────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
+  let openAgentMember = $state<StatusPersonRow | null>(null);
   let removingMemberUid = $state<string | null>(null);
   /**
    * Owner-only "Delete channel" (members popover → trash). The shell owns the
@@ -1016,9 +1018,15 @@
   );
 
   function openMemberProfile(row: StatusPersonRow): void {
-    // One right panel at a time — a profile supersedes an open reply thread.
+    // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
-    openProfileMember = row;
+    if (isAgentUid(row.personUid)) {
+      openProfileMember = null;
+      openAgentMember = row;
+    } else {
+      openAgentMember = null;
+      openProfileMember = row;
+    }
     if (tab !== "chat") tab = "chat";
   }
 
@@ -1059,7 +1067,9 @@
   }
 
   async function saveOpenAgentAvatar(selection: AvatarSelection): Promise<void> {
-    const uid = openProfileMember?.personUid?.trim();
+    const uid =
+      openAgentMember?.personUid?.trim() ||
+      openProfileMember?.personUid?.trim();
     if (!uid || agentAvatarSaving) return;
     agentAvatarSaving = true;
     agentAvatarSaveError = null;
@@ -1080,6 +1090,12 @@
         ...avatarOverridesByUid,
         [uid]: saved.previewDataUrl,
       };
+      if (openAgentMember) {
+        openAgentMember = {
+          ...openAgentMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
       if (openProfileMember) {
         openProfileMember = {
           ...openProfileMember,
@@ -1093,6 +1109,24 @@
     } finally {
       agentAvatarSaving = false;
     }
+  }
+
+  function closeAgentDetail(): void {
+    openAgentMember = null;
+  }
+
+  function openAgentFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim() ?? "";
+    if (!uid || !isAgentUid(uid) || selectedRow?.kind !== "dm") return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow.email ?? null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+    });
   }
 
   /** Resolve a message author against the live roster to enrich email/role. */
@@ -1132,6 +1166,9 @@
         await loadChannelRoster(channelId);
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
+        }
+        if (openAgentMember?.personUid === row.personUid) {
+          openAgentMember = null;
         }
       }
     } finally {
@@ -1398,6 +1435,7 @@
     const id = rootEventId.trim();
     if (id) {
       openProfileMember = null;
+      openAgentMember = null;
       openReplyRootId = id;
     }
   }
@@ -1535,6 +1573,10 @@
     row: ConversationRow,
     options?: { replyRootEventId?: string | null; preserveView?: boolean },
   ): void {
+    if (selectedRow?.id !== row.id) {
+      openProfileMember = null;
+      openAgentMember = null;
+    }
     selectedRow = row;
     if (!options?.preserveView) {
       view = "conversation";
@@ -1686,6 +1728,7 @@
     dmThreadsUnsupported = false;
     openReplyRootId = null;
     openProfileMember = null;
+    openAgentMember = null;
     attachTray = null;
     replyPreviewByRoot = {};
     // Meetings is a module-level warm store. Rotate it with the visible
@@ -2702,23 +2745,52 @@
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
                 {#if selectedRow.kind === "dm"}
-                  <span
-                    class="channel-header-avatar"
-                    data-testid="channel-header-avatar"
-                  >
-                    <IdentityMark
-                      kind={isAgentUid(selectedRow.personUid ?? "")
-                        ? "agent"
-                        : "person"}
-                      label={headerTitle}
-                      agentUid={selectedRow.personUid}
-                      avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
-                        null}
-                      size="small"
-                    />
-                  </span>
+                  {#if isAgentUid(selectedRow.personUid ?? "")}
+                    <button
+                      type="button"
+                      class="channel-header-agent"
+                      data-testid="channel-header-agent"
+                      aria-label={`View agent ${headerTitle}`}
+                      onclick={openAgentFromHeader}
+                    >
+                      <span
+                        class="channel-header-avatar"
+                        data-testid="channel-header-avatar"
+                      >
+                        <IdentityMark
+                          kind={isAgentUid(selectedRow.personUid ?? "")
+                            ? "agent"
+                            : "person"}
+                          label={headerTitle}
+                          agentUid={selectedRow.personUid}
+                          avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
+                            null}
+                          size="small"
+                        />
+                      </span>
+                      <h2 data-testid="channel-name">{headerTitle}</h2>
+                    </button>
+                  {:else}
+                    <span
+                      class="channel-header-avatar"
+                      data-testid="channel-header-avatar"
+                    >
+                      <IdentityMark
+                        kind={isAgentUid(selectedRow.personUid ?? "")
+                          ? "agent"
+                          : "person"}
+                        label={headerTitle}
+                        agentUid={selectedRow.personUid}
+                        avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
+                          null}
+                        size="small"
+                      />
+                    </span>
+                    <h2 data-testid="channel-name">{headerTitle}</h2>
+                  {/if}
+                {:else}
+                  <h2 data-testid="channel-name">{headerTitle}</h2>
                 {/if}
-                <h2 data-testid="channel-name">{headerTitle}</h2>
                 {#if channelSubtitle}
                   <span class="channel-sub-row">
                     <span class="channel-sub" data-testid="channel-sub"
@@ -2976,7 +3048,9 @@
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
-              data-reply-open={openReplyRootId || openProfileMember
+              data-reply-open={openReplyRootId ||
+                openProfileMember ||
+                openAgentMember
                 ? "true"
                 : "false"}
             >
@@ -3024,7 +3098,33 @@
                   draftStorage={tenantStorage}
                 />
               {/key}
-              {#if openProfileMember}
+              {#if openAgentMember}
+                <div
+                  class="reply-column profile-column"
+                  class:overlay={narrowViewport}
+                  data-testid="agent-detail-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <AgentDetailPanel
+                    agentUid={openAgentMember.personUid}
+                    displayName={openAgentMember.displayName}
+                    avatarUrl={openAgentMember.avatarUrl ??
+                      avatarByUid[openAgentMember.personUid] ??
+                      null}
+                    description={openAgentMember.description}
+                    companyUid={selectedRow.companyUid}
+                    {companyNames}
+                    {self}
+                    {isAdmin}
+                    {adapter}
+                    packs={loadedAvatarPacks}
+                    avatarSaving={agentAvatarSaving}
+                    avatarSaveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
+                    onclose={closeAgentDetail}
+                  />
+                </div>
+              {:else if openProfileMember}
                 <div
                   class="reply-column profile-column"
                   class:overlay={narrowViewport}
@@ -3333,6 +3433,41 @@
     flex: 0 0 auto;
     align-self: center;
     align-items: center;
+  }
+
+  .channel-header-agent {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .channel-header-agent h2 {
+    margin: 0;
+    color: var(--t1);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .channel-header-agent:hover h2 {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .channel-header-agent:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 
   .channel-hash {

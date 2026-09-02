@@ -15,6 +15,7 @@ import {
   type VersionProbe,
   type WhoAmI,
   type VersionInfo,
+  AGENT_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -721,6 +722,26 @@ export function createSyncPlatformAdapter(
           scope: pack.scope,
         });
       },
+    },
+
+    agents: {
+      getStatus: (agentUid) =>
+        hqProJson('GET', AGENT_PATHS.status(agentUid)),
+      listMobileRoster: (companyUid) =>
+        hqProJson('GET', AGENT_PATHS.mobileRoster(companyUid)),
+      listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),
+      pauseJob: (agentUid, jobId) =>
+        hqProJson('POST', AGENT_PATHS.pauseJob(agentUid, jobId)),
+      updateProfile: (agentUid, patch) =>
+        hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
+      stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
+      start: (agentUid) => hqProJson('POST', AGENT_PATHS.start(agentUid)),
+      deprovision: (agentUid) =>
+        hqProJson('DELETE', AGENT_PATHS.deprovision(agentUid)),
+      listOwners: (companyUid, agentUid) =>
+        hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
+      getCompanyTelemetry: (companyUid, from, to) =>
+        hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
     },
 
     company: {

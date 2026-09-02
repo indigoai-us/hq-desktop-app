@@ -412,6 +412,43 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     expect(emails).toContain("marcus@example.com");
   });
 
+  it("emits View agent from the agents roster", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const opened: Array<{ personUid: string }> = [];
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: {
+          ...model(),
+          agents: [
+            {
+              personUid: "agt_desktop",
+              displayName: "Desktop Agent",
+              role: "agent",
+              email: null,
+              avatarUrl: null,
+              description: null,
+              statusIcon: "running",
+            },
+          ],
+        },
+        onopenprofile: (row: { personUid: string }) => {
+          opened.push(row);
+        },
+      },
+    });
+    await tick();
+    const btn = host.querySelector(
+      '[data-testid="status-agent-open"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent).toContain("View agent");
+    btn!.click();
+    await tick();
+    expect(opened[0]?.personUid).toBe("agt_desktop");
+  });
+
   it("emits onopenprofile with the clicked member row", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
