@@ -664,7 +664,14 @@ class WebDriverClient {
   }
 }
 
-function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
+// CIM/WMI on a busy Windows runner can miss a live process for a beat, or
+// Get-CimInstance can fail transiently. Poll instead of asserting on one
+// lookup: empty and error results both retry until this deadline.
+const LIVE_PROCESS_LOOKUP_TIMEOUT_MS = 10_000;
+const LIVE_PROCESS_LOOKUP_POLL_MS = 200;
+const LIVE_PROCESS_LOOKUP_QUERY_TIMEOUT_MS = 10_000;
+
+function queryWindowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
   const appName = basename(appPath).replace(/'/g, "''");
   const query =
     '$target = [System.IO.Path]::GetFullPath($env:HQ_SYNC_E2E_APP_PATH); ' +
@@ -678,7 +685,7 @@ function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
       'powershell',
       ['-NoProfile', '-NonInteractive', '-Command', query],
       {
-        timeout: 10_000,
+        timeout: LIVE_PROCESS_LOOKUP_QUERY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         env: { ...process.env, HQ_SYNC_E2E_APP_PATH: appPath },
       },
@@ -696,6 +703,28 @@ function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
       },
     );
   });
+}
+
+async function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
+  const deadline = Date.now() + LIVE_PROCESS_LOOKUP_TIMEOUT_MS;
+  let lastError: Error | undefined;
+
+  while (true) {
+    try {
+      const processIds = await queryWindowsProcessIdsForExecutable(appPath);
+      if (processIds.length > 0) return processIds;
+      lastError = undefined;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(LIVE_PROCESS_LOOKUP_POLL_MS, remaining));
+  }
+
+  if (lastError) throw lastError;
+  return [];
 }
 
 async function waitForProcessIdsToExit(processIds: number[], deadline: number): Promise<void> {

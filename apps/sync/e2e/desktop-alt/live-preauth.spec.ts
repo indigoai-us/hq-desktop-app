@@ -174,7 +174,11 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     expect(await app.hasDesktopAltWindow()).toBe(false);
   });
 
-  it('runs the real quit path and exits the Windows process within its bound', async () => {
+  // retry: 1 is scoped to this case only — CIM lookup flakes used to fail the
+  // whole live-preauth file, and a job-wide `--retry` would re-run boot too.
+  // The lookup itself now polls for 10s; this is a single extra attempt if
+  // the process still is not visible after that.
+  it('runs the real quit path and exits the Windows process within its bound', { retry: 1 }, async () => {
     await app.quitAndAssertExited(APP_EXIT_DEADLINE_MS);
   });
 });

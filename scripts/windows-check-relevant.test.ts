@@ -278,7 +278,9 @@ describe("the Windows test process-tree watchdog", () => {
 
     expect(executionStep).toContain("timeout-minutes: 7");
     expect(executionStep).toContain("working-directory: apps/sync/src-tauri");
-    expect(executionStep).toContain("shell: pwsh");
+    expect(workflow).toContain(
+      'shell: pwsh -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/scripts/ci-timed-step.ps1" {0}',
+    );
     expect(executionStep).toContain(
       '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300',
     );

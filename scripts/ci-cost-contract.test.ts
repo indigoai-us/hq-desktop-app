@@ -128,6 +128,33 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     expect(keyOf(installer)).toBeDefined();
     expect(keyOf(check)).not.toEqual(keyOf(installer));
   });
+
+  it("does not make installer E2E wait on cargo check", () => {
+    const check = jobBody(windowsCheckWorkflow, "windows-check");
+    const installer = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+    const needsLine = (body: string) => /^\s+needs: .+$/m.exec(body)?.[0];
+
+    expect(needsLine(check)?.trim()).toBe("needs: changes");
+    expect(needsLine(installer)?.trim()).toBe("needs: changes");
+  });
+
+  it("wraps Windows run steps with per-step date groups", async () => {
+    const check = jobBody(windowsCheckWorkflow, "windows-check");
+    const installer = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+    const changes = jobBody(windowsCheckWorkflow, "changes");
+    const [pwshWrapper, bashWrapper] = await Promise.all([
+      readFile(resolve(rootDir, "scripts/ci-timed-step.ps1"), "utf8"),
+      readFile(resolve(rootDir, "scripts/ci-timed-step.sh"), "utf8"),
+    ]);
+
+    expect(check).toContain("scripts/ci-timed-step.ps1");
+    expect(installer).toContain("scripts/ci-timed-step.ps1");
+    expect(changes).toContain("scripts/ci-timed-step.sh");
+    expect(pwshWrapper).toContain("::group::");
+    expect(pwshWrapper).toContain("Get-Date");
+    expect(bashWrapper).toContain("::group::");
+    expect(bashWrapper).toContain("date -u");
+  });
 });
 
 describe("only macOS-specific work runs on a macOS runner", () => {

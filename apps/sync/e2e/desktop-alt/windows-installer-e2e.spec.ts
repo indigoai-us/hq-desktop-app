@@ -7,6 +7,8 @@ const repoUrl = (rel: string) =>
   fileURLToPath(new URL(`../../../../${rel}`, import.meta.url));
 
 const workflow = readFileSync(repoUrl('.github/workflows/windows-check.yml'), 'utf8');
+const liveDriver = readFileSync(appUrl('e2e/desktop-alt/live-driver.ts'), 'utf8');
+const livePreauth = readFileSync(appUrl('e2e/desktop-alt/live-preauth.spec.ts'), 'utf8');
 const installerHarness = readFileSync(
   appUrl('scripts/windows-installer-e2e.ps1'),
   'utf8',
@@ -80,6 +82,14 @@ describe('Windows production installer E2E', () => {
     expect(workflow).toContain(
       'Upgrade running PR bridge through its copied helper',
     );
+    const updaterStep = workflow.slice(
+      workflow.indexOf('The synthetic updater used to be a second full'),
+      workflow.indexOf('Upgrade running PR bridge through its copied helper'),
+    );
+    expect(updaterStep).toContain('pnpm tauri bundle');
+    expect(updaterStep).not.toContain('pnpm tauri build');
+    expect(updaterStep).toContain('windows-pe-version.mjs');
+    expect(updaterStep).toContain('same compiled binary');
     expect(installerHarness).toContain('--hq-update-helper');
     expect(installerHarness).toContain(
       'Installer modified the application before the parent exited',
@@ -202,6 +212,27 @@ describe('Windows production installer E2E', () => {
     expect(processRegistry).toContain(
       'cannot safely quiesce an HQ process without Job Object containment',
     );
+  });
+
+  it('keeps cargo check and installer E2E independent except for the path gate', () => {
+    const checkHeader = workflow.slice(
+      workflow.indexOf('\n  windows-check:\n'),
+      workflow.indexOf('\n    steps:', workflow.indexOf('\n  windows-check:\n')),
+    );
+    const installerHeader = workflow.slice(
+      workflow.indexOf('\n  windows-installer-e2e:\n'),
+      workflow.indexOf('\n    steps:', workflow.indexOf('\n  windows-installer-e2e:\n')),
+    );
+    expect(checkHeader).toMatch(/^\s+needs: changes$/m);
+    expect(installerHeader).toMatch(/^\s+needs: changes$/m);
+  });
+
+  it('polls the live quit-path process lookup and retries only that test', () => {
+    expect(liveDriver).toContain('LIVE_PROCESS_LOOKUP_TIMEOUT_MS = 10_000');
+    expect(liveDriver).toContain('Get-CimInstance Win32_Process');
+    expect(livePreauth).toContain("{ retry: 1 }");
+    expect(livePreauth).toContain('runs the real quit path and exits the Windows process within its bound');
+    expect(workflow).not.toMatch(/vitest run[^\n]*--retry/);
   });
 
   it('stops HQ processes before install and uninstall so locked files never break setup', () => {

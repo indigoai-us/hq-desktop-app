@@ -36,6 +36,10 @@ concurrency:
 
 # rust-cache hashes CARGO_* env vars into the cache key. Must match
 # cache-warm.yml so PRs restore the main-branch cache.
+#
+# Per-step timings: both Windows jobs (and the ubuntu gate) wrap `run:`
+# scripts with scripts/ci-timed-step.* so the log prints `::group::` + UTC
+# date at the start of each step and elapsed_seconds at the end.
 env:
   CARGO_TERM_COLOR: always
 
@@ -47,6 +51,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
+    defaults:
+      run:
+        shell: bash --noprofile --norc "${{ github.workspace }}/scripts/ci-timed-step.sh" {0}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +61,6 @@ jobs:
 
       - name: Decide whether the Windows gate applies
         id: filter
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -92,6 +98,11 @@ jobs:
           echo "windows=$verdict" >>"$GITHUB_OUTPUT"
           echo "Windows gate applies: $verdict"
 
+  # Independent of windows-installer-e2e: needs: is only the cheap path gate.
+  # A flaky installer step must not delay this compile check. Debug vs release
+  # stay on disjoint rust-cache shared-keys so each job restores its own
+  # profile (sharing a key would make each restore the other's artifacts and
+  # recompile).
   windows-check:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
@@ -100,6 +111,7 @@ jobs:
     defaults:
       run:
         working-directory: apps/sync
+        shell: pwsh -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/scripts/ci-timed-step.ps1" {0}
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
@@ -170,7 +182,6 @@ jobs:
       - name: Windows tests (process-tree watchdog)
         timeout-minutes: 7
         working-directory: apps/sync/src-tauri
-        shell: pwsh
         run: '& "$env:GITHUB_WORKSPACE/scripts/windows-test-watchdog.ps1" -TimeoutSeconds 300'
 
       # These regressions force each Job Object attachment failure and then let
@@ -324,7 +335,6 @@ jobs:
       - name: Candidate sync cancellation artifact probe
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        shell: pwsh
         run: |
           cargo build --target x86_64-pc-windows-msvc --features sync-cancel-probe
           $raw = & .\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe --sync-cancel-probe | Select-Object -Last 1
@@ -425,7 +435,6 @@ jobs:
       # session creation fails ("only supports Microsoft Edge version N").
       # Install a driver matched to the runtime and shadow the preinstalled one.
       - name: Install msedgedriver matching the WebView2 runtime
-        shell: pwsh
         run: scripts/ensure-msedgedriver.ps1
 
       # `--features e2e-automation` compiles in the WebView2 automation bridge
@@ -462,7 +471,6 @@ jobs:
       # silently fold the next launch into it.
       - name: Stop any stray app instance
         if: always()
-        shell: pwsh
         run: Get-Process hq-sync-menubar -ErrorAction SilentlyContinue | Stop-Process -Force
 
       # Signed-out by design: a GitHub runner has no Cognito session, and the
@@ -471,6 +479,10 @@ jobs:
       # a signed-out machine really reaches — the app boots, the popover paints,
       # and the desktop-alt gate refuses. The signed-in surfaces stay covered by
       # the scripted `Desktop-alt E2E` job (smoke-pages.spec.ts).
+      #
+      # Do not pass vitest --retry here: that would re-run every case in the
+      # file, including boot. The quit-path CIM lookup polls for 10s and that
+      # one test retries once via its own `{ retry: 1 }`.
       - name: Live Windows pre-auth smoke test
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
@@ -494,6 +506,10 @@ jobs:
       #   working-directory: apps/sync/src-tauri
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
 
+  # Independent of windows-check: needs: is only the cheap path gate, so a
+  # flaky installer step never delays the compile check. rust-cache stays on
+  # windows-installer-release (disjoint from windows-check-debug) because this
+  # job builds the release profile.
   windows-installer-e2e:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
@@ -503,6 +519,7 @@ jobs:
     defaults:
       run:
         working-directory: apps/sync
+        shell: pwsh -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/scripts/ci-timed-step.ps1" {0}
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
@@ -548,7 +565,6 @@ jobs:
       # same updater implementation, exactly as they do in production.
       - name: Prepare bridge and target versions
         id: versions
-        shell: pwsh
         run: |
           $baseVersion = node -p "require('./package.json').version"
           $parts = $baseVersion.Split('.')
@@ -576,7 +592,6 @@ jobs:
       # session creation fails ("only supports Microsoft Edge version N").
       # Install a driver matched to the runtime and shadow the preinstalled one.
       - name: Install msedgedriver matching the WebView2 runtime
-        shell: pwsh
         run: scripts/ensure-msedgedriver.ps1
 
       # Same flag as the windows-check job: `e2e-automation` is what lets
@@ -586,7 +601,6 @@ jobs:
       # `cfg!(debug_assertions)` could not have been the gate instead: this is a
       # release build.
       - name: Generate Windows MSI version overlay
-        shell: pwsh
         run: |
           $appVersion = node -p "require('./package.json').version"
           $configPath = Join-Path $env:RUNNER_TEMP "tauri.windows.msi-version.conf.json"
@@ -608,14 +622,12 @@ jobs:
           --features e2e-automation
 
       - name: Install Sentry CLI
-        shell: pwsh
         run: npm install --global @sentry/cli@3.6.2
 
       # Exercise the release-profile symbol contract on every PR that changes
       # the release workflow. The e2e feature changes the binary's debug id,
       # but the executable and its PDB must still carry the same id.
       - name: Verify installer debug file contract
-        shell: pwsh
         run: |
           $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
           $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
@@ -636,7 +648,6 @@ jobs:
           Write-Host "Installer executable/PDB debug id: $exeDebugId"
 
       - name: Verify prerelease MSI package
-        shell: pwsh
         run: |
           $msi = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi" -File -ErrorAction SilentlyContinue
           if (-not $msi) {
@@ -646,7 +657,6 @@ jobs:
 
       - name: Install PR bridge NSIS package
         id: install_bridge
-        shell: pwsh
         run: |
           $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
@@ -660,19 +670,53 @@ jobs:
           Write-Host "Installed PR bridge application: $app"
 
       - name: Roll back NSIS-installed bridge after an installer failure
-        shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
 
+      # The synthetic updater used to be a second full `tauri build` (~9 min
+      # even with a warm cache). That recompiled the same crate with only the
+      # version string changed. The updater E2E does not test "did rustc emit
+      # different machine code"; it tests:
+      #   - SHA256 of the new installer matches what the helper was given
+      #     (the helper's integrity / signature check of the payload)
+      #   - the helper waits for the parent to exit before touching files
+      #     (the safe-restart path)
+      #   - the installed exe ProductVersion equals the target version
+      #   - the installed exe hash is not the bridge hash
+      # Stamping VERSIONINFO on the already-built exe and running
+      # `tauri bundle` (no compile) produces an NSIS installer that
+      # satisfies all of those with the same compiled binary. The first
+      # `tauri build` still compiles the PR once.
       - name: Build next synthetic NSIS updater
-        shell: pwsh
         run: |
+          $exe = "src-tauri\target\x86_64-pc-windows-msvc\release\hq-sync-menubar.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Bridge executable missing: $exe"
+          }
+          $beforeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
+
           pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
           }
-          pnpm tauri build `
+
+          node ../../scripts/windows-pe-version.mjs --exe $exe --version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp PE version ${{ steps.versions.outputs.target }} on $exe"
+          }
+
+          $afterHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
+          if ($afterHash -eq $beforeHash) {
+            throw "PE version patch did not change the executable"
+          }
+          $productVersion = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
+          if (-not $productVersion -or -not $productVersion.StartsWith("${{ steps.versions.outputs.target }}", [StringComparison]::Ordinal)) {
+            throw "Patched ProductVersion '$productVersion' does not match target '${{ steps.versions.outputs.target }}'"
+          }
+          Write-Host "Patched PE version: $productVersion hash $beforeHash -> $afterHash"
+
+          pnpm tauri bundle `
             --target x86_64-pc-windows-msvc `
             --bundles nsis `
             --config src-tauri/tauri.windows.conf.json `
@@ -680,12 +724,11 @@ jobs:
             --config src-tauri/tauri.windows.ci.conf.json `
             --features e2e-automation
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to build target NSIS updater"
+            throw "Failed to bundle target NSIS updater"
           }
 
       - name: Upgrade running PR bridge through its copied helper
         id: upgrade
-        shell: pwsh
         run: |
           $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.target }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
@@ -698,13 +741,13 @@ jobs:
           Write-Host "Upgraded application: $app"
 
       - name: Roll back NSIS-installed target after an installer failure
-        shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
-      # production package rather than a debug build.
+      # production package rather than a debug build. Quit-path retry is on
+      # the spec (`{ retry: 1 }`), not a job-wide vitest --retry.
       - name: Live pre-auth smoke test of the installed application
         env:
           HQ_SYNC_DESKTOP_ALT_LIVE: "1"
@@ -714,7 +757,6 @@ jobs:
 
       - name: List installed files on failure
         if: failure()
-        shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           if (Test-Path -LiteralPath $installDir) {
@@ -743,7 +785,6 @@ jobs:
 
       - name: Uninstall production package
         if: always()
-        shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
           & "scripts\windows-installer-e2e.ps1" -Action uninstall -InstallerPath "${{ steps.install_bridge.outputs.installer }}" -InstallDir $installDir
