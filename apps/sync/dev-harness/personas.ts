@@ -11,7 +11,7 @@
  *   indigo          — today's default (Indigo member with conversations)
  *
  * The preview harness honors `?persona=<id>`. Vitest / e2e import
- * `createPersonaInvoke` and mount `HqWorkDesktopShell` against the same data.
+ * `createPersonaInvoke` and mount `HqWorkWorkShell` against the same data.
  */
 import type { SyncInvokeFn } from '@hq/platform';
 import type { Workspace } from '../src/lib/workspaces';
@@ -306,7 +306,7 @@ function emptyOk(): { status: number; body: string } {
 }
 
 /**
- * Tauri invoke mock that hydrates `HqWorkDesktopShell` as this persona.
+ * Tauri invoke mock that hydrates `HqWorkWorkShell` as this persona.
  * Directory / contacts / dm-threads succeed with this persona’s data so a
  * missing #setup fallback cannot hide behind a 404-shaped load error.
  */

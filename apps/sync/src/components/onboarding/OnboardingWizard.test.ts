@@ -18,6 +18,8 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
+
+import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
 import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
@@ -115,6 +117,18 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+/**
+ * The deep link the wizard fires. `q` carries the skill-independent setup
+ * prompt rather than the `/setup` slash command — a folder handed to Claude
+ * Desktop by a link is untrusted when it scans skills, so HQ's project
+ * `/setup` skill does not exist in the session the link opens.
+ */
+function expectedSetupDeepLink(folder: string): string {
+  const params = new URLSearchParams({ q: SETUP_DEEP_LINK_PROMPT });
+  params.set('folder', folder);
+  return `claude://code/new?${params.toString()}`;
+}
 
 describe('onboarding launch handoff', () => {
   it('turns a failed Claude launch into a folder escape path, never a red dump', async () => {
@@ -330,8 +344,11 @@ describe('onboarding launch handoff', () => {
     expect(poll).toHaveBeenCalledOnce();
     expect(wizardSource).toContain("invoke<ClaudeReady>('detect_claude_ready')");
     expect(wizardSource).toContain("invoke('open_claude_code_link', { url })");
+    // The deep link must NOT pre-type the `/setup` slash command: Claude
+    // Desktop scans skills before a link-opened folder is trusted, so HQ's
+    // project skill is not registered in the session the link creates.
     expect(wizardSource).toMatch(
-      /buildClaudeCodeUrl\(\{\s+folder: installPath \?\? '',\s+prompt: '\/setup',\s+\}\)/,
+      /buildClaudeCodeUrl\(\{\s+folder: installPath \?\? '',\s+prompt: SETUP_DEEP_LINK_PROMPT,\s+\}\)/,
     );
     vi.useRealTimers();
   });
@@ -373,7 +390,7 @@ describe('onboarding launch handoff', () => {
     await vi.advanceTimersByTimeAsync(3000);
     await flush();
     expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
-      url: 'claude://code/new?q=%2Fsetup&folder=%2FUsers%2Ftest%2Fhq',
+      url: expectedSetupDeepLink('/Users/test/hq'),
     });
     expect(tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'))
       .toHaveLength(1);
@@ -409,7 +426,7 @@ describe('onboarding launch handoff', () => {
     await vi.advanceTimersByTimeAsync(3_000);
     await flush();
     expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', {
-      url: 'claude://code/new?q=%2Fsetup&folder=%2FUsers%2Ftest%2Fhq',
+      url: expectedSetupDeepLink('/Users/test/hq'),
     });
     expect(onfinish).toHaveBeenCalledOnce();
   });

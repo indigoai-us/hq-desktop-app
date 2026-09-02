@@ -556,7 +556,7 @@ describe("only macOS-specific work runs on a macOS runner", () => {
 
 describe("the shell boot matrix is a cheap required PR gate", () => {
   // v0.10.178 froze every signed-in non-Indigo user with an empty inbox on
-  // an infinite conversation skeleton. The matrix mounts HqWorkDesktopShell
+  // an infinite conversation skeleton. The matrix mounts HqWorkWorkShell
   // for four personas on ubuntu — not on a macOS runner, and not behind
   // continue-on-error — so a missing identity cannot skip the check.
   it("runs on ubuntu-latest under the load-bearing check name", () => {

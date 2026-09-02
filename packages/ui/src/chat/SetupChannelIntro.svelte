@@ -26,6 +26,7 @@
     type LaunchKey,
   } from "../settings/launch-actions";
   import {
+    SETUP_DEEP_LINK_PROMPT,
     SETUP_HERO,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
@@ -66,6 +67,10 @@
       shell,
       hqFolderPath,
       prompt: SETUP_LAUNCH_COMMANDS.claude.prompt,
+      // The deep link cannot carry `/setup`: Claude Desktop scans skills
+      // before a link-opened folder is trusted, so HQ's project skill is not
+      // registered in that session.
+      deepLinkPrompt: SETUP_DEEP_LINK_PROMPT,
     }),
   );
 
