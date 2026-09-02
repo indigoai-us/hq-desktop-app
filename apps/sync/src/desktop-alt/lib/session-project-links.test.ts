@@ -75,6 +75,9 @@ describe('project keys', () => {
         path: '/hq/companies/indigo/projects/launch',
         storyCounts: { total: 0, done: 0 },
         updatedAt: null,
+        owner: null,
+        lastActivityAt: null,
+        status: 'active' as const,
       },
     ];
     expect(projectSlugFor(projects, 'Launch Q3')).toBe('launch');
