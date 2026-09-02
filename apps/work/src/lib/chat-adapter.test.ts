@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createSyncPlatformAdapter,
   createDesktopAdapter,
   failure,
   ok,
@@ -422,6 +423,62 @@ describe("createChatSidebarApi", () => {
       nextCursor: null,
     });
     expect(fetchDmThread).toHaveBeenCalledWith(args);
+  });
+
+  it("forwards owner project-channel options to the desktop adapter", async () => {
+    const channels = [
+      {
+        channelId: "chn_owner_project",
+        id: "chn_owner_project",
+        name: "Owner project",
+        scope: "project",
+        companyUid: "cmp_indigo",
+      },
+    ];
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "list_channels") return { channels };
+      throw new Error(`Unexpected desktop command: ${command}`);
+    });
+    const api = createChatSidebarApi(
+      createSyncPlatformAdapter({ invoke }),
+    );
+    const args = { companyUid: "cmp_indigo", includeCompanyProjects: true };
+
+    await expect(api.listChannels(args)).resolves.toEqual({ channels });
+    expect(invoke).toHaveBeenCalledWith("list_channels", args);
+  });
+
+  it("keeps web project-channel listing on the work feed", async () => {
+    const webTransport = vi.fn();
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://hq-pro.test",
+      fetch: webTransport,
+    });
+    const nativeListing = vi.spyOn(adapter.messaging, "listChannels");
+    const workFeed = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            { projectId: "project_web", companyUid: "cmp_indigo" },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const api = createChatSidebarApi(adapter, [], "prs_web", {
+      fetch: workFeed,
+    });
+
+    await expect(
+      api.listChannels({
+        companyUid: "cmp_indigo",
+        includeCompanyProjects: true,
+      }),
+    ).resolves.toMatchObject({
+      channels: [expect.objectContaining({ channelId: "project_web" })],
+    });
+    expect(nativeListing).not.toHaveBeenCalled();
+    expect(webTransport).not.toHaveBeenCalled();
   });
 
   it("partitions the work-feed cache by hydrating identity", async () => {

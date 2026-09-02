@@ -336,6 +336,12 @@ export function createChatSidebarApi(
       ),
     }),
     listChannels: async (args) => {
+      if (adapter.kind === "desktop") {
+        const native = await call<
+          ChannelsResponse | NonNullable<ChannelsResponse["channels"]>
+        >(adapter.messaging.listChannels(args));
+        return Array.isArray(native) ? { channels: native } : native;
+      }
       const items = await loadWorkFeed(personUid, deps.fetch ?? hqProFetch);
       return {
         channels: workItemsAsChannels(items, args.companyUid),
