@@ -1742,6 +1742,11 @@ fn set_test_windows_termination_results(results: Vec<TestWindowsTerminationResul
 }
 
 #[cfg(all(test, target_os = "windows"))]
+fn clear_test_windows_termination_results() {
+    TEST_WINDOWS_TERMINATION_RESULTS.with(|outcomes| outcomes.borrow_mut().clear());
+}
+
+#[cfg(all(test, target_os = "windows"))]
 fn take_test_windows_open_process_result() -> Option<bool> {
     TEST_WINDOWS_TERMINATION_RESULTS.with(|outcomes| {
         let mut outcomes = outcomes.borrow_mut();
@@ -5510,6 +5515,7 @@ mod windows_job_attachment_failure_tests {
                 // Panicking from Drop would continue unwinding, then drop the
                 // exact `Child` and lose the sole wait owner. Abort keeps the
                 // diagnostic above and fails this test binary without a leak.
+                let _ = std::io::Write::flush(&mut std::io::stderr());
                 std::process::abort();
             }
         }
@@ -5542,6 +5548,10 @@ mod windows_job_attachment_failure_tests {
         exit_delay: Duration,
         terminal_ack: TerminalAckGate,
     ) -> RunningFixture {
+        // Thread-local termination stubs persist across tests on a reused
+        // worker thread. A leftover TerminateProcess(false) makes Drop's
+        // teardown fail and abort the whole Windows test process.
+        clear_test_windows_termination_results();
         let handle = format!("{label}-{}", Uuid::new_v4());
         let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
         if let Some(forced) = forced {
@@ -5758,6 +5768,7 @@ mod windows_job_attachment_failure_tests {
             // attempt: that would hide a live child with no cancellation
             // authority. An unreaped fixture aborts the focused test process
             // after printing every identity needed to diagnose it.
+            clear_test_windows_termination_results();
             if let Err(error) = self.try_teardown(DEADLINE) {
                 eprintln!(
                     "[process] unreaped Windows fixture: handle={}, generation={}, root_pid={}, descendant_pid={}: {error}",
@@ -5766,6 +5777,7 @@ mod windows_job_attachment_failure_tests {
                 // A panic would unwind through `JoinHandle::drop`, silently
                 // detach the exact runner, and recreate the bug. Abort keeps
                 // the emitted diagnostics and makes the fixture failure loud.
+                let _ = std::io::Write::flush(&mut std::io::stderr());
                 std::process::abort();
             }
         }

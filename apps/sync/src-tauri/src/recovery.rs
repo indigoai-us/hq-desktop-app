@@ -71,45 +71,43 @@ fn boot_log(message: &str) {
     eprintln!("[boot] {message}");
 }
 
+/// Tests construct `tauri::test::mock_app()` without installing
+/// [`WatchdogRuntime`]. `AppHandle::state` panics in that case; a missing
+/// runtime must be a no-op so Windows unit tests cannot abort the process.
+fn apply_watchdog(
+    app: &AppHandle,
+    f: impl FnOnce(&mut crate::boot_watchdog::BootWatchdog) -> WatchdogEvent,
+) -> WatchdogEvent {
+    app.try_state::<WatchdogRuntime>()
+        .map(|runtime| runtime.apply(f))
+        .unwrap_or(WatchdogEvent::None)
+}
+
 pub fn on_startup(app: &AppHandle) {
     if force_recovery_from_env() {
         boot_log("HQ_DESKTOP_FORCE_RECOVERY set — opening recovery window");
-        let event = app
-            .state::<WatchdogRuntime>()
-            .apply(|dog| dog.on_safe_mode());
-        handle_event(app, event);
+        handle_event(app, apply_watchdog(app, |dog| dog.on_safe_mode()));
         return;
     }
     if safe_mode_requested() {
         boot_log("~/.hq/desktop-safe-mode present — opening recovery window");
         consume_safe_mode_flag();
-        let event = app
-            .state::<WatchdogRuntime>()
-            .apply(|dog| dog.on_safe_mode());
-        handle_event(app, event);
+        handle_event(app, apply_watchdog(app, |dog| dog.on_safe_mode()));
     }
 }
 
 pub fn note_desktop_window_created(app: &AppHandle) {
     boot_log("desktop-alt window created");
-    let event = app
-        .state::<WatchdogRuntime>()
-        .apply(|dog| dog.on_window_created());
-    handle_event(app, event);
+    handle_event(app, apply_watchdog(app, |dog| dog.on_window_created()));
 }
 
 pub fn note_desktop_user_closed(app: &AppHandle) {
     boot_log("desktop-alt closed by user");
-    let event = app
-        .state::<WatchdogRuntime>()
-        .apply(|dog| dog.on_user_closed());
-    handle_event(app, event);
+    handle_event(app, apply_watchdog(app, |dog| dog.on_user_closed()));
 }
 
 pub fn note_desktop_destroyed(app: &AppHandle) {
-    let event = app
-        .state::<WatchdogRuntime>()
-        .apply(|dog| dog.on_webview_crash());
+    let event = apply_watchdog(app, |dog| dog.on_webview_crash());
     if matches!(event, WatchdogEvent::OpenRecovery { .. }) {
         boot_log("desktop-alt webview gone before shell_ready");
     }
@@ -147,11 +145,17 @@ fn handle_event(app: &AppHandle, event: WatchdogEvent) {
 }
 
 fn spawn_timer(app: &AppHandle, timeout: Duration) {
-    let generation = app.state::<WatchdogRuntime>().generation();
+    let Some(runtime) = app.try_state::<WatchdogRuntime>() else {
+        return;
+    };
+    let generation = runtime.generation();
+    drop(runtime);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(timeout).await;
-        let runtime = handle.state::<WatchdogRuntime>();
+        let Some(runtime) = handle.try_state::<WatchdogRuntime>() else {
+            return;
+        };
         if runtime.generation() != generation {
             return;
         }
@@ -163,11 +167,9 @@ fn spawn_timer(app: &AppHandle, timeout: Duration) {
 }
 
 pub async fn open_recovery_from_menu(app: AppHandle) -> Result<(), String> {
-    let event = app
-        .state::<WatchdogRuntime>()
-        .apply(|dog| dog.on_menu_recovery());
-    match event {
+    match apply_watchdog(&app, |dog| dog.on_menu_recovery()) {
         WatchdogEvent::OpenRecovery { trigger } => open_recovery_window(app, trigger).await,
+        WatchdogEvent::None => open_recovery_window(app, RecoveryTrigger::Menu).await,
         _ => Ok(()),
     }
 }
@@ -181,7 +183,9 @@ pub async fn open_recovery_window(
         let _ = existing.show();
         return Ok(());
     }
-    app.state::<WatchdogRuntime>().mark_recovery_open(true);
+    if let Some(runtime) = app.try_state::<WatchdogRuntime>() {
+        runtime.mark_recovery_open(true);
+    }
 
     let mut pending = None;
     if trigger.auto_check() {
@@ -239,7 +243,9 @@ pub async fn open_recovery_window(
     }
 
     builder.build().map_err(|e| {
-        app.state::<WatchdogRuntime>().mark_recovery_open(false);
+        if let Some(runtime) = app.try_state::<WatchdogRuntime>() {
+            runtime.mark_recovery_open(false);
+        }
         e.to_string()
     })?;
     boot_log(&format!(
@@ -253,10 +259,7 @@ pub async fn open_recovery_window(
 #[tauri::command]
 pub fn shell_ready(app: AppHandle) -> Result<(), String> {
     boot_log("shell_ready from UI");
-    let event = app
-        .state::<WatchdogRuntime>()
-        .apply(|dog| dog.on_shell_ready());
-    handle_event(&app, event);
+    handle_event(&app, apply_watchdog(&app, |dog| dog.on_shell_ready()));
     Ok(())
 }
 
@@ -280,7 +283,9 @@ pub async fn open_recovery_window_cmd(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn on_recovery_closed(app: &AppHandle) {
-    app.state::<WatchdogRuntime>().mark_recovery_open(false);
+    if let Some(runtime) = app.try_state::<WatchdogRuntime>() {
+        runtime.mark_recovery_open(false);
+    }
     boot_log("recovery window closed");
 }
 
@@ -342,12 +347,27 @@ mod tests {
         match recovery_url() {
             WebviewUrl::CustomProtocol(url) => {
                 let raw = url.as_str();
-                assert!(
-                    raw.contains("hq-recovery"),
-                    "unexpected recovery url {raw}"
-                );
+                #[cfg(any(target_os = "windows", target_os = "android"))]
+                assert_eq!(raw, "http://hq-recovery.localhost/index.html");
+                #[cfg(not(any(target_os = "windows", target_os = "android")))]
+                assert_eq!(raw, "hq-recovery://localhost/index.html");
             }
             other => panic!("expected custom protocol, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn watchdog_runtime_is_optional_so_unit_tests_cannot_abort() {
+        let src = include_str!("recovery.rs");
+        let production = src.split("mod tests").next().expect("production source");
+        assert!(
+            production.contains("try_state::<WatchdogRuntime>()"),
+            "recovery must use try_state so mock apps and Windows unit tests do not panic"
+        );
+        assert!(
+            !production.contains("app.state::<WatchdogRuntime>")
+                && !production.contains("handle.state::<WatchdogRuntime>"),
+            "AppHandle::state panics when WatchdogRuntime is not managed"
+        );
     }
 }

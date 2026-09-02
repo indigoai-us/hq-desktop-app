@@ -31,4 +31,15 @@ describe('bulletproof recovery wiring', () => {
     expect(shell).toContain("invokeFn('shell_ready')");
     expect(shell).toContain('onShellReady');
   });
+
+  it('gates the recovery custom protocol per platform and does not use LaunchAgents', () => {
+    const recovery = read('apps/sync/src-tauri/src/recovery.rs');
+    expect(recovery).toContain('http://hq-recovery.localhost/index.html');
+    expect(recovery).toContain('hq-recovery://localhost/index.html');
+    expect(recovery).toContain('try_state::<WatchdogRuntime>()');
+    const watchdog = read('apps/sync/src-tauri/src/boot_watchdog.rs');
+    expect(watchdog).toContain('safe_mode_path_lives_under_hq_config_dir_not_a_launchagent');
+    const helper = read('apps/sync/src-tauri/src/tray_helper.rs');
+    expect(helper).toContain('set_tray_message_badge_is_a_noop_off_macos');
+  });
 });
