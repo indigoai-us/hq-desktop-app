@@ -216,3 +216,20 @@ describe('ToolGroupRow · artifacts', () => {
     expect(at('session-artifact-share')).toBeNull();
   });
 });
+
+describe('ToolGroupRow · a call summary whose fields are not strings', () => {
+  it('renders the row without throwing and shows what it can', () => {
+    // The summary is built from wire payloads; a row must never be the thing
+    // that takes the transcript down.
+    const hostile = [
+      { id: 'h1', name: null, detail: undefined, status: 'ok', outcome: null, output: null },
+      { id: 'h2', name: 'Bash', detail: 'ls', status: 'error', outcome: { stderr: 'boom' }, output: '' },
+      { id: 'h3', name: 'Read', detail: '/a', status: 'ok', outcome: '', output: [{ type: 'text', text: 'sub' }] },
+    ] as unknown as ToolCallSummary[];
+    expect(() => render({ summary: null, calls: hostile })).not.toThrow();
+    click(must('session-tool-group-toggle'));
+    expect(all('session-tool-call')).toHaveLength(3);
+    const outcomes = [...host.querySelectorAll('.call-outcome pre')].map((node) => node.textContent);
+    expect(outcomes).toEqual(['{"stderr":"boom"}', 'sub']);
+  });
+});

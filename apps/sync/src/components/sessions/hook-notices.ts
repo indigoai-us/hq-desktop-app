@@ -8,6 +8,11 @@
 //
 //   AUTO-CHECKPOINT REQUIRED — context ~50%
 //   AUTO-CHECKPOINT REQUIRED — precompact backup
+//
+// Every entry point takes `unknown`: the text comes off the wire, and a hook
+// notice or a user turn that is not a string must be a `false`, not a throw.
+
+import { contentToText } from './session-events';
 
 /**
  * What the strip's "Hand off" button can do right now: `hidden` with no
@@ -29,25 +34,26 @@ const CHECKPOINT_BANNER = 'AUTO-CHECKPOINT REQUIRED';
  * as a hedge against the banner being reworded — any text that talks about
  * context at 50%.
  */
-export function isCheckpointDirective(text: string): boolean {
-  if (text.includes(CHECKPOINT_BANNER)) return true;
-  return /context/i.test(text) && text.includes('50%');
+export function isCheckpointDirective(text: unknown): boolean {
+  const body = contentToText(text);
+  if (body.includes(CHECKPOINT_BANNER)) return true;
+  return /context/i.test(body) && body.includes('50%');
 }
 
 /** Does a user turn START with the given slash command (as a whole word)? */
-function startsWithCommand(text: string, command: string): boolean {
-  const trimmed = text.trimStart();
+function startsWithCommand(text: unknown, command: string): boolean {
+  const trimmed = contentToText(text).trimStart();
   if (!trimmed.startsWith(command)) return false;
   const next = trimmed.charAt(command.length);
   return next === '' || /\s/.test(next);
 }
 
 /** The operator sent `/handoff` (optionally with arguments). */
-export function isHandoffTurn(text: string): boolean {
+export function isHandoffTurn(text: unknown): boolean {
   return startsWithCommand(text, HANDOFF_COMMAND);
 }
 
 /** The operator sent `/checkpoint` (optionally with arguments). */
-export function isCheckpointTurn(text: string): boolean {
+export function isCheckpointTurn(text: unknown): boolean {
   return startsWithCommand(text, CHECKPOINT_COMMAND);
 }

@@ -6,7 +6,11 @@
 // the ONE place that shape is written down on the TypeScript side — the
 // transcript adapter folds it, and nothing else re-declares it.
 //
-// Pure types + a discriminant list. No runtime behaviour, no I/O.
+// Pure types + a discriminant list + ONE runtime helper (`contentToText`),
+// which exists because the wire is not as tidy as the types: several Rust
+// fields are `serde_json::Value` (`content`, `input`, `suggestions`) and every
+// `Option<_>` arrives as `null`, not `undefined`. Anything that calls a string
+// method on an event field goes through `contentToText` first. No I/O.
 
 export interface SessionCommand {
   name: string;
@@ -31,7 +35,8 @@ export interface PermissionSuggestion {
 
 export interface QuestionOption {
   label: string;
-  description?: string;
+  /** Rust `Option<String>` — `null` on the wire, never just absent. */
+  description?: string | null;
 }
 
 export interface SessionQuestion {
@@ -70,7 +75,7 @@ export interface UserMessageEvent {
 export interface TextDeltaEvent {
   kind: 'textDelta';
   text: string;
-  parentToolUseId?: string;
+  parentToolUseId?: string | null;
 }
 
 export interface ThinkingDeltaEvent {
@@ -81,23 +86,32 @@ export interface ThinkingDeltaEvent {
 export interface AssistantMessageEvent {
   kind: 'assistantMessage';
   text: string;
-  parentToolUseId?: string;
+  parentToolUseId?: string | null;
 }
 
 export interface ToolCallEvent {
   kind: 'toolCall';
   id: string;
   name: string;
+  /** Rust `serde_json::Value` — an object for Claude, but legally anything. */
   input: unknown;
-  parentToolUseId?: string;
+  parentToolUseId?: string | null;
 }
 
+/**
+ * A tool's result. `content` is a Rust `serde_json::Value`, and on the wire it
+ * really is any of: `null` (a Codex command with no output, a Claude result
+ * with no `content` key), a string, an array of Claude content blocks
+ * (`[{ type: "text", text }]`), or an object (a Codex `fileChange`). It was
+ * typed `string` once, and the adapter trusted that — `null.split` took the
+ * whole window down. Read it through `contentToText`.
+ */
 export interface ToolResultEvent {
   kind: 'toolResult';
   id: string;
   isError: boolean;
-  content: string;
-  parentToolUseId?: string;
+  content: unknown;
+  parentToolUseId?: string | null;
 }
 
 export interface PermissionRequestEvent {
@@ -105,7 +119,8 @@ export interface PermissionRequestEvent {
   requestId: string;
   toolName: string;
   input: unknown;
-  suggestions: PermissionSuggestion[];
+  /** Rust `serde_json::Value` — usually an array of suggestion objects, but not by contract. */
+  suggestions: unknown;
 }
 
 export interface QuestionRequestEvent {
@@ -125,7 +140,7 @@ export interface UsageEvent {
 export interface RateLimitEvent {
   kind: 'rateLimit';
   message: string;
-  resetsAt?: string;
+  resetsAt?: string | null;
 }
 
 /**
@@ -146,20 +161,21 @@ export interface HookNoticeEvent {
 export interface TurnDoneEvent {
   kind: 'turnDone';
   status: TurnStatus;
-  error?: string;
-  sessionId?: string;
+  error?: string | null;
+  sessionId?: string | null;
 }
 
 export interface ErrorEvent {
   kind: 'error';
   message: string;
-  code?: string;
+  code?: string | null;
 }
 
 export interface ExitedEvent {
   kind: 'exited';
-  code?: number;
-  signal?: string;
+  code?: number | null;
+  /** Rust `Option<i32>` — a signal NUMBER, `null` when the exit was not a signal. */
+  signal?: number | string | null;
 }
 
 export interface TruncatedEvent {
@@ -209,3 +225,63 @@ export const SESSION_EVENT_KINDS = [
   'exited',
   'truncated',
 ] as const satisfies ReadonlyArray<SessionEventKind>;
+
+// ---------------------------------------------------------------------------
+// contentToText — the one way a payload becomes a string
+// ---------------------------------------------------------------------------
+
+/** Longest JSON rendering of a non-text payload, in characters. */
+export const CONTENT_TEXT_CAP = 4096;
+
+function isTextBlock(value: unknown): value is { type: 'text'; text: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { type?: unknown }).type === 'text' &&
+    'text' in (value as object)
+  );
+}
+
+function compactJson(value: unknown): string {
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? '';
+  } catch {
+    // A cycle or a BigInt — the payload is still not allowed to be a crash.
+    json = String(value);
+  }
+  return json.length > CONTENT_TEXT_CAP ? `${json.slice(0, CONTENT_TEXT_CAP)}…` : json;
+}
+
+/**
+ * Whatever an event field turned out to be, as the string the UI shows.
+ *
+ *   - `null` / `undefined` → `''` (the common case: a command with no output)
+ *   - a string → itself, verbatim
+ *   - an array of Claude text blocks (`[{ type: "text", text }]`) or of plain
+ *     strings → the texts joined with newlines
+ *   - any other array or object → compact JSON, capped at `CONTENT_TEXT_CAP`
+ *   - a number / boolean → its `String`
+ *
+ * Never throws. This is what every `.split` / `.slice` / `.trim` /
+ * `.startsWith` on an event field reads, so a payload the types did not
+ * anticipate degrades to text rather than to a blank window.
+ */
+export function contentToText(content: unknown): string {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+  if (typeof content === 'number' || typeof content === 'boolean' || typeof content === 'bigint') {
+    return String(content);
+  }
+  if (Array.isArray(content)) {
+    const texts: string[] = [];
+    for (const item of content) {
+      if (typeof item === 'string') texts.push(item);
+      else if (isTextBlock(item)) texts.push(contentToText(item.text));
+      else return compactJson(content);
+    }
+    return texts.join('\n');
+  }
+  if (typeof content === 'object') return compactJson(content);
+  return '';
+}

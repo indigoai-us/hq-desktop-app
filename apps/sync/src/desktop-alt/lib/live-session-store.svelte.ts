@@ -37,6 +37,12 @@
  * The fold itself (`foldSessionEvents`) is pure and lives with the components;
  * this module memoizes it on a revision counter so a render that only reads
  * `transcript` does not refold on every access.
+ *
+ * THE FOLD NEVER TAKES THE PAGE DOWN. The fold guards every event and reports
+ * what it could not show in `foldErrors`; `safeFold` here guards the fold
+ * itself (a transcript that says "could not be displayed" beats a blank
+ * window) and writes those errors to the console once per session, not once
+ * per render.
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -307,6 +313,8 @@ let unlistenNeedsYou: UnlistenFn | null = null;
 let listenersStarting = false;
 
 let foldCache: { id: string; revision: number; value: TranscriptState } | null = null;
+/** Sessions whose fold errors have already been written to the console. */
+let foldErrorsReported = new Set<string>();
 
 /** Fold-cache key for the pre-session optimistic bubble. */
 const DRAFT_ID = '@draft';
@@ -851,11 +859,47 @@ export function resetLiveSessionStore(): void {
   turnMetaById = {};
   draftTurns = [];
   turnSeq = 0;
+  foldErrorsReported = new Set();
 }
 
 // ---------------------------------------------------------------------------
 // Read surface
 // ---------------------------------------------------------------------------
+
+/** What the transcript shows when the fold itself could not run. */
+const FOLD_FAILED_TEXT = 'This conversation could not be displayed.';
+
+/**
+ * `foldSessionEvents`, guaranteed to return. The fold catches per event; this
+ * catches the fold, so a session with a payload nobody anticipated renders a
+ * one-line transcript instead of throwing through a `$derived` into the
+ * shell's error boundary. Fold errors reach the console once per session.
+ */
+function safeFold(
+  sessionId: string,
+  events: ReadonlyArray<SessionEvent>,
+  options: Parameters<typeof foldSessionEvents>[1],
+): TranscriptState {
+  let value: TranscriptState;
+  try {
+    value = foldSessionEvents(events, options);
+  } catch (err) {
+    console.error(`[live-session-store] transcript fold failed for ${sessionId}`, err);
+    value = {
+      ...emptyTranscript(),
+      blocks: [{ type: 'error', id: 'fold-failed', tone: 'error', text: FOLD_FAILED_TEXT, at: null }],
+      foldErrors: [{ index: -1, kind: 'fold', error: errorText(err) }],
+    };
+  }
+  if (value.foldErrors.length > 0 && !foldErrorsReported.has(sessionId)) {
+    foldErrorsReported.add(sessionId);
+    console.warn(
+      `[live-session-store] ${value.foldErrors.length} event(s) in session ${sessionId} could not be displayed`,
+      value.foldErrors,
+    );
+  }
+  return value;
+}
 
 function activeEntry(): SessionEntry | null {
   return activeId ? (entries[activeId] ?? null) : null;
@@ -874,14 +918,14 @@ function transcriptOf(entry: SessionEntry | null): TranscriptState {
     if (foldCache && foldCache.id === DRAFT_ID && foldCache.revision === rev) {
       return foldCache.value;
     }
-    const draft = foldSessionEvents([], { userTurns: draftTurns });
+    const draft = safeFold(DRAFT_ID, [], { userTurns: draftTurns });
     foldCache = { id: DRAFT_ID, revision: rev, value: draft };
     return draft;
   }
   if (foldCache && foldCache.id === entry.sessionId && foldCache.revision === rev) {
     return foldCache.value;
   }
-  const value = foldSessionEvents(entry.events, {
+  const value = safeFold(entry.sessionId, entry.events, {
     receivedAt: entry.receivedAt,
     userTurns: userTurnsById[entry.sessionId] ?? [],
     resolutions: entry.resolutions,
@@ -958,7 +1002,8 @@ export const liveSessionStore = {
     const entry = activeEntry();
     if (!entry) return [];
     for (const event of entry.events) {
-      if (event.kind === 'started') return event.commands;
+      // `commands` is a Rust `Vec`, but the wire is read defensively throughout.
+      if (event.kind === 'started') return Array.isArray(event.commands) ? event.commands : [];
     }
     return [];
   },

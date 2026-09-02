@@ -12,6 +12,8 @@
 // PURE. The one `invoke` for reading text lives in the store; every loader the
 // menu needs is passed in as a function.
 
+import { contentToText } from './session-events';
+
 /** Where a chip came from — the `source` attribute on the wire. */
 export type ContextSource = 'meeting' | 'signal' | 'vault' | 'path';
 
@@ -283,9 +285,10 @@ const SOURCES = new Set<string>(['meeting', 'signal', 'vault', 'path']);
  * plus one tag per block. This is what the transcript renders for a backend
  * `userMessage`, so the raw block is never a bubble.
  */
-export function splitContextBlocks(text: string): { text: string; attachments: TurnAttachment[] } {
+export function splitContextBlocks(text: unknown): { text: string; attachments: TurnAttachment[] } {
   const attachments: TurnAttachment[] = [];
-  const stripped = text.replace(BLOCK, (_whole, raw: string) => {
+  // A recorded turn is a string on the wire — but the wire is not a contract.
+  const stripped = contentToText(text).replace(BLOCK, (_whole, raw: string) => {
     const attributes = readAttributes(raw);
     const source = attributes.source ?? 'path';
     const kind = (SOURCES.has(source) ? source : 'path') as ContextSource;

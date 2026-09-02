@@ -635,7 +635,10 @@ describe('the "Policies applied" chip — HQ hooks are visible in the strip', ()
     // And the adapter's case is there by name, so the exhaustiveness test
     // above keeps covering it.
     expect(ADAPTER).toContain("case 'hookNotice':");
-    expect(ADAPTER).toContain('mergePolicyDigest(policies, parsePolicyDigest(event.text))');
+    // The notice's text is read through `contentToText` first — a hook notice
+    // whose `text` is not a string is an empty digest, never a crash.
+    expect(ADAPTER).toContain('const text = contentToText(event.text);');
+    expect(ADAPTER).toContain('mergePolicyDigest(policies, parsePolicyDigest(text))');
   });
 
   it('the Rust and TS parsers are pinned on ONE shared fixture', () => {

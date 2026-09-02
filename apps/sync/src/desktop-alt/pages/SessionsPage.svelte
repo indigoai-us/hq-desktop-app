@@ -55,7 +55,11 @@
     hqRelativePath,
     type LoadedAttachment,
   } from '../../components/sessions/context-attachments';
-  import type { UserTurnMeta } from '../../components/sessions/transcript-adapter';
+  import {
+    emptyTranscript,
+    type TranscriptState,
+    type UserTurnMeta,
+  } from '../../components/sessions/transcript-adapter';
   import ShareToChannelDialog from '../../components/sessions/ShareToChannelDialog.svelte';
   import {
     deployCommandFor,
@@ -402,7 +406,19 @@
       });
   });
 
-  const transcript = $derived(liveSessionStore.transcript);
+  /**
+   * The store's fold guards every event and the store guards the fold; this
+   * guards the READ, so nothing on the transcript path can throw through a
+   * `$derived` into the shell's error boundary and blank the whole window.
+   */
+  const transcript = $derived.by((): TranscriptState => {
+    try {
+      return liveSessionStore.transcript;
+    } catch (err) {
+      console.error('[SessionsPage] transcript unavailable', err);
+      return emptyTranscript();
+    }
+  });
   const phase = $derived(liveSessionStore.phase);
   const summary = $derived(liveSessionStore.summary);
 

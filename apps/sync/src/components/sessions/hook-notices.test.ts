@@ -64,3 +64,21 @@ describe('slash-turn detection', () => {
     expect(isCheckpointTurn('/checkpoints')).toBe(false);
   });
 });
+
+describe('a hook notice or a turn that is not a string', () => {
+  // The text comes off the wire. `null` was a crash on `.includes`; now it is
+  // simply not a directive and not a slash turn.
+  it('is never a checkpoint directive', () => {
+    expect(isCheckpointDirective(null)).toBe(false);
+    expect(isCheckpointDirective(undefined)).toBe(false);
+    expect(isCheckpointDirective({ hook: 'SessionStart' })).toBe(false);
+    // An object is read as its JSON, so a banner INSIDE one is still found.
+    expect(isCheckpointDirective({ text: 'AUTO-CHECKPOINT REQUIRED' })).toBe(true);
+  });
+
+  it('is never a handoff or checkpoint turn', () => {
+    expect(isHandoffTurn(null)).toBe(false);
+    expect(isCheckpointTurn(undefined)).toBe(false);
+    expect(isHandoffTurn(['/handoff'])).toBe(true);
+  });
+});

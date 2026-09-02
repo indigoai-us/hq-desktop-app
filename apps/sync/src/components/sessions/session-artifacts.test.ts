@@ -22,6 +22,13 @@ describe('deployCommandFor', () => {
     );
     expect(deployCommandFor('/hq/a "b".md')).toBe('/deploy "/hq/a \\"b\\".md"');
   });
+
+  it('never throws on a path that is not a string', () => {
+    expect(deployCommandFor(null)).toBe('/deploy ');
+    expect(deployCommandFor(undefined)).toBe('/deploy ');
+    // An object is read as its JSON, which carries quotes, so it is quoted.
+    expect(deployCommandFor({ path: '/x' })).toBe('/deploy "{\\"path\\":\\"/x\\"}"');
+  });
 });
 
 describe('tauriArtifactActions', () => {
