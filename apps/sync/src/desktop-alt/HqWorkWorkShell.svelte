@@ -2,9 +2,9 @@
   /**
    * Native desktop host for the shared @hq/work shell.
    *
-   * This deliberately retains the Sync-owned lifecycle and event bridges from
-   * HqWorkDesktopShell. The product UI below the host boundary is WorkShell;
-   * this component only supplies native authority and delivery seams.
+   * This deliberately retains the Sync-owned lifecycle and event bridges.
+   * The product UI below the host boundary is WorkShell; this component only
+   * supplies native authority and delivery seams.
    */
   import { getVersion } from '@tauri-apps/api/app';
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
