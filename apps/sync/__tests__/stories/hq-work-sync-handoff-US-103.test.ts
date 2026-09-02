@@ -129,6 +129,12 @@ function mockInvoke(): SyncInvokeFn {
         if (path.startsWith('/v1/files/shared-with-me')) {
           return { status: 200, body: JSON.stringify({ events: [] }) };
         }
+        if (
+          path.startsWith('/v1/notify/channels/') &&
+          path.endsWith('/members')
+        ) {
+          return { status: 404, body: JSON.stringify({}) };
+        }
         return { status: 200, body: JSON.stringify({}) };
       }
       default:
@@ -162,6 +168,13 @@ function messagingInvoke(
     const override = overrides[cmd];
     if (override) return override(args);
     switch (cmd) {
+      case 'get_auth_session':
+        return {
+          accountId: 'acct_ada',
+          generation: 1,
+          status: 'active',
+          reason: null,
+        };
       case 'list_channels':
         return {
           channels: [
