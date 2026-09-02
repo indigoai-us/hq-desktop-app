@@ -1,22 +1,29 @@
 // Contract tests for the CI runner-cost invariants.
 //
-// GitHub bills macOS minutes at 10x and Windows at 2x a Linux minute, so the
-// three rules asserted here are what keep the PR gate affordable:
+// This repository is public, so GitHub's standard runners are free and the 10x
+// macOS / 2x Windows minute multipliers -- which this comment used to cite as
+// the reason for all of it -- are never applied to anything here. The costs
+// that are real are the wall clock a contributor waits on a required check,
+// and the repository's 10 GB Actions cache budget, which every branch shares
+// and which is currently close to full. The three rules asserted here defend
+// those:
 //
 //   1. Every PR-triggered workflow cancels superseded runs. Without a
 //      concurrency group, a branch that is pushed to N times leaves N-1 full
-//      Windows runs executing against commits nobody will merge.
+//      Windows runs executing against commits nobody will merge, holding
+//      concurrency slots the runs people are waiting on then queue behind.
 //   2. The Windows jobs cache Rust artifacts with Swatinem/rust-cache, which
 //      prunes to registry + dependency artifacts. Caching a raw `target/`
 //      directory with actions/cache produces multi-GB entries that evict each
-//      other out of the repository's 10 GB cache budget, so every run compiles
-//      cold while still paying to upload the archive.
+//      other out of the 10 GB budget, so every run compiles cold -- and takes
+//      the eviction out on every other branch's entries too.
 //   3. Work that is not macOS-specific runs on ubuntu-latest. Only the Tauri
-//      app crate and the real-child process regressions need a macOS runner.
+//      app crate and the real-child process regressions need a macOS runner;
+//      macOS runners are the scarcest pool and the slowest to be assigned.
 //
 // These are shape assertions over the workflow YAML, in the same style as
 // release-workflow.test.ts, so a regression fails the frontend job (which is
-// cheap) instead of silently costing runner minutes.
+// fast) instead of silently costing everyone minutes.
 
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
