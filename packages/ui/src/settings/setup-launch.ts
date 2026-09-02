@@ -42,7 +42,13 @@ export type ClaudeLaunchPath = "deep-link" | "cli" | "none";
  * skill is suppressed in the session the link creates. Re-exported from the
  * shared constant so there is exactly one copy of that prompt text.
  */
-export { SETUP_DEEP_LINK_PROMPT, SETUP_SKILL_PATH } from "../chat/setup-channel.js";
+export {
+  SETUP_DEEP_LINK_PROMPT,
+  SETUP_SKILL_PATH,
+  SETUP_CORE_MARKER,
+  SETUP_REPAIR_COMMAND,
+  SETUP_BOOTSTRAP_COMMAND,
+} from "../chat/setup-channel.js";
 
 /**
  * The prompt pre-entered into a TERMINAL agent session, and the text copied

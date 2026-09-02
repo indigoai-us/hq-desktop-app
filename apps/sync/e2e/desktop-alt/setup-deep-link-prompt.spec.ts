@@ -48,9 +48,11 @@ describe('Claude setup deep link carries a skill-independent prompt', () => {
   it('imports the prompt from the shared constant rather than inlining it', () => {
     expect(wizard).toContain("import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';");
     expect(card).toContain('SETUP_DEEP_LINK_PROMPT');
-    expect(launchLib).toContain(
-      "export { SETUP_DEEP_LINK_PROMPT, SETUP_SKILL_PATH } from '@hq/ui';",
-    );
+    // Re-exported (not redeclared) so the deep-link prompt has exactly one
+    // definition across @hq/ui and this app.
+    expect(launchLib).toContain("SETUP_DEEP_LINK_PROMPT");
+    expect(launchLib).toContain("from '@hq/ui'");
+    expect(launchLib).not.toContain('SETUP_DEEP_LINK_PROMPT =');
   });
 
   it('keeps /setup for terminal launches and the clipboard fallback', () => {

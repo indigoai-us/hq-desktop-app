@@ -13,7 +13,13 @@ import type { AiTools } from '../../lib/onboarding-summary';
  * and the pre-typed slash command lands as an unknown command. Re-exported
  * from the shared @hq/ui constant so there is exactly one copy of that text.
  */
-export { SETUP_DEEP_LINK_PROMPT, SETUP_SKILL_PATH } from '@hq/ui';
+export {
+  SETUP_DEEP_LINK_PROMPT,
+  SETUP_SKILL_PATH,
+  SETUP_CORE_MARKER,
+  SETUP_REPAIR_COMMAND,
+  SETUP_BOOTSTRAP_COMMAND,
+} from '@hq/ui';
 
 export type ClaudeLaunchPath = 'deep-link' | 'cli' | 'none';
 
