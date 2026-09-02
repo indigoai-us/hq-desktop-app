@@ -14,6 +14,24 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## macOS bundle identity (do not rename)
+
+The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in
+`apps/sync/src-tauri/tauri.conf.json`. The user LaunchAgent label is
+`ai.indigo.hq-sync-menubar` (`~/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist`).
+
+These two must stay stable. Renaming the `.app` bundle without repointing the
+LaunchAgent leaves a KeepAlive agent running the previous binary from the old
+path, so an in-place update looks installed while the user stays on the old
+version. `scripts/bundle-name-contract.test.ts` fails the release if
+`productName` or the LaunchAgent label constant drift.
+
+On every launch from `/Applications`, and again after an updater install, the
+app rewrites a stale LaunchAgent path to the running bundle (preserving other
+plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
+`HQ Sync.app` in `/Applications`, and terminates processes still running from
+that old path.
+
 ## Install Window (macOS DMG)
 
 The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the
@@ -308,10 +326,116 @@ public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
 
+### Non-Indigo release smoke (`HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`)
+
+v0.10.178 shipped because every test and every human check ran as an Indigo
+member with conversations. The macOS release job now launches the signed
+`.app` as a **non-Indigo** identity with an empty inbox before publish can
+run. The secret is **fail-closed**: if it is missing, the release job fails
+and nothing is published. There is no `continue-on-error`.
+
+Provision it like this:
+
+1. Create (or reuse) a Cognito user in the HQ prod pool who is **not** an
+   Indigo member. The account must have an empty conversation directory —
+   only the synthetic `#setup` channel. A personal-scope-only user also
+   works. Do **not** use an `@getindigo.ai` employee account.
+2. Sign in to HQ once on a throwaway machine / profile so
+   `~/.hq/cognito-tokens.json` is written.
+3. Copy the `refreshToken` field (never commit it, never paste it into a
+   ticket). Store it as the repository Actions secret
+   `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`.
+4. Confirm the user still has an empty inbox before each release train;
+   if it accumulates conversations, the smoke no longer represents the
+   v0.10.178 failure mode.
+
+The smoke script is `scripts/macos-artifact-smoke.mjs`. It writes an isolated
+`HOME` with that refresh token, launches `HQ.app` with
+`hqwork://open?channel=setup`, and requires `shell_ready from UI` in the boot
+log within 30 seconds plus a bundle version that matches the tag.
+
 Each release publishes one `latest.json` covering `darwin-aarch64`,
 `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one
-key. Stable releases use `make_latest=true`; beta and alpha use
-`make_latest=false`, so GitHub's `/releases/latest/` alias remains stable.
+key. Stable releases are published first as a GitHub prerelease (`make_latest=false`)
+and only flipped to latest after the tag-pinned `latest.json` smoke passes
+(`gh release edit --latest --prerelease=false`). Beta and alpha stay
+prerelease / not-latest, so GitHub's `/releases/latest/` alias remains stable
+until that promotion.
+
+### Server-directed rollback (`latest.json` extra fields)
+
+The updater only moves forward unless the feed marks the *running* version as
+bad. Extra keys sit next to Tauri's required `version` / `platforms` fields
+and are ignored by older clients:
+
+```json
+{
+  "version": "0.10.177",
+  "notes": "Emergency pull of 0.10.178",
+  "pub_date": "2026-09-02T12:00:00Z",
+  "rollback": true,
+  "bad_versions": ["0.10.178"],
+  "min_supported": "0.10.177",
+  "platforms": {
+    "darwin-aarch64": { "url": "…/HQ_0.10.177_universal.app.tar.gz", "signature": "…" }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `rollback` | This feed is a pull. Anyone not already on `version` may install it, including a *lower* version. |
+| `bad_versions` | Running versions that must accept the offered build even when it is older. |
+| `min_supported` | Floor. A running version below this is treated as needing the offer. |
+
+The package still goes through the same minisign check as a normal update.
+The "only newer" bypass fires **only** when the running version is marked bad
+(listed in `bad_versions`, below `min_supported`, or `rollback` is true and
+the running version is not the offered one). Healthy users on a newer good
+build are not silently downgraded.
+
+#### Operator runbook: pull a bad build in one command
+
+Prefer this over retagging when a public build (for example `v0.10.178`)
+already reached users and the UI cannot check for updates:
+
+```bash
+# From the repo root. Marks 0.10.178 bad and serves 0.10.177 as latest.
+node scripts/release-mark-bad.mjs 0.10.178 --to 0.10.177
+```
+
+What that does:
+
+1. Downloads `latest.json` from the good tag (`v0.10.177`).
+2. Stamps `rollback: true`, `bad_versions: ["0.10.178"]`, `min_supported: "0.10.177"`.
+3. Uploads it with `gh release upload v0.10.177 latest.json --clobber`.
+4. If GitHub's `/releases/latest` currently points at the bad tag, marks that
+   tag prerelease so the alias moves back to the good build.
+
+Dry-run against a local file (no `gh` calls):
+
+```bash
+node scripts/release-mark-bad.mjs 0.10.178 --dry-run --fixture scripts/fixtures/latest.json
+```
+
+Users already on the good version keep it. Users on a listed bad version
+install the offered build on the next updater check (or from the native
+Recovery window / tray "Check for updates…" item). Artifact signatures are
+not rewritten.
+
+If a staged stable tag was published as a prerelease but **not** promoted
+to latest, users on `/releases/latest` never saw it. Unpublish it without
+the updater feed:
+
+```bash
+gh release edit v0.10.178 -R indigoai-us/hq-desktop-app --prerelease
+# or delete the bad prerelease tag's GitHub release entirely
+gh release delete v0.10.178 -R indigoai-us/hq-desktop-app --yes
+```
+
+Prefer `scripts/release-mark-bad.mjs` once a bad build *did* become latest
+— that stamps `rollback: true` / `bad_versions` on the good tag's
+`latest.json` so already-updated clients pull back.
 
 ### Versionless download aliases
 
@@ -435,15 +559,30 @@ The publish job is globally serialized across release tags. It:
 2. Creates or resets a hidden draft and uploads the complete 15-asset set.
 3. Verifies the exact names, upload state, byte sizes, SHA-256 digests,
    updater-platform URLs, and detached signature sidecars.
-4. Makes the release public with one final PATCH only after the draft passes.
-5. Confirms the public asset/manifest contract and verifies that prereleases
-   did not replace stable latest.
+4. Makes the release public as a **GitHub prerelease that is not `latest`**.
+   Beta and alpha stay there. A stable tag does **not** become GitHub latest
+   in this step.
+5. Smokes the tag-pinned `latest.json`
+   (`/releases/download/<tag>/latest.json`, never `/releases/latest`) and
+   confirms the tag has not replaced stable latest.
+6. Only then, for a stable tag, promotes with
+   `gh release edit <tag> --latest --prerelease=false`.
+7. Confirms the public asset/manifest contract and that stable latest now
+   matches the tag (betas still must not replace it).
+
+The macOS build job also launches the signed `HQ.app` as a non-Indigo
+empty-inbox user before publish is allowed to start. If that smoke fails,
+or if the published `latest.json` smoke fails, the tag never becomes
+`latest` and installed apps keep the previous good build.
 
 An already-published healthy tag is accepted as a read-only rerun success.
-Signed, notarized, and timestamped rebuilds are not byte-deterministic, so the
-rerun validates the existing public release rather than overwriting its assets.
-The control-plane helpers are `scripts/release-asset-contract.mjs` and
-`scripts/release-stable-order.mjs`.
+A stable tag that is public but still a prerelease (`promote-pending`)
+resumes at the `latest.json` smoke and promotion — it does not upload
+again. Signed, notarized, and timestamped rebuilds are not
+byte-deterministic, so a fully-promoted rerun validates the existing
+public release rather than overwriting its assets.
+The control-plane helpers are `scripts/release-asset-contract.mjs`,
+`scripts/release-stable-order.mjs`, and `scripts/macos-artifact-smoke.mjs`.
 
 ## Artifact Shape
 

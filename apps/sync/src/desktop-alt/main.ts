@@ -32,12 +32,10 @@ if (!target) {
 // No top-level await: vite `target: safari13` cannot transpile TLA in this entry.
 const app = bootDesktopAltWindow({
   mountHqWork: async () => {
-    const { default: HqWorkDesktopShell } = await import(
-      './HqWorkDesktopShell.svelte'
-    );
+    const { default: HqWorkWorkShell } = await import('./HqWorkWorkShell.svelte');
     mount(GlobalErrorBoundary, {
       target,
-      props: { component: HqWorkDesktopShell, windowLabel },
+      props: { component: HqWorkWorkShell, windowLabel },
     });
   },
 }).catch((error) => {

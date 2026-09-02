@@ -608,6 +608,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        // Disposition of the signal that terminated an auto-sync watcher
+        // (HQ-DESKTOP-5Y). A fixed, closed vocabulary; the bare signal integer
+        // rides `watcher_exit_signal`. These independent egress checks degrade a
+        // producer bug that shipped a raw stderr fragment or a `hangup:pid` string
+        // to `[Filtered]` instead of shipping raw bytes.
+        "watcher_exit_signal_class" => Some(matches!(
+            value,
+            "fault" | "cancel" | "hangup" | "interrupt" | "other" | "none"
+        )),
+        // Bare signal integer. A numeric extra reaches this check as `""` (the
+        // scrub loop passes an empty string for a non-string `Value`), which is
+        // type-safe by construction; a string value must parse as an integer, so a
+        // producer bug that shipped raw text degrades to `[Filtered]`.
+        "watcher_exit_signal" => Some(value.is_empty() || value.parse::<i64>().is_ok()),
         // `tree` (HQ-DESKTOP-55) is the honest whole-descendant-tree RSS scope; the
         // other three remain the single-PID command-derived scopes.
         "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner" | "tree")),
@@ -2947,6 +2961,57 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_exit_signal_fields_are_registered_and_near_misses_are_filtered() {
+        // The full class vocabulary and a bare signal integer survive egress.
+        for (key, value) in [
+            ("watcher_exit_signal_class", "fault"),
+            ("watcher_exit_signal_class", "cancel"),
+            ("watcher_exit_signal_class", "hangup"),
+            ("watcher_exit_signal_class", "interrupt"),
+            ("watcher_exit_signal_class", "other"),
+            ("watcher_exit_signal_class", "none"),
+            ("watcher_exit_signal", "1"),
+            ("watcher_exit_signal", "9"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A numeric extra reaches the check as `""` (non-string Value), which is
+        // type-safe by construction and must be accepted.
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_exit_signal", ""),
+            Some(true)
+        );
+        // Near-misses on the class — wrong case, a `class:pid` compound, a path, or
+        // a raw message fragment — and a shell-injection on the integer all degrade
+        // to `[Filtered]` rather than shipping raw bytes.
+        for (key, value) in [
+            ("watcher_exit_signal_class", "Hangup"),
+            ("watcher_exit_signal_class", "hangup:1"),
+            ("watcher_exit_signal_class", "/Users/Ada/secret.md"),
+            ("watcher_exit_signal_class", "killed by SIGHUP"),
+            ("watcher_exit_signal", "1; rm -rf"),
+            ("watcher_exit_signal", "one"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag {key}={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra {key}={value}"
             );
         }
     }

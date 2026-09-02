@@ -156,4 +156,31 @@ describe("project metadata cache", () => {
     expect(load).toHaveBeenCalledTimes(2);
     unsubscribe();
   });
+
+  it("memoizes an inconclusive result before notifying reactive readers", async () => {
+    const load = vi.fn(async (): Promise<LiveProjectMetaLoad> => ({
+      meta: null,
+      definitiveMiss: false,
+    }));
+    let reruns = 0;
+    let cache!: ReturnType<typeof createProjectMetaCache>;
+    cache = createProjectMetaCache({
+      load,
+      onChanged: () => {
+        reruns += 1;
+        // Simulate a derived consumer re-reading metadata after the cache
+        // publishes a completed load. Stop after three turns so a broken
+        // cache fails its bounded-load assertion instead of spinning forever.
+        if (reruns < 3) cache.read(row);
+      },
+    });
+
+    expect(cache.read(row)).toBeNull();
+    await settle();
+    await settle();
+    await settle();
+
+    expect(reruns).toBe(1);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
 });

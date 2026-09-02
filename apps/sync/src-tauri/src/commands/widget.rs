@@ -534,9 +534,7 @@ fn widget_position_cocoa(w: f64, h: f64, zoom: f64) -> Option<tauri::LogicalPosi
             } else {
                 None
             };
-            widget_position_in_work_area(
-                work_x, work_y, work_w, work_h, w, h, placement, tray_x,
-            )
+            widget_position_in_work_area(work_x, work_y, work_w, work_h, w, h, placement, tray_x)
         };
 
         Some(tauri::LogicalPosition::new(x, y))
@@ -584,9 +582,7 @@ fn widget_position_fallback(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPo
     }
 
     // Last-resort hard-coded primary-ish geometry.
-    let (x, y) = widget_position_in_work_area(
-        0.0, 0.0, 1440.0, 820.0, w, h, placement, tray_x,
-    );
+    let (x, y) = widget_position_in_work_area(0.0, 0.0, 1440.0, 820.0, w, h, placement, tray_x);
     tauri::LogicalPosition::new(x, y)
 }
 
@@ -1333,40 +1329,38 @@ fn register_app_active_observer(app: &AppHandle) {
     use objc2::{class, msg_send, runtime::AnyObject};
 
     let app = app.clone();
-    APP_ACTIVE_OBSERVER.call_once(move || {
-        unsafe {
-            let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
-            if center.is_null() {
-                log(LOG_TAG, "app-active observer: defaultCenter is nil");
-                return;
-            }
-            let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
-            let null_obj: *mut AnyObject = std::ptr::null_mut();
-            for (name, active) in [
-                ("NSApplicationDidBecomeActiveNotification", true),
-                ("NSApplicationDidResignActiveNotification", false),
-            ] {
-                let app_clone = app.clone();
-                let block = RcBlock::new(move |_notif: *mut AnyObject| {
-                    log(LOG_TAG, &format!("app-active: active={active}"));
-                    let _ = app_clone.emit_to(
-                        WINDOW_LABEL,
-                        "widget:app-active",
-                        serde_json::json!({ "active": active }),
-                    );
-                });
-                let observer: *mut AnyObject = msg_send![
-                    center,
-                    addObserverForName: ns_str(name),
-                    object: null_obj,
-                    queue: queue,
-                    usingBlock: &*block
-                ];
-                std::mem::forget(block);
-                let _ = observer;
-            }
-            log(LOG_TAG, "app-active observer registered");
+    APP_ACTIVE_OBSERVER.call_once(move || unsafe {
+        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+        if center.is_null() {
+            log(LOG_TAG, "app-active observer: defaultCenter is nil");
+            return;
         }
+        let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
+        let null_obj: *mut AnyObject = std::ptr::null_mut();
+        for (name, active) in [
+            ("NSApplicationDidBecomeActiveNotification", true),
+            ("NSApplicationDidResignActiveNotification", false),
+        ] {
+            let app_clone = app.clone();
+            let block = RcBlock::new(move |_notif: *mut AnyObject| {
+                log(LOG_TAG, &format!("app-active: active={active}"));
+                let _ = app_clone.emit_to(
+                    WINDOW_LABEL,
+                    "widget:app-active",
+                    serde_json::json!({ "active": active }),
+                );
+            });
+            let observer: *mut AnyObject = msg_send![
+                center,
+                addObserverForName: ns_str(name),
+                object: null_obj,
+                queue: queue,
+                usingBlock: &*block
+            ];
+            std::mem::forget(block);
+            let _ = observer;
+        }
+        log(LOG_TAG, "app-active observer registered");
     });
 }
 

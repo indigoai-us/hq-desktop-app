@@ -35,6 +35,7 @@
     toWorkerCards,
     type LibraryOverlayTab,
   } from "./library-overlay-model.js";
+  import PageHeader from "../shell/PageHeader.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -168,38 +169,15 @@
   aria-label="Library"
   data-testid="library-overlay"
 >
-  <header class="lo-header">
-    <button
-      type="button"
-      class="lo-back"
-      data-testid="library-back"
-      aria-label="Back"
-      onclick={() => onback?.()}
-    >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-      >
-        <path
-          d="M10 3.5 5.5 8 10 12.5"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
-      Back
-    </button>
-    <h1 class="lo-title" data-testid="library-overlay-title">Library</h1>
-    <span class="lo-sub"
-      >{showMarketplace
-        ? "skills available to you, and packs"
-        : "skills available to you"}</span
-    >
-  </header>
+  <PageHeader
+    title="Library"
+    subtitle={showMarketplace
+      ? "skills available to you, and packs"
+      : "skills available to you"}
+    titleTestId="library-overlay-title"
+    backTestId="library-back"
+    onback={() => onback?.()}
+  />
 
   <div class="lo-body">
     <nav
@@ -477,61 +455,6 @@
     background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
-  }
-
-  .lo-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: 0 0 auto;
-    padding: 0 20px;
-    height: 52px;
-    flex: 0 0 52px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .lo-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t2, var(--v4-text-2));
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 16px;
-    cursor: pointer;
-  }
-  .lo-back:hover {
-    background: var(--hover);
-    color: var(--t1);
-  }
-  .lo-back:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
-  }
-
-  .lo-title {
-    margin: 0;
-    color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.2;
-    white-space: nowrap;
-  }
-
-  .lo-sub {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.45;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .lo-body {

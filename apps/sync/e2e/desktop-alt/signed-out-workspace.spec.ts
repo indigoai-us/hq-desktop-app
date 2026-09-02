@@ -10,7 +10,7 @@ describe('signed-out users open the desktop workspace for sign-in', () => {
   const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
   const tray = readRepoFile('src-tauri/src/tray.rs');
   const app = readRepoFile('src/App.svelte');
-  const shell = readRepoFile('src/desktop-alt/HqWorkDesktopShell.svelte');
+  const shell = readRepoFile('src/desktop-alt/HqWorkWorkShell.svelte');
   const signIn = readRepoFile('src/components/SignInPrompt.svelte');
   const auth = readRepoFile('src-tauri/src/commands/auth.rs');
 

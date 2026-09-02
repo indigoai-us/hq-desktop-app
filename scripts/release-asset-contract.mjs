@@ -162,6 +162,7 @@ export function planRelease({
   localAssets,
   tag,
   prerelease,
+  stagedStable = false,
 }) {
   const matches = flattenPages(releases).filter(
     (release) => release?.tag_name === tag,
@@ -175,6 +176,30 @@ export function planRelease({
   }
 
   const release = matches[0];
+
+  // A stable tag is first published as a GitHub prerelease (not latest). A
+  // retry that finds that public prerelease must resume at smoke + promote,
+  // not treat it as a finished latest release.
+  if (stagedStable && !release.draft && release.prerelease === true) {
+    verifyReleaseIdentity(release, {
+      tag,
+      prerelease: true,
+      draft: false,
+    });
+    verifyAssetSet(localAssets, release.assets ?? [], { matchBytes: false });
+    return { action: "promote-pending", releaseId: String(release.id) };
+  }
+
+  if (stagedStable && !release.draft && release.prerelease === false) {
+    verifyReleaseIdentity(release, {
+      tag,
+      prerelease: false,
+      draft: false,
+    });
+    verifyAssetSet(localAssets, release.assets ?? [], { matchBytes: false });
+    return { action: "already-published", releaseId: String(release.id) };
+  }
+
   verifyReleaseIdentity(release, {
     tag,
     prerelease,
@@ -358,6 +383,9 @@ async function runCli() {
       localAssets,
       tag,
       prerelease,
+      stagedStable: values["staged-stable"]
+        ? parseBoolean(values["staged-stable"], "--staged-stable")
+        : false,
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;

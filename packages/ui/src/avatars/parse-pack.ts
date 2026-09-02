@@ -90,15 +90,45 @@ export function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/** True when `src` is already a complete URL/path and must not be joined. */
+export function isResolvedPackItemSrc(src: string): boolean {
+  const value = src.trim();
+  if (!value) return false;
+  if (/^https?:\/\//i.test(value)) return true;
+  if (/^(blob|data|builtin):/i.test(value)) return true;
+  // Vite hashed/dev asset URLs: `/assets/foo.png`, `/src/...`.
+  if (value.startsWith("/") && !value.startsWith("//")) return true;
+  return false;
+}
+
+/**
+ * Pack-tile `src` that the packaged CSP will actually paint.
+ * Allows bundled same-origin assets, raster data URLs, and blob: object URLs.
+ * Rejects http(s) (tracking-pixel contract) and any other scheme.
+ */
+export function cspSafeAvatarSrc(src: string | null | undefined): string | null {
+  const value = src?.trim() ?? "";
+  if (!value) return null;
+  if (value.startsWith("blob:")) return value;
+  if (/^data:image\/(?:png|jpe?g|gif|webp|avif);base64,/i.test(value)) {
+    return value;
+  }
+  if (/^(?:\/\/|\\\\|#)/.test(value) || /^[a-z][a-zA-Z0-9+.-]*:/i.test(value)) {
+    return null;
+  }
+  return value;
+}
+
 /** Resolve an item `src` against the pack base URL. */
 export function resolvePackItemSrc(pack: AvatarPack, item: AvatarPackItem): string {
   const src = item.src.trim();
-  if (/^https?:\/\//i.test(src) || src.startsWith("builtin:") || src.startsWith("blob:")) {
-    return src;
-  }
+  if (isResolvedPackItemSrc(src)) return src;
   const base = trimSlash(pack.baseUrl);
   const path = src.replace(/^\/+/, "");
   if (!base) return path;
+  // builtin: packs already carry Vite URLs on each item. Joining them
+  // produces `builtin:generated-marks/assets/...` which no <img> can load.
+  if (base.startsWith("builtin:")) return src;
   return `${base}/${path}`;
 }
 

@@ -12,15 +12,15 @@ const packs: AvatarPack[] = [
     id: "generated-marks",
     name: "Generated marks",
     version: "1.0.0",
-    author: "HQ",
+    author: "Default",
     baseUrl: "builtin:generated-marks",
     items: [
-      { id: "agent-01", name: "Mark 01", src: "generated/agent-01.png", tags: [] },
+      { id: "agent-01", name: "Mark 01", src: "/assets/agent-01.png", tags: [] },
     ],
   },
   {
     id: "hq-agent-mascots",
-    name: "HQ agent mascots",
+    name: "Animals",
     version: "1.0.0",
     author: "Lizzy",
     baseUrl: "https://hq-agent-mascots.indigo-hq.com",
@@ -28,7 +28,7 @@ const packs: AvatarPack[] = [
       {
         id: "v2-dot",
         name: "Dot · simplified",
-        src: "mascots/v2/dot.png",
+        src: "/src/avatars/packs/hq-agent-mascots/mascots/v2/dot.png",
         tags: ["v2"],
       },
     ],
@@ -44,7 +44,7 @@ describe("saveAgentAvatar", () => {
     });
     const fetchBytes = vi.fn(async (url: string) => {
       expect(url).toBe(
-        "https://hq-agent-mascots.indigo-hq.com/mascots/v2/dot.png",
+        "/src/avatars/packs/hq-agent-mascots/mascots/v2/dot.png",
       );
       return new Uint8Array([1, 2, 3]);
     });

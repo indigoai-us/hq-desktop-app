@@ -10,12 +10,45 @@ describe("HQ Work desktop platform adapter", () => {
       fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
       "utf8",
     );
-    const appLocalSpecifiers = page.match(/\$(?:lib|app)\/[^\s"'`]+/g) ?? [];
+    const hqProClient = readFileSync(
+      fileURLToPath(new URL("../lib/hq-pro-client.ts", import.meta.url)),
+      "utf8",
+    );
+    const appLocalSpecifiers = `${page}\n${hqProClient}`.match(
+      /\$(?:lib|app|env)\/[^\s"'`]+/g,
+    ) ?? [];
 
     expect(
       appLocalSpecifiers,
-      `WorkShell.svelte contains forbidden app-local import: ${appLocalSpecifiers[0] ?? "none"}`,
+      `The WorkShell module graph contains a SvelteKit-only import: ${appLocalSpecifiers[0] ?? "none"}`,
     ).toEqual([]);
+  });
+
+  it("keeps public API configuration at the SvelteKit host boundary", () => {
+    const rootRoute = readFileSync(
+      fileURLToPath(new URL("./+page.svelte", import.meta.url)),
+      "utf8",
+    );
+
+    expect(rootRoute).toContain('import { env } from "$env/dynamic/public";');
+    expect(rootRoute).toContain(
+      "<WorkShell {data} apiUrl={env.PUBLIC_HQ_PRO_API_URL} />",
+    );
+  });
+
+  it("gives an embedding host's runtime kind precedence over ambient detection", () => {
+    const page = readFileSync(
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
+      "utf8",
+    );
+
+    expect(
+      page,
+      "A host-supplied runtimeKind must select the platform adapter before Work falls back to its existing Tauri detection.",
+    ).toMatch(
+      /const runtime = runtimeKind \?\? \(isTauriRuntime\(\) \? "desktop" : "web"\);/,
+    );
+    expect(page).toContain('const adapter: PlatformAdapter = runtime === "desktop"');
   });
 
   it("constructs the shared Sync adapter and maps Board reads to the host command", async () => {
@@ -26,16 +59,22 @@ describe("HQ Work desktop platform adapter", () => {
 
     expect(page).toContain("createSyncPlatformAdapter,");
     expect(page).toContain(
-      "? createSyncPlatformAdapter({ invoke: tauriInvoke })",
+      '? createSyncPlatformAdapter({ invoke: nativeInvoke })',
     );
+    expect(page).toMatch(/const nativeInvoke = hostInvoke \?\? tauriInvoke;/);
     expect(page).toContain(
       `: new WebPlatformAdapter({
-        baseUrl: hqProApiUrl(),
-        fetch: hqProFetch,
-        onUnauthorized: redirectToSigninWithCallback,
+        baseUrl: resolveHqProApiUrl(),
+        fetch: workFetch,
+        onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       })`,
     );
-    expect(page).toContain("const workFetch: HqProFetch = hqProFetch;");
+    expect(page).toContain(
+      "const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);",
+    );
+    expect(page).toContain("configureHqProApiUrl(apiUrl);");
+    expect(page).toContain("const workFetch: HqProFetch = hostFetch ?? hqProFetch;");
+    expect(page).toContain("const suppliedHostIdentity = hostIdentity ?? data.user ?? null;");
     expect(page).toContain("loadWorkThreads(roster, workFetch)");
 
     const commands: string[] = [];

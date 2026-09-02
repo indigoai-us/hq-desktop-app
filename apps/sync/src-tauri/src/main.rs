@@ -3,10 +3,12 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod boot_watchdog;
 mod commands;
 mod events;
 #[cfg(target_os = "macos")]
 mod glass;
+mod recovery;
 mod tray;
 mod tray_helper;
 mod updater;
@@ -145,6 +147,7 @@ fn setup_startup_surfaces(
     first_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
+    crate::recovery::on_startup(app);
 
     if first_run {
         tray::show_window_centered(app);
@@ -319,7 +322,7 @@ fn main() {
         }
     }
 
-    tauri::Builder::default()
+    crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -431,6 +434,7 @@ fn main() {
         )
         .manage(updater::PendingUpdate::default())
         .manage(updater::DownloadedUpdate::default())
+        .manage(crate::boot_watchdog::WatchdogRuntime::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -463,6 +467,17 @@ fn main() {
                         api.prevent_close();
                         let _ = window.hide();
                     });
+                }
+                if window.label() == crate::commands::desktop_alt::WINDOW_LABEL {
+                    crate::recovery::note_desktop_user_closed(window.app_handle());
+                }
+            }
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == crate::commands::desktop_alt::WINDOW_LABEL {
+                    crate::recovery::note_desktop_destroyed(window.app_handle());
+                }
+                if window.label() == crate::recovery::WINDOW_LABEL {
+                    crate::recovery::on_recovery_closed(window.app_handle());
                 }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
@@ -611,11 +626,16 @@ fn main() {
             commands::long_paths::open_long_paths_settings,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
+            commands::autostart::take_launch_agent_repoint_notice,
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
             tray::set_tray_state,
             updater::check_for_updates,
+            updater::reinstall_latest_release,
+            crate::recovery::shell_ready,
+            crate::recovery::reset_local_ui_state,
+            crate::recovery::open_recovery_window_cmd,
             updater::get_pending_update,
             updater::install_update,
             updater::download_update,
@@ -897,6 +917,13 @@ fn main() {
                 &app.package_info().version.to_string(),
             );
 
+            // Heal a LaunchAgent still pointing at a renamed bundle
+            // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
+            // pass, so a KeepAlive agent cannot keep the previous binary
+            // running. Best-effort and idempotent — never aborts launch.
+            #[cfg(target_os = "macos")]
+            commands::autostart::reconcile_launch_agent_on_launch();
+
             // Default-on autostart: ensure the LaunchAgent plist matches the
             // effective `startAtLogin` pref (default true) so a fresh install
             // opens HQ Sync at login without the user opening Settings first.
@@ -1010,6 +1037,7 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             updater::setup_update_checker(app.handle());
             commands::telemetry::setup_daily_active_emit();
+            commands::telemetry::setup_version_heartbeat();
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());

@@ -167,9 +167,9 @@ final class TrayController: NSObject {
         item.button?.addSubview(badgeView, positioned: .above, relativeTo: nil)
 
         // Right-click context menu (NOT set as item.menu — that would make a
-        // plain left-click open the menu instead of the popover). Items per
-        // the notifications-first redesign: Sync Now / Open desktop view /
-        // Sign Out / Quit HQ ⌘Q.
+        // plain left-click open the menu instead of the popover). Items:
+        // Sync Now / Open desktop view / Hide notifications / Check for
+        // updates / Recovery / Sign Out / Quit HQ ⌘Q.
         let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow), keyEquivalent: "")
         sync.target = self
         menu.addItem(sync)
@@ -181,6 +181,16 @@ final class TrayController: NSObject {
             title: "Hide notifications", action: #selector(hideNotifications), keyEquivalent: "")
         hideNotes.target = self
         menu.addItem(hideNotes)
+        menu.addItem(.separator())
+        let updates = NSMenuItem(
+            title: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
+        let recovery = NSMenuItem(
+            title: "Recovery…", action: #selector(openRecovery), keyEquivalent: "")
+        recovery.target = self
+        menu.addItem(recovery)
+        menu.addItem(.separator())
         let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
         signOut.target = self
         menu.addItem(signOut)
@@ -255,6 +265,14 @@ final class TrayController: NSObject {
     @objc func hideNotifications() { writeCommand("hide-notifications") }
     @objc func openDesktop() {
         writeCommand("desktop")
+        activateHQ()
+    }
+    @objc func checkForUpdates() {
+        writeCommand("updates")
+        activateHQ()
+    }
+    @objc func openRecovery() {
+        writeCommand("recovery")
         activateHQ()
     }
     @objc func signOutHQ() { writeCommand("signout") }

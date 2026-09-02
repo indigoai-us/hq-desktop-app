@@ -12,6 +12,54 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::config::{read_hq_config_lenient, HqConfig, MenubarPrefs};
 use crate::paths;
 
+/// Public author on a listing. Handle is the @-mention; displayName is the HQ
+/// person/company/creator name; avatarUrl is a short-lived presigned GET when
+/// the creator's HQ profile has a photo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceListingAuthor {
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+fn deserialize_listing_author<'de, D>(
+    deserializer: D,
+) -> Result<MarketplaceListingAuthor, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawAuthor {
+        Handle(String),
+        Profile(MarketplaceListingAuthor),
+    }
+    match RawAuthor::deserialize(deserializer)? {
+        RawAuthor::Handle(handle) => Ok(MarketplaceListingAuthor {
+            display_name: handle.clone(),
+            handle,
+            avatar_url: None,
+        }),
+        RawAuthor::Profile(mut profile) => {
+            if profile.display_name.is_empty() {
+                profile.display_name = profile.handle.clone();
+            }
+            if profile
+                .avatar_url
+                .as_ref()
+                .is_some_and(|url| url.is_empty())
+            {
+                profile.avatar_url = None;
+            }
+            Ok(profile)
+        }
+    }
+}
+
 /// One approved listing as exposed by the public browse/detail routes. Every
 /// field here is something the server explicitly allowlisted for anonymous
 /// callers (US-005) — there is no moderation state, no creator uid, no S3 key.
@@ -29,10 +77,12 @@ pub struct MarketplaceListing {
     pub slug: String,
     /// Published semantic version.
     pub version: String,
-    /// Author's PUBLIC handle (a string, not an object — the internal
-    /// `creatorUid` is never exposed by the public projection).
-    #[serde(default)]
-    pub author: String,
+    /// Author of this pack. The public listings route used to send a bare
+    /// handle string; it now sends `{ handle, displayName, avatarUrl? }`.
+    /// Both shapes deserialize so a mixed desktop/server deploy still parses.
+    /// The internal `creatorUid` is never exposed.
+    #[serde(default, deserialize_with = "deserialize_listing_author")]
+    pub author: MarketplaceListingAuthor,
     /// Short directory description, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -1614,7 +1664,8 @@ mod tests {
         let body = r#"{"listings":[
             {"id":"lst_1","type":"skill","name":"Impeccable","slug":"impeccable",
              "version":"1.2.0","author":"corey","summary":"Improve a UI",
-             "contributes":"1 skill","createdAt":"2026-06-01T00:00:00Z"},
+             "contributes":"1 skill","createdAt":"2026-06-01T00:00:00Z",
+             "coverImageUrl":"https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/listings/lst_1/cover.jpg"},
             {"id":"lst_2","type":"worker","name":"Architect","slug":"architect",
              "version":"0.1.0","author":"jane","createdAt":"2026-06-02T00:00:00Z"}
         ]}"#;
@@ -1625,16 +1676,44 @@ mod tests {
         assert_eq!(first.id, "lst_1");
         assert_eq!(first.type_, "skill");
         assert_eq!(first.name, "Impeccable");
-        assert_eq!(first.author, "corey");
+        assert_eq!(first.author.handle, "corey");
         assert_eq!(first.version, "1.2.0");
         assert_eq!(first.summary.as_deref(), Some("Improve a UI"));
         assert_eq!(first.contributes.as_deref(), Some("1 skill"));
+        assert_eq!(
+            first.cover_image_url.as_deref(),
+            Some(
+                "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/listings/lst_1/cover.jpg"
+            )
+        );
 
         // Optional fields absent → None, still parses.
         let second = &listings[1];
-        assert_eq!(second.author, "jane");
+        assert_eq!(second.author.handle, "jane");
         assert!(second.summary.is_none());
         assert!(second.contributes.is_none());
+        assert!(second.cover_image_url.is_none());
+    }
+
+    #[test]
+    fn browse_parses_author_object_with_avatar() {
+        let body = r#"{"listings":[
+            {"id":"lst_1","type":"skill","name":"Impeccable","slug":"impeccable",
+             "version":"1.2.0","author":{"handle":"corey","displayName":"Corey",
+             "avatarUrl":"https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_x/h.png"},
+             "createdAt":"2026-06-01T00:00:00Z"}
+        ]}"#;
+        let listings = parse_browse_response(StatusCode::OK, body).expect("parsed");
+        assert_eq!(listings.len(), 1);
+        let author = &listings[0].author;
+        assert_eq!(author.handle, "corey");
+        assert_eq!(author.display_name, "Corey");
+        assert_eq!(
+            author.avatar_url.as_deref(),
+            Some(
+                "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_x/h.png"
+            )
+        );
     }
 
     #[test]
@@ -1665,7 +1744,7 @@ mod tests {
             "downloadUrl":"https://example.com/pack.tar.gz?sig=abc"}}"#;
         let detail = parse_detail_response(StatusCode::OK, body).expect("parsed");
         assert_eq!(detail.listing.id, "lst_1");
-        assert_eq!(detail.listing.author, "corey");
+        assert_eq!(detail.listing.author.handle, "corey");
         assert_eq!(detail.listing.contributes.as_deref(), Some("1 skill"));
         assert_eq!(
             detail.download_url,

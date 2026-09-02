@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attachmentKindForContentType,
+  attachmentVaultScopeUid,
   buildChatAttachmentVaultPath,
   chatAttachmentValidatorForPlatform,
   conversationPairKey,
@@ -10,9 +11,11 @@ import {
   namePastedImageFile,
 } from "./chat-attachments.js";
 import {
+  formatUploadServerError,
   presignUrlFromResult,
   uploadChatAttachments,
 } from "./upload-chat-attachments.js";
+import { formatComposerSendError } from "./composer-send-error.js";
 
 describe("chat attachment helpers", () => {
   it("builds vault paths and pair keys", () => {
@@ -133,6 +136,28 @@ describe("chat attachment helpers", () => {
     expect(uploaded[0]?.vaultPath).toMatch(/^chat\/attachments\/chan\/chn_x\//);
   });
 
+  it("prefixes the server error verbatim when presign fails", async () => {
+    const file = new File([new Uint8Array([1])], "shot.png", {
+      type: "image/png",
+    });
+    await expect(
+      uploadChatAttachments({
+        files: [file],
+        companyUid: "prs_me",
+        scope: "dm",
+        scopeId: "prs_me#agt_izzy",
+        presignPut: async () => ({
+          ok: false,
+          reason: "error",
+          message:
+            "No active membership for caller in company prs_me",
+        }),
+      }),
+    ).rejects.toThrow(
+      "Could not upload shot.png: No active membership for caller in company prs_me",
+    );
+  });
+
   it("reads a presign PUT result", () => {
     expect(
       presignUrlFromResult({
@@ -147,5 +172,66 @@ describe("chat attachment helpers", () => {
       url: "https://s3.example/put",
       headers: { "content-type": "image/png" },
     });
+  });
+});
+
+describe("attachmentVaultScopeUid", () => {
+  const selfUid = "prs_me";
+
+  it("uses the personal scope for a DM with no company uid", () => {
+    expect(
+      attachmentVaultScopeUid({
+        row: { kind: "dm", companyUid: null },
+        selfUid,
+      }),
+    ).toBe(selfUid);
+  });
+
+  it("uses the personal scope when the row carries a person uid labelled as company", () => {
+    expect(
+      attachmentVaultScopeUid({
+        row: { kind: "dm", companyUid: "prs_me" },
+        selfUid,
+      }),
+    ).toBe(selfUid);
+  });
+
+  it("uses the company uid for a company-scoped DM", () => {
+    expect(
+      attachmentVaultScopeUid({
+        row: { kind: "dm", companyUid: "cmp_indigo" },
+        selfUid,
+      }),
+    ).toBe("cmp_indigo");
+  });
+
+  it("uses the company uid for a company channel", () => {
+    expect(
+      attachmentVaultScopeUid({
+        row: { kind: "channel", companyUid: "cmp_indigo" },
+        selfUid,
+      }),
+    ).toBe("cmp_indigo");
+  });
+});
+
+describe("formatComposerSendError", () => {
+  it("keeps the server error verbatim behind a friendly prefix", () => {
+    expect(
+      formatComposerSendError(
+        "No active membership for caller in company prs_me",
+        true,
+      ),
+    ).toBe(
+      "Couldn't send — No active membership for caller in company prs_me",
+    );
+    expect(
+      formatUploadServerError(
+        "No active membership for caller in company prs_me",
+        "shot.png",
+      ),
+    ).toBe(
+      "Could not upload shot.png: No active membership for caller in company prs_me",
+    );
   });
 });

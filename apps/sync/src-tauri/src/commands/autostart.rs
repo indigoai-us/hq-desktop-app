@@ -1,6 +1,15 @@
 use crate::commands::config::MenubarPrefs;
 use crate::util::logfile::log;
 use crate::util::paths;
+use hq_desktop_core::first_run::merge_menubar_flags;
+use serde_json::Value;
+
+/// One-time in-app copy when a stale LaunchAgent was healed or an old bundle
+/// was retired. Persisted untyped in menubar.json so a settings save cannot
+/// drop it.
+pub const LAUNCH_AGENT_REPOINT_NOTICE: &str =
+    "HQ updated its launch settings; the old copy was retired";
+const NOTICE_KEY: &str = "launchAgentRepointNoticePending";
 
 /// Check whether autostart is enabled.
 #[tauri::command]
@@ -36,6 +45,64 @@ fn start_at_login_pref() -> bool {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
     effective_start_at_login(prefs.as_ref())
+}
+
+/// True when menubar.json is holding an undismissed LaunchAgent heal notice.
+pub fn launch_agent_notice_pending_in_json(contents: &str) -> bool {
+    serde_json::from_str::<Value>(contents)
+        .ok()
+        .and_then(|v| v.get(NOTICE_KEY).and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn persist_launch_agent_notice() {
+    let Ok(path) = paths::menubar_json_path() else {
+        return;
+    };
+    if let Err(err) = merge_menubar_flags(&path, &[(NOTICE_KEY, Value::Bool(true))]) {
+        log("launchagent", &format!("persist notice failed: {err}"));
+    }
+}
+
+fn apply_reconcile_notice(report: &hq_platform::launchagent::ReconcileReport) {
+    if report.should_surface_notice() {
+        persist_launch_agent_notice();
+    }
+}
+
+/// Heal a LaunchAgent that still points at a renamed bundle (`HQ Sync.app`)
+/// and retire a leftover copy in `/Applications`. Idempotent. No-op on
+/// non-macOS and when this process is not the shipped `/Applications` app
+/// (so `cargo tauri dev` cannot rewrite the user's login agent).
+pub fn reconcile_launch_agent_on_launch() {
+    #[cfg(target_os = "macos")]
+    {
+        let report = hq_platform::launchagent::reconcile_installed(true);
+        apply_reconcile_notice(&report);
+    }
+}
+
+/// Same heal as launch, run after the updater has replaced the bundle and
+/// before `app.restart()`.
+pub fn reconcile_launch_agent_after_update() {
+    reconcile_launch_agent_on_launch();
+}
+
+/// Return the one-time LaunchAgent heal note and clear the pending flag.
+#[tauri::command]
+pub fn take_launch_agent_repoint_notice() -> Option<String> {
+    let path = paths::menubar_json_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    if !launch_agent_notice_pending_in_json(&contents) {
+        return None;
+    }
+    if let Err(err) = merge_menubar_flags(&path, &[(NOTICE_KEY, Value::Bool(false))]) {
+        log("launchagent", &format!("clear notice failed: {err}"));
+    }
+    Some(LAUNCH_AGENT_REPOINT_NOTICE.to_string())
 }
 
 /// Idempotent launch-time autostart reconciliation.
@@ -201,5 +268,39 @@ mod tests {
         // The one case that disables autostart: explicit opt-out.
         let p = prefs_with_start(Some(false));
         assert!(!effective_start_at_login(Some(&p)));
+    }
+
+    #[test]
+    fn launch_agent_notice_pending_reads_flag() {
+        assert!(!launch_agent_notice_pending_in_json("{}"));
+        assert!(!launch_agent_notice_pending_in_json("not json"));
+        assert!(launch_agent_notice_pending_in_json(
+            r#"{"launchAgentRepointNoticePending":true}"#
+        ));
+        assert!(!launch_agent_notice_pending_in_json(
+            r#"{"launchAgentRepointNoticePending":false}"#
+        ));
+    }
+
+    #[test]
+    fn take_launch_agent_notice_is_one_shot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("menubar.json");
+        std::fs::write(
+            &path,
+            r#"{"machineId":"keep-me","launchAgentRepointNoticePending":true}"#,
+        )
+        .unwrap();
+        assert!(launch_agent_notice_pending_in_json(
+            &std::fs::read_to_string(&path).unwrap()
+        ));
+        merge_menubar_flags(&path, &[(NOTICE_KEY, Value::Bool(false))]).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!launch_agent_notice_pending_in_json(&body));
+        assert!(body.contains("keep-me"));
+        assert_eq!(
+            LAUNCH_AGENT_REPOINT_NOTICE,
+            "HQ updated its launch settings; the old copy was retired"
+        );
     }
 }

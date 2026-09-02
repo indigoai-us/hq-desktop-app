@@ -7,6 +7,7 @@
   } from "../common/settings-write";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import { isMac } from "../common/platform";
+  import PageHeader from "../shell/PageHeader.svelte";
   import {
     formatHqFolderMeta,
     SETTINGS_SECTIONS,
@@ -1763,33 +1764,13 @@
   data-testid="settings-single-pane"
 >
   <main class="settings-main">
-    <header class="page-header settings-head">
-      <button
-        type="button"
-        class="settings-back"
-        data-testid="settings-back"
-        onclick={() => onnavigate?.(null)}
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M10 3.5 5.5 8 10 12.5"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-        Back
-      </button>
-      <h1 id="settings-title">Settings</h1>
-      <span class="settings-sub">{saved ? "Saved" : "yours — desktop"}</span>
-    </header>
+    <PageHeader
+      title="Settings"
+      titleId="settings-title"
+      subtitle={saved ? "Saved" : "yours — desktop"}
+      backTestId="settings-back"
+      onback={() => onnavigate?.(null)}
+    />
 
     {#if error}
       <div class="error" role="alert">
@@ -2933,25 +2914,6 @@
     font-family: var(--font-sans);
   }
 
-  .settings-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 0 0 52px;
-    height: 52px;
-    padding: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .settings-sub {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--t3);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .settings-split {
     display: flex;
     flex: 1 1 auto;
@@ -3023,27 +2985,6 @@
     overflow: hidden;
   }
 
-  .settings-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    padding: 5px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: none;
-    color: var(--t2);
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .settings-back:hover {
-    color: var(--t1);
-  }
-
   .settings-controls {
     display: grid;
     gap: var(--v4-space-5);
@@ -3053,8 +2994,7 @@
     border: 0;
   }
 
-  .settings-section h2,
-  .page-header p {
+  .settings-section h2 {
     margin: 0;
     color: var(--v4-text-3);
     font-size: var(--text-base);
@@ -3072,13 +3012,6 @@
     container-name: settings-main;
     container-type: inline-size;
     overflow: visible;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    white-space: nowrap;
   }
 
   .settings-section {

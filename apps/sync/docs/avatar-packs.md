@@ -9,7 +9,7 @@ host that serves `pack.json` plus the images it names.
 ```json
 {
   "id": "hq-agent-mascots",
-  "name": "HQ agent mascots",
+  "name": "Animals",
   "version": "1.0.0",
   "author": "Lizzy",
   "baseUrl": "https://hq-agent-mascots.indigo-hq.com",
@@ -48,15 +48,26 @@ For each registered pack URL the shell:
 2. Validates the body.
 3. On network / parse / validation failure, uses a bundled snapshot when one
    exists for that `baseUrl`.
+4. Rewrites each item `src` onto a bundled snapshot file when the relative
+   path is one we ship. The packaged CSP is `img-src 'self' data: asset: blob:`
+   — it deliberately does **not** allow `https:`, so a live host URL would
+   paint as an empty tile even when the fetch succeeds.
 
 The first remote pack is Lizzy's mascot catalog at
-`https://hq-agent-mascots.indigo-hq.com/`. Its snapshot lives at
-`packages/ui/src/avatars/packs/hq-agent-mascots.json`. The live site did not
-ship `pack.json` when this landed; the snapshot is the working catalog until
-it does.
+`https://hq-agent-mascots.indigo-hq.com/`. Display name **Animals**. Snapshot
+catalog: `packages/ui/src/avatars/packs/hq-agent-mascots.json`. Snapshot
+images: `packages/ui/src/avatars/packs/hq-agent-mascots/mascots/{v1,v2}/*.png`
+(24 files). The live site does not ship `pack.json`; the host is access-gated
+and would 302 an `<img>` load. The bundled files are the working catalog.
 
-A built-in pack, **Generated marks**, is always loaded from the bundled
-`agent-NN.png` set. It is not a URL and cannot be removed.
+A built-in pack, **Generated marks** (author line **Default**), is always
+loaded from the bundled `agent-NN.png` set. Item `src` values are the Vite
+asset URLs from `import.meta.glob` — they must not be joined onto the
+`builtin:generated-marks` base, or the tiles render as empty boxes. It is not
+a URL and cannot be removed.
+
+The picker never puts an `http(s)` URL in `<img src>`. A tile whose image
+fails to decode shows a two-letter mark instead of an empty square.
 
 ## Adding a pack
 
@@ -66,8 +77,10 @@ next picker open reloads the registry.
 
 Default registry:
 
-- `builtin:generated-marks` (always present, not listed as removable)
-- `https://hq-agent-mascots.indigo-hq.com`
+- `builtin:generated-marks` (always present, not listed as removable;
+  picker heading "Generated marks", credit "Default · 1.0.0")
+- `https://hq-agent-mascots.indigo-hq.com` (picker heading "Animals",
+  credit "Lizzy · 1.0.0")
 
 ## Saving a choice
 

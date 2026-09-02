@@ -31,6 +31,7 @@ vi.mock("@hq/ui", async (importOriginal) => {
 vi.mock("$lib/tauri-invoke.js", () => ({ tauriInvoke: nativeInvoke }));
 vi.mock("$lib/tauri-listen.js", () => ({ tauriListen }));
 vi.mock("$lib/hq-pro-client.js", () => ({
+  configureHqProApiUrl: vi.fn(),
   hqProFetch: vi.fn(),
   hqProApiUrl: vi.fn(() => "https://hq-pro.test"),
   redirectToSigninWithCallback: vi.fn(),
@@ -50,6 +51,7 @@ import type {
 } from "@hq/ui";
 import { hqProFetch } from "$lib/hq-pro-client.js";
 import Page from "../lib/WorkShell.svelte";
+import WorkShellHostTenantHarness from "./WorkShellHostTenantHarness.svelte";
 
 type AuthStatus =
   | "active"
@@ -80,9 +82,13 @@ type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
 };
+type HostTenantHarness = {
+  establishTenant(accountId: string | null, generation: number): void;
+};
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let hostTenantHarness: HostTenantHarness | null = null;
 let accountId: string | null;
 let initialSession: AuthSession;
 let authSessionHandler: ((event: { payload: unknown }) => void) | null;
@@ -243,6 +249,8 @@ beforeEach(() => {
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
+  if (hostTenantHarness) await unmount(hostTenantHarness);
+  hostTenantHarness = null;
   host.remove();
   localStorage.clear();
   clearDesktopRuntime();
@@ -250,6 +258,41 @@ afterEach(async () => {
 });
 
 describe("native desktop auth session transitions", () => {
+  it("persists the embedded host's rail seed through its tenant storage facade", async () => {
+    const tenantCacheKey =
+      "hq.work.tenant.v1.acct_embedded.all.hq.chat.conversation-cache";
+    localStorage.setItem(
+      "hq.web.rail-cache.v4",
+      JSON.stringify({
+        personUid: "prs_embedded",
+        savedAt: Date.now(),
+        directory: [
+          {
+            channelId: "chn_embedded_seed",
+            scope: "project",
+            name: "Embedded seed",
+            lastActivityAt: null,
+          },
+        ],
+        contacts: [],
+        lastThread: null,
+        lastSelectedId: null,
+      }),
+    );
+    makeDesktopRuntime();
+    hostTenantHarness = mount(WorkShellHostTenantHarness, { target: host });
+
+    await tick();
+    hostTenantHarness.establishTenant("acct_embedded", 7);
+
+    await vi.waitFor(() => {
+      expect(localStorage.getItem(tenantCacheKey)).toContain(
+        "chn_embedded_seed",
+      );
+    });
+    expect(nativeInvoke).not.toHaveBeenCalledWith("get_auth_session");
+  });
+
   it("seeds the conversation cache into the literal tenant-scoped key", async () => {
     const tenantCacheKey =
       "hq.work.tenant.v1.acct_a.all.hq.chat.conversation-cache";

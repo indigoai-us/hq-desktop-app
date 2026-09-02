@@ -38,6 +38,13 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(swift).toContain('.hq/.tray-cmd');
     expect(swift).toContain('writeCommand("show ');
     expect(swift).toContain('writeCommand("quit")');
+    expect(swift).toContain('writeCommand("hide-notifications")');
+    expect(swift).toContain('Hide notifications');
+    expect(swift).toContain('writeCommand("widget-peek")');
+    expect(swift).toContain('writeCommand("updates")');
+    expect(swift).toContain('writeCommand("recovery")');
+    expect(swift).toContain('Check for updates…');
+    expect(swift).toContain('Recovery…');
     // Self-exits when the main app (argv[1] PID) dies — no orphan icon.
     expect(swift).toContain('kill(hqPid, 0)');
   });
@@ -146,6 +153,13 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
       /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
     );
     expect(helper).toContain('"quit" => app.exit(0)');
+    expect(helper).toContain('"hide-notifications" =>');
+    expect(helper).toContain('"widget-peek" =>');
+    expect(helper).toContain('"updates" =>');
+    expect(helper).toContain('"recovery" =>');
+    expect(helper).toContain('spawn_tray_check_for_updates');
+    expect(helper).toContain('spawn_tray_open_recovery');
+    expect(helper).toContain('set_tray_message_badge_is_a_noop_off_macos');
   });
 
   it('popover toggle shows on-screen, suppresses auto-hide, and is single-window', () => {

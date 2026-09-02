@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HQ Recovery</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f5f7;
+        --card: rgba(255, 255, 255, 0.72);
+        --text: #1d1d1f;
+        --muted: #6e6e73;
+        --line: rgba(0, 0, 0, 0.08);
+        --primary: #0071e3;
+        --primary-text: #fff;
+        --danger: #d70015;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1d1d1f;
+          --card: rgba(44, 44, 46, 0.82);
+          --text: #f5f5f7;
+          --muted: #a1a1a6;
+          --line: rgba(255, 255, 255, 0.08);
+          --primary: #0a84ff;
+          --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        padding: 22px 20px 18px;
+      }
+      main {
+        width: 100%;
+        max-width: 380px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .mark {
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      h1 {
+        margin: 4px 0 0;
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.03em;
+      }
+      .version {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .status {
+        min-height: 1.45em;
+        color: var(--muted);
+      }
+      .status[data-kind="error"] { color: var(--danger); }
+      .status[data-kind="ok"] { color: var(--text); }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font: inherit;
+        font-weight: 560;
+        cursor: pointer;
+        background: var(--card);
+        color: var(--text);
+        box-shadow: var(--shadow);
+        text-align: left;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      button.primary {
+        background: var(--primary);
+        color: var(--primary-text);
+        box-shadow: none;
+      }
+      button.quit {
+        background: transparent;
+        box-shadow: none;
+        color: var(--muted);
+        text-align: center;
+      }
+      button:focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main data-testid="hq-recovery">
+      <div>
+        <div class="mark">HQ</div>
+        <h1>Recovery</h1>
+        <p class="version" id="version">Version …</p>
+      </div>
+      <p>
+        The desktop window did not finish loading. You can install an update
+        (including a server-directed rollback), reinstall the current latest
+        release, or clear local UI state. Sync data is kept.
+      </p>
+      <p class="status" id="status" role="status"></p>
+      <div class="actions">
+        <button type="button" class="primary" id="primary" hidden></button>
+        <button type="button" id="check">Check for updates now</button>
+        <button type="button" id="reinstall">Reinstall latest release</button>
+        <button type="button" id="reset">Reset local UI state</button>
+        <button type="button" class="quit" id="quit">Quit</button>
+      </div>
+    </main>
+    <script>
+      const state = window.__HQ_RECOVERY__ || {
+        version: "unknown",
+        pendingUpdate: null,
+        trigger: "menu",
+      };
+
+      function invoke(cmd, args) {
+        const internals = window.__TAURI_INTERNALS__;
+        if (!internals || typeof internals.invoke !== "function") {
+          return Promise.reject(new Error("Native bridge unavailable"));
+        }
+        return internals.invoke(cmd, args);
+      }
+
+      const versionEl = document.getElementById("version");
+      const statusEl = document.getElementById("status");
+      const primaryEl = document.getElementById("primary");
+      const buttons = [...document.querySelectorAll("button")];
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text || "";
+        statusEl.dataset.kind = kind || "";
+      }
+
+      function busy(on) {
+        for (const button of buttons) button.disabled = on;
+      }
+
+      function showPending(info) {
+        if (!info || !info.version) {
+          primaryEl.hidden = true;
+          return;
+        }
+        primaryEl.hidden = false;
+        const rollback =
+          info.rollback === true ||
+          (state.version && info.version !== state.version);
+        primaryEl.textContent = rollback
+          ? "Install HQ v" + info.version + " (rollback)"
+          : "Install HQ v" + info.version;
+        primaryEl.dataset.version = info.version;
+      }
+
+      versionEl.textContent = "Currently running v" + (state.version || "unknown");
+      showPending(state.pendingUpdate);
+      if (state.pendingUpdate && state.pendingUpdate.version) {
+        setStatus("An update is available.", "ok");
+      } else if (state.trigger === "watchdog-timeout") {
+        setStatus("The window did not become ready in time.");
+      } else if (state.trigger === "webview-crash") {
+        setStatus("The desktop view stopped unexpectedly.");
+      } else if (state.trigger === "safe-mode") {
+        setStatus("Safe mode was requested for this launch.");
+      }
+
+      document.getElementById("check").addEventListener("click", async () => {
+        busy(true);
+        setStatus("Checking for updates…");
+        try {
+          const info = await invoke("check_for_updates");
+          if (info && info.version) {
+            showPending(info);
+            setStatus("Update v" + info.version + " is available.", "ok");
+          } else {
+            showPending(null);
+            setStatus("You’re up to date — v" + state.version + ".", "ok");
+          }
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Couldn’t check for updates.", "error");
+        } finally {
+          busy(false);
+        }
+      });
+
+      async function installPending() {
+        busy(true);
+        setStatus("Installing update…");
+        try {
+          await invoke("install_update");
+          setStatus("Install started. HQ will restart.", "ok");
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Install failed.", "error");
+          busy(false);
+        }
+      }
+
+      primaryEl.addEventListener("click", () => void installPending());
+
+      document.getElementById("reinstall").addEventListener("click", async () => {
+        busy(true);
+        setStatus("Downloading and installing the current latest release…");
+        try {
+          await invoke("reinstall_latest_release");
+          setStatus("Install started. HQ will restart.", "ok");
+        } catch (error) {
+          setStatus(
+            error && error.message ? error.message : "Reinstall failed.",
+            "error",
+          );
+          busy(false);
+        }
+      });
+
+      document.getElementById("reset").addEventListener("click", async () => {
+        busy(true);
+        setStatus("Clearing local UI state…");
+        try {
+          await invoke("reset_local_ui_state");
+          setStatus("Local UI state cleared. Relaunch HQ if the window is still stuck.", "ok");
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Couldn’t reset UI state.", "error");
+        } finally {
+          busy(false);
+        }
+      });
+
+      document.getElementById("quit").addEventListener("click", async () => {
+        try {
+          await invoke("quit_app");
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Couldn’t quit.", "error");
+        }
+      });
+    </script>
+  </body>
+</html>
