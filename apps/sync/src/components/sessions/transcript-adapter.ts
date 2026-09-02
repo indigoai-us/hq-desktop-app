@@ -246,8 +246,8 @@ export type PendingCard =
 export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
-  costUsd?: number;
-  durationMs?: number;
+  costUsd?: number | null;
+  durationMs?: number | null;
   /** "2 in · 17 out · $0.68". */
   label: string;
 }
@@ -351,14 +351,18 @@ function compactTokens(value: number): string {
 function usageLabel(usage: {
   inputTokens: number;
   outputTokens: number;
-  costUsd?: number;
-  durationMs?: number;
+  costUsd?: number | null;
+  durationMs?: number | null;
 }): string {
   const parts = [
     `${compactTokens(usage.inputTokens)} in`,
     `${compactTokens(usage.outputTokens)} out`,
   ];
-  if (usage.costUsd !== undefined) parts.push(`$${usage.costUsd.toFixed(2)}`);
+  // Codex reports no dollar cost: the Rust `Option<f64>` arrives as `null`, not
+  // `undefined`, so an `!== undefined` guard let `null.toFixed` crash the page.
+  if (typeof usage.costUsd === 'number' && Number.isFinite(usage.costUsd)) {
+    parts.push(`$${usage.costUsd.toFixed(2)}`);
+  }
   return parts.join(' · ');
 }
 
