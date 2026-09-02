@@ -38,8 +38,9 @@ use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 use crate::util::release_channel::{
-    effective_channel, resolve_channel_endpoint, EndpointProvenance, ReleaseChannel,
-    ResolvedChannelEndpoint,
+    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
+    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel,
+    ResolvedChannelEndpoint, UpdateFeedPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -551,18 +552,44 @@ struct ChannelAwareUpdater {
     channel: ReleaseChannel,
 }
 
+/// How the version comparator decides whether the feed target is an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateOfferMode {
+    /// Newer, or older only when the running version is marked bad.
+    Standard,
+    /// Recovery "Reinstall latest": install the feed target even if equal.
+    Reinstall,
+}
+
 /// Build a channel-aware `tauri_plugin_updater::Updater` for this
 /// invocation. Tauri's `app.updater()` always uses the static endpoint
 /// from `tauri.conf.json`; `app.updater_builder()` lets us override
 /// per-call so the same binary serves three channels without rebuild.
 async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, String> {
+    channel_aware_updater_with_mode(app, UpdateOfferMode::Standard).await
+}
+
+async fn channel_aware_updater_with_mode(
+    app: &AppHandle,
+    mode: UpdateOfferMode,
+) -> Result<ChannelAwareUpdater, String> {
     let (channel, resolved) = resolve_endpoint().await;
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
+    let policy = fetch_update_feed_policy(&resolved.url).await;
+    log_feed_policy(&policy, app.package_info().version.to_string().as_str());
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| format!("updater_builder.endpoints: {e}"))?
+        .version_comparator(move |current, release| match mode {
+            UpdateOfferMode::Reinstall => {
+                should_reinstall_feed_target(&current, &release.version)
+            }
+            UpdateOfferMode::Standard => {
+                should_offer_update(&current, &release.version, &policy)
+            }
+        })
         .build()
         .map_err(|e| format!("updater_builder.build: {e}"))?;
     Ok(ChannelAwareUpdater {
@@ -570,6 +597,28 @@ async fn channel_aware_updater(app: &AppHandle) -> Result<ChannelAwareUpdater, S
         provenance: resolved.provenance,
         channel,
     })
+}
+
+fn log_feed_policy(policy: &UpdateFeedPolicy, current: &str) {
+    if policy.rollback
+        || !policy.bad_versions.is_empty()
+        || policy.min_supported.is_some()
+    {
+        log(
+            "updater",
+            &format!(
+                "feed policy rollback={} bad_versions={:?} min_supported={:?} offered={:?} current={current}",
+                policy.rollback,
+                policy
+                    .bad_versions
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>(),
+                policy.min_supported.as_ref().map(|v| v.to_string()),
+                policy.version.as_ref().map(|v| v.to_string()),
+            ),
+        );
+    }
 }
 
 #[tauri::command]
@@ -599,6 +648,57 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             // pulled/superseded release doesn't keep hydrating surfaces
             // (e.g. the version pop-out) as "Update available" forever.
             Ok(apply_absent_and_emit(&app, ticket, authoritative)?.pending_info())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Download and install the current `latest.json` target regardless of
+/// version (recovery "Reinstall latest release"). Signature verification
+/// is unchanged; only the "only newer" gate is skipped.
+#[tauri::command]
+pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
+    let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+        .ok_or_else(|| "An update installation is already in progress".to_string())?;
+    let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    let ticket = begin_app_check(&app)?;
+    let updater = channel_aware_updater_with_mode(&app, UpdateOfferMode::Reinstall).await?;
+    let authoritative = updater.provenance.absence_is_authoritative();
+    match updater.updater.check().await {
+        Ok(Some(update)) => {
+            let info = discovered_update(
+                update.version.clone(),
+                update.body.clone(),
+                update.date.map(|d| d.to_string()),
+            );
+            let _ = record_and_announce_update(
+                &app,
+                ticket,
+                info,
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await?;
+            log(
+                "updater",
+                &format!(
+                    "reinstalling latest.json target v{} (running v{})",
+                    update.version,
+                    app.package_info().version
+                ),
+            );
+            #[cfg(not(target_os = "windows"))]
+            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
+            let version = update.version.clone();
+            let result = install_verified_update(&app, &update).await;
+            if let Err(message) = &result {
+                emit_update_install_failed(&app, &version, message);
+            }
+            result
+        }
+        Ok(None) => {
+            let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
+            Err("No release available to reinstall".to_string())
         }
         Err(e) => Err(e.to_string()),
     }
@@ -644,6 +744,8 @@ async fn install_verified_update(
             )
             .await
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         app.restart();
     }
@@ -834,6 +936,8 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
             .update
             .install(&staged.bytes)
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         app.restart();
     }
@@ -891,6 +995,8 @@ pub async fn is_indigo_user() -> bool {
 /// Menu-item id for the macOS app-menu "Check for Updates…" entry.
 #[cfg(target_os = "macos")]
 pub const MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu:check-for-updates";
+#[cfg(target_os = "macos")]
+pub const MENU_RECOVERY_ID: &str = "app-menu:recovery";
 
 /// Build the macOS application menu with a "Check for Updates…" item under
 /// About, keeping the standard app/Edit/Window entries (the app previously
@@ -905,10 +1011,12 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
 
     let check_item = MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…")
         .build(app)?;
+    let recovery_item = MenuItemBuilder::with_id(MENU_RECOVERY_ID, "Recovery…").build(app)?;
     let app_menu = SubmenuBuilder::new(app, "HQ")
         .about(Some(AboutMetadata::default()))
         .separator()
         .item(&check_item)
+        .item(&recovery_item)
         .separator()
         .services()
         .separator()
@@ -941,7 +1049,12 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(menu)?;
 
     app.on_menu_event(|handle, event| {
-        if event.id().as_ref() != MENU_CHECK_FOR_UPDATES_ID {
+        let id = event.id().as_ref();
+        if id == MENU_RECOVERY_ID {
+            crate::recovery::spawn_tray_open_recovery(handle.clone());
+            return;
+        }
+        if id != MENU_CHECK_FOR_UPDATES_ID {
             return;
         }
         let handle = handle.clone();
@@ -949,8 +1062,11 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
             match check_for_updates(handle.clone()).await {
                 // Update found: `check_for_updates` already emitted
                 // `update:available`, which every existing surface (Settings
-                // row, banner, version pop-out) listens for.
-                Ok(Some(_)) => {}
+                // row, banner, version pop-out) listens for. Also raise the
+                // native recovery window so a stuck UI still has a path.
+                Ok(Some(_)) => {
+                    crate::recovery::spawn_tray_open_recovery(handle);
+                }
                 Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
                 Err(e) => {
                     log("updater", &format!("menu check_for_updates failed: {e}"));
@@ -972,6 +1088,11 @@ fn up_to_date_body(app: &AppHandle) -> String {
 
 /// Native confirmation for a user-initiated menu check. Notification (not a
 /// modal) so it works whether or not any app window is frontmost.
+#[cfg(target_os = "macos")]
+pub(crate) fn notify_manual_check_up_to_date(app: &AppHandle) {
+    notify_manual_check(app, &up_to_date_body(app));
+}
+
 #[cfg(target_os = "macos")]
 fn notify_manual_check(app: &AppHandle, body: &str) {
     use tauri_plugin_notification::NotificationExt;

@@ -1,0 +1,34 @@
+# Cargo profile overlay for the Windows installer FIXTURES only.
+#
+# The two installer jobs in windows-check.yml copy this to
+# `apps/sync/src-tauri/.cargo/config.toml` at build time. It is never copied by
+# release.yml, so nothing here reaches a user.
+#
+# Why it lives here instead of at `.cargo/config.toml`: at that path it would
+# apply to every local `cargo build` and to the release workflow, and it would
+# also land in Swatinem/rust-cache's cache key (the action hashes
+# `**/.cargo/config.toml`), forking a second multi-GB lane out of a 10 GB budget
+# the whole repository shares.
+#
+# Measured on run 33651446024: of the installer build's 8m37s of cargo, 6m15s
+# is one silent block -- codegen and link of the hq-sync-menubar binary alone.
+# The other three workspace crates and every dependency are already cheap or
+# already cached. So the override is aimed at exactly that crate.
+#
+# IMPORTANT -- the scope below is load-bearing, not conservatism.
+#
+# The CI step writes this file AFTER rust-cache has computed its key, so the
+# cache key does not describe this override. That is only sound while the
+# override cannot change anything the cache stores. rust-cache deletes
+# workspace-member artifacts before saving, so hq-sync-menubar is never in the
+# cache; every dependency still builds at the profile's own opt-level and stays
+# bit-identical to what the key promises.
+#
+# Add a dependency to this file and that stops being true: the lane would then
+# hold artifacts its key does not describe, and every job restoring it --
+# including release builds warmed from the same shared key -- would silently
+# get them. If you need to override a dependency, put the setting in the
+# workflow's env instead and accept the new cache lane.
+
+[profile.release.package.hq-sync-menubar]
+opt-level = 1

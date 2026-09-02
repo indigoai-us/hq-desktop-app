@@ -50,6 +50,7 @@ import {
   takeDirectorySeed,
   takeRailConversations,
   pickAutoOpenConversation,
+  pickSettledBootConversation,
   titlebarDayDate,
   togglePin,
   type ConversationRow,
@@ -583,6 +584,56 @@ describe("pickAutoOpenConversation", () => {
 
   it("returns null when the rail is empty", () => {
     expect(pickAutoOpenConversation([], null)).toBeNull();
+  });
+});
+
+describe("pickSettledBootConversation", () => {
+  function row(
+    partial: Partial<ConversationRow> & { id: string; lastActivityAt: number },
+  ): ConversationRow {
+    return {
+      kind: "channel",
+      title: partial.id,
+      companyUid: null,
+      unreadDot: false,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  it("still prefers a real conversation over #setup", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 99,
+    });
+    const live = row({
+      id: "ch:chn_ops",
+      channelId: "chn_ops",
+      lastActivityAt: 1,
+    });
+    expect(pickSettledBootConversation([setup, live], null)?.id).toBe(
+      "ch:chn_ops",
+    );
+  });
+
+  it("falls back to #setup so an empty tenant is not stuck on the skeleton", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+      pinned: true,
+    });
+    expect(pickSettledBootConversation([setup], null)?.id).toBe("ch:setup");
+  });
+
+  it("returns null when a selection already exists", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+    });
+    expect(pickSettledBootConversation([setup], "ch:setup")).toBeNull();
   });
 });
 

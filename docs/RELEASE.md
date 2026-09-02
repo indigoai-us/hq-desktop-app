@@ -14,6 +14,24 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## macOS bundle identity (do not rename)
+
+The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in
+`apps/sync/src-tauri/tauri.conf.json`. The user LaunchAgent label is
+`ai.indigo.hq-sync-menubar` (`~/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist`).
+
+These two must stay stable. Renaming the `.app` bundle without repointing the
+LaunchAgent leaves a KeepAlive agent running the previous binary from the old
+path, so an in-place update looks installed while the user stays on the old
+version. `scripts/bundle-name-contract.test.ts` fails the release if
+`productName` or the LaunchAgent label constant drift.
+
+On every launch from `/Applications`, and again after an updater install, the
+app rewrites a stale LaunchAgent path to the running bundle (preserving other
+plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
+`HQ Sync.app` in `/Applications`, and terminates processes still running from
+that old path.
+
 ## Install Window (macOS DMG)
 
 The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the
@@ -312,6 +330,67 @@ Each release publishes one `latest.json` covering `darwin-aarch64`,
 `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one
 key. Stable releases use `make_latest=true`; beta and alpha use
 `make_latest=false`, so GitHub's `/releases/latest/` alias remains stable.
+
+### Server-directed rollback (`latest.json` extra fields)
+
+The updater only moves forward unless the feed marks the *running* version as
+bad. Extra keys sit next to Tauri's required `version` / `platforms` fields
+and are ignored by older clients:
+
+```json
+{
+  "version": "0.10.177",
+  "notes": "Emergency pull of 0.10.178",
+  "pub_date": "2026-09-02T12:00:00Z",
+  "rollback": true,
+  "bad_versions": ["0.10.178"],
+  "min_supported": "0.10.177",
+  "platforms": {
+    "darwin-aarch64": { "url": "…/HQ_0.10.177_universal.app.tar.gz", "signature": "…" }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `rollback` | This feed is a pull. Anyone not already on `version` may install it, including a *lower* version. |
+| `bad_versions` | Running versions that must accept the offered build even when it is older. |
+| `min_supported` | Floor. A running version below this is treated as needing the offer. |
+
+The package still goes through the same minisign check as a normal update.
+The "only newer" bypass fires **only** when the running version is marked bad
+(listed in `bad_versions`, below `min_supported`, or `rollback` is true and
+the running version is not the offered one). Healthy users on a newer good
+build are not silently downgraded.
+
+#### Operator runbook: pull a bad build in one command
+
+Prefer this over retagging when a public build (for example `v0.10.178`)
+already reached users and the UI cannot check for updates:
+
+```bash
+# From the repo root. Marks 0.10.178 bad and serves 0.10.177 as latest.
+node scripts/release-mark-bad.mjs 0.10.178 --to 0.10.177
+```
+
+What that does:
+
+1. Downloads `latest.json` from the good tag (`v0.10.177`).
+2. Stamps `rollback: true`, `bad_versions: ["0.10.178"]`, `min_supported: "0.10.177"`.
+3. Uploads it with `gh release upload v0.10.177 latest.json --clobber`.
+4. If GitHub's `/releases/latest` currently points at the bad tag, marks that
+   tag prerelease so the alias moves back to the good build.
+
+Dry-run against a local file (no `gh` calls):
+
+```bash
+node scripts/release-mark-bad.mjs 0.10.178 --dry-run --fixture scripts/fixtures/latest.json
+```
+
+Users already on the good version keep it. Users on a listed bad version
+install the offered build on the next updater check (or from the native
+Recovery window / tray "Check for updates…" item). Artifact signatures are
+not rewritten.
 
 ### Versionless download aliases
 

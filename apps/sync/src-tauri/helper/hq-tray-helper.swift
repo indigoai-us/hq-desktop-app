@@ -177,6 +177,16 @@ final class TrayController: NSObject {
             title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
         desktop.target = self
         menu.addItem(desktop)
+        menu.addItem(.separator())
+        let updates = NSMenuItem(
+            title: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
+        let recovery = NSMenuItem(
+            title: "Recovery…", action: #selector(openRecovery), keyEquivalent: "")
+        recovery.target = self
+        menu.addItem(recovery)
+        menu.addItem(.separator())
         let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
         signOut.target = self
         menu.addItem(signOut)
@@ -237,6 +247,14 @@ final class TrayController: NSObject {
     @objc func syncNow() { writeCommand("sync") }
     @objc func openDesktop() {
         writeCommand("desktop")
+        activateHQ()
+    }
+    @objc func checkForUpdates() {
+        writeCommand("updates")
+        activateHQ()
+    }
+    @objc func openRecovery() {
+        writeCommand("recovery")
         activateHQ()
     }
     @objc func signOutHQ() { writeCommand("signout") }

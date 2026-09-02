@@ -127,6 +127,10 @@
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
     notificationWakeSeq?: number;
+    /** Native hosts can bound first paint without replacing DesktopApp's default. */
+    bootTimeoutMs?: number;
+    /** Native hosts receive DesktopApp's first successful shell-paint signal. */
+    onShellReady?: () => void;
     /** Native external-browser seam for Settings and rendered links. */
     onOpenConsole?: (url: string) => Promise<void> | void;
     onopenurl?: (url: string) => void;
@@ -167,6 +171,8 @@
     refreshAppVersion,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
+    bootTimeoutMs,
+    onShellReady,
     onOpenConsole: hostOnOpenConsole,
     onopenurl: hostOpenUrl,
     onembeddednavigationready,
@@ -659,6 +665,8 @@
       {initialReplyRootEventId}
       {seedDirectory}
       {notificationWakeSeq}
+      {bootTimeoutMs}
+      {onShellReady}
       {searchRows}
       hydrateLiveMessages={true}
       onlivemessages={cacheLiveMessages}

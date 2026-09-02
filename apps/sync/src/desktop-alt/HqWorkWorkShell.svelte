@@ -43,9 +43,14 @@
 
   interface Props {
     invokeFn?: SyncInvokeFn;
+    /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
+    bootTimeoutMs?: number;
   }
 
-  let { invokeFn = tauriInvoke as SyncInvokeFn }: Props = $props();
+  let {
+    invokeFn = tauriInvoke as SyncInvokeFn,
+    bootTimeoutMs,
+  }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
@@ -631,6 +636,10 @@
         onopenurl={openBrowserUrl}
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
+        bootTimeoutMs={bootTimeoutMs}
+        onShellReady={() => {
+          void invokeFn('shell_ready');
+        }}
         onembeddednavigationready={() => {
           detachNavigation?.();
           const detach = navigation.attach((target) => {

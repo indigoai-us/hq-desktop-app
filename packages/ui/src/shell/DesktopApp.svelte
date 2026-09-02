@@ -19,7 +19,7 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import type { PlatformAdapter } from "@hq/platform";
+  import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
@@ -28,6 +28,11 @@
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
+  import {
+    CONVERSATION_BOOT_GRACE_MS,
+    DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    raceTimeout,
+  } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
@@ -369,6 +374,14 @@
      * Vault buckets do not grant browser CORS to raw presigned URLs.
      */
     getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
+    /**
+     * Bound for first-paint optional fetches (directory, contacts, DM
+     * threads). Tests pass a short value so a hung/404 call cannot leave the
+     * conversation pane on a skeleton.
+     */
+    bootTimeoutMs?: number;
+    /** First successful conversation/empty paint — host reports `shell_ready`. */
+    onShellReady?: () => void;
   }
 
   let {
@@ -415,6 +428,8 @@
     onselectrow,
     putAttachmentObject,
     getAttachmentObject,
+    bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    onShellReady,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -485,6 +500,21 @@
   let sidebarCollapsed = $state(false);
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let conversationBootTimedOut = $state(false);
+  $effect(() => {
+    if (selectedRow) {
+      conversationBootTimedOut = false;
+      return;
+    }
+    const handle = setTimeout(() => {
+      conversationBootTimedOut = true;
+      console.info("[hq-desktop]", {
+        t: Date.now(),
+        event: "conversation-boot-timeout",
+      });
+    }, bootTimeoutMs + CONVERSATION_BOOT_GRACE_MS);
+    return () => clearTimeout(handle);
+  });
   $effect(() => {
     const next = initialRow;
     if (!next) return;
@@ -1792,12 +1822,20 @@
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
     const [res, threadsRes] = await Promise.all([
-      notifications.fetchDmInbox({
-        ...(since ? { since } : {}),
-        limit: "50",
-      }),
+      raceTimeout(
+        notifications.fetchDmInbox({
+          ...(since ? { since } : {}),
+          limit: "50",
+        }),
+        bootTimeoutMs,
+        "dm-inbox",
+      ).catch(() => failure("timeout", "dm-inbox timed out")),
       wantThreads
-        ? notifications.fetchDmThreads!({ limit: 100 }).catch(() => null)
+        ? raceTimeout(
+            notifications.fetchDmThreads!({ limit: 100 }),
+            bootTimeoutMs,
+            "dm-threads",
+          ).catch(() => null)
         : Promise.resolve(null),
     ]);
     if (
@@ -2604,6 +2642,8 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
           onrows={(rows) => (railRows = rows)}
+          {bootTimeoutMs}
+          {onShellReady}
         />
         {/key}
       {/if}
@@ -3050,6 +3090,14 @@
               onopen={openChannelFile}
             />
           {/if}
+        {:else if conversationBootTimedOut}
+          <div
+            class="conversation-boot-error"
+            data-testid="conversation-boot-error"
+            role="alert"
+          >
+            Couldn’t load conversations.
+          </div>
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
           <ChannelSkeleton />
@@ -3145,6 +3193,19 @@
     min-height: 0;
     padding: 0;
     overflow: hidden;
+  }
+
+  .conversation-boot-error {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
   }
 
   .notifications-layer {
