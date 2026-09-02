@@ -10,6 +10,12 @@ import { automatedAgentJoinNoticeKey } from '../lib/automatedNotices';
 /** Auto-collapse timeout for each visible stack row (ms). */
 export const WIDGET_ROW_TIMEOUT_MS = 8000;
 
+/** Default stack auto-hide delay while HQ is not focused (seconds). */
+export const DEFAULT_WIDGET_AUTO_HIDE_SECONDS = WIDGET_ROW_TIMEOUT_MS / 1000;
+
+/** localStorage key for the user/system “stack hidden” flag (survives focus/wake). */
+export const WIDGET_STACK_HIDDEN_STORAGE_KEY = 'hq-widget-stack-hidden-v1';
+
 /** Max visible rows; overflow drops the oldest visible. */
 export const WIDGET_STACK_MAX = 4;
 
@@ -245,11 +251,89 @@ export interface WidgetStackState {
    * never disappears. Omitted/`undefined` is treated as false.
    */
   held?: boolean;
+  /**
+   * User/system dismissed the live stack overlay. Items stay in `visible` /
+   * `recent` so tray hover can re-surface them, but {@link widgetWindowSize}
+   * returns idle and the panel is not drawn. Omitted/`undefined` is shown.
+   */
+  hidden?: boolean;
 }
 
 /** Empty non-occluded stack. */
 export function emptyWidgetStack(): WidgetStackState {
-  return { visible: [], queued: [], recent: [], occluded: false, held: false };
+  return {
+    visible: [],
+    queued: [],
+    recent: [],
+    occluded: false,
+    held: false,
+    hidden: false,
+  };
+}
+
+/** Collapse the live overlay without dropping items from history. */
+export function hideStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden === true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: true,
+    held: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/** Reveal a previously hidden live overlay. No-op when already shown. */
+export function showStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden !== true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Drop the live toast overlay (visible + queued) without touching recent.
+ * Opening or closing the Messages panel consumes the toast so it cannot
+ * come back as a second persistent surface.
+ */
+export function clearLiveOverlay(state: WidgetStackState): WidgetStackState {
+  if (state.visible.length === 0 && state.queued.length === 0) {
+    return state;
+  }
+  return {
+    ...state,
+    visible: [],
+    queued: [],
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Whether the live stack should auto-hide: HQ is in the background, the
+ * pointer/reply hold is off, and the configured delay has elapsed.
+ * `autoHideSeconds <= 0` means never (persist until explicit dismiss).
+ */
+export function stackAutoHideDue(input: {
+  hidden: boolean;
+  held: boolean;
+  appFocused: boolean;
+  autoHideSeconds: number;
+  elapsedMs: number;
+}): boolean {
+  if (input.hidden || input.held || input.appFocused) return false;
+  if (!Number.isFinite(input.autoHideSeconds) || input.autoHideSeconds <= 0) {
+    return false;
+  }
+  return input.elapsedMs >= input.autoHideSeconds * 1000;
 }
 
 /**
@@ -546,12 +630,35 @@ function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): Widget
   return [entry, ...withoutMatching(recent, item)].slice(0, WIDGET_RECENT_MAX);
 }
 
+export type AddItemOptions = {
+  /**
+   * When false, needs-action rows go to `recent` (Messages → Activity)
+   * but never into the live toast overlay. Default true.
+   */
+  showNeedsAction?: boolean;
+  /**
+   * When false, skip visible/queued (the toast). The item still goes to
+   * `recent`. Used while the Messages panel is already open so a second
+   * surface cannot appear behind it. Default true.
+   */
+  liveOverlay?: boolean;
+};
+
 /**
- * Enqueue or show a notification. When occluded, push onto `queued` (newest
- * first); otherwise prepend to `visible` and trim to {@link WIDGET_STACK_MAX}.
- * Always also prepends into `recent` (unread, deduped, capped).
+ * Enqueue or show a notification toast. When occluded, push onto `queued`
+ * (newest first); otherwise prepend to `visible` and trim to
+ * {@link WIDGET_STACK_MAX}. Always also prepends into `recent` (unread,
+ * deduped, capped) so the Messages panel Activity list has the row.
+ *
+ * A hidden overlay re-surfaces only for a *new* item. Re-delivery of a row
+ * already on the hidden stack (wake/poller) must not pin the window on top
+ * again — that is the stuck-state the hide flag exists to prevent.
  */
-export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetStackState {
+export function addItem(
+  state: WidgetStackState,
+  item: WidgetStackItem,
+  options: AddItemOptions = {},
+): WidgetStackState {
   // The updater may rediscover the same version every six hours. Keep one
   // current update row instead of accumulating random banner ids.
   const isActionableUpdate =
@@ -570,9 +677,25 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
         }
       : state;
   const recent = prependRecent(base.recent, item);
+  const skipLive =
+    options.liveOverlay === false ||
+    (options.showNeedsAction === false && isNeedsActionItem(item));
+  if (skipLive) {
+    return {
+      ...base,
+      visible: withoutMatching(base.visible, item),
+      queued: withoutMatching(base.queued, item),
+      recent,
+    };
+  }
+  const isExistingLive =
+    base.visible.some((existing) => sameNotification(existing, item)) ||
+    base.queued.some((existing) => sameNotification(existing, item));
+  const hidden = base.hidden === true && isExistingLive;
   if (base.occluded) {
     return {
       ...base,
+      hidden,
       visible: withoutMatching(base.visible, item),
       queued: [item, ...withoutMatching(base.queued, item)],
       recent,
@@ -580,6 +703,7 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
   }
   return {
     ...base,
+    hidden,
     queued: withoutMatching(base.queued, item),
     visible: [item, ...withoutMatching(base.visible, item)].slice(0, WIDGET_STACK_MAX),
     recent,
@@ -645,12 +769,10 @@ export function expireItems(state: WidgetStackState, now: number): WidgetStackSt
   if (state.held === true) {
     return state;
   }
-  // Needs-action rows stay until resolved or dismissed: the 8 s auto-collapse
-  // is for glanceable notices, and pulling a picker out from under the user
-  // was one of the ways these rows dead-ended.
-  const visible = state.visible.filter(
-    (item) => item.expiresAt > now || isNeedsActionItem(item),
-  );
+  // The live overlay is a toast: every row, including needs-action, auto-hides
+  // after expiresAt. Needs-action rows remain in `recent` (Messages → Activity)
+  // until the user files or dismisses them.
+  const visible = state.visible.filter((item) => item.expiresAt > now);
   if (visible.length === state.visible.length) {
     return state;
   }
@@ -719,6 +841,21 @@ export function markRecentRead(state: WidgetStackState): WidgetStackState {
  */
 export function unreadRecentCount(state: WidgetStackState): number {
   return state.recent.filter((r) => r.unread === true).length;
+}
+
+/**
+ * Badge on the HQ mark: unread rows plus unresolved needs-action rows
+ * (a meeting that still needs a company stays badged after the panel is
+ * marked read). Each recent item counts at most once.
+ */
+export function widgetBadgeCount(state: WidgetStackState): number {
+  let count = 0;
+  for (const item of state.recent) {
+    if (item.unread === true || isNeedsActionItem(item)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /**
@@ -1255,7 +1392,7 @@ export function hoverRows(
  * Backend clamps to 66..380 × 43..720.
  */
 export function widgetWindowSize(state: WidgetStackState): { width: number; height: number } {
-  const n = state.visible.length;
+  const n = state.hidden === true ? 0 : state.visible.length;
   if (n === 0) {
     return { width: WIDGET_IDLE_WIDTH, height: WIDGET_IDLE_HEIGHT };
   }

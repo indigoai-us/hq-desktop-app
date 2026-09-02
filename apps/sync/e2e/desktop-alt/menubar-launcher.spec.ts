@@ -17,6 +17,8 @@ describe('US-006: menubar launcher opens desktop view', () => {
 
   it('menu-bar click "show" routes to the desktop workspace on the main thread', () => {
     expect(trayHelper).toContain('if let Some(rest) = cmd.strip_prefix("show")');
+    expect(trayHelper).toContain('app.run_on_main_thread(move ||');
+    expect(trayHelper).toContain('crate::commands::widget::hide_widget_stack_now(&app_hide)');
     expect(trayHelper).toContain('activate_primary_surface');
   });
 

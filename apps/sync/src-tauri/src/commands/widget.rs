@@ -69,8 +69,16 @@ static SCREEN_PARAMS_OBSERVER: Once = Once::new();
 /// Same disable→re-enable rationale as [`SCREEN_PARAMS_OBSERVER`].
 static CLICK_AWAY_MONITOR: Once = Once::new();
 
+/// Ensures the HQ-active observer is registered at most once per process.
+static APP_ACTIVE_OBSERVER: Once = Once::new();
+
+/// Ensures the Escape key monitor is registered at most once per process.
+static ESCAPE_MONITOR: Once = Once::new();
+
 /// Window label — kept in sync with the `main.ts` router branch and
-/// `capabilities/widget.json`.
+/// `capabilities/widget.json`. This is the only widget window: the HQ mark,
+/// the Messages panel, and the transient new-item toast all render inside it.
+/// There is no separate `widget-stack` window.
 pub const WINDOW_LABEL: &str = "widget";
 
 /// Widget geometry (logical px). Sized to hug the 56px wordmark so the
@@ -145,6 +153,98 @@ fn configured_display_name() -> Option<String> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WidgetPlacement {
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+    FollowTray,
+}
+
+fn parse_widget_placement(raw: Option<&str>) -> WidgetPlacement {
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("bottom-left") => WidgetPlacement::BottomLeft,
+        Some("top-right") => WidgetPlacement::TopRight,
+        Some("top-left") => WidgetPlacement::TopLeft,
+        Some("follow-tray") => WidgetPlacement::FollowTray,
+        _ => WidgetPlacement::BottomRight,
+    }
+}
+
+fn placement_key(placement: WidgetPlacement) -> &'static str {
+    match placement {
+        WidgetPlacement::BottomRight => "bottom-right",
+        WidgetPlacement::BottomLeft => "bottom-left",
+        WidgetPlacement::TopRight => "top-right",
+        WidgetPlacement::TopLeft => "top-left",
+        WidgetPlacement::FollowTray => "follow-tray",
+    }
+}
+
+fn configured_placement() -> WidgetPlacement {
+    parse_widget_placement(
+        read_menubar_json()
+            .as_ref()
+            .and_then(|j| j.get("widgetPlacement").and_then(|v| v.as_str())),
+    )
+}
+
+fn configured_auto_hide_seconds() -> u32 {
+    read_menubar_json()
+        .and_then(|j| {
+            j.get("widgetAutoHideSeconds")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+        })
+        .unwrap_or(8)
+}
+
+fn configured_show_needs_action() -> bool {
+    read_menubar_json()
+        .and_then(|j| j.get("widgetShowNeedsAction").and_then(|v| v.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Top-left of the widget window inside a work area (tao: origin top-left, y-down).
+///
+/// The chosen corner stays fixed as `w`/`h` change, so `resize_widget` can grow
+/// the stack without walking away from the placement. `follow-tray` uses
+/// `tray_x` (work-area X of the menu-bar icon centre) when known, otherwise
+/// top-right.
+fn widget_position_in_work_area(
+    work_x: f64,
+    work_y: f64,
+    work_w: f64,
+    work_h: f64,
+    w: f64,
+    h: f64,
+    placement: WidgetPlacement,
+    tray_x: Option<f64>,
+) -> (f64, f64) {
+    let margin_x = MARGIN_RIGHT;
+    let margin_top = MARGIN_RIGHT;
+    let margin_bottom = MARGIN_BOTTOM;
+    let left = work_x + margin_x;
+    let right = work_x + work_w - w - margin_x;
+    let top = work_y + margin_top;
+    let bottom = work_y + work_h - h - margin_bottom;
+    let (x, y) = match placement {
+        WidgetPlacement::BottomRight => (right, bottom),
+        WidgetPlacement::BottomLeft => (left, bottom),
+        WidgetPlacement::TopRight => (right, top),
+        WidgetPlacement::TopLeft => (left, top),
+        WidgetPlacement::FollowTray => {
+            let x = match tray_x {
+                Some(tx) => (tx - w / 2.0).clamp(left.min(right), left.max(right)),
+                None => right,
+            };
+            (x, top)
+        }
+    };
+    (x.max(work_x), y.max(work_y))
 }
 
 // ── Takeover (US-003) ───────────────────────────────────────────────────────────
@@ -409,17 +509,35 @@ fn widget_position_cocoa(w: f64, h: f64, zoom: f64) -> Option<tauri::LogicalPosi
         let primary_frame: CGRect = msg_send![primary, frame];
         let target_frame: CGRect = msg_send![target, frame];
         let (minimum, _) = widget_size_bounds(zoom);
+        let placement = configured_placement();
+        let primary_h = primary_frame.size.height;
 
-        let (x, y) = anchor_lower_right_dock_aware(
-            vf.origin.x,
-            vf.origin.y,
-            vf.size.width,
-            target_frame.origin.y,
-            primary_frame.size.height,
-            w,
-            h,
-            minimum.1,
-        );
+        let (x, y) = if placement == WidgetPlacement::BottomRight {
+            // Preserve dock-band centering for the default lower-right mark.
+            anchor_lower_right_dock_aware(
+                vf.origin.x,
+                vf.origin.y,
+                vf.size.width,
+                target_frame.origin.y,
+                primary_h,
+                w,
+                h,
+                minimum.1,
+            )
+        } else {
+            let work_x = vf.origin.x;
+            let work_w = vf.size.width;
+            let work_h = vf.size.height;
+            let work_y = primary_h - (vf.origin.y + work_h);
+            let tray_x = if placement == WidgetPlacement::FollowTray {
+                crate::tray::tray_anchor_x_points()
+            } else {
+                None
+            };
+            widget_position_in_work_area(
+                work_x, work_y, work_w, work_h, w, h, placement, tray_x,
+            )
+        };
 
         Some(tauri::LogicalPosition::new(x, y))
     }
@@ -441,6 +559,13 @@ fn widget_position_fallback(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPo
         .or_else(|| app.primary_monitor().ok().flatten())
         .or_else(|| monitors.into_iter().next());
 
+    let placement = configured_placement();
+    let tray_x = if placement == WidgetPlacement::FollowTray {
+        crate::tray::tray_anchor_x_points()
+    } else {
+        None
+    };
+
     if let Some(m) = monitor {
         let scale = m.scale_factor();
         let mon_w = m.size().width as f64 / scale;
@@ -451,14 +576,18 @@ fn widget_position_fallback(app: &AppHandle, w: f64, h: f64) -> tauri::LogicalPo
         let origin_x = pos.x as f64 / scale;
         let origin_y = pos.y as f64 / scale;
         // Extra 80px bottom clearance when we cannot read visibleFrame.
-        // Clamp relative to the monitor origin, not the virtual desktop (0,0).
-        let x = (origin_x + mon_w - w - MARGIN_RIGHT).max(origin_x);
-        let y = (origin_y + mon_h - h - 80.0).max(origin_y);
+        let work_h = (mon_h - 80.0).max(h);
+        let (x, y) = widget_position_in_work_area(
+            origin_x, origin_y, mon_w, work_h, w, h, placement, tray_x,
+        );
         return tauri::LogicalPosition::new(x, y);
     }
 
     // Last-resort hard-coded primary-ish geometry.
-    tauri::LogicalPosition::new(1440.0 - w - MARGIN_RIGHT, 900.0 - h - 80.0)
+    let (x, y) = widget_position_in_work_area(
+        0.0, 0.0, 1440.0, 820.0, w, h, placement, tray_x,
+    );
+    tauri::LogicalPosition::new(x, y)
 }
 
 /// Recompute the anchor and `set_position` if the widget window exists.
@@ -564,6 +693,80 @@ pub async fn resize_widget(
         }
         Ok(())
     }
+}
+
+fn apply_idle_widget_geometry() -> (f64, f64, f64) {
+    let zoom = current_widget_geometry().2;
+    let ((w, h), _) = widget_size_bounds(zoom);
+    if let Ok(mut geometry) = WIDGET_GEOMETRY.lock() {
+        *geometry = (w, h, zoom);
+    }
+    (w, h, zoom)
+}
+
+fn apply_widget_size_and_position(app: &AppHandle) {
+    let (w, h, zoom) = current_widget_geometry();
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+        return;
+    };
+    if let Err(e) = window.set_size(tauri::LogicalSize::new(w, h)) {
+        log(LOG_TAG, &format!("hide/show set_size failed: {e}"));
+    }
+    let pos = widget_position_for(app, w, h, zoom);
+    if let Err(e) = window.set_position(pos) {
+        log(LOG_TAG, &format!("hide/show set_position failed: {e}"));
+    }
+    // Idle size hugs the wordmark — restore hit-testing so the mark stays
+    // clickable. A stuck expanded overlay is shrunk first so it cannot eat
+    // clicks over other apps.
+    let _ = window.set_ignore_cursor_events(false);
+}
+
+/// Collapse a stuck/expanded stack immediately (idle size + `widget:hide`).
+///
+/// Called from Esc, the panel hide control, the tray "Hide notifications"
+/// item, and tray left-click recovery. Frontend still owns item state; this
+/// just guarantees the native window cannot keep covering other apps.
+pub fn hide_widget_stack_now(app: &AppHandle) {
+    let _ = app.emit_to(WINDOW_LABEL, "widget:hide", serde_json::json!({}));
+    apply_idle_widget_geometry();
+
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let _ = app.clone().run_on_main_thread(move || {
+            apply_widget_size_and_position(&app);
+        });
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    apply_widget_size_and_position(app);
+}
+
+/// Re-surface a hidden stack (tray hover). Frontend decides whether there is
+/// anything to draw; this is the wakeup signal.
+pub fn show_widget_stack_now(app: &AppHandle) {
+    let _ = app.emit_to(WINDOW_LABEL, "widget:show", serde_json::json!({}));
+}
+
+#[tauri::command]
+pub async fn hide_widget_stack(app: AppHandle) -> Result<(), String> {
+    hide_widget_stack_now(&app);
+    Ok(())
+}
+
+fn emit_widget_live_settings(app: &AppHandle) {
+    let _ = app.emit_to(
+        WINDOW_LABEL,
+        "widget:settings",
+        serde_json::json!({
+            "placement": placement_key(configured_placement()),
+            "autoHideSeconds": configured_auto_hide_seconds(),
+            "showNeedsAction": configured_show_needs_action(),
+            "enabled": widget_enabled(),
+        }),
+    );
 }
 
 // ── Focusable (quick-reply) ─────────────────────────────────────────────────────
@@ -838,6 +1041,12 @@ pub async fn widget_ready(app: AppHandle) -> Result<(), String> {
                 "widget:occlusion",
                 serde_json::json!({ "visible": visible }),
             );
+            let active = ns_app_is_active();
+            let _ = app_for_occ.emit_to(
+                WINDOW_LABEL,
+                "widget:app-active",
+                serde_json::json!({ "active": active }),
+            );
         });
     }
 
@@ -848,7 +1057,14 @@ pub async fn widget_ready(app: AppHandle) -> Result<(), String> {
             "widget:occlusion",
             serde_json::json!({ "visible": true }),
         );
+        let _ = app.emit_to(
+            WINDOW_LABEL,
+            "widget:app-active",
+            serde_json::json!({ "active": true }),
+        );
     }
+
+    emit_widget_live_settings(&app);
 
     // Drain buffered notifications in FIFO order after occlusion.
     let drained = pending.len();
@@ -970,6 +1186,12 @@ pub fn setup_widget_window(app: &AppHandle) {
 
     #[cfg(target_os = "macos")]
     register_click_away_monitor(app);
+
+    #[cfg(target_os = "macos")]
+    register_app_active_observer(app);
+
+    #[cfg(target_os = "macos")]
+    register_escape_monitor(app);
 }
 
 /// True when the monitored mouse-down landed inside the widget window frame.
@@ -1084,6 +1306,101 @@ fn register_click_away_monitor(app: &AppHandle) {
             std::mem::forget(block);
             let _ = monitor; // retained token; intentionally never released
             log(LOG_TAG, "click-away monitor registered");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn ns_app_is_active() -> bool {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    // SAFETY: main thread (widget_ready / notification block); public AppKit.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let active: bool = msg_send![app, isActive];
+        active
+    }
+}
+
+/// Emit `widget:app-active` when HQ becomes the foreground app or resigns it.
+/// The frontend closes the Messages panel on resign so it cannot cover other
+/// apps; the new-item toast still auto-hides on its own delay.
+#[cfg(target_os = "macos")]
+fn register_app_active_observer(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    let app = app.clone();
+    APP_ACTIVE_OBSERVER.call_once(move || {
+        unsafe {
+            let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+            if center.is_null() {
+                log(LOG_TAG, "app-active observer: defaultCenter is nil");
+                return;
+            }
+            let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
+            let null_obj: *mut AnyObject = std::ptr::null_mut();
+            for (name, active) in [
+                ("NSApplicationDidBecomeActiveNotification", true),
+                ("NSApplicationDidResignActiveNotification", false),
+            ] {
+                let app_clone = app.clone();
+                let block = RcBlock::new(move |_notif: *mut AnyObject| {
+                    log(LOG_TAG, &format!("app-active: active={active}"));
+                    let _ = app_clone.emit_to(
+                        WINDOW_LABEL,
+                        "widget:app-active",
+                        serde_json::json!({ "active": active }),
+                    );
+                });
+                let observer: *mut AnyObject = msg_send![
+                    center,
+                    addObserverForName: ns_str(name),
+                    object: null_obj,
+                    queue: queue,
+                    usingBlock: &*block
+                ];
+                std::mem::forget(block);
+                let _ = observer;
+            }
+            log(LOG_TAG, "app-active observer registered");
+        }
+    });
+}
+
+/// Global Escape → `widget:escape`. The widget window is non-focusable, so
+/// key events never reach its document unless a reply field is keyed.
+#[cfg(target_os = "macos")]
+fn register_escape_monitor(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    let app = app.clone();
+    ESCAPE_MONITOR.call_once(move || {
+        // NSEventMaskKeyDown
+        const MASK: u64 = 1 << 10;
+        const ESCAPE_KEY_CODE: u16 = 53;
+        unsafe {
+            let block = RcBlock::new(move |event: *mut AnyObject| {
+                if event.is_null() {
+                    return;
+                }
+                let key_code: u16 = msg_send![event, keyCode];
+                if key_code != ESCAPE_KEY_CODE {
+                    return;
+                }
+                let _ = app.emit_to(WINDOW_LABEL, "widget:escape", serde_json::json!({}));
+            });
+            let monitor: *mut AnyObject = msg_send![
+                class!(NSEvent),
+                addGlobalMonitorForEventsMatchingMask: MASK,
+                handler: &*block
+            ];
+            std::mem::forget(block);
+            let _ = monitor;
+            log(LOG_TAG, "escape monitor registered");
         }
     });
 }
@@ -1382,6 +1699,7 @@ fn apply_widget_settings_on_main(app: &AppHandle) -> Result<(), String> {
     if widget_enabled() {
         log(LOG_TAG, "apply_widget_settings: enabled — setup/re-anchor");
         setup_widget_window(app);
+        emit_widget_live_settings(app);
         return Ok(());
     }
 
@@ -1421,6 +1739,11 @@ mod tests {
     #[test]
     fn floating_widget_platform_default_matches_native_surface() {
         assert_eq!(default_widget_enabled(), !cfg!(target_os = "windows"));
+    }
+
+    #[test]
+    fn widget_uses_a_single_window_label() {
+        assert_eq!(WINDOW_LABEL, "widget");
     }
 
     #[test]
@@ -1729,5 +2052,107 @@ mod tests {
         let y_cocoa = frame_oy; // clamped
         assert_eq!(x, vf_ox + vf_w - w - MARGIN_RIGHT);
         assert_eq!(y, primary_h - (y_cocoa + h));
+    }
+
+    #[test]
+    fn widget_position_in_work_area_each_corner() {
+        // 1440×900 work area at origin; idle 66×43 widget.
+        let (work_x, work_y, work_w, work_h) = (0.0, 0.0, 1440.0, 900.0);
+        let (w, h) = (66.0, 43.0);
+        let right = work_w - w - MARGIN_RIGHT;
+        let left = MARGIN_RIGHT;
+        let top = MARGIN_RIGHT;
+        let bottom = work_h - h - MARGIN_BOTTOM;
+
+        assert_eq!(
+            widget_position_in_work_area(
+                work_x,
+                work_y,
+                work_w,
+                work_h,
+                w,
+                h,
+                WidgetPlacement::BottomRight,
+                None,
+            ),
+            (right, bottom)
+        );
+        assert_eq!(
+            widget_position_in_work_area(
+                work_x,
+                work_y,
+                work_w,
+                work_h,
+                w,
+                h,
+                WidgetPlacement::BottomLeft,
+                None,
+            ),
+            (left, bottom)
+        );
+        assert_eq!(
+            widget_position_in_work_area(
+                work_x,
+                work_y,
+                work_w,
+                work_h,
+                w,
+                h,
+                WidgetPlacement::TopRight,
+                None,
+            ),
+            (right, top)
+        );
+        assert_eq!(
+            widget_position_in_work_area(
+                work_x,
+                work_y,
+                work_w,
+                work_h,
+                w,
+                h,
+                WidgetPlacement::TopLeft,
+                None,
+            ),
+            (left, top)
+        );
+        assert_eq!(
+            widget_position_in_work_area(
+                work_x,
+                work_y,
+                work_w,
+                work_h,
+                w,
+                h,
+                WidgetPlacement::FollowTray,
+                None,
+            ),
+            (right, top)
+        );
+        let (follow_x, follow_y) = widget_position_in_work_area(
+            work_x,
+            work_y,
+            work_w,
+            work_h,
+            w,
+            h,
+            WidgetPlacement::FollowTray,
+            Some(200.0),
+        );
+        assert_eq!(follow_y, top);
+        assert_eq!(follow_x, 200.0 - w / 2.0);
+    }
+
+    #[test]
+    fn parse_widget_placement_defaults_bottom_right() {
+        assert_eq!(parse_widget_placement(None), WidgetPlacement::BottomRight);
+        assert_eq!(
+            parse_widget_placement(Some("top-left")),
+            WidgetPlacement::TopLeft
+        );
+        assert_eq!(
+            parse_widget_placement(Some("FOLLOW-TRAY")),
+            WidgetPlacement::FollowTray
+        );
     }
 }

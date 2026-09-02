@@ -315,6 +315,9 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: None,
             widget_display: None,
+            widget_placement: None,
+            widget_auto_hide_seconds: None,
+            widget_show_needs_action: None,
             dock_icon,
             hq_work_handoff: None,
         }

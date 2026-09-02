@@ -243,6 +243,18 @@ pub struct MenubarPrefs {
     /// None = primary display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_display: Option<String>,
+    /// Widget stack corner: `bottom-right` (default), `bottom-left`,
+    /// `top-right`, `top-left`, or `follow-tray`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_placement: Option<String>,
+    /// Seconds the live stack stays up while HQ is not focused. `None` → 8
+    /// (the row auto-collapse). `Some(0)` → never auto-hide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_auto_hide_seconds: Option<u32>,
+    /// When true (default), meeting needs-action rows appear in the widget
+    /// stack. When false they still land in the desktop notifications list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_show_needs_action: Option<bool>,
     /// macOS Dock icon on/off. When true (**the default**), HQ runs under
     /// `NSApplicationActivationPolicyRegular` — Dock icon, Cmd-Tab entry, and
     /// the standard app menu bar. When false, HQ keeps the classic
