@@ -611,6 +611,7 @@ fn main() {
             commands::long_paths::open_long_paths_settings,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
+            commands::autostart::take_launch_agent_repoint_notice,
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
@@ -895,6 +896,13 @@ fn main() {
             commands::config::record_sync_version(
                 &app.package_info().version.to_string(),
             );
+
+            // Heal a LaunchAgent still pointing at a renamed bundle
+            // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
+            // pass, so a KeepAlive agent cannot keep the previous binary
+            // running. Best-effort and idempotent — never aborts launch.
+            #[cfg(target_os = "macos")]
+            commands::autostart::reconcile_launch_agent_on_launch();
 
             // Default-on autostart: ensure the LaunchAgent plist matches the
             // effective `startAtLogin` pref (default true) so a fresh install

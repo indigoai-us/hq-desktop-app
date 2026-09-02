@@ -14,6 +14,24 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## macOS bundle identity (do not rename)
+
+The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in
+`apps/sync/src-tauri/tauri.conf.json`. The user LaunchAgent label is
+`ai.indigo.hq-sync-menubar` (`~/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist`).
+
+These two must stay stable. Renaming the `.app` bundle without repointing the
+LaunchAgent leaves a KeepAlive agent running the previous binary from the old
+path, so an in-place update looks installed while the user stays on the old
+version. `scripts/bundle-name-contract.test.ts` fails the release if
+`productName` or the LaunchAgent label constant drift.
+
+On every launch from `/Applications`, and again after an updater install, the
+app rewrites a stale LaunchAgent path to the running bundle (preserving other
+plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
+`HQ Sync.app` in `/Applications`, and terminates processes still running from
+that old path.
+
 ## Install Window (macOS DMG)
 
 The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the

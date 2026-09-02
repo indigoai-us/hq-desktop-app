@@ -644,6 +644,8 @@ async fn install_verified_update(
             )
             .await
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         app.restart();
     }
@@ -834,6 +836,8 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
             .update
             .install(&staged.bytes)
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "macos")]
+        crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         app.restart();
     }

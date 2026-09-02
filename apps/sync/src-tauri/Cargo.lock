@@ -2729,6 +2729,7 @@ dependencies = [
  "block2",
  "dirs",
  "hq-desktop-core",
+ "libc",
  "objc2",
  "raw-window-handle",
  "window-vibrancy",
