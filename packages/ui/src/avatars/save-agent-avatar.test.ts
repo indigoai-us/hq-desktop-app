@@ -120,6 +120,19 @@ describe("composeAvatarByUid", () => {
       }).agt_a,
     ).toBe("data:image/jpeg;base64,xx");
   });
+
+  it("includes roster and signed-in profile photos for people", () => {
+    expect(
+      composeAvatarByUid({
+        rosters: [{ personUid: "prs_ada", avatarUrl: "https://cdn/ada.jpg" }],
+        selfUid: "prs_me",
+        selfAvatarUrl: "https://cdn/me.jpg",
+      }),
+    ).toEqual({
+      prs_ada: "https://cdn/ada.jpg",
+      prs_me: "https://cdn/me.jpg",
+    });
+  });
 });
 
 describe("avatarsFromContactPayload", () => {

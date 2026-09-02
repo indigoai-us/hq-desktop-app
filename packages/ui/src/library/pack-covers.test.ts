@@ -8,6 +8,7 @@ import {
   coverTone,
   marketplaceAvatarSrc,
   marketplaceCoverSrc,
+  paintableAvatarSrc,
 } from "./pack-covers";
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
 
@@ -154,6 +155,28 @@ describe("marketplaceAvatarSrc — creator photo allowlist", () => {
     expect(
       marketplaceAvatarSrc("https://cdn.example.com/avatar.png"),
     ).toBeNull();
+  });
+});
+
+describe("paintableAvatarSrc — packaged img-src contract", () => {
+  it("paints bundled/local, blob, raster data, and marketplace member photos", () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/members/prs_x/h.png?X-Amz-Signature=mock`;
+    expect(paintableAvatarSrc("/assets/agent-01.png")).toBe(
+      "/assets/agent-01.png",
+    );
+    expect(paintableAvatarSrc("blob:https://app.local/id")).toBe(
+      "blob:https://app.local/id",
+    );
+    expect(
+      paintableAvatarSrc("data:image/png;base64,iVBORw0KGgo="),
+    ).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(paintableAvatarSrc(hosted)).toBe(hosted);
+  });
+
+  it("does not paint arbitrary http(s) — that would require widening img-src", () => {
+    expect(paintableAvatarSrc("https://cdn.test/corey.jpg")).toBeNull();
+    expect(paintableAvatarSrc("https://cdn.example.com/avatar.png")).toBeNull();
+    expect(paintableAvatarSrc("http://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_x/h.png")).toBeNull();
   });
 });
 

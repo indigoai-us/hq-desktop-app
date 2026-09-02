@@ -25,6 +25,7 @@
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
@@ -2758,13 +2759,13 @@
                         data-testid="channel-header-avatar"
                       >
                         <IdentityMark
-                          kind={isAgentUid(selectedRow.personUid ?? "")
-                            ? "agent"
-                            : "person"}
+                          kind="agent"
                           label={headerTitle}
                           agentUid={selectedRow.personUid}
-                          avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
-                            null}
+                          avatarUrl={authorAvatarUrl(
+                            selectedRow.personUid,
+                            avatarByUid,
+                          )}
                           size="small"
                         />
                       </span>
@@ -2776,13 +2777,13 @@
                       data-testid="channel-header-avatar"
                     >
                       <IdentityMark
-                        kind={isAgentUid(selectedRow.personUid ?? "")
-                          ? "agent"
-                          : "person"}
+                        kind="person"
                         label={headerTitle}
                         agentUid={selectedRow.personUid}
-                        avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
-                          null}
+                        avatarUrl={authorAvatarUrl(
+                          selectedRow.personUid,
+                          avatarByUid,
+                        )}
                         size="small"
                       />
                     </span>

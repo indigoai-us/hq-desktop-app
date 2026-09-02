@@ -16,6 +16,8 @@ describe('avatar pack picker source contract', () => {
   const parsePack = ui('src/avatars/parse-pack.ts');
   const picker = ui('src/avatars/AvatarPackPicker.svelte');
   const agentAvatars = ui('src/chat/messaging/agent-avatars.ts');
+  const identityMark = ui('src/chat/messaging/IdentityMark.svelte');
+  const sidebarModel = ui('src/chat/sidebar-model.ts');
   const docs = readRepoFile('docs/avatar-packs.md');
   const types = ui('src/avatars/types.ts');
   const csp = JSON.parse(readRepoFile('src-tauri/tauri.conf.json')) as {
@@ -63,6 +65,11 @@ describe('avatar pack picker source contract', () => {
     expect(picker).toContain('cspSafeAvatarSrc');
     expect(picker).toContain('avatar-pack-item-fallback');
     expect(picker).toContain('onerror');
+    // Message rows / rail photos use the same allowlist — they must not
+    // paint arbitrary http(s) by stuffing a CDN URL into <img src>.
+    expect(agentAvatars).toContain('paintableAvatarSrc');
+    expect(identityMark).toContain('paintableAvatarSrc');
+    expect(sidebarModel).toContain('paintableAvatarSrc');
     const imageSources = csp.app.security.csp
       .match(/(?:^|;)\s*img-src\s+([^;]+)/i)?.[1]
       ?.trim()
@@ -71,10 +78,8 @@ describe('avatar pack picker source contract', () => {
     expect(imageSources).toContain("'self'");
     expect(imageSources).toContain('blob:');
     // Pack tiles never load over http(s) (`cspSafeAvatarSrc` returns null).
-    // Marketplace covers/avatars use this one production assets origin.
-    // Scheme wildcards stay forbidden — pack tiles still cannot paint http(s).
-    // Marketplace listing covers are the only remote img-src — one origin,
-    // no scheme wildcard. Same contract as tauri-conf.spec.ts.
+    // Marketplace covers and HQ profile photos share this one production
+    // assets origin. Scheme wildcards stay forbidden.
     expect(imageSources?.filter((source) => /^https?:/i.test(source))).toEqual([
       MARKETPLACE_COVER_ORIGIN,
     ]);

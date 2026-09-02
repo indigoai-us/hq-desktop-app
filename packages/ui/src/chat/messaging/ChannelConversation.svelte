@@ -31,6 +31,7 @@
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
+  import { authorAvatarUrl } from "./agent-avatars";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
@@ -203,12 +204,6 @@
     draftKey = null,
     draftStorage = null,
   }: Props = $props();
-
-  /** Real avatar for a message's author, when the roster carried one. */
-  function avatarFor(msg: ConversationMessageWire): string | null {
-    const uid = (msg.fromPersonUid ?? "").trim();
-    return (uid && avatarByUid[uid]) || null;
-  }
 
   /** Emit an author-profile-open when we have a personUid to resolve. */
   function openAuthorProfile(msg: ConversationMessageWire): void {
@@ -987,6 +982,7 @@
                 <IdentityMark
                   kind="agent"
                   label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
                   size="regular"
                 />
@@ -1031,7 +1027,7 @@
                     <IdentityMark
                       kind="agent"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       agentUid={msg.fromPersonUid}
                       size="regular"
                     />
@@ -1039,7 +1035,7 @@
                     <IdentityMark
                       kind="person"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       size="regular"
                     />
                   {/if}
@@ -1138,8 +1134,10 @@
                             <IdentityMark
                               kind={a.agent ? "agent" : "person"}
                               label={a.displayName}
-                              avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
-                                null}
+                              avatarUrl={authorAvatarUrl(
+                                a.personUid,
+                                avatarByUid,
+                              )}
                               agentUid={a.personUid}
                               size="small"
                             />

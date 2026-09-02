@@ -60,7 +60,11 @@ import {
   type DmContactInput,
   type MessageSearchHit,
 } from "./sidebar-model";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src";
 import { agentAvatarAssets, agentAvatarFor } from "./messaging/agent-avatars";
+
+const PARKER_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_parker/h.png?X-Amz-Signature=mock`;
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 
 // Fixed "now": Wednesday Aug 12, 2026 15:00 local — tests use local day math.
 const NOW = new Date(2026, 7, 12, 15, 0, 0, 0).getTime();
@@ -2043,13 +2047,23 @@ describe("rowAvatar", () => {
   };
 
   it("uses a known photo for anyone", () => {
-    expect(
-      rowAvatar(agent, { agt_parker: "https://cdn/parker.jpg" }),
-    ).toEqual({ kind: "photo", src: "https://cdn/parker.jpg" });
-    expect(rowAvatar(human, { prs_ada: "https://cdn/ada.jpg" })).toEqual({
+    expect(rowAvatar(agent, { agt_parker: PARKER_PHOTO })).toEqual({
       kind: "photo",
-      src: "https://cdn/ada.jpg",
+      src: PARKER_PHOTO,
     });
+    expect(rowAvatar(human, { prs_ada: ADA_PHOTO })).toEqual({
+      kind: "photo",
+      src: ADA_PHOTO,
+    });
+  });
+
+  it("ignores arbitrary http(s) photos the packaged CSP cannot paint", () => {
+    expect(
+      rowAvatar(agent, { agt_parker: "https://cdn.test/parker.jpg" }),
+    ).toMatchObject({ kind: "generated" });
+    expect(
+      rowAvatar(human, { prs_ada: "https://cdn.test/ada.jpg" }),
+    ).toEqual({ kind: "initials", initials: "AL" });
   });
 
   it("uses a deterministic generated avatar for a photo-less agent", () => {

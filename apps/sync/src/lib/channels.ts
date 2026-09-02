@@ -76,6 +76,8 @@ export interface ChannelMember {
   displayName: string;
   /** "owner" | "member" — owners can remove members + invite. */
   role: 'owner' | 'member' | string;
+  /** Presigned avatar GET URL when hq-pro included it on the roster. */
+  avatarUrl?: string | null;
 }
 
 /** A group of channels under one header (Personal, or a company name). */

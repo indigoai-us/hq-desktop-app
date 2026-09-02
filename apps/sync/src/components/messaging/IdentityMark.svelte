@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentAvatarFor } from '@hq/ui';
+  import { agentAvatarFor, paintableAvatarSrc } from '@hq/ui';
 
   interface Props {
     kind?: 'person' | 'group' | 'agent' | 'channel' | 'file';
@@ -21,7 +21,8 @@
 
   // Photo > deterministic generated avatar (agents only) > monogram/glyph.
   const effectiveAvatarUrl = $derived(
-    avatarUrl ?? (kind === 'agent' ? agentAvatarFor(agentUid) : null),
+    paintableAvatarSrc(avatarUrl) ??
+      (kind === 'agent' ? agentAvatarFor(agentUid) : null),
   );
 
   let imageBroken = $state(false);

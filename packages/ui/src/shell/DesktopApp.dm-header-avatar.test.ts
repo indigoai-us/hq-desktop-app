@@ -10,6 +10,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import { agentAvatarAssets } from "../chat/messaging/agent-avatars";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src.js";
 
 interface Fixture {
   messages: Array<Record<string, unknown>>;
@@ -81,7 +82,7 @@ const CHANNEL_ROW = {
   channelId: "chn_proj",
 } as ConversationRow;
 
-const PHOTO_URL = "https://cdn.test/agent.png";
+const PHOTO_URL = `https://${MARKETPLACE_COVER_HOST}/members/agt_photo/h.png?X-Amz-Signature=mock`;
 const now = () => new Date().toISOString();
 
 function createFx(overrides: Partial<Fixture> = {}): Fixture {
@@ -159,6 +160,33 @@ describe("DesktopApp DM header avatar", () => {
     const header = headerAvatar();
     expect(header.querySelector("img.avatar-img")).toBeNull();
     expect(header.querySelector(".monogram")?.textContent).toBe("DA");
+  });
+
+  it("renders a roster photo in a human DM header", async () => {
+    const HUMAN_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_someone/h.png?X-Amz-Signature=mock`;
+    const sidebarApi = createFixtureChatSidebarApi();
+    await mountApp(createFx(), createChatWakeBus(), HUMAN_ROW, {
+      sidebarApi: {
+        ...sidebarApi,
+        listContacts: async () => ({
+          contacts: [
+            {
+              personUid: "prs_someone",
+              displayName: "Dana",
+              avatarUrl: HUMAN_PHOTO,
+              lastActivityAt: now(),
+              lastDmAt: now(),
+            },
+          ],
+        }),
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        headerAvatar().querySelector("img.avatar-img")?.getAttribute("src"),
+      ).toBe(HUMAN_PHOTO);
+    });
   });
 
   it("prefers a roster photo when the agent appears on a loaded channel", async () => {

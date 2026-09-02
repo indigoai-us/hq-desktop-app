@@ -11,6 +11,7 @@
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
+  import { authorAvatarUrl } from "./agent-avatars";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
@@ -223,14 +224,6 @@
       participantType: storedMentionType(row),
       displayName: row.displayName,
     }));
-  }
-
-  /** Real avatar for a thread message's author, when known. */
-  function replyAvatarFor(
-    msg: { fromPersonUid?: string | null } | null | undefined,
-  ): string | null {
-    const uid = (msg?.fromPersonUid ?? "").trim();
-    return (uid && avatarByUid[uid]) || null;
   }
 
   let root = $state<ConversationMessageWire | null>(null);
@@ -744,7 +737,7 @@
         <IdentityMark
           kind={isAgent(root) ? "agent" : "person"}
           label={messageAuthor(root)}
-          avatarUrl={replyAvatarFor(root)}
+          avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
           agentUid={root.fromPersonUid}
           size="regular"
         />
@@ -888,7 +881,7 @@
               <IdentityMark
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
-                avatarUrl={replyAvatarFor(msg)}
+                avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
                 size="regular"
               />
