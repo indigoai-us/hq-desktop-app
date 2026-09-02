@@ -6,13 +6,16 @@ import {
   moveIndex,
   selectionEquals,
 } from "./filter-items.js";
+import { generatedMarksPack } from "./generated-marks.js";
+import { cspSafeAvatarSrc } from "./parse-pack.js";
+import { HQ_AGENT_MASCOTS_SNAPSHOT } from "./snapshots.js";
 import type { AvatarPack } from "./types.js";
 
 const generated: AvatarPack = {
   id: "generated-marks",
   name: "Generated marks",
   version: "1.0.0",
-  author: "HQ",
+  author: "Default",
   baseUrl: "builtin:generated-marks",
   items: [
     { id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] },
@@ -22,7 +25,7 @@ const generated: AvatarPack = {
 
 const mascots: AvatarPack = {
   id: "hq-agent-mascots",
-  name: "HQ agent mascots",
+  name: "Animals",
   version: "1.0.0",
   author: "Lizzy",
   baseUrl: "https://hq-agent-mascots.indigo-hq.com",
@@ -51,6 +54,7 @@ describe("picker filtering and selection", () => {
       "v1-fox",
     ]);
     expect(filterPacks([generated, mascots], "generated marks")).toHaveLength(1);
+    expect(filterPacks([generated, mascots], "animals")).toHaveLength(1);
     expect(filterPacks([generated, mascots], "nope")).toEqual([]);
   });
 
@@ -65,6 +69,18 @@ describe("picker filtering and selection", () => {
     expect(rows[2]?.src).toBe(
       "https://hq-agent-mascots.indigo-hq.com/mascots/v2/dot.png",
     );
+  });
+
+  it("flattens bundled snapshot tiles to CSP-safe srcs", () => {
+    const rows = flattenVisible(
+      filterPacks([generatedMarksPack(), HQ_AGENT_MASCOTS_SNAPSHOT], ""),
+    );
+    expect(rows.length).toBeGreaterThan(12);
+    for (const row of rows) {
+      expect(cspSafeAvatarSrc(row.src), row.key).toBe(row.src);
+      expect(row.src).not.toMatch(/^https?:/i);
+      expect(row.src).not.toMatch(/^builtin:/);
+    }
   });
 
   it("compares selections", () => {
