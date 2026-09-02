@@ -562,15 +562,34 @@ fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
 /// Download through Tauri (including minisign verification), then prepare the
 /// helper, stop HQ-owned processes, and exit through Tauri's normal lifecycle.
 pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result<(), String> {
+    let mut downloaded = 0_u64;
     let bytes = update
-        .download(|_, _| {}, || {})
+        .download(
+            |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                crate::updater::emit_update_download_progress(app, downloaded, total);
+            },
+            || {},
+        )
         .await
         .map_err(|error| error.to_string())?;
+    install_verified_bytes(app, update, &bytes).await
+}
+
+/// Install an already-downloaded, Tauri-verified package through the helper
+/// handoff. Shared by the one-shot path above and the queued
+/// `download_update` → `install_downloaded_update` flow so both exit through
+/// the same NSIS-safe lifecycle.
+pub async fn install_verified_bytes(
+    app: &AppHandle,
+    update: &Update,
+    bytes: &[u8],
+) -> Result<(), String> {
     if crate::updater::sync_in_progress() {
         return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
 
-    let staged = stage_update(&bytes, &update.version)?;
+    let staged = stage_update(bytes, &update.version)?;
     let mut helper = match spawn_helper(&staged) {
         Ok(helper) => helper,
         Err(error) => {

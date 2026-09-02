@@ -158,7 +158,8 @@ describe('Windows production installer E2E', () => {
     expect(versionGate).toContain('crate::updater::install_stable_update(app).await');
     expect(versionGate).not.toContain('download_and_install');
     expect(main).toContain('windows_update::run_helper_if_requested()');
-    expect(windowsUpdate).toContain('.download(|_, _| {}, || {})');
+    expect(windowsUpdate).toContain('.download(');
+    expect(windowsUpdate).toContain('emit_update_download_progress');
     expect(windowsUpdate).toContain('quiesce_for_update(PROCESS_EXIT_TIMEOUT)');
     expect(windowsUpdate).toContain('app.exit(0)');
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');

@@ -739,6 +739,13 @@ export interface UpdatesApi {
   getVersions(): AdapterPromise<VersionInfo>;
   checkForUpdates(): AdapterPromise<Json>;
   installUpdate(): AdapterPromise<void>;
+  /** Queued update, phase 1: verify + download in the background (progress
+   *  arrives on the host `update:progress` event), staging the package. */
+  downloadUpdate(): AdapterPromise<Json>;
+  /** Queued update, phase 2: install the staged package and restart. */
+  installDownloadedUpdate(): AdapterPromise<void>;
+  /** The staged-but-not-installed package, if any (hydrates "Restart to update"). */
+  getDownloadedUpdate(): AdapterPromise<Json | null>;
   getPendingUpdate(): AdapterPromise<Json | null>;
   checkCoreState(): AdapterPromise<Json>;
   installCoreUpdate(): AdapterPromise<void>;

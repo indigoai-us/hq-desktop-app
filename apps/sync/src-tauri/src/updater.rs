@@ -56,6 +56,97 @@ pub struct UpdateInfo {
     pub detected_at: String,
 }
 
+/// Byte-progress for an in-flight desktop-app download. `percent` is omitted
+/// when the updater did not report a total size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInstallStarted<'a> {
+    version: &'a str,
+}
+
+pub(crate) fn download_progress_percent(downloaded: u64, total: Option<u64>) -> Option<u32> {
+    let total = total.filter(|size| *size > 0)?;
+    Some(((downloaded.min(total) * 100) / total) as u32)
+}
+
+pub(crate) fn emit_update_download_progress(
+    app: &AppHandle,
+    downloaded: u64,
+    total: Option<u64>,
+) {
+    let _ = app.emit(
+        "update:progress",
+        UpdateProgress {
+            downloaded,
+            total,
+            percent: download_progress_percent(downloaded, total),
+        },
+    );
+}
+
+pub(crate) fn emit_update_install_started(app: &AppHandle, version: &str) {
+    let _ = app.emit("update:install-started", UpdateInstallStarted { version });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInstallFailed<'a> {
+    version: &'a str,
+    message: &'a str,
+}
+
+pub(crate) fn emit_update_install_failed(app: &AppHandle, version: &str, message: &str) {
+    let _ = app.emit(
+        "update:install-failed",
+        UpdateInstallFailed { version, message },
+    );
+}
+
+fn emit_update_downloaded(app: &AppHandle, version: &str) {
+    let _ = app.emit("update:downloaded", UpdateInstallStarted { version });
+}
+
+/// A verified (minisign-checked) update package that has been downloaded but
+/// not yet installed. `download_update` stages it; `install_downloaded_update`
+/// consumes it. Keeping the `Update` handle alongside the bytes lets the
+/// install step reuse the plugin's own installer without a second network
+/// round-trip.
+pub struct StagedDownload {
+    update: tauri_plugin_updater::Update,
+    info: UpdateInfo,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct DownloadedUpdate(Mutex<Option<StagedDownload>>);
+
+impl DownloadedUpdate {
+    fn take(&self) -> Option<StagedDownload> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    fn put(&self, staged: StagedDownload) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(staged);
+    }
+
+    fn info(&self) -> Option<UpdateInfo> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|staged| staged.info.clone())
+    }
+}
+
 /// Trusted updater state returned to the frontend.
 ///
 /// `unchecked` covers startup before the first successful check and preserves
@@ -535,14 +626,22 @@ async fn install_verified_update(
     app: &AppHandle,
     update: &tauri_plugin_updater::Update,
 ) -> Result<(), String> {
+    emit_update_install_started(app, &update.version);
     #[cfg(target_os = "windows")]
     {
         crate::windows_update::install_verified_update(app, update).await
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let mut downloaded = 0_u64;
         update
-            .download_and_install(|_, _| {}, || {})
+            .download_and_install(
+                |chunk, total| {
+                    downloaded = downloaded.saturating_add(chunk as u64);
+                    emit_update_download_progress(app, downloaded, total);
+                },
+                || {},
+            )
             .await
             .map_err(|error| error.to_string())?;
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
@@ -606,7 +705,12 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
             // this critical section.
             #[cfg(not(target_os = "windows"))]
             crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-            install_verified_update(&app, &update).await
+            let version = update.version.clone();
+            let result = install_verified_update(&app, &update).await;
+            if let Err(message) = &result {
+                emit_update_install_failed(&app, &version, message);
+            }
+            result
         }
         Ok(None) => {
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
@@ -623,6 +727,126 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 /// `length > 1` to decide whether to render it.
 ///
 /// Returned in display order: stable → beta → alpha (most stable first).
+/// Phase one of the queued desktop-app update: verify + download the newest
+/// release for the effective channel in the background, emitting
+/// `update:progress` as chunks land, and stage the bytes for
+/// `install_downloaded_update`. Holds the install lease for the whole download
+/// so the automatic background installer cannot race the same package.
+#[tauri::command]
+pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
+    let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+        .ok_or_else(|| "An update installation is already in progress".to_string())?;
+    let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    let ticket = begin_app_check(&app)?;
+    let updater = channel_aware_updater(&app).await?;
+    let authoritative = updater.provenance.absence_is_authoritative();
+    match updater.updater.check().await {
+        Ok(Some(update)) => {
+            let info = discovered_update(
+                update.version.clone(),
+                update.body.clone(),
+                update.date.map(|d| d.to_string()),
+            );
+            let info = record_and_announce_update(
+                &app,
+                ticket,
+                info.clone(),
+                authoritative,
+                UpdateAnnouncement::PersistentOnly,
+            )
+            .await?
+            .unwrap_or(info);
+            let version = update.version.clone();
+            let mut downloaded = 0_u64;
+            let bytes = match update
+                .download(
+                    |chunk, total| {
+                        downloaded = downloaded.saturating_add(chunk as u64);
+                        emit_update_download_progress(&app, downloaded, total);
+                    },
+                    || {},
+                )
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let message = error.to_string();
+                    emit_update_install_failed(&app, &version, &message);
+                    return Err(message);
+                }
+            };
+            emit_update_download_progress(&app, downloaded, Some(downloaded));
+            app.state::<DownloadedUpdate>().put(StagedDownload {
+                update,
+                info: info.clone(),
+                bytes,
+            });
+            log(
+                "updater",
+                &format!("desktop update v{version} downloaded; waiting for restart"),
+            );
+            emit_update_downloaded(&app, &version);
+            Ok(info)
+        }
+        Ok(None) => {
+            let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
+            Err("No update available".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Phase two: install the package staged by `download_update` and restart.
+/// Uses the same single-flight lease and platform-safe installer (including
+/// the Windows helper handoff) as the one-shot `install_update` path.
+#[tauri::command]
+pub async fn install_downloaded_update(app: AppHandle) -> Result<(), String> {
+    let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+        .ok_or_else(|| "An update installation is already in progress".to_string())?;
+    let staged = app
+        .state::<DownloadedUpdate>()
+        .take()
+        .ok_or_else(|| "No downloaded update to install".to_string())?;
+    if sync_in_progress() {
+        app.state::<DownloadedUpdate>().put(staged);
+        return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
+    }
+    let version = staged.info.version.clone();
+    emit_update_install_started(&app, &version);
+    let result = install_staged_update(&app, &staged).await;
+    if let Err(message) = &result {
+        emit_update_install_failed(&app, &version, message);
+        // Keep the verified bytes so "Restart to update" can be retried
+        // without another download.
+        app.state::<DownloadedUpdate>().put(staged);
+    }
+    result
+}
+
+async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_update::install_verified_bytes(app, &staged.update, &staged.bytes).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        staged
+            .update
+            .install(&staged.bytes)
+            .map_err(|error| error.to_string())?;
+        crate::commands::hq_work::spawn_maybe_co_install_hq_work();
+        app.restart();
+    }
+}
+
+/// The update `download_update` already staged, if any — lets late-mounting
+/// surfaces hydrate straight into "Restart to update".
+#[tauri::command]
+pub fn get_downloaded_update(app: AppHandle) -> Option<UpdateInfo> {
+    app.try_state::<DownloadedUpdate>()
+        .and_then(|state| state.info())
+}
+
 #[tauri::command]
 pub async fn available_channels() -> Vec<String> {
     if feature_gate::is_indigo_user().await {
@@ -1015,6 +1239,15 @@ mod tests {
         let second = apply_confirmed_absent(&mut ledger, second_ticket);
         assert!(second.applied);
         assert!(!second.cleared_pending);
+    }
+
+    #[test]
+    fn download_progress_percent_is_none_without_a_total_and_caps_at_100() {
+        assert_eq!(download_progress_percent(42, None), None);
+        assert_eq!(download_progress_percent(42, Some(0)), None);
+        assert_eq!(download_progress_percent(42, Some(100)), Some(42));
+        assert_eq!(download_progress_percent(100, Some(100)), Some(100));
+        assert_eq!(download_progress_percent(150, Some(100)), Some(100));
     }
 
     #[test]

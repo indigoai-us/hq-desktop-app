@@ -11,9 +11,14 @@
   import { flushSync, onMount, tick } from 'svelte';
   import {
     DesktopApp,
+    applyAvailableUpdate,
     createChatWakeBus,
     createLiveNotificationsApi,
     dispatchEmbeddedNavigation,
+    markDownloaded,
+    markInstallStarted,
+    reportDownloadProgress,
+    reportInstallFailed,
     settingsProfileFromSelf,
     toSelfIdentity,
     workspacesFromMembershipRows,
@@ -501,10 +506,41 @@
       'hq-cli-update:cleared',
     ];
     const unlistenUpdatePromises = updateEvents.map((eventName) =>
-      listen(eventName, () => {
-        if (!cancelled) updateWakeSeq += 1;
+      listen(eventName, (event) => {
+        if (cancelled) return;
+        if (eventName === 'update:available') {
+          const version =
+            event.payload &&
+            typeof event.payload === 'object' &&
+            'version' in event.payload &&
+            typeof (event.payload as { version?: unknown }).version === 'string'
+              ? (event.payload as { version: string }).version
+              : null;
+          applyAvailableUpdate(version);
+        } else if (eventName === 'update:cleared') {
+          applyAvailableUpdate(null);
+        }
+        updateWakeSeq += 1;
       }).catch(() => () => {}),
     );
+    const unlistenProgressPromise = listen('update:progress', (event) => {
+      if (!cancelled) reportDownloadProgress(event.payload);
+    }).catch(() => () => {});
+    const unlistenInstallStartedPromise = listen<{ version?: string }>(
+      'update:install-started',
+      (event) => {
+        if (!cancelled) markInstallStarted(event.payload?.version ?? null);
+      },
+    ).catch(() => () => {});
+    const unlistenDownloadedPromise = listen<{ version?: string }>(
+      'update:downloaded',
+      (event) => {
+        if (!cancelled) markDownloaded(event.payload?.version ?? null);
+      },
+    ).catch(() => () => {});
+    const unlistenInstallFailedPromise = listen('update:install-failed', (event) => {
+      if (!cancelled) reportInstallFailed(event.payload);
+    }).catch(() => () => {});
 
     const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
       if (cancelled) return;
@@ -539,6 +575,10 @@
       for (const unlistenPromise of unlistenUpdatePromises) {
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       }
+      void unlistenProgressPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenInstallStartedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenDownloadedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenInstallFailedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);

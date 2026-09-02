@@ -443,6 +443,7 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(updater::DownloadedUpdate::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -629,6 +630,9 @@ fn main() {
             updater::check_for_updates,
             updater::get_pending_update,
             updater::install_update,
+            updater::download_update,
+            updater::install_downloaded_update,
+            updater::get_downloaded_update,
             updater::available_channels,
             updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,
