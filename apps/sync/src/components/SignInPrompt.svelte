@@ -7,9 +7,14 @@
   interface Props {
     reauth?: boolean;
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
+    /**
+     * Raise the compact `main` window after OAuth. The desktop workspace hosts
+     * its own sign-in surface and must stay focused (`false`).
+     */
+    bringMainToFront?: boolean;
   }
 
-  let { reauth = false, onsuccess }: Props = $props();
+  let { reauth = false, onsuccess, bringMainToFront = true }: Props = $props();
 
   type SignInProvider = 'Google' | 'Microsoft';
   const providers: { key: SignInProvider; label: string }[] = [
@@ -85,12 +90,15 @@
         // Pull focus back from the browser on macOS and Windows. JS setFocus
         // is often ignored while the browser holds activation — Rust raises
         // via AppKit / Win32. oauth_listen_for_code also raises on callback;
-        // this is the renderer-side belt-and-suspenders path.
-        try {
-          await invoke('bring_main_window_to_front');
-        } catch (focusErr) {
-          // Focus-stealing isn't critical; log but don't block success.
-          console.warn('[signin] failed to refocus window:', focusErr);
+        // this is the renderer-side belt-and-suspenders path. The workspace
+        // host skips it so sign-in does not bounce to the compact popover.
+        if (bringMainToFront) {
+          try {
+            await invoke('bring_main_window_to_front');
+          } catch (focusErr) {
+            // Focus-stealing isn't critical; log but don't block success.
+            console.warn('[signin] failed to refocus window:', focusErr);
+          }
         }
         void emitDesktopOperationalTelemetry({
           eventName: 'oauth_signin_succeeded',

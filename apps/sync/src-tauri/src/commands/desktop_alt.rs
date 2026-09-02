@@ -546,11 +546,10 @@ pub enum ActivationAction {
 /// Pure activation matrix — unit-testable without a Tauri runtime.
 pub fn activation_policy(source: ActivationSource) -> ActivationAction {
     match source {
-        ActivationSource::TrayLeftClick | ActivationSource::CompactShortcut => {
-            ActivationAction::ToggleCompact
-        }
-        ActivationSource::TaskbarSecondProcess => ActivationAction::ShowCompact,
-        ActivationSource::OpenHqMenu
+        ActivationSource::CompactShortcut => ActivationAction::ToggleCompact,
+        ActivationSource::TrayLeftClick
+        | ActivationSource::TaskbarSecondProcess
+        | ActivationSource::OpenHqMenu
         | ActivationSource::DesktopShortcut
         | ActivationSource::DockIconClick => ActivationAction::ShowDesktop { route: None },
     }
@@ -629,15 +628,16 @@ pub async fn open_destination(
     open_desktop_alt_window_inner(app, Some(destination.route_str())).await
 }
 
-/// Open or focus the expanded desktop window (GA — any signed-in user).
+/// Open or focus the desktop workspace window.
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
-/// startup does not surface it. This command is still defensive and can
-/// rebuild the window if it was closed earlier in the session.
+/// startup does not surface it until an activation source asks. This command
+/// is still defensive and can rebuild the window if it was closed earlier
+/// in the session. Signed-out and onboarding users are admitted — the
+/// webview hosts sign-in / the workspace shell itself.
 ///
 /// `route` (optional) lands the window on a specific screen — e.g. `"meetings"`
-/// from the meeting-detected notification. Omitted (the manual "open new UX"
-/// button) keeps the default Sync screen.
+/// from the meeting-detected notification. Omitted keeps the default home.
 ///
 /// Prefer [`open_destination`] / typed [`DesktopDestination`] for new call sites;
 /// this command remains the IPC surface and still reuses one desktop window.
@@ -648,8 +648,7 @@ pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> R
 
 /// Window open/focus body, callable from non-command contexts (e.g. the
 /// `UNUserNotificationCenter` delegate handling a cold notification click,
-/// where no `#[tauri::command]` invocation is in flight). Keeps the GA
-/// gate (signed-in check) so the delegate path is defense-in-depth too.
+/// where no `#[tauri::command]` invocation is in flight).
 ///
 /// `route` routes the window to a screen: an already-open window gets a live
 /// `desktop:navigate` event; a fresh build queues the route for the frontend
@@ -658,13 +657,8 @@ pub async fn open_desktop_alt_window_inner(
     app: AppHandle,
     route: Option<&str>,
 ) -> Result<(), String> {
-    if !desktop_alt_enabled().await? {
-        return Err("desktop-alt requires a signed-in user".to_string());
-    }
-
     // US-103: intercept is a no-op (always false). Combined-app embed still
-    // opens THIS desktop-alt window; the webview mounts @hq/ui DesktopApp when
-    // hq_work_handoff is on. Flag-off must not probe install or log (finding-6).
+    // opens THIS desktop-alt window; the webview always mounts @hq/ui DesktopApp.
     if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
         return Ok(());
     }
@@ -1594,18 +1588,18 @@ mod window_router_tests {
     }
 
     #[test]
-    fn activation_matrix_tray_and_taskbar_are_compact() {
+    fn activation_matrix_tray_and_taskbar_open_desktop() {
         assert_eq!(
             activation_policy(ActivationSource::TrayLeftClick),
-            ActivationAction::ToggleCompact
+            ActivationAction::ShowDesktop { route: None }
+        );
+        assert_eq!(
+            activation_policy(ActivationSource::TaskbarSecondProcess),
+            ActivationAction::ShowDesktop { route: None }
         );
         assert_eq!(
             activation_policy(ActivationSource::CompactShortcut),
             ActivationAction::ToggleCompact
-        );
-        assert_eq!(
-            activation_policy(ActivationSource::TaskbarSecondProcess),
-            ActivationAction::ShowCompact
         );
     }
 
@@ -1623,13 +1617,11 @@ mod window_router_tests {
 
     #[test]
     fn activation_matrix_dock_icon_click_opens_the_desktop_window() {
-        // The Dock icon is a full-application affordance — it must NOT land on
-        // the compact popover the way a taskbar re-activation does.
         assert_eq!(
             activation_policy(ActivationSource::DockIconClick),
             ActivationAction::ShowDesktop { route: None }
         );
-        assert_ne!(
+        assert_eq!(
             activation_policy(ActivationSource::DockIconClick),
             activation_policy(ActivationSource::TaskbarSecondProcess)
         );

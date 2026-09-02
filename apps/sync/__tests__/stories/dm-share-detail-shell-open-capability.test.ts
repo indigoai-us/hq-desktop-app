@@ -194,7 +194,7 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<ThreadPanel[\s/>]/.test(body))
       .map(([relative]) => relative)
       .sort();
-    expect(threadPanelMounts).toEqual(['components/messaging/MessagesShell.svelte']);
+    expect(threadPanelMounts).toEqual([]);
   });
 
   it('builds both windows under the labels the capabilities grant', () => {

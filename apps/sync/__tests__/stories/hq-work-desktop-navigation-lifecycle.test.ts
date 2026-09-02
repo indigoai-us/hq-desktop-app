@@ -1107,6 +1107,9 @@ describe('embedded Work navigation and lifecycle', () => {
     await mountShell({ signedIn: false });
     expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
     expect(host.textContent).toContain('Your session expired');
+    expect(host.querySelector('.sign-in-card')).toBeTruthy();
+    expect(host.textContent).toContain('Continue with Google');
+    expect(host.textContent).toContain('Continue with Microsoft');
 
     await unmount(component!);
     component = null;

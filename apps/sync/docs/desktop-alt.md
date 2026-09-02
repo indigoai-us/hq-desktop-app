@@ -1,13 +1,17 @@
 # Desktop Alt UX
 
-The desktop-alt UX is the GA desktop surface for signed-in HQ Sync users. It adds the V4 decorated Tauri window while leaving the classic menubar popover as the default path.
+The desktop workspace is the single HQ UI. The decorated Tauri window
+(`desktop-alt`, `@hq/ui` DesktopApp) is what every user gets after sign-in.
+The compact menubar popover remains a status/quick-actions surface (tray
+right-click / Opt+Shift+H), not a second chat app.
 
 ## Access Model
 
-- The popover asks `desktop_alt_enabled` on mount and passes the result into `Popover.svelte`.
-- The toggle renders only inside `{#if desktopAltEnabled}` with `data-testid="desktop-alt-toggle"` and title `Open desktop view`.
-- `open_desktop_alt_window` re-checks the same backend gate before showing or creating the window. Signed-out users get `desktop-alt requires a signed-in user`.
-- The gate delegates to `util::feature_gate::desktop_features_enabled()`, which admits signed-in users. Indigo-only checks still protect admin/pre-release surfaces such as Moderation and non-stable update channels.
+- Tray left-click, Dock, and second-process activation open the `desktop-alt` window.
+- First-run onboarding still uses the compact `main` card, then hands off to the desktop workspace.
+- Signed-out users open the same window; `HqWorkDesktopShell` shows sign-in there.
+- `desktop_alt_enabled` still reports whether a Cognito email is present (used by some command paths). It no longer blocks opening the window.
+- Indigo-only checks still protect admin/pre-release surfaces such as Moderation and non-stable update channels.
 
 ## Window + Frontend Map
 
@@ -72,16 +76,10 @@ npm run test:e2e:desktop-alt
 
 Live mode is strict: when `HQ_SYNC_DESKTOP_ALT_LIVE` is set and the `tauri-driver` harness cannot be resolved, the run **fails** with the resolution reason rather than quietly falling back to the scripted harness. A silent fallback would let the Windows installer job report a pass without ever launching the installed binary.
 
-## HQ Work handoff (rollback path)
+## Single desktop shell
 
-Canonical combined-app rollout (flag-gated embed of `@hq/ui` DesktopApp in
-this window): [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md).
+Canonical combined-app notes: [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md).
 
-Desktop-alt is the flag-off rollback surface for the HQ Work desktop-view
-handoff. `hqWorkHandoff` / `hq_work_handoff` **defaults false**; Open HQ still
-opens this window until the flag is on.
-
-See [hq-work-handoff.md](hq-work-handoff.md) for alpha enable (`@getindigo.ai`,
-`~/.hq/menubar.json`), the copy-paste default-on one-liners, `[handoff]` log
-events, the rollback drill, and the removal note: **delete this window one
-Sync release after default-on bake — keep the code until then.**
+This window always mounts `@hq/ui` DesktopApp. The retired `hqWorkHandoff`
+menubar key is stripped on launch so upgraded installs cannot keep a classic
+chat shell. Historical two-app notes remain in [hq-work-handoff.md](hq-work-handoff.md).

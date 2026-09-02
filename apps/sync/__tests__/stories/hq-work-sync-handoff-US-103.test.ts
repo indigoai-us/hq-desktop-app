@@ -3,7 +3,7 @@
  * US-103 — Mount embedded @hq/ui DesktopApp behind hq_work_handoff.
  *
  * Tray "Open desktop view" always opens the desktop-alt window. The webview
- * boot is the flag branch: flag on → HQ Work shell, flag off → legacy.
+ * always mounts the @hq/ui HQ Work shell.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -348,14 +348,14 @@ afterEach(async () => {
 
 describe('US-103 embedded desktop window', () => {
   describe('flag branch (tray desktop-view → window boot)', () => {
-    it('hq_work_handoff still defaults false', () => {
-      expect(hqWorkHandoffEnabled(undefined)).toBe(false);
-      expect(hqWorkHandoffEnabled(null)).toBe(false);
-      expect(hqWorkHandoffEnabled(false)).toBe(false);
+    it('hq_work_handoff is always on, including a retired false key', () => {
+      expect(hqWorkHandoffEnabled(undefined)).toBe(true);
+      expect(hqWorkHandoffEnabled(null)).toBe(true);
+      expect(hqWorkHandoffEnabled(false)).toBe(true);
       expect(hqWorkHandoffEnabled(true)).toBe(true);
     });
 
-    it('Given flag off, when the tray desktop-view action runs, then legacy desktop-alt mounts', async () => {
+    it('Given a retired false flag, when the tray desktop-view action runs, then hq-work mounts', async () => {
       const calls: string[] = [];
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => false,
@@ -366,9 +366,9 @@ describe('US-103 embedded desktop window', () => {
           calls.push('hq-work');
         },
       });
-      expect(shell).toBe('legacy');
-      expect(await resolveDesktopAltShell(async () => false)).toBe('legacy');
-      expect(calls).toEqual(['legacy']);
+      expect(shell).toBe('hq-work');
+      expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
+      expect(calls).toEqual(['hq-work']);
     });
 
     it('shows a branded loading mark until identity settles', async () => {
@@ -426,31 +426,31 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
     });
 
-    it('flag-read failure falls back to the legacy desktop-alt shell', async () => {
+    it('flag-read failure still mounts the hq-work shell', async () => {
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => {
           throw new Error('menubar missing');
         },
-        mountLegacy: () => undefined,
-        mountHqWork: () => {
-          throw new Error('must not mount HQ Work when the flag cannot be read');
+        mountLegacy: () => {
+          throw new Error('must not mount legacy');
         },
+        mountHqWork: () => undefined,
       });
-      expect(shell).toBe('legacy');
+      expect(shell).toBe('hq-work');
     });
 
-    it('finding-6: flag-off boot does not probe install or mount the HQ Work shell', async () => {
+    it('finding-6: boot does not probe HQ Work install', async () => {
       const invokeFn = vi.fn(async (command: string) => {
-        throw new Error(`flag-off boot must not invoke ${command}`);
+        throw new Error(`boot must not invoke ${command}`);
       }) as HqWorkInvoker;
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => false,
-        mountLegacy: () => undefined,
-        mountHqWork: () => {
-          throw new Error('must not mount HQ Work when flag is off');
+        mountLegacy: () => {
+          throw new Error('must not mount legacy');
         },
+        mountHqWork: () => undefined,
       });
-      expect(shell).toBe('legacy');
+      expect(shell).toBe('hq-work');
       expect(invokeFn).not.toHaveBeenCalled();
     });
   });
