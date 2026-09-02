@@ -7,10 +7,11 @@
    * ZERO extra fetch after send — cache-first; the host must not re-GET the
    * whole reply thread on ack (hq-work-desktop-io-off-main-thread).
    */
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
@@ -38,7 +39,8 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isImageFile,
+    filesFromDataTransfer,
+    namePastedImageFile,
     validateChatAttachment,
     type ChatAttachmentValidator,
     type ChatAttachmentWire,
@@ -240,7 +242,7 @@
   let localSeq = 0;
   let seenIds = $state(new Set<string>());
   let localReactions = $state<ReactionMap>({});
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -497,50 +499,15 @@
     attachError = null;
   }
 
-  /**
-   * Lazy object URLs for image previews of pending composer files. The
-   * $effect below revokes URLs whenever a file leaves pendingFiles (remove,
-   * send-clear), and onDestroy revokes whatever is left.
-   */
-  const pendingPreviewUrls = new Map<File, string>();
-  function pendingPreviewUrl(file: File): string {
-    let url = pendingPreviewUrls.get(file);
-    if (!url) {
-      url = URL.createObjectURL(file);
-      pendingPreviewUrls.set(file, url);
-    }
-    return url;
-  }
-  $effect(() => {
-    const current = new Set(pendingFiles);
-    for (const [file, url] of pendingPreviewUrls) {
-      if (!current.has(file)) {
-        URL.revokeObjectURL(url);
-        pendingPreviewUrls.delete(file);
-      }
-    }
-  });
-  onDestroy(() => {
-    for (const url of pendingPreviewUrls.values()) URL.revokeObjectURL(url);
-    pendingPreviewUrls.clear();
-  });
-
-  /** Pasted screenshots all arrive named "image.png" — make each unique. */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
     if (!onuploadfiles) return;
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -1047,43 +1014,12 @@
         />
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="reply-pending" data-testid="reply-panel-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            {#if isImageFile(file)}
-              <span class="reply-thumb">
-                <img
-                  class="reply-thumb-img"
-                  src={pendingPreviewUrl(file)}
-                  alt={file.name}
-                />
-                <span class="reply-thumb-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="reply-thumb-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {:else}
-              <span class="reply-chip">
-                <span class="reply-chip-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="reply-chip-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {/if}
-          {/each}
-          {#if attachError}
-            <span class="reply-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          testid="reply-panel-pending"
+          onremove={removePendingFile}
+        />
       {/if}
       <textarea
         class="reply-input"
@@ -1483,94 +1419,6 @@
     font-size: 11px;
     font-weight: 400;
     cursor: pointer;
-  }
-
-  .reply-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .reply-thumb {
-    position: relative;
-    display: inline-flex;
-    width: 56px;
-    height: 56px;
-    overflow: hidden;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-  }
-
-  .reply-thumb-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-
-  .reply-thumb-name {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 1px 3px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 10px;
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    opacity: 0.9;
-  }
-
-  .reply-thumb-remove {
-    position: absolute;
-    top: 0;
-    right: 0;
-    appearance: none;
-    border: 0;
-    padding: 0 4px;
-    line-height: 16px;
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-thumb-remove:hover {
-    background: var(--sel, rgba(255, 255, 255, 0.12));
-    color: var(--t1, #fff);
-  }
-
-  .reply-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 200px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .reply-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .reply-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .reply-attach {

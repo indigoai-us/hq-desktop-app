@@ -11,7 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { onDestroy, untrack, type Snippet } from "svelte";
+  import { untrack, type Snippet } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
@@ -22,6 +22,7 @@
   import PromptAttachment from "./PromptAttachment.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
     systemModelForMessage,
@@ -32,7 +33,11 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isImageFile,
+    attachmentKindForContentType,
+    contentTypeForFile,
+    filesFromDataTransfer,
+    namePastedImageFile,
+    newAttachmentId,
     validateChatAttachment,
     type ChatAttachmentValidator,
   } from "./chat-attachments";
@@ -275,7 +280,7 @@
   let replyText = $state("");
   let replyInputEl = $state<HTMLTextAreaElement | null>(null);
   let attachInputEl = $state<HTMLInputElement | null>(null);
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
@@ -617,52 +622,14 @@
     attachError = null;
   }
 
-  /**
-   * Lazy object URLs for image previews of pending composer files. The
-   * $effect below revokes URLs whenever a file leaves pendingFiles (remove,
-   * send-clear), and onDestroy revokes whatever is left.
-   */
-  const pendingPreviewUrls = new Map<File, string>();
-  function pendingPreviewUrl(file: File): string {
-    let url = pendingPreviewUrls.get(file);
-    if (!url) {
-      url = URL.createObjectURL(file);
-      pendingPreviewUrls.set(file, url);
-    }
-    return url;
-  }
-  $effect(() => {
-    const current = new Set(pendingFiles);
-    for (const [file, url] of pendingPreviewUrls) {
-      if (!current.has(file)) {
-        URL.revokeObjectURL(url);
-        pendingPreviewUrls.delete(file);
-      }
-    }
-  });
-  onDestroy(() => {
-    for (const url of pendingPreviewUrls.values()) URL.revokeObjectURL(url);
-    pendingPreviewUrls.clear();
-  });
-
-  /**
-   * Pasted screenshots arrive as clipboard files all named "image.png" — give
-   * each a unique name so the (name, size) dedupe and vault path stay distinct.
-   */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -696,7 +663,7 @@
     e.preventDefault();
     dragDepth = 0;
     dragActive = false;
-    const files = Array.from(e.dataTransfer?.files ?? []);
+    const files = filesFromDataTransfer(e.dataTransfer);
     if (files.length > 0) {
       addPendingFiles(files);
       replyInputEl?.focus();
@@ -776,17 +743,20 @@
         createdAt: new Date().toISOString(),
         direction: "out",
         mentions,
-        attachments: files.map((file) => ({
-          id: file.name,
-          vaultPath: file.name,
-          name: file.name,
-          contentType: file.type,
-          sizeBytes: file.size,
-          kind: file.type.startsWith("image/") ? "image" : "file",
-          previewUrl: file.type.startsWith("image/")
-            ? URL.createObjectURL(file)
-            : null,
-        })),
+        attachments: files.map((file) => {
+          const contentType = contentTypeForFile(file);
+          const kind = attachmentKindForContentType(contentType);
+          return {
+            id: newAttachmentId(),
+            vaultPath: file.name,
+            name: file.name,
+            contentType,
+            sizeBytes: file.size,
+            kind,
+            previewUrl:
+              kind === "image" ? URL.createObjectURL(file) : null,
+          };
+        }),
       },
     ];
     replyText = "";
@@ -1225,43 +1195,11 @@
         </div>
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="composer-pending" data-testid="composer-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            {#if isImageFile(file)}
-              <span class="composer-thumb">
-                <img
-                  class="composer-thumb-img"
-                  src={pendingPreviewUrl(file)}
-                  alt={file.name}
-                />
-                <span class="composer-thumb-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="composer-thumb-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {:else}
-              <span class="composer-chip">
-                <span class="composer-chip-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="composer-chip-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {/if}
-          {/each}
-          {#if attachError}
-            <span class="composer-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          onremove={removePendingFile}
+        />
       {/if}
       <div class="mention-input-frame">
         {#if replyText.length > 0}
@@ -1499,95 +1437,6 @@
     clip: rect(0 0 0 0);
     white-space: nowrap;
     border: 0;
-  }
-
-  .composer-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 0 2px 8px;
-  }
-
-  .composer-thumb {
-    position: relative;
-    display: inline-flex;
-    width: 56px;
-    height: 56px;
-    overflow: hidden;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-  }
-
-  .composer-thumb-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-
-  .composer-thumb-name {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 1px 3px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 10px;
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    opacity: 0.9;
-  }
-
-  .composer-thumb-remove {
-    position: absolute;
-    top: 0;
-    right: 0;
-    appearance: none;
-    border: 0;
-    padding: 0 4px;
-    line-height: 16px;
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .composer-thumb-remove:hover {
-    background: var(--sel, rgba(255, 255, 255, 0.12));
-    color: var(--t1, #fff);
-  }
-
-  .composer-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 220px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .composer-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .composer-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .composer-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .dm-thread-wrap {
