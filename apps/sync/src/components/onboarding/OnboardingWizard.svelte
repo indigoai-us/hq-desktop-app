@@ -8,6 +8,7 @@
   import folderIcon from '../../assets/onboarding/folder-icon.png';
   import '../../styles/design-system.css';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
     COMPLETE_SETUP,
     SETUP_NEEDS_PASS,
@@ -1212,7 +1213,10 @@
       if (tools.claude_desktop) {
         const url = buildClaudeCodeUrl({
           folder: installPath ?? '',
-          prompt: '/setup',
+          // NOT '/setup': Claude Desktop scans skills before a link-opened
+          // folder is trusted, so HQ's project `/setup` skill is not
+          // registered in the session this deep link creates.
+          prompt: SETUP_DEEP_LINK_PROMPT,
         });
         await invoke('open_claude_code_link', { url });
         launched = true;
@@ -1352,7 +1356,7 @@
     try {
       const url = buildClaudeCodeUrl({
         folder: installPath ?? '',
-        prompt: '/setup',
+        prompt: SETUP_DEEP_LINK_PROMPT,
       });
       await invoke('open_claude_code_link', { url });
       launched = true;
