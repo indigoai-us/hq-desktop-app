@@ -10,6 +10,10 @@ const commandPalette = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/CommandPalette.svelte'),
   'utf8',
 );
+const statusBar = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/DesktopStatusBar.svelte'),
+  'utf8',
+);
 const banner = readFileSync(
   resolve(process.cwd(), 'src/components/BannerNotification.svelte'),
   'utf8',
@@ -26,6 +30,10 @@ const liveNowCard = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/LiveNowCard.svelte'),
   'utf8',
 );
+const messagesShell = readFileSync(
+  resolve(process.cwd(), 'src/components/messaging/MessagesShell.svelte'),
+  'utf8',
+);
 const marketplacePanel = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/panels/MarketplacePanel.svelte'),
   'utf8',
@@ -40,7 +48,8 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(homePage).toContain('class="home-skeleton"');
     expect(homePage).toContain('aria-busy="true"');
     // (CompaniesPage was removed as a destination by hq-desktop-widget US-007.)
-
+    expect(messagesShell).toContain('Loading conversations');
+    expect(messagesShell).toContain('class="pane-empty"');
     expect(liveNowCard).toContain('No active meeting window has been detected.');
     expect(meetingsPage).toContain('No calendars connected yet');
     expect(marketplacePanel).toContain('class="grid-skeleton"');
@@ -89,6 +98,9 @@ describe('US-016: V4 connective tissue stays complete', () => {
   });
 
   it('DESKTOP-001: compact shell removes the bottom status bar and keeps titlebar chrome', () => {
+    // Status bar component still exists (version popout host) but is unmounted.
+    expect(statusBar).toContain('filesProgressed?: number;');
+    expect(statusBar).toContain('workspaceCount?: number;');
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(desktopApp).toContain('<V4TitleBar');
     expect(desktopApp).toContain('ontogglesidebar={handleToggleSidebar}');

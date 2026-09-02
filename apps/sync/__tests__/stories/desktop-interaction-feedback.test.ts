@@ -108,7 +108,7 @@ describe('desktop interaction feedback and render budgets', () => {
     expect(tauriMain).toContain('commands::hq_cli_update::get_hq_cli_version');
   });
 
-  it.skip('bounds the Messages rail while preserving explicit access to older conversations', () => {
+  it('bounds the Messages rail while preserving explicit access to older conversations', () => {
     const messages = read('src/components/messaging/MessagesShell.svelte');
     expect(messages).toContain('const RAIL_RENDER_BATCH = 60');
     expect(messages).toContain('filteredRailItems.slice(0, railVisibleCount)');

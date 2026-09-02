@@ -2,23 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { bootDesktopAltWindow, resolveDesktopAltShell } from './boot';
 
 describe('resolveDesktopAltShell', () => {
-  it('always returns hq-work, including for a GA user with no company', async () => {
+  it('returns hq-work only for a strict true handoff', async () => {
     expect(await resolveDesktopAltShell(async () => true)).toBe('hq-work');
-    expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
-    expect(await resolveDesktopAltShell()).toBe('hq-work');
+    expect(await resolveDesktopAltShell(async () => false)).toBe('legacy');
   });
 
-  it('ignores a retired hqWorkHandoff false / throw from an upgraded install', async () => {
+  it('falls back to legacy when getHandoff throws', async () => {
     expect(
       await resolveDesktopAltShell(async () => {
         throw new Error('menubar missing');
       }),
-    ).toBe('hq-work');
+    ).toBe('legacy');
   });
 });
 
 describe('bootDesktopAltWindow', () => {
-  it('mounts hq-work even when getHandoff returns false', async () => {
+  it('mounts legacy when getHandoff returns false, without calling mountHqWork', async () => {
     const order: string[] = [];
     const shell = await bootDesktopAltWindow({
       getHandoff: async () => {
@@ -32,24 +31,28 @@ describe('bootDesktopAltWindow', () => {
         order.push('hq-work');
       },
     });
-    expect(shell).toBe('hq-work');
-    expect(order).toEqual(['hq-work']);
+    expect(shell).toBe('legacy');
+    expect(order).toEqual(['handoff', 'legacy']);
   });
 
-  it('mounts hq-work when getHandoff throws (upgraded install / missing key)', async () => {
+  it('mounts legacy when getHandoff throws', async () => {
     const mountLegacy = vi.fn();
+    const mountHqWork = vi.fn(() => {
+      throw new Error('must not mount HQ Work when the flag cannot be read');
+    });
     const shell = await bootDesktopAltWindow({
       getHandoff: async () => {
         throw new Error('menubar missing');
       },
       mountLegacy,
-      mountHqWork: () => undefined,
+      mountHqWork,
     });
-    expect(shell).toBe('hq-work');
-    expect(mountLegacy).not.toHaveBeenCalled();
+    expect(shell).toBe('legacy');
+    expect(mountLegacy).toHaveBeenCalledOnce();
+    expect(mountHqWork).not.toHaveBeenCalled();
   });
 
-  it('awaits mountHqWork without calling legacy', async () => {
+  it('awaits mountHqWork after a truthy handoff, without calling legacy', async () => {
     const order: string[] = [];
     const shell = await bootDesktopAltWindow({
       getHandoff: async () => {
@@ -66,6 +69,6 @@ describe('bootDesktopAltWindow', () => {
       },
     });
     expect(shell).toBe('hq-work');
-    expect(order).toEqual(['hq-work-start', 'hq-work-end']);
+    expect(order).toEqual(['handoff', 'hq-work-start', 'hq-work-end']);
   });
 });

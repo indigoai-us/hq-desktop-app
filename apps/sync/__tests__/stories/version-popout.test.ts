@@ -9,24 +9,31 @@ import { describe, expect, it } from 'vitest';
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
-const titleBar = read('src/desktop-alt/v4/V4TitleBar.svelte');
+const statusBar = read('src/desktop-alt/DesktopStatusBar.svelte');
 const popout = read('src/desktop-alt/components/VersionPopout.svelte');
 const desktopApp = read('src/desktop-alt/DesktopApp.svelte');
 const harness = read('dev-harness/mocks/core.ts');
 
 describe('US-017: version pop-out in desktop status bar', () => {
   it('version label opens a viewport-fixed pop-out with a11y + close affordances', () => {
+    const s = normalize(statusBar);
     const p = normalize(popout);
 
-    expect(titleBar).toContain('data-testid="version-label"');
-    expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
-    expect(titleBar).toContain('<VersionPopout');
-    expect(titleBar).toContain('aria-expanded={versionOpen}');
+    expect(statusBar).toContain('data-testid="version-label"');
+    expect(statusBar).toContain("import VersionPopout from './components/VersionPopout.svelte'");
+    expect(statusBar).toContain('<VersionPopout');
+    expect(statusBar).toContain('aria-expanded={versionOpen}');
+    expect(s).toContain('position: relative');
     expect(p).toContain('position: fixed');
+    expect(p).toContain('bottom: 40px');
+    expect(p).toContain('right: 12px');
+    expect(p).toContain('z-index: 10000');
+    expect(p).toContain('top: 48px');
     expect(popout).toContain('role="dialog"');
     expect(popout).toContain('aria-label="Version and updates"');
-    expect(titleBar).toContain("window.addEventListener('mousedown'");
-    expect(titleBar).toContain("event.key === 'Escape'");
+    // Click-away + Escape live on the status bar while the pop-out is open.
+    expect(statusBar).toContain("window.addEventListener('mousedown'");
+    expect(statusBar).toContain("event.key === 'Escape'");
     // DESKTOP-001: status bar unmounted; account/settings live on the titlebar.
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(desktopApp).toContain('onaccount={handleAccountMenu}');

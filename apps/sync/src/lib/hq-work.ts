@@ -17,9 +17,9 @@ export type HqWorkInvoker = <T>(
 ) => Promise<T>;
 
 export function hqWorkHandoffEnabled(
-  _flag?: boolean | null | undefined,
+  flag: boolean | null | undefined,
 ): boolean {
-  return true;
+  return flag === true;
 }
 
 export async function detectHqWorkInstalled(

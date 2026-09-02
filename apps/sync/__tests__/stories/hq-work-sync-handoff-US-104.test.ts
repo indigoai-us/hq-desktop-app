@@ -34,9 +34,9 @@ afterEach(() => {
 
 describe('US-104 internal notification + deep-link routing', () => {
   it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-    expect(hqWorkHandoffEnabled(null)).toBe(true);
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
+    expect(hqWorkHandoffEnabled(undefined)).toBe(false);
+    expect(hqWorkHandoffEnabled(null)).toBe(false);
+    expect(hqWorkHandoffEnabled(false)).toBe(false);
     expect(hqWorkHandoffEnabled(true)).toBe(true);
   });
 

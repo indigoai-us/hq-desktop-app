@@ -40,7 +40,6 @@
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
   import { dismissBootLoader } from './boot-loader';
-  import SignInPrompt from '../components/SignInPrompt.svelte';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
@@ -83,6 +82,7 @@
   let workspaceError = $state<string | null>(null);
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
+  let reauthError = $state<string | null>(null);
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
@@ -171,6 +171,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    reauthError = null;
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -238,6 +239,7 @@
     identityError = null;
     workspaceError = null;
     signOutError = null;
+    reauthError = null;
     // Do not render stale tenant/account data while a new auth probe runs.
     self = null;
     companies = null;
@@ -337,9 +339,13 @@
     }
   }
 
-  function handleWorkspaceSignInSuccess(): void {
-    void hydrateSession();
-    void invokeFn('open_desktop_alt_window');
+  async function beginReauth(): Promise<void> {
+    reauthError = null;
+    try {
+      await invokeFn('begin_reauth');
+    } catch (error) {
+      reauthError = readableError(error, 'Couldn’t start sign-in. Please try again.');
+    }
   }
 
   // Sync owns MQTT credentials and turns wake-only publishes into reconciled,
@@ -597,14 +603,9 @@
           ? 'Sign in again to continue using HQ Work.'
           : 'This device no longer has an active HQ Work session.'}
       </p>
-      <div class="workspace-signin">
-        <SignInPrompt
-          reauth={signedOutReason === 'expired' || signedOutReason === 'invalid'}
-          bringMainToFront={false}
-          onsuccess={handleWorkspaceSignInSuccess}
-        />
-      </div>
+      <button type="button" onclick={() => void beginReauth()}>Sign in</button>
       <button type="button" class="secondary" onclick={() => void hydrateSession()}>Retry</button>
+      {#if reauthError}<p class="lifecycle-error" role="alert">{reauthError}</p>{/if}
     </section>
   {:else if lifecycle === 'recovery'}
     <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
@@ -706,7 +707,7 @@
     margin: 0;
   }
 
-  .lifecycle-state > button,
+  .lifecycle-state button,
   .workspace-warning button {
     width: fit-content;
     padding: 7px 10px;
@@ -718,16 +719,7 @@
   }
 
   .lifecycle-state .secondary { background: transparent; }
-
-  .workspace-signin {
-    width: min(100%, 420px);
-  }
-
-  .workspace-signin :global(.sign-in-container) {
-    width: 100%;
-    height: auto;
-    min-height: 0;
-  }
+  .lifecycle-error { color: #fca5a5; }
 
   .workspace-warning {
     position: absolute;

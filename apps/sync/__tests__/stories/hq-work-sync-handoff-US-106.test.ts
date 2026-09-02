@@ -28,49 +28,83 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
     expect(existsSync(docPath)).toBe(true);
   });
 
-  describe('retired flag cannot select a shell', () => {
-    it('get_settings reports hq_work_handoff as None', () => {
+  describe('flag defaults false', () => {
+    it('get_settings no-file branch is Some(false), not Some(true)', () => {
       const idx = settings.indexOf('if !path.exists()');
       expect(idx).toBeGreaterThan(-1);
       const noFile = settings.slice(idx, settings.indexOf('let contents =', idx));
-      expect(noFile).toContain('hq_work_handoff: None');
+      expect(noFile).toContain('hq_work_handoff: Some(false)');
+      expect(noFile).not.toContain('hq_work_handoff: Some(true)');
     });
 
-    it('hq_work_handoff_enabled is always true', () => {
+    it('get_settings present branch unwrap_or(false)', () => {
+      expect(settings).toContain(
+        'hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))',
+      );
+      expect(settings).not.toContain(
+        'hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))',
+      );
+    });
+
+    it('hq_work_handoff_enabled unwrap_or(false)', () => {
       const idx = config.indexOf('pub fn hq_work_handoff_enabled');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(idx, idx + 280);
-      expect(body).toContain('true');
-      expect(body).not.toContain('.unwrap_or(false)');
+      expect(body).toContain('.unwrap_or(false)');
+      expect(body).not.toContain('.unwrap_or(true)');
     });
 
-    it('get_hq_work_handoff always returns true', () => {
+    it('get_hq_work_handoff defaults on inside the cohort, off outside it', () => {
+      // Was: "missing file is Ok(false)". The embed is now default-ON for
+      // Approved cohort members should not have to hand-edit menubar.json,
+      // and there is deliberately no Settings toggle. A missing
+      // file or missing key is "no explicit choice", not an opt-out.
       const idx = config.indexOf('fn get_hq_work_handoff');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
-      expect(body).toContain('Ok(true)');
-      expect(body).not.toContain('is_hq_work_cohort_user');
+      // Cohort membership is still required, and still comes from one place.
+      expect(body).toContain('feature_gate::is_hq_work_cohort_user()');
+      expect(body).toContain('hq_work_handoff_visible(');
+      // An explicit false is still an opt-out, and still short-circuits.
+      expect(body).toContain('choice == Some(false)');
+      expect(body).toContain('return Ok(false)');
+      // The default itself: cohort AND (choice defaulting to true).
+      const visible = config.slice(
+        config.indexOf('pub fn hq_work_handoff_visible'),
+        config.indexOf('/// On by default for'),
+      );
+      expect(visible).toContain('is_cohort_member && choice.unwrap_or(true)');
     });
   });
 
-  describe('boot always mounts the hq-work shell', () => {
-    it('does not keep a legacy mount path', () => {
-      expect(boot).toContain("export type DesktopAltShell = 'hq-work'");
-      expect(boot).toContain('await deps.mountHqWork()');
-      expect(boot).not.toContain("? 'hq-work' : 'legacy'");
+  describe('boot rollback is the legacy shell', () => {
+    it('flag off maps to legacy / mountLegacy', () => {
+      expect(boot).toContain("return (await getHandoff()) === true ? 'hq-work' : 'legacy'");
+      expect(boot).toContain("if (shell === 'hq-work')");
+      expect(boot).toContain('deps.mountHqWork()');
+      expect(boot).toContain('deps.mountLegacy()');
     });
   });
 
   describe('canonical rollout doc', () => {
-    it('documents the single desktop shell and retired hqWorkHandoff key', () => {
+    it('documents alpha enable, default-on one-liners, rollback, removal', () => {
       const doc = readRepo('docs/hq-work-embedded-rollout.md');
       expect(doc).toContain('hqWorkHandoff');
       expect(doc).toContain('~/.hq/menubar.json');
+      expect(doc).toContain('@getindigo.ai');
+      expect(doc).toContain('@vyg.ai');
+      expect(doc).toContain('@liverecover.com');
+      expect(doc).toContain('hq_work_handoff: Some(false)');
+      expect(doc).toContain('hq_work_handoff: Some(true)');
+      expect(doc).toContain('unwrap_or(false)');
+      expect(doc).toContain('unwrap_or(true)');
+      expect(doc).toContain('hq_work_handoff_enabled');
       expect(doc).toContain('get_hq_work_handoff');
-      expect(doc).toContain('HqWorkDesktopShell');
-      expect(doc).toContain('always returns');
-      expect(doc).toContain('strips the key');
-      expect(doc).toContain('is_indigo_user');
+      expect(doc).toContain('return Ok(false)');
+      expect(doc).toContain('Not a live macOS GUI session');
+      expect(doc).toContain('no migration');
+      expect(doc).toContain('legacy');
+      expect(doc).toContain('one Sync release after default-on bake');
     });
 
     it('records BEFORE updater bytes and withholds fabricated AFTER', () => {
@@ -93,7 +127,7 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(twoApp).toContain('hq-work-embedded-rollout.md');
       expect(desktopAltDoc).toContain('hq-work-embedded-rollout.md');
       expect(desktopAltDoc).toContain('hq-work-handoff.md');
-      expect(desktopAltDoc).toContain('single HQ UI');
+      expect(desktopAltDoc).toContain('default-on bake');
     });
   });
 });

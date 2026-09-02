@@ -1,9 +1,9 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
-//! Left-click opens the desktop workspace (first-run onboarding still uses
-//! the compact `main` card). Right-click shows a context menu with "Sync Now",
-//! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
+//! Left-click toggles the compact notification popover (US-004 WindowRouter);
+//! right-click shows a context menu with "Sync Now", "Open desktop view", and
+//! "Quit". Full desktop opens only via the explicit menu action / shortcut.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -412,16 +412,15 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     ..
                 } = event
                 {
-                    // Tray left-click opens the desktop workspace. First-run
-                    // onboarding still lives on `main`, so that path keeps the
-                    // installer card instead.
+                    // US-004: tray left-click toggles the compact popover only.
+                    // Full desktop is reserved for "Open desktop view" / shortcut.
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
                     hq_telemetry::record_native_panic_seam(
                         hq_telemetry::NativePanicSeam::TrayLeftClick,
                     );
-                    activate_primary_surface(&app_handle);
+                    toggle_popover_window(&app_handle);
                 }
             }
         })
@@ -724,10 +723,10 @@ pub fn show_window_centered(app: &AppHandle) {
 // Only one primary HQ surface is ever on-screen at a time: the classic popover
 // (`main`) OR the desktop window (`desktop-alt`). Showing one hides the other.
 //
-// WindowRouter activation policy:
-//   Tray left-click / taskbar second-process / Dock → desktop workspace
-//   First-run onboarding still owns `main` until the wizard finishes
-//   Opt+Shift+H → toggle compact status popover
+// US-004 WindowRouter activation policy:
+//   Tray left-click / taskbar second-process → compact popover
+//   Explicit "Open desktop view" / Opt+Shift+O → full desktop
+//   Opt+Shift+H → toggle compact popover
 // Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
@@ -744,8 +743,8 @@ pub fn hide_desktop_alt(app: &AppHandle) {
 /// popover). Kept for the global desktop shortcut which still toggles.
 ///
 /// If `desktop-alt` is already visible, hide it. Otherwise open it
-/// asynchronously. Signed-out users are admitted so they can sign in inside
-/// the workspace; a real open failure still falls back to `main`.
+/// asynchronously; when the GA gate rejects a signed-out user, fall back to
+/// the classic popover so they still reach the SignInPrompt.
 pub fn toggle_desktop_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         if win.is_visible().unwrap_or(false) {
@@ -760,9 +759,9 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
                 .await
         {
-            // Real open failure: keep first-run onboarding / sign-in reachable
-            // on `main`. show_popover_window does AppKit window ops and must
-            // run on the main thread.
+            // GA gate rejects signed-out users — show classic popover so they
+            // still reach SignInPrompt. show_popover_window does AppKit window
+            // ops and must run on the main thread.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
@@ -771,16 +770,22 @@ pub fn toggle_desktop_window(app: &AppHandle) {
     });
 }
 
-/// Show + focus the desktop workspace. Never hides it.
+/// Show + focus the desktop window. Never hides it.
 ///
 /// The show-only counterpart to [`toggle_desktop_window`], for activation
-/// sources where hiding would read as a no-op rather than a toggle — tray
-/// left-click, Dock icon, and second-process activation.
+/// sources where hiding would read as a no-op rather than a toggle — the macOS
+/// Dock icon click being the case this exists for. Clicking a Dock icon to make
+/// the window disappear is not behaviour any Mac app has.
 ///
 /// `open_desktop_alt_window_inner` already show+focuses an existing window, so
-/// this is safe to call whether or not the window has been built yet. First-run
-/// onboarding still lives on `main`; callers that must not steal that card
-/// should use [`activate_primary_surface`].
+/// this is safe to call whether or not the window has been built yet. When the
+/// GA gate rejects a signed-out user it falls back to the classic popover, same
+/// as `toggle_desktop_window`, so the Dock icon still reaches SignInPrompt.
+///
+/// macOS-only because the Dock-click (`RunEvent::Reopen`) handler is its only
+/// caller; ungated it would be dead code on Windows/Linux. Drop the gate if a
+/// non-macOS activation source ever needs show-without-toggle.
+#[cfg(target_os = "macos")]
 pub fn show_desktop_window(app: &AppHandle) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -788,23 +793,13 @@ pub fn show_desktop_window(app: &AppHandle) {
             crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
                 .await
         {
-            // Real open failure (not a signed-out gate): keep the onboarding /
-            // sign-in card reachable on `main`.
+            // show_popover_window does AppKit window ops — main thread only.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
             });
         }
     });
-}
-
-/// Open the desktop workspace, unless first-run onboarding still owns `main`.
-pub fn activate_primary_surface(app: &AppHandle) {
-    if onboarding_window_requires_blur_suppression(app) {
-        show_popover_window(app);
-        return;
-    }
-    show_desktop_window(app);
 }
 
 /// Show the popover (`main`) on-screen, hiding the desktop window first.

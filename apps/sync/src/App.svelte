@@ -92,6 +92,8 @@
     }
   }
 
+  let showHandoffCard = $state(false);
+  let handoffFirstShow = $state(true);
   let authenticated = $state(false);
   let expiresAt = $state('');
   let checking = $state(true);
@@ -1257,6 +1259,9 @@
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
           if (authenticated) void loadUnreadSummary();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
+        } else {
+          // Handoff overlay replaces Open desktop, not the compact tray click.
+          showHandoffCard = false;
         }
       })
     );
@@ -1293,23 +1298,30 @@
       await listen('tray:open-settings', () => {
         void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
           console.error('tray open_desktop_alt_window (settings) failed:', e);
-          // Real open failure: keep first-run onboarding / sign-in reachable.
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
           void invoke('show_main_window').catch(console.error);
         });
       })
     );
 
     // Native tray right-click menu (hq-tray-helper): Open desktop view +
-    // Sign Out. Signed-out users still get the workspace window so they can
-    // sign in there.
+    // Sign Out. Both route through the same guarded frontend paths the
+    // popover uses (the backend gate is re-checked by open_desktop_alt_window).
     unlisteners.push(
       await listen('tray:open-desktop', () => {
         void invoke('open_desktop_alt_window').catch((e) => {
           console.error('tray open_desktop_alt_window failed:', e);
-          // Real open failure: keep first-run onboarding / sign-in reachable.
+          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
           void invoke('show_main_window').catch(console.error);
         });
       })
+    );
+
+    unlisteners.push(
+      await listen<{ firstShow?: boolean }>('handoff:show-card', (e) => {
+        handoffFirstShow = e.payload?.firstShow !== false;
+        showHandoffCard = true;
+      }),
     );
 
     unlisteners.push(
@@ -2373,11 +2385,6 @@
     if (shouldResumeSync) {
       await handleSyncNow();
     }
-    if (auth.authenticated) {
-      void invoke('open_desktop_alt_window').catch((e) => {
-        console.error('open_desktop_alt_window after sign-in failed:', e);
-      });
-    }
   }
 </script>
 
@@ -2438,6 +2445,8 @@
       oninstallupdate={handleInstallUpdate}
       onretrynotificationaction={handleRetryNotificationAction}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
+      showHqWorkHandoff={showHandoffCard}
+      hqWorkHandoffFirstShow={handoffFirstShow}
     />
   {:else}
     <SignInPrompt reauth={syncState === 'auth-error'} onsuccess={handleAuthSuccess} />

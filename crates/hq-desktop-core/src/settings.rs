@@ -34,9 +34,6 @@ pub fn merge_prefs_over_existing(
             obj.entry(k).or_insert(v);
         }
     }
-    // Retired shell-choice key. Never re-persist it, even if it is still on
-    // disk from a pre-desktop-workspace install.
-    obj.remove("hqWorkHandoff");
     serde_json::to_string_pretty(&serde_json::Value::Object(obj))
         .map_err(|e| format!("Failed to serialize settings: {}", e))
 }
@@ -116,8 +113,8 @@ mod tests {
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
-            // Retired. Always None so Settings cannot resurrect the classic shell.
-            hq_work_handoff: None,
+            // HQ Work handoff defaults OFF so existing installs keep desktop-alt.
+            hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
         }
     }
 
@@ -151,8 +148,8 @@ mod tests {
         // Widget defaults ON when absent; display stays None (primary).
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
-        // Retired hqWorkHandoff is ignored, not defaulted.
-        assert_eq!(result.hq_work_handoff, None);
+        // HQ Work handoff defaults OFF when absent.
+        assert_eq!(result.hq_work_handoff, Some(false));
     }
 
     #[test]
@@ -231,8 +228,8 @@ mod tests {
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
-        // Retired hqWorkHandoff is ignored even when the typed field is set.
-        assert_eq!(result.hq_work_handoff, None);
+        // explicit hq_work_handoff true survives the default-off coercion
+        assert_eq!(result.hq_work_handoff, Some(true));
     }
 
     #[test]
@@ -546,30 +543,18 @@ mod tests {
     }
 
     #[test]
-    fn test_hq_work_handoff_is_ignored() {
+    fn test_hq_work_handoff_defaults_false() {
         let result = apply_defaults(empty_prefs());
-        assert_eq!(result.hq_work_handoff, None);
+        assert_eq!(result.hq_work_handoff, Some(false));
+    }
+
+    #[test]
+    fn test_explicit_hq_work_handoff_true_preserved() {
         let prefs = MenubarPrefs {
             hq_work_handoff: Some(true),
             ..empty_prefs()
         };
-        assert_eq!(apply_defaults(prefs).hq_work_handoff, None);
-        let prefs = MenubarPrefs {
-            hq_work_handoff: Some(false),
-            ..empty_prefs()
-        };
-        assert_eq!(apply_defaults(prefs).hq_work_handoff, None);
-    }
-
-    #[test]
-    fn test_merge_strips_retired_hq_work_handoff() {
-        let existing = r#"{
-            "machineId": "keep-me",
-            "hqWorkHandoff": false
-        }"#;
-        let merged = merge_prefs_over_existing(&empty_prefs(), Some(existing)).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
-        assert!(v.get("hqWorkHandoff").is_none());
-        assert_eq!(v["machineId"], "keep-me");
+        let result = apply_defaults(prefs);
+        assert_eq!(result.hq_work_handoff, Some(true));
     }
 }

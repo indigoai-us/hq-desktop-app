@@ -1,9 +1,9 @@
 # HQ Work embedded window — live smoke checklist (US-107)
 
 Executable checklist for the **combined-app** embed: HQ Work's `@hq/ui`
-DesktopApp inside Sync's desktop-alt window. The desktop workspace is the
-single UI for every signed-in user. Run **once on a real macOS machine**
-after a build that includes this shell.
+DesktopApp inside Sync's desktop-alt window. Run **once on a real macOS
+machine** before flipping `hqWorkHandoff` beyond the approved cohort
+(`@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`).
 
 Canonical file: this document. It **supersedes** the two-app
 [hq-work-handoff-qa.md](hq-work-handoff-qa.md) (card / co-install / launch HQ
@@ -17,8 +17,10 @@ Rollout, bake, rollback, updater budget:
 macOS only. Tray popover, widget, and sync engine stay in Sync. No second
 app, no co-install, no account or data migration.
 
-The retired `hqWorkHandoff` key is ignored and stripped on launch. There is
-no flag-off rollback to a classic chat shell.
+The flag **defaults ON for `@getindigo.ai`, `@vyg.ai`, and
+`@liverecover.com`** and off for everyone else. For a cohort operator running
+this checklist that inverts Scenario 1: *absent* no longer means off, so the
+flag-off scenario must write an explicit `false`.
 
 Executed once on a real machine — see [Results](#results-live-machine).
 Re-record that section from scratch for any later run; it must always describe a
@@ -35,13 +37,20 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 }
 ```
 
-`get_hq_work_handoff` always returns true. Launch strips any leftover
-`hqWorkHandoff` key. Updater, moderation, admin, and staging access remain
-Indigo-only (`is_indigo_user`).
+**The key is a preference, not an authorisation.** `~/.hq/menubar.json` is a
+plain user-writable file, so `get_hq_work_handoff` resolves
+`is_hq_work_cohort_user() AND (choice defaulting to true)`. Inside the
+approved domain cohort the embed is on unless the user writes an explicit
+`false`; outside it, the embed is off no matter what the file says, so writing
+`"hqWorkHandoff": true` there still gets nothing. `set_hq_work_handoff(true)`
+refuses outright rather than writing a key the reader would ignore. The HQ
+Work predicate is deliberately separate, so updater, moderation, admin, and
+staging access remain Indigo-only.
 
-Practical consequence for this checklist: **run it as any signed-in user**.
-A Gmail account with no company affiliation must see the same desktop
-workspace as an `@getindigo.ai` account.
+Practical consequence for this checklist: **run it signed in with an approved
+domain**. Signed in as anyone else, every scenario below correctly shows the
+legacy shell, and Scenario 2 will look like a failure when it is the gate
+doing its job.
 
 Same write path as `set_hq_work_handoff(true)`. Inspect without dumping
 secrets:

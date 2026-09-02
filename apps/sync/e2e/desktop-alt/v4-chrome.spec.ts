@@ -142,6 +142,15 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(harnessMocks).toContain("slug: 'archive-labs'");
   });
 
+  it('DesktopStatusBar still exists as a component (version popout host) but is unmounted', () => {
+    const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
+    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+
+    expect(statusBar).toContain('workspaceCount,');
+    expect(statusBar).toContain('const currentWorkspaceCount = $derived(workspaceCount ?? 0)');
+    expect(desktopApp).not.toContain('workspaceCount={renderWorkspaceCount}');
+  });
+
   it('the old segmented-control navigation is gone from company and library pages', () => {
     const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     const library = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');

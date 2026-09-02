@@ -7,6 +7,10 @@ const desktopApp = readFileSync(
   'utf8',
 );
 const trayApp = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
+const statusBar = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/DesktopStatusBar.svelte'),
+  'utf8',
+);
 const commandPalette = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/CommandPalette.svelte'),
   'utf8',
@@ -20,10 +24,18 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
   it('DESKTOP-001: status bar component remains intact but is unmounted from the shell', () => {
     const app = normalize(desktopApp);
     const tray = normalize(trayApp);
+    const bar = normalize(statusBar);
 
+    // Tray still uses the shared effective-total helper for its own progress.
     expect(tray).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
+    // Shell no longer mounts the bottom status bar (titlebar owns sync chrome).
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(app).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
+    // Component still implements the live strip for potential reuse / version popout.
+    expect(bar).toContain('<div class="ls-left">');
+    expect(bar).toContain('<div class="ls-right">');
+    expect(bar).toContain('Idle · all safe');
+    expect(bar).toContain('v{version}');
     expect(desktopApp).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
   });
 

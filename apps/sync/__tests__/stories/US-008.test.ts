@@ -24,6 +24,7 @@ const inboxPage = read('src/desktop-alt/pages/InboxPage.svelte');
 const v4Sidebar = read('src/desktop-alt/v4/V4Sidebar.svelte');
 const notificationFeed = read('src/components/NotificationFeed.svelte');
 const notificationRow = read('src/components/NotificationRow.svelte');
+const messagesShell = read('src/components/messaging/MessagesShell.svelte');
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -151,7 +152,7 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(desktopApp).toContain("messages:open-conversation");
     expect(desktopApp).toContain('take_pending_messages_target');
     expect(desktopApp).toContain('requestConversation');
-
+    expect(messagesShell).toContain('takePendingConversation()');
   });
 
   it('NotificationFeed wires message rows with reply/react and share rows as share type', () => {
@@ -182,7 +183,7 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(desktopApp).toContain("route.kind === 'inbox'");
     expect(desktopApp).toContain('<InboxPage');
     expect(desktopApp).toContain("route.kind === 'messages'");
-    expect(desktopApp).toContain('<InboxPage');
+    expect(desktopApp).toContain('<MessagesShell embedded={true} />');
     expect(desktopApp).not.toContain('MessagesPage');
     expect(desktopApp).not.toContain('NotificationsPage');
   });

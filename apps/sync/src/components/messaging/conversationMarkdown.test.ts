@@ -74,6 +74,10 @@ pnpm test
       resolve(process.cwd(), 'src/components/messaging/Conversation.svelte'),
       'utf8',
     );
+    const threadPanel = readFileSync(
+      resolve(process.cwd(), 'src/components/messaging/ThreadPanel.svelte'),
+      'utf8',
+    );
 
     expect(conversation).toContain(':global(.markdown-table-scroll)');
     expect(conversation).toContain(':global(table)');
@@ -98,6 +102,11 @@ pnpm test
     expect(conversation).toContain('{@html renderMessageBodyMarkdown(msg.body)}');
     expect(conversation).toContain(
       'onclick={(event) => void onBodyLinkActivate(event)}',
+    );
+    expect(threadPanel).toContain('composer={false}');
+    expect(threadPanel).not.toContain('thread-root-bubble');
+    expect(threadPanel).toMatch(
+      /\.thread-root\s*\{[\s\S]*?background:\s*transparent/,
     );
   });
 

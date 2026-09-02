@@ -413,9 +413,9 @@ pub fn build_hqwork_open_url(
     }
 }
 
-/// Conversation / DM opens go to the embedded desktop workspace.
-pub fn should_route_notification_to_embedded(_handoff_enabled: bool) -> bool {
-    true
+/// Flag-on notification/widget opens go to the embedded desktop, not compact windows.
+pub fn should_route_notification_to_embedded(handoff_enabled: bool) -> bool {
+    handoff_enabled
 }
 
 /// Validated internal route payload. None if tokens fail charset.
@@ -495,6 +495,14 @@ pub async fn open_hqwork_deep_link(app: AppHandle, url: String) -> Result<(), St
         crate::util::logfile::log("hq-work", "ignoring malformed or empty hqwork URL");
         return Ok(());
     };
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
+    ) {
+        crate::util::logfile::log("hq-work", "ignoring hqwork URL while handoff flag is off");
+        return Ok(());
+    }
     crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some(route.as_str())).await
 }
 
@@ -697,24 +705,42 @@ pub fn maybe_intercept_desktop_alt_handoff(
     Ok(intercept_steals_desktop_alt_window())
 }
 
-/// Open the desktop workspace on the validated conversation route.
+/// Intercept `open_communications_window` when the handoff flag is on.
+/// US-104: open THIS desktop-alt window on the validated conversation route.
+/// Never launch HQ Work. Flag-off keeps the compact communications window.
 pub async fn maybe_intercept_conversation_open(
     app: &AppHandle,
     channel_id: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
+    ) {
+        return Ok(false);
+    }
     let route = embedded_conversation_route(channel_id, None, reply)
         .unwrap_or_else(|| "messages".to_string());
     spawn_embedded_desktop_open(app, route);
     Ok(true)
 }
 
-/// Open the desktop workspace on the validated person route.
+/// Intercept `open_dm_detail` when the handoff flag is on.
+/// US-104: open THIS desktop-alt window on the validated person route.
+/// Never launch HQ Work. Flag-off keeps the compact DM window.
 pub async fn maybe_intercept_dm_open(
     app: &AppHandle,
     person_uid: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
+    ) {
+        return Ok(false);
+    }
     let route = embedded_conversation_route(None, person_uid, reply)
         .unwrap_or_else(|| "messages".to_string());
     spawn_embedded_desktop_open(app, route);
@@ -1630,7 +1656,7 @@ mod tests {
 
     #[test]
     fn us104_notification_routes_use_validated_tokens() {
-        assert!(should_route_notification_to_embedded(false));
+        assert!(!should_route_notification_to_embedded(false));
         assert!(should_route_notification_to_embedded(true));
         assert_eq!(
             embedded_conversation_route(Some("chn_x"), None, Some("evt_1")).as_deref(),

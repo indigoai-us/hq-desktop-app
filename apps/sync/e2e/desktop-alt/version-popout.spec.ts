@@ -10,9 +10,13 @@ import { readRepoFile } from './harness';
 
 describe('desktop-alt version pop-out (US-017)', () => {
   it('compact titlebar hosts the version pop-out without restoring the bottom status bar', () => {
+    const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
+    // The retired footer keeps its implementation for older entry points, but
+    // the mounted titlebar must expose the same updater in the redesign.
+    expect(statusBar).toContain("import VersionPopout from './components/VersionPopout.svelte'");
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
     expect(titleBar).toContain('data-testid="version-label"');

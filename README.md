@@ -3,9 +3,8 @@
 One HQ desktop application: **it installs, then it syncs.**
 
 A single Tauri 2 binary that launches as an onboarding installer when HQ is not yet
-set up, then becomes the long-lived HQ desktop workspace (tray icon plus the
-decorated desktop window) once setup completes. One download, one version, one
-updater stream. The desktop workspace is the only UI for every signed-in user.
+set up, then becomes the long-lived HQ Sync menu-bar / tray agent once setup completes.
+One download, one version, one updater stream.
 
 This repository consolidates three previously separate repositories — `hq-installer`
 (React), `hq-sync` (Svelte, macOS), and `hq-sync-win` (Svelte, Windows) — into one

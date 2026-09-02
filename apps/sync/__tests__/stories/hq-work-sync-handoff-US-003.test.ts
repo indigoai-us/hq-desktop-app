@@ -17,6 +17,7 @@ vi.mock('svelte', async () => {
 });
 
 import { flushSync, mount, unmount } from 'svelte';
+import HqWorkHandoffCard from '../../src/components/HqWorkHandoffCard.svelte';
 import {
   getHqWorkHandoffCardShown,
   installHqWork,
@@ -49,8 +50,12 @@ function mockInvoker(
 let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function mountCard(_props: Record<string, unknown> = {}): HTMLElement {
-  throw new Error('HqWorkHandoffCard was removed; the desktop workspace is the only UI');
+function mountCard(props: Record<string, unknown> = {}): HTMLElement {
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  component = mount(HqWorkHandoffCard, { target: host, props });
+  flushSync();
+  return host;
 }
 
 async function flush(): Promise<void> {
@@ -128,7 +133,7 @@ describe('US-003 desktop-view-moved handoff card', () => {
     });
   });
 
-  describe.skip('Frontend card', () => {
+  describe('Frontend card', () => {
     it('renders plain-language copy, Install/Open testids, and ghost wrapper', () => {
       const invokeFn = mockInvoker();
       mountCard({ invokeFn, firstShow: true });

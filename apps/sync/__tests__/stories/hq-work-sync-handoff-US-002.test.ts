@@ -36,10 +36,10 @@ function mockInvoker(
 }
 
 describe('US-002 HQ Work detection, launch, and handoff flag', () => {
-  it('hqWorkHandoffEnabled is always true, including a retired false key', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-    expect(hqWorkHandoffEnabled(null)).toBe(true);
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
+  it('hqWorkHandoffEnabled defaults false unless explicitly true', () => {
+    expect(hqWorkHandoffEnabled(undefined)).toBe(false);
+    expect(hqWorkHandoffEnabled(null)).toBe(false);
+    expect(hqWorkHandoffEnabled(false)).toBe(false);
     expect(hqWorkHandoffEnabled(true)).toBe(true);
   });
 

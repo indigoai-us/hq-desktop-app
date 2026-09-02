@@ -192,6 +192,17 @@ describe('DESKTOP-018: no colored edge rails', () => {
       );
     }
 
+    const messages = readFileSync(
+      join(SOURCE_ROOT, 'components/messaging/MessagesShell.svelte'),
+      'utf8',
+    );
+    expect(rule(messages, '.contact-row')).toContain('border-radius: 0');
+    expect(rule(messages, '.compact-list .contact-row')).toContain('border-radius: 6px');
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain(
+      'background: color-mix(in srgb, var(--fg) 10%, transparent)',
+    );
+    expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
+
     const secondarySidebar = readFileSync(
       join(SOURCE_ROOT, 'desktop-alt/v4/V4SecondarySidebar.svelte'),
       'utf8',
@@ -222,6 +233,17 @@ describe('DESKTOP-018: no colored edge rails', () => {
       join(SOURCE_ROOT, 'components/messaging/Conversation.svelte'),
       'utf8',
     );
+    const thread = readFileSync(
+      join(SOURCE_ROOT, 'components/messaging/ThreadPanel.svelte'),
+      'utf8',
+    );
+
+    // 8d6cc492 dropped ThreadPanel's .thread-root-details rule: the pinned
+    // thread root now renders through the shared <Conversation/> primitive, so
+    // its details use Conversation.svelte's .dm-bubble-details (checked below).
+    expect(thread).not.toMatch(/\.thread-root-details\s*\{/);
+    expect(thread).toContain('import Conversation');
+    expect(thread).toContain('<Conversation');
 
     for (const [source, selector] of [
       [conversation, '.dm-bubble-details'],

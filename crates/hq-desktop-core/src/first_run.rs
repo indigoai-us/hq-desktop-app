@@ -102,7 +102,12 @@ pub fn read_menubar_obj(path: &Path) -> Map<String, Value> {
 /// dismissal flag) write through the same untyped-merge path instead of the
 /// typed `save_settings` round-trip, which would drop any key not in
 /// `MenubarPrefs`.
-fn write_menubar_obj(path: &Path, obj: Map<String, Value>) -> Result<(), String> {
+pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
+    let mut obj = read_menubar_obj(path);
+    for (k, v) in updates {
+        obj.insert((*k).to_string(), v.clone());
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -113,46 +118,6 @@ fn write_menubar_obj(path: &Path, obj: Map<String, Value>) -> Result<(), String>
     f.sync_all().ok();
     fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
-    let mut obj = read_menubar_obj(path);
-    for (k, v) in updates {
-        obj.insert((*k).to_string(), v.clone());
-    }
-    write_menubar_obj(path, obj)
-}
-
-/// Retired menubar.json key that used to pick the embedded HQ Work shell
-/// versus the classic popover chat. The desktop workspace is now the only UI,
-/// so an upgraded install carrying `"hqWorkHandoff": false` must not keep the
-/// old surface.
-pub const RETIRED_HQ_WORK_HANDOFF_KEY: &str = "hqWorkHandoff";
-
-/// Remove top-level keys from `menubar.json`. Missing file / missing keys are
-/// success (idempotent). Returns whether any named key was actually present.
-pub fn remove_menubar_keys(path: &Path, keys: &[&str]) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let mut obj = read_menubar_obj(path);
-    let mut changed = false;
-    for key in keys {
-        if obj.remove(*key).is_some() {
-            changed = true;
-        }
-    }
-    if !changed {
-        return Ok(false);
-    }
-    write_menubar_obj(path, obj)?;
-    Ok(true)
-}
-
-/// Strip the retired `hqWorkHandoff` preference so upgraded installs switch
-/// to the desktop workspace even if they had opted out.
-pub fn migrate_retired_hq_work_handoff(path: &Path) -> Result<bool, String> {
-    remove_menubar_keys(path, &[RETIRED_HQ_WORK_HANDOFF_KEY])
 }
 
 /// A telemetry consent answer we can PROVE the user gave.
@@ -557,33 +522,6 @@ mod tests {
         // Unknown keys preserved untouched.
         assert_eq!(obj.get("machineId"), Some(&Value::String("keep-me".into())));
         assert_eq!(obj.get("futureKey"), Some(&json!({ "nested": 1 })));
-    }
-
-    #[test]
-    fn migrate_retired_hq_work_handoff_strips_false_and_true() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("menubar.json");
-        fs::write(
-            &path,
-            r#"{"machineId":"keep-me","hqWorkHandoff":false,"futureKey":1}"#,
-        )
-        .unwrap();
-
-        assert!(migrate_retired_hq_work_handoff(&path).unwrap());
-        let obj = read_menubar_obj(&path);
-        assert!(obj.get("hqWorkHandoff").is_none());
-        assert_eq!(obj.get("machineId"), Some(&Value::String("keep-me".into())));
-        assert_eq!(obj.get("futureKey"), Some(&json!(1)));
-        // Idempotent: a second pass is a no-op.
-        assert!(!migrate_retired_hq_work_handoff(&path).unwrap());
-    }
-
-    #[test]
-    fn migrate_retired_hq_work_handoff_missing_file_is_ok() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("menubar.json");
-        assert!(!migrate_retired_hq_work_handoff(&path).unwrap());
-        assert!(!path.exists());
     }
 
     #[test]

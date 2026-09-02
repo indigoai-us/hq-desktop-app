@@ -88,7 +88,7 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
       blockFrom(
         desktopAltCommand,
         'pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String>',
-        '/// Open or focus the desktop workspace window.',
+        '/// Open or focus the expanded desktop window (GA — any signed-in user).',
       ),
     );
     const urlBuilder = normalize(

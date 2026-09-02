@@ -33,6 +33,7 @@
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
+  import MessagesShell from '../components/messaging/MessagesShell.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
@@ -1815,9 +1816,7 @@
               <InboxPage />
             </div>
           {:else if route.kind === 'messages'}
-            <div class="page">
-              <InboxPage />
-            </div>
+            <MessagesShell embedded={true} />
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
                  (default-deny); ModerationPanel ALSO re-checks + locks itself, and
