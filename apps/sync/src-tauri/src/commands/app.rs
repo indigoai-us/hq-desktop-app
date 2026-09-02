@@ -22,6 +22,23 @@ pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Hide the menubar popover from the renderer — Esc and the header close
+/// button.
+///
+/// The popover window is `decorations: false`, so it has no traffic-light close
+/// control, and `CloseRequested` only reaches it via Cmd-W. This is the
+/// explicit "make it go away" path. Besides hiding, it records the dismissal
+/// with `tray::note_popover_dismissed` so the launch-time onboarding pin stops
+/// suppressing click-away for the rest of the process.
+#[tauri::command]
+pub fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is not available.".to_string())?;
+    crate::tray::note_popover_dismissed();
+    window.hide().map_err(|e| e.to_string())
+}
+
 /// Ask the main menubar window to show its existing Settings surface.
 ///
 /// Desktop-alt is a separate webview, but Settings still lives in the main

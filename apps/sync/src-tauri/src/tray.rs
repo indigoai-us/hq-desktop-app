@@ -5,7 +5,7 @@
 //! right-click shows a context menu with "Sync Now", "Open desktop view", and
 //! "Quit". Full desktop opens only via the explicit menu action / shortcut.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -129,6 +129,26 @@ pub fn suppress_blur_hide_briefly() {
 
 fn blur_hide_suppressed() -> bool {
     now_ms() < SUPPRESS_BLUR_UNTIL_MS.load(Ordering::SeqCst)
+}
+
+/// Set the first time the user explicitly dismisses the popover — Esc, the
+/// header close button, a tray toggle that hid it, or Cmd-W.
+///
+/// Read by [`should_hide_popover_on_blur`]. The onboarding blur-hide pin below
+/// is a *launch-time* verdict that never clears, so on a first-run / installer
+/// launch the popover kept ignoring click-away for the whole process lifetime,
+/// long after onboarding was done — the "I can't get rid of it" bug. An
+/// explicit dismissal proves the user is driving the window deliberately, so
+/// from then on normal click-away dismissal is restored.
+static USER_DISMISSED_POPOVER: AtomicBool = AtomicBool::new(false);
+
+/// Record an explicit user dismissal of the popover (see `USER_DISMISSED_POPOVER`).
+pub fn note_popover_dismissed() {
+    USER_DISMISSED_POPOVER.store(true, Ordering::SeqCst);
+}
+
+fn popover_dismissed_by_user() -> bool {
+    USER_DISMISSED_POPOVER.load(Ordering::SeqCst)
 }
 
 fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
@@ -429,6 +449,47 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     Ok(tray)
 }
 
+/// Inputs to [`should_hide_popover_on_blur`]. Grouped in a struct so the
+/// decision stays a pure function that can be unit-tested without a running
+/// Tauri app or a real window.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BlurHideInputs {
+    /// A native modal (folder picker, save panel) is open. It steals key-window
+    /// status from the popover; hiding would unparent and dismiss the modal.
+    pub modal_open: bool,
+    /// One of OUR OWN secondary windows (drift / DM / share detail) is visible,
+    /// i.e. focus moved within HQ rather than away from it.
+    pub secondary_window_open: bool,
+    /// `HQ_DISABLE_BLUR_HIDE=1` — dev/debug opt-out.
+    pub env_disabled: bool,
+    /// Short-lived suppression window right after a deliberate show from the
+    /// native menu-bar helper (see `SUPPRESS_BLUR_UNTIL_MS`).
+    pub transient_suppression: bool,
+    /// Onboarding / installer / OAuth is in flight, so a blur must not dismiss
+    /// the surface the user is working through.
+    pub onboarding_pin: bool,
+    /// The user has explicitly dismissed the popover at least once this
+    /// process. Releases the onboarding pin, which is otherwise permanent.
+    pub user_dismissed_once: bool,
+}
+
+/// Decide whether a `Focused(false)` on the popover should hide it.
+///
+/// Everything except `onboarding_pin` is an unconditional veto. The onboarding
+/// pin is a *soft* veto: it protects the installer from spurious blur until the
+/// user shows they can close the window on their own, after which click-away
+/// works normally again.
+pub(crate) fn should_hide_popover_on_blur(inputs: BlurHideInputs) -> bool {
+    if inputs.modal_open
+        || inputs.secondary_window_open
+        || inputs.env_disabled
+        || inputs.transient_suppression
+    {
+        return false;
+    }
+    !inputs.onboarding_pin || inputs.user_dismissed_once
+}
+
 pub(crate) fn handle_tray_blur_hide<F>(should_hide: bool, hide_action: F)
 where
     F: FnOnce(),
@@ -497,11 +558,16 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                let should_hide = !is_modal_open()
-                    && !secondary_open
-                    && !disable_blur_hide
-                    && !blur_hide_suppressed()
-                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle());
+                let should_hide = should_hide_popover_on_blur(BlurHideInputs {
+                    modal_open: is_modal_open(),
+                    secondary_window_open: secondary_open,
+                    env_disabled: disable_blur_hide,
+                    transient_suppression: blur_hide_suppressed(),
+                    onboarding_pin: onboarding_window_requires_blur_suppression(
+                        win_clone.app_handle(),
+                    ),
+                    user_dismissed_once: popover_dismissed_by_user(),
+                });
                 handle_tray_blur_hide(should_hide, || {
                     let _ = win_clone.hide();
                 });
@@ -523,17 +589,25 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         let app_handle = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(2));
-            if let Some(window) = app_handle.get_webview_window("main") {
-                eprintln!("[dev-show] showing main window");
-                let _ = window.center();
-                let _ = window.set_always_on_top(true);
-                let _ = window.show();
-                let _ = window.set_focus();
-                let visible = window.is_visible().unwrap_or(false);
-                eprintln!("[dev-show] is_visible={}", visible);
-            } else {
-                eprintln!("[dev-show] main window not found");
-            }
+            let app_main = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                if let Some(window) = app_main.get_webview_window("main") {
+                    eprintln!("[dev-show] showing main window");
+                    let _ = window.center();
+                    // Deliberately NOT `set_always_on_top(true)`. A sticky
+                    // topmost popover floats over every app and every space
+                    // (the window is `visibleOnAllWorkspaces`), which is what
+                    // made the dev-shown window feel impossible to get rid of.
+                    // `bring_webview_to_front` clears the topmost flag and uses
+                    // the same show+focus path as a real tray click, so a
+                    // dev-shown popover is dismissible like any other.
+                    crate::util::window_focus::bring_webview_to_front(&window);
+                    let visible = window.is_visible().unwrap_or(false);
+                    eprintln!("[dev-show] is_visible={}", visible);
+                } else {
+                    eprintln!("[dev-show] main window not found");
+                }
+            });
         });
     }
 
@@ -931,6 +1005,7 @@ pub fn toggle_popover_window(app: &AppHandle) {
                 let _ = window.emit("popover:opened", ());
                 return;
             }
+            note_popover_dismissed();
             let _ = window.hide();
             return;
         }
@@ -1129,6 +1204,106 @@ pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Baseline: a genuine click-away on a steady-state popover.
+    fn plain_blur() -> BlurHideInputs {
+        BlurHideInputs {
+            modal_open: false,
+            secondary_window_open: false,
+            env_disabled: false,
+            transient_suppression: false,
+            onboarding_pin: false,
+            user_dismissed_once: false,
+        }
+    }
+
+    #[test]
+    fn blur_hides_the_popover_on_a_plain_click_away() {
+        assert!(should_hide_popover_on_blur(plain_blur()));
+    }
+
+    #[test]
+    fn blur_never_hides_while_a_hard_veto_is_active() {
+        for (label, inputs) in [
+            (
+                "native modal open",
+                BlurHideInputs {
+                    modal_open: true,
+                    ..plain_blur()
+                },
+            ),
+            (
+                "our own secondary window took focus",
+                BlurHideInputs {
+                    secondary_window_open: true,
+                    ..plain_blur()
+                },
+            ),
+            (
+                "HQ_DISABLE_BLUR_HIDE=1",
+                BlurHideInputs {
+                    env_disabled: true,
+                    ..plain_blur()
+                },
+            ),
+            (
+                "just shown from the menu-bar helper",
+                BlurHideInputs {
+                    transient_suppression: true,
+                    ..plain_blur()
+                },
+            ),
+        ] {
+            assert!(
+                !should_hide_popover_on_blur(inputs),
+                "expected no hide while {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn onboarding_pin_suppresses_blur_hide_until_the_user_dismisses_once() {
+        let pinned = BlurHideInputs {
+            onboarding_pin: true,
+            ..plain_blur()
+        };
+        assert!(
+            !should_hide_popover_on_blur(pinned),
+            "installer / first-run surface must survive a spurious blur"
+        );
+        assert!(
+            should_hide_popover_on_blur(BlurHideInputs {
+                user_dismissed_once: true,
+                ..pinned
+            }),
+            "once the user has closed the popover themselves, click-away works again"
+        );
+    }
+
+    #[test]
+    fn an_explicit_dismissal_does_not_override_a_hard_veto() {
+        // Esc / close-button history must not make a native picker or one of
+        // our own detail windows dismiss the popover out from under the user.
+        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+            modal_open: true,
+            onboarding_pin: true,
+            user_dismissed_once: true,
+            ..plain_blur()
+        }));
+        assert!(!should_hide_popover_on_blur(BlurHideInputs {
+            secondary_window_open: true,
+            user_dismissed_once: true,
+            ..plain_blur()
+        }));
+    }
+
+    #[test]
+    fn note_popover_dismissed_latches_the_dismissal_flag() {
+        // Process-global latch: assert the transition, not the initial value —
+        // other tests in this binary may have flipped it already.
+        note_popover_dismissed();
+        assert!(popover_dismissed_by_user());
+    }
 
     #[test]
     fn test_tray_state_from_str_loose() {
