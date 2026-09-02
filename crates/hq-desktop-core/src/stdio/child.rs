@@ -148,6 +148,16 @@ pub struct StdioLaunch {
     pub args: Vec<String>,
     /// Extra environment, applied with operator-wins precedence.
     pub env: Vec<(String, String)>,
+    /// Inherited variables to unset in the child, applied *before* [`Self::env`].
+    ///
+    /// [`Self::env`] is operator-wins and therefore cannot clear anything: a
+    /// variable already present in the parent environment wins, and there is no
+    /// value that means "absent". This list is the escape hatch — each name is
+    /// `env_remove`d off the command, so the child starts without it even
+    /// though the parent has it. Listing a name here and also in [`Self::env`]
+    /// is well defined: the removal happens first, so the `env` value is what
+    /// the child sees.
+    pub env_remove: Vec<String>,
     /// Working directory for the child.
     pub cwd: PathBuf,
 }
@@ -219,10 +229,21 @@ impl StdioChild {
             // Callers MUST still call shutdown().await for guaranteed reaping.
             .kill_on_drop(true);
 
+        // Scrub first: `env` is operator-wins and so can never *clear* an
+        // inherited variable. Anything the caller needs the child to start
+        // without has to be removed from the command explicitly.
+        for key in &launch.env_remove {
+            cmd.env_remove(key);
+        }
+
         // Operator-wins precedence: never override a key the operator already
-        // set in the parent environment.
+        // set in the parent environment. A key we just scrubbed does not count
+        // as inherited — it is gone from the child either way, so an explicit
+        // value for it must still apply.
         for (key, value) in &launch.env {
-            if std::env::var(key).is_err() {
+            let inherited = std::env::var(key).is_ok();
+            let scrubbed = launch.env_remove.iter().any(|k| k == key);
+            if !inherited || scrubbed {
                 cmd.env(key, value);
             }
         }
@@ -1021,6 +1042,7 @@ done
             program: "bash".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: std::env::temp_dir(),
         }
     }
@@ -1102,6 +1124,130 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         false
+    }
+
+    // ── environment scrub ───────────────────────────────────────────────────
+
+    /// Restores a process-global variable on drop, so a panicking assertion
+    /// cannot leak the override into a later test in this binary.
+    struct ScopedVar(&'static str, Option<std::ffi::OsString>);
+
+    impl ScopedVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self(key, prev)
+        }
+    }
+
+    impl Drop for ScopedVar {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    /// Report both variables back as one JSON frame; an unset variable comes
+    /// back as the empty string rather than tripping `set -u`.
+    const ENV_REPORT_SCRIPT: &str = r#"
+printf '{"scrubbed":"%s","kept":"%s"}\n' "${HQ_TEST_SCRUB_ME-}" "${HQ_TEST_KEEP_ME-}"
+while IFS= read -r _line; do :; done
+"#;
+
+    /// `env` is operator-wins and therefore cannot clear anything. `env_remove`
+    /// is the only way to keep an inherited variable — a `CLAUDECODE` leaking
+    /// out of the shell that started a dev build, say — away from the child.
+    ///
+    /// The env lock is deliberately held across the spawns: a child snapshots
+    /// the parent environment at `spawn`, so releasing it earlier would let a
+    /// parallel test in this binary mutate the very thing under test.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock, reason = "serializes process-global env")]
+    async fn env_remove_clears_an_inherited_variable_and_leaves_the_rest_alone() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scrub = ScopedVar::set("HQ_TEST_SCRUB_ME", "leaked");
+        let _keep = ScopedVar::set("HQ_TEST_KEEP_ME", "kept");
+
+        // Unlisted: the child inherits both, which is what makes the scrub in
+        // the next case attributable to `env_remove` and nothing else.
+        let mut child = StdioChild::spawn(&script_launch(ENV_REPORT_SCRIPT))
+            .await
+            .expect("spawn");
+        let frame = child
+            .next_frame(idle(), hard())
+            .await
+            .expect("frame")
+            .expect("a frame");
+        assert_eq!(
+            frame["scrubbed"], "leaked",
+            "without env_remove the child inherits the parent's value"
+        );
+        assert_eq!(frame["kept"], "kept");
+        child.shutdown_with_reap(REAP_TIMEOUT).await;
+
+        // Listed: gone from the child even though the parent still has it.
+        let mut launch = script_launch(ENV_REPORT_SCRIPT);
+        launch.env_remove.push("HQ_TEST_SCRUB_ME".to_string());
+        let mut child = StdioChild::spawn(&launch).await.expect("spawn");
+        let frame = child
+            .next_frame(idle(), hard())
+            .await
+            .expect("frame")
+            .expect("a frame");
+        assert_eq!(
+            frame["scrubbed"], "",
+            "env_remove must clear the inherited value"
+        );
+        assert_eq!(
+            frame["kept"], "kept",
+            "and must not disturb anything it did not name"
+        );
+        assert_eq!(
+            std::env::var("HQ_TEST_SCRUB_ME").as_deref(),
+            Ok("leaked"),
+            "the scrub is per-child; the parent's own env is untouched"
+        );
+        child.shutdown_with_reap(REAP_TIMEOUT).await;
+    }
+
+    /// A name in both lists is well defined: the removal happens first, so the
+    /// explicit value wins over the inherited one that operator-wins would
+    /// otherwise have preserved.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock, reason = "serializes process-global env")]
+    async fn env_wins_over_an_inherited_value_when_the_name_is_also_scrubbed() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scrub = ScopedVar::set("HQ_TEST_SCRUB_ME", "leaked");
+        let _keep = ScopedVar::set("HQ_TEST_KEEP_ME", "kept");
+
+        let mut launch = script_launch(ENV_REPORT_SCRIPT);
+        launch.env_remove.push("HQ_TEST_SCRUB_ME".to_string());
+        launch
+            .env
+            .push(("HQ_TEST_SCRUB_ME".to_string(), "explicit".to_string()));
+        // Not scrubbed, so plain operator-wins still applies here.
+        launch
+            .env
+            .push(("HQ_TEST_KEEP_ME".to_string(), "ignored".to_string()));
+
+        let mut child = StdioChild::spawn(&launch).await.expect("spawn");
+        let frame = child
+            .next_frame(idle(), hard())
+            .await
+            .expect("frame")
+            .expect("a frame");
+        assert_eq!(frame["scrubbed"], "explicit");
+        assert_eq!(
+            frame["kept"], "kept",
+            "an un-scrubbed inherited value still beats the launch's env"
+        );
+        child.shutdown_with_reap(REAP_TIMEOUT).await;
     }
 
     // ── graceful end-of-input ───────────────────────────────────────────────

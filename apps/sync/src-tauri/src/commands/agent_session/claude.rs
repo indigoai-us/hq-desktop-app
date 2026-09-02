@@ -185,17 +185,46 @@ struct Ending {
 /// [`paths::child_path`] (a Finder-launched GUI inherits launchd's minimal
 /// PATH, which has no `node`), and applies everything else operator-wins — an
 /// inherited variable is never overridden. Passing PATH here is therefore
-/// belt-and-braces rather than load-bearing, and it is also why we do NOT try
-/// to clear `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` through this list: it
-/// cannot remove an inherited value. The app is not itself a Claude session, so
-/// in production there is nothing to clear.
+/// belt-and-braces rather than load-bearing.
+///
+/// On `env_remove`: an inherited variable cannot be cleared through `env` (that
+/// list has no value meaning "absent"), which is what [`StdioLaunch::env_remove`]
+/// is for. A shipped app launched from Finder has nothing to clear, but a dev
+/// build started from inside a Claude Code session — `cargo tauri dev` in an
+/// agent's shell — inherits that session's `CLAUDECODE`,
+/// `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`, and friends. Handing
+/// those to the `claude` we spawn makes the child think it is running *inside*
+/// another Claude session and quietly changes its behaviour. We therefore scrub
+/// every inherited `CLAUDE*` variable plus `HQ_SESSION_ID` at launch time. The
+/// list is computed from the live environment rather than hard-coded so a
+/// variable the CLI adds in a future release is scrubbed too.
 pub fn claude_launch(program: String, spec: &SessionSpec, cwd: PathBuf) -> StdioLaunch {
     StdioLaunch {
         program,
         args: build_args(spec),
         env: vec![("PATH".to_string(), paths::child_path())],
+        env_remove: inherited_agent_env(),
         cwd,
     }
+}
+
+/// Names of the inherited variables that must not reach a spawned `claude`.
+///
+/// The `CLAUDE*` half is read from [`std::env::vars_os`] at call time, so it
+/// covers whatever the surrounding session actually set rather than a
+/// hard-coded guess. Non-UTF-8 names are skipped — they cannot be one of ours,
+/// and `Command::env_remove` wants a name we can spell. `HQ_SESSION_ID` is
+/// listed unconditionally; removing a variable the parent does not have is a
+/// no-op, and an unconditional entry cannot go stale.
+fn inherited_agent_env() -> Vec<String> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(key, _)| key.into_string().ok())
+        .filter(|key| key.starts_with("CLAUDE"))
+        .collect();
+    names.push("HQ_SESSION_ID".to_string());
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Spawn the real `claude` CLI for `spec`.
@@ -689,16 +718,50 @@ while IFS= read -r _line; do :; done
 exit 0
 "#;
 
-    /// Write the fake to disk and return its path. `HQ_FAKE_REPLIES` is where
-    /// it records what the driver sent back, so the test can assert on the
-    /// exact control-response payload.
-    fn install_fake(dir: &std::path::Path, replies: &std::path::Path) -> String {
+    /// The `result` frame the real CLI emits for a turn the client interrupted,
+    /// copied verbatim from the spike recording. Note the shape: `subtype` is
+    /// `error_during_execution` and `is_error` is true — on the wire an
+    /// interrupted turn is indistinguishable from a genuine failure, which is
+    /// exactly why the driver's own `mark_interrupted` has to be the signal.
+    const INTERRUPTED_RESULT: &str = r#"{"duration_api_ms":0,"stop_reason":null,"session_id":"c551f5ce-a8ed-460e-8d94-3c17ffd83217","total_cost_usd":0,"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subagent_stats":{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"started_in_background":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"user":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},"is_error":true,"num_turns":2,"subtype":"error_during_execution","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],"type":"result","duration_ms":36437,"uuid":"b9629cd0-55b1-4917-97e6-50e8479816be","queued_turn_count":0}"#;
+
+    /// A fake `claude` that streams for a while and then honours an interrupt
+    /// the way the spike recorded the real CLI honouring one: the receipt
+    /// (`control_response` echoing our `request_id`) first, then the
+    /// `error_during_execution` `result`, then it keeps running until stdin
+    /// closes.
+    ///
+    /// The deltas are paced so the interrupt is written into a turn that is
+    /// genuinely mid-stream rather than into an already-idle child.
+    const FAKE_CLAUDE_INTERRUPT: &str = r#"
+set -u
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"cli-int","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":["interrupt_receipt_v1"]}'
+for i in 1 2 3 4; do
+  printf '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tick %s "}}}\n' "$i"
+  sleep 0.2
+done
+# The client's interrupt is waiting in the pipe by now.
+IFS= read -r reply
+printf '%s\n' "$reply" >> "$HQ_FAKE_REPLIES"
+id=$(printf '%s' "$reply" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"still_queued":[]}}}\n' "$id"
+printf '%s\n' "$HQ_FAKE_RESULT"
+# stay alive until the client closes stdin, exactly like the real CLI
+while IFS= read -r _line; do :; done
+exit 0
+"#;
+
+    /// Write `script` to disk as the fake CLI and return its path.
+    /// `HQ_FAKE_REPLIES` is where it records what the driver sent back, so the
+    /// test can assert on the exact control-response payload.
+    fn install_fake(dir: &std::path::Path, replies: &std::path::Path, script: &str) -> String {
         let path = dir.join("fake-claude.sh");
         let mut file = std::fs::File::create(&path).expect("create fake");
         write!(
             file,
-            "#!/bin/bash\nexport HQ_FAKE_REPLIES={}\n{FAKE_CLAUDE}",
-            replies.display()
+            "#!/bin/bash\nexport HQ_FAKE_REPLIES={}\nexport HQ_FAKE_RESULT='{}'\n{script}",
+            replies.display(),
+            INTERRUPTED_RESULT
         )
         .expect("write fake");
         drop(file);
@@ -718,12 +781,19 @@ exit 0
         join: tokio::task::JoinHandle<()>,
         _dir: tempfile::TempDir,
         replies: PathBuf,
+        /// The fake's pid, captured at spawn so a test can prove the process is
+        /// gone once the session ends.
+        pid: Option<u32>,
     }
 
     async fn start(mode: PermissionMode) -> Harness {
+        start_with(mode, FAKE_CLAUDE).await
+    }
+
+    async fn start_with(mode: PermissionMode, script: &str) -> Harness {
         let dir = tempfile::tempdir().expect("tempdir");
         let replies = dir.path().join("replies.jsonl");
-        let program = install_fake(dir.path(), &replies);
+        let program = install_fake(dir.path(), &replies, script);
 
         let spec = spec(mode);
         let launch = claude_launch(program, &spec, dir.path().to_path_buf());
@@ -733,6 +803,7 @@ exit 0
         assert!(launch.args.contains(&"stream-json".to_string()));
 
         let child = StdioChild::spawn(&launch).await.expect("spawn fake");
+        let pid = child.pid();
 
         let state = Arc::new(Mutex::new(SessionState::default()));
         state
@@ -761,6 +832,7 @@ exit 0
             join,
             _dir: dir,
             replies,
+            pid,
         }
     }
 
@@ -947,5 +1019,118 @@ exit 0
 
         h.tx.send(Outbound::End).expect("send end");
         h.join.await.expect("loop finished");
+    }
+
+    /// Probe existence without delivering a signal (signal 0).
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        // SAFETY: `kill(2)` with signal 0 performs the permission/existence
+        // check only; no signal is delivered and no memory is touched.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    /// Bounded wait for the OS to reap `pid`.
+    #[cfg(unix)]
+    async fn until_gone(pid: u32) -> bool {
+        for _ in 0..200 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// End-to-end interrupt: a mid-stream turn is stopped, the CLI's receipt +
+    /// `error_during_execution` result land, and the session comes back to Idle
+    /// as *interrupted* rather than failed.
+    ///
+    /// The distinction is the whole point. The `result` frame is byte-for-byte
+    /// the one a real failure produces (`is_error: true`), so if the driver
+    /// ever stopped marking the normalizer before writing the request, the user
+    /// would see a red error for having clicked Stop.
+    #[tokio::test]
+    async fn interrupting_a_streaming_turn_ends_it_as_interrupted_and_returns_to_idle() {
+        let h = start_with(PermissionMode::BypassAll, FAKE_CLAUDE_INTERRUPT).await;
+
+        // Wait until the turn is genuinely streaming before stopping it.
+        until("the stream to start", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::TextDelta { .. }))
+        })
+        .await;
+
+        // Exactly what `agent_session_interrupt` posts.
+        h.tx.send(Outbound::Interrupt).expect("send interrupt");
+
+        until("the turn to finish", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+        })
+        .await;
+
+        let events = h.sink.events();
+        assert!(
+            events.iter().any(|(_, e)| matches!(
+                e,
+                SessionEvent::TurnDone { status: DoneStatus::Interrupted, error: None, .. }
+            )),
+            "an interrupted turn is Interrupted, not Error: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::Error { .. })),
+            "and produces no error event: {events:?}"
+        );
+        assert_eq!(
+            h.state
+                .lock()
+                .await
+                .registry
+                .get("sess-e2e")
+                .unwrap()
+                .phase,
+            SessionPhase::Idle,
+            "an interrupted turn returns to Idle, ready for the next prompt"
+        );
+
+        // The request we actually put on the wire is the documented interrupt
+        // shape, and the fake's receipt echoed its id back.
+        let sent = std::fs::read_to_string(&h.replies).expect("replies");
+        let request: Value = serde_json::from_str(sent.trim()).expect("json");
+        assert_eq!(request["type"], "control_request");
+        assert_eq!(request["request"]["subtype"], "interrupt");
+        assert!(
+            request["request_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("int_")),
+            "interrupt request id: {}",
+            request["request_id"]
+        );
+
+        // Now end it exactly as `agent_session_end` does: EOF on stdin, wait,
+        // then release the channel and drop the session.
+        h.tx.send(Outbound::End).expect("send end");
+        h.join.await.expect("loop finished");
+        {
+            let mut guard = h.state.lock().await;
+            guard.close_channel("sess-e2e");
+            guard.registry.remove("sess-e2e");
+            assert!(!guard.has_channel("sess-e2e"));
+        }
+
+        #[cfg(unix)]
+        {
+            let pid = h.pid.expect("the fake reported a pid");
+            assert!(
+                until_gone(pid).await,
+                "the fake claude (pid {pid}) outlived the session"
+            );
+        }
     }
 }
