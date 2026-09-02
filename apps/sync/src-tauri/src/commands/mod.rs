@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agency;
+pub mod agent_session;
 pub mod agent_stdio;
 pub mod ai_tools;
 pub mod app;

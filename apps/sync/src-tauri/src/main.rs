@@ -660,6 +660,18 @@ fn main() {
             // per-reader commands the readers exposed in US-002/US-003/US-004
             // (registered here so the frontend store can fall back to a single
             // reader and the polling loop emits `sessions:updated`).
+            // In-app agent sessions (feature-flagged dark by
+            // `agent_session_flags`): the live registry + Claude driver.
+            commands::agent_session::agent_session_preflight,
+            commands::agent_session::agent_session_start,
+            commands::agent_session::agent_session_send,
+            commands::agent_session::agent_session_respond_permission,
+            commands::agent_session::agent_session_answer_question,
+            commands::agent_session::agent_session_interrupt,
+            commands::agent_session::agent_session_end,
+            commands::agent_session::agent_session_list,
+            commands::agent_session::agent_session_replay,
+            commands::agent_session::agent_session_slash_commands,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,
