@@ -43,7 +43,7 @@
   import {
     createChatSidebarApi,
     createNotificationsApi,
-  } from "$lib/chat-adapter";
+  } from "./chat-adapter";
   import {
     persistLastSelected,
     persistLastThread,
@@ -51,35 +51,35 @@
     readShallowCache,
     resolveLastSelectedId,
     seedConversationCacheFromRail,
-  } from "$lib/browser-cache";
-  import { openWorkExternalUrl } from "$lib/external-open";
-  import { startWebMeshForAdapter } from "$lib/mesh-runtime";
-  import { loadWorkThreads } from "$lib/work-thread-loader";
-  import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
+  } from "./browser-cache";
+  import { openWorkExternalUrl } from "./external-open";
+  import { startWebMeshForAdapter } from "./mesh-runtime";
+  import { loadWorkThreads } from "./work-thread-loader";
+  import { projectIdFromDirectoryRow } from "./live-sidebar";
   import {
     loadLiveProjectMeta,
     loadWebVaultFilePreview,
     type LiveProjectMeta,
-  } from "$lib/live-project";
+  } from "./live-project";
   import {
     createProjectMetaCache,
     subscribeProjectMetaInvalidations,
-  } from "$lib/project-meta-cache";
+  } from "./project-meta-cache";
   import {
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
     type HqProFetch,
-  } from "$lib/hq-pro-client";
-  import { displayVersion } from "$lib/version";
+  } from "./hq-pro-client";
+  import { displayVersion } from "./version";
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
     nativeTenantFromSession,
     signOutFromShell,
-  } from "$lib/desktop-shell";
-  import { tauriInvoke } from "$lib/tauri-invoke";
-  import { tauriListen } from "$lib/tauri-listen";
+  } from "./desktop-shell";
+  import { tauriInvoke } from "./tauri-invoke";
+  import { tauriListen } from "./tauri-listen";
   import workPackage from "../../package.json";
 
   let { data } = $props();

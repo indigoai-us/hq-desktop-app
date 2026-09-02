@@ -5,6 +5,19 @@ import { createSyncPlatformAdapter } from "@hq/platform";
 import { describe, expect, it } from "vitest";
 
 describe("HQ Work desktop platform adapter", () => {
+  it("does not use SvelteKit app-local aliases in the exported shell", () => {
+    const page = readFileSync(
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
+      "utf8",
+    );
+    const appLocalSpecifiers = page.match(/\$(?:lib|app)\/[^\s"'`]+/g) ?? [];
+
+    expect(
+      appLocalSpecifiers,
+      `WorkShell.svelte contains forbidden app-local import: ${appLocalSpecifiers[0] ?? "none"}`,
+    ).toEqual([]);
+  });
+
   it("constructs the shared Sync adapter and maps Board reads to the host command", async () => {
     const page = readFileSync(
       fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
