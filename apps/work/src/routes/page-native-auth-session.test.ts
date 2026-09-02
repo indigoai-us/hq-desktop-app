@@ -82,12 +82,13 @@ type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
 };
+type HostTenantHarness = {
+  establishTenant(accountId: string | null, generation: number): void;
+};
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
-let hostTenantHarness: ReturnType<
-  typeof mount<typeof WorkShellHostTenantHarness>
-> | null = null;
+let hostTenantHarness: HostTenantHarness | null = null;
 let accountId: string | null;
 let initialSession: AuthSession;
 let authSessionHandler: ((event: { payload: unknown }) => void) | null;
