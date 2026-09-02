@@ -54,6 +54,63 @@ function preamble(workflow: string): string {
   return workflow.slice(0, workflow.indexOf("\njobs:"));
 }
 
+/** Every top-level job key, discovered rather than listed. */
+function jobNames(workflow: string): string[] {
+  const jobs = workflow.slice(workflow.indexOf("\njobs:"));
+
+  return [...jobs.matchAll(/\n {2}([a-zA-Z0-9_-]+):\n/g)].map((m) => m[1]);
+}
+
+describe("every job declares a job-level timeout", () => {
+  // A job with no `timeout-minutes` inherits the Actions default of 360
+  // minutes. That is not a cost ceiling, it is the absence of one: a blocked
+  // step holds a runner -- and, for a required check, the merge -- for six
+  // hours while reporting nothing but "in progress".
+  //
+  // This is not hypothetical. windows-check was the one long-running job in
+  // the repository that never got a job-level timeout, even though its three
+  // siblings in the same file declare 45, 45 and 30, and 30 of its 46 steps
+  // carry no step timeout either. Run 33624196971 blocked on "Windows app
+  // tests (e2e automation)" -- a step whose healthy duration is about two
+  // minutes -- and was still sitting there an hour later with nothing
+  // scheduled to end it.
+  //
+  // The list is discovered from the document rather than hard-coded, because
+  // the gap arrived with a job that predated the convention: a fixed list
+  // would let the next such job through the same hole.
+  for (const [label, get] of [
+    ["ci", () => ciWorkflow],
+    ["windows-check", () => windowsCheckWorkflow],
+  ] as const) {
+    it(`${label} gives every job a timeout-minutes`, () => {
+      const workflow = get();
+      const missing = jobNames(workflow).filter(
+        // Four spaces pins this to the job mapping. Step timeouts nest deeper,
+        // and matching those would let a job pass on a step's declaration.
+        (name) => !/\n {4}timeout-minutes: \d+\n/.test(jobBody(workflow, name)),
+      );
+
+      expect(missing).toEqual([]);
+    });
+
+    it(`${label} keeps every timeout under the six-hour default`, () => {
+      // A timeout at or above the default is decoration -- it changes nothing
+      // about when a hung job stops.
+      const workflow = get();
+      const overrun = jobNames(workflow)
+        .map((name) => ({
+          name,
+          minutes: Number(
+            /\n {4}timeout-minutes: (\d+)\n/.exec(jobBody(workflow, name))?.[1],
+          ),
+        }))
+        .filter((job) => !(job.minutes < 360));
+
+      expect(overrun).toEqual([]);
+    });
+  }
+});
+
 describe("superseded runs are cancelled", () => {
   // A pull_request-triggered workflow with no concurrency group keeps running
   // after the branch moves on. Measured over 30 days, 153 of 689 windows-check
