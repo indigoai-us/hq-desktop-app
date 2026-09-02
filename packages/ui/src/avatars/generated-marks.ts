@@ -1,7 +1,9 @@
 import { agentAvatarAssets } from "../chat/messaging/agent-avatars.js";
 import {
+  GENERATED_MARKS_AUTHOR,
   GENERATED_MARKS_BASE_URL,
   GENERATED_MARKS_PACK_ID,
+  GENERATED_MARKS_PACK_NAME,
   type AvatarPack,
 } from "./types.js";
 
@@ -23,9 +25,9 @@ export function generatedMarksPack(
 ): AvatarPack {
   return {
     id: GENERATED_MARKS_PACK_ID,
-    name: "Generated marks",
+    name: GENERATED_MARKS_PACK_NAME,
     version: "1.0.0",
-    author: "HQ",
+    author: GENERATED_MARKS_AUTHOR,
     baseUrl: GENERATED_MARKS_BASE_URL,
     items: assets.map((src, index) => {
       const id = itemIdForAsset(src, index);
