@@ -172,3 +172,159 @@ export function pickModel(
   }
   return models[0] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Friendly names — the pill never shows a raw model id
+// ---------------------------------------------------------------------------
+
+/** Which agent CLI a session drives. Mirrors the store's `SessionTool`. */
+export type SessionToolId = 'claude' | 'codex';
+
+/** The tool pill's vocabulary. The glyphs are text, so there is no icon dep. */
+export const TOOL_OPTIONS: ReadonlyArray<{
+  value: SessionToolId;
+  label: string;
+  glyph: string;
+}> = [
+  { value: 'claude', label: 'Claude', glyph: '✳' },
+  { value: 'codex', label: 'Codex', glyph: '⌁' },
+];
+
+export const LAST_TOOL_KEY = 'hq.sessions.lastTool';
+
+/** The remembered tool, defended down to the only tool that always exists. */
+export function readRememberedTool(): SessionToolId {
+  return readRemembered(LAST_TOOL_KEY) === 'codex' ? 'codex' : 'claude';
+}
+
+/** Families whose name is an acronym rather than a word. */
+const ACRONYM_FAMILIES = new Set(['gpt', 'o1', 'o3', 'o4']);
+
+/** `claude-fable-5-1[1m]` → the `1m` is a context window, not part of the name. */
+const CONTEXT_SUFFIX = /\[(\d+)m\]$/i;
+
+function titleCaseFamily(word: string): string {
+  const lower = word.toLowerCase();
+  if (ACRONYM_FAMILIES.has(lower)) return lower === 'gpt' ? 'GPT' : lower;
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+/**
+ * Turn a model ID into something a person would say out loud.
+ *
+ *   claude-opus-4-8            → Opus 4.8
+ *   claude-fable-5-1[1m]       → Fable 5.1
+ *   claude-haiku-4-5-20260101  → Haiku 4.5      (the build date is not a version)
+ *   opus[1m]                   → Opus (1M)
+ *
+ * The `[1m]` suffix is only spoken when the name carries no version, because
+ * that is the only case where it is doing disambiguating work: `opus` and
+ * `opus[1m]` are two rows in the same menu, while `claude-fable-5-1[1m]` has
+ * no sibling it could be confused with.
+ *
+ * Anything unrecognisable returns `''` so the caller can fall back honestly
+ * rather than render half a parse.
+ */
+export function friendlyModelName(value: string | null | undefined): string {
+  if (!value) return '';
+  let id = value.trim();
+  if (id.length === 0) return '';
+
+  let context = '';
+  const suffix = CONTEXT_SUFFIX.exec(id);
+  if (suffix && suffix.index > 0) {
+    context = `${suffix[1]}M`.toUpperCase();
+    id = id.slice(0, suffix.index);
+  }
+
+  id = id.replace(/^(?:us|eu|apac)\./i, '').replace(/^anthropic\./i, '');
+  id = id.replace(/^claude[-.]/i, '');
+
+  const parts = id.split(/[-_.]/).filter(Boolean);
+  const family = parts[0];
+  if (!family) return '';
+
+  const version: string[] = [];
+  for (const part of parts.slice(1)) {
+    // A version segment is one or two digits. `20260101` is a build date, and
+    // everything after it belongs to the same trailing stamp.
+    if (!/^\d{1,2}$/.test(part)) break;
+    version.push(part);
+  }
+
+  const name = titleCaseFamily(family);
+  if (version.length > 0) return `${name} ${version.join('.')}`;
+  return context ? `${name} (${context})` : name;
+}
+
+/**
+ * The CLI names its own default inside the row's description:
+ *   "Use the default model (currently Opus 5 (1M context))"
+ * That parenthetical is the only pre-session evidence of what "Default" means,
+ * so it is worth reading rather than showing the user the word "Default".
+ */
+export function defaultModelHint(description?: string | null): string {
+  if (!description) return '';
+  const match = /\bcurrently\s+(.+)$/i.exec(description);
+  if (!match) return '';
+  let text = match[1].trim();
+  // Trim the closing parens that belonged to the sentence, not to the name.
+  while (text.endsWith(')') && countChar(text, ')') > countChar(text, '(')) {
+    text = text.slice(0, -1).trim();
+  }
+  return text.replace(/\s*\([^)]*context[^)]*\)\s*$/i, '').trim();
+}
+
+function countChar(text: string, char: string): number {
+  let total = 0;
+  for (const candidate of text) if (candidate === char) total += 1;
+  return total;
+}
+
+/** The first sentence of a description — a menu subline, not a paragraph. */
+export function firstSentence(text?: string | null): string {
+  if (!text) return '';
+  const trimmed = text.trim();
+  const stop = trimmed.search(/[.!?](\s|$)/);
+  return (stop === -1 ? trimmed : trimmed.slice(0, stop)).trim();
+}
+
+/**
+ * The rows a user can actually pick. The CLI's "Default (recommended)" row is
+ * not one of them: it names no model, so a menu that offers it is offering the
+ * user a chance to un-choose rather than to choose.
+ */
+export function selectableModels(models: ReadonlyArray<SessionModel>): SessionModel[] {
+  return models.filter((entry) => entry.value !== null);
+}
+
+/** One menu row's label — derived from the id, which is the authoritative name. */
+export function modelRowLabel(entry: SessionModel): string {
+  return friendlyModelName(entry.value) || shortenModelLabel(entry.label);
+}
+
+/**
+ * What the model pill says. Never a raw id, never the word "Default".
+ *
+ * With an explicit choice it is that model's friendly name. With the implicit
+ * default it is the model the CLI actually resolved (announced by `started`),
+ * else the catalog's own hint about what the default currently is, and only if
+ * both are unknown the CLI's other word for the same row.
+ */
+export function modelPillLabel(
+  models: ReadonlyArray<SessionModel>,
+  model: string | null,
+  resolvedModel: string | null = null,
+): string {
+  if (model !== null) {
+    const friendly = friendlyModelName(model);
+    if (friendly) return friendly;
+    const hit = models.find((entry) => entry.value === model);
+    return hit ? shortenModelLabel(hit.label) : model;
+  }
+  const resolved = friendlyModelName(resolvedModel);
+  if (resolved) return resolved;
+  const hint = defaultModelHint(models.find((entry) => entry.value === null)?.description);
+  if (hint) return hint;
+  return 'Recommended';
+}

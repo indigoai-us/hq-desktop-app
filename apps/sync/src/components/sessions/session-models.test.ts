@@ -5,10 +5,19 @@ import {
   EFFORT_OPTIONS,
   FALLBACK_MODELS,
   LAST_MODEL_KEY,
+  LAST_TOOL_KEY,
+  TOOL_OPTIONS,
+  defaultModelHint,
+  firstSentence,
+  friendlyModelName,
+  modelPillLabel,
+  modelRowLabel,
   pickModel,
   readRemembered,
+  readRememberedTool,
   readSessionModels,
   remember,
+  selectableModels,
   shortenModelLabel,
 } from './session-models';
 
@@ -170,5 +179,136 @@ describe('remembering pill choices', () => {
       throw new Error('denied');
     });
     expect(() => remember(LAST_MODEL_KEY, 'opus')).not.toThrow();
+  });
+});
+
+describe('friendlyModelName — an id is not a name', () => {
+  it.each([
+    ['claude-opus-4-8', 'Opus 4.8'],
+    ['claude-fable-5-1[1m]', 'Fable 5.1'],
+    ['claude-sonnet-4-6', 'Sonnet 4.6'],
+    ['claude-haiku-4-5-20260101', 'Haiku 4.5'],
+    ['claude-opus-5[1m]', 'Opus 5'],
+    ['opus[1m]', 'Opus (1M)'],
+    ['opus', 'Opus'],
+    ['sonnet', 'Sonnet'],
+    ['haiku', 'Haiku'],
+  ])('%s → %s', (id, expected) => {
+    expect(friendlyModelName(id)).toBe(expected);
+  });
+
+  it('drops a build stamp rather than reading it as a version', () => {
+    // `4-5-20260101` is Haiku 4.5 built on a date, not Haiku 4.5.20260101.
+    expect(friendlyModelName('claude-haiku-4-5-20260101')).not.toContain('2026');
+  });
+
+  it('speaks the context window only when nothing else disambiguates', () => {
+    // `opus` and `opus[1m]` are two rows in one menu; `claude-fable-5-1[1m]`
+    // has no sibling it could be confused with.
+    expect(friendlyModelName('opus[1m]')).toBe('Opus (1M)');
+    expect(friendlyModelName('claude-fable-5-1[1m]')).toBe('Fable 5.1');
+  });
+
+  it('title-cases an unknown family and keeps acronyms upper', () => {
+    expect(friendlyModelName('claude-newfamily-6-2')).toBe('Newfamily 6.2');
+    expect(friendlyModelName('gpt-5')).toBe('GPT 5');
+  });
+
+  it('strips a bedrock-style region prefix', () => {
+    expect(friendlyModelName('us.anthropic.claude-opus-4-8')).toBe('Opus 4.8');
+  });
+
+  it('has no answer for nothing, and says so rather than guessing', () => {
+    expect(friendlyModelName(null)).toBe('');
+    expect(friendlyModelName('')).toBe('');
+    expect(friendlyModelName('   ')).toBe('');
+  });
+});
+
+describe('defaultModelHint', () => {
+  it('reads the model the CLI says it is currently defaulting to', () => {
+    expect(
+      defaultModelHint('Use the default model (currently Opus 5 (1M context))'),
+    ).toBe('Opus 5');
+  });
+
+  it('is empty when the description names nothing', () => {
+    expect(defaultModelHint('Use the default model')).toBe('');
+    expect(defaultModelHint(undefined)).toBe('');
+  });
+});
+
+describe('firstSentence', () => {
+  it('takes one sentence, not the paragraph', () => {
+    expect(firstSentence('Most capable for your hardest tasks. Slower and pricier.')).toBe(
+      'Most capable for your hardest tasks',
+    );
+  });
+
+  it('leaves an unpunctuated line whole', () => {
+    expect(firstSentence('Most capable for your hardest and longest-running tasks')).toBe(
+      'Most capable for your hardest and longest-running tasks',
+    );
+  });
+
+  it('is empty for nothing', () => {
+    expect(firstSentence(undefined)).toBe('');
+  });
+});
+
+describe('the model menu', () => {
+  const models = readSessionModels(REAL_CATALOG);
+
+  it('offers no "Default" row — that is an un-choice, not a choice', () => {
+    expect(selectableModels(models).some((entry) => entry.value === null)).toBe(false);
+    expect(selectableModels(models)).toHaveLength(models.length - 1);
+  });
+
+  it('labels each row from its id, not the CLI’s terse display name', () => {
+    expect(selectableModels(models).map(modelRowLabel)).toEqual([
+      'Opus (1M)',
+      'Fable 5.1',
+      'Sonnet',
+      'Haiku',
+    ]);
+  });
+});
+
+describe('modelPillLabel — never a raw id, never "Default"', () => {
+  const models = readSessionModels(REAL_CATALOG);
+
+  it('names an explicit choice', () => {
+    expect(modelPillLabel(models, 'claude-fable-5-1[1m]')).toBe('Fable 5.1');
+  });
+
+  it('names the model the live session actually resolved', () => {
+    expect(modelPillLabel(models, null, 'claude-opus-4-8')).toBe('Opus 4.8');
+  });
+
+  it('falls back to the catalog’s own hint before a session exists', () => {
+    expect(modelPillLabel(models, null, null)).toBe('Opus 5');
+  });
+
+  it('says "Recommended" only when the catalog explains nothing', () => {
+    expect(modelPillLabel(FALLBACK_MODELS, null, null)).toBe('Recommended');
+  });
+});
+
+describe('the tool pill', () => {
+  it('offers exactly Claude and Codex', () => {
+    expect(TOOL_OPTIONS.map((option) => option.value)).toEqual(['claude', 'codex']);
+    expect(TOOL_OPTIONS.map((option) => option.label)).toEqual(['Claude', 'Codex']);
+  });
+
+  it('remembers the last tool under the agreed key', () => {
+    expect(LAST_TOOL_KEY).toBe('hq.sessions.lastTool');
+    remember(LAST_TOOL_KEY, 'codex');
+    expect(readRememberedTool()).toBe('codex');
+  });
+
+  it('defaults to the only CLI that always exists', () => {
+    expect(readRememberedTool()).toBe('claude');
+    remember(LAST_TOOL_KEY, 'nonsense');
+    expect(readRememberedTool()).toBe('claude');
   });
 });
