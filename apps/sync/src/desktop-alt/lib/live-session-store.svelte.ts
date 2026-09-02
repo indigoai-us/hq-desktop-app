@@ -129,6 +129,8 @@ export interface Preflight {
   claudeAvailable: boolean;
   claudeLoggedIn: boolean;
   codexAvailable: boolean;
+  /** The Codex CLI signs in separately from the ChatGPT desktop app. */
+  codexLoggedIn: boolean;
   companies: PreflightCompany[];
 }
 

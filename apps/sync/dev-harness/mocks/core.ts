@@ -1368,6 +1368,7 @@ This final paragraph verifies spacing after a thematic break.
     claudeAvailable: true,
     claudeLoggedIn: true,
     codexAvailable: true,
+    codexLoggedIn: true,
     companies: [
       { slug: 'indigo', displayName: 'Indigo' },
       { slug: 'ridge', displayName: 'Ridge' },

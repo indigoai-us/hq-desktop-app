@@ -745,7 +745,7 @@ describe('probe memoization (preflight + catalog)', () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'agent_session_preflight') {
         return { hqRoot: '/hq', hooksReady: true, hooksError: null, claudeAvailable: true,
-          claudeLoggedIn: true, codexAvailable: false, companies: [] };
+          claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false, companies: [] };
       }
       throw new Error(`unexpected ${cmd}`);
     });

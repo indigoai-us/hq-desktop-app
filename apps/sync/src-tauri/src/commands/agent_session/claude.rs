@@ -151,7 +151,18 @@ impl SessionEventSink for AppSink {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outbound {
     /// Write one already-built NDJSON line (user turn, control response).
+    ///
+    /// Claude's is a `stream-json` frame; Codex's is the turn `input` array as
+    /// JSON (or bare text). Either way the driver that receives it is the one
+    /// that built it, so the string is opaque to everything in between.
     Line(String),
+    /// Answer a server→client JSON-RPC request the driver parked, by the
+    /// registry's `request_id`. Codex-only: Claude answers control requests
+    /// with a `Line`, because there the response IS a frame the caller can
+    /// build. Codex's response has to carry the numeric JSON-RPC id of the
+    /// request, which only the driver knows — so the caller sends the result
+    /// and the driver addresses the envelope.
+    Reply { request_id: String, result: Value },
     /// Mark the normalizer interrupted, then send the interrupt request. The
     /// two must not be reordered: the `result` that answers an interrupt is
     /// indistinguishable on the wire from a real failure, and only the flag
@@ -300,6 +311,15 @@ pub async fn run_session_loop(
                     };
                     break;
                 }
+            }
+
+            // Codex-only: nothing on the Claude wire is addressed by a
+            // JSON-RPC id, so this can only be a mis-routed instruction.
+            Step::Out(Some(Outbound::Reply { request_id, .. })) => {
+                log(
+                    LOG_TAG,
+                    &format!("session={session_id} ignoring a Codex-shaped reply to {request_id}"),
+                );
             }
 
             Step::Out(Some(Outbound::Interrupt)) => {
