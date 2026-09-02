@@ -17,23 +17,42 @@
 // Covered by scripts/windows-check-relevant.test.ts.
 
 /**
- * Path patterns that require the Windows gate. These are the exact patterns the
- * workflow's `paths:` filter carried, and they must stay in sync with it — the
- * test asserts that.
+ * Path patterns that require the Windows gate.
  *
- * `**` matches any suffix; `*` matches within one segment.
+ * The old `apps/sync/**` entry ran the two Windows jobs (40-80 Windows-runner
+ * minutes) on every Svelte/TS/test/icon-only change even though the frontend
+ * is fully covered by ci.yml (typecheck, lint, vitest, desktop-alt E2E on
+ * Linux). The list is now scoped to what the Windows jobs actually compile or
+ * install: the Rust crate and its tauri configs/installer templates/icons
+ * under src-tauri, the Recall sidecar, the desktop-alt E2E specs the Windows
+ * jobs run live, the app package manifest/lockfile (installer contents),
+ * shared crates, Cargo/toolchain files, release/Windows scripts, and the two
+ * workflows.
+ *
+ * Release tags are not affected: release.yml always builds all targets on
+ * every tag regardless of this gate.
+ *
+ * `**` matches any suffix; `*` matches within one segment. The test pins this
+ * list exactly.
  */
 export const WINDOWS_RELEVANT_PATTERNS = [
-  "apps/sync/**",
+  "apps/sync/src-tauri/**",
+  "apps/sync/sidecar/**",
+  "apps/sync/e2e/desktop-alt/**",
+  "apps/sync/package.json",
+  "apps/sync/pnpm-lock.yaml",
+  "apps/sync/pnpm-workspace.yaml",
   "imports/hq-installer-react/**",
   "crates/**",
   "Cargo.toml",
   "Cargo.lock",
+  "rust-toolchain.toml",
   "versions.toml",
   "scripts/release-*.mjs",
   "scripts/release-*.test.ts",
-  "scripts/windows-msi-version.mjs",
-  "scripts/windows-msi-version.test.ts",
+  "scripts/windows-*.mjs",
+  "scripts/windows-*.test.ts",
+  "scripts/windows-*.ps1",
   ".github/workflows/release.yml",
   ".github/workflows/windows-check.yml",
   "workspace/evidence/**",

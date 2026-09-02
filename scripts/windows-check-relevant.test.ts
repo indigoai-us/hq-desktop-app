@@ -44,16 +44,24 @@ beforeAll(async () => {
 describe("paths that need the Windows gate", () => {
   const relevant = [
     "apps/sync/src-tauri/src/main.rs",
+    "apps/sync/src-tauri/tauri.windows.conf.json",
+    "apps/sync/src-tauri/icons/icon.ico",
+    "apps/sync/sidecar/recall-sdk-bridge/package.json",
+    "apps/sync/e2e/desktop-alt/live-preauth.spec.ts",
     "apps/sync/package.json",
+    "apps/sync/pnpm-lock.yaml",
     "crates/hq-desktop-core/src/paths.rs",
     "imports/hq-installer-react/src/App.tsx",
     "Cargo.toml",
     "Cargo.lock",
+    "rust-toolchain.toml",
     "versions.toml",
     "scripts/release-asset-contract.mjs",
     "scripts/release-stable-order.test.ts",
     "scripts/windows-msi-version.mjs",
     "scripts/windows-msi-version.test.ts",
+    "scripts/windows-check-relevant.mjs",
+    "scripts/windows-test-watchdog.ps1",
     ".github/workflows/release.yml",
     ".github/workflows/windows-check.yml",
     "workspace/evidence/run-1/log.txt",
@@ -74,6 +82,12 @@ describe("paths that do not need the Windows gate", () => {
     "README.md",
     ".github/workflows/ci.yml",
     "reports/whatever.md",
+    "apps/sync/src/App.svelte",
+    "apps/sync/src/lib/stores/auth.ts",
+    "apps/sync/__tests__/stories/US-001.test.ts",
+    "apps/sync/scripts/create-dmg.sh",
+    "apps/sync/desktop-alt.html",
+    "apps/sync/.claude/CLAUDE.md",
   ];
 
   it.each(irrelevant)("skips the gate for %s", (path) => {
@@ -112,7 +126,7 @@ describe("pattern matching is anchored", () => {
   });
 
   it("does not match a suffix of an exact-file pattern", () => {
-    expect(isWindowsRelevant(["apps/sync/Cargo.toml"])).toBe(true);
+    expect(isWindowsRelevant(["apps/sync/src-tauri/Cargo.toml"])).toBe(true);
     expect(isWindowsRelevant(["vendor/Cargo.toml"])).toBe(false);
   });
 });
@@ -196,20 +210,25 @@ describe("the workflow keeps both required checks reachable", () => {
     expect(workflow).toContain("name: installer E2E (x64 MSI + NSIS)");
   });
 
-  it("still covers every path the old trigger filter listed", () => {
-    // The filter moved from YAML into the matcher; nothing may be dropped in
-    // the move, or a real Windows regression stops being gated.
+  it("pins the exact relevance list", () => {
     expect(WINDOWS_RELEVANT_PATTERNS).toEqual([
-      "apps/sync/**",
+      "apps/sync/src-tauri/**",
+      "apps/sync/sidecar/**",
+      "apps/sync/e2e/desktop-alt/**",
+      "apps/sync/package.json",
+      "apps/sync/pnpm-lock.yaml",
+      "apps/sync/pnpm-workspace.yaml",
       "imports/hq-installer-react/**",
       "crates/**",
       "Cargo.toml",
       "Cargo.lock",
+      "rust-toolchain.toml",
       "versions.toml",
       "scripts/release-*.mjs",
       "scripts/release-*.test.ts",
-      "scripts/windows-msi-version.mjs",
-      "scripts/windows-msi-version.test.ts",
+      "scripts/windows-*.mjs",
+      "scripts/windows-*.test.ts",
+      "scripts/windows-*.ps1",
       ".github/workflows/release.yml",
       ".github/workflows/windows-check.yml",
       "workspace/evidence/**",

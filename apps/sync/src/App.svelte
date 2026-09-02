@@ -140,23 +140,22 @@
   // "234 files synced".
   let personalFilesDone = $state(0);
   let personalFilesTotal = $state<number | null>(null);
-  // Latched flag for the unified progress bar — once the in-process Rust
-  // personal first-push completes, this stays true until the next Sync
-  // click. Lets the bar treat the personal phase as "fully filled (50%
-  // slot)" even after personalFilesTotal has been reset, so there's no
-  // visible drop between the Rust phase and the runner taking over.
+  // Latched once the in-process Rust personal first-push completes; stays
+  // true until the next Sync click. Lets the popover keep "Syncing personal"
+  // as the current-workspace sub-label after personalFilesTotal resets.
   let personalFirstPushDone = $state(false);
   // Real total file count for the entire sync — emitted by the Rust pre-walk
   // BEFORE any uploads begin (sums personal allowlist + every local company
-  // folder, after applying .hqignore + DEFAULT_IGNORES). Drives the unified
-  // per-file progress bar. 0 means pre-walk hasn't fired yet (or hit an
-  // error); the UI falls back to workspace-level progress in that case.
+  // folder, after applying .hqignore + DEFAULT_IGNORES). Fallback
+  // denominator for the popover "N of M transferred" caption. 0 means
+  // pre-walk hasn't fired yet (or hit an error); the UI falls back to
+  // workspace-level counts in that case.
   let syncTotalFiles = $state(0);
   // Plan-event-derived denominator (hq-cloud@5.5.0+). Each plan event from
   // the runner adds (filesToDownload + filesToUpload + filesToConflict)
   // for one company / direction. When the runner is new enough to emit
-  // these, this gives us an accurate denominator for the progress bar
-  // that includes BOTH push and pull work — improving on the older
+  // these, this gives us an accurate denominator for the transferred
+  // caption that includes BOTH push and pull work — improving on the older
   // upload-only `syncTotalFiles` from the Rust pre-pass. When 0, the
   // UI falls back to `syncTotalFiles`.
   let syncPlanTotalFiles = $state(0);

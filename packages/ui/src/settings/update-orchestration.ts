@@ -50,6 +50,13 @@ export interface UpdateCheckOutcome {
   cliProbeError: string | null;
 }
 
+export interface UpdateVersions {
+  coreVersion: string | null;
+  cliVersion: string | null;
+  coreProbeError: string | null;
+  cliProbeError: string | null;
+}
+
 export interface RunUpdateCheckOptions {
   /** Per-call ceiling. A slower call resolves as a failed row, never a spin. */
   timeoutMs?: number;
@@ -58,9 +65,14 @@ export interface RunUpdateCheckOptions {
   clearTimeoutFn?: typeof clearTimeout;
   /** Commit a row the moment its own check settles. */
   onRow?: (row: UpdateRow, status: UpdateRowStatus) => void;
+  /**
+   * Commit installed versions as soon as `getVersions()` settles, before the
+   * slower Core/CLI comparison checks finish.
+   */
+  onVersions?: (versions: UpdateVersions) => void;
 }
 
-export const DEFAULT_UPDATE_CHECK_TIMEOUT_MS = 20_000;
+export const DEFAULT_UPDATE_CHECK_TIMEOUT_MS = 45_000;
 
 const TIMEOUT = Symbol("update-check-timeout");
 
@@ -109,7 +121,7 @@ async function bounded<T>(
       return {
         ok: false,
         reason: "timeout",
-        message: "The check timed out. Try again.",
+        message: `The check timed out after ${Math.round(timeoutMs / 1000)}s. Try again.`,
       };
     }
     return raced;
@@ -180,10 +192,10 @@ export async function runUpdateCheck(
 
   const versions = await versionsPromise;
   const versionRecord = versions.ok ? asRecord(versions.value) : null;
-  const coreProbeError = versions.ok
+  let coreProbeError = versions.ok
     ? probeFailure(versionRecord?.coreProbe)
     : versions.message ?? "The Core version probe failed.";
-  const cliProbeError = versions.ok
+  let cliProbeError = versions.ok
     ? probeFailure(versionRecord?.cliProbe)
     : versions.message ?? "The CLI version probe failed.";
   const coreVersion =
@@ -195,9 +207,29 @@ export async function runUpdateCheck(
       ? (versionRecord.cli as string)
       : null;
 
-  const coreStatus = coreStatusFrom(await corePromise, coreVersion, coreProbeError);
+  options.onVersions?.({
+    coreVersion,
+    cliVersion,
+    coreProbeError,
+    cliProbeError,
+  });
+
+  const coreCheck = await corePromise;
+  const coreStatus = coreStatusFrom(coreCheck, coreVersion, coreProbeError);
+  if (!coreCheck.ok && !coreProbeError) {
+    coreProbeError =
+      (typeof coreCheck.message === "string" && coreCheck.message.trim()) ||
+      "The Core update check failed.";
+  }
   options.onRow?.("core", coreStatus);
-  const cliStatus = cliStatusFrom(await cliPromise, cliVersion, cliProbeError);
+
+  const cliCheck = await cliPromise;
+  const cliStatus = cliStatusFrom(cliCheck, cliVersion, cliProbeError);
+  if (!cliCheck.ok && !cliProbeError) {
+    cliProbeError =
+      (typeof cliCheck.message === "string" && cliCheck.message.trim()) ||
+      "The CLI update check failed.";
+  }
   options.onRow?.("cli", cliStatus);
 
   return {
@@ -208,5 +240,28 @@ export async function runUpdateCheck(
     cliVersion,
     coreProbeError,
     cliProbeError,
+  };
+}
+
+export interface UpdateCheckRunner {
+  isRunning: () => boolean;
+  run: (
+    adapter: UpdateOrchestrationAdapter,
+    options?: RunUpdateCheckOptions,
+  ) => Promise<UpdateCheckOutcome>;
+}
+
+/** Coalesce overlapping update checks onto a single in-flight promise. */
+export function createUpdateCheckRunner(): UpdateCheckRunner {
+  let inFlight: Promise<UpdateCheckOutcome> | null = null;
+  return {
+    isRunning: () => inFlight !== null,
+    run(adapter, options) {
+      if (inFlight) return inFlight;
+      inFlight = runUpdateCheck(adapter, options).finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    },
   };
 }

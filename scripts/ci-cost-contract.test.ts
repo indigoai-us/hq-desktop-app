@@ -122,7 +122,7 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     const check = jobBody(windowsCheckWorkflow, "windows-check");
     const installer = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
 
-    const keyOf = (body: string) => /\n\s+key: (\S+)\n/.exec(body)?.[1];
+    const keyOf = (body: string) => /\n\s+shared-key: (\S+)\n/.exec(body)?.[1];
 
     expect(keyOf(check)).toBeDefined();
     expect(keyOf(installer)).toBeDefined();

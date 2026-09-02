@@ -74,6 +74,8 @@ export const WEB_PATHS = {
     `/v1/notify/notifications/${encodeURIComponent(id)}/actions/${encodeURIComponent(action)}`,
   dmInbox: "/v1/notify/inbox",
   dmInboxAck: "/v1/notify/inbox/ack",
+  /** Per-user DM peer index (hq-pro PR #2813). 404 on servers that predate it. */
+  dmThreads: "/v1/notify/dm-threads",
   sharedWithMe: "/v1/files/shared-with-me",
   sharedWithMeAck: "/v1/files/shared-with-me/ack",
   reactions: "/v1/notify/reactions",
@@ -560,6 +562,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
           : WEB_PATHS.dmInbox,
       ),
     ackDmInbox: (eventIds) => this.post(WEB_PATHS.dmInboxAck, { eventIds }),
+    fetchDmThreads: (opts) =>
+      this.get(
+        opts && Object.keys(opts).length > 0
+          ? `${WEB_PATHS.dmThreads}?${new URLSearchParams(opts as Record<string, string>).toString()}`
+          : WEB_PATHS.dmThreads,
+      ),
     fetchSharedWithMe: (opts) =>
       this.get(
         opts && Object.keys(opts).length > 0

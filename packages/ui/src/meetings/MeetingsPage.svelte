@@ -29,6 +29,8 @@
     eventMeetingUrl,
     extractedSignalLabels,
     isPlausibleMeetingUrl,
+    botForEvent,
+    meetingMatchesFocusId,
     pickLiveMeeting,
     pickUpNext,
     timeLabel,
@@ -460,9 +462,22 @@
   });
 
   // Host-driven deep-link focus (replaces the Tauri meetings:focus-meeting
-  // listener + meetings_take_pending_focus cold-mount stash).
+  // listener + meetings_take_pending_focus cold-mount stash). Unattributed
+  // recordings live on the Past tab — switch to it so the selected row exists.
   $effect(() => {
-    if (focusRequest) focusMeetingRow(focusRequest.meetingId);
+    if (!focusRequest) return;
+    const id = focusRequest.meetingId;
+    const matches = (event: MeetingEvent) =>
+      meetingMatchesFocusId(
+        id,
+        event,
+        botForEvent(event, botsByEventId, scheduledBots) ??
+          botsByEventId.get(event.id),
+      );
+    if (pastEvents.some(matches) && !upcomingEvents.some(matches) && agendaTab !== "past") {
+      agendaTab = "past";
+    }
+    focusMeetingRow(id);
   });
 </script>
 

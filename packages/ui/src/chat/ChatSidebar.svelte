@@ -74,6 +74,7 @@
     normalizeConversations,
     rememberRecentDm,
     resolveSearchHitRow,
+    rowAvatar,
     saveConversationCache,
     saveDmDots,
     savePins,
@@ -102,6 +103,20 @@
     switcherRowsFromConversations,
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
+  import {
+    channelCreateValidationMessage,
+    channelExistsWithName,
+    companiesForChannelCreate,
+    companyUidsByPerson,
+    defaultChannelCompanyUid,
+    directoryRowsFromFeed,
+    formatChannelCreateFailure,
+    pickChannelCompanyUid,
+    personalScopeAllowed,
+    unavailableChannelScopes,
+    unconfirmedCreateMessage,
+    type ChannelCreateMember,
+  } from "./channel-create-scope";
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -132,6 +147,8 @@
      * the rail.
      */
     seedDirectory?: ChannelDirectoryRow[] | null;
+    /** personUid → presigned avatar URL from loaded channel rosters. */
+    avatarByUid?: Record<string, string> | null;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -141,6 +158,8 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => void;
+    /** Emits the full normalized conversation list whenever it changes. */
+    onrows?: (rows: ConversationRow[]) => void;
   }
 
   let {
@@ -156,12 +175,14 @@
     tenantAccountId = null,
     tenantCompanyId = null,
     seedDirectory = null,
+    avatarByUid = null,
     oncommand,
     onnavigateMessages,
     onopenSettings,
     onselect,
     oncompanyscopechange,
     onsignout,
+    onrows,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -279,7 +300,7 @@
   /** "" = personal scope; otherwise the companyUid. */
   let channelCompanyUid = $state("");
   let channelQuery = $state("");
-  let channelParticipants = $state<{ personUid: string; label: string }[]>([]);
+  let channelParticipants = $state<ChannelCreateMember[]>([]);
   let channelCreating = $state(false);
   let channelError = $state<string | null>(null);
   /** Compose body carried into the create-channel flow — sent as the new
@@ -382,6 +403,16 @@
     }),
   );
 
+  let lastEmittedRows: ConversationRow[] | null = null;
+  $effect(() => {
+    const rows = allRows;
+    const emit = onrows;
+    if (!emit) return;
+    if (rows === lastEmittedRows) return;
+    lastEmittedRows = rows;
+    emit(rows);
+  });
+
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   const directoryRows = $derived(
@@ -460,14 +491,45 @@
   );
   const people = $derived(distinctDmPeople(allRows));
   const canCreateChannel = $derived(typeof api.createChannel === "function");
+  const channelCreateCompanies = $derived(
+    companiesForChannelCreate(companies, accountLabel),
+  );
+  const memberCompanies = $derived(
+    companyUidsByPerson(allRows, contactsWithUnreads),
+  );
+  const channelCreatePeople = $derived(
+    people.map((person) => ({
+      ...person,
+      companyUids: memberCompanies.get(person.personUid) ?? [],
+    })),
+  );
   const channelPeopleResults = $derived.by(() => {
     const q = channelQuery.trim().toLowerCase();
     const picked = new Set(channelParticipants.map((p) => p.personUid));
-    return people
+    return channelCreatePeople
       .filter((p) => !picked.has(p.personUid))
       .filter((p) => !q || p.label.toLowerCase().includes(q))
       .slice(0, 8);
   });
+  const channelPersonalAllowed = $derived(
+    personalScopeAllowed(channelParticipants, self?.uid),
+  );
+  const channelScopeUnavailable = $derived(
+    unavailableChannelScopes(
+      channelCreateCompanies,
+      channelParticipants,
+      self?.uid,
+    ),
+  );
+  const channelCreateBlock = $derived(
+    channelCreateValidationMessage({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: channelParticipants,
+      companyUid: channelCompanyUid,
+      selfUid: self?.uid,
+    }),
+  );
   const liveSwitcherRows = $derived(
     switcherRowsFromConversations([...directoryRows, ...browseRows], (uid) => {
       if (!uid) return "";
@@ -678,17 +740,32 @@
     composeError = null;
   }
 
+  function syncChannelScope(): void {
+    channelCompanyUid = pickChannelCompanyUid({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: channelParticipants,
+      currentUid: channelCompanyUid,
+      selfUid: self?.uid,
+    });
+  }
+
   function openNewChannel(): void {
     closeAllOverlays();
     newChannelOpen = true;
     channelName = "";
-    channelCompanyUid = scopeCompanies[0]?.companyUid ?? "";
     channelQuery = "";
     channelParticipants = [];
     channelError = null;
     pendingChannelFirstMessage = "";
     createdChannel = null;
     channelCreationUnconfirmed = false;
+    channelCompanyUid = defaultChannelCompanyUid({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: [],
+      selfUid: self?.uid,
+    });
   }
 
   function closeNewChannel(): void {
@@ -714,18 +791,24 @@
     pendingChannelFirstMessage = body;
   }
 
-  function addChannelParticipant(p: {
-    personUid: string;
-    label: string;
-  }): void {
-    channelParticipants = [...channelParticipants, p];
+  function addChannelParticipant(p: ChannelCreateMember): void {
+    channelParticipants = [
+      ...channelParticipants,
+      {
+        personUid: p.personUid,
+        label: p.label,
+        companyUids: p.companyUids ?? [],
+      },
+    ];
     channelQuery = "";
+    syncChannelScope();
   }
 
   function removeChannelParticipant(uid: string): void {
     channelParticipants = channelParticipants.filter(
       (p) => p.personUid !== uid,
     );
+    syncChannelScope();
   }
 
   function upsertCreatedChannel(
@@ -746,9 +829,32 @@
   }
 
   function createErrorDetail(err: unknown, fallback: string): string {
-    return err instanceof Error && err.message.trim()
-      ? err.message.trim()
-      : fallback;
+    return formatChannelCreateFailure(err) || fallback;
+  }
+
+  async function createdChannelAlreadyExists(name: string): Promise<boolean> {
+    if (channelExistsWithName(name, channels)) return true;
+    const uids = channelCompanyUid
+      ? [channelCompanyUid]
+      : channelCreateCompanies.map((company) => company.companyUid);
+    for (const uid of uids) {
+      try {
+        const resp = await api.listChannels({
+          companyUid: uid,
+          includeCompanyProjects: false,
+        });
+        if (channelExistsWithName(name, resp?.channels ?? [])) return true;
+      } catch {
+        // Lookup is best-effort; a failed list must not block a safe retry.
+      }
+    }
+    try {
+      const feed = await api.fetchChannelDirectory(null);
+      if (channelExistsWithName(name, directoryRowsFromFeed(feed))) return true;
+    } catch {
+      // Same: directory lookup failure is not proof the create committed.
+    }
+    return false;
   }
 
   async function submitCreateChannel(): Promise<void> {
@@ -762,6 +868,19 @@
       createdChannel?.firstMessageDelivery === "unconfirmed"
     ) {
       return;
+    }
+    if (!createdChannel) {
+      const blocked = channelCreateValidationMessage({
+        activeScope: scope,
+        companies: channelCreateCompanies,
+        members: channelParticipants,
+        companyUid: channelCompanyUid,
+        selfUid: self?.uid,
+      });
+      if (blocked) {
+        channelError = blocked;
+        return;
+      }
     }
     channelCreating = true;
     channelError = null;
@@ -850,8 +969,9 @@
           ? `Channel created, but ${pending.length} invitation${pending.length === 1 ? " is" : "s are"} incomplete (${pending.map((invitee) => invitee.label).join(", ")}): ${detail}. Retry to resume the same channel.`
           : detail;
       } else {
-        channelCreationUnconfirmed = true;
-        channelError = `Channel creation could not be confirmed: ${detail}. Retry is disabled to prevent creating a duplicate channel; check your channel list before trying again.`;
+        const exists = await createdChannelAlreadyExists(name);
+        channelCreationUnconfirmed = exists;
+        channelError = unconfirmedCreateMessage({ detail, name, exists });
       }
     } finally {
       channelCreating = false;
@@ -1240,6 +1360,53 @@
     }
   }
 
+  /** Peers already asked about — one thread read per bare uid, ever. */
+  const dmNameLookupsTried = new Set<string>();
+
+  /**
+   * The DM peer index (dm-threads) carries bare uids. When such a peer is not
+   * in the contacts roster its row would be titled by uid; read the newest
+   * page of that thread once and take the counterpart's name/email from it.
+   */
+  async function resolveUnnamedDmPeers(): Promise<void> {
+    const fetchThread = api.fetchDmThread;
+    if (typeof fetchThread !== "function") return;
+    const pending = contacts.filter(
+      (contact) =>
+        !contact.displayName?.trim() &&
+        !contact.email?.trim() &&
+        !dmNameLookupsTried.has(contact.personUid),
+    );
+    for (const contact of pending) {
+      const uid = contact.personUid;
+      dmNameLookupsTried.add(uid);
+      try {
+        const page = await fetchThread.call(api, {
+          withPersonUid: uid,
+          limit: 10,
+        });
+        const messages = Array.isArray(page?.messages) ? page.messages : [];
+        const theirs = messages.find(
+          (message) => (message.fromPersonUid ?? "").trim() === uid,
+        );
+        const displayName = theirs?.fromDisplayName?.trim() ?? "";
+        const email = theirs?.fromEmail?.trim() ?? "";
+        if (!displayName && !email) continue;
+        contacts = contacts.map((entry) =>
+          entry.personUid === uid
+            ? {
+                ...entry,
+                displayName: entry.displayName || displayName || null,
+                email: entry.email || email || null,
+              }
+            : entry,
+        );
+      } catch {
+        /* best effort — the row still lists, titled by email or uid */
+      }
+    }
+  }
+
   function mergePairUnreadsPayload(
     payload: PairUnreadsPayload | null | undefined,
   ): void {
@@ -1253,6 +1420,7 @@
           fromDisplayName: entry.displayName,
         })),
       );
+      void resolveUnnamedDmPeers();
     }
     const entries = payload?.pairUnreads;
     if (!Array.isArray(entries)) return;
@@ -1333,6 +1501,18 @@
 
       track(
         wakes.on("dm:new-message", (payload) => {
+          const fromPersonUid = (payload.fromPersonUid ?? "").trim();
+          const stamp = payload.createdAt;
+          if (
+            fromPersonUid &&
+            fromPersonUid !== self?.uid &&
+            typeof stamp === "string" &&
+            stamp
+          ) {
+            contacts = mergeContactsWithInbox(contacts, [
+              { fromPersonUid, createdAt: stamp },
+            ]);
+          }
           if (
             !shouldBumpDmUnread({
               selectedId: selectedId ?? activeId,
@@ -1345,17 +1525,6 @@
           if (payload.absoluteUnread !== true) {
             pairUnreads = incrementPairUnread(pairUnreads, payload.fromPersonUid);
           }
-          const stamp = payload.createdAt;
-          contacts = contacts.map((contact) =>
-            contact.personUid === payload.fromPersonUid
-              ? {
-                  ...contact,
-                  ...(stamp
-                    ? { lastActivityAt: stamp, lastMessageAt: stamp }
-                    : {}),
-                }
-              : contact,
-          );
         }),
       );
 
@@ -2232,9 +2401,18 @@
                         {row.memberCount ?? row.members?.length ?? 0}
                       </span>
                     {:else}
-                      <span class="chat-avatar" aria-hidden="true"
-                        >{initialsFor(row.title)}</span
+                      {@const avatar = rowAvatar(row, avatarByUid)}
+                      <span
+                        class="chat-avatar"
+                        aria-hidden="true"
+                        data-avatar={avatar.kind}
                       >
+                        {#if avatar.src}
+                          <img src={avatar.src} alt="" />
+                        {:else}
+                          {avatar.initials}
+                        {/if}
+                      </span>
                     {/if}
                     <span class="chat-search-hit-copy">
                       <span class="chat-row-title">{row.title}</span>
@@ -2278,9 +2456,18 @@
                       {row.memberCount ?? row.members?.length ?? 0}
                     </span>
                   {:else}
-                    <span class="chat-switcher-avatar" aria-hidden="true"
-                      >{initialsFor(row.title)}</span
+                    {@const avatar = rowAvatar(row, avatarByUid)}
+                    <span
+                      class="chat-switcher-avatar"
+                      aria-hidden="true"
+                      data-avatar={avatar.kind}
                     >
+                      {#if avatar.src}
+                        <img src={avatar.src} alt="" />
+                      {:else}
+                        {avatar.initials}
+                      {/if}
+                    </span>
                   {/if}
                   <span class="chat-switcher-name">{row.title}</span>
                 </button>
@@ -2599,12 +2786,29 @@
             aria-label="Channel workspace"
             disabled={createdChannel !== null}
           >
-            {#each scopeCompanies as company (company.companyUid)}
-              <option value={company.companyUid}>{company.label}</option>
+            {#each channelCreateCompanies as company (company.companyUid)}
+              {@const blocked = channelScopeUnavailable.find(
+                (row) => row.company.companyUid === company.companyUid,
+              )}
+              <option value={company.companyUid} disabled={Boolean(blocked)}>
+                {blocked
+                  ? `${company.label} — ${blocked.reason}`
+                  : company.label}
+              </option>
             {/each}
-            <option value="">Personal</option>
+            {#if channelPersonalAllowed}
+              <option value="">Personal</option>
+            {/if}
           </select>
         </div>
+        {#if channelScopeUnavailable.length > 0}
+          <p
+            class="chat-channel-scope-hint"
+            data-testid="chat-channel-scope-unavailable"
+          >
+            {channelScopeUnavailable[0].reason}
+          </p>
+        {/if}
 
         <div class="chat-compose-to">
           <span class="chat-compose-to-label">With</span>
@@ -2658,6 +2862,14 @@
 
         {#if channelError}
           <div class="chat-channel-error" role="alert">{channelError}</div>
+        {:else if channelCreateBlock}
+          <div
+            class="chat-channel-error"
+            role="alert"
+            data-testid="chat-channel-validation"
+          >
+            {channelCreateBlock}
+          </div>
         {/if}
 
         {#if createdChannel && pendingChannelFirstMessage.trim()}
@@ -2676,7 +2888,8 @@
                 channelCreating ||
                 !channelName.trim() ||
                 channelCreationUnconfirmed ||
-                createdChannel?.firstMessageDelivery === "unconfirmed"
+                createdChannel?.firstMessageDelivery === "unconfirmed" ||
+                (!createdChannel && Boolean(channelCreateBlock))
               }
               aria-busy={channelCreating}
               onclick={() => void submitCreateChannel()}
@@ -2736,12 +2949,18 @@
           {row.memberCount ?? row.members?.length ?? 0}
         </span>
       {:else}
+        {@const avatar = rowAvatar(row, avatarByUid)}
         <span
           class="chat-avatar"
           aria-hidden="true"
           data-testid="chat-dm-avatar"
+          data-avatar={avatar.kind}
         >
-          {initialsFor(row.title)}
+          {#if avatar.src}
+            <img src={avatar.src} alt="" />
+          {:else}
+            {avatar.initials}
+          {/if}
         </span>
       {/if}
       <span class="chat-row-title">{row.title}</span>
@@ -3199,6 +3418,15 @@
   .chat-avatar.group {
     border-radius: 50%;
     font-variant-numeric: tabular-nums;
+  }
+
+  .chat-avatar img,
+  .chat-switcher-avatar img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .chat-unread-badge {
@@ -3787,6 +4015,14 @@
     color: var(--t1);
     font: inherit;
     cursor: pointer;
+  }
+
+  .chat-channel-scope-hint {
+    margin: 0;
+    padding: 0 16px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.35;
   }
 
   .chat-channel-with {
