@@ -8,6 +8,7 @@ pub mod bandwidth;
 pub mod banner;
 pub mod claude_launch;
 pub mod cli_update_lock;
+pub mod client_health;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
