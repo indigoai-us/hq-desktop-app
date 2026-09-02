@@ -120,7 +120,11 @@ class ProjectMetaCacheImpl implements ProjectMetaCache {
     }
     const now = (this.options.now ?? Date.now)();
     if (result?.meta) this.entries.set(key, { meta: result.meta, loadedAt: now });
-    else if (result?.definitiveMiss) this.misses.set(key, { loadedAt: now });
+    // A fulfilled loader result is authoritative, including an inconclusive
+    // no-metadata response. Rejections stay retryable for transient failures.
+    else if (result && !result.retryable) {
+      this.misses.set(key, { loadedAt: now });
+    }
     this.options.onChanged?.();
   }
 }

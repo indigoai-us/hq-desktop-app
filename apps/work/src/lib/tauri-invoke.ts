@@ -10,6 +10,14 @@ type TauriWindow = Window & {
 let tauriModulePromise: Promise<typeof import("@tauri-apps/api/core")> | null =
   null;
 
+function unavailableTauriInvoke(command: string, cause: unknown): Error {
+  const error = new Error(`Tauri invoke is unavailable for ${command}`) as Error & {
+    cause?: unknown;
+  };
+  error.cause = cause;
+  return error;
+}
+
 /**
  * Resolve the module API first. `withGlobalTauri` is deliberately not enabled
  * for the desktop host, but the legacy global remains a compatibility fallback.
@@ -25,9 +33,7 @@ export const tauriInvoke: InvokeFn = async (command, args) => {
         : (window as TauriWindow).__TAURI__;
     const invoke = globalTauri?.core?.invoke ?? globalTauri?.tauri?.invoke;
     if (invoke) return invoke(command, args);
-    throw new Error(`Tauri invoke is unavailable for ${command}`, {
-      cause: moduleError,
-    });
+    throw unavailableTauriInvoke(command, moduleError);
   }
   return tauri.invoke(command, args);
 };

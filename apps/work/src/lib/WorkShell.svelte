@@ -33,8 +33,11 @@
     type ConversationRow,
     type BoardTabData,
     type ChannelFileItemModel,
+    type ChannelFilePreview,
     type ChannelStatusModel,
     type ChatSidebarApi,
+    type PackagesEvents,
+    type ReplyThreadScope,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -66,6 +69,7 @@
     subscribeProjectMetaInvalidations,
   } from "./project-meta-cache";
   import {
+    configureHqProApiUrl,
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
@@ -82,7 +86,98 @@
   import { tauriListen } from "./tauri-listen";
   import workPackage from "../../package.json";
 
-  let { data } = $props();
+  type WorkShellHostIdentity = {
+    sub?: string | null;
+    email?: string | null;
+    name?: string | null;
+  };
+
+  type WorkShellProps = {
+    data: { user?: WorkShellHostIdentity | null };
+    runtimeKind?: "desktop" | "web";
+    apiUrl?: string;
+    /** Native hosts replace the browser's cookie-backed hq-pro transport. */
+    fetch?: HqProFetch;
+    /** Native hosts must not navigate a static bundle to SvelteKit sign-in. */
+    onUnauthorized?: () => void;
+    /** Native hosts fetch Vault bytes through their bounded transport. */
+    loadFilePreview?: (
+      item: ChannelFileItemModel,
+      selectedCompanyUid: string | null,
+    ) => Promise<ChannelFilePreview>;
+    /** Mirrors the safe user shape supplied by +layout.server on the web. */
+    hostIdentity?: WorkShellHostIdentity | null;
+    /** Native host-owned storage partition for the authenticated account. */
+    hostTenantAccountId?: string | null;
+    /** Native host-owned boundary for changes to that storage partition. */
+    hostTenantGeneration?: number;
+    /** Desktop hosts can supply their tested native command seam. */
+    invoke?: InvokeFn;
+    /** Desktop hosts can supply their tested native event seam. */
+    listen?: typeof tauriListen;
+    /** Desktop hosts bridge authenticated native wake events onto this bus. */
+    wakes?: ReturnType<typeof createChatWakeBus>;
+    /** Native hosts expose the app version rather than Work's package version. */
+    version?: string;
+    /** Native host update edge forwarded to DesktopApp's Updates pane. */
+    updateWakeSeq?: number;
+    /** Native host app-version refresh used by DesktopApp's Updates pane. */
+    refreshAppVersion?: () => Promise<string>;
+    /** Native package-operation stream for Library → Installed. */
+    packagesEvents?: PackagesEvents | null;
+    /** Native notification wake edge forwarded by a desktop host. */
+    notificationWakeSeq?: number;
+    /** Native hosts can bound first paint without replacing DesktopApp's default. */
+    bootTimeoutMs?: number;
+    /** Native hosts receive DesktopApp's first successful shell-paint signal. */
+    onShellReady?: () => void;
+    /** Native external-browser seam for Settings and rendered links. */
+    onOpenConsole?: (url: string) => Promise<void> | void;
+    onopenurl?: (url: string) => void;
+    /** Native route bridge, attached after DesktopApp listeners are ready. */
+    onembeddednavigationready?: () => void | (() => void);
+    /** Native active-thread bridge for reply realtime optimization. */
+    onactivethreadchange?: (
+      active:
+        | {
+            rootEventId: string;
+            scope: ReplyThreadScope;
+            channelId?: string | null;
+            withPersonUid?: string | null;
+            seenReplyIds: string[];
+          }
+        | null,
+    ) => void;
+  };
+
+  // A non-SvelteKit host can supply its runtime kind and public API URL. The
+  // Work route supplies the latter from SvelteKit's dynamic public env; the
+  // exported shell itself deliberately has no SvelteKit virtual-module edge.
+  let {
+    data,
+    runtimeKind,
+    apiUrl,
+    fetch: hostFetch,
+    onUnauthorized,
+    loadFilePreview: hostLoadFilePreview,
+    hostIdentity,
+    hostTenantAccountId,
+    hostTenantGeneration,
+    invoke: hostInvoke,
+    listen: hostListen,
+    wakes: hostWakes,
+    version: hostVersion,
+    updateWakeSeq,
+    refreshAppVersion,
+    packagesEvents,
+    notificationWakeSeq: hostNotificationWakeSeq,
+    bootTimeoutMs,
+    onShellReady,
+    onOpenConsole: hostOnOpenConsole,
+    onopenurl: hostOpenUrl,
+    onembeddednavigationready,
+    onactivethreadchange,
+  }: WorkShellProps = $props();
 
   type TauriWindow = Window & {
     __TAURI__?: {
@@ -100,27 +195,46 @@
     );
   }
 
-  const adapter: PlatformAdapter = isTauriRuntime()
-    ? createSyncPlatformAdapter({ invoke: tauriInvoke })
+  const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
+  const nativeInvoke = hostInvoke ?? tauriInvoke;
+  const nativeListen = hostListen ?? tauriListen;
+  // The Sync embed supplies a settled desktop identity only after its own
+  // native lifecycle is ready. It remains the authority for auth refreshes
+  // and tenant-generation boundaries; a standalone desktop WorkShell keeps
+  // the default native session lifecycle below.
+  const hostOwnsNativeSession =
+    runtime === "desktop" && hostIdentity !== undefined;
+  configureHqProApiUrl(apiUrl);
+  const resolveHqProApiUrl = () => hqProApiUrl(apiUrl);
+  // The hosted route leaves this undefined, retaining the original singleton
+  // and its single browser token cache. Native hosts must supply their
+  // authenticated command bridge because a static build has no /api routes.
+  const workFetch: HqProFetch = hostFetch ?? hqProFetch;
+  const adapter: PlatformAdapter = runtime === "desktop"
+    ? createSyncPlatformAdapter({ invoke: nativeInvoke })
     : new WebPlatformAdapter({
-        baseUrl: hqProApiUrl(),
-        fetch: hqProFetch,
-        onUnauthorized: redirectToSigninWithCallback,
+        baseUrl: resolveHqProApiUrl(),
+        fetch: workFetch,
+        onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
-  const workFetch: HqProFetch = hqProFetch;
   const attachmentHandlers =
-    adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
+    adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);
-  const wakes = createChatWakeBus();
-  let notificationWakeSeq = $state(0);
+  const wakes = hostWakes ?? createChatWakeBus();
+  let localNotificationWakeSeq = $state(0);
+  const notificationWakeSeq = $derived(
+    hostNotificationWakeSeq ?? localNotificationWakeSeq,
+  );
   let externalLinkError = $state<string | null>(null);
 
   // The Cognito subject owns the web storage partition. The shared shell's
   // person identity is hydrated from caller-scoped whoami below.
-  const hostSelf = toSelfIdentity(data.user ?? null);
+  const suppliedHostIdentity = hostIdentity ?? data.user ?? null;
+  const hostSelf = toSelfIdentity(suppliedHostIdentity);
   const hostAccountId =
-    typeof data.user?.sub === "string" && data.user.sub.trim()
-      ? data.user.sub.trim()
+    typeof suppliedHostIdentity?.sub === "string" &&
+    suppliedHostIdentity.sub.trim()
+      ? suppliedHostIdentity.sub.trim()
       : null;
   let self = $state(hostSelf);
   let tenantAccountId = $state<string | null>(
@@ -129,12 +243,20 @@
   let tenantGeneration = $state(0);
   let tenantHydration = 0;
   let shellEpoch = $state(0);
+  const effectiveTenantAccountId = $derived(
+    hostOwnsNativeSession
+      ? (hostTenantAccountId?.trim() || null)
+      : tenantAccountId,
+  );
+  const effectiveTenantGeneration = $derived(
+    hostOwnsNativeSession ? (hostTenantGeneration ?? 0) : tenantGeneration,
+  );
   const personUid = $derived(self?.uid ?? "");
   let shallow = $state(readShallowCache(personUid));
   const conversationCacheStorage = $derived(
     createTenantStorage(
       typeof window !== "undefined" ? window.localStorage : null,
-      { accountId: tenantAccountId, companyId: "all" },
+      { accountId: effectiveTenantAccountId, companyId: "all" },
     ),
   );
   $effect(() => {
@@ -176,7 +298,12 @@
     load: (row) => {
       const projectId = projectIdFor(row);
       return loadLiveProjectMeta(
-        { ...row, projectId: projectId || row.projectId },
+        {
+          channelId: row.channelId,
+          companyUid: row.companyUid,
+          projectId: projectId || row.projectId,
+          title: row.title,
+        },
         companyLabelFor(row.companyUid),
         { fetch: workFetch },
       );
@@ -199,7 +326,7 @@
     if (adapter.kind !== "desktop") return;
     try {
       const session = nativeTenantFromSession(
-        await tauriInvoke("get_auth_session"),
+        await nativeInvoke("get_auth_session"),
       );
       if (
         !session ||
@@ -284,14 +411,16 @@
   }
 
   onMount(async () => {
-    if (adapter.kind === "desktop") await hydrateNativeTenant();
+    if (adapter.kind === "desktop" && !hostOwnsNativeSession) {
+      await hydrateNativeTenant();
+    }
     await bootstrapTenant(tenantGeneration);
   });
 
   onMount(() => {
-    if (adapter.kind !== "desktop") return;
+    if (adapter.kind !== "desktop" || hostOwnsNativeSession) return;
     let cancelled = false;
-    const unlistenPromise = tauriListen<unknown>(
+    const unlistenPromise = nativeListen<unknown>(
       "auth:session-changed",
       (event) => {
         if (cancelled) return;
@@ -326,7 +455,7 @@
       wakes,
       fetchImpl: hqProFetch,
       onNotifications: () => {
-        notificationWakeSeq += 1;
+        localNotificationWakeSeq += 1;
       },
     });
     if (!mesh) return;
@@ -434,6 +563,7 @@
     },
   );
   const loadFilePreview = (item: ChannelFileItemModel) =>
+    hostLoadFilePreview?.(item, selectedCompanyUid) ??
     loadWebVaultFilePreview(item, selectedCompanyUid, { fetch: workFetch });
   const channelStatusByRow = $derived(
     (row: ConversationRow): ChannelStatusModel | null => {
@@ -478,9 +608,13 @@
   }
 
   async function signOut(): Promise<void> {
+    if (adapter.kind === "desktop" && onUnauthorized) {
+      onUnauthorized();
+      return;
+    }
     await signOutFromShell({
       adapter,
-      invoke: tauriInvoke,
+      invoke: nativeInvoke,
       navigate: (url) => window.location.assign(url),
       onDesktopSignedOut: () => {
         self = null;
@@ -507,7 +641,7 @@
   {#key shellEpoch}
     <DesktopApp
       {adapter}
-      version={displayVersion(`v${workPackage.version}`)}
+      version={hostVersion ?? displayVersion(`v${workPackage.version}`)}
       sidebarApi={liveSidebarApi}
       {notificationsApi}
       {messagesByRow}
@@ -521,23 +655,30 @@
       identities={identitiesFromContacts(shallow.contacts)}
       mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
       coreFixtures={false}
-      onopenurl={openUrl}
+      onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
       {self}
-      {tenantAccountId}
-      {tenantGeneration}
+      tenantAccountId={effectiveTenantAccountId}
+      tenantGeneration={effectiveTenantGeneration}
       {initialRow}
       {initialReplyRootEventId}
       {seedDirectory}
       {notificationWakeSeq}
+      {bootTimeoutMs}
+      {onShellReady}
       {searchRows}
       hydrateLiveMessages={true}
       onlivemessages={cacheLiveMessages}
       onselectrow={rememberSelectedRow}
       settingsProfile={settingsProfileFromSelf(self)}
       onsignout={signOut}
-      onOpenConsole={openUrl}
+      onOpenConsole={hostOnOpenConsole ?? openUrl}
+      {onembeddednavigationready}
+      {packagesEvents}
+      {updateWakeSeq}
+      {refreshAppVersion}
+      {onactivethreadchange}
     />
   {/key}
   {#if externalLinkError}

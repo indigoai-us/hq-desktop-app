@@ -27,7 +27,7 @@ describe('bulletproof recovery wiring', () => {
   });
 
   it('reports shell_ready from the HQ Work shell after first paint', () => {
-    const shell = read('apps/sync/src/desktop-alt/HqWorkDesktopShell.svelte');
+    const shell = read('apps/sync/src/desktop-alt/HqWorkWorkShell.svelte');
     expect(shell).toContain("invokeFn('shell_ready')");
     expect(shell).toContain('onShellReady');
   });

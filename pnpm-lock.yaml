@@ -41,6 +41,9 @@ importers:
       '@hq/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@hq/work':
+        specifier: workspace:*
+        version: link:../work
       '@sentry/svelte':
         specifier: ^10.49.0
         version: 10.62.0(svelte@5.56.4)

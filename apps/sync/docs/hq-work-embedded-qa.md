@@ -33,7 +33,8 @@ native hop):
    `WebPlatformAdapter`).
 3. Presign result `{ results: [{ url, headers }] }` — `headers` must include
    `content-type` (and any `x-amz-*` the signer returned).
-4. `putVaultObject` → `invoke("vault_s3_put", { url, headers, body })`.
+4. WorkShell's `createTauriAttachmentHandlers` →
+   `invoke("vault_s3_put", { url, headers, body })`.
    Rust allowlists HTTPS S3 hosts and forwards only `content-type`,
    `if-match` / `if-none-match`, and `x-amz-*`. No Cognito bearer, no
    `build_client()` HQ headers (those break SigV4). 180s timeout.
@@ -43,7 +44,7 @@ native hop):
 
 `createSyncPlatformAdapter` is `kind: "desktop"`, so DesktopApp uses
 `putAttachmentObject` rather than the web `/api/chat-attachment-upload`
-proxy. `HqWorkDesktopShell` must pass both hops.
+proxy. `HqWorkWorkShell` must pass both hops.
 
 ## Parity checklist
 
@@ -52,7 +53,7 @@ proxy. `HqWorkDesktopShell` must pass both hops.
 | Reactions | `fetchReactions` / `toggleReaction` → `fetch_reactions` / `toggle_reaction` | Pass | US-105 `reactions map onto existing Sync commands`; US-102 wrap/toggle tests |
 | Reply threads | `fetchReplyThread` / `sendReply` → `fetch_thread` / `send_thread_reply`; attachments → `hq_pro_fetch` via `buildSendReplyRequest` | Pass | US-105 `reply threads` + `sendReply with attachments` |
 | Image paste/drop | `ChannelConversation` / `ReplyPanel` `onpaste`/`ondrop` → `uploadFilesForSelectedRow` → vault hop | Pass | US-105 paste/drop source-contract + attachment hop wiring |
-| Attachments (presign PUT + CORS-safe PUT) | `presignVaultPut` + `putVaultObject`/`vault_s3_put`; send extras on channel/DM/reply | Pass | US-105 attachment hop + presign PUT contract; `vault_s3.rs` cargo tests |
+| Attachments (presign PUT + CORS-safe PUT) | `presignVaultPut` + WorkShell `createTauriAttachmentHandlers`/`vault_s3_put`; send extras on channel/DM/reply | Pass | US-105 attachment hop + presign PUT contract; `vault_s3.rs` cargo tests |
 | Attachment preview GET | `presignVaultGet` + `getVaultObject`/`vault_s3_get` | Pass | US-105 `getAttachmentObject={getVaultObject}` + `vault_s3_get` registration |
 | Channel creation | sidebar `createChannel` → `create_channel` / `create_group_dm` | Pass | US-105 `createChannel through the sidebar host` |
 | History | `fetchChannel` / `fetchDmThread` (`fetch_channel` / `fetch_dm_thread`; `since` → hq-pro GET) | Pass | US-105 `history fetchChannel / fetchDmThread` |
@@ -74,7 +75,7 @@ that in this story.
 ## Related
 
 - Adapter: [`sync-adapter.ts`](../../../packages/platform/src/tauri/sync-adapter.ts)
-- Shell: [`HqWorkDesktopShell.svelte`](../src/desktop-alt/HqWorkDesktopShell.svelte)
+- Shell: [`HqWorkWorkShell.svelte`](../src/desktop-alt/HqWorkWorkShell.svelte)
 - Native hop: [`vault-s3-put.ts`](../src/desktop-alt/vault-s3-put.ts),
   [`vault_s3.rs`](../src-tauri/src/commands/vault_s3.rs)
 - Rollout: [hq-work-embedded-rollout.md](./hq-work-embedded-rollout.md)
