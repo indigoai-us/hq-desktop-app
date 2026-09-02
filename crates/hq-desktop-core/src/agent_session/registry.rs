@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use super::types::{
     PermissionMode, Question, SessionEvent, SessionPhase, SessionSpec, SessionTool,
+    TurnOverrides,
 };
 use crate::stdio::SlotCircuit;
 
@@ -444,7 +445,18 @@ impl LiveSession {
                 if !model.is_empty() {
                     self.model = Some(model.clone());
                 }
-                phase_target = Some(SessionPhase::Idle);
+                // A handshake announcement is only ever an END to `Starting`.
+                // It races the operator's first send: Codex answers
+                // `thread/start` before the driver task has recorded its
+                // `Started`, and Claude's `init` lands after every HQ
+                // SessionStart hook has run — either way the user can already
+                // have pressed Enter. Letting it set `Idle` unconditionally
+                // parked a session that was mid-turn at "Idle" until the turn
+                // ended, which is exactly when the composer should be showing
+                // that it is working.
+                if self.phase == SessionPhase::Starting {
+                    phase_target = Some(SessionPhase::Idle);
+                }
             }
             SessionEvent::PermissionRequest {
                 request_id,
@@ -555,6 +567,33 @@ impl LiveSession {
         }
     }
 
+    /// Apply the per-turn model / effort the operator chose on the composer's
+    /// pills. Changing either must never fork the chat, so the values are
+    /// simply carried into the spec — the driver reads them when it builds the
+    /// next turn, and a tool that cannot change them mid-process ignores them.
+    ///
+    /// The overrides are ABSOLUTE, not a patch: `None` is the user choosing
+    /// "Default" / "Auto", which is a real choice and has to be able to clear
+    /// a previous one.
+    pub fn apply_turn_overrides(&mut self, overrides: &TurnOverrides) {
+        self.spec.model = overrides.model.clone();
+        self.spec.effort = overrides.effort.clone();
+        // The strip names the model the session is actually using; leaving the
+        // CLI's first-turn answer there would name the previous one forever.
+        if overrides.model.is_some() {
+            self.model = overrides.model.clone();
+        }
+    }
+
+    /// Change how tool-permission requests are answered from here on.
+    ///
+    /// Session-scoped and immediate: `decide_can_use_tool` reads the spec, so
+    /// this alone is what makes `bypassAll` stop parking prompts. Whether the
+    /// CLI is also told is the driver's business.
+    pub fn set_permission_mode(&mut self, mode: PermissionMode) {
+        self.spec.permission_mode = mode;
+    }
+
     pub fn summary(&self) -> SessionSummary {
         SessionSummary {
             session_id: self.spec.session_id.clone(),
@@ -562,6 +601,7 @@ impl LiveSession {
             phase: self.phase,
             company: self.spec.company.clone(),
             model: self.model.clone(),
+            requested_model: self.spec.model.clone(),
             effort: self.spec.effort.clone(),
             permission_mode: self.spec.permission_mode,
             cwd: self.spec.cwd.clone(),
@@ -607,7 +647,12 @@ pub struct SessionSummary {
     pub phase: SessionPhase,
     pub company: Option<String>,
     pub model: Option<String>,
-    /// The reasoning effort the session was launched with, when one was chosen.
+    /// The model the OPERATOR asked for (the composer's catalog value), which
+    /// is not what `model` reports — that is the id the CLI resolved. Only a
+    /// comparison against this one can tell "the pill moved" from "the CLI
+    /// spelled the same model differently".
+    pub requested_model: Option<String>,
+    /// The reasoning effort the session is currently running with.
     pub effort: Option<String>,
     /// How this session answers tool-permission requests.
     pub permission_mode: PermissionMode,
@@ -882,6 +927,97 @@ mod tests {
     }
 
     // ── phase machine ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_late_started_never_downgrades_a_session_that_is_already_working() {
+        // The race this pins: the operator's first message can be sent before
+        // the driver has announced the handshake. Codex answers `thread/start`
+        // inside the start command and records `Started` from its driver task;
+        // Claude's `init` lands only after every HQ SessionStart hook has run.
+        // Either way the `Started` arrives mid-turn, and treating it as "the
+        // session went idle" left the strip saying Idle — and the status tail
+        // gone — for the 30–50s a first Codex turn takes.
+        let mut s = session("s1");
+        assert_eq!(
+            s.on_user_send(now()),
+            Some(PhaseChange {
+                from: SessionPhase::Starting,
+                to: SessionPhase::Working
+            })
+        );
+
+        let out = s.on_event(started(), now(), now_ms()).expect("recorded");
+        assert_eq!(out.phase_change, None, "Started is not a turn ending");
+        assert_eq!(s.phase, SessionPhase::Working);
+        // It still carries what it announced — only the phase edge is refused.
+        assert_eq!(s.cli_session_id.as_deref(), Some("cli-1"));
+        assert_eq!(s.model.as_deref(), Some("claude-haiku-4-5"));
+
+        // The turn's own ending is what returns the session to Idle.
+        let out = s.on_event(turn_done(), now(), now_ms()).expect("recorded");
+        assert_eq!(
+            out.phase_change,
+            Some(PhaseChange {
+                from: SessionPhase::Working,
+                to: SessionPhase::Idle
+            })
+        );
+    }
+
+    #[test]
+    fn a_started_that_lands_while_a_human_is_needed_leaves_the_prompt_up() {
+        let mut s = session("s1");
+        s.on_user_send(now());
+        s.on_event(permission("req_1", "Write"), now(), now_ms())
+            .expect("recorded");
+        assert_eq!(s.phase, SessionPhase::NeedsYou);
+
+        let out = s.on_event(started(), now(), now_ms()).expect("recorded");
+        assert_eq!(out.phase_change, None);
+        assert_eq!(
+            s.phase,
+            SessionPhase::NeedsYou,
+            "a handshake announcement must not dismiss a parked prompt"
+        );
+    }
+
+    #[test]
+    fn pill_changes_move_the_live_session_rather_than_forking_it() {
+        let mut s = session("s1");
+        s.on_event(started(), now(), now_ms()).expect("recorded");
+        assert_eq!(s.summary().model.as_deref(), Some("claude-haiku-4-5"));
+        assert_eq!(s.summary().requested_model.as_deref(), Some("haiku"));
+
+        s.apply_turn_overrides(&TurnOverrides {
+            model: Some("gpt-5.6-codex".into()),
+            effort: Some("high".into()),
+        });
+        let summary = s.summary();
+        assert_eq!(summary.requested_model.as_deref(), Some("gpt-5.6-codex"));
+        assert_eq!(summary.effort.as_deref(), Some("high"));
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("gpt-5.6-codex"),
+            "the strip names the model the session is now using"
+        );
+        assert_eq!(summary.session_id, "s1", "the same session, not a new one");
+
+        // "Default" / "Auto" is a real choice and must be able to clear one.
+        s.apply_turn_overrides(&TurnOverrides::default());
+        assert_eq!(s.summary().requested_model, None);
+        assert_eq!(s.summary().effort, None);
+    }
+
+    #[test]
+    fn a_permission_mode_change_takes_effect_without_a_restart() {
+        let mut s = session("s1");
+        assert_eq!(decide_can_use_tool(&s, "Write"), AutoDecision::Ask);
+        s.set_permission_mode(PermissionMode::BypassAll);
+        assert_eq!(decide_can_use_tool(&s, "Write"), AutoDecision::Allow);
+        assert_eq!(s.summary().permission_mode, PermissionMode::BypassAll);
+        s.set_permission_mode(PermissionMode::Prompt);
+        assert_eq!(decide_can_use_tool(&s, "Write"), AutoDecision::Ask);
+    }
 
     #[test]
     fn the_phase_machine_runs_start_to_needs_you_to_idle() {

@@ -40,7 +40,9 @@ use hq_desktop_core::agent_session::claude_wire::{
 use hq_desktop_core::agent_session::registry::{
     decide_can_use_tool, AutoDecision, NeedsYou, PhaseChange,
 };
-use hq_desktop_core::agent_session::types::{SessionEvent, SessionSpec, SlashCommand};
+use hq_desktop_core::agent_session::types::{
+    PermissionMode, SessionEvent, SessionSpec, SlashCommand, TurnOverrides,
+};
 use hq_desktop_core::agent_session::ClaudeNormalizer;
 use hq_desktop_core::paths;
 use hq_desktop_core::stdio::child::REAP_TIMEOUT;
@@ -163,6 +165,16 @@ pub enum Outbound {
     /// request, which only the driver knows — so the caller sends the result
     /// and the driver addresses the envelope.
     Reply { request_id: String, result: Value },
+    /// What the NEXT turn should use, from the composer's model / effort
+    /// pills. Codex applies both on `turn/start`; Claude cannot change either
+    /// inside a running `--print` process and drops the instruction, which is
+    /// why the UI tells a Claude operator the choice lands on their next
+    /// session. Never a reason to fork a chat — only a company change is.
+    SetTurnOptions(TurnOverrides),
+    /// The permission pill moved. Codex re-approves under the new policy from
+    /// the next turn on; Claude is told over the control channel instead (see
+    /// `set_permission_mode_request_line`), so its driver has nothing to do.
+    SetPermissionMode(PermissionMode),
     /// Mark the normalizer interrupted, then send the interrupt request. The
     /// two must not be reordered: the `result` that answers an interrupt is
     /// indistinguishable on the wire from a real failure, and only the flag
@@ -321,6 +333,17 @@ pub async fn run_session_loop(
                     &format!("session={session_id} ignoring a Codex-shaped reply to {request_id}"),
                 );
             }
+
+            // A running `claude --print` is pinned to the model and effort it
+            // was launched with. The choice is still recorded in the registry
+            // (it is what the NEXT session starts with) and the composer says
+            // so — dropping it here is the honest half of that.
+            Step::Out(Some(Outbound::SetTurnOptions(_))) => {}
+
+            // Claude's permission mode moves by control request, which the
+            // command surface writes as a `Line`; there is nothing for the
+            // driver to do with the mode itself.
+            Step::Out(Some(Outbound::SetPermissionMode(_))) => {}
 
             Step::Out(Some(Outbound::Interrupt)) => {
                 normalizer.mark_interrupted();

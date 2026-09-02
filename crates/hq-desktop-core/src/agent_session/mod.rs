@@ -31,5 +31,5 @@ pub use registry::{
 };
 pub use types::{
     DoneStatus, PermissionDecision, PermissionMode, Question, QuestionAnswer, QuestionOption,
-    SessionEvent, SessionPhase, SessionSpec, SessionTool, SlashCommand,
+    SessionEvent, SessionPhase, SessionSpec, SessionTool, SlashCommand, TurnOverrides,
 };

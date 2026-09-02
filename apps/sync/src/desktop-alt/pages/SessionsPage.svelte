@@ -36,6 +36,7 @@
     LAST_MODEL_KEY,
     LAST_TOOL_KEY,
     friendlyModelName,
+    modelPillLabel,
     pickModel,
     readRemembered,
     readRememberedTool,
@@ -50,6 +51,7 @@
     type PermissionMode,
     type Preflight,
     type SessionSpec,
+    type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
   import '../../components/sessions/sessions-tokens.css';
@@ -185,11 +187,20 @@
    */
   let pillsBoundTo = $state<string | null>(null);
   /**
-   * Set only when the user CHANGES a pill while a session is live. Comparing
-   * pill values against the live summary is not a substitute: the summary
-   * reports the model the CLI actually resolved (e.g. "claude-opus-4-8") while
-   * the pill holds the catalog value ("default"), so a value comparison reads
-   * every follow-up as "a different session" and forks the chat on each send.
+   * Set only when the user changes the COMPANY pill while a session is live.
+   *
+   * A company is what binds a session's context — its knowledge, its
+   * credentials, its policies — so it is the one pill that cannot be rebound
+   * on a running session, and the only one whose change forks the next send
+   * into a new chat. Model, effort and permission mode all move in place:
+   * Codex takes model and effort per `turn/start`, both CLIs take a
+   * permission-mode change mid-session, and a user who picked a different
+   * thinking mode asked for a different answer, not a different conversation.
+   *
+   * Comparing pill values against the live summary is still not a substitute
+   * for the flag: the summary reports the model the CLI actually resolved
+   * (e.g. "claude-opus-4-8") while the pill holds the catalog value
+   * ("default"), so a value comparison reads every follow-up as a fork.
    */
   let pillsDirty = $state(false);
   $effect(() => {
@@ -200,8 +211,14 @@
     companySeeded = true;
     modelSeeded = true;
     company = live.company ?? null;
-    // The model pill keeps the user's catalog choice; the strip title shows
-    // the model the session actually resolved.
+    permissionMode = live.permissionMode;
+    // The pills describe the session on screen, not the last one started —
+    // otherwise opening an old chat would report a model change the user never
+    // made, and the very first follow-up would send an override for it.
+    // `requestedModel` is the catalog value the operator chose; `model` is the
+    // id the CLI resolved, and the strip is where that one belongs.
+    model = live.requestedModel;
+    effort = live.effort;
   });
   const commands = $derived(
     mergeSlashCommands(probeCommands, liveSessionStore.startedCommands),
@@ -218,7 +235,7 @@
 
   const title = $derived(
     sessionId && summary
-      ? `${summary.company ?? 'No company'} · ${friendlyModel(summary.model)}`
+      ? `${summary.company ?? 'No company'} · ${sessionModelName(summary)}`
       : sessionId
         ? 'Session'
         : 'New session',
@@ -296,9 +313,24 @@
     return parts[parts.length - 1] ?? '';
   }
 
-  /** "claude-fable-5-1[1m]" is not a title. The strip says what a person would. */
-  function friendlyModel(value: string | null): string {
-    return friendlyModelName(value) || 'default model';
+  /**
+   * "claude-fable-5-1[1m]" is not a title. The strip names the session's model
+   * exactly the way the composer's pill does — which for Codex means the
+   * catalog's own display name ("GPT-5.6-Codex"), because its ids differ in
+   * ways the friendly mapper flattens away.
+   *
+   * The catalog is only trusted when it belongs to the session's OWN CLI; a
+   * Claude session read through Codex's model list would be named from a
+   * table it is not in.
+   */
+  function sessionModelName(live: { model: string | null; tool: SessionToolId }): string {
+    if (!live.model) return 'default model';
+    const catalog = catalogTool === live.tool ? models : [];
+    return (
+      modelPillLabel(catalog, live.model, null, live.tool) ||
+      friendlyModelName(live.model) ||
+      'default model'
+    );
   }
 
   function specFrom(resume: string | null = null): SessionSpec {
@@ -317,9 +349,35 @@
   }
 
   /**
-   * The one send path. With no live session (or with pills that describe a
-   * different one) the message STARTS the session it belongs to; otherwise it
-   * joins the conversation already on screen.
+   * The composer's model / effort pills, when they no longer match the live
+   * session — the payload that moves them WITHOUT forking the chat. `null`
+   * when nothing moved, so an ordinary follow-up sends no override at all.
+   */
+  const pendingOverrides = $derived.by((): TurnOverrides | null => {
+    const live = summary;
+    if (!live) return null;
+    // `requestedModel` is what the operator asked for; `model` is what the CLI
+    // resolved, and comparing against that would read every follow-up as a
+    // change.
+    if (model === live.requestedModel && effort === live.effort) return null;
+    return { model, effort };
+  });
+
+  /**
+   * Claude runs one `--print` process per session and cannot be moved off the
+   * model or the effort it was launched with, so its operator is told where
+   * their choice actually lands. Codex takes both per turn, so it needs no
+   * note.
+   */
+  const overridesDeferred = $derived(
+    Boolean(sessionId) && summary?.tool === 'claude' && pendingOverrides !== null,
+  );
+
+  /**
+   * The one send path. With no live session (or with a company pill that
+   * describes a different one) the message STARTS the session it belongs to;
+   * otherwise it joins the conversation already on screen, carrying whatever
+   * the model and effort pills now say.
    */
   async function handleSend(text: string, images: ComposerImage[]) {
     if (sendDisabled) return;
@@ -328,7 +386,7 @@
 
     if (sessionId && !newSessionPending) {
       try {
-        await liveSessionStore.send(text, attachments);
+        await liveSessionStore.send(text, attachments, pendingOverrides);
       } catch (err) {
         actionError = err instanceof Error ? err.message : String(err);
       }
@@ -378,7 +436,14 @@
     }
   }
 
-  /** A pill changed by the user while a session is live forks the next send. */
+  /**
+   * ONLY a company change forks the next send into a new session.
+   *
+   * A company binds the session's knowledge, credentials and policies, so it
+   * cannot be rebound on a running child. Everything else — model, effort,
+   * permission mode, and the tool that is implied by a company-less new chat —
+   * moves in place. Selecting a new thinking mode must not start a new chat.
+   */
   function markPillsDirty(changed: boolean) {
     if (changed && sessionId) pillsDirty = true;
   }
@@ -390,22 +455,34 @@
   }
 
   function chooseModel(value: string | null) {
-    markPillsDirty(value !== model);
     model = value;
     remember(LAST_MODEL_KEY, value);
   }
 
   function chooseEffort(value: string | null) {
-    const next = EFFORT_OPTIONS.some((option) => option.value === value) ? value : null;
-    markPillsDirty(next !== effort);
-    effort = next;
+    effort = EFFORT_OPTIONS.some((option) => option.value === value) ? value : null;
     remember(LAST_EFFORT_KEY, effort);
   }
 
+  /**
+   * The tool cannot change under a running child either — but unlike a
+   * company, a tool change on a live session is a new chat by construction, so
+   * it forks for the same reason.
+   */
   function chooseTool(next: SessionToolId) {
     markPillsDirty(next !== tool);
     tool = next;
     remember(LAST_TOOL_KEY, next);
+  }
+
+  /** The permission pill moves on the LIVE session; it never forks. */
+  function choosePermission(mode: PermissionMode) {
+    const changed = mode !== permissionMode;
+    permissionMode = mode;
+    if (!changed || !sessionId) return;
+    void liveSessionStore.setPermissionMode(mode).catch((err: unknown) => {
+      actionError = err instanceof Error ? err.message : String(err);
+    });
   }
 </script>
 
@@ -483,10 +560,8 @@
       onmodel={chooseModel}
       oneffort={chooseEffort}
       ontool={chooseTool}
-      onpermission={(mode) => {
-        markPillsDirty(mode !== permissionMode);
-        permissionMode = mode;
-      }}
+      {overridesDeferred}
+      onpermission={choosePermission}
     />
   </div>
 </div>

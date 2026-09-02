@@ -10,6 +10,7 @@ import {
   defaultModelHint,
   firstSentence,
   friendlyModelName,
+  modelMenuRows,
   modelPillLabel,
   modelRowLabel,
   pickModel,
@@ -32,6 +33,30 @@ const REAL_CATALOG = [
   { value: 'claude-fable-5-1[1m]', displayName: 'Fable' },
   { value: 'sonnet', displayName: 'Sonnet' },
   { value: 'haiku', displayName: 'Haiku' },
+];
+
+/**
+ * Codex's `model/list` result, as `parse_model_list` hands it to the composer.
+ * Recorded against codex-cli 0.144.1 (see the spike's FINDINGS-codex.md §6):
+ * several distinct models share a version, and only `displayName` tells them
+ * apart — the ids differ in exactly the segment the friendly mapper drops.
+ */
+const CODEX_CATALOG = [
+  {
+    value: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6-Sol',
+    description: 'Balanced reasoning for everyday work.',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low' },
+      { reasoningEffort: 'medium' },
+      { reasoningEffort: 'high' },
+    ],
+    defaultReasoningEffort: 'medium',
+  },
+  { value: 'gpt-5.6-codex', displayName: 'GPT-5.6-Codex' },
+  { value: 'gpt-5.6-codex-mini', displayName: 'GPT-5.6-Codex-Mini' },
+  { value: 'gpt-5.4-sol', displayName: 'GPT-5.4-Sol' },
+  { value: 'gpt-5.4-codex', displayName: 'GPT-5.4-Codex' },
 ];
 
 afterEach(() => {
@@ -265,7 +290,7 @@ describe('the model menu', () => {
   });
 
   it('labels each row from its id, not the CLI’s terse display name', () => {
-    expect(selectableModels(models).map(modelRowLabel)).toEqual([
+    expect(selectableModels(models).map((entry) => modelRowLabel(entry))).toEqual([
       'Opus (1M)',
       'Fable 5.1',
       'Sonnet',
@@ -310,5 +335,98 @@ describe('the tool pill', () => {
     expect(readRememberedTool()).toBe('claude');
     remember(LAST_TOOL_KEY, 'nonsense');
     expect(readRememberedTool()).toBe('claude');
+  });
+});
+
+describe('the Codex model menu names every model, and names it once', () => {
+  const models = readSessionModels(CODEX_CATALOG);
+
+  it('reads Codex ids as distinct models rather than one version', () => {
+    // The bug: `friendlyModelName` drops everything after the version, so five
+    // distinct ids rendered as "GPT 5.6" ×3 and "GPT 5.4" ×2.
+    expect(models.map((entry) => friendlyModelName(entry.value))).toEqual([
+      'GPT 5.6',
+      'GPT 5.6',
+      'GPT 5.6',
+      'GPT 5.4',
+      'GPT 5.4',
+    ]);
+    expect(modelMenuRows(models, 'codex').map((row) => row.label)).toEqual([
+      'GPT-5.6-Sol',
+      'GPT-5.6-Codex',
+      'GPT-5.6-Codex-Mini',
+      'GPT-5.4-Sol',
+      'GPT-5.4-Codex',
+    ]);
+  });
+
+  it('never renders the same words twice', () => {
+    const labels = modelMenuRows(models, 'codex').map((row) => row.label);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('keeps every row addressable by its own id', () => {
+    expect(modelMenuRows(models, 'codex').map((row) => row.value)).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-codex',
+      'gpt-5.6-codex-mini',
+      'gpt-5.4-sol',
+      'gpt-5.4-codex',
+    ]);
+  });
+
+  it('drops a duplicate id rather than offering the same choice twice', () => {
+    const dupes = readSessionModels([
+      { value: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol' },
+      { value: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol (again)' },
+    ]);
+    expect(modelMenuRows(dupes, 'codex')).toHaveLength(1);
+  });
+
+  it('disambiguates two ids that really do share a display name', () => {
+    const colliding = readSessionModels([
+      { value: 'gpt-5.6-sol', displayName: 'GPT-5.6' },
+      { value: 'gpt-5.6-codex-mini', displayName: 'GPT-5.6' },
+    ]);
+    expect(modelMenuRows(colliding, 'codex').map((row) => row.label)).toEqual([
+      'GPT-5.6 (sol)',
+      'GPT-5.6 (codex-mini)',
+    ]);
+  });
+
+  it('falls back to the friendly mapper only when there is no display name', () => {
+    const bare = readSessionModels([{ value: 'gpt-5.6-sol' }]);
+    expect(modelRowLabel(bare[0]!, 'codex')).toBe('GPT 5.6');
+  });
+
+  it('leaves Claude naming models from their ids', () => {
+    const claude = readSessionModels(REAL_CATALOG);
+    expect(modelMenuRows(claude, 'claude').map((row) => row.label)).toEqual([
+      'Opus (1M)',
+      'Fable 5.1',
+      'Sonnet',
+      'Haiku',
+    ]);
+  });
+});
+
+describe('the pill and the strip name a Codex model the way the menu does', () => {
+  const models = readSessionModels(CODEX_CATALOG);
+
+  it('names an explicit Codex choice by its display name', () => {
+    expect(modelPillLabel(models, 'gpt-5.6-codex', null, 'codex')).toBe('GPT-5.6-Codex');
+    // Without the tool the same id collapses to its version — the old bug.
+    expect(modelPillLabel(models, 'gpt-5.6-codex')).toBe('GPT 5.6');
+  });
+
+  it('names the model a live Codex session resolved', () => {
+    expect(modelPillLabel(models, null, 'gpt-5.6-codex-mini', 'codex')).toBe(
+      'GPT-5.6-Codex-Mini',
+    );
+  });
+
+  it('still says something honest for a model the catalog has never heard of', () => {
+    expect(modelPillLabel(models, 'gpt-9-experimental', null, 'codex')).toBe('GPT 9');
+    expect(modelPillLabel([], null, 'gpt-5.6-codex', 'codex')).toBe('GPT 5.6');
   });
 });

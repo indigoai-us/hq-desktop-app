@@ -378,6 +378,23 @@ pub async fn run_session_loop(
                 }
             }
 
+            // The composer's model / effort pills. Codex takes both per turn,
+            // so a change lands on the NEXT `turn/start` — no new thread, no
+            // new chat. A change made mid-turn cannot retroactively re-run the
+            // turn in flight; it applies to the one after it.
+            Step::Out(Some(Outbound::SetTurnOptions(overrides))) => {
+                turns.model = overrides.model.clone();
+                turns.effort = overrides.effort.clone();
+            }
+
+            // The permission pill. The auto-approve half already moved (the
+            // command surface updates the registry, which `decide_can_use_tool`
+            // reads); this is the CLI's own gate, which is a `turn/start`
+            // parameter and therefore also only rebindable per turn.
+            Step::Out(Some(Outbound::SetPermissionMode(mode))) => {
+                turns.approval_policy = policy_for(mode).0;
+            }
+
             Step::Out(Some(Outbound::Interrupt)) => {
                 // Mark BEFORE the request: the turn end that follows is
                 // indistinguishable on the wire from a real failure.
@@ -887,7 +904,7 @@ mod tests {
     use super::*;
     use hq_desktop_core::agent_session::registry::{LiveSession, NeedsYou, PhaseChange};
     use hq_desktop_core::agent_session::types::{
-        DoneStatus, PermissionMode, SessionPhase, SessionTool,
+        DoneStatus, PermissionMode, SessionPhase, SessionTool, TurnOverrides,
     };
     use std::io::Write;
     use tokio::sync::mpsc;
@@ -988,6 +1005,65 @@ emit '{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId"
 emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"completed","error":null}}}'
 
 # stay alive until the client closes stdin, exactly like the real app server
+while IFS= read -r _line; do :; done
+exit 0
+"#;
+
+    /// A fake that reproduces the SHAPE of a real first Codex turn: the
+    /// bookkeeping burst (`thread/started`, `thread/settings/updated`,
+    /// `thread/status/changed`, five `mcpServer/startupStatus/updated`), every
+    /// HQ hook pair, and Codex echoing the user's own message back — all of it
+    /// before a single token of the answer. That is 30–50s on the real CLI and
+    /// it is exactly the window the session used to spend saying "Idle".
+    ///
+    /// It also blocks until a second line arrives, so the test can prove the
+    /// pill overrides ride the `turn/start` that follows.
+    const FAKE_CODEX_SLOW_FIRST_TURN: &str = r#"
+set -u
+emit() { printf '%s\n' "$1"; }
+id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
+take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"; printf '%s' "$line"; }
+
+init=$(take)
+emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"codexHome\":\"/tmp/codex\"}}"
+take > /dev/null
+start=$(take)
+emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-5\"},\"model\":\"gpt-5.6-sol\",\"reasoningEffort\":\"medium\"}}"
+skills=$(take)
+emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$skills"),\"result\":{\"data\":[]}}"
+
+# ── the slow first turn ──────────────────────────────────────────────────────
+turn=$(take)
+emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$turn"),\"result\":{\"turn\":{\"id\":\"tu-5\",\"status\":\"inProgress\"}}}"
+emit '{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-5"}}}'
+for i in 1 2 3 4 5; do
+  emit '{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"server":"hq"}}'
+done
+emit '{"jsonrpc":"2.0","method":"thread/settings/updated","params":{"threadId":"th-5"}}'
+emit '{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"th-5","status":"running"}}'
+emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"inProgress"}}}'
+emit '{"jsonrpc":"2.0","method":"warning","params":{"message":"a warning is not a turn ending"}}'
+for i in 1 2 3 4 5; do
+  emit '{"jsonrpc":"2.0","method":"hook/started","params":{"threadId":"th-5","hook":{"name":"hq"}}}'
+  emit '{"jsonrpc":"2.0","method":"hook/completed","params":{"threadId":"th-5","hook":{"name":"hq"}}}'
+done
+emit '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}}'
+emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}}'
+
+# A marker the test can wait on: everything above produced NO transcript at all,
+# so without it there is nothing to observe but the passage of time.
+emit '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-5","turnId":"tu-5","itemId":"m1","delta":"Hi."}}'
+# Hold the turn open long enough for the test to observe the phase mid-flight;
+# a real first turn spends 30-50s here.
+sleep 1
+emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"agentMessage","id":"m1","text":"Hi.","phase":"final_answer"}}}'
+emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"completed","error":null}}}'
+
+# ── a second turn, after the operator moved the model / effort pills ─────────
+second=$(take)
+emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$second"),\"result\":{\"turn\":{\"id\":\"tu-6\"}}}"
+emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-6"}}}'
+emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-6","status":"completed","error":null}}}'
 while IFS= read -r _line; do :; done
 exit 0
 "#;
@@ -1309,6 +1385,157 @@ exit 0
         assert_eq!(session.phase, SessionPhase::Ended);
         assert!(session.pending.is_empty());
         assert!(!guard.has_channel("sess-cx"));
+    }
+
+    #[tokio::test]
+    async fn a_codex_session_stays_working_from_the_send_until_the_turn_ends() {
+        let h = start_with(PermissionMode::Prompt, FAKE_CODEX_SLOW_FIRST_TURN).await;
+
+        // The handshake announcement lands first, exactly as it does in the
+        // app — which is what made this a race worth pinning.
+        until("the handshake event", || !h.sink.events().is_empty()).await;
+        assert_eq!(
+            h.state.lock().await.registry.get("sess-cx").unwrap().phase,
+            SessionPhase::Idle
+        );
+
+        // Send through the REAL command path, so `on_user_send` runs where it
+        // runs in production rather than being restated here.
+        {
+            let mut guard = h.state.lock().await;
+            super::super::record_and_queue_user_turn(
+                &mut guard,
+                &h.sink,
+                "sess-cx",
+                "hello",
+                user_input("hello", &[]).to_string(),
+                0,
+            )
+            .expect("queue the turn");
+        }
+        assert_eq!(
+            h.state.lock().await.registry.get("sess-cx").unwrap().phase,
+            SessionPhase::Working,
+            "the composer must show work the instant Enter is pressed"
+        );
+
+        // Everything the real CLI streams before it says anything: the thread
+        // bookkeeping, five MCP startup notices, ten HQ hook frames, and Codex
+        // echoing our own message back. None of it is a turn ending.
+        until("the first token", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::TextDelta { .. }))
+        })
+        .await;
+        assert_eq!(
+            h.state.lock().await.registry.get("sess-cx").unwrap().phase,
+            SessionPhase::Working,
+            "phase must not have gone Idle while the model was thinking"
+        );
+        assert_eq!(
+            h.sink.phases(),
+            vec![SessionPhase::Idle, SessionPhase::Working],
+            "no Idle edge between the send and the turn's own ending"
+        );
+        // The bookkeeping produced no transcript at all — only the answer did.
+        assert_eq!(
+            h.sink
+                .events()
+                .iter()
+                .filter(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))
+                .count(),
+            1,
+            "Codex echoing the turn back must not double the prompt"
+        );
+
+        until("the turn to finish", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+        })
+        .await;
+        assert_eq!(
+            h.state.lock().await.registry.get("sess-cx").unwrap().phase,
+            SessionPhase::Idle,
+            "only `turn/completed` returns the session to Idle"
+        );
+        assert_eq!(
+            h.sink.phases(),
+            vec![SessionPhase::Idle, SessionPhase::Working, SessionPhase::Idle],
+            "one working span, with no flicker in the middle of it"
+        );
+
+        // ── the pills move the SAME session ──────────────────────────────────
+        h.tx.send(Outbound::SetTurnOptions(TurnOverrides {
+            model: Some("gpt-5.6-codex".into()),
+            effort: Some("xhigh".into()),
+        }))
+        .expect("send overrides");
+        h.tx.send(Outbound::Line(user_input("again", &[]).to_string()))
+            .expect("send turn");
+
+        until("the second turn/start", || {
+            h.sent().iter().filter(|m| m["method"] == "turn/start").count() == 2
+        })
+        .await;
+        let starts: Vec<Value> = h
+            .sent()
+            .into_iter()
+            .filter(|m| m["method"] == "turn/start")
+            .collect();
+        assert!(
+            starts[0]["params"].get("model").is_none(),
+            "the first turn carried no override: {}",
+            starts[0]
+        );
+        assert_eq!(starts[1]["params"]["threadId"], "th-5", "same thread, not a fork");
+        assert_eq!(starts[1]["params"]["model"], "gpt-5.6-codex");
+        assert_eq!(starts[1]["params"]["effort"], "xhigh");
+
+        h.tx.send(Outbound::End).expect("send end");
+        h.join.await.expect("loop finished");
+    }
+
+    #[tokio::test]
+    async fn a_permission_pill_change_rebinds_the_next_turns_approval_policy() {
+        let h = start_with(PermissionMode::Prompt, FAKE_CODEX_SLOW_FIRST_TURN).await;
+        until("the handshake event", || !h.sink.events().is_empty()).await;
+
+        h.tx.send(Outbound::Line(user_input("hello", &[]).to_string()))
+            .expect("send turn");
+        until("the turn to finish", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+        })
+        .await;
+
+        h.tx.send(Outbound::SetPermissionMode(PermissionMode::BypassAll))
+            .expect("send mode");
+        h.tx.send(Outbound::Line(user_input("again", &[]).to_string()))
+            .expect("send turn");
+
+        until("the second turn/start", || {
+            h.sent().iter().filter(|m| m["method"] == "turn/start").count() == 2
+        })
+        .await;
+        let starts: Vec<Value> = h
+            .sent()
+            .into_iter()
+            .filter(|m| m["method"] == "turn/start")
+            .collect();
+        assert_eq!(starts[0]["params"]["approvalPolicy"], "on-request");
+        assert_eq!(
+            starts[1]["params"]["approvalPolicy"], "never",
+            "the pill moved the live session rather than starting a new one"
+        );
+
+        h.tx.send(Outbound::End).expect("send end");
+        h.join.await.expect("loop finished");
     }
 
     #[tokio::test]

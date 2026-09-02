@@ -97,14 +97,30 @@ export interface QuestionAnswer {
   values: string[];
 }
 
+/**
+ * The composer's model / effort pills, as the NEXT turn should use them
+ * (Rust `TurnOverrides`).
+ *
+ * Absolute, not a patch: `null` is the user choosing the CLI's own default,
+ * which has to be able to clear an earlier choice. Applying these never forks
+ * the chat — only a company change does.
+ */
+export interface TurnOverrides {
+  model: string | null;
+  effort: string | null;
+}
+
 /** One session the app is driving (Rust `SessionSummary`). */
 export interface SessionSummary {
   sessionId: string;
   tool: SessionTool;
   phase: SessionPhase;
   company: string | null;
+  /** The model id the CLI resolved — NOT the catalog value the pill holds. */
   model: string | null;
-  /** The reasoning effort the session was launched with, when one was chosen. */
+  /** The model the operator asked for, which is what a pill compares against. */
+  requestedModel: string | null;
+  /** The reasoning effort the session is currently running with. */
   effort: string | null;
   /** How this session answers tool-permission requests. */
   permissionMode: PermissionMode;
@@ -451,8 +467,13 @@ async function open(sessionId: string): Promise<void> {
   // Subscribe BEFORE replaying: an event emitted between the catch-up and the
   // subscription would otherwise be lost with no seq gap to reveal it.
   await ensureListeners();
-  await replayFrom(sessionId, 0);
-  await refreshList();
+  // The registry snapshot is fetched ALONGSIDE the replay rather than after
+  // it. The first send is immediately followed by a route change that closes
+  // and reopens the session, and the only phase this entry has until the list
+  // lands is whatever the pre-send snapshot said — so every round trip spent
+  // before that correction is a round trip the strip spends naming the wrong
+  // state on a session that is mid-turn.
+  await Promise.all([replayFrom(sessionId, 0), refreshList()]);
 }
 
 /**
@@ -506,7 +527,7 @@ async function startAndSend(
     draftTurns = [];
     foldCache = null;
     revision += 1;
-    await invoke('agent_session_send', { sessionId, text, images });
+    await invoke('agent_session_send', { sessionId, text, images, overrides: null });
     return sessionId;
   } catch (err) {
     // The send never happened, so the bubble would be a lie. Take it back.
@@ -517,12 +538,35 @@ async function startAndSend(
   }
 }
 
-/** Send a user turn (or steer an in-flight one) to the active session. */
-async function send(text: string, images: ImageAttachment[] = []): Promise<void> {
+/**
+ * Send a user turn (or steer an in-flight one) to the active session.
+ *
+ * `overrides` carries the composer's model / effort pills when they have moved
+ * since the session started. They are applied to the SAME session — changing a
+ * model or a thinking effort must never start a new chat.
+ */
+async function send(
+  text: string,
+  images: ImageAttachment[] = [],
+  overrides: TurnOverrides | null = null,
+): Promise<void> {
   const sessionId = activeId;
   if (!sessionId) return;
   recordTurn(sessionId, text);
-  await invoke('agent_session_send', { sessionId, text, images });
+  await invoke('agent_session_send', { sessionId, text, images, overrides });
+  if (overrides) await refreshList();
+}
+
+/**
+ * Move the permission pill on a LIVE session. Claude is told over its control
+ * channel and Codex rebinds its next turn's approval policy; either way the
+ * session keeps running, so this is never a reason to fork the chat.
+ */
+async function setPermissionMode(mode: PermissionMode): Promise<void> {
+  const sessionId = activeId;
+  if (!sessionId) return;
+  await invoke('agent_session_set_permission_mode', { sessionId, mode });
+  await refreshList();
 }
 
 /** Answer a parked permission request on the active session. */
@@ -785,6 +829,7 @@ export const liveSessionStore = {
   start,
   startAndSend,
   send,
+  setPermissionMode,
   respondPermission,
   answerQuestion,
   interrupt,

@@ -18,6 +18,15 @@ use super::types::{
 /// `--permission-prompt-tool stdio` is undocumented (absent from
 /// `claude --help`) but routes `can_use_tool` — and therefore
 /// `AskUserQuestion` — onto the stdio control channel instead of a TTY prompt.
+/// The CLI's own word for a permission mode — the same string `--permission-mode`
+/// takes and the same one `set_permission_mode` expects.
+pub fn permission_mode_arg(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Prompt => "default",
+        PermissionMode::BypassAll => "bypassPermissions",
+    }
+}
+
 pub fn build_args(spec: &SessionSpec) -> Vec<String> {
     let mut args: Vec<String> = [
         "--print",
@@ -40,16 +49,10 @@ pub fn build_args(spec: &SessionSpec) -> Vec<String> {
     .map(|s| (*s).to_owned())
     .collect();
 
-    match spec.permission_mode {
-        PermissionMode::Prompt => {
-            args.push("--permission-mode".into());
-            args.push("default".into());
-        }
-        PermissionMode::BypassAll => {
-            args.push("--permission-mode".into());
-            args.push("bypassPermissions".into());
-            args.push("--dangerously-skip-permissions".into());
-        }
+    args.push("--permission-mode".into());
+    args.push(permission_mode_arg(spec.permission_mode).into());
+    if spec.permission_mode == PermissionMode::BypassAll {
+        args.push("--dangerously-skip-permissions".into());
     }
 
     // A fresh run pins the id we minted; a resume adopts the CLI's own id.
@@ -306,6 +309,29 @@ pub fn interrupt_request_line(request_id: &str) -> String {
         "type": "control_request",
         "request_id": request_id,
         "request": { "subtype": "interrupt" },
+    })
+    .to_string()
+}
+
+/// Client → CLI `set_permission_mode` control request.
+///
+/// The Claude Code control channel accepts a mid-session permission-mode
+/// change (`initialize`, `interrupt`, `set_permission_mode`, `set_model`, …),
+/// so moving the composer's permission pill does NOT have to start a new
+/// session. The mode string is the CLI's own vocabulary, not ours.
+///
+/// This is best-effort on purpose: HQ answers `can_use_tool` itself, so
+/// `bypassAll` already works from the registry alone. A CLI old enough to
+/// refuse the subtype answers with an error `control_response`, which the
+/// driver logs and the user never has to care about.
+pub fn set_permission_mode_request_line(request_id: &str, mode: PermissionMode) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {
+            "subtype": "set_permission_mode",
+            "mode": permission_mode_arg(mode),
+        },
     })
     .to_string()
 }
@@ -1145,6 +1171,38 @@ mod tests {
                 "request_id": "init_1",
                 "request": {"subtype": "initialize"}
             })
+        );
+    }
+
+    #[test]
+    fn a_permission_mode_change_is_a_control_request_not_a_new_session() {
+        // Moving the permission pill must not restart the CLI: the control
+        // channel takes the change mid-session, in the CLI's own vocabulary.
+        assert_eq!(
+            serde_json::from_str::<Value>(&set_permission_mode_request_line(
+                "perm_1",
+                PermissionMode::BypassAll
+            ))
+            .expect("json"),
+            json!({
+                "type": "control_request",
+                "request_id": "perm_1",
+                "request": {"subtype": "set_permission_mode", "mode": "bypassPermissions"}
+            })
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&set_permission_mode_request_line(
+                "perm_2",
+                PermissionMode::Prompt
+            ))
+            .expect("json")["request"]["mode"],
+            "default"
+        );
+        // The same vocabulary the launch flag uses — one spelling, one source.
+        assert_eq!(permission_mode_arg(PermissionMode::Prompt), "default");
+        assert_eq!(
+            permission_mode_arg(PermissionMode::BypassAll),
+            "bypassPermissions"
         );
     }
 

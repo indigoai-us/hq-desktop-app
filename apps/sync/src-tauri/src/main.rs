@@ -673,6 +673,7 @@ fn main() {
             commands::agent_session::agent_session_respond_permission,
             commands::agent_session::agent_session_answer_question,
             commands::agent_session::agent_session_interrupt,
+            commands::agent_session::agent_session_set_permission_mode,
             commands::agent_session::agent_session_end,
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,

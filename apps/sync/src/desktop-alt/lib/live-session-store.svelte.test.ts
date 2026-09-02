@@ -37,6 +37,7 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     phase: 'idle',
     company: 'indigo',
     model: 'opus',
+    requestedModel: null,
     cwd: '/Users/x/HQ',
     startedAt: '2026-01-01T00:00:00.000Z',
     lastActivityAt: '2026-01-01T00:00:00.000Z',
@@ -324,6 +325,7 @@ describe('liveSessionStore decisions', () => {
       sessionId: SESSION,
       text: 'hello',
       images: [],
+      overrides: null,
     });
     expect(invoke).toHaveBeenCalledWith('agent_session_interrupt', { sessionId: SESSION });
   });
@@ -598,7 +600,47 @@ describe('liveSessionStore mirrors the operator\'s own turns', () => {
       sessionId: SESSION,
       text: 'what is this?',
       images: [{ mediaType: 'image/png', base64: 'QUJD' }],
+      overrides: null,
     });
+  });
+
+  it('carries the moved model / effort pills on the SAME session', async () => {
+    // The bug this pins: selecting a new thinking mode started a new chat.
+    // Only a company change forks; model and effort ride the next turn.
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+    invoke.mockClear();
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.send('again', [], { model: 'gpt-5.6-codex', effort: 'high' });
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_send', {
+      sessionId: SESSION,
+      text: 'again',
+      images: [],
+      overrides: { model: 'gpt-5.6-codex', effort: 'high' },
+    });
+    expect(
+      invoke.mock.calls.some(([command]) => command === 'agent_session_start'),
+      'a pill change must never start a session',
+    ).toBe(false);
+  });
+
+  it('moves the permission pill on the live session rather than forking it', async () => {
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+    invoke.mockClear();
+    invoke.mockResolvedValue([]);
+
+    await liveSessionStore.setPermissionMode('bypassAll');
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_set_permission_mode', {
+      sessionId: SESSION,
+      mode: 'bypassAll',
+    });
+    expect(
+      invoke.mock.calls.some(([command]) => command === 'agent_session_start'),
+    ).toBe(false);
   });
 });
 
@@ -638,6 +680,7 @@ describe('liveSessionStore.startAndSend', () => {
       sessionId: 'fresh',
       text: 'hello',
       images: [],
+      overrides: null,
     });
     expect(liveSessionStore.activeSessionId).toBe('fresh');
     expect(bubbleText()).toEqual(['hello']);

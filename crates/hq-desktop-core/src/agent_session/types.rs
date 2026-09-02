@@ -67,6 +67,25 @@ pub struct SessionSpec {
     pub permission_mode: PermissionMode,
 }
 
+/// What the operator's composer pills say the NEXT turn should use.
+///
+/// Absolute, not a patch: a missing field is the user choosing the CLI's own
+/// default ("Default" / "Auto"), which is a real choice and must be able to
+/// clear a previous one. Only Codex can honour these mid-session (`turn/start`
+/// takes `model` and `effort` per turn); Claude's driver drops them, because a
+/// running `claude --print` cannot change either.
+///
+/// Changing a model or an effort NEVER forks the chat — only a company change
+/// does, because a company is what binds the session's context.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnOverrides {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
 /// One slash command offered by the CLI (composer autocomplete).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -496,6 +515,33 @@ mod tests {
             assert_eq!(raw, tag);
             assert_eq!(serde_json::from_value::<SessionPhase>(raw).unwrap(), phase);
         }
+    }
+
+    #[test]
+    fn turn_overrides_round_trip_as_the_camel_case_pills_the_ui_sends() {
+        let overrides = TurnOverrides {
+            model: Some("gpt-5.6-codex".into()),
+            effort: Some("xhigh".into()),
+        };
+        let raw = serde_json::to_value(&overrides).expect("serialize");
+        assert_eq!(raw["model"], "gpt-5.6-codex");
+        assert_eq!(raw["effort"], "xhigh");
+        assert_eq!(
+            serde_json::from_value::<TurnOverrides>(raw).expect("parse"),
+            overrides
+        );
+
+        // "Default" / "Auto" is a real choice, so an absent field and an
+        // explicit null both have to read as "the CLI's own default".
+        assert_eq!(
+            serde_json::from_value::<TurnOverrides>(json!({})).expect("parse"),
+            TurnOverrides::default()
+        );
+        assert_eq!(
+            serde_json::from_value::<TurnOverrides>(json!({"model": null, "effort": null}))
+                .expect("parse"),
+            TurnOverrides::default()
+        );
     }
 
     #[test]
