@@ -37,7 +37,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 
 import { flushSync, mount, unmount } from 'svelte';
 import { failure, ok, type PlatformAdapter } from '@hq/platform';
-import { ChatSidebar, EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
+import { EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
 import {
   bootDesktopAltWindow,
   resolveDesktopAltShell,
@@ -156,6 +156,7 @@ function messagingInvoke(
   calls: MessagingCall[],
   overrides: Partial<Record<string, (args?: Record<string, unknown>) => unknown>> = {},
 ): SyncInvokeFn {
+  const hostInvoke = mockInvoke();
   return async (cmd, args) => {
     calls.push({ cmd, args });
     const override = overrides[cmd];
@@ -206,7 +207,7 @@ function messagingInvoke(
       case 'mark_dm_thread_read':
         return { eventId: 'evt_sent' };
       default:
-        throw new Error(`unexpected messaging command: ${cmd}`);
+        return hostInvoke(cmd, args);
     }
   };
 }
@@ -215,39 +216,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
   host = document.createElement('div');
   host.className = 'desktop-shell chat-shell';
   document.body.appendChild(host);
-  const adapter = createSyncPlatformAdapter({ invoke: invokeFn });
-  component = mount(ChatSidebar, {
+  component = mount(HqWorkWorkShell, {
     target: host,
-    props: {
-      api: createHqWorkSidebarApi(adapter),
-      seedDirectory: [
-        {
-          channelId: 'chn_existing',
-          name: 'existing',
-          scope: 'company',
-          lastActivityAt: '2026-08-31T09:00:00.000Z',
-        },
-      ],
-      isAdmin: true,
-      companies: [
-        {
-          slug: 'indigo',
-          displayName: 'Indigo',
-          kind: 'company',
-          state: 'synced',
-          cloudUid: 'cmp_indigo',
-          bucketName: null,
-          hasLocalFolder: true,
-          localPath: '/tmp/indigo',
-          membershipStatus: 'active',
-          role: 'owner',
-          lastSyncedAt: null,
-          brokenReason: null,
-          invitedBy: null,
-          invitedAt: null,
-        },
-      ],
-    },
+    props: { invokeFn },
   });
 }
 
