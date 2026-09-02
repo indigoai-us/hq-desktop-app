@@ -110,10 +110,15 @@ describe('onboarding step telemetry', () => {
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain(first.sessionId);
   });
 
-  it('does not retain a failed operational event for a later consent action', async () => {
+  it('buffers a pre-auth operational event and flushes it after authentication', async () => {
+    let authenticated = false;
     const telemetry = createOnboardingStepTelemetry({
       storage,
-      emit: async () => Promise.reject(new Error('offline')),
+      newSessionId: () => '44444444-4444-4444-8444-444444444444',
+      emit: async (event) => {
+        if (!authenticated) throw new Error('no token');
+        emitted.push(event);
+      },
     });
     telemetry.record({
       properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
@@ -121,6 +126,19 @@ describe('onboarding step telemetry', () => {
     await Promise.resolve();
 
     expect(emitted).toEqual([]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('welcome-signin');
+    await expect(telemetry.flush()).rejects.toThrow('no token');
+
+    authenticated = true;
+    await telemetry.flush();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '44444444-4444-4444-8444-444444444444',
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).not.toContain('welcome-signin');
   });
 
   it('does not associate operational setup events with an account', async () => {
@@ -142,5 +160,51 @@ describe('onboarding step telemetry', () => {
         properties: { step: 'welcome-signin', action: 'started' },
       },
     ]);
+  });
+
+  it('migrates the compatible v2 session and pending records before creating v3', async () => {
+    storage.setItem(
+      __INTERNALS__.LEGACY_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        sessionId: '55555555-5555-4555-8555-555555555555',
+        firstLaunchRecorded: true,
+        pending: [
+          {
+            sessionId: '55555555-5555-4555-8555-555555555555',
+            occurredAt: '2026-08-31T10:00:00.000Z',
+            properties: {
+              step: 'welcome-signin',
+              action: 'entered',
+              surface: 'desktop_installer',
+              platform: 'macos',
+            },
+          },
+        ],
+      }),
+    );
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => 'should-not-be-used',
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+
+    expect(telemetry.sessionId).toBe('55555555-5555-4555-8555-555555555555');
+    expect(storage.getItem(__INTERNALS__.LEGACY_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+
+    await telemetry.flush();
+    telemetry.recordFirstLaunch();
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '55555555-5555-4555-8555-555555555555',
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(emitted).toHaveLength(1);
   });
 });

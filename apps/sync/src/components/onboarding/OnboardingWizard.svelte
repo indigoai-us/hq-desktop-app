@@ -387,6 +387,13 @@
           if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
         })
         .catch(() => {});
+      // A resumed onboarding session may already have a restored token. Its
+      // operational queue is independent of consent and can resume delivery.
+      void invokeCommand<{ authenticated: boolean }>('get_auth_state')
+        .then((auth) => {
+          if (auth?.authenticated) return onboardingTelemetry.flush();
+        })
+        .catch(() => {});
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -514,6 +521,9 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        // The token is now available, so release operational records that were
+        // buffered solely while the OAuth flow was unauthenticated.
+        void onboardingTelemetry.flush().catch(() => {});
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         // The consent question is asked later as its own step after setup.

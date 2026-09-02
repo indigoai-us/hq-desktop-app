@@ -43,6 +43,11 @@ const wizardSource = readFileSync(
   resolve(process.cwd(), 'src/components/onboarding/OnboardingWizard.svelte'),
   'utf8',
 );
+const syncAppSource = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
+const desktopAltSource = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'),
+  'utf8',
+);
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -324,5 +329,14 @@ describe('US-001 source regressions', () => {
     expect(wizardSource).toContain(
       "let telemetryChoice = $state<'share' | 'decline' | null>(null);",
     );
+  });
+
+  it('keeps manual sync outcomes on the consent-gated telemetry path', () => {
+    for (const source of [syncAppSource, desktopAltSource]) {
+      expect(source).toContain("eventName: 'manual_sync_failed'");
+      expect(source).toContain("'manual_sync_completed'");
+      expect(source).toContain('emitDesktopTelemetry');
+      expect(source).not.toContain('emitDesktopOperationalTelemetry');
+    }
   });
 });

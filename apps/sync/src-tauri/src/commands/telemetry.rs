@@ -945,8 +945,10 @@ async fn emit_desktop_operational_telemetry_with_vault(
     session_id: Option<String>,
     occurred_at: Option<String>,
 ) -> Result<(), String> {
-    if !is_safe_event_name(&event_name) {
-        return Err(format!("invalid telemetry event name: {event_name}"));
+    if !is_operational_desktop_event_name(&event_name) {
+        return Err(format!(
+            "event is not approved operational telemetry: {event_name}"
+        ));
     }
 
     let event = build_desktop_telemetry_event(
@@ -964,6 +966,18 @@ async fn emit_desktop_operational_telemetry_with_vault(
         .post_telemetry_events(&batch)
         .await
         .map_err(|e| e.to_string())
+}
+
+const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
+    "desktop_app_daily_active",
+    "desktop_onboarding_step",
+    "desktop_setup_completed",
+    "oauth_signin_succeeded",
+    "telemetry_preference_changed",
+];
+
+fn is_operational_desktop_event_name(event_name: &str) -> bool {
+    OPERATIONAL_DESKTOP_EVENT_NAMES.contains(&event_name)
 }
 
 /// Emit an installation or delivery-health record. Operational telemetry is
@@ -2424,6 +2438,27 @@ mod codex_telemetry_tests {
                 .any(|request| request.url.path() == "/v1/usage/opt-in"),
             "operational telemetry must not wait for or read the skill consent"
         );
+    }
+
+    #[tokio::test]
+    async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        let server = MockServer::start().await;
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+
+        let result = emit_desktop_operational_telemetry_with_vault(
+            &vault,
+            "manual_sync_completed".to_string(),
+            Some(json!({"filesDownloaded": 3})),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "event is not approved operational telemetry: manual_sync_completed"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

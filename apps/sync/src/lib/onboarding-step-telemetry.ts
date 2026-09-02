@@ -1,5 +1,5 @@
 import {
-  emitDesktopOperationalTelemetry,
+  emitDesktopOperationalTelemetryStrict,
   type DesktopTelemetryProperties,
 } from './desktop-telemetry';
 import type { StageId } from './onboarding-setup';
@@ -7,6 +7,7 @@ import type { WizardStepId } from './onboarding-wizard';
 
 const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
+const LEGACY_STORAGE_KEY = 'hq-sync:onboarding-step-telemetry:v2';
 
 export type OnboardingAction =
   | 'entered'
@@ -50,6 +51,8 @@ interface PersistedTelemetryState {
   version: number;
   sessionId: string;
   firstLaunchRecorded: boolean;
+  /** Operational records waiting only for an authenticated transport. */
+  pending: OnboardingStepEvent[];
 }
 
 export interface OnboardingStepTelemetryOptions {
@@ -63,13 +66,15 @@ export interface OnboardingStepTelemetry {
   readonly sessionId: string;
   record(event: RecordOnboardingStep): void;
   recordFirstLaunch(): void;
+  /** Retry records that could not be delivered before authentication existed. */
+  flush(): Promise<void>;
 }
 
 /**
  * The wizard's installation trace. Setup state is operational telemetry, so
- * each event is dispatched immediately and is deliberately independent of the
- * skill-telemetry preference. The persisted state preserves the install
- * session and suppresses duplicate first-launch events across a wizard remount.
+ * each event is independent of the skill-telemetry preference. Before
+ * authentication exists, records wait in a durable delivery queue; that queue
+ * waits only for transport, never for a consent answer.
  */
 export function createOnboardingStepTelemetry(
   options: OnboardingStepTelemetryOptions = {},
@@ -78,6 +83,7 @@ export function createOnboardingStepTelemetry(
   const now = options.now ?? (() => new Date());
   const emit = options.emit ?? emitOnboardingStep;
   let state = loadState(storage, options.newSessionId ?? createUuid);
+  let flushPromise: Promise<void> | null = null;
 
   function persist(): void {
     if (!storage) return;
@@ -98,8 +104,27 @@ export function createOnboardingStepTelemetry(
         platform: currentPlatform(),
       },
     };
-    void emit(event).catch(() => {});
+    state = { ...state, pending: [...state.pending, event] };
     persist();
+    void flush().catch(() => {});
+  }
+
+  async function flush(): Promise<void> {
+    if (flushPromise) return flushPromise;
+
+    const pendingFlush = (async () => {
+      // Keep each event until its command succeeds. A missing pre-auth token
+      // stops the drain, and a later authenticated retry resumes in order.
+      while (state.pending.length > 0) {
+        await emit(state.pending[0]!);
+        state = { ...state, pending: state.pending.slice(1) };
+        persist();
+      }
+    })();
+    flushPromise = pendingFlush.finally(() => {
+      flushPromise = null;
+    });
+    return flushPromise;
   }
 
   return {
@@ -107,6 +132,7 @@ export function createOnboardingStepTelemetry(
       return state.sessionId;
     },
     record,
+    flush,
     recordFirstLaunch() {
       if (state.firstLaunchRecorded) return;
       state.firstLaunchRecorded = true;
@@ -142,7 +168,7 @@ async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
   }
-  await emitDesktopOperationalTelemetry({
+  await emitDesktopOperationalTelemetryStrict({
     eventName: 'desktop_onboarding_step',
     properties,
     sessionId: event.sessionId,
@@ -155,21 +181,18 @@ function loadState(
   newSessionId: () => string,
 ): PersistedTelemetryState {
   try {
-    const raw = storage?.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<PersistedTelemetryState>;
-      if (
-        parsed.version === SCHEMA_VERSION &&
-        typeof parsed.sessionId === 'string' &&
-        parsed.sessionId.length > 0 &&
-        typeof parsed.firstLaunchRecorded === 'boolean'
-      ) {
-        return {
-          version: SCHEMA_VERSION,
-          sessionId: parsed.sessionId,
-          firstLaunchRecorded: parsed.firstLaunchRecorded,
-        };
+    const current = parseState(storage?.getItem(STORAGE_KEY), SCHEMA_VERSION);
+    if (current) return current;
+
+    const legacy = parseState(storage?.getItem(LEGACY_STORAGE_KEY), 2);
+    if (legacy) {
+      try {
+        storage?.setItem(STORAGE_KEY, JSON.stringify(legacy));
+        storage?.removeItem(LEGACY_STORAGE_KEY);
+      } catch {
+        // Retaining the v2 entry is safe: its compatible data is still in use.
       }
+      return legacy;
     }
   } catch {
     // Corrupt storage starts a fresh local trace.
@@ -178,7 +201,39 @@ function loadState(
     version: SCHEMA_VERSION,
     sessionId: newSessionId(),
     firstLaunchRecorded: false,
+    pending: [],
   };
+}
+
+function parseState(raw: string | null | undefined, version: number): PersistedTelemetryState | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as Partial<PersistedTelemetryState>;
+  if (
+    parsed.version !== version ||
+    typeof parsed.sessionId !== 'string' ||
+    parsed.sessionId.length === 0 ||
+    typeof parsed.firstLaunchRecorded !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    version: SCHEMA_VERSION,
+    sessionId: parsed.sessionId,
+    firstLaunchRecorded: parsed.firstLaunchRecorded,
+    pending: Array.isArray(parsed.pending) ? parsed.pending.filter(isEvent) : [],
+  };
+}
+
+function isEvent(value: unknown): value is OnboardingStepEvent {
+  if (!value || typeof value !== 'object') return false;
+  const event = value as Partial<OnboardingStepEvent>;
+  return (
+    typeof event.sessionId === 'string' &&
+    typeof event.occurredAt === 'string' &&
+    Boolean(event.properties) &&
+    typeof event.properties?.step === 'string' &&
+    typeof event.properties?.action === 'string'
+  );
 }
 
 function safeStorage(): Storage | null {
@@ -206,4 +261,4 @@ function createUuid(): string {
   });
 }
 
-export const __INTERNALS__ = { STORAGE_KEY, SCHEMA_VERSION };
+export const __INTERNALS__ = { STORAGE_KEY, LEGACY_STORAGE_KEY, SCHEMA_VERSION };

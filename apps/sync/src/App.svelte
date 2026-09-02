@@ -50,7 +50,7 @@
   } from './lib/brand';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
-  import { emitDesktopOperationalTelemetry } from './lib/desktop-telemetry';
+  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import {
     handleMeetingDetected,
@@ -910,7 +910,7 @@
       syncErrorMessage = msg;
       syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
-      void emitDesktopOperationalTelemetry({
+      void emitDesktopTelemetry({
         eventName: 'manual_sync_failed',
         properties: { errorKind: 'start_sync', errorCount: 1, surface: 'popover' },
       });
@@ -1641,7 +1641,7 @@
         // (for newly-provisioned companies) or updated last-synced timestamps.
         loadWorkspaces();
         if (shouldEmitManualSync) {
-          void emitDesktopOperationalTelemetry({
+          void emitDesktopTelemetry({
             eventName:
               event.payload.errors.length > 0
                 ? 'manual_sync_failed'
@@ -1677,7 +1677,7 @@
           syncErrorCompany = event.payload.company ?? '';
           await invoke('set_tray_state', { state: 'error' });
           if (shouldEmitManualSync) {
-            void emitDesktopOperationalTelemetry({
+            void emitDesktopTelemetry({
               eventName: 'manual_sync_failed',
               properties: { errorKind: 'sync_error', errorCount: 1, surface: 'popover' },
             });

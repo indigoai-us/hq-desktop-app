@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   emitDesktopOperationalTelemetry,
+  emitDesktopOperationalTelemetryStrict,
   emitDesktopTelemetry,
   emitDesktopTelemetryStrict,
 } from './desktop-telemetry';
@@ -75,5 +76,16 @@ describe('emitDesktopTelemetry', () => {
       eventName: 'desktop_onboarding_step',
       properties: { step: 'setup', action: 'completed' },
     });
+  });
+
+  it('keeps operational delivery failures visible to the authentication queue', async () => {
+    const invokeCommand = vi.fn().mockRejectedValue(new Error('no token'));
+
+    await expect(
+      emitDesktopOperationalTelemetryStrict({
+        eventName: 'desktop_onboarding_step',
+        invokeCommand,
+      }),
+    ).rejects.toThrow('no token');
   });
 });

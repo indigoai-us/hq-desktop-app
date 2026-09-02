@@ -46,7 +46,7 @@
   } from './lib/file-tree';
   import { LatestRequestCoordinator, type LatestRequestCheck } from './lib/latest-request';
   import type { Project } from './lib/projects-model';
-  import { emitDesktopOperationalTelemetry } from '../lib/desktop-telemetry';
+  import { emitDesktopTelemetry } from '../lib/desktop-telemetry';
   import {
     invalidateCompanyResources,
     setActiveCompanyResource,
@@ -942,7 +942,7 @@
       syncState = 'error';
       syncErrorMessage = String(err);
       await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
-      void emitDesktopOperationalTelemetry({
+      void emitDesktopTelemetry({
         eventName: 'manual_sync_failed',
         properties: { errorKind: 'start_sync', errorCount: 1, surface: 'desktop-alt' },
       });
@@ -1543,7 +1543,7 @@
         }
         await refreshRealState();
         if (shouldEmitManualSync) {
-          void emitDesktopOperationalTelemetry({
+          void emitDesktopTelemetry({
             eventName:
               event.payload.errors.length > 0
                 ? 'manual_sync_failed'
@@ -1599,7 +1599,7 @@
         }
         await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
         if (shouldEmitManualSync) {
-          void emitDesktopOperationalTelemetry({
+          void emitDesktopTelemetry({
             eventName: 'manual_sync_failed',
             properties: { errorKind: 'sync_error', errorCount: 1, surface: 'desktop-alt' },
           });

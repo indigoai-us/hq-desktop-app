@@ -452,7 +452,7 @@ describe('onboarding launch handoff', () => {
 });
 
 describe('onboarding connector telemetry', () => {
-  it('delivers each auto-skip terminal outcome once without buffering it', async () => {
+  it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -480,6 +480,15 @@ describe('onboarding connector telemetry', () => {
       )
       .map(([, args]) => (args as { properties: { action: string } }).properties.action);
     expect(connectorActions).toEqual(['entered', 'skipped']);
+
+    await flushUntil(() => {
+      const pending = JSON.parse(
+        localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
+      ) as { pending?: Array<{ properties: { step: string } }> };
+      return !(pending.pending ?? []).some(
+        (event) => event.properties.step === 'connector-import',
+      );
+    });
 
     const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
       pending?: Array<{ properties: { step: string; action: string } }>;
