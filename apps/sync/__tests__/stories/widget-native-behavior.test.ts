@@ -151,6 +151,16 @@ function defaultInvoke(command: string, args?: Record<string, unknown>): unknown
     };
   }
   if (command === 'open_meetings_window') return null;
+  if (command === 'get_settings') {
+    return {
+      widgetEnabled: true,
+      widgetDisplay: null,
+      widgetPlacement: 'bottom-right',
+      widgetAutoHideSeconds: 8,
+      widgetShowNeedsAction: true,
+    };
+  }
+  if (command === 'hide_widget_stack') return null;
   return undefined;
 }
 
@@ -170,9 +180,14 @@ async function waitForNativeReady(): Promise<void> {
         'sync:complete',
         'update:available',
         'update:cleared',
+        'widget:app-active',
         'widget:click-away',
+        'widget:escape',
+        'widget:hide',
         'widget:notification',
         'widget:occlusion',
+        'widget:settings',
+        'widget:show',
       ].sort(),
     );
     expect(tauri.invoke).toHaveBeenCalledWith('widget_ready');
@@ -446,7 +461,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(9);
+    expect([...unlisteners.values()]).toHaveLength(14);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }

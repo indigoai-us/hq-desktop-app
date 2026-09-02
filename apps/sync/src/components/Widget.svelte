@@ -20,6 +20,8 @@
     type WidgetStackItem,
     type WidgetStackState,
     WIDGET_RECENT_STORAGE_KEY,
+    WIDGET_STACK_HIDDEN_STORAGE_KEY,
+    DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
     addItem,
     bannerToStackItem,
     channelToStackItem,
@@ -29,6 +31,10 @@
     dismissRecent,
     WIDGET_ROW_TIMEOUT_MS,
     expireItems,
+    hideStack,
+    isNeedsActionItem,
+    showStack,
+    stackAutoHideDue,
     historyFeedItemToStackItem,
     hoverRows,
     markQueueSeen,
@@ -59,9 +65,24 @@
     queued = 0,
     /** Seed visible rows for happy-dom tests (no Tauri). */
     initialItems = [],
+    /** Test override for the persisted hide flag. */
+    initialHidden = false,
+    /** Test override — when set, skip native app-active events. */
+    appFocused: appFocusedProp = undefined as boolean | undefined,
+    /** Test override for the auto-hide delay (seconds; 0 = never). */
+    autoHideSeconds: autoHideSecondsProp = undefined as number | undefined,
+    /** Test override for whether needs-action rows enter the live overlay. */
+    showNeedsAction: showNeedsActionProp = undefined as boolean | undefined,
+    /** Test override for corner placement (CSS alignment). */
+    placement: placementProp = undefined as string | undefined,
   }: {
     queued?: number;
     initialItems?: WidgetStackItem[];
+    initialHidden?: boolean;
+    appFocused?: boolean;
+    autoHideSeconds?: number;
+    showNeedsAction?: boolean;
+    placement?: string;
   } = $props();
 
   function currentDesktopZoom(): number {
@@ -92,12 +113,15 @@
           recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
           occluded: false,
           held: false,
+          hidden: initialHidden,
         };
       }
       let recent: WidgetStackItem[] = [];
+      let hidden = false;
       try {
         if (typeof localStorage !== 'undefined') {
           recent = deserializeRecent(localStorage.getItem(WIDGET_RECENT_STORAGE_KEY));
+          hidden = localStorage.getItem(WIDGET_STACK_HIDDEN_STORAGE_KEY) === '1';
         }
       } catch {
         // localStorage unavailable / blocked — empty history.
@@ -108,9 +132,58 @@
         recent,
         occluded: false,
         held: false,
+        hidden,
       };
     }),
   );
+
+  let appFocused = $state(untrack(() => appFocusedProp ?? true));
+  let autoHideSeconds = $state(
+    untrack(() => autoHideSecondsProp ?? DEFAULT_WIDGET_AUTO_HIDE_SECONDS),
+  );
+  let showNeedsAction = $state(untrack(() => showNeedsActionProp ?? true));
+  let placement = $state(untrack(() => placementProp ?? 'bottom-right'));
+  let stackShownAt = $state(untrack(() => Date.now()));
+
+  function persistHidden(hidden: boolean): void {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        if (hidden) localStorage.setItem(WIDGET_STACK_HIDDEN_STORAGE_KEY, '1');
+        else localStorage.removeItem(WIDGET_STACK_HIDDEN_STORAGE_KEY);
+      }
+    } catch {
+      // Quota / private mode — no-op.
+    }
+  }
+
+  function markStackShown(): void {
+    stackShownAt = Date.now();
+  }
+
+  function hideVisibleStack(): void {
+    pinned = false;
+    hoverOpen = false;
+    contextMenuOpen = false;
+    desktopNavigationError = null;
+    applyStack(hideStack(stack));
+    persistHidden(true);
+    setPointerHold(false);
+    void setWidgetFocusable(false);
+    if (hasTauri()) {
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('hide_widget_stack').catch((err: unknown) => {
+          console.error('widget: hide_widget_stack failed', err);
+        });
+      });
+    }
+  }
+
+  function revealHiddenStack(): void {
+    if (stack.hidden !== true) return;
+    persistHidden(false);
+    applyStack(showStack(stack));
+    markStackShown();
+  }
 
   // US-015: persist recent history so the popup survives relaunch.
   $effect(() => {
@@ -145,7 +218,11 @@
    * to avoid effect loops — callers compute holdActive after local state updates.
    */
   function applyHold(holdActive: boolean): void {
+    const wasHeld = stack.held === true;
     stack = setHeld(stack, holdActive, Date.now());
+    // Re-arm auto-hide when the pointer/reply hold is released so a hover
+    // cannot cancel the timer forever.
+    if (wasHeld && !holdActive) markStackShown();
   }
 
   function setPointerHold(on: boolean): void {
@@ -463,6 +540,27 @@
     closePinned(true);
   }
 
+  function handleGlobalEscape(): void {
+    if (replyHolds.size > 0) return;
+    if (contextMenuOpen) {
+      closeContextMenu(true);
+      return;
+    }
+    if (pinned || hoverOpen) {
+      closePinned(true);
+      return;
+    }
+    if (stack.visible.length > 0 && stack.hidden !== true) {
+      hideVisibleStack();
+    }
+  }
+
+  function handleGlobalKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    handleGlobalEscape();
+  }
+
   /**
    * Open the two-pane communications window (side pane + detail/reply canvas).
    * Used by context menu + mini-popup footer icons.
@@ -551,12 +649,16 @@
   }
 
   function applyStack(next: WidgetStackState): void {
+    const wasHidden = stack.hidden === true;
     stack = next;
+    if (wasHidden && next.hidden !== true) markStackShown();
+    persistHidden(next.hidden === true);
     syncExpiryTimer();
   }
 
   function syncExpiryTimer(): void {
-    if (stack.visible.length === 0) {
+    const live = stack.hidden !== true && stack.visible.length > 0;
+    if (!live) {
       if (expiryTimer !== undefined) {
         clearInterval(expiryTimer);
         expiryTimer = undefined;
@@ -565,10 +667,25 @@
     }
     if (expiryTimer !== undefined) return;
     expiryTimer = setInterval(() => {
-      const next = expireItems(stack, Date.now());
+      let next = expireItems(stack, Date.now());
+      if (
+        stackAutoHideDue({
+          hidden: next.hidden === true,
+          held: next.held === true,
+          appFocused,
+          autoHideSeconds,
+          elapsedMs: Date.now() - stackShownAt,
+        })
+      ) {
+        next = hideStack(next);
+      }
       if (next !== stack) {
         stack = next;
-        if (stack.visible.length === 0 && expiryTimer !== undefined) {
+        persistHidden(next.hidden === true);
+        if (
+          (stack.hidden === true || stack.visible.length === 0) &&
+          expiryTimer !== undefined
+        ) {
           clearInterval(expiryTimer);
           expiryTimer = undefined;
         }
@@ -892,6 +1009,7 @@
 
     document.addEventListener('pointerdown', handleClickAway, true);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, handleDesktopZoomChange);
 
     if (!hasTauri()) {
@@ -899,6 +1017,7 @@
       return () => {
         document.removeEventListener('pointerdown', handleClickAway, true);
         window.removeEventListener('blur', handleWindowBlur);
+        window.removeEventListener('keydown', handleGlobalKeydown);
         window.removeEventListener(
           DESKTOP_ZOOM_CHANGE_EVENT,
           handleDesktopZoomChange,
@@ -912,6 +1031,11 @@
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
     let unlistenClickAway: (() => void) | undefined;
+    let unlistenHide: (() => void) | undefined;
+    let unlistenShow: (() => void) | undefined;
+    let unlistenEscape: (() => void) | undefined;
+    let unlistenAppActive: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
     let unlistenDm: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
     let unlistenUpdate: (() => void) | undefined;
@@ -941,7 +1065,7 @@
         const now = Date.now();
         const id = `wn-${now}-${++idSeq}`;
         const item = bannerToStackItem(e.payload, now, id);
-        applyStack(addItem(stack, item));
+        applyStack(addItem(stack, item, { showNeedsAction }));
       });
 
       unlistenOcc = await listen<{ visible: boolean }>('widget:occlusion', (e) => {
@@ -960,6 +1084,62 @@
         if (pinned) closePinned();
       });
 
+      unlistenHide = await listen('widget:hide', () => {
+        if (replyHolds.size > 0) return;
+        applyStack(hideStack(stack));
+        persistHidden(true);
+        pinned = false;
+        hoverOpen = false;
+        contextMenuOpen = false;
+        setPointerHold(false);
+        void setWidgetFocusable(false);
+      });
+
+      unlistenShow = await listen('widget:show', () => {
+        revealHiddenStack();
+      });
+
+      unlistenEscape = await listen('widget:escape', () => {
+        handleGlobalEscape();
+      });
+
+      unlistenAppActive = await listen<{ active: boolean }>('widget:app-active', (e) => {
+        if (appFocusedProp !== undefined) return;
+        appFocused = e.payload?.active === true;
+        if (appFocused) markStackShown();
+      });
+
+      unlistenSettings = await listen<{
+        placement?: string;
+        autoHideSeconds?: number;
+        showNeedsAction?: boolean;
+        enabled?: boolean;
+      }>('widget:settings', (e) => {
+        const next = e.payload ?? {};
+        if (placementProp === undefined && typeof next.placement === 'string') {
+          placement = next.placement;
+        }
+        if (
+          autoHideSecondsProp === undefined &&
+          typeof next.autoHideSeconds === 'number'
+        ) {
+          autoHideSeconds = next.autoHideSeconds;
+        }
+        if (
+          showNeedsActionProp === undefined &&
+          typeof next.showNeedsAction === 'boolean'
+        ) {
+          showNeedsAction = next.showNeedsAction;
+          if (!showNeedsAction) {
+            applyStack({
+              ...stack,
+              visible: stack.visible.filter((row) => !isNeedsActionItem(row)),
+              queued: stack.queued.filter((row) => !isNeedsActionItem(row)),
+            });
+          }
+        }
+      });
+
       // Keep recent history in sync with the real notification feed and native
       // pending updater state.
       unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
@@ -975,6 +1155,32 @@
       await invoke('widget_ready').catch((err: unknown) => {
         console.error('widget: widget_ready failed', err);
       });
+      await invoke<{
+        widgetPlacement?: string | null;
+        widgetAutoHideSeconds?: number | null;
+        widgetShowNeedsAction?: boolean | null;
+      }>('get_settings')
+        .then((settings) => {
+          if (!settings) return;
+          if (placementProp === undefined && settings.widgetPlacement) {
+            placement = settings.widgetPlacement;
+          }
+          if (
+            autoHideSecondsProp === undefined &&
+            typeof settings.widgetAutoHideSeconds === 'number'
+          ) {
+            autoHideSeconds = settings.widgetAutoHideSeconds;
+          }
+          if (
+            showNeedsActionProp === undefined &&
+            typeof settings.widgetShowNeedsAction === 'boolean'
+          ) {
+            showNeedsAction = settings.widgetShowNeedsAction;
+          }
+        })
+        .catch((err: unknown) => {
+          console.error('widget: get_settings failed', err);
+        });
       // Seed ~10 openable history rows (US-015 + Lizzie inbox mockup).
       if (!cancelled) await refreshRecentFromHistory();
     })();
@@ -984,6 +1190,7 @@
       historyLoadGeneration += 1;
       document.removeEventListener('pointerdown', handleClickAway, true);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener(
         DESKTOP_ZOOM_CHANGE_EVENT,
         handleDesktopZoomChange,
@@ -991,6 +1198,11 @@
       safeUnlisten(unlistenNotif)();
       safeUnlisten(unlistenOcc)();
       safeUnlisten(unlistenClickAway)();
+      safeUnlisten(unlistenHide)();
+      safeUnlisten(unlistenShow)();
+      safeUnlisten(unlistenEscape)();
+      safeUnlisten(unlistenAppActive)();
+      safeUnlisten(unlistenSettings)();
       safeUnlisten(unlistenDm)();
       safeUnlisten(unlistenSync)();
       safeUnlisten(unlistenUpdate)();
@@ -1226,6 +1438,8 @@
 <div
   class="wg"
   class:surface-open={hoverOpen || contextMenuOpen}
+  class:place-top={placement.startsWith('top') || placement === 'follow-tray'}
+  class:place-left={placement === 'top-left' || placement === 'bottom-left'}
   onpointerdowncapture={handlePointerDownCapture}
   onfocusincapture={handleFocusInCapture}
   onpointerenter={cancelHoverClose}
@@ -1450,7 +1664,7 @@
     </div>
   {/if}
 
-  {#if stack.visible.length > 0 && !hoverOpen}
+  {#if stack.visible.length > 0 && !hoverOpen && stack.hidden !== true}
     <div
       class="stack"
       class:stack-single={stack.visible.length === 1}
@@ -1459,6 +1673,17 @@
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
+      <button
+        class="stack-hide"
+        type="button"
+        data-testid="widget-stack-hide"
+        aria-label="Hide notifications"
+        onclick={hideVisibleStack}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+        </svg>
+      </button>
       {#each stack.visible as item (item.id)}
         <div class="frost" data-kind={item.kind}>
           <NotificationRow
@@ -1573,6 +1798,35 @@
     --glass-filter-soft: blur(16px) saturate(145%) contrast(102%);
   }
 
+  .wg.place-top {
+    justify-content: flex-start;
+  }
+
+  .wg.place-left {
+    align-items: flex-start;
+    padding: 8px 0 2px 8px;
+  }
+
+  .wg.place-top .hover-list,
+  .wg.place-top .stack,
+  .wg.place-top .ctx-menu {
+    margin-bottom: 0;
+    margin-top: 14px;
+    transform-origin: top right;
+  }
+
+  .wg.place-top.place-left .hover-list,
+  .wg.place-top.place-left .stack,
+  .wg.place-top.place-left .ctx-menu {
+    transform-origin: top left;
+  }
+
+  .wg.place-left:not(.place-top) .hover-list,
+  .wg.place-left:not(.place-top) .stack,
+  .wg.place-left:not(.place-top) .ctx-menu {
+    transform-origin: bottom left;
+  }
+
   .wg-toast {
     width: 348px;
     margin-bottom: 8px;
@@ -1588,12 +1842,46 @@
 
   /* Notification stack — column of one-line rows ABOVE the wordmark. */
   .stack {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 0;
     margin-bottom: 10px;
     flex-shrink: 0;
+  }
+
+  .stack-hide {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 2;
+    width: 22px;
+    height: 22px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-button, 6px);
+    background: transparent;
+    color: var(--row-muted);
+    cursor: pointer;
+  }
+
+  .wg.place-left .stack-hide {
+    right: auto;
+    left: 4px;
+  }
+
+  .stack-hide:hover,
+  .stack-hide:focus-visible {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .stack-hide:focus-visible {
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
   }
 
   /* A single transient alert is a real toast card. When two or more alerts are

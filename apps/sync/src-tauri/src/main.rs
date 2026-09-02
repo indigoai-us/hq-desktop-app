@@ -828,6 +828,7 @@ fn main() {
             commands::widget::widget_ready,
             commands::widget::list_displays,
             commands::widget::apply_widget_settings,
+            commands::widget::hide_widget_stack,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,

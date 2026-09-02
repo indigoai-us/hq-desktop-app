@@ -245,4 +245,13 @@ describe('US-006: toggle-off restores native + closes window', () => {
   it('WidgetSettings invokes apply_widget_settings after save', () => {
     expect(settings).toContain("invoke('apply_widget_settings')");
   });
+
+  it('hide_widget_stack shrinks the native window and is registered', () => {
+    expect(widget).toContain('pub fn hide_widget_stack_now');
+    expect(widget).toContain('pub async fn hide_widget_stack');
+    expect(widget).toContain('widget:hide');
+    expect(widget).toContain('set_ignore_cursor_events(false)');
+    const main = readRepoFile('src-tauri/src/main.rs');
+    expect(main).toContain('commands::widget::hide_widget_stack');
+  });
 });

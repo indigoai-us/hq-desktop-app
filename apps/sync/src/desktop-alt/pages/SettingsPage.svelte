@@ -1788,7 +1788,7 @@
     </section>
 
     <section id="widget" class="settings-section">
-      <h2>Widget</h2>
+      <h2>Notifications widget</h2>
       <div class="settings-card">
         <WidgetSettings showLoadError={false} />
       </div>

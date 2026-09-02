@@ -177,6 +177,10 @@ final class TrayController: NSObject {
             title: "Open desktop view", action: #selector(openDesktop), keyEquivalent: "")
         desktop.target = self
         menu.addItem(desktop)
+        let hideNotes = NSMenuItem(
+            title: "Hide notifications", action: #selector(hideNotifications), keyEquivalent: "")
+        hideNotes.target = self
+        menu.addItem(hideNotes)
         let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
         signOut.target = self
         menu.addItem(signOut)
@@ -189,6 +193,19 @@ final class TrayController: NSObject {
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        if let button = item.button {
+            let area = NSTrackingArea(
+                rect: button.bounds,
+                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self,
+                userInfo: nil)
+            button.addTrackingArea(area)
+        }
+    }
+
+    @objc func mouseEntered(_ event: NSEvent) {
+        writeCommand("widget-peek")
     }
 
     func refreshBadge() {
@@ -235,6 +252,7 @@ final class TrayController: NSObject {
     }
 
     @objc func syncNow() { writeCommand("sync") }
+    @objc func hideNotifications() { writeCommand("hide-notifications") }
     @objc func openDesktop() {
         writeCommand("desktop")
         activateHQ()

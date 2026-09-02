@@ -10,6 +10,12 @@ import { automatedAgentJoinNoticeKey } from '../lib/automatedNotices';
 /** Auto-collapse timeout for each visible stack row (ms). */
 export const WIDGET_ROW_TIMEOUT_MS = 8000;
 
+/** Default stack auto-hide delay while HQ is not focused (seconds). */
+export const DEFAULT_WIDGET_AUTO_HIDE_SECONDS = WIDGET_ROW_TIMEOUT_MS / 1000;
+
+/** localStorage key for the user/system “stack hidden” flag (survives focus/wake). */
+export const WIDGET_STACK_HIDDEN_STORAGE_KEY = 'hq-widget-stack-hidden-v1';
+
 /** Max visible rows; overflow drops the oldest visible. */
 export const WIDGET_STACK_MAX = 4;
 
@@ -245,11 +251,72 @@ export interface WidgetStackState {
    * never disappears. Omitted/`undefined` is treated as false.
    */
   held?: boolean;
+  /**
+   * User/system dismissed the live stack overlay. Items stay in `visible` /
+   * `recent` so tray hover can re-surface them, but {@link widgetWindowSize}
+   * returns idle and the panel is not drawn. Omitted/`undefined` is shown.
+   */
+  hidden?: boolean;
 }
 
 /** Empty non-occluded stack. */
 export function emptyWidgetStack(): WidgetStackState {
-  return { visible: [], queued: [], recent: [], occluded: false, held: false };
+  return {
+    visible: [],
+    queued: [],
+    recent: [],
+    occluded: false,
+    held: false,
+    hidden: false,
+  };
+}
+
+/** Collapse the live overlay without dropping items from history. */
+export function hideStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden === true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: true,
+    held: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/** Reveal a previously hidden live overlay. No-op when already shown. */
+export function showStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden !== true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Whether the live stack should auto-hide: HQ is in the background, the
+ * pointer/reply hold is off, and the configured delay has elapsed.
+ * `autoHideSeconds <= 0` means never (persist until explicit dismiss).
+ */
+export function stackAutoHideDue(input: {
+  hidden: boolean;
+  held: boolean;
+  appFocused: boolean;
+  autoHideSeconds: number;
+  elapsedMs: number;
+}): boolean {
+  if (input.hidden || input.held || input.appFocused) return false;
+  if (!Number.isFinite(input.autoHideSeconds) || input.autoHideSeconds <= 0) {
+    return false;
+  }
+  return input.elapsedMs >= input.autoHideSeconds * 1000;
 }
 
 /**
@@ -546,12 +613,28 @@ function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): Widget
   return [entry, ...withoutMatching(recent, item)].slice(0, WIDGET_RECENT_MAX);
 }
 
+export type AddItemOptions = {
+  /**
+   * When false, needs-action rows go to `recent` (Inbox / notifications list)
+   * but never into the live widget overlay. Default true.
+   */
+  showNeedsAction?: boolean;
+};
+
 /**
  * Enqueue or show a notification. When occluded, push onto `queued` (newest
  * first); otherwise prepend to `visible` and trim to {@link WIDGET_STACK_MAX}.
  * Always also prepends into `recent` (unread, deduped, capped).
+ *
+ * A hidden overlay re-surfaces only for a *new* item. Re-delivery of a row
+ * already on the hidden stack (wake/poller) must not pin the window on top
+ * again — that is the stuck-state the hide flag exists to prevent.
  */
-export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetStackState {
+export function addItem(
+  state: WidgetStackState,
+  item: WidgetStackItem,
+  options: AddItemOptions = {},
+): WidgetStackState {
   // The updater may rediscover the same version every six hours. Keep one
   // current update row instead of accumulating random banner ids.
   const isActionableUpdate =
@@ -570,9 +653,23 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
         }
       : state;
   const recent = prependRecent(base.recent, item);
+  const skipLive = options.showNeedsAction === false && isNeedsActionItem(item);
+  if (skipLive) {
+    return {
+      ...base,
+      visible: withoutMatching(base.visible, item),
+      queued: withoutMatching(base.queued, item),
+      recent,
+    };
+  }
+  const isExistingLive =
+    base.visible.some((existing) => sameNotification(existing, item)) ||
+    base.queued.some((existing) => sameNotification(existing, item));
+  const hidden = base.hidden === true && isExistingLive;
   if (base.occluded) {
     return {
       ...base,
+      hidden,
       visible: withoutMatching(base.visible, item),
       queued: [item, ...withoutMatching(base.queued, item)],
       recent,
@@ -580,6 +677,7 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
   }
   return {
     ...base,
+    hidden,
     queued: withoutMatching(base.queued, item),
     visible: [item, ...withoutMatching(base.visible, item)].slice(0, WIDGET_STACK_MAX),
     recent,
@@ -1255,7 +1353,7 @@ export function hoverRows(
  * Backend clamps to 66..380 × 43..720.
  */
 export function widgetWindowSize(state: WidgetStackState): { width: number; height: number } {
-  const n = state.visible.length;
+  const n = state.hidden === true ? 0 : state.visible.length;
   if (n === 0) {
     return { width: WIDGET_IDLE_WIDTH, height: WIDGET_IDLE_HEIGHT };
   }

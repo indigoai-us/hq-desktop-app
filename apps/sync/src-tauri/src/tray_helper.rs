@@ -146,8 +146,11 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 // the main thread — calling them from this poll thread deadlocks
                 // AppKit and wedges the poller after the first click. Marshal it.
                 let app_main = app.clone();
-                let _ =
-                    app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+                let app_hide = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::commands::widget::hide_widget_stack_now(&app_hide);
+                    crate::tray::toggle_popover_window(&app_main);
+                });
             } else {
                 match cmd {
                     "sync" => {
@@ -159,6 +162,12 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     // window gate is re-checked by open_desktop_alt_window).
                     "desktop" => {
                         let _ = app.emit("tray:open-desktop", ());
+                    }
+                    "hide-notifications" => {
+                        crate::commands::widget::hide_widget_stack_now(&app);
+                    }
+                    "widget-peek" => {
+                        crate::commands::widget::show_widget_stack_now(&app);
                     }
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());

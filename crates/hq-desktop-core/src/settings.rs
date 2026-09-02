@@ -72,6 +72,9 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: None,
             widget_display: None,
+            widget_placement: None,
+            widget_auto_hide_seconds: None,
+            widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
         }
@@ -110,6 +113,13 @@ mod tests {
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
             widget_display: prefs.widget_display,
+            widget_placement: Some(
+                prefs
+                    .widget_placement
+                    .unwrap_or_else(|| "bottom-right".to_string()),
+            ),
+            widget_auto_hide_seconds: Some(prefs.widget_auto_hide_seconds.unwrap_or(8)),
+            widget_show_needs_action: Some(prefs.widget_show_needs_action.unwrap_or(true)),
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
@@ -148,6 +158,9 @@ mod tests {
         // Widget defaults ON when absent; display stays None (primary).
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
+        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(8));
+        assert_eq!(result.widget_show_needs_action, Some(true));
         // HQ Work handoff defaults OFF when absent.
         assert_eq!(result.hq_work_handoff, Some(false));
     }
@@ -194,6 +207,9 @@ mod tests {
             claude_projects_dir: Some("/Users/test/.claude-ridge/projects".to_string()),
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
+            widget_placement: Some("top-left".to_string()),
+            widget_auto_hide_seconds: Some(0),
+            widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
         };
@@ -225,6 +241,9 @@ mod tests {
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
         assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
+        assert_eq!(result.widget_placement.as_deref(), Some("top-left"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(0));
+        assert_eq!(result.widget_show_needs_action, Some(false));
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
@@ -258,6 +277,9 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
+            widget_placement: Some("follow-tray".to_string()),
+            widget_auto_hide_seconds: Some(15),
+            widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
         };
@@ -275,10 +297,16 @@ mod tests {
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
+        assert_eq!(parsed.widget_placement.as_deref(), Some("follow-tray"));
+        assert_eq!(parsed.widget_auto_hide_seconds, Some(15));
+        assert_eq!(parsed.widget_show_needs_action, Some(true));
         assert!(
             json.contains("\"releaseChannel\":"),
             "expected camelCase key 'releaseChannel' in serialized output, got: {json}"
         );
+        assert!(json.contains("\"widgetPlacement\":\"follow-tray\""));
+        assert!(json.contains("\"widgetAutoHideSeconds\":15"));
+        assert!(json.contains("\"widgetShowNeedsAction\":true"));
     }
 
     #[test]
@@ -471,6 +499,9 @@ mod tests {
         let result = apply_defaults(empty_prefs());
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
+        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(8));
+        assert_eq!(result.widget_show_needs_action, Some(true));
     }
 
     #[test]
@@ -490,6 +521,9 @@ mod tests {
         let with_values = MenubarPrefs {
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
+            widget_placement: Some("top-right".to_string()),
+            widget_auto_hide_seconds: Some(0),
+            widget_show_needs_action: Some(false),
             ..empty_prefs()
         };
         let json = serde_json::to_string(&with_values).unwrap();
@@ -501,6 +535,9 @@ mod tests {
             json.contains("\"widgetDisplay\":\"DELL U2720Q\""),
             "expected camelCase widgetDisplay, got: {json}"
         );
+        assert!(json.contains("\"widgetPlacement\":\"top-right\""));
+        assert!(json.contains("\"widgetAutoHideSeconds\":0"));
+        assert!(json.contains("\"widgetShowNeedsAction\":false"));
         assert!(!json.contains("widget_enabled"));
         assert!(!json.contains("widget_display"));
 
