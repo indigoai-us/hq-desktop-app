@@ -48,8 +48,8 @@ use hq_desktop_core::sync_outcome::{
     classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
     runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
     termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
-    RunnerExitDisposition, SyncCancelCause, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
-    RUNNER_PHASE_PRE_PROTOCOL,
+    RunnerExitDisposition, SessionEndLatchReading, SyncCancelCause, WindowsTerminatorAttribution,
+    SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
@@ -57,6 +57,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_windows_terminator_attribution,
+};
 #[cfg(test)]
 use crate::commands::process::run_process_impl;
 use crate::commands::process::{
@@ -268,6 +271,19 @@ struct ManualRunnerExitContext {
     /// already attaches this axis (`daemon.rs`); the manual route now reads the
     /// SAME shared hq-desktop-core source so the two capture seams cannot drift.
     runner_unmatched_stderr_shapes: Option<String>,
+    /// The Windows session-end terminator attribution, read from the shared
+    /// [`current_windows_terminator_attribution`] reader — `Some` ONLY on the
+    /// `DBG_TERMINATE_PROCESS`/no-signal shape (the reader self-gates to it), and
+    /// `None` on every other exit and on non-Windows builds. Attribution ONLY: the
+    /// manual route's capture-vs-defer disposition is unchanged; it now emits the
+    /// same `windows_terminator` axis the watcher route already ships so a manual
+    /// runner torn down at Windows session end is nameable (HQ-DESKTOP-5X).
+    windows_terminator: Option<WindowsTerminatorAttribution>,
+    /// The durable session-end latch reading for that same shape (`Unavailable`
+    /// elsewhere) — the manual route's copy of the watcher route's
+    /// `session_end_latch` axis, from the SAME shared reader so the two seams
+    /// cannot drift.
+    session_end_latch: SessionEndLatchReading,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -281,6 +297,8 @@ impl Default for ManualRunnerExitContext {
             stdout_line_count: 0,
             node_major: None,
             runner_unmatched_stderr_shapes: None,
+            windows_terminator: None,
+            session_end_latch: SessionEndLatchReading::Unavailable,
         }
     }
 }
@@ -318,6 +336,10 @@ fn manual_runner_exit_context(
         // tag_value(), mirroring daemon.rs — `None` here so a context that never
         // recorded an unmatched line renders no tag.
         runner_unmatched_stderr_shapes: None,
+        // Set by the caller from the shared session-end readers on the
+        // DBG_TERMINATE_PROCESS/no-signal shape; inert here (HQ-DESKTOP-5X).
+        windows_terminator: None,
+        session_end_latch: SessionEndLatchReading::Unavailable,
     }
 }
 
@@ -438,6 +460,17 @@ fn runner_exit_telemetry_context(
             tags.push(("windows_fault_symbol", symbol.to_string()));
         }
     }
+    // Windows session-end attribution (HQ-DESKTOP-5X): a manual runner torn down at
+    // Windows session end now names its terminator exactly as the watcher route
+    // does. `windows_terminator` is `Some` ONLY on the DBG_TERMINATE_PROCESS/
+    // no-signal shape (the shared reader self-gates to it), so this tag appears on
+    // that shape alone — never on any other exit and never on non-Windows. This is
+    // ATTRIBUTION ONLY: the fingerprint and the capture-vs-defer disposition are
+    // unchanged. The token is `WindowsTerminatorAttribution::class_name()`, the
+    // same fixed vocabulary the watcher route emits.
+    if let Some(attribution) = context.windows_terminator {
+        tags.push(("windows_terminator", attribution.class_name().to_string()));
+    }
     let mut extras = vec![
         (
             "saw_alertable_error",
@@ -527,6 +560,18 @@ fn runner_exit_telemetry_context(
         extras.push((
             "runner_oom_frame_count",
             sentry::protocol::Value::Number(frames.into()),
+        ));
+    }
+    // The durable session-end latch (HQ-DESKTOP-5X): the watcher route's third
+    // evidence dimension, carried on the manual route on the SAME shape only.
+    // Gated on `windows_terminator` being present so it appears exactly when the
+    // terminator does — the DBG_TERMINATE_PROCESS/no-signal shape — and never on
+    // any other exit. A fixed content-safe token (latched/absent/unavailable),
+    // rendered as an extra exactly as the watcher route renders it.
+    if context.windows_terminator.is_some() {
+        extras.push((
+            "session_end_latch",
+            sentry::protocol::Value::String(context.session_end_latch.class_name().to_string()),
         ));
     }
     (tags, extras)
@@ -2718,6 +2763,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         // absence never renders as evidence.
                         exit_context.runner_unmatched_stderr_shapes =
                             runner_unmatched_stderr.tag_value();
+                        // Windows session-end attribution (HQ-DESKTOP-5X): read the
+                        // SAME two shared readers the watcher route reads, so a
+                        // manual runner torn down at Windows session end names its
+                        // terminator + latch. Pure readers — no deferral is created
+                        // here, so the watcher route stays the sole owner of the
+                        // deferral lifecycle. Both self-gate to the
+                        // DBG_TERMINATE_PROCESS/no-signal shape and are inert on
+                        // every other exit and on non-Windows builds.
+                        exit_context.windows_terminator =
+                            current_windows_terminator_attribution(&app_bg, code, signal);
+                        exit_context.session_end_latch =
+                            current_session_end_latch_reading_for_exit(code, signal);
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
