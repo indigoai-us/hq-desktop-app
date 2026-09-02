@@ -473,6 +473,10 @@ fn main() {
                 if window.label() == "main" {
                     handle_window_close_requested_hide(true, || {
                         api.prevent_close();
+                        // Cmd-W is an explicit dismissal, same as Esc or the
+                        // popover's close button — release the onboarding
+                        // blur-hide pin so click-away works from here on.
+                        tray::note_popover_dismissed();
                         let _ = window.hide();
                     });
                 }
@@ -503,6 +507,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
             commands::app::bring_main_window_to_front,
+            commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::ai_tools::detect_ai_tools,
