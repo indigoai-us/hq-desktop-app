@@ -258,6 +258,7 @@ pub async fn agent_session_start(
 /// Send a user turn (or steer an in-flight one).
 #[tauri::command]
 pub async fn agent_session_send(
+    app: tauri::AppHandle,
     session_id: String,
     text: String,
     images: Option<Vec<ImageAttachment>>,
@@ -280,7 +281,9 @@ pub async fn agent_session_send(
     let mut guard = state.lock().await;
     guard.send(&session_id, Outbound::Line(line))?;
     if let Some(session) = guard.registry.get_mut(&session_id) {
-        session.on_user_send(now_iso());
+        if let Some(change) = session.on_user_send(now_iso()) {
+            claude::AppSink(app).emit_phase(&session_id, change);
+        }
     }
     Ok(())
 }
@@ -288,6 +291,7 @@ pub async fn agent_session_send(
 /// Answer a parked tool-permission request.
 #[tauri::command]
 pub async fn agent_session_respond_permission(
+    app: tauri::AppHandle,
     session_id: String,
     request_id: String,
     decision: PermissionDecision,
@@ -323,7 +327,9 @@ pub async fn agent_session_respond_permission(
         Outbound::Line(control_response_line(&request_id, response)),
     )?;
     if let Some(session) = guard.registry.get_mut(&session_id) {
-        session.on_response_sent(&request_id, now_iso());
+        if let Some(change) = session.on_response_sent(&request_id, now_iso()) {
+            claude::AppSink(app).emit_phase(&session_id, change);
+        }
     }
     Ok(())
 }
@@ -331,6 +337,7 @@ pub async fn agent_session_respond_permission(
 /// Answer a parked `AskUserQuestion`.
 #[tauri::command]
 pub async fn agent_session_answer_question(
+    app: tauri::AppHandle,
     session_id: String,
     request_id: String,
     answers: Vec<QuestionAnswer>,
@@ -356,7 +363,9 @@ pub async fn agent_session_answer_question(
         Outbound::Line(control_response_line(&request_id, allow_response(updated))),
     )?;
     if let Some(session) = guard.registry.get_mut(&session_id) {
-        session.on_response_sent(&request_id, now_iso());
+        if let Some(change) = session.on_response_sent(&request_id, now_iso()) {
+            claude::AppSink(app).emit_phase(&session_id, change);
+        }
     }
     Ok(())
 }
