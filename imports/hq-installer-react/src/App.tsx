@@ -114,12 +114,9 @@ function WizardApp() {
   const wizardState = getWizardState();
   const { currentStep } = router;
 
-  // Step-funnel telemetry: one ping per step as it's reached. Anonymous by an
-  // install-session id until sign-in, after which the personUid rides along and
-  // the server stitches the session to the person. Gated on telemetry opt-in;
-  // fully fire-and-forget so it never blocks the wizard.
+  // Step-funnel telemetry is operational: it records each setup step without
+  // waiting for the skill-telemetry preference and never blocks the wizard.
   useEffect(() => {
-    if (!getWizardState().telemetryEnabled) return;
     const step = WIZARD_STEPS.find((s) => s.index === currentStep);
     if (!step) return;
     void pingStep({

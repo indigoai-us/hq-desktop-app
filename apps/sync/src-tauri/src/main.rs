@@ -575,6 +575,7 @@ fn main() {
             commands::telemetry::mark_consent_reprompt_shown,
             commands::telemetry::write_menubar_telemetry_pref,
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
+            commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,

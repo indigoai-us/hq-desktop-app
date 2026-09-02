@@ -868,6 +868,7 @@ fn build_desktop_telemetry_event(
     properties: Option<Value>,
     session_id: Option<String>,
     occurred_at: Option<String>,
+    consent_basis: &str,
 ) -> RawTelemetryEvent {
     let properties = sanitize_desktop_properties(properties);
     RawTelemetryEvent {
@@ -884,7 +885,7 @@ fn build_desktop_telemetry_event(
             .unwrap_or_else(|| {
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             }),
-        consent_basis: "desktop-opt-in".to_string(),
+        consent_basis: consent_basis.to_string(),
         schema_version: 1,
         idempotency_key: None,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
@@ -907,7 +908,13 @@ async fn emit_desktop_telemetry_with_vault(
         return Ok(());
     }
 
-    let event = build_desktop_telemetry_event(event_name, properties, session_id, occurred_at);
+    let event = build_desktop_telemetry_event(
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+        "desktop-opt-in",
+    );
     let batch = TelemetryEventsBatch {
         events: vec![event],
     };
@@ -929,6 +936,70 @@ pub async fn emit_desktop_telemetry_if_opted_in(
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_telemetry_with_vault(&vault, event_name, properties, session_id, occurred_at).await
+}
+
+async fn emit_desktop_operational_telemetry_with_vault(
+    vault: &VaultClient,
+    event_name: String,
+    properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
+) -> Result<(), String> {
+    if !is_operational_desktop_event_name(&event_name) {
+        return Err(format!(
+            "event is not approved operational telemetry: {event_name}"
+        ));
+    }
+
+    let event = build_desktop_telemetry_event(
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+        "no-consent",
+    );
+    let batch = TelemetryEventsBatch {
+        events: vec![event],
+    };
+
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
+    "desktop_app_daily_active",
+    "desktop_onboarding_step",
+    "desktop_setup_completed",
+    "oauth_signin_succeeded",
+    "telemetry_preference_changed",
+];
+
+fn is_operational_desktop_event_name(event_name: &str) -> bool {
+    OPERATIONAL_DESKTOP_EVENT_NAMES.contains(&event_name)
+}
+
+/// Emit an installation or delivery-health record. Operational telemetry is
+/// intentionally independent of the skill-telemetry opt-in.
+#[tauri::command]
+pub async fn emit_desktop_operational_telemetry(
+    event_name: String,
+    properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+    )
+    .await
 }
 
 /// Queue a consent-gated desktop event without delaying the updater path.
@@ -962,7 +1033,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         app: "hq-desktop-app".to_string(),
         source: "desktop".to_string(),
         occurred_at,
-        consent_basis: "desktop-opt-in".to_string(),
+        consent_basis: "no-consent".to_string(),
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
@@ -974,10 +1045,6 @@ async fn emit_daily_active_with_vault(
     vault: &VaultClient,
     utc_day: chrono::NaiveDate,
 ) -> Result<(), String> {
-    if !resolve_telemetry_enabled(vault).await {
-        return Ok(());
-    }
-
     let batch = TelemetryEventsBatch {
         events: vec![build_daily_active_event(utc_day)],
     };
@@ -2236,7 +2303,7 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_desktop_telemetry_opt_in_false_sends_no_events() {
+    async fn test_skill_telemetry_opt_in_false_sends_no_events() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
@@ -2275,13 +2342,8 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_desktop_telemetry_posts_sanitized_envelope() {
+    async fn test_operational_telemetry_posts_when_skill_opt_in_is_declined() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
         Mock::given(method("POST"))
             .and(path("/v1/telemetry/events"))
             .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
@@ -2294,7 +2356,7 @@ mod codex_telemetry_tests {
         std::env::set_var("HOME", home.path());
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let result = emit_desktop_telemetry_with_vault(
+        let result = emit_desktop_operational_telemetry_with_vault(
             &vault,
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -2328,7 +2390,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["eventName"], "desktop_onboarding_step");
         assert_eq!(event["app"], "hq-desktop-app");
         assert_eq!(event["source"], "desktop");
-        assert_eq!(event["consentBasis"], "desktop-opt-in");
+        assert_eq!(event["consentBasis"], "no-consent");
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
@@ -2369,6 +2431,106 @@ mod codex_telemetry_tests {
         assert!(!props.contains_key("email"));
         assert!(!props.contains_key("message"));
         assert!(!props.contains_key("companyUid"));
+
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/usage/opt-in"),
+            "operational telemetry must not wait for or read the skill consent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        let server = MockServer::start().await;
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+
+        let result = emit_desktop_operational_telemetry_with_vault(
+            &vault,
+            "manual_sync_completed".to_string(),
+            Some(json!({"filesDownloaded": 3})),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "event is not approved operational telemetry: manual_sync_completed"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_opted_in_user_emits_operational_and_skill_telemetry() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-both"}"#);
+        write_jsonl(
+            home.path(),
+            "project",
+            "session.jsonl",
+            &[USER_ROW, ASST_ROW],
+        );
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        emit_desktop_operational_telemetry_with_vault(
+            &vault,
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 3})),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let app = make_app_handle();
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/telemetry/events")
+                .count(),
+            1,
+            "the setup record is emitted"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/usage")
+                .count(),
+            1,
+            "the opted-in skill batch is emitted"
+        );
     }
 
     #[test]
@@ -2391,6 +2553,7 @@ mod codex_telemetry_tests {
         assert_eq!(serialized["eventName"], "desktop_app_daily_active");
         assert_eq!(serialized["app"], "hq-desktop-app");
         assert_eq!(serialized["source"], "desktop");
+        assert_eq!(serialized["consentBasis"], "no-consent");
         assert_eq!(
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
@@ -2402,11 +2565,11 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_daily_active_opt_out_sends_no_event() {
+    async fn test_daily_active_posts_when_skill_opt_in_is_declined() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
             .mount(&server)
             .await;
 
@@ -2417,9 +2580,19 @@ mod codex_telemetry_tests {
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
-        assert!(reqs
+        let posts: Vec<_> = reqs
             .iter()
-            .all(|request| request.method != wiremock::http::Method::POST));
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(posts.len(), 1);
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        assert_eq!(body["events"][0]["consentBasis"], "no-consent");
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/usage/opt-in"),
+            "app launch telemetry must not consult skill consent"
+        );
     }
 
     #[tokio::test]
