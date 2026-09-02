@@ -59,6 +59,12 @@ pub struct SessionSpec {
     pub cwd: String,
     /// Active HQ company, when the session is bound to one.
     pub company: Option<String>,
+    /// The company project this session works on — the project DIRECTORY
+    /// slug under `companies/<co>/projects/`, which is also what its channel
+    /// (`p-<slug>`) is named from. Optional and `default` on the wire so an
+    /// older composer that never sends it still parses.
+    #[serde(default)]
+    pub project: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     /// Existing CLI session id to resume; mutually exclusive with a fresh
@@ -619,6 +625,7 @@ mod tests {
             tool: SessionTool::Claude,
             cwd: "/x".into(),
             company: Some("indigo".into()),
+            project: Some("launch".into()),
             model: Some("opus".into()),
             effort: Some("high".into()),
             resume: None,
@@ -627,6 +634,15 @@ mod tests {
         let raw = serde_json::to_value(&spec).expect("serialize");
         assert_eq!(raw["sessionId"], "s1");
         assert_eq!(raw["permissionMode"], "prompt");
+        assert_eq!(raw["project"], "launch");
+        // A composer that predates the project binding omits the key entirely;
+        // that must still parse as "no project" rather than fail the start.
+        let mut legacy = raw.clone();
+        legacy.as_object_mut().expect("object").remove("project");
+        assert_eq!(
+            serde_json::from_value::<SessionSpec>(legacy).expect("parse").project,
+            None
+        );
         assert!(raw["resume"].is_null());
         assert_eq!(
             serde_json::from_value::<SessionSpec>(raw).expect("parse"),

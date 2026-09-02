@@ -361,6 +361,7 @@ mod tests {
             tool: SessionTool::Claude,
             phase,
             company: None,
+            project: None,
             model: None,
             requested_model: None,
             effort: None,

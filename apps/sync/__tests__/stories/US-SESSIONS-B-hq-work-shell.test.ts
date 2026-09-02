@@ -167,7 +167,13 @@ describe('US-SESSIONS-B — the shell registers the destination', () => {
 describe('US-SESSIONS-B — the wrapper adapts the shell contract', () => {
   it('translates the shell param into the page props and back', () => {
     expect(WRAPPER).toContain("import SessionsPage from './SessionsPage.svelte'");
-    expect(WRAPPER).toContain('sessionId={param ?? undefined}');
+    // The param is decoded once: a session id opens that session; a
+    // `new?company=…&project=…` param is a fresh chat pre-bound to a project
+    // (see `sessions-route-param.ts`). Either way the page never sees the
+    // raw param.
+    expect(WRAPPER).toContain('const route = $derived(parseSessionsParam(param))');
+    expect(WRAPPER).toContain("sessionId={route.kind === 'session' ? route.sessionId : undefined}");
+    expect(WRAPPER).not.toContain('sessionId={param');
     expect(WRAPPER).toContain('onopensession={(id) => onnavigate?.(id || null)}');
   });
 

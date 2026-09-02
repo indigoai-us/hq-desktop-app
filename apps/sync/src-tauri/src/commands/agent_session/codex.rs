@@ -954,6 +954,7 @@ mod tests {
             tool: SessionTool::Codex,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
+            project: None,
             model: None,
             effort: None,
             resume: None,

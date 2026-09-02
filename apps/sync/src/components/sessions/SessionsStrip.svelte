@@ -33,6 +33,11 @@
     menuEnabled?: boolean;
     /** One quiet line beside the menu ("Opened in Terminal"); empty hides it. */
     menuResult?: string;
+    /** The session's bound project (directory slug); hidden when unbound. */
+    projectLabel?: string | null;
+    /** The project has a channel, so the pill opens it. */
+    projectLinked?: boolean;
+    onopenproject?: () => void;
     ontoggledrawer?: () => void;
     onnew?: () => void;
     /** Send `/handoff` on the live session. */
@@ -52,6 +57,9 @@
     tool = 'claude',
     menuEnabled = false,
     menuResult = '',
+    projectLabel = null,
+    projectLinked = false,
+    onopenproject,
     ontoggledrawer,
     onnew,
     onhandoff,
@@ -76,7 +84,24 @@
     </svg>
   </button>
 
-  <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
+  <div class="strip-center">
+    <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
+    {#if projectLabel}
+      <!-- The bound project, as a pill beside the company. It opens the
+           project's channel when one exists; otherwise it only informs. -->
+      <button
+        type="button"
+        class="project-pill"
+        data-testid="sessions-project-pill"
+        data-linked={projectLinked ? 'true' : 'false'}
+        disabled={!projectLinked}
+        title={projectLinked ? `Open #p-${projectLabel}` : `Project ${projectLabel}`}
+        onclick={() => onopenproject?.()}
+      >
+        project {projectLabel}
+      </button>
+    {/if}
+  </div>
 
   <div class="strip-right">
     {#if policies}
@@ -159,8 +184,40 @@
     font-family: var(--font-sans);
   }
 
-  .strip-title {
+  .strip-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--v4-space-2);
     flex: 1;
+    min-width: 0;
+  }
+
+  .project-pill {
+    flex: none;
+    height: 18px;
+    padding: 0 7px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill, 999px);
+    background: transparent;
+    color: var(--v4-text-2);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .project-pill:hover:not(:disabled) {
+    color: var(--v4-text-1);
+    background: var(--v4-active-row);
+  }
+
+  .project-pill:disabled {
+    cursor: default;
+  }
+
+  .strip-title {
     min-width: 0;
     margin: 0;
     text-align: center;

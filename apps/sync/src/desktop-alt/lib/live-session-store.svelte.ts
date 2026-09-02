@@ -92,6 +92,12 @@ export interface SessionSpec {
   /** Ignored by the backend (it always runs from the HQ root) but part of the shape. */
   cwd: string;
   company: string | null;
+  /**
+   * The company project the session works on — its directory slug, the key
+   * its channel (`p-<slug>`) is named from. Optional on the wire (Rust
+   * `#[serde(default)]`) so callers that never bind a project send nothing.
+   */
+  project?: string | null;
   model: string | null;
   effort: string | null;
   /** Existing CLI session id to resume. */
@@ -131,6 +137,8 @@ export interface SessionSummary {
   tool: SessionTool;
   phase: SessionPhase;
   company: string | null;
+  /** The bound project (directory slug), from the composer or from HQ creating one mid-session. */
+  project?: string | null;
   /** The model id the CLI resolved — NOT the catalog value the pill holds. */
   model: string | null;
   /** The model the operator asked for, which is what a pill compares against. */
