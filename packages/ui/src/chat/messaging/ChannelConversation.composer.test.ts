@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ChannelConversation from "./ChannelConversation.svelte";
-import { loadDraft, saveDraft } from "./composer-drafts";
+import { loadDraft, saveDraft, type DraftStorage } from "./composer-drafts";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -102,7 +102,7 @@ describe("ChannelConversation composer drafts", () => {
   }
 
   function mountWithDraft(
-    storage: ReturnType<typeof memoryStorage>,
+    storage: DraftStorage,
     onsend?: (body: string) => void | Promise<void>,
   ): HTMLTextAreaElement {
     host = document.createElement("div");
@@ -193,6 +193,112 @@ describe("ChannelConversation composer drafts", () => {
     vi.advanceTimersByTime(1_000);
     await tick();
     expect(loadDraft(storage, "ch:chn_a")).toBe("");
+  });
+
+  it("keeps retrying a draft whose write storage rejected", async () => {
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    let failing = true;
+    const flaky = {
+      getItem: storage.getItem,
+      removeItem: storage.removeItem,
+      setItem: (k: string, v: string) => {
+        if (failing) throw new DOMException("quota", "QuotaExceededError");
+        storage.setItem(k, v);
+      },
+    };
+    const composer = mountWithDraft(flaky);
+    await tick();
+    composer.value = "first";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    vi.advanceTimersByTime(400);
+    expect(loadDraft(storage, "ch:chn_a"), "write rejected").toBe("");
+
+    // Storage recovers; the next change retries and persists.
+    failing = false;
+    composer.value = "first, then more";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    vi.advanceTimersByTime(400);
+    expect(loadDraft(storage, "ch:chn_a")).toBe("first, then more");
+  });
+
+  it("re-attempts a rejected write on unmount instead of treating it as saved", async () => {
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    let failing = true;
+    const flaky = {
+      getItem: storage.getItem,
+      removeItem: storage.removeItem,
+      setItem: (k: string, v: string) => {
+        if (failing) throw new DOMException("quota", "QuotaExceededError");
+        storage.setItem(k, v);
+      },
+    };
+    const composer = mountWithDraft(flaky);
+    await tick();
+    composer.value = "unsaved";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    vi.advanceTimersByTime(400);
+    expect(loadDraft(storage, "ch:chn_a")).toBe("");
+    failing = false;
+    await unmount(component!);
+    component = null;
+    expect(loadDraft(storage, "ch:chn_a"), "destroy flush retried").toBe(
+      "unsaved",
+    );
+  });
+
+  it("restores the text and re-persists the draft when onsend rejects", async () => {
+    const storage = memoryStorage();
+    saveDraft(storage, "ch:chn_a", "please send me");
+    const composer = mountWithDraft(storage, async () => {
+      throw new Error("network down");
+    });
+    await tick();
+    composer.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await tick();
+    // Optimistic clear happened first…
+    expect(composer.value).toBe("");
+    await vi.waitFor(() => {
+      expect(composer.value).toBe("please send me");
+    });
+    expect(loadDraft(storage, "ch:chn_a")).toBe("please send me");
+    expect(host.textContent).toContain("network down");
+  });
+
+  it("does not clobber new typing when a slow send finally fails", async () => {
+    const storage = memoryStorage();
+    let reject!: (e: Error) => void;
+    const composer = mountWithDraft(
+      storage,
+      () =>
+        new Promise<void>((_, rej) => {
+          reject = rej;
+        }),
+    );
+    await tick();
+    composer.value = "first message";
+    composer.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await tick();
+    expect(composer.value).toBe("");
+    composer.value = "second thought";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    reject(new Error("timeout"));
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("timeout");
+    });
+    expect(composer.value).toBe("second thought");
+    await vi.waitFor(() => {
+      expect(loadDraft(storage, "ch:chn_a")).toBe("second thought");
+    });
   });
 
   it("does nothing without a draft key / storage", async () => {

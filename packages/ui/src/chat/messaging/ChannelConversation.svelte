@@ -386,23 +386,29 @@
   let draftPersisted = untrack(() => replyText);
   let draftPending: string | null = null;
 
-  function writeDraft(text: string): void {
-    if (!draftKey || !draftStorage) return;
-    if (text === draftPersisted) return;
+  /**
+   * Write `text` now. `draftPersisted` only advances when storage really took
+   * it, so a quota failure is not mistaken for a saved draft.
+   */
+  function writeDraft(text: string): boolean {
+    if (!draftKey || !draftStorage) return true;
+    if (text === draftPersisted) return true;
+    if (!saveDraft(draftStorage, draftKey, text)) return false;
     draftPersisted = text;
-    saveDraft(draftStorage, draftKey, text);
+    return true;
   }
 
-  /** Write any debounced-but-unsaved text now (unmount / send). */
+  /**
+   * Write any debounced-but-unsaved text now (unmount / send). On a failed
+   * write `draftPending` stays set so the next change (or unmount) retries.
+   */
   function flushDraft(): void {
     if (draftTimer != null) {
       clearTimeout(draftTimer);
       draftTimer = null;
     }
-    if (draftPending != null) {
-      const text = draftPending;
+    if (draftPending != null && writeDraft(draftPending)) {
       draftPending = null;
-      writeDraft(text);
     }
   }
 
@@ -413,8 +419,21 @@
       draftTimer = null;
     }
     draftPending = null;
-    draftPersisted = "";
-    if (draftKey && draftStorage) clearDraft(draftStorage, draftKey);
+    if (!draftKey || !draftStorage || clearDraft(draftStorage, draftKey)) {
+      draftPersisted = "";
+    }
+  }
+
+  /**
+   * Send failed: put the text back (unless the user already typed something
+   * new) and persist it again so it is not lost to a remount either.
+   */
+  function restoreDraftAfterFailedSend(body: string): void {
+    if (!body) return;
+    syncComposerFromDom();
+    if (replyText.trim() !== "") return;
+    replyText = body;
+    writeDraft(body);
   }
 
   $effect(() => {
@@ -852,6 +871,7 @@
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
       attachError = formatComposerSendError(raw, files.length > 0);
+      restoreDraftAfterFailedSend(body);
     }
   }
 

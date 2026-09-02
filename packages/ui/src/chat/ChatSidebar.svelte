@@ -2036,20 +2036,7 @@
                     <span class="chat-search-hit-copy">
                       <span class="chat-search-hit-title">
                         {#if draftIdSet.has(row.id)}
-                          <span
-                            class="chat-row-draft"
-                            data-testid="chat-row-draft"
-                            role="img"
-                            aria-label="Draft"
-                            title="Draft"
-                          >
-                            <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
-                              <path
-                                d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
-                                fill="currentColor"
-                              />
-                            </svg>
-                          </span>
+                          {@render draftMark()}
                         {/if}
                         <span class="chat-row-title">{row.title}</span>
                       </span>
@@ -2224,6 +2211,26 @@
   onconfirm={() => void confirmSignOut()}
 />
 
+<!-- Slack-style pencil shown before a row title when it has an unsent draft.
+     Shared by the rail row and the search-hit row; colour comes from
+     `.chat-row-draft` (`var(--t3)`). -->
+{#snippet draftMark()}
+  <span
+    class="chat-row-draft"
+    data-testid="chat-row-draft"
+    role="img"
+    aria-label="Draft"
+    title="Draft"
+  >
+    <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
+      <path
+        d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
+        fill="currentColor"
+      />
+    </svg>
+  </span>
+{/snippet}
+
 {#snippet conversationRow(row: ConversationRow)}
   <div role="listitem" class="chat-li">
     <button
@@ -2261,21 +2268,8 @@
           {/if}
         </span>
       {/if}
-{#if draftIdSet.has(row.id)}
-        <span
-          class="chat-row-draft"
-          data-testid="chat-row-draft"
-          role="img"
-          aria-label="Draft"
-          title="Draft"
-        >
-          <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
-            <path
-              d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
-              fill="currentColor"
-            />
-          </svg>
-        </span>
+      {#if draftIdSet.has(row.id)}
+        {@render draftMark()}
       {/if}
       <span class="chat-row-title">{row.title}</span>
       {#if row.unreadCount != null && row.unreadCount > 0}
