@@ -7,10 +7,12 @@
 //!
 //! # What is deliberately dropped
 //!
-//! Codex is a chattier protocol than Claude's `stream-json`. `hook/*`,
+//! Codex is a chattier protocol than Claude's `stream-json`. `hook/started`,
 //! `mcpServer/*`, `thread/settings/*`, `thread/status/*`, `account/*`,
 //! `remoteControl/*`, `warning`, and `thread/started` are bookkeeping with no
-//! transcript meaning, and `item/* userMessage` is Codex echoing back the turn
+//! transcript meaning (a `hook/completed` whose run carries text entries is
+//! the one hook frame that becomes a [`SessionEvent::HookNotice`] — HQ's
+//! policy context rides there), and `item/* userMessage` is Codex echoing back the turn
 //! we just sent — which the registry already recorded as a
 //! [`SessionEvent::UserMessage`] at send time. Emitting it again would double
 //! every prompt in the transcript.
@@ -24,7 +26,7 @@ use serde_json::{json, Map, Value};
 use super::codex_wire::{
     command_text, parse_approval_request, parse_user_input_request,
 };
-use super::types::{DoneStatus, SessionEvent};
+use super::types::{cap_hook_text, DoneStatus, SessionEvent};
 
 /// Which half of an item's lifecycle a frame is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +112,8 @@ impl CodexNormalizer {
             }
 
             "thread/tokenUsage/updated" => usage_event(&params).into_iter().collect(),
+
+            "hook/completed" => hook_notice(&params).into_iter().collect(),
 
             "turn/completed" => vec![self.turn_done(&params)],
             "turn/failed" => {
@@ -224,6 +228,38 @@ fn turn_error(params: &Value) -> Option<String> {
         error.to_string()
     } else {
         message
+    })
+}
+
+/// `hook/completed` → the text the hook run handed the model, if any.
+///
+/// The recorded shape is `params.run = {id, eventName, status,
+/// statusMessage, …, entries: [{kind: "context" | "warning", text}]}`. HQ's
+/// hooks put their whole injection (local context, policy reminders, the
+/// checkpoint gate) in those entries; a run with none — every PreToolUse and
+/// PostToolUse hook in the recordings — said nothing and produces nothing.
+fn hook_notice(params: &Value) -> Option<SessionEvent> {
+    let run = params.get("run")?;
+    let text = run
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("text").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        return None;
+    }
+    Some(SessionEvent::HookNotice {
+        hook_event: str_field(run, &["eventName", "event_name"]),
+        hook_name: str_field(run, &["id"]),
+        text: cap_hook_text(&text),
     })
 }
 
@@ -455,6 +491,33 @@ mod tests {
         .is_empty());
         // A response to one of OUR requests is the driver's business.
         assert!(normalize(r#"{"id":3,"result":{"turn":{"id":"tu"}}}"#).is_empty());
+    }
+
+    // Verbatim from cx1.codex.jsonl (entry text shortened after the first
+    // sentence; nothing else altered).
+    const HOOK_COMPLETED_WITH_CONTEXT: &str = r#"{"method":"hook/completed","params":{"threadId":"01a06218-e436-7963-827b-6103963b4320","turnId":"01a06218-f3a3-7f51-992d-618a3c6b3c6b","run":{"id":"user-prompt-submit:4:/Users/jacobposel/Documents/HQ/.codex/config.toml","eventName":"userPromptSubmit","handlerType":"command","executionMode":"sync","scope":"turn","sourcePath":"/Users/jacobposel/Documents/HQ/.codex/config.toml","source":"project","displayOrder":4,"status":"completed","statusMessage":"Routing HQ prompt","startedAt":1788352221,"completedAt":1788352225,"durationMs":3553,"entries":[{"kind":"context","text":"<auto-session-project>\nAUTO SESSION PROJECT ACTIVE\n</auto-session-project>"},{"kind":"warning","text":"  "},{"kind":"context","text":"<policy-reminder>\n> Policy `hq-git-discipline` applies here: anchor every git mutation.\n</policy-reminder>"}]}}}"#;
+
+    // Verbatim from cx1.codex.jsonl: a PreToolUse run with no entries.
+    const HOOK_COMPLETED_EMPTY: &str = r#"{"method":"hook/completed","params":{"threadId":"01a06218-e436-7963-827b-6103963b4320","turnId":"01a06218-f3a3-7f51-992d-618a3c6b3c6b","run":{"id":"pre-tool-use:0:/Users/jacobposel/Documents/HQ/.codex/config.toml:exec-ab8b7fc6-21e7-484f-9dd3-74eabcc60d56","eventName":"preToolUse","handlerType":"command","executionMode":"sync","scope":"turn","sourcePath":"/Users/jacobposel/Documents/HQ/.codex/config.toml","source":"project","displayOrder":0,"status":"completed","statusMessage":"Checking HQ safety rails","startedAt":1788352227,"completedAt":1788352231,"durationMs":4131,"entries":[]}}}"#;
+
+    #[test]
+    fn a_hook_run_with_text_entries_is_a_hook_notice_and_one_without_is_silent() {
+        assert_eq!(
+            normalize(HOOK_COMPLETED_WITH_CONTEXT),
+            vec![SessionEvent::HookNotice {
+                hook_event: "userPromptSubmit".into(),
+                hook_name: "user-prompt-submit:4:/Users/jacobposel/Documents/HQ/.codex/config.toml"
+                    .into(),
+                // Blank entries drop out; the rest join on a blank line.
+                text: "<auto-session-project>\nAUTO SESSION PROJECT ACTIVE\n</auto-session-project>\n\n<policy-reminder>\n> Policy `hq-git-discipline` applies here: anchor every git mutation.\n</policy-reminder>".into(),
+            }]
+        );
+        assert!(normalize(HOOK_COMPLETED_EMPTY).is_empty());
+        // `hook/started` never carries entries and stays bookkeeping.
+        assert!(normalize(
+            &HOOK_COMPLETED_WITH_CONTEXT.replace("hook/completed", "hook/started")
+        )
+        .is_empty());
     }
 
     #[test]

@@ -35,6 +35,16 @@ pub const SYSTEM_HOOK_STARTED: &str = r#"{"type":"system","subtype":"hook_starte
 /// RECORDED (`allow`).
 pub const SYSTEM_HOOK_RESPONSE: &str = r#"{"type":"system","subtype":"hook_response","hook_id":"6a344346-fd9e-43ca-ac90-a7e7682799fa","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"","stdout":"","stderr":"","exit_code":0,"outcome":"success","uuid":"333bb103-682b-4da1-9b32-b07f41a5e133","session_id":"c34ee513-e375-415f-ae7b-1fb9a71b5953"}"#;
 
+/// RECORDED (`allow2`). A SessionStart hook that wrote context for the model
+/// (the journal index) — the shape every HQ hook injection arrives in:
+/// `output` is stdout followed by stderr.
+pub const SYSTEM_HOOK_RESPONSE_JOURNAL: &str = r#"{"type":"system","subtype":"hook_response","hook_id":"1fe097a5-deda-47b6-834a-c4b7365f147f","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"<journal-index>\n## Today's session journal (2026-09-02)\n# Session journal — 2026-09-02\n\n- `001` 00:03Z — Checkpoint sibling maintenance\n- `002` 00:47Z — Marketing agent factory OAuth and pack seam\n\nLoad specific entries via:  /journal --read <NNN>\nFull spec:  core/knowledge/public/hq-core/journal-spec.md\n</journal-index>\n","stdout":"<journal-index>\n## Today's session journal (2026-09-02)\n# Session journal — 2026-09-02\n\n- `001` 00:03Z — Checkpoint sibling maintenance\n- `002` 00:47Z — Marketing agent factory OAuth and pack seam\n\nLoad specific entries via:  /journal --read <NNN>\nFull spec:  core/knowledge/public/hq-core/journal-spec.md\n</journal-index>\n","stderr":"","exit_code":0,"outcome":"success","uuid":"900cfa80-d75b-4518-b591-40d1e17643c6","session_id":"bda49ac8-be7a-402e-aa29-530eb37cad06"}"#;
+
+/// RECORDED (`allow2`, replacement char elided). A clean-exit hook whose only
+/// output was an awk warning on stderr: `output` mirrors the stderr, stdout
+/// is empty, and the model was told nothing.
+pub const SYSTEM_HOOK_RESPONSE_STDERR_ONLY: &str = r#"{"type":"system","subtype":"hook_response","hook_id":"5c7183ed-a7cc-4d25-84d7-1d9080d487fd","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"awk: towc: multibyte conversion failure on: '...'\n\n input record number 101, file /Users/jacobposel/Documents/HQ/personal/policies/_digest.md\n source line number 81\n","stdout":"","stderr":"awk: towc: multibyte conversion failure on: '...'\n\n input record number 101, file /Users/jacobposel/Documents/HQ/personal/policies/_digest.md\n source line number 81\n","exit_code":0,"outcome":"success","uuid":"96316648-2e26-4a8a-a61e-5884e4902576","session_id":"bda49ac8-be7a-402e-aa29-530eb37cad06"}"#;
+
 /// RECORDED (`allow`, hook stdout/stderr shortened).
 pub const SYSTEM_HOOK_PROGRESS: &str = r#"{"type":"system","subtype":"hook_progress","hook_id":"7653ab0c-1ee0-40c8-b804-d319d6492704","hook_name":"SessionStart:startup","hook_event":"SessionStart","stdout":"","stderr":"awk: towc: multibyte conversion failure\n","output":"awk: towc: multibyte conversion failure\n","uuid":"e3959269-2800-4190-b0f9-f079fba91fbf","session_id":"c34ee513-e375-415f-ae7b-1fb9a71b5953"}"#;
 

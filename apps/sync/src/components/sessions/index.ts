@@ -12,6 +12,7 @@ export { default as DayDivider } from './DayDivider.svelte';
 export { default as MessageRow } from './MessageRow.svelte';
 export { default as MessageTimeline } from './MessageTimeline.svelte';
 export { default as PermissionCard } from './PermissionCard.svelte';
+export { default as PoliciesChip } from './PoliciesChip.svelte';
 export { default as QuestionCard } from './QuestionCard.svelte';
 export { default as SessionComposer } from './SessionComposer.svelte';
 export { default as SessionsStrip } from './SessionsStrip.svelte';
@@ -54,6 +55,7 @@ export type {
   AssistantMessageEvent,
   ErrorEvent,
   ExitedEvent,
+  HookNoticeEvent,
   PermissionRequestEvent,
   PermissionSuggestion,
   QuestionOption,
@@ -81,6 +83,7 @@ export {
   SESSION_SELF_UID,
   TOOL_CATEGORIES,
   describeToolInput,
+  emptyTranscript,
   foldSessionEvents,
   toolArtifactPaths,
   toolCategory,
@@ -127,3 +130,21 @@ export {
   slashQueryFor,
 } from './slash-commands';
 export type { SlashQuery } from './slash-commands';
+
+export {
+  EXCERPT_CAP,
+  emptyPolicyDigest,
+  mergePolicyDigest,
+  parsePolicyDigest,
+  policyCountLabel,
+} from './policy-digest';
+export type { PolicyDigest, PolicyEntry } from './policy-digest';
+
+export {
+  CHECKPOINT_COMMAND,
+  HANDOFF_COMMAND,
+  isCheckpointDirective,
+  isCheckpointTurn,
+  isHandoffTurn,
+} from './hook-notices';
+export type { HandoffState } from './hook-notices';

@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::claude_wire::{
     parse_ask_user_questions, parse_can_use_tool, parse_init_slash_commands, Frame,
 };
-use super::types::{DoneStatus, SessionEvent, SessionTool};
+use super::types::{cap_hook_text, DoneStatus, SessionEvent, SessionTool};
 
 /// Human-readable text for the CLI's assistant-level error codes. These arrive
 /// as a terse `error` field on an `assistant` frame — usually with NO text
@@ -81,6 +81,39 @@ fn resets_at(info: &Value) -> Option<String> {
         })
 }
 
+/// The text a `hook_response` frame carries for the model, if any.
+///
+/// The recorded frame shape is `{hook_name, hook_event, output, stdout,
+/// stderr, exit_code, outcome}` where `output` is stdout followed by stderr.
+/// What the CLI feeds the model is `stdout` on a clean exit (HQ's policy
+/// reminder, the journal index, a plugin's guidance) and `stderr` on a
+/// blocking exit (a PreToolUse hook's "blocked: …" reason). A clean exit with
+/// an empty stdout — the common case, and the awk-warning case — said
+/// nothing to the model and produces nothing here.
+fn hook_response_notice(raw: &Value) -> Option<SessionEvent> {
+    let stdout = str_at(raw, "stdout");
+    let text = if !stdout.trim().is_empty() {
+        stdout
+    } else if raw.get("exit_code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+        let stderr = str_at(raw, "stderr");
+        if stderr.trim().is_empty() {
+            str_at(raw, "output")
+        } else {
+            stderr
+        }
+    } else {
+        String::new()
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(SessionEvent::HookNotice {
+        hook_event: str_at(raw, "hook_event"),
+        hook_name: str_at(raw, "hook_name"),
+        text: cap_hook_text(&text),
+    })
+}
+
 /// Content blocks of an `assistant`/`user` message, as a slice.
 fn blocks(message: &Value) -> &[Value] {
     message
@@ -133,9 +166,15 @@ impl ClaudeNormalizer {
                 cwd,
                 raw,
             } => {
-                // `status`, `hook_started`, `hook_response`, `hook_progress`,
-                // `thinking_tokens`, `task_started`, `task_notification` and
-                // anything else newer are lifecycle chatter with no event.
+                // A hook that said something to the model is a notice for
+                // the session (HQ's policy reminder, a checkpoint directive);
+                // a hook that said nothing is not.
+                if subtype == "hook_response" {
+                    return hook_response_notice(&raw).into_iter().collect();
+                }
+                // `status`, `hook_started`, `hook_progress`, `thinking_tokens`,
+                // `task_started`, `task_notification` and anything else newer
+                // are lifecycle chatter with no event.
                 if subtype != "init" {
                     return Vec::new();
                 }
@@ -391,7 +430,7 @@ impl ClaudeNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_session::claude_wire::parse_frame;
+    use crate::agent_session::claude_wire::{frame_from_value, parse_frame};
     use crate::agent_session::fixtures;
     use crate::agent_session::types::{Question, QuestionOption, SlashCommand};
     use serde_json::json;
@@ -479,6 +518,105 @@ mod tests {
             r#"{"type":"system","subtype":"some_future_subtype"}"#,
         ] {
             assert!(one(line).is_empty(), "expected no event for: {line}");
+        }
+    }
+
+    #[test]
+    fn a_hook_that_wrote_to_stdout_is_a_hook_notice() {
+        // RECORDED (`allow2`): the journal-index SessionStart hook.
+        assert_eq!(
+            one(fixtures::SYSTEM_HOOK_RESPONSE_JOURNAL),
+            vec![SessionEvent::HookNotice {
+                hook_event: "SessionStart".into(),
+                hook_name: "SessionStart:startup".into(),
+                text: "<journal-index>\n## Today's session journal (2026-09-02)\n# Session journal — 2026-09-02\n\n- `001` 00:03Z — Checkpoint sibling maintenance\n- `002` 00:47Z — Marketing agent factory OAuth and pack seam\n\nLoad specific entries via:  /journal --read <NNN>\nFull spec:  core/knowledge/public/hq-core/journal-spec.md\n</journal-index>\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_policy_reminder_hook_arrives_verbatim_and_parses() {
+        // DERIVED: the recorded frame shape carrying the shared policy fixture
+        // (the same text `policy_digest` and the TS mirror are pinned on).
+        let text = include_str!(
+            "../../../../apps/sync/src/components/sessions/__fixtures__/hook-policy-reminder.txt"
+        );
+        let frame = json!({
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_id": "0e1181c8-ae82-49d3-88e0-6b099b993453",
+            "hook_name": "UserPromptSubmit",
+            "hook_event": "UserPromptSubmit",
+            "output": text,
+            "stdout": text,
+            "stderr": "",
+            "exit_code": 0,
+            "outcome": "success",
+            "uuid": "05ec31df-1b46-423d-878a-a51dc0468125",
+            "session_id": "bda49ac8-be7a-402e-aa29-530eb37cad06"
+        });
+        let events = ClaudeNormalizer::new().normalize(frame_from_value(frame));
+        let [SessionEvent::HookNotice {
+            hook_event,
+            hook_name,
+            text: carried,
+        }] = events.as_slice()
+        else {
+            panic!("expected one HookNotice, got {events:?}");
+        };
+        assert_eq!(hook_event, "UserPromptSubmit");
+        assert_eq!(hook_name, "UserPromptSubmit");
+        assert_eq!(carried, text, "the text is carried unaltered");
+        let digest = crate::agent_session::parse_policy_digest(carried);
+        assert_eq!(digest.company.as_deref(), Some("indigo"));
+        assert_eq!(digest.entries.len(), 6);
+    }
+
+    #[test]
+    fn a_hook_that_only_warned_on_stderr_and_exited_clean_is_silent() {
+        // RECORDED (`allow2`): awk's multibyte warning. `output` mirrors the
+        // stderr, but the model was told nothing.
+        assert!(one(fixtures::SYSTEM_HOOK_RESPONSE_STDERR_ONLY).is_empty());
+        // Whitespace-only stdout is equally nothing.
+        assert!(one(
+            r#"{"type":"system","subtype":"hook_response","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"\n","stdout":"\n","stderr":"","exit_code":0,"outcome":"success"}"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_blocking_hook_carries_its_stderr_reason() {
+        // DERIVED: a PreToolUse hook that blocked (exit 2) explains itself on
+        // stderr, which is what the CLI feeds back to the model.
+        assert_eq!(
+            one(
+                r#"{"type":"system","subtype":"hook_response","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"BLOCKED: bare git mutation from the HQ root\n","stdout":"","stderr":"BLOCKED: bare git mutation from the HQ root\n","exit_code":2,"outcome":"blocked"}"#
+            ),
+            vec![SessionEvent::HookNotice {
+                hook_event: "PreToolUse".into(),
+                hook_name: "PreToolUse:Bash".into(),
+                text: "BLOCKED: bare git mutation from the HQ root\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn hook_notice_text_is_capped_at_the_ring_budget() {
+        use crate::agent_session::HOOK_NOTICE_TEXT_CAP;
+        let big = "x".repeat(HOOK_NOTICE_TEXT_CAP * 3);
+        let frame = json!({
+            "type": "system", "subtype": "hook_response",
+            "hook_name": "SessionStart:startup", "hook_event": "SessionStart",
+            "output": big, "stdout": big, "stderr": "", "exit_code": 0, "outcome": "success"
+        });
+        match ClaudeNormalizer::new()
+            .normalize(frame_from_value(frame))
+            .as_slice()
+        {
+            [SessionEvent::HookNotice { text, .. }] => {
+                assert_eq!(text.len(), HOOK_NOTICE_TEXT_CAP)
+            }
+            other => panic!("expected one capped HookNotice, got {other:?}"),
         }
     }
 
@@ -998,6 +1136,7 @@ mod tests {
                 SessionEvent::QuestionRequest { .. } => "questionRequest",
                 SessionEvent::Usage { .. } => "usage",
                 SessionEvent::RateLimit { .. } => "rateLimit",
+                SessionEvent::HookNotice { .. } => "hookNotice",
                 SessionEvent::TurnDone { .. } => "turnDone",
                 SessionEvent::Error { .. } => "error",
                 SessionEvent::Exited { .. } => "exited",

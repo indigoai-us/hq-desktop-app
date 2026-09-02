@@ -5,6 +5,7 @@ import {
   SESSION_MEMBERS,
   SESSION_SELF_UID,
   describeToolInput,
+  emptyTranscript,
   foldSessionEvents,
   toolArtifactPaths,
   toolCategory,
@@ -75,7 +76,12 @@ describe('foldSessionEvents — purity and determinism', () => {
       pending: [],
       lastUsage: null,
       ended: false,
+      policies: { company: null, entries: [] },
+      checkpointDue: false,
+      checkpointPrompts: 0,
+      handoff: 'none',
     });
+    expect(foldSessionEvents([])).toEqual(emptyTranscript());
   });
 
   it('folds the same events to the same blocks, and never mutates the input', () => {
@@ -120,6 +126,12 @@ describe('foldSessionEvents — every event kind is handled', () => {
     },
     { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 },
     { kind: 'rateLimit', message: 'slow down' },
+    {
+      kind: 'hookNotice',
+      hookEvent: 'SessionStart',
+      hookName: 'SessionStart:startup',
+      text: '> Policy `x` applies here: y',
+    },
     { kind: 'truncated', dropped: 9 },
     { kind: 'turnDone', status: 'success' },
     { kind: 'error', message: 'boom', code: 'E1' },
@@ -517,6 +529,135 @@ describe('foldSessionEvents — what is NOT a row', () => {
       { kind: 'usage', inputTokens: 12_400, outputTokens: 999 },
     ]);
     expect(lastUsage?.label).toBe('12.4k in · 999 out');
+  });
+});
+
+describe('foldSessionEvents — hook notices are state, never rows', () => {
+  const notice = (text: string): SessionEvent => ({
+    kind: 'hookNotice',
+    hookEvent: 'SessionStart',
+    hookName: 'SessionStart:startup',
+    text,
+  });
+  const POLICIES =
+    '<policy-reminder>\n> Policy `hq-git-discipline` (HARD — binding rule from `core/policies/hq-git-discipline.md`):\n> Anchor every git mutation.\n> Policy `quiet-by-default-narration` applies here: Quiet by default.\n</policy-reminder>\n';
+  const BIND = '<company-policy-digest co="indigo">\n- [hard] **indigo-only**: Keep it in indigo. Full text: `x.md`.\n</company-policy-digest>\n';
+
+  it('produces no block and fills `policies`', () => {
+    const state = foldSessionEvents([started, notice(POLICIES)]);
+    expect(state.blocks).toEqual([]);
+    expect(state.policies).toEqual({
+      company: null,
+      entries: [
+        { slug: 'hq-git-discipline', hard: true, excerpt: 'Anchor every git mutation.' },
+        { slug: 'quiet-by-default-narration', hard: false, excerpt: 'Quiet by default.' },
+      ],
+    });
+  });
+
+  it('accumulates across notices, dedupes by slug, and takes the latest company', () => {
+    const state = foldSessionEvents([
+      notice(POLICIES),
+      { kind: 'textDelta', text: 'hi' },
+      notice(POLICIES),
+      notice(BIND),
+    ]);
+    expect(types(state.blocks)).toEqual(['assistantProse']);
+    expect(state.policies.company).toBe('indigo');
+    expect(state.policies.entries.map((e) => e.slug)).toEqual([
+      'hq-git-discipline',
+      'quiet-by-default-narration',
+      'indigo-only',
+    ]);
+    expect(state.policies.entries.filter((e) => e.hard)).toHaveLength(2);
+  });
+
+  it('does not interrupt an open prose row or tool group', () => {
+    const state = foldSessionEvents([
+      { kind: 'textDelta', text: 'a' },
+      notice('<journal-index>\nnothing to see\n</journal-index>'),
+      { kind: 'textDelta', text: 'b' },
+    ]);
+    expect(proseText(state.blocks)).toEqual(['ab']);
+    expect(state.policies).toEqual({ company: null, entries: [] });
+  });
+
+  it('raises the checkpoint prompt on the AUTO-CHECKPOINT banner and clears it on /checkpoint', () => {
+    const banner = notice('║  AUTO-CHECKPOINT REQUIRED — context ~50%  ║');
+    const raised = foldSessionEvents([started, banner]);
+    expect(raised.blocks).toEqual([]);
+    expect(raised.checkpointDue).toBe(true);
+    expect(raised.checkpointPrompts).toBe(1);
+
+    // A mirrored `/checkpoint` turn answers it.
+    const answered = foldSessionEvents([started, banner], {
+      userTurns: [turn({ text: '/checkpoint', atIndex: 2 })],
+    });
+    expect(answered.checkpointDue).toBe(false);
+    expect(answered.checkpointPrompts).toBe(1);
+
+    // So does the backend's own record of that turn; a second banner later
+    // (the precompact one) raises it again with a higher count.
+    const again = foldSessionEvents([
+      started,
+      banner,
+      { kind: 'userMessage', text: '/checkpoint', imageCount: 0 },
+      { kind: 'turnDone', status: 'success' },
+      notice('AUTO-CHECKPOINT REQUIRED — precompact backup'),
+    ]);
+    expect(again.checkpointDue).toBe(true);
+    expect(again.checkpointPrompts).toBe(2);
+    // An ordinary message does not answer a checkpoint prompt.
+    const ignored = foldSessionEvents([banner, { kind: 'userMessage', text: 'carry on', imageCount: 0 }]);
+    expect(ignored.checkpointDue).toBe(true);
+  });
+});
+
+describe('foldSessionEvents — the /handoff turn', () => {
+  it('is running from the mirrored turn until turnDone, then leaves a divider', () => {
+    const running = foldSessionEvents([started, { kind: 'textDelta', text: 'Writing…' }], {
+      userTurns: [turn({ text: '/handoff', atIndex: 1 })],
+    });
+    expect(running.handoff).toBe('running');
+    expect(types(running.blocks)).toEqual(['userBubble', 'assistantProse']);
+
+    const done = foldSessionEvents(
+      [
+        started,
+        { kind: 'assistantMessage', text: 'Handoff written to workspace/threads/handoff.json.' },
+        { kind: 'turnDone', status: 'success' },
+      ],
+      { userTurns: [turn({ text: '/handoff', atIndex: 1 })] },
+    );
+    expect(done.handoff).toBe('done');
+    expect(types(done.blocks)).toEqual(['userBubble', 'assistantProse', 'divider']);
+    expect((done.blocks[2] as Extract<ChatBlock, { type: 'divider' }>).label).toBe(
+      'Session handed off',
+    );
+  });
+
+  it('reads the backend-recorded turn the same way, and a failed turn is not a handoff', () => {
+    const recorded = foldSessionEvents([
+      { kind: 'userMessage', text: '/handoff', imageCount: 0 },
+      { kind: 'turnDone', status: 'success' },
+    ]);
+    expect(recorded.handoff).toBe('done');
+    expect(types(recorded.blocks)).toEqual(['userBubble', 'divider']);
+
+    const failed = foldSessionEvents([
+      { kind: 'userMessage', text: '/handoff', imageCount: 0 },
+      { kind: 'turnDone', status: 'error', error: 'nope' },
+    ]);
+    expect(failed.handoff).toBe('none');
+    expect(types(failed.blocks)).toEqual(['userBubble', 'error']);
+
+    // Only a real /handoff counts; an ordinary turn ending says nothing.
+    const plain = foldSessionEvents([
+      { kind: 'userMessage', text: 'ship it', imageCount: 0 },
+      { kind: 'turnDone', status: 'success' },
+    ]);
+    expect(plain.handoff).toBe('none');
+    expect(types(plain.blocks)).toEqual(['userBubble']);
   });
 });
 
