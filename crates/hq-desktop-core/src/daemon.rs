@@ -664,6 +664,49 @@ pub fn ensure_cloud_sync_allowed() -> Result<(), String> {
     }
 }
 
+/// Developer-facing message returned by every sync-spawn path while
+/// `HQ_DEV_NO_SYNC` is set. Not a user-facing string: only a dev build run
+/// with the env var explicitly set can ever see it.
+pub const DEV_NO_SYNC_MESSAGE: &str =
+    "HQ_DEV_NO_SYNC=1 - this dev build will not start the sync runner.";
+
+/// Dev-build sync kill switch: `HQ_DEV_NO_SYNC=1` (or `true`, trimmed and
+/// case-insensitive).
+///
+/// WHY: a dev build runs *beside* the installed HQ Sync app, and both point at
+/// the same HQ folder. Two sync runners over one folder is unsafe - they race
+/// on the same git mirrors, PID/daemon state files, and vault uploads, so a
+/// debugging session can corrupt the user's real synced state. This env var
+/// lets a developer run the app with sync structurally impossible instead of
+/// relying on remembering to leave a toggle off.
+///
+/// Distinct from `HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH`, which only suppresses
+/// the launch-time autostart: this refuses EVERY spawn path (renderer
+/// `start_daemon`, app-launch autostart, supervisor respawn, and `start_sync`).
+pub fn is_dev_no_sync() -> bool {
+    std::env::var("HQ_DEV_NO_SYNC")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true"
+        })
+        .unwrap_or(false)
+}
+
+/// Common preflight for every path that SPAWNS a sync process: the dev kill
+/// switch first (a dev build must never start a runner beside the installed
+/// app), then the user-facing Cloud Off gate.
+///
+/// Order matters. `HQ_DEV_NO_SYNC` is a build-environment invariant that must
+/// hold regardless of what is on disk, so it is checked before any preference
+/// read; a dev build therefore refuses identically whether Cloud is paused or
+/// connected.
+pub fn ensure_sync_spawn_allowed() -> Result<(), String> {
+    if is_dev_no_sync() {
+        return Err(DEV_NO_SYNC_MESSAGE.to_string());
+    }
+    ensure_cloud_sync_allowed()
+}
+
 /// Check if personal-vault sync is enabled in menubar.json.
 ///
 /// Defaults to true (matches Settings + Sync Now). When false, the watch
@@ -952,6 +995,124 @@ mod tests {
         .unwrap();
         assert!(!is_cloud_paused());
         assert!(ensure_cloud_sync_allowed().is_ok());
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // -- Dev-build sync kill switch (HQ_DEV_NO_SYNC) -----------------------
+
+    /// Restores `HQ_DEV_NO_SYNC` to its pre-test value on drop so a panicking
+    /// assertion can never leak the var into a later test in this binary.
+    struct ScopedDevNoSync(Option<std::ffi::OsString>);
+
+    impl ScopedDevNoSync {
+        fn set(value: &str) -> Self {
+            let prev = std::env::var_os("HQ_DEV_NO_SYNC");
+            std::env::set_var("HQ_DEV_NO_SYNC", value);
+            Self(prev)
+        }
+
+        fn unset() -> Self {
+            let prev = std::env::var_os("HQ_DEV_NO_SYNC");
+            std::env::remove_var("HQ_DEV_NO_SYNC");
+            Self(prev)
+        }
+    }
+
+    impl Drop for ScopedDevNoSync {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => std::env::set_var("HQ_DEV_NO_SYNC", v),
+                None => std::env::remove_var("HQ_DEV_NO_SYNC"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_dev_no_sync_parses_truthy_values_only() {
+        let _g = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        {
+            let _e = ScopedDevNoSync::unset();
+            assert!(!is_dev_no_sync(), "unset must default to sync-allowed");
+        }
+
+        for truthy in ["1", "true", " TRUE ", "True", "\ttrue\n"] {
+            let _e = ScopedDevNoSync::set(truthy);
+            assert!(is_dev_no_sync(), "{truthy:?} must disable sync");
+        }
+
+        for falsy in ["0", "", "  ", "false", "no", "yes", "2"] {
+            let _e = ScopedDevNoSync::set(falsy);
+            assert!(!is_dev_no_sync(), "{falsy:?} must NOT disable sync");
+        }
+    }
+
+    /// The dev kill switch dominates the Cloud gate: a dev build refuses every
+    /// spawn path with `DEV_NO_SYNC_MESSAGE` whether Cloud is connected or
+    /// paused, and with the switch off `ensure_sync_spawn_allowed` delegates to
+    /// the exact Cloud-paused behavior pinned by
+    /// `test_is_cloud_paused_reads_menubar_and_defaults_connected`.
+    #[test]
+    fn test_ensure_sync_spawn_allowed_dev_switch_dominates_cloud_gate() {
+        let _g = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+
+        // Cloud explicitly CONNECTED - the dev switch alone must refuse.
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":false}"#,
+        )
+        .unwrap();
+        {
+            let _e = ScopedDevNoSync::set("1");
+            assert!(!is_cloud_paused());
+            assert!(ensure_cloud_sync_allowed().is_ok());
+            assert_eq!(
+                ensure_sync_spawn_allowed(),
+                Err(DEV_NO_SYNC_MESSAGE.to_string())
+            );
+        }
+
+        // Switch off, Cloud connected -> spawning is allowed.
+        {
+            let _e = ScopedDevNoSync::unset();
+            assert!(ensure_sync_spawn_allowed().is_ok());
+        }
+
+        // Switch off, Cloud paused -> delegates to the Cloud gate's message.
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":true}"#,
+        )
+        .unwrap();
+        {
+            let _e = ScopedDevNoSync::unset();
+            assert_eq!(
+                ensure_sync_spawn_allowed(),
+                Err(CLOUD_PAUSED_MESSAGE.to_string())
+            );
+        }
+
+        // Both on -> the dev switch wins, so a dev build's refusal never
+        // depends on the user's Cloud preference.
+        {
+            let _e = ScopedDevNoSync::set("true");
+            assert_eq!(
+                ensure_sync_spawn_allowed(),
+                Err(DEV_NO_SYNC_MESSAGE.to_string())
+            );
+        }
 
         match old_home {
             Some(v) => std::env::set_var("HOME", v),

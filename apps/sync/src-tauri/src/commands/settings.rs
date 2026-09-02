@@ -79,6 +79,8 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             // HQ Work handoff defaults OFF — existing installs keep desktop-alt
             // until ~/.hq/menubar.json is flipped (no rebuild).
             hq_work_handoff: Some(false),
+            // In-app sessions ships dark on a fresh install.
+            in_app_sessions: Some(false),
         });
     }
 
@@ -174,6 +176,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // HQ Work handoff defaults OFF when absent so existing installs keep
         // desktop-alt until the flag is flipped in menubar.json.
         hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
+        // In-app sessions (Phase 0) defaults OFF when absent so the
+        // surface stays dark until menubar.json opts in.
+        in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
     })
 }
 

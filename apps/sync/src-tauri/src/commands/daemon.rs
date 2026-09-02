@@ -839,12 +839,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
-    // V2 Cloud Off (US-001 / US-016): while the user has Cloud paused, NO watch
-    // daemon may start — renderer request, app-launch autostart, or supervisor
-    // respawn. Instant/event push is an argument of this watcher, so gating
+    // Spawn preflight for all three watch-daemon origins (renderer request,
+    // app-launch autostart, supervisor respawn), which all funnel through this
+    // function. Refuses when the dev kill switch `HQ_DEV_NO_SYNC` is set (a dev
+    // build must never run a second sync runner over the same HQ folder as the
+    // installed app), and when V2 Cloud Off (US-001 / US-016) has the user's
+    // sync paused. Instant/event push is an argument of this watcher, so gating
     // here pauses it too. Checked before taking the singleton guard so a
-    // paused refusal never wedges a later, unpaused start.
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+    // refusal never wedges a later, allowed start.
+    hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
     // Generation-scoped registration: every later release/terminate/cancel this
     // start performs is bound to the generation it acquired here, so a stale
     // actor can never operate on a replacement watcher (HQ-DESKTOP-3J).

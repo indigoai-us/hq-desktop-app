@@ -74,6 +74,7 @@ mod tests {
             widget_display: None,
             dock_icon: None,
             hq_work_handoff: None,
+            in_app_sessions: None,
         }
     }
 
@@ -115,6 +116,9 @@ mod tests {
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
             // HQ Work handoff defaults OFF so existing installs keep desktop-alt.
             hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
+            // In-app sessions ships dark - absent means off, so the
+            // surface never appears on an install that never opted in.
+            in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
         }
     }
 
@@ -150,6 +154,8 @@ mod tests {
         assert_eq!(result.widget_display, None);
         // HQ Work handoff defaults OFF when absent.
         assert_eq!(result.hq_work_handoff, Some(false));
+        // In-app sessions (Phase 0) defaults OFF when absent.
+        assert_eq!(result.in_app_sessions, Some(false));
     }
 
     #[test]
@@ -196,6 +202,7 @@ mod tests {
             widget_display: Some("DELL U2720Q".to_string()),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
+            in_app_sessions: Some(true),
         };
 
         let result = apply_defaults(prefs);
@@ -260,6 +267,7 @@ mod tests {
             widget_display: Some("Built-in Retina Display".to_string()),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
+            in_app_sessions: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -546,6 +554,26 @@ mod tests {
     fn test_hq_work_handoff_defaults_false() {
         let result = apply_defaults(empty_prefs());
         assert_eq!(result.hq_work_handoff, Some(false));
+    }
+
+    #[test]
+    fn test_in_app_sessions_defaults_false() {
+        let result = apply_defaults(empty_prefs());
+        assert_eq!(result.in_app_sessions, Some(false));
+    }
+
+    #[test]
+    fn test_explicit_in_app_sessions_true_preserved() {
+        // An opted-in install must not be flipped back off by the default-off
+        // coercion that runs on every settings read/save.
+        let prefs = MenubarPrefs {
+            in_app_sessions: Some(true),
+            ..empty_prefs()
+        };
+
+        let result = apply_defaults(prefs);
+
+        assert_eq!(result.in_app_sessions, Some(true));
     }
 
     #[test]

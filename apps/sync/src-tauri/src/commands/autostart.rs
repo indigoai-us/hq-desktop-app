@@ -171,6 +171,7 @@ mod tests {
             widget_display: None,
             dock_icon: None,
             hq_work_handoff: None,
+            in_app_sessions: None,
         }
     }
 

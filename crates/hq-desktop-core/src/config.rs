@@ -265,6 +265,14 @@ pub struct MenubarPrefs {
     /// keep desktop-alt until ~/.hq/menubar.json is flipped (no rebuild).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
+    /// In-app agent sessions (Phase 0 feature flag). Absent -> false: the
+    /// whole in-app sessions surface stays dark on every existing install
+    /// until the flag is explicitly written to ~/.hq/menubar.json (no rebuild
+    /// needed). A developer can force it on for one process with
+    /// `HQ_DEV_IN_APP_SESSIONS=1` without touching the file; see
+    /// `crate::agent_session_flags`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_app_sessions: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -799,6 +807,42 @@ mod tests {
         assert_eq!(prefs.hq_work_handoff, Some(false));
         let out = serde_json::to_string(&prefs).unwrap();
         assert!(out.contains("\"hqWorkHandoff\":false"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_in_app_sessions_absent_deserializes_none() {
+        let json = r#"{}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.in_app_sessions, None);
+        // Absent stays absent on the way back out - a settings save must not
+        // materialize the flag for users who never opted in.
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            !out.contains("inAppSessions"),
+            "None must be omitted from serialized output, got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_menubar_prefs_in_app_sessions_true_round_trip() {
+        let json = r#"{"inAppSessions": true}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.in_app_sessions, Some(true));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"inAppSessions\":true"),
+            "expected camelCase key 'inAppSessions' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("in_app_sessions"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_in_app_sessions_false_round_trip() {
+        let json = r#"{"inAppSessions": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.in_app_sessions, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"inAppSessions\":false"));
     }
 
     #[test]

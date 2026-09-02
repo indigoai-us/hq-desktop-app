@@ -2106,11 +2106,12 @@ fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
 ///   ndjson lines arrive.
 /// - Hard timeout of 1 hour; the sync is cancelled if it exceeds this.
 ///
-/// V2 Cloud Off gate for `start_sync` (first statement of the command).
-/// Extracted `pub(crate)` so the unit test exercises the exact function the
-/// command calls against a real menubar.json.
+/// Spawn gate for `start_sync` (first statement of the command): the dev kill
+/// switch `HQ_DEV_NO_SYNC` first, then V2 Cloud Off. Extracted `pub(crate)` so
+/// the unit test exercises the exact function the command calls against a real
+/// menubar.json.
 pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()
+    hq_desktop_core::daemon::ensure_sync_spawn_allowed()
 }
 
 /// Returns the handle string on success (always `"hq-sync"`).
