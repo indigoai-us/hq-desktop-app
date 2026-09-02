@@ -2975,6 +2975,8 @@
                     ? setupHeader
                     : undefined}
                   belowMessages={agentThinkingBelow}
+                  draftKey={selectedRow.id}
+                  draftStorage={tenantStorage}
                 />
               {/key}
               {#if openProfileMember}

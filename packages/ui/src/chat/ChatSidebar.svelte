@@ -14,6 +14,10 @@
    */
   import { onMount, untrack } from "svelte";
   import {
+    COMPOSER_DRAFT_CHANGED_EVENT,
+    listDraftRowIds,
+  } from "./messaging/composer-drafts";
+  import {
     clearChannelUnread,
     type Channel,
     humanizeChannelName,
@@ -228,6 +232,12 @@
   let pins = $state<string[]>(loadPins(storage));
   /** User unpinned #setup — sticky until they pin it again. */
   let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
+  /** Rows with an unsent composer draft (Slack-style pencil marker). */
+  let draftIds = $state<string[]>(listDraftRowIds(storage));
+  const draftIdSet = $derived(new Set(draftIds));
+  function refreshDraftIds(): void {
+    draftIds = listDraftRowIds(storage);
+  }
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
@@ -1242,8 +1252,10 @@
     }
 
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
 
     return () => {
+      window.removeEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
       for (const u of unlisteners) u();
       directoryReconciler.stop();
       if (refreshTimer != null) {
@@ -2022,7 +2034,25 @@
                       </span>
                     {/if}
                     <span class="chat-search-hit-copy">
-                      <span class="chat-row-title">{row.title}</span>
+                      <span class="chat-search-hit-title">
+                        {#if draftIdSet.has(row.id)}
+                          <span
+                            class="chat-row-draft"
+                            data-testid="chat-row-draft"
+                            role="img"
+                            aria-label="Draft"
+                            title="Draft"
+                          >
+                            <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
+                              <path
+                                d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </span>
+                        {/if}
+                        <span class="chat-row-title">{row.title}</span>
+                      </span>
                       <span class="chat-search-snippet"
                         >{searchHitSnippet(hit)}</span
                       >
@@ -2229,6 +2259,22 @@
           {:else}
             {avatar.initials}
           {/if}
+        </span>
+      {/if}
+{#if draftIdSet.has(row.id)}
+        <span
+          class="chat-row-draft"
+          data-testid="chat-row-draft"
+          role="img"
+          aria-label="Draft"
+          title="Draft"
+        >
+          <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
+            <path
+              d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
+              fill="currentColor"
+            />
+          </svg>
         </span>
       {/if}
       <span class="chat-row-title">{row.title}</span>
@@ -2661,6 +2707,14 @@
     white-space: nowrap;
   }
 
+  .chat-row-draft {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    color: var(--t3);
+    line-height: 0;
+  }
+
   .chat-glyph {
     flex: 0 0 16px;
     width: 16px;
@@ -3026,6 +3080,13 @@
     flex: 1 1 auto;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+  }
+
+  .chat-search-hit-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
   }
 
