@@ -23,18 +23,46 @@
    * popover with its top sliced off.
    *
    * All autocomplete decisions come from the pure helpers in
-   * `./slash-commands` and `./mentions`, and every model name comes from
-   * `./session-models`; this component owns only the DOM and the keyboard.
+   * `./slash-commands`, `./mentions` and `./context-attachments`, and every
+   * model name comes from `./session-models`; this component owns only the
+   * DOM and the keyboard.
    *
-   * `@`-mentions: an `@` at a word start opens `MentionPicker` over the same
-   * slot the slash menu uses (the two never show together — a mention token
-   * under the caret wins). Picking inserts `@Display Name` AND keeps a chip
-   * under the textarea that says who will be DMed; the chip has an × and a
-   * mention whose text was deleted loses its chip, so nothing is ever DMed
-   * that the user cannot see promised right under their draft.
+   * `/` opens `SlashPicker` — HQ workers, HQ skills by scope, and the CLI's
+   * own commands — over the slot the `@` picker uses (the two never show
+   * together; a mention token under the caret wins). The draft is the search.
+   *
+   * `@`-mentions: an `@` at a word start opens `MentionPicker`. Picking
+   * inserts `@Display Name` AND keeps a chip under the textarea that says who
+   * will be DMed; the chip has an × and a mention whose text was deleted loses
+   * its chip, so nothing is ever DMed that the user cannot see promised right
+   * under their draft.
+   *
+   * `+` opens `ContextAttachMenu`: an image, a meeting, a signal, a vault
+   * file or a pasted path. Each pick is a chip on the same row the mentions
+   * use; its text is read the moment it lands so the running size under the
+   * chips is honest, and every loaded chip rides the send as a context block
+   * the page appends after the words.
+   *
+   * The company pill has a second level: pick a company, then a project (or
+   * "No project"), and the page orients the first send with `/startwork`. The
+   * opt-out toggle lives in the same menu.
    */
   import { onMount, tick } from 'svelte';
+  import ContextAttachMenu from './ContextAttachMenu.svelte';
   import MentionPicker from './MentionPicker.svelte';
+  import ProjectPicker from './ProjectPicker.svelte';
+  import SlashPicker from './SlashPicker.svelte';
+  import {
+    ATTACHMENT_CHARS,
+    addAttachment,
+    attachmentLabel,
+    contextSizeLabel,
+    exceedsContextBudget,
+    removeAttachment,
+    type ContextAttachment,
+    type ContextLoaders,
+    type LoadedAttachment,
+  } from './context-attachments';
   import {
     addMention,
     applyMention,
@@ -45,7 +73,17 @@
     type Mention,
     type MentionCandidate,
   } from './mentions';
-  import { filterSlashCommands, applySlashCommand } from './slash-commands';
+  import {
+    applyPickerRow,
+    pushRecentSlash,
+    readRecentSlash,
+    rememberRecentSlash,
+    slashQueryFor,
+    type PickerRow,
+    type RecentSlash,
+    type SkillCatalog,
+  } from './slash-commands';
+  import type { ProjectEntry } from './startwork';
   import type { SessionCommand } from './session-events';
   import type { ComposerImage, SessionModel, SessionToolId } from './session-models';
   import {
@@ -62,11 +100,23 @@
   }
 
   /** Which pill's popover is open. One at a time — they share the same row. */
-  type MenuName = 'permission' | 'company' | 'tool' | 'model' | 'effort';
+  type MenuName = 'permission' | 'company' | 'tool' | 'model' | 'effort' | 'attach';
+
+  /** A context chip: the pick, plus its read text (or why it has none yet). */
+  interface ContextChip extends ContextAttachment {
+    text?: string;
+    truncated?: boolean;
+    loading: boolean;
+    error?: string;
+  }
 
   interface Props {
     /** Merged slash-command catalog (probe + the session's own `started` list). */
     commands?: SessionCommand[];
+    /** HQ workers + skills for the `/` picker; null until loaded. */
+    catalog?: SkillCatalog | null;
+    catalogLoading?: boolean;
+    catalogError?: string;
     /** True while the agent is mid-turn — turns Send into Stop, never disables input. */
     working?: boolean;
     /** True when nothing can be sent at all (no CLI, ended session). */
@@ -79,6 +129,13 @@
 
     companies?: CompanyOption[];
     company?: string | null;
+    /** The chosen project's name for the company pill's second level. */
+    project?: string | null;
+    projects?: ProjectEntry[];
+    projectsLoading?: boolean;
+    projectsError?: string;
+    /** "Run /startwork on first message". */
+    startworkEnabled?: boolean;
     models?: SessionModel[];
     /** The selected model's `value` (`null` = the CLI's own default). */
     model?: string | null;
@@ -106,11 +163,23 @@
     mentionCandidates?: MentionCandidate[];
     /** The last mention fan-out's outcome, e.g. "DM'd Corey Epstein". */
     mentionStatus?: { text: string; error: boolean } | null;
+    /** The `+` menu's readers; null leaves only Image… enabled. */
+    context?: ContextLoaders | null;
 
-    /** `mentions` are the chips still showing at send time — the DM list. */
-    onsend?: (text: string, images: ComposerImage[], mentions: Mention[]) => void;
+    /**
+     * `mentions` are the chips still showing at send time — the DM list;
+     * `attachments` the loaded context chips, in the order they were added.
+     */
+    onsend?: (
+      text: string,
+      images: ComposerImage[],
+      mentions: Mention[],
+      attachments: LoadedAttachment[],
+    ) => void;
     onstop?: () => void;
     oncompany?: (slug: string | null) => void;
+    onproject?: (name: string | null) => void;
+    onstartworktoggle?: (enabled: boolean) => void;
     onmodel?: (value: string | null) => void;
     oneffort?: (value: string | null) => void;
     onpermission?: (mode: 'prompt' | 'bypassAll') => void;
@@ -119,6 +188,9 @@
 
   let {
     commands = [],
+    catalog = null,
+    catalogLoading = false,
+    catalogError = '',
     working = false,
     disabled = false,
     notice = '',
@@ -126,6 +198,11 @@
     autofocus = false,
     companies = [],
     company = null,
+    project = null,
+    projects = [],
+    projectsLoading = false,
+    projectsError = '',
+    startworkEnabled = true,
     models = [],
     model = null,
     resolvedModel = null,
@@ -138,9 +215,12 @@
     hqFolder = '',
     mentionCandidates = [],
     mentionStatus = null,
+    context = null,
     onsend,
     onstop,
     oncompany,
+    onproject,
+    onstartworktoggle,
     onmodel,
     oneffort,
     onpermission,
@@ -152,11 +232,16 @@
   let fileInput = $state<HTMLInputElement | null>(null);
   let attached = $state<ComposerImage[]>([]);
   let attachError = $state('');
-  let highlighted = $state(0);
   /** Dismissed with Escape; re-armed as soon as the draft changes. */
   let suppressed = $state(false);
   let lastDraft = $state('');
   let openMenu = $state<MenuName | null>(null);
+  /** The company menu's two levels. */
+  let companyPane = $state<'companies' | 'projects'>('companies');
+
+  // --- / picker ---------------------------------------------------------------
+  let slashPicker = $state<{ handleKey: (event: KeyboardEvent) => boolean } | null>(null);
+  let recent = $state<RecentSlash[]>(readRecentSlash());
 
   // --- @mentions ------------------------------------------------------------
   /** Where the caret is, mirrored from the textarea on every edit/move. */
@@ -166,6 +251,10 @@
   let mentionHighlighted = $state(0);
   /** Dismissed with Escape; re-armed as soon as the draft changes. */
   let mentionSuppressed = $state(false);
+
+  // --- context chips ----------------------------------------------------------
+  let contextChips = $state<ContextChip[]>([]);
+  let contextError = $state('');
 
   const mentionQuery = $derived(mentionSuppressed ? null : mentionQueryAt(draft, caret));
   const mentionMatches = $derived(
@@ -179,12 +268,15 @@
   );
   const chips = $derived(pruneMentions(mentions, draft));
 
-  const matches = $derived(suppressed ? [] : filterSlashCommands(draft, commands));
-  // A mention token under the caret takes the slot; the slash menu yields.
-  const menuOpen = $derived(!mentionOpen && matches.length > 0);
-  const safeIndex = $derived(
-    matches.length === 0 ? 0 : Math.min(Math.max(highlighted, 0), matches.length - 1),
+  /** The draft is ONE `/token` — the picker's query is what follows the slash. */
+  const slashQuery = $derived(suppressed ? null : slashQueryFor(draft));
+  // A mention token under the caret takes the slot; the slash picker yields.
+  const pickerOpen = $derived(!mentionOpen && slashQuery !== null);
+
+  const loadedContext = $derived(
+    contextChips.filter((chip): chip is ContextChip & { text: string } => typeof chip.text === 'string'),
   );
+  const contextLoading = $derived(contextChips.some((chip) => chip.loading));
 
   /**
    * A live session can report a model the catalog does not list (an older
@@ -206,16 +298,17 @@
   const effortLabel = $derived(
     EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'Auto',
   );
-  const companyLabel = $derived(
+  const companyName = $derived(
     companies.find((option) => option.slug === company)?.displayName ?? company ?? 'Company',
   );
+  const companyLabel = $derived(project ? `${companyName} · ${project}` : companyName);
   const permissionLabel = $derived(
     permissionMode === 'bypassAll' ? 'Bypass permissions' : 'Prompt for permissions',
   );
   const toolOption = $derived(
     TOOL_OPTIONS.find((option) => option.value === tool) ?? TOOL_OPTIONS[0],
   );
-  const canSend = $derived(!disabled && draft.trim().length > 0);
+  const canSend = $derived(!disabled && draft.trim().length > 0 && !contextLoading);
 
   onMount(() => {
     if (autofocus) textarea?.focus();
@@ -248,7 +341,6 @@
     if (draft === lastDraft) return;
     lastDraft = draft;
     suppressed = false;
-    highlighted = 0;
     mentionSuppressed = false;
     mentionHighlighted = 0;
   });
@@ -287,6 +379,7 @@
     // click just opened.
     event.stopPropagation();
     openMenu = openMenu === name ? null : name;
+    if (openMenu === 'company') companyPane = 'companies';
   }
 
   function closeMenus() {
@@ -300,16 +393,81 @@
     }
   }
 
-  function pick(command: SessionCommand) {
-    draft = applySlashCommand(draft, command);
+  /** A picker row lands in the draft and at the top of Recent. */
+  function pickRow(row: PickerRow) {
+    draft = applyPickerRow(draft, row);
+    recent = pushRecentSlash(recent, {
+      name: row.name,
+      description: row.description,
+      insert: row.insert,
+    });
+    rememberRecentSlash(recent);
     suppressed = true;
+    textarea?.focus();
+  }
+
+  /** The picker's search box typed: the draft follows it. */
+  function onPickerQuery(query: string) {
+    draft = `/${query}`;
+  }
+
+  // --- context chips ----------------------------------------------------------
+
+  async function addContext(attachment: ContextAttachment) {
+    contextError = '';
+    closeMenus();
+    textarea?.focus();
+    const next = addAttachment(contextChips, { ...attachment, loading: true } as ContextChip);
+    if (next.error) {
+      contextError = next.error;
+      return;
+    }
+    if (next.list.length === contextChips.length) return; // already attached
+    contextChips = next.list;
+    const readers = context;
+    if (!readers) {
+      contextChips = removeAttachment(contextChips, attachment.path);
+      contextError = 'Context files cannot be read right now.';
+      return;
+    }
+    try {
+      const ref = await readers.referenceText(attachment.path, ATTACHMENT_CHARS);
+      // The chip may have been removed while the read was in flight.
+      if (!contextChips.some((chip) => chip.path === attachment.path)) return;
+      if (exceedsContextBudget(loadedContext, ref.text)) {
+        contextChips = removeAttachment(contextChips, attachment.path);
+        contextError = `${attachmentLabel(attachment)} would push the context past the 24k-character budget.`;
+        return;
+      }
+      contextChips = contextChips.map((chip) =>
+        chip.path === attachment.path
+          ? { ...chip, text: ref.text, truncated: ref.truncated, loading: false }
+          : chip,
+      );
+    } catch (err) {
+      contextChips = removeAttachment(contextChips, attachment.path);
+      contextError = `Couldn't read ${attachmentLabel(attachment)}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  function dropContext(path: string) {
+    contextChips = removeAttachment(contextChips, path);
+    contextError = '';
     textarea?.focus();
   }
 
   function submit() {
     const text = draft.trim();
-    if (!text || disabled) return;
-    onsend?.(text, attached, chips);
+    if (!text || disabled || contextLoading) return;
+    const attachments: LoadedAttachment[] = loadedContext.map((chip) => ({
+      kind: chip.kind,
+      title: chip.title,
+      path: chip.path,
+      subtitle: chip.subtitle,
+      text: chip.text,
+      truncated: chip.truncated ?? false,
+    }));
+    onsend?.(text, attached, chips, attachments);
     draft = '';
     attached = [];
     attachError = '';
@@ -317,6 +475,8 @@
     mentions = [];
     mentionSuppressed = false;
     caret = 0;
+    contextChips = [];
+    contextError = '';
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -344,28 +504,9 @@
       }
     }
 
-    if (menuOpen) {
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        highlighted = (safeIndex + 1) % matches.length;
-        return;
-      }
-      if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        highlighted = (safeIndex - 1 + matches.length) % matches.length;
-        return;
-      }
-      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
-        event.preventDefault();
-        const chosen = matches[safeIndex];
-        if (chosen) pick(chosen);
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        suppressed = true;
-        return;
-      }
+    if (pickerOpen && slashPicker?.handleKey(event)) {
+      event.preventDefault();
+      return;
     }
 
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -426,6 +567,11 @@
   function removeImage(name: string) {
     attached = attached.filter((image) => image.name !== name);
   }
+
+  function pickImage() {
+    closeMenus();
+    fileInput?.click();
+  }
 </script>
 
 <svelte:window onclick={closeMenus} onkeydown={onWindowKeydown} />
@@ -444,36 +590,23 @@
     />
   {/if}
 
-  {#if menuOpen}
-    <ul
-      class="slash-menu"
-      role="listbox"
-      aria-label="Slash commands"
-      data-testid="session-slash-menu"
-    >
-      {#each matches as command, index (command.name)}
-        <li>
-          <button
-            type="button"
-            role="option"
-            aria-selected={index === safeIndex}
-            class="slash-item"
-            class:highlighted={index === safeIndex}
-            data-testid="session-slash-item"
-            onmouseenter={() => (highlighted = index)}
-            onclick={() => pick(command)}
-          >
-            <span class="slash-name">/{command.name}</span>
-            {#if command.argumentHint}
-              <span class="slash-args">{command.argumentHint}</span>
-            {/if}
-            {#if command.description}
-              <span class="slash-description">{command.description}</span>
-            {/if}
-          </button>
-        </li>
-      {/each}
-    </ul>
+  {#if pickerOpen && slashQuery}
+    <SlashPicker
+      bind:this={slashPicker}
+      query={slashQuery.prefix}
+      {catalog}
+      {catalogLoading}
+      {catalogError}
+      cliCommands={commands}
+      {company}
+      {recent}
+      onpick={pickRow}
+      onquery={onPickerQuery}
+      onclose={() => {
+        suppressed = true;
+        textarea?.focus();
+      }}
+    />
   {/if}
 
   <div class="box">
@@ -535,6 +668,42 @@
       </div>
     {/if}
 
+    {#if contextChips.length > 0}
+      <div class="mention-chips" data-testid="session-context-chips">
+        <span class="mention-chips-label">Context</span>
+        {#each contextChips as chip (chip.path)}
+          <span
+            class="mention-chip"
+            class:loading={chip.loading}
+            data-testid="session-context-chip"
+            data-kind={chip.kind}
+            data-path={chip.path}
+            title={chip.path}
+          >
+            <span class="mention-chip-name">{attachmentLabel(chip)}</span>
+            {#if chip.loading}
+              <span class="chip-note" aria-label="Reading">…</span>
+            {:else if chip.truncated}
+              <span class="chip-note" data-testid="session-context-truncated">truncated</span>
+            {/if}
+            <button
+              type="button"
+              class="mention-chip-remove"
+              aria-label={`Remove ${attachmentLabel(chip)}`}
+              title={`Remove ${attachmentLabel(chip)}`}
+              data-testid="session-context-remove"
+              onclick={() => dropContext(chip.path)}
+            >
+              ✕
+            </button>
+          </span>
+        {/each}
+        <span class="mention-chips-label size" data-testid="session-context-size">
+          {contextSizeLabel(loadedContext)}
+        </span>
+      </div>
+    {/if}
+
     <div class="controls" data-testid="session-composer-controls">
       <div class="cluster">
         <div class="pill-wrap">
@@ -583,22 +752,38 @@
           {/if}
         </div>
 
-        <button
-          type="button"
-          class="icon-button attach"
-          aria-label="Attach an image"
-          data-testid="session-composer-attach"
-          onclick={() => fileInput?.click()}
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path
-              d="M7 2.4v9.2M2.4 7h9.2"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
+        <div class="pill-wrap">
+          <button
+            type="button"
+            class="icon-button attach"
+            aria-label="Attach context"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'attach'}
+            data-testid="session-composer-attach"
+            onclick={(event) => toggleMenu('attach', event)}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path
+                d="M7 2.4v9.2M2.4 7h9.2"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          {#if openMenu === 'attach'}
+            <ContextAttachMenu
+              {company}
+              loaders={context}
+              onimage={pickImage}
+              onattach={(attachment) => void addContext(attachment)}
+              onclose={() => {
+                closeMenus();
+                textarea?.focus();
+              }}
             />
-          </svg>
-        </button>
+          {/if}
+        </div>
         <input
           bind:this={fileInput}
           class="file-input"
@@ -623,22 +808,96 @@
               <span class="chev" aria-hidden="true">⌄</span>
             </button>
             {#if openMenu === 'company'}
-              <div class="menu" role="menu" data-testid="session-menu-company">
-                {#each companies as option (option.slug)}
+              <!-- Rows that move WITHIN this two-level menu stop their click so
+                   the window listener does not close it: picking a company
+                   opens the project pane, and the toggle stays put. -->
+              <div
+                class="menu menu-wide"
+                role="menu"
+                data-testid="session-menu-company"
+                data-pane={companyPane}
+              >
+                {#if companyPane === 'companies'}
+                  {#each companies as option (option.slug)}
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={option.slug === company}
+                      class="menu-item"
+                      class:selected={option.slug === company}
+                      data-testid="session-menu-company-item"
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        oncompany?.(option.slug);
+                        companyPane = 'projects';
+                      }}
+                    >
+                      <span class="menu-label">{option.displayName}</span>
+                    </button>
+                  {/each}
+                  <div class="menu-rule"></div>
                   <button
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={option.slug === company}
+                    role="menuitem"
                     class="menu-item"
-                    class:selected={option.slug === company}
-                    onclick={() => {
-                      oncompany?.(option.slug);
-                      closeMenus();
+                    disabled={!company}
+                    data-testid="session-menu-project-open"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      companyPane = 'projects';
                     }}
                   >
-                    <span class="menu-label">{option.displayName}</span>
+                    <span class="menu-label">
+                      Project
+                      <span class="menu-value">{project ?? 'None'}</span>
+                      <span class="chev-right" aria-hidden="true">›</span>
+                    </span>
                   </button>
-                {/each}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={startworkEnabled}
+                    class="menu-item"
+                    data-testid="session-menu-startwork-toggle"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onstartworktoggle?.(!startworkEnabled);
+                    }}
+                  >
+                    <span class="menu-label">
+                      <span class="check" aria-hidden="true">{startworkEnabled ? '✓' : ''}</span>
+                      Run /startwork on first message
+                    </span>
+                    <span class="menu-sub">Orients the session in HQ before your first message</span>
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="menu-item menu-back"
+                    data-testid="session-menu-project-back"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      companyPane = 'companies';
+                    }}
+                  >
+                    <span class="menu-label">
+                      <span class="chev-left" aria-hidden="true">‹</span>
+                      {companyName}
+                    </span>
+                  </button>
+                  <div class="menu-rule"></div>
+                  <ProjectPicker
+                    {projects}
+                    selected={project}
+                    loading={projectsLoading}
+                    error={projectsError}
+                    onpick={(name) => {
+                      onproject?.(name);
+                      closeMenus();
+                      textarea?.focus();
+                    }}
+                  />
+                {/if}
               </div>
             {/if}
           </div>
@@ -817,6 +1076,9 @@
     {#if attachError}
       <span class="foot-note error" data-testid="session-attach-error">{attachError}</span>
     {/if}
+    {#if contextError}
+      <span class="foot-note error" role="alert" data-testid="session-context-error">{contextError}</span>
+    {/if}
     {#if mentionStatus}
       <span
         class="foot-note"
@@ -942,7 +1204,8 @@
     cursor: pointer;
   }
 
-  .icon-button:hover {
+  .icon-button:hover,
+  .icon-button[aria-expanded='true'] {
     color: var(--v4-text-1);
     background: var(--v4-active-row);
   }
@@ -1048,6 +1311,12 @@
     min-width: 260px;
   }
 
+  .menu-rule {
+    height: 1px;
+    margin: 3px 4px;
+    background: var(--v4-hairline);
+  }
+
   .menu-item {
     display: flex;
     flex-direction: column;
@@ -1078,6 +1347,27 @@
     align-items: center;
     gap: 5px;
     font-weight: 600;
+  }
+
+  .menu-value {
+    margin-left: auto;
+    font-weight: 400;
+    color: var(--v4-text-3);
+  }
+
+  .chev-right,
+  .chev-left {
+    color: var(--v4-text-3);
+  }
+
+  .check {
+    display: inline-block;
+    width: 12px;
+    text-align: center;
+  }
+
+  .menu-back .menu-label {
+    color: var(--v4-text-2);
   }
 
   .menu-item.selected .menu-label {
@@ -1164,11 +1454,12 @@
     cursor: pointer;
   }
 
-  /* --- @mention chips --------------------------------------------------- */
+  /* --- @mention + context chips ----------------------------------------- */
 
   /* The chip is the promise: one row under the draft naming every recipient
-     the send will DM, each removable. It reads as a sentence ("Will DM Corey
-     Epstein"), because the action it announces leaves the app. */
+     the send will DM (or every file it will carry), each removable. It reads
+     as a sentence ("Will DM Corey Epstein"), because the action it announces
+     leaves the app. Context chips share the row's grammar on purpose. */
   .mention-chips {
     display: flex;
     flex-wrap: wrap;
@@ -1183,11 +1474,18 @@
     color: var(--v4-text-3);
   }
 
+  .mention-chips-label.size {
+    margin-left: auto;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+  }
+
   .mention-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     height: 22px;
+    max-width: 100%;
     padding: 0 4px 0 8px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
@@ -1195,10 +1493,28 @@
     font-size: 11px;
   }
 
+  .mention-chip.loading {
+    opacity: 0.6;
+  }
+
+  .mention-chip-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chip-note {
+    flex: none;
+    font-size: 10px;
+    color: var(--v4-text-3);
+  }
+
   .mention-chip-remove {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: none;
     width: 16px;
     height: 16px;
     padding: 0;
@@ -1246,63 +1562,5 @@
 
   .foot-note.error {
     color: var(--v4-error, var(--v4-text-2));
-  }
-
-  /* --- slash autocomplete ----------------------------------------------- */
-
-  .slash-menu {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 0;
-    right: 0;
-    z-index: 5;
-    max-height: 240px;
-    overflow-y: auto;
-    margin: 0;
-    padding: 4px;
-    list-style: none;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-popover-strong, var(--v4-popover, var(--v4-raised)));
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    box-shadow: var(--v4-shadow-popover, none);
-  }
-
-  .slash-item {
-    display: flex;
-    align-items: baseline;
-    gap: var(--v4-space-2);
-    width: 100%;
-    padding: 5px var(--v4-space-2);
-    border: 0;
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-1);
-    font-family: inherit;
-    font-size: var(--type-metadata);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .slash-item.highlighted {
-    background: var(--v4-active-row);
-  }
-
-  .slash-name {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    flex: none;
-  }
-
-  .slash-args {
-    color: var(--v4-text-3);
-    flex: none;
-  }
-
-  .slash-description {
-    color: var(--v4-text-3);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 </style>

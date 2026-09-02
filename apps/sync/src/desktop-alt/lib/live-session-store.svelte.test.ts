@@ -815,3 +815,146 @@ describe('probe memoization (preflight + catalog)', () => {
     expect(attempts).toBe(3);
   });
 });
+
+describe('turn meta — hidden orientation turns and context tags', () => {
+  it('renders the hidden /startwork turn as a divider and keeps it one after the backend echo', async () => {
+    mockBackend({ 0: page([], 0) });
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'agent_session_start') return Promise.resolve({ sessionId: SESSION });
+      if (command === 'agent_session_list') return Promise.resolve([summary()]);
+      if (command === 'agent_session_replay') return Promise.resolve(page([], 0));
+      if (command === 'agent_session_send') return Promise.resolve(undefined);
+      throw new Error(`unexpected ${command} ${JSON.stringify(args)}`);
+    });
+    const spec = {
+      sessionId: '',
+      tool: 'claude' as const,
+      cwd: '',
+      company: 'indigo',
+      model: null,
+      effort: null,
+      resume: null,
+      permissionMode: 'prompt' as const,
+    };
+    await liveSessionStore.startAndSend(spec, '/startwork indigo', [], {
+      hidden: true,
+      label: 'Starting work in indigo · project sessions',
+    });
+    await liveSessionStore.send('fix the bug', [], null, {
+      attachments: [{ kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' }],
+    });
+
+    // The two sends went out in order, startwork first.
+    const sends = invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_send');
+    expect(sends.map(([, args]) => (args as { text: string }).text)).toEqual([
+      '/startwork indigo',
+      'fix the bug',
+    ]);
+
+    // Mirrored: divider, then a bubble carrying the tag.
+    let blocks = liveSessionStore.transcript.blocks;
+    expect(blocks.map((block) => block.type)).toEqual(['divider', 'userBubble']);
+    expect((blocks[0] as { label: string }).label).toBe('Starting work in indigo · project sessions');
+    expect((blocks[1] as { attachments: unknown[] }).attachments).toEqual([
+      { kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' },
+    ]);
+
+    // The backend's own record replaces the mirror — and renders identically,
+    // label and tag included, because the meta outlives the mirror.
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      receivedAtMs: T0,
+      event: { kind: 'userMessage', text: '/startwork indigo', imageCount: 0 },
+    });
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 1,
+      receivedAtMs: T0 + 1,
+      event: { kind: 'userMessage', text: 'fix the bug', imageCount: 0 },
+    });
+    expect(liveSessionStore.userTurns).toEqual([]);
+    blocks = liveSessionStore.transcript.blocks;
+    expect(blocks.map((block) => block.type)).toEqual(['divider', 'userBubble']);
+    expect((blocks[0] as { label: string }).label).toBe('Starting work in indigo · project sessions');
+    expect((blocks[1] as { attachments: unknown[] }).attachments).toEqual([
+      { kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' },
+    ]);
+  });
+});
+
+describe('HQ context wrappers', () => {
+  beforeEach(() => {
+    resetProbeCaches();
+  });
+
+  it('caches the skill catalog per company and forgets a failed probe', async () => {
+    const catalog = { workers: [], skills: [] };
+    invoke.mockImplementation((cmd: string) =>
+      cmd === 'hq_skill_catalog' ? Promise.resolve(catalog) : Promise.resolve(undefined),
+    );
+    await liveSessionStore.hqSkillCatalog('indigo');
+    await liveSessionStore.hqSkillCatalog('indigo');
+    await liveSessionStore.hqSkillCatalog('ridge');
+    await liveSessionStore.hqSkillCatalog(null);
+    const calls = invoke.mock.calls.filter(([cmd]) => cmd === 'hq_skill_catalog');
+    expect(calls.map(([, args]) => (args as { company: string | null }).company)).toEqual([
+      'indigo',
+      'ridge',
+      null,
+    ]);
+
+    resetProbeCaches();
+    invoke.mockImplementationOnce(() => Promise.reject(new Error('walk failed')));
+    await expect(liveSessionStore.hqSkillCatalog('indigo')).rejects.toThrow('walk failed');
+    await liveSessionStore.hqSkillCatalog('indigo');
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'hq_skill_catalog')).toHaveLength(5);
+  });
+
+  it('passes camelCase args straight through to each hq_* command', async () => {
+    invoke.mockImplementation(() => Promise.resolve([]));
+    await liveSessionStore.hqCompanyProjects('indigo');
+    await liveSessionStore.hqRecentMeetings('indigo', 10);
+    await liveSessionStore.hqSignals('indigo', 'decision', 5);
+    await liveSessionStore.hqVaultFiles('indigo', 'knowledge', 'brief', 20);
+    await liveSessionStore.hqVaultFiles('indigo');
+    await liveSessionStore.hqReferenceText('companies/indigo/a.md', 6000);
+    expect(invoke).toHaveBeenCalledWith('hq_company_projects', { company: 'indigo' });
+    expect(invoke).toHaveBeenCalledWith('hq_recent_meetings', { company: 'indigo', limit: 10 });
+    expect(invoke).toHaveBeenCalledWith('hq_signals', { company: 'indigo', kind: 'decision', limit: 5 });
+    expect(invoke).toHaveBeenCalledWith('hq_vault_files', {
+      company: 'indigo',
+      prefix: 'knowledge',
+      query: 'brief',
+      limit: 20,
+    });
+    // Empty prefix / query are sent as null so the backend lists the root.
+    expect(invoke).toHaveBeenCalledWith('hq_vault_files', {
+      company: 'indigo',
+      prefix: null,
+      query: null,
+      limit: 200,
+    });
+    expect(invoke).toHaveBeenCalledWith('hq_reference_text', {
+      path: 'companies/indigo/a.md',
+      maxChars: 6000,
+    });
+  });
+
+  it('exposes the loader set the composer’s + menu takes, backed by the same wrappers', async () => {
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === 'hq_reference_text' ? { path: '/p', text: 'hi', truncated: false } : []),
+    );
+    const loaders = liveSessionStore.contextLoaders;
+    await loaders.meetings('indigo');
+    await loaders.signals('indigo');
+    await loaders.vaultFiles('indigo', '', '');
+    await expect(loaders.referenceText('/p', 6000)).resolves.toEqual({ path: '/p', text: 'hi', truncated: false });
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual([
+      'hq_recent_meetings',
+      'hq_signals',
+      'hq_vault_files',
+      'hq_reference_text',
+    ]);
+  });
+});

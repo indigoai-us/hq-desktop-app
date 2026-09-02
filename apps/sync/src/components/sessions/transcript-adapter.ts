@@ -45,6 +45,8 @@ import {
   parsePolicyDigest,
   type PolicyDigest,
 } from './policy-digest';
+import { isStartworkTurn, startworkLabelFromText } from './startwork';
+import { splitContextBlocks, type TurnAttachment } from './context-attachments';
 
 export const SESSION_SELF_UID = 'you';
 export const SESSION_AGENT_UID = 'agent';
@@ -212,7 +214,14 @@ export interface ToolArtifact {
 export type CardResolution = 'Allowed' | 'Allowed for session' | 'Denied' | string;
 
 export type ChatBlock =
-  | { type: 'userBubble'; id: string; text: string; at: number | null }
+  | {
+      type: 'userBubble';
+      id: string;
+      text: string;
+      /** "Attached: Meeting · title" tags under the words; never the raw block. */
+      attachments: TurnAttachment[];
+      at: number | null;
+    }
   | {
       type: 'assistantProse';
       id: string;
@@ -310,8 +319,25 @@ export function emptyTranscript(): TranscriptState {
   };
 }
 
+/**
+ * What a user turn MEANS beyond its text. Carried on the mirrored turn, and
+ * kept by the store (keyed by text) past the moment the mirror is dropped, so
+ * the backend's own record of the same turn renders identically.
+ */
+export interface UserTurnMeta {
+  /**
+   * Not a bubble: a quiet system divider. The page marks the orientation
+   * `/startwork` turn it sends before the user's first message this way.
+   */
+  hidden?: boolean;
+  /** The divider's wording ("Starting work in indigo · project X"). */
+  label?: string;
+  /** The context chips that rode this turn. */
+  attachments?: TurnAttachment[];
+}
+
 /** One locally-mirrored user turn (the event stream carries none). */
-export interface UserTurn {
+export interface UserTurn extends UserTurnMeta {
   id: string;
   text: string;
   /**
@@ -335,6 +361,11 @@ export interface FoldOptions {
   userTurns?: ReadonlyArray<UserTurn>;
   /** requestId → the verb this client answered it with. */
   resolutions?: Readonly<Record<string, CardResolution>>;
+  /**
+   * text → meta for turns this client sent, so a backend `userMessage` that
+   * replaces the mirror keeps its hidden flag, its label and its tags.
+   */
+  turnMeta?: Readonly<Record<string, UserTurnMeta>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +509,7 @@ export function foldSessionEvents(
 ): TranscriptState {
   const receivedAt = options.receivedAt ?? [];
   const resolutions = options.resolutions ?? {};
+  const turnMeta = options.turnMeta ?? {};
   // Sorted on a copy so a caller's array is never mutated.
   const turns = [...(options.userTurns ?? [])].sort((a, b) => a.atIndex - b.atIndex);
 
@@ -572,6 +604,33 @@ export function foldSessionEvents(
     return group;
   }
 
+  /**
+   * One user turn, mirrored or backend-recorded, as its block. A hidden turn
+   * (the page's orientation `/startwork`, or any `/startwork` the backend
+   * recorded once the mirror was gone) is a system divider, never a bubble;
+   * everything else is a bubble whose words exclude the context block and
+   * whose tags name what rode along.
+   */
+  function userBlock(id: string, text: string, meta: UserTurnMeta, at: number | null): ChatBlock {
+    const hidden = meta.hidden ?? isStartworkTurn(text);
+    if (hidden) {
+      return {
+        type: 'divider',
+        id: `sys-${id}`,
+        label: meta.label ?? (isStartworkTurn(text) ? startworkLabelFromText(text) : text),
+        at,
+      };
+    }
+    const split = splitContextBlocks(text);
+    return {
+      type: 'userBubble',
+      id: `user-${id}`,
+      text: split.text,
+      attachments: meta.attachments ?? split.attachments,
+      at,
+    };
+  }
+
   /** Emit every mirrored user turn that belongs before event `index`. */
   function drainTurns(index: number): void {
     while (nextTurn < turns.length && turns[nextTurn]!.atIndex <= index) {
@@ -583,7 +642,7 @@ export function foldSessionEvents(
       closeGroup();
       retireThought();
       noteUserTurn(turn.text);
-      push({ type: 'userBubble', id: `user-${turn.id}`, text: turn.text, at: turn.at });
+      push(userBlock(turn.id, turn.text, turn, turn.at));
     }
   }
 
@@ -606,7 +665,7 @@ export function foldSessionEvents(
         closeGroup();
         retireThought();
         noteUserTurn(event.text);
-        push({ type: 'userBubble', id: `user-ev-${index}`, text: event.text, at });
+        push(userBlock(`ev-${index}`, event.text, turnMeta[event.text] ?? {}, at));
         break;
       }
 

@@ -261,7 +261,7 @@ describe('send and stop', () => {
     expect(onsend).not.toHaveBeenCalled();
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     flushSync();
-    expect(onsend).toHaveBeenCalledWith('hello', [], []);
+    expect(onsend).toHaveBeenCalledWith('hello', [], [], []);
   });
 
   it('becomes a spinning stop while the agent works', () => {
@@ -373,9 +373,12 @@ describe('@mentions — the picker, the chips, the promise', () => {
     key(input, 'Enter');
     input = type('@Corey Epstein can you look?');
     key(input, 'Enter');
-    expect(onsend).toHaveBeenCalledWith('@Corey Epstein can you look?', [], [
-      { uid: 'prs_corey', displayName: 'Corey Epstein' },
-    ]);
+    expect(onsend).toHaveBeenCalledWith(
+      '@Corey Epstein can you look?',
+      [],
+      [{ uid: 'prs_corey', displayName: 'Corey Epstein' }],
+      [],
+    );
     expect(at('session-mention-chips')).toBeNull();
 
     input = type('@co');
@@ -384,7 +387,7 @@ describe('@mentions — the picker, the chips, the promise', () => {
     expect(at('session-mention-chips')).toBeNull();
     input = type('@Corey Epstein again');
     key(input, 'Enter');
-    expect(onsend).toHaveBeenLastCalledWith('@Corey Epstein again', [], []);
+    expect(onsend).toHaveBeenLastCalledWith('@Corey Epstein again', [], [], []);
   });
 
   it('drops the chip when the @Name is deleted from the draft', () => {

@@ -910,3 +910,67 @@ describe('foldSessionEvents · artifacts', () => {
     expect(group?.artifacts).toEqual([]);
   });
 });
+
+describe('foldSessionEvents — hidden turns and context tags', () => {
+  it('renders a hidden mirrored turn as a quiet divider with its label', () => {
+    const { blocks } = foldSessionEvents([], {
+      userTurns: [
+        turn({ id: 'sw', text: '/startwork indigo', hidden: true, label: 'Starting work in indigo · project x' }),
+        turn({ id: 'u', text: 'go', atIndex: 0 }),
+      ],
+    });
+    expect(types(blocks)).toEqual(['divider', 'userBubble']);
+    expect(blocks[0]).toMatchObject({ id: 'sys-sw', label: 'Starting work in indigo · project x' });
+  });
+
+  it('treats a backend-recorded /startwork as hidden too, deriving the label from the text', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: '/startwork indigo', imageCount: 0 },
+      { kind: 'userMessage', text: 'go', imageCount: 0 },
+    ]);
+    expect(types(blocks)).toEqual(['divider', 'userBubble']);
+    expect(blocks[0]).toMatchObject({ label: 'Starting work in indigo' });
+  });
+
+  it('prefers the kept meta for a backend turn — the exact label survives the mirror', () => {
+    const { blocks } = foldSessionEvents(
+      [{ kind: 'userMessage', text: '/startwork sessions', imageCount: 0 }],
+      { turnMeta: { '/startwork sessions': { hidden: true, label: 'Starting work in indigo · project sessions' } } },
+    );
+    expect(blocks[0]).toMatchObject({ type: 'divider', label: 'Starting work in indigo · project sessions' });
+  });
+
+  it('strips the context block from a recorded turn and renders it as tags', () => {
+    const text =
+      'What did we decide?\n\n<hq-context source="meeting" path="companies/indigo/sources/meetings/x.md" title="Weekly sync">\nnotes\n</hq-context>';
+    const { blocks } = foldSessionEvents([{ kind: 'userMessage', text, imageCount: 0 }]);
+    expect(blocks[0]).toEqual({
+      type: 'userBubble',
+      id: 'user-ev-0',
+      text: 'What did we decide?',
+      attachments: [
+        { kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/sources/meetings/x.md' },
+      ],
+      at: null,
+    });
+  });
+
+  it('carries a mirrored turn’s attachments onto its bubble', () => {
+    const { blocks } = foldSessionEvents([], {
+      userTurns: [
+        turn({
+          text: 'summarise',
+          attachments: [{ kind: 'signal', title: 'Ship it', path: '/s.md' }],
+        }),
+      ],
+    });
+    expect((blocks[0] as Extract<ChatBlock, { type: 'userBubble' }>).attachments).toEqual([
+      { kind: 'signal', title: 'Ship it', path: '/s.md' },
+    ]);
+  });
+
+  it('a plain turn carries no tags', () => {
+    const { blocks } = foldSessionEvents([{ kind: 'userMessage', text: 'hi', imageCount: 0 }]);
+    expect((blocks[0] as Extract<ChatBlock, { type: 'userBubble' }>).attachments).toEqual([]);
+  });
+});

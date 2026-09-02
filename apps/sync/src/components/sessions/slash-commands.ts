@@ -86,3 +86,290 @@ export function applySlashCommand(draft: string, command: SessionCommand): strin
   const leading = draft.slice(0, draft.length - draft.trimStart().length);
   return `${leading}/${command.name} `;
 }
+
+// ---------------------------------------------------------------------------
+// The discovery picker — HQ workers + skills + the CLI's own commands
+// ---------------------------------------------------------------------------
+//
+// `SlashPicker.svelte` paints rows; everything that decides WHICH rows, in
+// what group, in what order, and what a pick inserts lives here so it can be
+// asserted without a DOM. The catalog shapes mirror `hq_skill_catalog`.
+
+/** One skill a worker exposes (`WorkerSkill` on the Rust side). */
+export interface WorkerSkill {
+  name: string;
+  description: string;
+  tags: string[];
+  /** The literal `/run {worker} {skill}` form. */
+  invoke: string;
+}
+
+export interface WorkerEntry {
+  id: string;
+  name: string;
+  description: string;
+  company: string | null;
+  skills: WorkerSkill[];
+}
+
+export interface SkillEntry {
+  name: string;
+  description: string;
+  /** `core` | `personal` | `company:<slug>` | `package`. */
+  scope: string;
+  tags: string[];
+  /** The real slash form, e.g. `/handoff`, `/indigo:capture`. */
+  invoke: string;
+}
+
+export interface SkillCatalog {
+  workers: WorkerEntry[];
+  skills: SkillEntry[];
+}
+
+export type PickerGroup = 'recent' | 'workers' | 'skills' | 'cli';
+
+/** One row the picker can show. `insert === ''` means "drill in" (a worker). */
+export interface PickerRow {
+  id: string;
+  /** Mono label — the invocation for a skill, the worker's name for a worker. */
+  name: string;
+  description: string;
+  /** What lands in the draft (with its trailing space), or '' to drill in. */
+  insert: string;
+  group: PickerGroup;
+  tags: string[];
+  /** Skills only. */
+  scope?: string;
+  /** Worker rows: the worker to drill into. */
+  workerId?: string;
+}
+
+/** Rows shown per group before the "more…" affordance. */
+export const PICKER_PAGE = 60;
+
+const lowerCase = (value: string) => value.toLocaleLowerCase('en-US');
+
+/** Company (the selected one first), then Personal, Core, Packages. */
+export function scopeRank(scope: string, company: string | null): number {
+  if (scope.startsWith('company:')) {
+    return company && scope === `company:${company}` ? 0 : 1;
+  }
+  if (scope === 'personal') return 2;
+  if (scope === 'core') return 3;
+  return 4;
+}
+
+export function scopeLabel(scope: string): string {
+  if (scope.startsWith('company:')) return scope.slice('company:'.length);
+  if (scope === 'personal') return 'Personal';
+  if (scope === 'core') return 'Core';
+  if (scope === 'package') return 'Packages';
+  return scope;
+}
+
+/** Every HQ skill as a row, ordered by scope then name. */
+export function skillRows(catalog: SkillCatalog | null, company: string | null): PickerRow[] {
+  if (!catalog) return [];
+  return [...catalog.skills]
+    .sort(
+      (a, b) =>
+        scopeRank(a.scope, company) - scopeRank(b.scope, company) ||
+        a.invoke.localeCompare(b.invoke, 'en-US'),
+    )
+    .map((skill) => ({
+      id: `skill:${skill.invoke}`,
+      name: skill.invoke,
+      description: skill.description,
+      insert: `${skill.invoke} `,
+      group: 'skills',
+      tags: skill.tags,
+      scope: skill.scope,
+    }));
+}
+
+/** Every worker as a drill-in row. */
+export function workerRows(catalog: SkillCatalog | null): PickerRow[] {
+  if (!catalog) return [];
+  return [...catalog.workers]
+    .sort((a, b) => a.name.localeCompare(b.name, 'en-US'))
+    .map((worker) => ({
+      id: `worker:${worker.id}`,
+      name: worker.name || worker.id,
+      description: worker.description,
+      insert: '',
+      group: 'workers',
+      tags: worker.skills.flatMap((skill) => skill.tags),
+      workerId: worker.id,
+    }));
+}
+
+/** A worker's skills, each inserting its `/run {worker} {skill}` form. */
+export function workerSkillRows(worker: WorkerEntry): PickerRow[] {
+  return worker.skills.map((skill) => ({
+    id: `worker:${worker.id}:${skill.name}`,
+    name: skill.invoke || `/run ${worker.id} ${skill.name}`,
+    description: skill.description,
+    insert: `${skill.invoke || `/run ${worker.id} ${skill.name}`} `,
+    group: 'workers',
+    tags: skill.tags,
+    workerId: worker.id,
+  }));
+}
+
+/**
+ * The CLI's own commands, minus anything the HQ catalog already names — the
+ * HQ row carries the description and tags, so it wins the slot.
+ */
+export function cliRows(
+  commands: ReadonlyArray<SessionCommand>,
+  catalog: SkillCatalog | null,
+): PickerRow[] {
+  const covered = new Set((catalog?.skills ?? []).map((skill) => lowerCase(skill.invoke)));
+  return commands
+    .filter((command) => !covered.has(`/${lowerCase(command.name)}`))
+    .map((command) => ({
+      id: `cli:${command.name}`,
+      name: `/${command.name}`,
+      description: command.argumentHint
+        ? `${command.description} ${command.argumentHint}`.trim()
+        : command.description,
+      insert: `/${command.name} `,
+      group: 'cli',
+      tags: [],
+    }));
+}
+
+/** Name, description or a tag contains the query (case-insensitive). */
+export function rowMatches(row: PickerRow, query: string): boolean {
+  const needle = lowerCase(query.trim());
+  if (!needle) return true;
+  if (lowerCase(row.name).includes(needle)) return true;
+  if (lowerCase(row.description).includes(needle)) return true;
+  return row.tags.some((tag) => lowerCase(tag).includes(needle));
+}
+
+/**
+ * Filter and rank: a name that STARTS with the query (with or without its
+ * leading slash) outranks a name that contains it, which outranks a hit on
+ * the description or a tag. Ties keep the incoming order.
+ */
+export function filterRows(rows: ReadonlyArray<PickerRow>, query: string): PickerRow[] {
+  const needle = lowerCase(query.trim());
+  if (!needle) return [...rows];
+  const ranked: Array<{ row: PickerRow; rank: number; index: number }> = [];
+  rows.forEach((row, index) => {
+    const name = lowerCase(row.name);
+    const bare = name.startsWith('/') ? name.slice(1) : name;
+    let rank: number | null = null;
+    if (bare.startsWith(needle) || name.startsWith(needle)) rank = 0;
+    else if (name.includes(needle)) rank = 1;
+    else if (rowMatches(row, needle)) rank = 2;
+    if (rank !== null) ranked.push({ row, rank, index });
+  });
+  ranked.sort((a, b) => a.rank - b.rank || a.index - b.index);
+  return ranked.map((entry) => entry.row);
+}
+
+/** The union of tags across rows, most common first, capped. */
+export function tagUnion(rows: ReadonlyArray<PickerRow>, limit = 24): string[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const tag of row.tags) {
+      const key = tag.trim();
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'en-US'))
+    .slice(0, limit)
+    .map(([tag]) => tag);
+}
+
+/** Group skill rows by scope, in scope order. */
+export function groupByScope(
+  rows: ReadonlyArray<PickerRow>,
+  company: string | null,
+): Array<{ scope: string; label: string; rows: PickerRow[] }> {
+  const groups = new Map<string, PickerRow[]>();
+  for (const row of rows) {
+    const scope = row.scope ?? 'core';
+    const list = groups.get(scope) ?? [];
+    list.push(row);
+    groups.set(scope, list);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => scopeRank(a[0], company) - scopeRank(b[0], company) || a[0].localeCompare(b[0]))
+    .map(([scope, list]) => ({ scope, label: scopeLabel(scope), rows: list }));
+}
+
+// --- Recent ------------------------------------------------------------------
+
+export const RECENT_SLASH_KEY = 'hq.sessions.recentSlash';
+export const RECENT_SLASH_LIMIT = 8;
+
+/** A remembered pick — enough to re-render the row without the catalog. */
+export interface RecentSlash {
+  name: string;
+  description: string;
+  insert: string;
+}
+
+export function readRecentSlash(): RecentSlash[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(RECENT_SLASH_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (entry): entry is RecentSlash =>
+          Boolean(entry) &&
+          typeof (entry as RecentSlash).insert === 'string' &&
+          typeof (entry as RecentSlash).name === 'string',
+      )
+      .map((entry) => ({
+        name: entry.name,
+        description: typeof entry.description === 'string' ? entry.description : '',
+        insert: entry.insert,
+      }))
+      .slice(0, RECENT_SLASH_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+/** Most recent first, deduped by what it inserts, capped at eight. */
+export function pushRecentSlash(
+  recent: ReadonlyArray<RecentSlash>,
+  pick: RecentSlash,
+): RecentSlash[] {
+  const rest = recent.filter((entry) => entry.insert !== pick.insert);
+  return [pick, ...rest].slice(0, RECENT_SLASH_LIMIT);
+}
+
+export function rememberRecentSlash(recent: ReadonlyArray<RecentSlash>): void {
+  try {
+    globalThis.localStorage?.setItem(RECENT_SLASH_KEY, JSON.stringify(recent));
+  } catch {
+    // A lost history is not worth failing a pick over.
+  }
+}
+
+export function recentRows(recent: ReadonlyArray<RecentSlash>): PickerRow[] {
+  return recent.map((entry) => ({
+    id: `recent:${entry.insert}`,
+    name: entry.name,
+    description: entry.description,
+    insert: entry.insert,
+    group: 'recent',
+    tags: [],
+  }));
+}
+
+/** Apply a picked row to the draft, keeping any leading whitespace. */
+export function applyPickerRow(draft: string, row: Pick<PickerRow, 'insert'>): string {
+  const leading = draft.slice(0, draft.length - draft.trimStart().length);
+  return `${leading}${row.insert}`;
+}

@@ -350,7 +350,7 @@ describe('follow-ups stay in the live session', () => {
 
     // The moved pills ride the next send instead.
     expect(PAGE).toContain('pendingOverrides');
-    expect(PAGE).toContain('liveSessionStore.send(text, attachments, pendingOverrides)');
+    expect(PAGE).toContain('liveSessionStore.send(wire, attachments, pendingOverrides, meta)');
     expect(PAGE).toContain('liveSessionStore.setPermissionMode(mode)');
     expect(STORE).toContain('overrides: TurnOverrides | null = null');
   });
@@ -412,10 +412,10 @@ describe('US-SESSIONS-A — @mentions: teammates and fleet agents from the compo
     expect(COMPOSER).toContain('<MentionPicker');
     expect(COMPOSER).toContain('data-testid="session-mention-chips"');
     expect(COMPOSER).toContain('data-testid="session-mention-remove"');
-    // Mention precedence: the slash menu yields to an @ token under the caret.
-    expect(COMPOSER).toContain('const menuOpen = $derived(!mentionOpen && matches.length > 0)');
+    // Mention precedence: the slash picker yields to an @ token under the caret.
+    expect(COMPOSER).toContain('const pickerOpen = $derived(!mentionOpen && slashQuery !== null)');
     // The chips are the DM list — the send carries exactly what is visible.
-    expect(COMPOSER).toContain('onsend?.(text, attached, chips)');
+    expect(COMPOSER).toContain('onsend?.(text, attached, chips, attachments)');
   });
 
   it('the page loads the directory per company and DMs only AFTER the session send', () => {
@@ -693,5 +693,212 @@ describe('the "Hand off" button and the checkpoint prompt', () => {
       { userTurns: [{ id: 't1', text: '/checkpoint', atIndex: 1, at: null }] },
     );
     expect(cleared.checkpointDue).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composer-level HQ features: start-work, the `/` picker, context attachments
+// ---------------------------------------------------------------------------
+
+import { planFirstSend } from '../../src/components/sessions/startwork';
+import {
+  composeWithContext,
+  splitContextBlocks,
+} from '../../src/components/sessions/context-attachments';
+
+describe('company / project start-work — the first send orients the session', () => {
+  const STARTWORK = read('src/components/sessions/startwork.ts');
+  const PICKER = read('src/components/sessions/ProjectPicker.svelte');
+  const HQ_CONTEXT_RS = read('src-tauri/src/commands/hq_context.rs');
+
+  it('the company pill has a Project second level with "No project" first and done/total counts', () => {
+    expect(COMPOSER).toContain("import ProjectPicker from './ProjectPicker.svelte'");
+    expect(COMPOSER).toContain('<ProjectPicker');
+    expect(COMPOSER).toContain("data-pane={companyPane}");
+    expect(COMPOSER).toContain('data-testid="session-menu-project-open"');
+    expect(PICKER).toContain('data-testid="session-project-none"');
+    expect(PICKER).toContain('No project');
+    expect(PICKER).toContain('storyProgress(project)');
+    expect(STARTWORK).toContain('return `${entry.storyCounts.done}/${entry.storyCounts.total}`;');
+    // Picking a company opens the project pane rather than closing the menu.
+    expect(COMPOSER).toContain("oncompany?.(option.slug);\n                        companyPane = 'projects';");
+  });
+
+  it('remembers the last project per company under hq.sessions.lastProject.<slug>', () => {
+    expect(STARTWORK).toContain("export const LAST_PROJECT_KEY_PREFIX = 'hq.sessions.lastProject.';");
+    expect(PAGE).toContain('project = readLastProject(wanted);');
+    expect(PAGE).toContain('rememberLastProject(company, name);');
+  });
+
+  it('the page loads projects and the skill catalog through the store, never a raw invoke', () => {
+    expect(PAGE).not.toContain('invoke(');
+    expect(PAGE).toContain('.hqCompanyProjects(wanted)');
+    expect(PAGE).toContain('.hqSkillCatalog(wanted)');
+    expect(STORE).toContain("invoke<ProjectEntry[]>('hq_company_projects'");
+    expect(STORE).toContain("invoke<SkillCatalog>('hq_skill_catalog'");
+    expect(MAIN_RS).toContain('commands::hq_context::hq_company_projects');
+    expect(MAIN_RS).toContain('commands::hq_context::hq_skill_catalog');
+    expect(HQ_CONTEXT_RS).toContain('pub fn hq_company_projects(company: String)');
+  });
+
+  it('the FIRST send is two sends: the hidden /startwork turn, then the user text', () => {
+    // Executed for real: the plan is the sequence.
+    expect(planFirstSend('fix it', { company: 'indigo', project: null }, true)).toEqual([
+      { text: '/startwork indigo', hidden: true, label: 'Starting work in indigo' },
+      { text: 'fix it', hidden: false },
+    ]);
+    expect(planFirstSend('fix it', { company: 'indigo', project: 'x' }, true)[0]?.text).toBe(
+      '/startwork x',
+    );
+    // And the page follows it: startAndSend the orientation, then send the words.
+    const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
+    const body = fn.slice(0, fn.indexOf('\n  }\n'));
+    expect(body).toContain('planFirstSend(text, { company, project }, startworkEnabled)');
+    const orientAt = body.indexOf('liveSessionStore.startAndSend(specFrom(), orientation.text, [], {');
+    const wordsAt = body.indexOf('await liveSessionStore.send(wire, attachments, null, meta);');
+    const routeAt = body.indexOf('onopensession?.(started);');
+    expect(orientAt).toBeGreaterThan(-1);
+    expect(wordsAt).toBeGreaterThan(orientAt);
+    expect(routeAt).toBeGreaterThan(wordsAt);
+    expect(body).toContain('hidden: true,');
+  });
+
+  it('never double-sends and honours the opt-out toggle', () => {
+    expect(planFirstSend('/startwork ridge', { company: 'indigo', project: null }, true)).toHaveLength(1);
+    expect(planFirstSend('go', { company: 'indigo', project: null }, false)).toHaveLength(1);
+    expect(COMPOSER).toContain('data-testid="session-menu-startwork-toggle"');
+    expect(COMPOSER).toContain('Run /startwork on first message');
+    expect(STARTWORK).toContain("export const STARTWORK_ENABLED_KEY = 'hq.sessions.startworkOnFirstMessage';");
+    expect(PAGE).toContain('rememberStartworkEnabled(enabled);');
+  });
+
+  it('a hidden turn is a quiet system divider, live and after the backend echo', () => {
+    expect(ADAPTER).toContain('const hidden = meta.hidden ?? isStartworkTurn(text);');
+    expect(ADAPTER).toContain("type: 'divider',\n        id: `sys-${id}`,");
+    expect(STORE).toContain('turnMeta: turnMetaById[entry.sessionId]');
+    expect(STORE).toContain('function keepTurnMeta(');
+    const state = foldSessionEvents(
+      [{ kind: 'userMessage', text: '/startwork indigo', imageCount: 0 }],
+      { turnMeta: { '/startwork indigo': { hidden: true, label: 'Starting work in indigo · project x' } } },
+    );
+    expect(state.blocks).toEqual([
+      { type: 'divider', id: 'sys-ev-0', label: 'Starting work in indigo · project x', at: null },
+    ]);
+  });
+});
+
+describe('the `/` discovery picker replaces the flat list', () => {
+  const SLASH = read('src/components/sessions/slash-commands.ts');
+  const PICKER = read('src/components/sessions/SlashPicker.svelte');
+
+  it('the composer mounts SlashPicker on a `/` draft and the flat popover is gone', () => {
+    expect(COMPOSER).toContain("import SlashPicker from './SlashPicker.svelte'");
+    expect(COMPOSER).toContain('<SlashPicker');
+    expect(COMPOSER).toContain('const slashQuery = $derived(suppressed ? null : slashQueryFor(draft));');
+    expect(COMPOSER).not.toContain('class="slash-menu"');
+    expect(COMPOSER).not.toContain('filterSlashCommands');
+    // Keyboard drives the picker from the textarea.
+    expect(COMPOSER).toContain('if (pickerOpen && slashPicker?.handleKey(event))');
+    expect(PICKER).toContain('export function handleKey(event: KeyboardEvent): boolean');
+  });
+
+  it('groups Recent, Workers, Skills (by scope, company first) and CLI, with a tag row and a cap', () => {
+    expect(PICKER).toContain('data-testid={`session-slash-tab-${entry.id}`}');
+    for (const tab of ['recent', 'workers', 'skills', 'cli']) {
+      expect(PICKER).toContain(`{ id: '${tab}', label:`);
+    }
+    expect(PICKER).toContain('data-testid="session-slash-tags"');
+    expect(PICKER).toContain('data-testid="session-slash-more"');
+    expect(SLASH).toContain('export const PICKER_PAGE = 60;');
+    expect(SLASH).toContain('export const RECENT_SLASH_LIMIT = 8;');
+    expect(SLASH).toContain("export const RECENT_SLASH_KEY = 'hq.sessions.recentSlash';");
+    // Company (selected first) → Personal → Core → Packages.
+    expect(SLASH).toContain("return company && scope === `company:${company}` ? 0 : 1;");
+    expect(SLASH).toContain("if (scope === 'personal') return 2;");
+    expect(SLASH).toContain("if (scope === 'core') return 3;");
+  });
+
+  it('a worker drills into its skills and a skill inserts /run {worker} {skill}', () => {
+    expect(PICKER).toContain("drilled = catalog?.workers.find((worker) => worker.id === row.workerId) ?? null;");
+    expect(SLASH).toContain('insert: `${skill.invoke || `/run ${worker.id} ${skill.name}`} `,');
+  });
+
+  it('CLI commands are what the CLI announced minus what HQ already names', () => {
+    expect(SLASH).toContain("!covered.has(`/${lowerCase(command.name)}`)");
+    expect(COMPOSER).toContain('cliCommands={commands}');
+  });
+
+  it('the catalog is loaded once per company through the store', () => {
+    expect(STORE).toContain('let skillCatalogCache: Map<string, Promise<SkillCatalog>> = new Map();');
+    expect(PAGE).toContain('{catalog}');
+  });
+});
+
+describe('context attachments — the `+` menu', () => {
+  const MENU = read('src/components/sessions/ContextAttachMenu.svelte');
+  const CONTEXT = read('src/components/sessions/context-attachments.ts');
+
+  it('the + button opens the menu with Image, Meeting, Signal, Vault file and Paste path', () => {
+    expect(COMPOSER).toContain("import ContextAttachMenu from './ContextAttachMenu.svelte'");
+    expect(COMPOSER).toContain("toggleMenu('attach', event)");
+    for (const id of [
+      'session-attach-image',
+      'session-attach-meeting',
+      'session-attach-signal',
+      'session-attach-vault',
+      'session-attach-path',
+    ]) {
+      expect(MENU).toContain(id);
+    }
+    // Vault browsing has breadcrumbs and a search; signals group by kind.
+    expect(MENU).toContain('data-testid="session-attach-crumb"');
+    expect(MENU).toContain('data-testid="session-attach-search"');
+    expect(MENU).toContain('data-testid="session-attach-signal-kind"');
+    // Loaders come from the store — the menu and the composer never invoke.
+    expect(MENU).not.toContain('invoke(');
+    expect(COMPOSER).not.toContain('invoke(');
+    expect(PAGE).toContain('context={liveSessionStore.contextLoaders}');
+    expect(STORE).toContain("invoke<MeetingEntry[]>('hq_recent_meetings'");
+    expect(STORE).toContain("invoke<SignalEntry[]>('hq_signals'");
+    expect(STORE).toContain("invoke<VaultEntry[]>('hq_vault_files'");
+    expect(STORE).toContain("invoke<ReferenceText>('hq_reference_text'");
+  });
+
+  it('chips share the mention row, are removable, and show the running size against the caps', () => {
+    expect(COMPOSER).toContain('data-testid="session-context-chips"');
+    expect(COMPOSER).toContain('data-testid="session-context-remove"');
+    expect(COMPOSER).toContain('data-testid="session-context-size"');
+    expect(COMPOSER).toContain('class="mention-chips" data-testid="session-context-chips"');
+    expect(CONTEXT).toContain('export const MAX_ATTACHMENTS = 4;');
+    expect(CONTEXT).toContain('export const MAX_CONTEXT_CHARS = 24_000;');
+    expect(CONTEXT).toContain('export const ATTACHMENT_CHARS = 6_000;');
+    expect(COMPOSER).toContain('readers.referenceText(attachment.path, ATTACHMENT_CHARS)');
+  });
+
+  it('the wire carries each chip as an hq-context block AFTER the text, and the bubble shows tags', () => {
+    const wire = composeWithContext(
+      'Summarise this',
+      [
+        {
+          kind: 'meeting',
+          title: 'Weekly sync',
+          path: '/Users/x/HQ/companies/indigo/sources/meetings/x.md',
+          text: 'notes',
+          truncated: true,
+        },
+      ],
+      '/Users/x/HQ',
+    );
+    expect(wire).toBe(
+      'Summarise this\n\n<hq-context source="meeting" path="companies/indigo/sources/meetings/x.md" title="Weekly sync">\nnotes\n(truncated)\n</hq-context>',
+    );
+    expect(splitContextBlocks(wire)).toEqual({
+      text: 'Summarise this',
+      attachments: [{ kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/sources/meetings/x.md' }],
+    });
+    expect(PAGE).toContain("composeWithContext(text, context, preflight?.hqRoot ?? '')");
+    expect(TRANSCRIPT).toContain('data-testid="session-user-attachment"');
+    expect(TRANSCRIPT).toContain('Attached: {attachmentLabel(attachment)}');
+    expect(ADAPTER).toContain('const split = splitContextBlocks(text);');
   });
 });
