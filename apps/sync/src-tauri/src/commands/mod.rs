@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod agency;
 pub mod agent_session;
+pub mod agent_session_launch;
 pub mod agent_stdio;
 pub mod ai_tools;
 pub mod app;
@@ -25,6 +26,7 @@ pub mod first_run;
 pub mod folder_picker;
 pub mod git_mirror;
 pub mod hq_cli_update;
+pub mod hq_context;
 pub mod hq_core_drift;
 pub mod hq_core_staging;
 pub mod hq_core_state;
