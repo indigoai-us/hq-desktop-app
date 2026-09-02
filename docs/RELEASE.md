@@ -326,10 +326,41 @@ public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
 
+### Non-Indigo release smoke (`HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`)
+
+v0.10.178 shipped because every test and every human check ran as an Indigo
+member with conversations. The macOS release job now launches the signed
+`.app` as a **non-Indigo** identity with an empty inbox before publish can
+run. The secret is **fail-closed**: if it is missing, the release job fails
+and nothing is published. There is no `continue-on-error`.
+
+Provision it like this:
+
+1. Create (or reuse) a Cognito user in the HQ prod pool who is **not** an
+   Indigo member. The account must have an empty conversation directory —
+   only the synthetic `#setup` channel. A personal-scope-only user also
+   works. Do **not** use an `@getindigo.ai` employee account.
+2. Sign in to HQ once on a throwaway machine / profile so
+   `~/.hq/cognito-tokens.json` is written.
+3. Copy the `refreshToken` field (never commit it, never paste it into a
+   ticket). Store it as the repository Actions secret
+   `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`.
+4. Confirm the user still has an empty inbox before each release train;
+   if it accumulates conversations, the smoke no longer represents the
+   v0.10.178 failure mode.
+
+The smoke script is `scripts/macos-artifact-smoke.mjs`. It writes an isolated
+`HOME` with that refresh token, launches `HQ.app` with
+`hqwork://open?channel=setup`, and requires `shell_ready from UI` in the boot
+log within 30 seconds plus a bundle version that matches the tag.
+
 Each release publishes one `latest.json` covering `darwin-aarch64`,
 `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one
-key. Stable releases use `make_latest=true`; beta and alpha use
-`make_latest=false`, so GitHub's `/releases/latest/` alias remains stable.
+key. Stable releases are published first as a GitHub prerelease (`make_latest=false`)
+and only flipped to latest after the tag-pinned `latest.json` smoke passes
+(`gh release edit --latest --prerelease=false`). Beta and alpha stay
+prerelease / not-latest, so GitHub's `/releases/latest/` alias remains stable
+until that promotion.
 
 ### Server-directed rollback (`latest.json` extra fields)
 
@@ -391,6 +422,20 @@ Users already on the good version keep it. Users on a listed bad version
 install the offered build on the next updater check (or from the native
 Recovery window / tray "Check for updates…" item). Artifact signatures are
 not rewritten.
+
+If a staged stable tag was published as a prerelease but **not** promoted
+to latest, users on `/releases/latest` never saw it. Unpublish it without
+the updater feed:
+
+```bash
+gh release edit v0.10.178 -R indigoai-us/hq-desktop-app --prerelease
+# or delete the bad prerelease tag's GitHub release entirely
+gh release delete v0.10.178 -R indigoai-us/hq-desktop-app --yes
+```
+
+Prefer `scripts/release-mark-bad.mjs` once a bad build *did* become latest
+— that stamps `rollback: true` / `bad_versions` on the good tag's
+`latest.json` so already-updated clients pull back.
 
 ### Versionless download aliases
 
@@ -514,15 +559,30 @@ The publish job is globally serialized across release tags. It:
 2. Creates or resets a hidden draft and uploads the complete 15-asset set.
 3. Verifies the exact names, upload state, byte sizes, SHA-256 digests,
    updater-platform URLs, and detached signature sidecars.
-4. Makes the release public with one final PATCH only after the draft passes.
-5. Confirms the public asset/manifest contract and verifies that prereleases
-   did not replace stable latest.
+4. Makes the release public as a **GitHub prerelease that is not `latest`**.
+   Beta and alpha stay there. A stable tag does **not** become GitHub latest
+   in this step.
+5. Smokes the tag-pinned `latest.json`
+   (`/releases/download/<tag>/latest.json`, never `/releases/latest`) and
+   confirms the tag has not replaced stable latest.
+6. Only then, for a stable tag, promotes with
+   `gh release edit <tag> --latest --prerelease=false`.
+7. Confirms the public asset/manifest contract and that stable latest now
+   matches the tag (betas still must not replace it).
+
+The macOS build job also launches the signed `HQ.app` as a non-Indigo
+empty-inbox user before publish is allowed to start. If that smoke fails,
+or if the published `latest.json` smoke fails, the tag never becomes
+`latest` and installed apps keep the previous good build.
 
 An already-published healthy tag is accepted as a read-only rerun success.
-Signed, notarized, and timestamped rebuilds are not byte-deterministic, so the
-rerun validates the existing public release rather than overwriting its assets.
-The control-plane helpers are `scripts/release-asset-contract.mjs` and
-`scripts/release-stable-order.mjs`.
+A stable tag that is public but still a prerelease (`promote-pending`)
+resumes at the `latest.json` smoke and promotion — it does not upload
+again. Signed, notarized, and timestamped rebuilds are not
+byte-deterministic, so a fully-promoted rerun validates the existing
+public release rather than overwriting its assets.
+The control-plane helpers are `scripts/release-asset-contract.mjs`,
+`scripts/release-stable-order.mjs`, and `scripts/macos-artifact-smoke.mjs`.
 
 ## Artifact Shape
 

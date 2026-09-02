@@ -1,7 +1,7 @@
 import { generatedMarksPack } from "./generated-marks.js";
 import { packJsonUrl, parseAvatarPack, trimSlash } from "./parse-pack.js";
 import { readPackRegistry } from "./registry.js";
-import { bundledSnapshotFor } from "./snapshots.js";
+import { bindBundledPackSrcs, bundledSnapshotFor } from "./snapshots.js";
 import { GENERATED_MARKS_BASE_URL, type AvatarPack } from "./types.js";
 
 export type PackFetch = (
@@ -64,7 +64,10 @@ export async function loadPackFromUrl(
       const parsed = parseAvatarPack(await readJson(response));
       if (parsed.ok) {
         return {
-          pack: { ...parsed.pack, baseUrl: trimSlash(baseUrl) || parsed.pack.baseUrl },
+          pack: bindBundledPackSrcs({
+            ...parsed.pack,
+            baseUrl: trimSlash(baseUrl) || parsed.pack.baseUrl,
+          }),
           source: "remote",
         };
       }
@@ -74,7 +77,10 @@ export async function loadPackFromUrl(
   }
   if (fallback) {
     return {
-      pack: { ...fallback, baseUrl: trimSlash(baseUrl) || fallback.baseUrl },
+      pack: bindBundledPackSrcs({
+        ...fallback,
+        baseUrl: trimSlash(baseUrl) || fallback.baseUrl,
+      }),
       source: "fallback",
     };
   }

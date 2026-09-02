@@ -17,22 +17,28 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import MarketplacePanel from '../../src/desktop-alt/panels/MarketplacePanel.svelte';
+import {
+  MARKETPLACE_COVER_HOST,
+} from '../../src/desktop-alt/lib/pack-covers';
 import type { MarketplaceListing } from '../../src/desktop-alt/lib/marketplace';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+const MARKETPLACE_COVER =
+  `https://${MARKETPLACE_COVER_HOST}/listings/lst_real/cover.jpg?X-Amz-Signature=mock`;
+
 const listings: MarketplaceListing[] = [
   {
     id: 'real-art',
     type: 'skill',
-    name: 'Full Color Art',
-    slug: 'full-color-art',
+    name: 'hq-pack-client-service',
+    slug: 'client-service',
     version: '1.0.0',
     author: 'maya',
-    summary: 'A hosted cover that must not bypass the packaged image policy.',
+    summary: 'A hosted marketplace cover must render on the card.',
     createdAt: '2026-07-28T12:00:00Z',
-    coverImageUrl: 'https://cdn.example.com/full-color.jpg',
+    coverImageUrl: MARKETPLACE_COVER,
   },
   {
     id: 'fallback-art',
@@ -44,6 +50,17 @@ const listings: MarketplaceListing[] = [
     summary: 'A listing without an image receives a generated color identity.',
     createdAt: '2026-07-28T12:00:00Z',
     coverImageUrl: null,
+  },
+  {
+    id: 'blocked-art',
+    type: 'skill',
+    name: 'Blocked Host Art',
+    slug: 'blocked-host-art',
+    version: '2.0.0',
+    author: 'maya',
+    summary: 'An arbitrary https cover must not bypass the packaged image policy.',
+    createdAt: '2026-07-28T12:00:00Z',
+    coverImageUrl: 'https://cdn.example.com/full-color.jpg',
   },
 ];
 
@@ -65,33 +82,57 @@ afterEach(async () => {
 });
 
 describe('marketplace cover color contract', () => {
-  it('uses the colorful fallback instead of emitting blocked hosted image URLs', async () => {
+  it('renders the marketplace cover when present, falls back when absent, and keeps badge/version overlaid', async () => {
     component = mount(MarketplacePanel, { target: host });
 
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelectorAll('[data-testid="marketplace-card"]')).toHaveLength(2);
+      expect(host.querySelectorAll('[data-testid="marketplace-card"]')).toHaveLength(3);
     });
 
     const cards = [...host.querySelectorAll<HTMLElement>('[data-testid="marketplace-card"]')];
-    const real = cards.find((card) => card.textContent?.includes('Full Color Art'));
+    const real = cards.find((card) => card.textContent?.includes('Client Service'));
     const fallback = cards.find((card) => card.textContent?.includes('Fallback Art'));
+    const blocked = cards.find((card) => card.textContent?.includes('Blocked Host Art'));
     expect(real).toBeTruthy();
     expect(fallback).toBeTruthy();
+    expect(blocked).toBeTruthy();
 
-    expect(real!.querySelector('.cover-img')).toBeNull();
-    expect(real!.querySelector('.cover-fallback')).toBeTruthy();
-    expect(real!.querySelector('.cover-color')).toBeTruthy();
-    expect(real!.querySelector('img[src^="http"]')).toBeNull();
+    const realCover = real!.querySelector('[data-testid="marketplace-cover"]');
+    const realImg = real!.querySelector<HTMLImageElement>('.cover-img');
+    expect(realImg).toBeTruthy();
+    expect(realImg!.src).toBe(MARKETPLACE_COVER);
+    expect(real!.querySelector('.cover-fallback')).toBeNull();
+    expect(realCover!.querySelector('.kind-chip')?.textContent).toMatch(/skill/);
+    expect(realCover!.querySelector('[data-testid="marketplace-version"]')?.textContent).toBe(
+      'v1.0.0',
+    );
+
+    expect(fallback!.querySelector('.cover-img')).toBeNull();
     expect(fallback!.querySelector('.cover-fallback')).toBeTruthy();
-    expect(fallback!.querySelector('.cover-color')).toBeTruthy();
+    expect(fallback!.querySelector('.cover-monogram')?.textContent).toBe('F');
+    expect(fallback!.querySelector('[data-testid="marketplace-cover"] .kind-chip')?.textContent).toMatch(
+      /skill/,
+    );
+    expect(
+      fallback!.querySelector('[data-testid="marketplace-cover"] [data-testid="marketplace-version"]')
+        ?.textContent,
+    ).toBe('v1.0.0');
+
+    expect(blocked!.querySelector('.cover-img')).toBeNull();
+    expect(blocked!.querySelector('.cover-fallback')).toBeTruthy();
+    expect(blocked!.querySelector('img[src^="https://cdn.example.com"]')).toBeNull();
+    expect(
+      blocked!.querySelector('[data-testid="marketplace-cover"] [data-testid="marketplace-version"]')
+        ?.textContent,
+    ).toBe('v2.0.0');
 
     real!.click();
     flushSync();
     const detail = host.querySelector('[data-testid="marketplace-detail-cover"]');
-    expect(detail?.querySelector('.detail-cover-img')).toBeNull();
-    expect(detail?.querySelector('.detail-cover-fallback')).toBeTruthy();
-    expect(detail?.querySelector('.cover-color')).toBeTruthy();
-    expect(detail?.querySelector('img[src^="http"]')).toBeNull();
+    const detailImg = detail?.querySelector<HTMLImageElement>('.detail-cover-img');
+    expect(detailImg).toBeTruthy();
+    expect(detailImg!.src).toBe(MARKETPLACE_COVER);
+    expect(detail?.querySelector('.detail-cover-fallback')).toBeNull();
   });
 });

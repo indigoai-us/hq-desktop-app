@@ -18,6 +18,14 @@
  * intentional.
  */
 :root {
+  /* Overlay window chrome — shared by V4TitleBar and full-window sub-page
+     headers (PageHeader). Keep in lockstep with titlebar-layout.ts.
+     Default inset is the no-window-controls gutter (web). `.has-window-controls`
+     raises it to the macOS traffic-light gutter; Windows overrides to 12px
+     because caption buttons live in the native title bar. */
+  --titlebar-height: 48px;
+  --titlebar-leading-inset: 16px;
+
   /* Readable desktop ramp with visible hierarchy. Metadata stays compact but
      never drops below 13px; page/detail headings have real display scale. */
   --type-metadata: 13px;
@@ -82,6 +90,16 @@
   --v4-space-6: 24px;
   --v4-row-h: 28px;
   --v4-row-gap: 2px;
+}
+
+/* Desktop hosts overlay native window controls on the HQ chrome. */
+.has-window-controls {
+  --titlebar-leading-inset: 78px;
+}
+
+/* Windows: native decorated title bar, no overlay traffic lights. */
+html[data-platform="windows"] {
+  --titlebar-leading-inset: 12px;
 }
 
 /* Light is the default and is repeated on the force-theme selector so visual

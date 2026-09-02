@@ -77,8 +77,17 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(csp).toContain("img-src 'self'");
     expect(csp).toContain('data:');
     expect(csp).toContain('asset:');
-    expect(csp).not.toMatch(/img-src[^;]*https?:/i);
+    // Marketplace listing covers AND creator avatars are presigned GETs on
+    // this one production assets host. A wildcard (`https:` / `*`) would
+    // re-open tracking pixels.
+    expect(csp).toContain(
+      'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
+    );
     expect(csp).not.toMatch(/img-src[^;]*\*/i);
+    // Scheme wildcards stay forbidden; only the one marketplace assets origin
+    // is allowlisted (not `https:` / `https://*` / `https://*.amazonaws.com`).
+    expect(csp).not.toMatch(/img-src[^;]*https:\s/i);
+    expect(csp).not.toMatch(/img-src[^;]*https:\/\/\*/i);
   });
 
   it('routes target=_blank and in-webview navigations to the OS browser', () => {

@@ -248,6 +248,10 @@
     patch({ windowOpacity: applyWindowOpacity(next) });
   }
 
+  function toggleSidebarScopeLabels(): void {
+    patch({ showSidebarScopeLabels: !prefs.showSidebarScopeLabels });
+  }
+
   async function toggleLaunch(): Promise<void> {
     if (!adapter || pending("launch")) return;
     const previous = native.startAtLogin;
@@ -1064,6 +1068,22 @@
           <button type="button" class="chip" class:on={prefs.uiSize === option.id} role="radio" aria-checked={prefs.uiSize === option.id} onclick={() => setUiSize(option.id)}>{option.label}</button>
         {/each}
       </div>
+    </div>
+    <div class="set-row">
+      <div>
+        <div class="sn">Show company / email labels in the sidebar</div>
+        <div class="sd">Company names on channels and agents; emails on people when names collide</div>
+      </div>
+      <button
+        type="button"
+        class="toggle"
+        class:on={prefs.showSidebarScopeLabels}
+        role="switch"
+        aria-checked={prefs.showSidebarScopeLabels}
+        aria-label="Show company / email labels in the sidebar"
+        data-testid="settings-sidebar-scope-labels"
+        onclick={() => toggleSidebarScopeLabels()}
+      ></button>
     </div>
   {:else if section === "notifications"}
     {#if canSync}

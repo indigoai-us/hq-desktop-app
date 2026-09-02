@@ -160,6 +160,40 @@ describe("stable release publication order", () => {
     });
   });
 
+  it("confirms a staged stable tag has not become latest yet", async () => {
+    const fetchImpl = async () => latestResponse("v1.2.3");
+    await expect(
+      confirmReleaseChannel({
+        repository,
+        targetTag: "v1.3.0",
+        makeLatest: false,
+        token,
+        fetchImpl: fetchImpl as typeof fetch,
+        attempts: 1,
+        retryDelayMs: 0,
+      }),
+    ).resolves.toEqual({
+      status: "staged-not-latest",
+      targetTag: "v1.3.0",
+      latestTag: "v1.2.3",
+    });
+  });
+
+  it("fails closed if a staged stable tag became latest before promotion", async () => {
+    const fetchImpl = async () => latestResponse("v1.3.0");
+    await expect(
+      confirmReleaseChannel({
+        repository,
+        targetTag: "v1.3.0",
+        makeLatest: false,
+        token,
+        fetchImpl: fetchImpl as typeof fetch,
+        attempts: 1,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow("unexpectedly became latest before promotion");
+  });
+
   it.each([401, 403, 429, 500, 503])(
     "fails closed when latest returns HTTP %i",
     async (status) => {

@@ -3,21 +3,19 @@
  *
  * Each listing gets a unique, on-brand piece of cover art (the Indigo Midjourney
  * "moodboard" style shared with getindigo.ai + the email headers) so a card reads
- * as a distinct object, not a row of text. Covers are bundled with the app and
- * keyed by the pack `slug` (the stable, per-creator install identifier).
+ * as a distinct object, not a row of text.
  *
- * Server-provided remote cover URLs are intentionally not rendered directly:
- * the packaged CSP blocks remote images so a listing cannot become a tracking
- * pixel. Once an authorized native proxy returns a raster data URL,
- * `coverForListing` will accept it. Until then, shipped art wins and every other
- * pack gets the deterministic branded gradient placeholder.
+ * Precedence: a presigned `coverImageUrl` from the marketplace assets bucket
+ * (the only remote host the packaged CSP allowlists) wins, then a CSP-safe
+ * local/data URL, then bundled-by-slug art. Arbitrary https hosts stay blocked
+ * so a listing cannot become a tracking pixel. Packs with none of the above
+ * get the deterministic branded gradient placeholder.
  *
  * Kept rune-free + asset-import-only so it's trivially unit-testable.
  */
 
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
 import { safeLocalImageSrc } from "../common/local-image-src.js";
-
 // Vite resolves each import to a hashed asset URL string at build time.
 import engineeringCover from "./assets/pack-covers/engineering.jpg";
 import gstackCover from "./assets/pack-covers/gstack.jpg";
@@ -26,10 +24,18 @@ import impeccableCover from "./assets/pack-covers/impeccable.jpg";
 import magicpathCover from "./assets/pack-covers/magicpath-agent-skills.jpg";
 
 /**
+ * Virtual-hosted S3 origin hq-pro mints cover presigned URLs against in
+ * production (`hq-marketplace-assets-${stage}` with stage `hq-prod`). Keep in
+ * lockstep with `apps/sync/src-tauri/tauri.conf.json` `img-src`.
+ */
+export const MARKETPLACE_COVER_HOST =
+  "hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com";
+
+/**
  * Bundled cover art, keyed by pack slug. Add an entry here (and the asset under
  * `assets/pack-covers/`) when a new pack ships with first-party art; everything
- * else falls back to the branded gradient placeholder until the backend serves a
- * per-listing `coverImageUrl`.
+ * else falls back to the branded gradient placeholder when the listing has no
+ * hosted `coverImageUrl`.
  */
 export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
   engineering: engineeringCover,
@@ -40,13 +46,66 @@ export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Accept a hq-pro-minted marketplace cover URL, or `null` when the value is not
+ * a https URL on the allowlisted assets host. Tracking-pixel hosts, http, and
+ * credentialed URLs are rejected so a listing cannot load arbitrary images.
+ */
+export function marketplaceCoverSrc(
+  raw: string | null | undefined,
+): string | null {
+  const src = raw?.trim() ?? "";
+  if (src === "" || /[\u0000-\u001f\u007f]/.test(src)) return null;
+  let url: URL;
+  try {
+    url = new URL(src);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.hostname !== MARKETPLACE_COVER_HOST) return null;
+  if (!url.pathname.startsWith("/listings/")) return null;
+  return src;
+}
+
+/**
+ * Accept a hq-pro-minted person/creator avatar URL on the same marketplace
+ * assets host. Paths are `/members/…` (HQ profile photos) or `/creators/…`
+ * (creator-directory avatars). Arbitrary hosts stay blocked.
+ */
+export function marketplaceAvatarSrc(
+  raw: string | null | undefined,
+): string | null {
+  const src = raw?.trim() ?? "";
+  if (src === "" || /[\u0000-\u001f\u007f]/.test(src)) return null;
+  let url: URL;
+  try {
+    url = new URL(src);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.hostname !== MARKETPLACE_COVER_HOST) return null;
+  if (
+    !url.pathname.startsWith("/members/") &&
+    !url.pathname.startsWith("/creators/")
+  ) {
+    return null;
+  }
+  return src;
+}
+
+/**
  * Resolve the cover-art URL for a listing, or `null` when none is available.
  *
- * Precedence: a CSP-compatible, locally rendered `coverImageUrl` (for example a
- * raster data URL from a future native proxy) wins over bundled-by-slug art.
- * Direct http(s) URLs are ignored and fall through to bundled or generated art.
+ * Precedence: an allowlisted marketplace `coverImageUrl` (presigned S3 GET),
+ * then a CSP-compatible local/data URL, then bundled-by-slug art. Arbitrary
+ * http(s) URLs are ignored and fall through to bundled or generated art.
  */
 export function coverForListing(listing: MarketplaceListing): string | null {
+  const hosted = marketplaceCoverSrc(listing.coverImageUrl);
+  if (hosted) return hosted;
   const local = safeLocalImageSrc(listing.coverImageUrl);
   if (local) return local;
   return BUNDLED_PACK_COVERS[listing.slug] ?? null;

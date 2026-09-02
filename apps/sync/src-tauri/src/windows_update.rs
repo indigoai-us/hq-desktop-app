@@ -638,6 +638,7 @@ pub async fn install_verified_bytes(
             staged.version
         ),
     );
+    crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.version).await;
     quiescence.commit();
     app.exit(0);
     Ok(())

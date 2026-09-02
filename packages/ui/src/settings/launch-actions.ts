@@ -45,6 +45,17 @@ export interface LaunchActionsInput {
    * run `/setup`.
    */
   prompt?: string;
+  /**
+   * Prompt for the Claude Code DESKTOP DEEP LINK only, when it must differ
+   * from `prompt`. Defaults to `prompt`.
+   *
+   * WHY the seam exists: Claude Desktop scans skills before a folder handed
+   * to it by a `claude://` link is trusted, so a project skill such as HQ's
+   * `/setup` is not registered in the session the link opens and the
+   * pre-typed slash command lands as an unknown command. The terminal-CLI
+   * path settles trust before that scan, so it keeps `prompt` unchanged.
+   */
+  deepLinkPrompt?: string;
 }
 
 export interface LaunchActions {
@@ -95,9 +106,11 @@ export function createLaunchActions({
   shell,
   hqFolderPath,
   prompt,
+  deepLinkPrompt,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
+  const deepLinkPrefill = prefillOf(deepLinkPrompt) ?? prefill;
   let aiTools: AiTools | null | undefined;
 
   async function ensureAiTools(): Promise<AiTools | null> {
@@ -112,7 +125,7 @@ export function createLaunchActions({
     const path = resolveClaudeLaunchPath(await ensureAiTools());
     if (path === "deep-link") {
       const res = await shell.openClaudeCodeLink(
-        buildClaudeCodeUrl({ folder, prompt: prefill }),
+        buildClaudeCodeUrl({ folder, prompt: deepLinkPrefill }),
       );
       return res.ok ? null : failureMessage(res, "Claude Code");
     }

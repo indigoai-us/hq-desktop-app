@@ -59,6 +59,7 @@ pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
 pub mod watcher_fault;
+pub mod win32_path;
 pub mod workspaces;
 
 #[cfg(test)]

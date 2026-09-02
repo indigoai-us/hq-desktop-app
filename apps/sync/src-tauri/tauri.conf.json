@@ -41,7 +41,7 @@
       }
     ],
     "security": {
-      "csp": "img-src 'self' data: asset: blob:"
+      "csp": "img-src 'self' data: asset: blob: https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com"
     }
   },
   "plugins": {

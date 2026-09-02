@@ -3,7 +3,7 @@
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
    */
-  import { resolvePackItemSrc } from "./parse-pack.js";
+  import { cspSafeAvatarSrc, resolvePackItemSrc } from "./parse-pack.js";
   import {
     filterPacks,
     flattenVisible,
@@ -44,6 +44,22 @@
   let loadingRemote = $state(false);
   let selection = $state<AvatarSelection>({ kind: "generated" });
   let cursor = $state(0);
+  let broken = $state(new Set<string>());
+
+  function markBroken(key: string): void {
+    if (broken.has(key)) return;
+    const next = new Set(broken);
+    next.add(key);
+    broken = next;
+  }
+
+  function tileInitials(name: string): string {
+    const parts = name.trim().split(/[\s·•/\-]+/).filter(Boolean);
+    if (parts.length > 1) {
+      return `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase();
+    }
+    return name.trim().slice(0, 2).toUpperCase() || "•";
+  }
 
   const loaded = $derived(packs ?? remotePacks ?? []);
   const loading = $derived(!packs && (loadingRemote || remotePacks === null));
@@ -124,10 +140,11 @@
   }
 
   const previewSrc = $derived.by(() => {
-    if (selection.kind === "generated") return currentSrc;
-    const row = selectedRow;
-    if (!row) return currentSrc;
-    return row.src;
+    const raw =
+      selection.kind === "generated"
+        ? currentSrc
+        : (selectedRow?.src ?? currentSrc);
+    return cspSafeAvatarSrc(raw);
   });
 </script>
 
@@ -182,12 +199,14 @@
           <div class="grid">
             {#each group.items as item (item.id)}
               {@const src = resolvePackItemSrc(group.pack, item)}
+              {@const tileSrc = cspSafeAvatarSrc(src)}
               {@const key = `${group.pack.id}:${item.id}`}
               {@const selected =
                 selection.kind === "item" &&
                 selection.packId === group.pack.id &&
                 selection.itemId === item.id}
               {@const focused = currentRow?.key === key}
+              {@const failed = !tileSrc || broken.has(key)}
               <button
                 type="button"
                 class="sw"
@@ -209,7 +228,19 @@
                     src,
                   })}
               >
-                <img src={src} alt="" />
+                {#if tileSrc}
+                  <img
+                    src={tileSrc}
+                    alt=""
+                    class:is-broken={broken.has(key)}
+                    onerror={() => markBroken(key)}
+                  />
+                {/if}
+                {#if failed}
+                  <span class="fallback" data-testid="avatar-pack-item-fallback">
+                    {tileInitials(item.name)}
+                  </span>
+                {/if}
               </button>
             {/each}
           </div>
@@ -301,6 +332,7 @@
   }
 
   .preview {
+    position: relative;
     width: 56px;
     height: 56px;
     overflow: hidden;
@@ -309,10 +341,16 @@
 
   .preview img,
   .sw img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  .sw img.is-broken {
+    opacity: 0;
   }
 
   .note,
@@ -354,14 +392,27 @@
   }
 
   .sw {
+    position: relative;
     display: block;
     aspect-ratio: 1;
+    min-height: 0;
     padding: 0;
     overflow: hidden;
     border: 1px solid transparent;
     border-radius: 10px;
-    background: none;
+    background: color-mix(in srgb, var(--t1) 5%, transparent);
     cursor: pointer;
+  }
+
+  .fallback {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--t2);
+    font: 500 12px/1 var(--font-ui, inherit);
+    letter-spacing: 0.02em;
+    pointer-events: none;
   }
 
   .sw.on {

@@ -344,12 +344,17 @@ mod tests {
     fn runtime_generation_bumps_on_start_and_cancel() {
         let runtime = WatchdogRuntime::default();
         assert_eq!(runtime.generation(), 0);
+        assert!(!runtime.recovery_is_open());
         runtime.apply(|dog| dog.on_window_created());
         let after_start = runtime.generation();
         assert!(after_start > 0);
         runtime.apply(|dog| dog.on_shell_ready());
         assert!(runtime.generation() > after_start);
         assert_eq!(runtime.phase(), WatchdogPhase::Ready);
+        runtime.mark_recovery_open(true);
+        assert!(runtime.recovery_is_open());
+        runtime.mark_recovery_open(false);
+        assert!(!runtime.recovery_is_open());
     }
 
     #[test]
@@ -367,5 +372,32 @@ mod tests {
         assert!(script.contains("hq.work.tenant.v1."));
         assert!(!script.contains("cognito-tokens"));
         assert!(!script.contains("menubar.json"));
+    }
+
+    #[test]
+    fn safe_mode_path_lives_under_hq_config_dir_not_a_launchagent() {
+        let Some(path) = safe_mode_path() else {
+            return;
+        };
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(SAFE_MODE_FILE_NAME)
+        );
+        let rendered = path.to_string_lossy();
+        assert!(
+            !rendered.contains("LaunchAgents"),
+            "safe-mode must not use a macOS LaunchAgent path, got {rendered}"
+        );
+        let config = hq_desktop_core::paths::hq_config_dir().expect("hq config dir");
+        assert_eq!(path, config.join(SAFE_MODE_FILE_NAME));
+    }
+
+    #[test]
+    fn watchdog_timeout_defaults_when_the_override_env_is_unset() {
+        if std::env::var(WATCHDOG_TIMEOUT_ENV).is_ok() {
+            return;
+        }
+        assert_eq!(watchdog_timeout_from_env(), DEFAULT_WATCHDOG_TIMEOUT);
+        assert!(!force_recovery_from_env());
     }
 }

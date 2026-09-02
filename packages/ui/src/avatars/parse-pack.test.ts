@@ -1,13 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAvatarPack, resolvePackItemSrc, packJsonUrl } from "./parse-pack.js";
-import { HQ_AGENT_MASCOTS_SNAPSHOT } from "./snapshots.js";
+import {
+  cspSafeAvatarSrc,
+  isResolvedPackItemSrc,
+  packJsonUrl,
+  parseAvatarPack,
+  resolvePackItemSrc,
+} from "./parse-pack.js";
+import { generatedMarksPack } from "./generated-marks.js";
+import {
+  bundledMascotAssets,
+  HQ_AGENT_MASCOTS_SNAPSHOT,
+} from "./snapshots.js";
+import {
+  GENERATED_MARKS_AUTHOR,
+  GENERATED_MARKS_PACK_NAME,
+  HQ_AGENT_MASCOTS_AUTHOR,
+  HQ_AGENT_MASCOTS_PACK_NAME,
+} from "./types.js";
 
 const valid = {
   id: "demo",
   name: "Demo pack",
   version: "1.0.0",
-  author: "HQ",
+  author: "Tester",
   baseUrl: "https://example.test/pack",
   items: [
     { id: "fox", name: "Fox", src: "fox.png", tags: ["animal", "fox"] },
@@ -88,6 +104,16 @@ describe("resolvePackItemSrc", () => {
     ).toBe("https://cdn.test/dot.png");
   });
 
+  it("does not prefix Vite asset URLs with the builtin: pack base", () => {
+    const pack = generatedMarksPack(["/assets/agent-01.png", "/assets/agent-02.svg"]);
+    expect(pack.author).toBe(GENERATED_MARKS_AUTHOR);
+    expect(pack.name).toBe(GENERATED_MARKS_PACK_NAME);
+    expect(resolvePackItemSrc(pack, pack.items[0]!)).toBe("/assets/agent-01.png");
+    expect(resolvePackItemSrc(pack, pack.items[1]!)).toBe("/assets/agent-02.svg");
+    expect(isResolvedPackItemSrc("/assets/agent-01.png")).toBe(true);
+    expect(isResolvedPackItemSrc("blob:https://app/local")).toBe(true);
+  });
+
   it("builds the pack.json URL", () => {
     expect(packJsonUrl("https://hq-agent-mascots.indigo-hq.com/")).toBe(
       "https://hq-agent-mascots.indigo-hq.com/pack.json",
@@ -95,10 +121,29 @@ describe("resolvePackItemSrc", () => {
   });
 });
 
+describe("cspSafeAvatarSrc", () => {
+  it("keeps bundled assets, raster data URLs, and blob URLs", () => {
+    expect(cspSafeAvatarSrc("/assets/agent-01.png")).toBe("/assets/agent-01.png");
+    expect(cspSafeAvatarSrc("blob:https://app.local/id")).toBe("blob:https://app.local/id");
+    expect(cspSafeAvatarSrc("data:image/png;base64,iVBORw0KGgo=")).toBe(
+      "data:image/png;base64,iVBORw0KGgo=",
+    );
+  });
+
+  it("rejects remote and privileged schemes the packaged CSP would block", () => {
+    expect(cspSafeAvatarSrc("https://hq-agent-mascots.indigo-hq.com/mascots/v2/dot.png")).toBeNull();
+    expect(cspSafeAvatarSrc("builtin:generated-marks/assets/agent-01.png")).toBeNull();
+    expect(cspSafeAvatarSrc("javascript:alert(1)")).toBeNull();
+  });
+});
+
 describe("bundled mascots snapshot", () => {
-  it("is a valid 24-item catalog", () => {
+  it("is a valid 24-item Animals catalog with bundled image URLs", () => {
     expect(HQ_AGENT_MASCOTS_SNAPSHOT.id).toBe("hq-agent-mascots");
+    expect(HQ_AGENT_MASCOTS_SNAPSHOT.name).toBe(HQ_AGENT_MASCOTS_PACK_NAME);
+    expect(HQ_AGENT_MASCOTS_SNAPSHOT.author).toBe(HQ_AGENT_MASCOTS_AUTHOR);
     expect(HQ_AGENT_MASCOTS_SNAPSHOT.items).toHaveLength(24);
+    expect(Object.keys(bundledMascotAssets).length).toBe(24);
     expect(
       HQ_AGENT_MASCOTS_SNAPSHOT.items.map((item) => item.id).sort(),
     ).toEqual(
@@ -107,5 +152,12 @@ describe("bundled mascots snapshot", () => {
     expect(
       HQ_AGENT_MASCOTS_SNAPSHOT.items.some((item) => item.id === "v2-dot"),
     ).toBe(true);
+    for (const item of HQ_AGENT_MASCOTS_SNAPSHOT.items) {
+      const src = resolvePackItemSrc(HQ_AGENT_MASCOTS_SNAPSHOT, item);
+      expect(cspSafeAvatarSrc(src), item.id).toBe(src);
+      expect(src).not.toMatch(/^https?:/i);
+      expect(src).not.toMatch(/^builtin:/);
+      expect(src).toContain("hq-agent-mascots");
+    }
   });
 });
