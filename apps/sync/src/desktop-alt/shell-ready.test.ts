@@ -22,8 +22,15 @@ vi.mock('@tauri-apps/api/app', () => ({
   setTheme: vi.fn(async () => {}),
 }));
 
+vi.mock('@hq/work/WorkShell', async () => {
+  const { default: WorkShellShellReadyHarness } = await import(
+    './WorkShellShellReadyHarness.svelte'
+  );
+  return { default: WorkShellShellReadyHarness };
+});
+
 import { flushSync, mount, unmount } from 'svelte';
-import HqWorkDesktopShell from './HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from './HqWorkWorkShell.svelte';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
@@ -49,12 +56,7 @@ function mockInvoke(
           displayName: WHOAMI.displayName,
         };
       case 'get_auth_session':
-        return {
-          accountId: 'acct_ada',
-          generation: 1,
-          status: 'active',
-          reason: null,
-        };
+        return null;
       case 'whoami':
         return WHOAMI;
       case 'list_syncable_workspaces':
@@ -120,18 +122,22 @@ afterEach(async () => {
   host?.remove();
 });
 
-describe('HqWorkDesktopShell shell_ready', () => {
-  it('invokes shell_ready after the first successful conversations paint', async () => {
+describe('HqWorkWorkShell shell_ready', () => {
+  it('invokes shell_ready after WorkShell reports its first successful paint', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn, calls } = mockInvoke();
-    component = mount(HqWorkDesktopShell, {
+    component = mount(HqWorkWorkShell, {
       target: host,
-      props: { invokeFn },
+      props: { invokeFn, bootTimeoutMs: 41 },
     });
     await flush();
     expect(calls).toContain('shell_ready');
-    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+    expect(
+      host.querySelector('[data-testid="work-shell-ready-harness"]')?.getAttribute(
+        'data-boot-timeout',
+      ),
+    ).toBe('41');
   });
 
   it('does not invoke shell_ready on identity-error', async () => {
@@ -142,7 +148,7 @@ describe('HqWorkDesktopShell shell_ready', () => {
         throw new Error('vault unavailable');
       },
     });
-    component = mount(HqWorkDesktopShell, {
+    component = mount(HqWorkWorkShell, {
       target: host,
       props: { invokeFn },
     });

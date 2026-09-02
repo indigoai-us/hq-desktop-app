@@ -241,3 +241,14 @@ mod tests {
             .exists());
     }
 }
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_tray_message_badge_is_a_noop_off_macos() {
+        assert_eq!(set_tray_message_badge(0), Ok(()));
+        assert_eq!(set_tray_message_badge(12), Ok(()));
+    }
+}

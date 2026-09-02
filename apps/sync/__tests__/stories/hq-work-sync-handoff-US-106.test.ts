@@ -67,7 +67,7 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(doc).toContain('hqWorkHandoff');
       expect(doc).toContain('~/.hq/menubar.json');
       expect(doc).toContain('get_hq_work_handoff');
-      expect(doc).toContain('HqWorkDesktopShell');
+      expect(doc).toContain('HqWorkWorkShell');
       expect(doc).toContain('always returns');
       expect(doc).toContain('strips the key');
       expect(doc).toContain('is_indigo_user');
@@ -79,7 +79,7 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(doc).toContain('74110996');
       expect(doc).toContain('70.68');
       expect(doc).toContain('+10 MiB');
-      expect(doc).toContain('HqWorkDesktopShell');
+      expect(doc).toContain('HqWorkWorkShell');
       expect(doc).toContain('dynamic import()');
       expect(doc).toMatch(/requires a[\s\S]*release build/);
       expect(doc).toContain('Do not invent an AFTER number');

@@ -37,7 +37,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 
 import { flushSync, mount, unmount } from 'svelte';
 import { failure, ok, type PlatformAdapter } from '@hq/platform';
-import { ChatSidebar, EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
+import { EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
 import {
   bootDesktopAltWindow,
   resolveDesktopAltShell,
@@ -46,7 +46,7 @@ import {
   applyDesktopAltRoute,
   createHqWorkSidebarApi,
 } from '../../src/desktop-alt/hq-work-host';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import {
   hqWorkHandoffEnabled,
   type HqWorkInvoker,
@@ -129,6 +129,12 @@ function mockInvoke(): SyncInvokeFn {
         if (path.startsWith('/v1/files/shared-with-me')) {
           return { status: 200, body: JSON.stringify({ events: [] }) };
         }
+        if (
+          path.startsWith('/v1/notify/channels/') &&
+          path.endsWith('/members')
+        ) {
+          return { status: 404, body: JSON.stringify({}) };
+        }
         return { status: 200, body: JSON.stringify({}) };
       }
       default:
@@ -156,11 +162,19 @@ function messagingInvoke(
   calls: MessagingCall[],
   overrides: Partial<Record<string, (args?: Record<string, unknown>) => unknown>> = {},
 ): SyncInvokeFn {
+  const hostInvoke = mockInvoke();
   return async (cmd, args) => {
     calls.push({ cmd, args });
     const override = overrides[cmd];
     if (override) return override(args);
     switch (cmd) {
+      case 'get_auth_session':
+        return {
+          accountId: 'acct_ada',
+          generation: 1,
+          status: 'active',
+          reason: null,
+        };
       case 'list_channels':
         return {
           channels: [
@@ -221,7 +235,7 @@ function messagingInvoke(
       case 'mark_dm_thread_read':
         return { eventId: 'evt_sent' };
       default:
-        throw new Error(`unexpected messaging command: ${cmd}`);
+        return hostInvoke(cmd, args);
     }
   };
 }
@@ -230,39 +244,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
   host = document.createElement('div');
   host.className = 'desktop-shell chat-shell';
   document.body.appendChild(host);
-  const adapter = createSyncPlatformAdapter({ invoke: invokeFn });
-  component = mount(ChatSidebar, {
+  component = mount(HqWorkWorkShell, {
     target: host,
-    props: {
-      api: createHqWorkSidebarApi(adapter),
-      seedDirectory: [
-        {
-          channelId: 'chn_existing',
-          name: 'existing',
-          scope: 'company',
-          lastActivityAt: '2026-08-31T09:00:00.000Z',
-        },
-      ],
-      isAdmin: true,
-      companies: [
-        {
-          slug: 'indigo',
-          displayName: 'Indigo',
-          kind: 'company',
-          state: 'synced',
-          cloudUid: 'cmp_indigo',
-          bucketName: null,
-          hasLocalFolder: true,
-          localPath: '/tmp/indigo',
-          membershipStatus: 'active',
-          role: 'owner',
-          lastSyncedAt: null,
-          brokenReason: null,
-          invitedBy: null,
-          invitedAt: null,
-        },
-      ],
-    },
+    props: { invokeFn },
   });
 }
 
@@ -385,7 +369,7 @@ describe('US-103 embedded desktop window', () => {
         }
         return inner(cmd, args);
       };
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn },
       });
@@ -411,7 +395,7 @@ describe('US-103 embedded desktop window', () => {
         },
         mountHqWork: () => {
           calls.push('hq-work');
-          component = mount(HqWorkDesktopShell, {
+          component = mount(HqWorkWorkShell, {
             target: host,
             props: { invokeFn },
           });
@@ -459,7 +443,7 @@ describe('US-103 embedded desktop window', () => {
     it('⌘, opens the embedded settings surface', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn: mockInvoke() },
       });
@@ -483,7 +467,7 @@ describe('US-103 embedded desktop window', () => {
         calls.push(command);
         return baseInvoke(command, args);
       };
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn },
       });
@@ -519,7 +503,7 @@ describe('US-103 embedded desktop window', () => {
         }
         return baseInvoke(command, args);
       };
-      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
       await flush(24);
       window.dispatchEvent(
         new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
@@ -588,7 +572,7 @@ describe('US-103 embedded desktop window', () => {
 
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
       await flush(36);
       window.dispatchEvent(
         new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {

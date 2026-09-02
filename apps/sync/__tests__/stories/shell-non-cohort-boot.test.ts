@@ -30,7 +30,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import { resolveLaunchShell } from '../../src/lib/desktop-shell';
 import { hqWorkHandoffEnabled } from '../../src/lib/hq-work';
 import type { SyncInvokeFn } from '@hq/platform';
@@ -173,7 +173,7 @@ let component: ReturnType<typeof mount> | null = null;
 async function mountShell(options: Options = {}, bootTimeoutMs = 40): Promise<void> {
   host = document.createElement('div');
   document.body.appendChild(host);
-  component = mount(HqWorkDesktopShell, {
+  component = mount(HqWorkWorkShell, {
     target: host,
     props: { invokeFn: invokeFor(options), bootTimeoutMs },
   });

@@ -8,6 +8,7 @@
    * exist. Pure mapping lives in notifications-model.ts.
    */
   import type { NotificationsApi } from "../chat/chat-api";
+  import PageHeader from "../shell/PageHeader.svelte";
   import {
     buildNotificationsView,
     classifyNotificationsError,
@@ -202,23 +203,18 @@
   aria-labelledby="notifications-title"
   data-testid="notifications-view"
 >
-  <header class="notif-header">
-    <button
-      type="button"
-      class="notif-back"
-      data-testid="notifications-back"
-      aria-label="Back"
-      onclick={() => onback?.()}
-    >
-      ← Back
-    </button>
-    <h1 id="notifications-title" data-testid="notifications-title">
-      {view.headerTitle}
-    </h1>
+  <PageHeader
+    title={view.headerTitle}
+    titleId="notifications-title"
+    titleTestId="notifications-title"
+    backTestId="notifications-back"
+    onback={() => onback?.()}
+    variant="embedded"
+  >
     <span class="notif-unread" data-testid="notifications-unread"
       >{view.headerUnread}</span
     >
-
+    {#snippet trailing()}
     <div class="notif-header-actions">
       <div
         class="notif-toggle"
@@ -258,7 +254,8 @@
         {markAllPending ? "Marking…" : "Mark all read"}
       </button>
     </div>
-  </header>
+    {/snippet}
+  </PageHeader>
 
   <div class="notif-body" data-testid="notifications-list">
     {#if loading && feedState.items.length === 0}
@@ -501,16 +498,6 @@
     color: var(--t1);
   }
 
-  .notif-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 0 0 auto;
-    height: 52px;
-    padding: 0 20px;
-    border-bottom: 1px solid var(--line);
-  }
-
   .notif-unread {
     overflow: hidden;
     color: var(--t3);
@@ -518,43 +505,6 @@
     font-weight: 400;
     line-height: 1;
     text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .notif-back {
-    appearance: none;
-    -webkit-appearance: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t2);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 1;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .notif-back:hover {
-    color: var(--t1);
-  }
-
-  .notif-back:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: 2px;
-  }
-
-  .notif-header h1 {
-    margin: 0;
-    color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1;
     white-space: nowrap;
   }
 

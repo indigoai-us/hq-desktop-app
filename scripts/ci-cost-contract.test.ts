@@ -553,3 +553,32 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     );
   });
 });
+
+describe("the shell boot matrix is a cheap required PR gate", () => {
+  // v0.10.178 froze every signed-in non-Indigo user with an empty inbox on
+  // an infinite conversation skeleton. The matrix mounts HqWorkDesktopShell
+  // for four personas on ubuntu — not on a macOS runner, and not behind
+  // continue-on-error — so a missing identity cannot skip the check.
+  it("runs on ubuntu-latest under the load-bearing check name", () => {
+    const job = jobBody(ciWorkflow, "shell-boot-matrix");
+
+    expect(ciWorkflow).toContain("name: Shell boot matrix");
+    expect(job).toContain("runs-on: ubuntu-latest");
+    expect(job).toContain("timeout-minutes: 15");
+    expect(job).not.toContain("continue-on-error");
+    expect(job).toContain(
+      "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+    );
+  });
+
+  it("mounts every release-gate persona in vitest and desktop-alt e2e", () => {
+    const job = jobBody(ciWorkflow, "shell-boot-matrix");
+
+    expect(job).toContain(
+      "pnpm exec vitest run __tests__/stories/shell-boot-persona-matrix.test.ts",
+    );
+    expect(job).toContain(
+      "pnpm exec vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/shell-boot-persona-matrix.spec.ts",
+    );
+  });
+});

@@ -36,6 +36,8 @@ export interface LiveProjectMeta {
 export interface LiveProjectMetaLoad {
   meta: LiveProjectMeta | null;
   definitiveMiss: boolean;
+  /** A transport error was observed; let the caller retry instead of caching it. */
+  retryable?: boolean;
 }
 
 export interface LiveProjectDeps {
@@ -229,7 +231,10 @@ export function metaFromProjectView(
 }
 
 export async function loadLiveProjectMeta(
-  row: ConversationRow,
+  row: Pick<
+    ConversationRow,
+    "channelId" | "companyUid" | "projectId" | "title"
+  >,
   companyLabel?: string | null,
   deps: LiveProjectDeps = {},
 ): Promise<LiveProjectMetaLoad> {
@@ -280,6 +285,10 @@ export async function loadLiveProjectMeta(
         viewRaw.kind === "not-found" &&
         membersRaw.kind === "not-found" &&
         sessionsRaw.kind === "not-found",
+      retryable:
+        viewRaw.kind === "error" ||
+        membersRaw.kind === "error" ||
+        sessionsRaw.kind === "error",
     };
   }
   return {

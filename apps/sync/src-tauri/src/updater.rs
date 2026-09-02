@@ -747,6 +747,7 @@ async fn install_verified_update(
         #[cfg(target_os = "macos")]
         crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
+        crate::commands::telemetry::emit_version_heartbeat_after_update(&update.version).await;
         app.restart();
     }
 }
@@ -939,6 +940,8 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         #[cfg(target_os = "macos")]
         crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
+        crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.info.version)
+            .await;
         app.restart();
     }
 }

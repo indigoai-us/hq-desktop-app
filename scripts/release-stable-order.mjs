@@ -396,9 +396,10 @@ export async function confirmReleaseChannel({
   attempts = 5,
   retryDelayMs = 2_000,
 }) {
+  const isStableTag = stablePattern.test(targetTag);
   if (makeLatest) {
     stableParts(targetTag);
-  } else if (!prereleasePattern.test(targetTag)) {
+  } else if (!isStableTag && !prereleasePattern.test(targetTag)) {
     throw orderError(`expected a strict prerelease tag, got ${String(targetTag)}`);
   }
   if (!Number.isInteger(attempts) || attempts < 1) {
@@ -443,12 +444,18 @@ export async function confirmReleaseChannel({
       }
       if (!makeLatest && latestTag === targetTag) {
         throw orderError(
-          `prerelease ${targetTag} unexpectedly replaced stable latest`,
+          isStableTag
+            ? `staged stable ${targetTag} unexpectedly became latest before promotion`
+            : `prerelease ${targetTag} unexpectedly replaced stable latest`,
         );
       }
 
       return {
-        status: makeLatest ? "stable-latest" : "prerelease-isolated",
+        status: makeLatest
+          ? "stable-latest"
+          : isStableTag
+            ? "staged-not-latest"
+            : "prerelease-isolated",
         targetTag,
         latestTag,
       };

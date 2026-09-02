@@ -81,6 +81,9 @@ mod tests {
         )));
         assert!(is_app_navigation(&parse("tauri://localhost/index.html")));
         assert!(is_app_navigation(&parse("hq-recovery://localhost/index.html")));
+        assert!(is_app_navigation(&parse(
+            "http://hq-recovery.localhost/index.html"
+        )));
         assert!(is_app_navigation(&parse("about:blank")));
         assert!(!is_app_navigation(&parse("https://example.com/docs")));
         assert!(!is_app_navigation(&parse("mailto:ada@example.com")));

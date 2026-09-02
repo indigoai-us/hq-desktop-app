@@ -51,7 +51,6 @@ describe("shouldReportShellReady", () => {
     ).toBe(false);
   });
 });
-
 describe("ChatSidebar wires onShellReady through shouldReportShellReady", () => {
   it("calls the helper from maybeReportShellReady", async () => {
     const { readFileSync } = await import("node:fs");
@@ -66,4 +65,3 @@ describe("ChatSidebar wires onShellReady through shouldReportShellReady", () => 
     expect(src).toContain("firstRefreshSettled");
   });
 });
-

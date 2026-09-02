@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   BUNDLED_PACK_COVERS,
+  MARKETPLACE_COVER_HOST,
   coverFallback,
   coverForListing,
   coverTone,
+  marketplaceAvatarSrc,
+  marketplaceCoverSrc,
 } from "./pack-covers";
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
 
@@ -47,13 +50,29 @@ describe("coverForListing — pack cover resolution", () => {
     expect(coverForListing(listing({ slug: "some-unknown-pack" }))).toBeNull();
   });
 
-  it("does not render a server-provided remote cover URL", () => {
+  it("does not render an arbitrary remote cover URL (tracking-pixel contract)", () => {
     const hosted = "https://cdn.example.com/cover.png";
     expect(
       coverForListing(
         listing({ slug: "some-unknown-pack", coverImageUrl: hosted }),
       ),
     ).toBeNull();
+  });
+
+  it("renders a presigned marketplace cover URL from the allowlisted assets host", () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/listings/lst_X/cover.jpg?X-Amz-Signature=mock`;
+    expect(
+      coverForListing(
+        listing({ slug: "some-unknown-pack", coverImageUrl: hosted }),
+      ),
+    ).toBe(hosted);
+  });
+
+  it("prefers the marketplace cover over bundled-by-slug art", () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/listings/lst_gstack/cover.png?X-Amz-Signature=mock`;
+    expect(
+      coverForListing(listing({ slug: "gstack", coverImageUrl: hosted })),
+    ).toBe(hosted);
   });
 
   it("keeps bundled art when a listing also includes a blocked remote cover", () => {
@@ -117,6 +136,47 @@ describe("coverFallback — deterministic branded placeholder", () => {
     const fb = coverFallback(listing({ slug: "", name: "" }));
     expect(fb.monogram).toBe("?");
     expect(fb.gradient).toMatch(/^linear-gradient\(/);
+  });
+});
+
+describe("marketplaceAvatarSrc — creator photo allowlist", () => {
+  it("accepts a presigned member avatar on the marketplace assets host", () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/members/prs_x/h.png?X-Amz-Signature=mock`;
+    expect(marketplaceAvatarSrc(hosted)).toBe(hosted);
+  });
+
+  it("accepts a creator-directory avatar on the marketplace assets host", () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/creators/stefan/avatar?X-Amz-Signature=mock`;
+    expect(marketplaceAvatarSrc(hosted)).toBe(hosted);
+  });
+
+  it("rejects an arbitrary remote avatar host", () => {
+    expect(
+      marketplaceAvatarSrc("https://cdn.example.com/avatar.png"),
+    ).toBeNull();
+  });
+});
+
+describe("marketplaceCoverSrc — allowlisted marketplace assets host", () => {
+  const valid = `https://${MARKETPLACE_COVER_HOST}/listings/lst_1/cover.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc`;
+
+  it("accepts a https listing cover on the production assets host", () => {
+    expect(marketplaceCoverSrc(valid)).toBe(valid);
+  });
+
+  it("rejects http, wrong hosts, credentialed URLs, and non-listing paths", () => {
+    for (const source of [
+      valid.replace("https://", "http://"),
+      "https://cdn.example.com/listings/lst_1/cover.jpg",
+      `https://evil.${MARKETPLACE_COVER_HOST}/listings/lst_1/cover.jpg`,
+      `https://user:pass@${MARKETPLACE_COVER_HOST}/listings/lst_1/cover.jpg`,
+      `https://${MARKETPLACE_COVER_HOST}/creators/alice/avatar`,
+      "not a url",
+      "   ",
+      null,
+    ]) {
+      expect(marketplaceCoverSrc(source), String(source)).toBeNull();
+    }
   });
 });
 

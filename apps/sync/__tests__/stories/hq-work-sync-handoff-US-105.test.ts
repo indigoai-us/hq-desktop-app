@@ -42,11 +42,8 @@ import {
   type SyncInvokeFn,
 } from '@hq/platform';
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
-import {
-  getVaultObject,
-  putVaultObject,
-} from '../../src/desktop-alt/vault-s3-put';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { getVaultObject } from '../../src/desktop-alt/vault-s3-put';
 import { hqWorkHandoffEnabled } from '../../src/lib/hq-work';
 
 const repoRoot = resolve(process.cwd());
@@ -640,30 +637,16 @@ describe('US-105 embedded feature-parity QA', () => {
   });
 
   describe('attachment native hop (CORS-safe PUT/GET)', () => {
-    it('wires putAttachmentObject and getAttachmentObject on the embedded shell', () => {
-      const shell = readRepo('src/desktop-alt/HqWorkDesktopShell.svelte');
-      expect(shell).toContain('putAttachmentObject={putVaultObject}');
-      expect(shell).toContain('getAttachmentObject={getVaultObject}');
-      expect(shell).toContain("from './vault-s3-put'");
-    });
-
-    it('TS hop invokes vault_s3_put with content-type headers and file bytes', async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(200);
-      const file = new File([new Uint8Array([1, 2, 3])], 'shot.png', {
-        type: 'image/png',
-      });
-      const headers = { 'content-type': 'image/png' };
-      const res = await putVaultObject(
-        'https://bucket.s3.us-east-1.amazonaws.com/shot.png',
-        headers,
-        file,
+    it('wires putAttachmentObject and getAttachmentObject through the shared shell native hop', () => {
+      const shell = readMono('apps', 'work', 'src', 'lib', 'WorkShell.svelte');
+      const nativeHop = readMono('apps', 'work', 'src', 'lib', 'desktop-shell.ts');
+      expect(shell).toMatch(
+        /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(nativeInvoke\)\s*:\s*null/,
       );
-      expect(res.status).toBe(200);
-      expect(vi.mocked(invoke)).toHaveBeenCalledWith('vault_s3_put', {
-        url: 'https://bucket.s3.us-east-1.amazonaws.com/shot.png',
-        headers,
-        body: [1, 2, 3],
-      });
+      expect(shell).toContain('putAttachmentObject={attachmentHandlers?.putAttachmentObject}');
+      expect(shell).toContain('getAttachmentObject={attachmentHandlers?.getAttachmentObject}');
+      expect(nativeHop).toContain('invoke("vault_s3_put", {');
+      expect(nativeHop).toContain('invoke("vault_s3_get", {');
     });
 
     it('TS hop invokes vault_s3_get and returns content-type', async () => {
@@ -726,7 +709,7 @@ describe('US-105 embedded feature-parity QA', () => {
     it('⌘, opens settings and the Light appearance pill applies', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn: mockInvoke() },
       });

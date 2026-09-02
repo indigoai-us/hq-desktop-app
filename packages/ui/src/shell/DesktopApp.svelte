@@ -164,6 +164,7 @@
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
   import {
+    attachmentVaultScopeUid,
     chatAttachmentValidatorForPlatform,
     conversationPairKey,
   } from "../chat/messaging/chat-attachments.js";
@@ -442,6 +443,9 @@
   );
   const resolvedSettingsProfile = $derived(
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
+  );
+  const hasWindowControls = $derived(
+    adapter?.capabilities?.hasWindowControls ?? false,
   );
 
   /**
@@ -1981,10 +1985,10 @@
   });
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
-    const fromRow = row?.companyUid?.trim();
-    if (fromRow) return fromRow;
-    const first = (companies ?? []).find((company) => company.cloudUid?.trim());
-    return first?.cloudUid?.trim() || null;
+    return attachmentVaultScopeUid({
+      row,
+      selfUid: self?.uid,
+    });
   }
 
   const channelFilePreviewContext = $derived(
@@ -2576,6 +2580,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="desktop-shell chat-shell"
+  class:has-window-controls={hasWindowControls}
   data-testid="desktop-shell"
   onclick={onShellLinkEvent}
   onauxclick={onShellLinkEvent}
@@ -3288,6 +3293,9 @@
     min-height: 0;
     padding: 0;
     overflow: hidden;
+    /* In-pane destinations (Meetings, Notifications) are not under the
+       overlay traffic lights — don't inherit the window-chrome gutter. */
+    --titlebar-leading-inset: 16px;
   }
 
   .conversation-boot-error {

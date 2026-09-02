@@ -37,6 +37,10 @@ describe('desktop-alt V4 library and marketplace family (US-014)', () => {
     expect(marketplace).toContain('data-testid="marketplace-your-listings"');
     expect(marketplace).toContain('PUBLISHED LISTINGS');
     expect(marketplace).not.toContain('Published packs you own');
+    expect(marketplace).toContain('coverForListing');
+    expect(marketplace).toContain('object-fit: cover');
+    expect(marketplace).toContain('kind-chip');
+    expect(marketplace).toContain('cover-version');
   });
 
   it('the browser harness provides deterministic populated marketplace data', () => {

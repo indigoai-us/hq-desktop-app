@@ -58,6 +58,7 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import { formatComposerSendError } from "./composer-send-error";
   import {
     clearDraft,
     loadDraft,
@@ -768,43 +769,6 @@
       addPendingFiles(files);
       replyInputEl?.focus();
     }
-  }
-
-  /** Soft, human copy for composer failures — never dump raw API codes. */
-  function formatComposerSendError(raw: string, hadFiles: boolean): string {
-    if (/failed to fetch|networkerror|^load failed$/i.test(raw)) {
-      return hadFiles
-        ? "Could not upload the file"
-        : "Could not send the message";
-    }
-    if (/CHANNEL_NOT_FOUND|channel not found/i.test(raw)) {
-      return "Couldn't send — this channel isn't available right now. Try reopening it.";
-    }
-    if (/CHANNEL_MENTION_INVITE_FORBIDDEN|mention-invite/i.test(raw)) {
-      return "Couldn't send — only the channel owner can mention someone who isn't a member yet.";
-    }
-    if (
-      /MENTION_PARTICIPANT_NOT_FOUND|mentioned participant was not found/i.test(
-        raw,
-      )
-    ) {
-      return "Couldn't send — that @mention couldn't be resolved.";
-    }
-    if (
-      /MENTION_PARTICIPANT_NOT_VISIBLE|not active in this company/i.test(raw)
-    ) {
-      return "Couldn't send — that person isn't active in this company.";
-    }
-    // Strip machine codes like "[CHANNEL_NOT_FOUND] …" if a human message remains.
-    const stripped = raw.replace(/^\[[A-Z0-9_]+\]\s*/i, "").trim();
-    if (stripped && stripped.length <= 160 && !/^[A-Z0-9_]+$/.test(stripped)) {
-      return stripped.startsWith("Couldn't") || stripped.startsWith("Could not")
-        ? stripped
-        : `Couldn't send — ${stripped}`;
-    }
-    return hadFiles
-      ? "Could not send the attachment"
-      : "Could not send the message";
   }
 
   function openAttachment(item: FileAttachmentModel): void {
