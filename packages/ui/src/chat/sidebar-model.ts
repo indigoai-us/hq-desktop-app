@@ -1681,6 +1681,96 @@ export function companyLabelFor(
   return companies.find((c) => c.companyUid === companyUid)?.label ?? null;
 }
 
+/** Inline rail chip: company name for channels/agents, email for people. */
+export type RailScopeLabelKind = "company" | "email";
+
+export interface RailScopeLabel {
+  kind: RailScopeLabelKind;
+  text: string;
+}
+
+const RAW_COMPANY_UID = /^[a-z]{2,5}_[A-Za-z0-9_-]+$/;
+
+/**
+ * Display name for a conversation's company. Prefers the memberships list;
+ * falls back to a human-readable `companyUid` (fixture rows that stored the
+ * name in that field). Opaque `cmp_…` / `co_…` identifiers stay hidden.
+ */
+export function resolveRailCompanyName(
+  companyUid: string | null | undefined,
+  companies: ScopeCompany[],
+): string | null {
+  const fromList = companyLabelFor(companyUid, companies)?.trim();
+  if (fromList) return fromList;
+  const raw = companyUid?.trim() ?? "";
+  if (!raw || RAW_COMPANY_UID.test(raw)) return null;
+  return raw;
+}
+
+function isAgentDmRow(row: ConversationRow): boolean {
+  return row.kind === "dm" && !!row.personUid && isAgentUid(row.personUid);
+}
+
+function isHumanDmRow(row: ConversationRow): boolean {
+  return row.kind === "dm" && !!row.personUid && !isAgentUid(row.personUid);
+}
+
+/** Lowercased titles that appear on more than one human DM (disambiguation). */
+export function duplicateHumanDmTitles(
+  rows: readonly ConversationRow[],
+): Set<string> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!isHumanDmRow(row)) continue;
+    const key = row.title.trim().toLowerCase();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const dupes = new Set<string>();
+  for (const [key, count] of counts) {
+    if (count > 1) dupes.add(key);
+  }
+  return dupes;
+}
+
+/**
+ * Secondary rail label. In "All companies", channels and agent DMs show the
+ * company name and human DMs show email. In a single-company (or personal)
+ * scope the company name is redundant, so it is omitted; human emails stay
+ * only when two people share a display name.
+ */
+export function railRowScopeLabel(
+  row: ConversationRow,
+  options: {
+    scope: CompanyScope;
+    companies: ScopeCompany[];
+    enabled: boolean;
+    duplicateHumanTitles?: ReadonlySet<string>;
+  },
+): RailScopeLabel | null {
+  if (!options.enabled) return null;
+  const allCompanies = options.scope === "all";
+
+  if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
+    if (!allCompanies) return null;
+    const name = resolveRailCompanyName(row.companyUid, options.companies);
+    return name ? { kind: "company", text: name } : null;
+  }
+
+  if (isHumanDmRow(row)) {
+    const email = row.email?.trim() ?? "";
+    if (!email) return null;
+    if (allCompanies) return { kind: "email", text: email };
+    const titleKey = row.title.trim().toLowerCase();
+    if (titleKey && options.duplicateHumanTitles?.has(titleKey)) {
+      return { kind: "email", text: email };
+    }
+    return null;
+  }
+
+  return null;
+}
+
 // ── Message content search (all-history, US-013) ─────────────────────────────
 
 /** Wire hit from `search_messages` / `GET /v1/notify/search`. */
