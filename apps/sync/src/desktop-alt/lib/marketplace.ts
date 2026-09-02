@@ -15,6 +15,55 @@ import type { Workspace } from '../../lib/workspaces';
 
 export { PACK_DISPLAY_NAMES, prettifyPackName };
 
+/** Public author on a listing card — handle is the @-mention. */
+export interface MarketplaceListingAuthor {
+  handle: string;
+  displayName: string;
+  avatarUrl?: string | null;
+}
+
+/**
+ * Normalize a listing's `author` field (legacy string or `{ handle, displayName,
+ * avatarUrl? }`) into a single shape the cards can render.
+ */
+export function listingAuthor(
+  listing: Pick<MarketplaceListing, 'author'>,
+): MarketplaceListingAuthor {
+  const raw = listing.author as unknown;
+  if (typeof raw === 'string') {
+    const handle = raw.trim();
+    return { handle, displayName: handle };
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const rec = raw as Record<string, unknown>;
+    const handle = typeof rec.handle === 'string' ? rec.handle.trim() : '';
+    const displayName =
+      typeof rec.displayName === 'string' && rec.displayName.trim()
+        ? rec.displayName.trim()
+        : handle;
+    const avatarUrl =
+      typeof rec.avatarUrl === 'string' && rec.avatarUrl.trim()
+        ? rec.avatarUrl.trim()
+        : undefined;
+    return { handle, displayName, ...(avatarUrl ? { avatarUrl } : {}) };
+  }
+  return { handle: '', displayName: '' };
+}
+
+export function listingAuthorHandle(listing: Pick<MarketplaceListing, 'author'>): string {
+  return listingAuthor(listing).handle;
+}
+
+/** Two-letter initials from display name, then handle. */
+export function authorInitials(author: MarketplaceListingAuthor): string {
+  const source = (author.displayName || author.handle).trim().replace(/^@/, '');
+  const parts = source.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`.toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase() || '?';
+}
+
 /** One approved listing row (`MarketplaceListing` wire shape, US-005 public). */
 export interface MarketplaceListing {
   /** Stable listing id — the detail key. */
@@ -27,8 +76,12 @@ export interface MarketplaceListing {
   slug: string;
   /** Published semantic version. */
   version: string;
-  /** Author's PUBLIC handle (a string — never the internal creator uid). */
-  author: string;
+  /**
+   * Author of this pack. The public listings route used to send a bare handle
+   * string; it now sends `{ handle, displayName, avatarUrl? }`. Both shapes
+   * are accepted so a mixed desktop/server deploy still renders.
+   */
+  author: string | MarketplaceListingAuthor;
   /** Short directory description, when present. */
   summary?: string | null;
   /** Human-readable summary of what the pack contributes, when present. */
@@ -93,7 +146,8 @@ export function listingHaystack(listing: MarketplaceListing): string {
     listing.name,
     listingDisplayName(listing),
     listing.slug,
-    listing.author,
+    listingAuthor(listing).handle,
+    listingAuthor(listing).displayName,
     listing.summary ?? '',
     listing.contributes ?? '',
     listing.type,

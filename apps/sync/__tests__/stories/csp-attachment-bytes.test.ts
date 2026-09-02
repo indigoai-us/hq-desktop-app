@@ -40,7 +40,8 @@ describe('desktop-alt CSP allows local attachment bytes', () => {
 
   it('still blocks remote images (tracking-pixel contract)', () => {
     const csp = conf.app.security.csp;
-    // Marketplace covers are the only remote img-src; wildcards stay forbidden.
+    // Marketplace covers and creator avatars share this one remote img-src;
+    // wildcards stay forbidden.
     expect(csp).toContain(
       'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
     );

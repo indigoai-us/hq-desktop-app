@@ -6,6 +6,7 @@ import {
   coverFallback,
   coverForListing,
   coverTone,
+  marketplaceAvatarSrc,
   marketplaceCoverSrc,
 } from './pack-covers';
 import type { MarketplaceListing } from './marketplace';
@@ -166,5 +167,21 @@ describe('coverTone — stable marketplace color identity', () => {
     );
 
     expect(tones.size).toBeGreaterThan(1);
+  });
+});
+
+describe('marketplaceAvatarSrc — creator photo allowlist', () => {
+  it('accepts a presigned member avatar on the marketplace assets host', () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/members/prs_x/h.png?X-Amz-Signature=mock`;
+    expect(marketplaceAvatarSrc(hosted)).toBe(hosted);
+  });
+
+  it('accepts a creator-directory avatar on the marketplace assets host', () => {
+    const hosted = `https://${MARKETPLACE_COVER_HOST}/creators/stefan/avatar?X-Amz-Signature=mock`;
+    expect(marketplaceAvatarSrc(hosted)).toBe(hosted);
+  });
+
+  it('rejects an arbitrary remote avatar host', () => {
+    expect(marketplaceAvatarSrc('https://cdn.example.com/avatar.png')).toBeNull();
   });
 });

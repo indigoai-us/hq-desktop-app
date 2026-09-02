@@ -69,6 +69,34 @@ export function marketplaceCoverSrc(
 }
 
 /**
+ * Accept a hq-pro-minted person/creator avatar URL on the same marketplace
+ * assets host. Paths are `/members/…` (HQ profile photos) or `/creators/…`
+ * (creator-directory avatars). Arbitrary hosts stay blocked.
+ */
+export function marketplaceAvatarSrc(
+  raw: string | null | undefined,
+): string | null {
+  const src = raw?.trim() ?? '';
+  if (src === '' || /[\u0000-\u001f\u007f]/.test(src)) return null;
+  let url: URL;
+  try {
+    url = new URL(src);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:') return null;
+  if (url.username !== '' || url.password !== '') return null;
+  if (url.hostname !== MARKETPLACE_COVER_HOST) return null;
+  if (
+    !url.pathname.startsWith('/members/') &&
+    !url.pathname.startsWith('/creators/')
+  ) {
+    return null;
+  }
+  return src;
+}
+
+/**
  * Resolve the cover-art URL for a listing, or `null` when none is available.
  *
  * Precedence: an allowlisted marketplace `coverImageUrl` (presigned S3 GET),

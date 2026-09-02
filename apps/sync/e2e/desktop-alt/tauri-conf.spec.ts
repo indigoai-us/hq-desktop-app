@@ -77,8 +77,9 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(csp).toContain("img-src 'self'");
     expect(csp).toContain('data:');
     expect(csp).toContain('asset:');
-    // Marketplace listing covers are presigned GETs on this one production
-    // assets host. A wildcard (`https:` / `*`) would re-open tracking pixels.
+    // Marketplace listing covers AND creator avatars are presigned GETs on
+    // this one production assets host. A wildcard (`https:` / `*`) would
+    // re-open tracking pixels.
     expect(csp).toContain(
       'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
     );
