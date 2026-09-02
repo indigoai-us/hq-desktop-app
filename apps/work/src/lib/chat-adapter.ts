@@ -341,6 +341,8 @@ export function createChatSidebarApi(
         channels: workItemsAsChannels(items, args.companyUid),
       } as ChannelsResponse;
     },
+    fetchDmThread: (args) =>
+      call<DmThreadResponse>(adapter.messaging.fetchDmThread(args)),
     markDmThreadRead: (withPersonUid) =>
       call<void>(adapter.messaging.markDmThreadRead(withPersonUid)),
     markChannelRead: (channelId) =>

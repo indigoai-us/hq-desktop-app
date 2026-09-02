@@ -400,6 +400,30 @@ describe("createChatSidebarApi", () => {
     resetLiveRailHydrate();
   });
 
+  it("forwards unnamed-DM peer thread reads through the sidebar API", async () => {
+    const fetchDmThread = vi.fn(async () =>
+      ok({ messages: [], nextCursor: null }),
+    );
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    adapter.messaging.fetchDmThread = fetchDmThread;
+    const api = createChatSidebarApi(adapter);
+    const args = { withPersonUid: "prs_unlisted", limit: 10 };
+
+    expect(typeof api.fetchDmThread).toBe("function");
+    await expect(api.fetchDmThread?.(args)).resolves.toEqual({
+      messages: [],
+      nextCursor: null,
+    });
+    expect(fetchDmThread).toHaveBeenCalledWith(args);
+  });
+
   it("partitions the work-feed cache by hydrating identity", async () => {
     vi.mocked(hqProFetch)
       .mockResolvedValueOnce(
