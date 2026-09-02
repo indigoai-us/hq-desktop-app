@@ -530,6 +530,29 @@ const HARNESS_WORKSPACES: Workspace[] = [
   ),
 ];
 
+
+// --- in-app sessions (?view=sessions) --------------------------------------
+// A scripted transcript that exercises every block the chat surface renders:
+// operator bubbles, prose, a folded tool group, an open permission card, one
+// already answered, and the usage line the composer footer reads.
+const SESSION_ID = 'sess_7f3ab21c';
+
+const AGENT_SESSION_EVENTS: [number, unknown][] = [
+  [0, { kind: 'started', sessionId: SESSION_ID, tool: 'claude', model: 'claude-fable-5-1[1m]', cwd: '/Users/corey/Documents/HQ', tools: ['Bash', 'Read', 'Edit'], commands: [{ name: 'handoff', description: 'End the session cleanly' }] }],
+  [1, { kind: 'toolCall', id: 't1', name: 'Bash', input: { command: 'git -C repos/private/hq-desktop-app status --short' } }],
+  [2, { kind: 'toolResult', id: 't1', isError: false, content: ' M apps/sync/src/desktop-alt/pages/SessionsPage.svelte' }],
+  [3, { kind: 'toolCall', id: 't2', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionTranscript.svelte' } }],
+  [4, { kind: 'toolResult', id: 't2', isError: false, content: '143 lines read' }],
+  [5, { kind: 'toolCall', id: 't3', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [6, { kind: 'toolResult', id: 't3', isError: false, content: '313 lines read' }],
+  [7, { kind: 'toolCall', id: 't4', name: 'Edit', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [8, { kind: 'toolResult', id: 't4', isError: false, content: 'edited' }],
+  [9, { kind: 'assistantMessage', text: "The composer is now a single rounded bar. Company, model and effort are **pills on the bar itself**, so there is no setup step before the first message.\n\nOne thing to confirm before I keep going: the permission pill defaults to `Prompt`." }],
+  [10, { kind: 'permissionRequest', requestId: 'req_written', toolName: 'Write', input: { file_path: 'apps/sync/src/components/sessions/ToolGroupRow.svelte' }, suggestions: [] }],
+  [11, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }],
+];
+
+
 const handlers: Record<string, Handler> = {
   // Deterministic full-desktop route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
@@ -1333,6 +1356,62 @@ This final paragraph verifies spacing after a thematic break.
   messages_window_ready: () => null,
   open_messages_window: () => null,
   take_pending_messages_target: () => null,
+
+  agent_session_preflight: () => ({
+    hqRoot: '/Users/corey/Documents/HQ',
+    hooksReady: true,
+    hooksError: null,
+    claudeAvailable: true,
+    claudeLoggedIn: true,
+    codexAvailable: true,
+    companies: [
+      { slug: 'indigo', displayName: 'Indigo' },
+      { slug: 'ridge', displayName: 'Ridge' },
+      { slug: 'personal', displayName: 'Personal' },
+    ],
+  }),
+  agent_session_slash_commands: () => ({
+    commands: [
+      { name: 'handoff', description: 'End the session cleanly' },
+      { name: 'checkpoint', description: 'Write a checkpoint and continue' },
+      { name: 'plan', description: 'Plan the work first', argumentHint: '<goal>' },
+    ],
+    models: [
+      { value: 'default', displayName: 'Default (recommended)', description: 'Use the default model' },
+      { value: 'opus[1m]', displayName: 'Opus (1M context)' },
+      { value: 'claude-fable-5-1[1m]', displayName: 'Fable' },
+      { value: 'sonnet', displayName: 'Sonnet' },
+      { value: 'haiku', displayName: 'Haiku' },
+    ],
+  }),
+  agent_session_list: () => [
+    {
+      sessionId: SESSION_ID,
+      tool: 'claude',
+      phase: 'working',
+      company: 'indigo',
+      model: 'claude-fable-5-1[1m]',
+      cwd: '/Users/corey/Documents/HQ',
+      startedAt: '2026-09-02T14:00:00Z',
+      lastActivityAt: '2026-09-02T14:06:00Z',
+      lastSeq: AGENT_SESSION_EVENTS.length,
+      pendingCount: 1,
+    },
+  ],
+  agent_session_replay: (args) => {
+    const since = Number(args?.sinceSeq ?? 0);
+    return {
+      events: AGENT_SESSION_EVENTS.filter(([seq]) => seq >= since),
+      nextSeq: AGENT_SESSION_EVENTS.length,
+      truncated: false,
+    };
+  },
+  agent_session_start: () => ({ sessionId: SESSION_ID }),
+  agent_session_send: () => null,
+  agent_session_interrupt: () => null,
+  agent_session_end: () => null,
+  agent_session_respond_permission: () => null,
+  agent_session_answer_question: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

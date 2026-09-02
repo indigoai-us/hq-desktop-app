@@ -71,6 +71,20 @@ function mockBackend(pages: Record<number, ReplayPage>, list: SessionSummary[] =
   });
 }
 
+/** The assistant prose the transcript would render, oldest first. */
+function proseText(): string[] {
+  return liveSessionStore.transcript.blocks
+    .filter((block) => block.type === 'assistantProse')
+    .map((block) => (block as { text: string }).text);
+}
+
+/** The operator bubbles the transcript would render, oldest first. */
+function bubbleText(): string[] {
+  return liveSessionStore.transcript.blocks
+    .filter((block) => block.type === 'userBubble')
+    .map((block) => (block as { text: string }).text);
+}
+
 function emit(name: string, payload: unknown) {
   const handler = handlers.get(name);
   if (!handler) throw new Error(`No listener registered for ${name}`);
@@ -111,12 +125,10 @@ describe('liveSessionStore.open', () => {
 
     expect(liveSessionStore.events).toHaveLength(2);
     expect(liveSessionStore.nextSeq).toBe(2);
-    // The fold is what the transcript renders: the started system line plus the
-    // assistant's own message row.
-    expect(liveSessionStore.transcript.messages.map((m) => m.body)).toEqual([
-      expect.stringContaining('Started claude'),
-      'on it',
-    ]);
+    // The fold is what the transcript renders. `started` is deliberately NOT a
+    // row — the strip already names the session — so the only block is the
+    // assistant's own prose.
+    expect(proseText()).toEqual(['on it']);
   });
 
   it('carries the started event’s slash commands', async () => {
@@ -177,11 +189,7 @@ describe('liveSessionStore seq gaps', () => {
       sinceSeq: 1,
     });
     // Both the missed event and the one that exposed the gap are present, once.
-    expect(liveSessionStore.transcript.messages.map((m) => m.body)).toEqual([
-      expect.stringContaining('Started claude'),
-      'missed',
-      'arrived',
-    ]);
+    expect(proseText()).toEqual(['missed', 'arrived']);
   });
 });
 
@@ -296,6 +304,7 @@ describe('liveSessionStore decisions', () => {
     expect(invoke).toHaveBeenCalledWith('agent_session_send', {
       sessionId: SESSION,
       text: 'hello',
+      images: [],
     });
     expect(invoke).toHaveBeenCalledWith('agent_session_interrupt', { sessionId: SESSION });
   });
@@ -349,5 +358,272 @@ describe('liveSessionStore.close', () => {
     expect(unlistened).toEqual(
       expect.arrayContaining([AGENT_SESSION_EVENT, AGENT_SESSION_PHASE, AGENT_SESSION_NEEDS_YOU]),
     );
+  });
+});
+
+
+describe('liveSessionStore receivedAt stamps', () => {
+  it('stamps a LIVE event with the moment it arrived', async () => {
+    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    await liveSessionStore.open(SESSION);
+
+    const before = Date.now();
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      event: { kind: 'assistantMessage', text: 'live' } satisfies SessionEvent,
+    });
+    const after = Date.now();
+
+    const [stamp] = liveSessionStore.receivedAt;
+    expect(stamp).not.toBeNull();
+    expect(stamp!).toBeGreaterThanOrEqual(before);
+    expect(stamp!).toBeLessThanOrEqual(after);
+  });
+
+  it('leaves a REPLAYED event unstamped rather than dating it "now"', async () => {
+    // A replayed event has no honest arrival time. Stamping it with the replay
+    // instant would file a week of history under today and draw a fake day
+    // divider — the exact bug this contract exists to prevent.
+    mockBackend({
+      0: {
+        events: [
+          [0, started],
+          [1, { kind: 'assistantMessage', text: 'old' }],
+        ],
+        nextSeq: 2,
+        truncated: false,
+      },
+    });
+    await liveSessionStore.open(SESSION);
+
+    expect(liveSessionStore.receivedAt).toEqual([null, null]);
+    expect(liveSessionStore.transcript.blocks.every((block) => block.at === null)).toBe(true);
+    expect(liveSessionStore.transcript.blocks.some((b) => b.type === 'divider')).toBe(false);
+  });
+
+  it('keeps the stamps parallel to the events across a gap replay', async () => {
+    const arrived: SessionEvent = { kind: 'assistantMessage', text: 'arrived' };
+    mockBackend({
+      0: { events: [[0, started]], nextSeq: 1, truncated: false },
+      1: {
+        events: [
+          [1, { kind: 'assistantMessage', text: 'missed' }],
+          [2, arrived],
+        ],
+        nextSeq: 3,
+        truncated: false,
+      },
+    });
+    await liveSessionStore.open(SESSION);
+    emit(AGENT_SESSION_EVENT, { sessionId: SESSION, seq: 2, event: arrived });
+    await vi.waitFor(() => expect(liveSessionStore.nextSeq).toBe(3));
+
+    expect(liveSessionStore.receivedAt).toHaveLength(liveSessionStore.events.length);
+  });
+});
+
+describe('liveSessionStore mirrors the operator\'s own turns', () => {
+  it('shows a sent message immediately — the event stream carries none back', async () => {
+    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.send('do the thing');
+
+    expect(bubbleText()).toEqual(['do the thing']);
+  });
+
+  it('SURVIVES the close/open pair a route change performs', async () => {
+    // This is the whole point of keeping the mirror outside the session entry:
+    // the first send is followed by a navigation, the page remounts, and the
+    // message the user just sent has to still be on screen.
+    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary()]);
+      if (command === 'agent_session_replay') {
+        return Promise.resolve({ events: [], nextSeq: 0, truncated: false });
+      }
+      return Promise.resolve(undefined);
+    });
+    await liveSessionStore.send('do the thing');
+
+    liveSessionStore.close(SESSION);
+    expect(bubbleText()).toEqual([]);
+
+    await liveSessionStore.open(SESSION);
+    expect(bubbleText()).toEqual(['do the thing']);
+  });
+
+  it('interleaves the bubble above the reply it provoked', async () => {
+    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+    await liveSessionStore.send('do the thing');
+
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      event: { kind: 'assistantMessage', text: 'on it' } satisfies SessionEvent,
+    });
+
+    expect(liveSessionStore.transcript.blocks.map((block) => block.type)).toEqual([
+      'userBubble',
+      'assistantProse',
+    ]);
+  });
+
+  it('carries images on the send', async () => {
+    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockClear();
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.send('what is this?', [
+      { mediaType: 'image/png', base64: 'QUJD' },
+    ]);
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_send', {
+      sessionId: SESSION,
+      text: 'what is this?',
+      images: [{ mediaType: 'image/png', base64: 'QUJD' }],
+    });
+  });
+});
+
+describe('liveSessionStore.startAndSend', () => {
+  function mockStart(onStart?: () => void) {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_start') {
+        onStart?.();
+        return Promise.resolve({ sessionId: 'fresh' });
+      }
+      if (command === 'agent_session_replay') {
+        return Promise.resolve({ events: [], nextSeq: 0, truncated: false });
+      }
+      if (command === 'agent_session_list') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+  }
+
+  const spec = {
+    sessionId: '',
+    tool: 'claude',
+    cwd: '',
+    company: 'indigo',
+    model: null,
+    effort: null,
+    resume: null,
+    permissionMode: 'prompt',
+  } as const;
+
+  it('starts the session the first message belongs to, then sends it', async () => {
+    mockStart();
+    const id = await liveSessionStore.startAndSend({ ...spec }, 'hello');
+
+    expect(id).toBe('fresh');
+    expect(invoke).toHaveBeenCalledWith('agent_session_start', { spec: { ...spec } });
+    expect(invoke).toHaveBeenCalledWith('agent_session_send', {
+      sessionId: 'fresh',
+      text: 'hello',
+      images: [],
+    });
+    expect(liveSessionStore.activeSessionId).toBe('fresh');
+    expect(bubbleText()).toEqual(['hello']);
+  });
+
+  it('paints the bubble BEFORE the backend has minted an id', async () => {
+    let duringStart: string[] = [];
+    mockStart(() => {
+      duringStart = bubbleText();
+    });
+    await liveSessionStore.startAndSend({ ...spec }, 'hello');
+    expect(duringStart).toEqual(['hello']);
+  });
+
+  it('takes the bubble back when the start fails — it would be a lie', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_start') return Promise.reject(new Error('no CLI'));
+      return Promise.resolve(undefined);
+    });
+
+    await expect(liveSessionStore.startAndSend({ ...spec }, 'hello')).rejects.toThrow('no CLI');
+    expect(bubbleText()).toEqual([]);
+  });
+
+  it('keeps the bubble across the remount that follows the first send', async () => {
+    mockStart();
+    const id = await liveSessionStore.startAndSend({ ...spec }, 'hello');
+    // Exactly what the page does on the route change: close, then reopen.
+    liveSessionStore.close(id);
+    await liveSessionStore.open(id);
+    expect(bubbleText()).toEqual(['hello']);
+  });
+});
+
+describe('liveSessionStore resolutions', () => {
+  const permission: SessionEvent = {
+    kind: 'permissionRequest',
+    requestId: 'req-1',
+    toolName: 'Write',
+    input: { file_path: 'hello.txt' },
+    suggestions: [],
+  };
+
+  it('records the verb so an answered card collapses instead of vanishing', async () => {
+    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.respondPermission('req-1', { kind: 'allowSession' });
+
+    const card = liveSessionStore.transcript.blocks.find((b) => b.type === 'permissionCard');
+    expect(card).toBeDefined();
+    expect((card as { resolution: string | null }).resolution).toBe('Allowed for session');
+    expect(liveSessionStore.pending).toEqual([]);
+  });
+
+  it('records a denial as a denial', async () => {
+    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.respondPermission('req-1', { kind: 'deny', message: 'no' });
+
+    const card = liveSessionStore.transcript.blocks.find((b) => b.type === 'permissionCard');
+    expect((card as { resolution: string | null }).resolution).toBe('Denied');
+  });
+
+  it('summarises the chosen answers on a question card', async () => {
+    const question: SessionEvent = {
+      kind: 'questionRequest',
+      requestId: 'q-1',
+      questions: [
+        { id: 'q1', header: 'Scope', text: 'How far?', options: [{ label: 'All' }], multiSelect: false },
+      ],
+    };
+    mockBackend({ 0: { events: [[0, question]], nextSeq: 1, truncated: false } });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+
+    await liveSessionStore.answerQuestion('q-1', [{ questionId: 'q1', values: ['All'] }]);
+
+    const card = liveSessionStore.transcript.blocks.find((b) => b.type === 'questionCard');
+    expect((card as { resolution: string | null }).resolution).toBe('Answered · All');
+  });
+});
+
+describe('liveSessionStore.lastUsage', () => {
+  it('surfaces the last turn cost for the composer footer', async () => {
+    mockBackend({
+      0: {
+        events: [[0, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }]],
+        nextSeq: 1,
+        truncated: false,
+      },
+    });
+    await liveSessionStore.open(SESSION);
+    expect(liveSessionStore.lastUsage?.label).toBe('2 in · 17 out · $0.68');
   });
 });

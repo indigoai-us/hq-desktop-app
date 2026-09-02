@@ -1,35 +1,39 @@
 <script lang="ts">
   /**
-   * The centre column of the Sessions page: the transcript plus the decision
-   * cards the session is blocked on.
+   * The conversation itself.
    *
-   * Composition only — `MessageTimeline` renders the stream, `PermissionCard`
-   * and `QuestionCard` render the parked requests, and this component decides
-   * that pending cards sit BELOW the transcript and ABOVE the composer (which
-   * the page slots in beneath it). Nothing here invokes; every decision is
-   * forwarded to the page as a callback.
+   * The shape is a CHAT, not an event log, and every decision here follows from
+   * that: what you said is a bubble on the right; what the agent said is plain
+   * prose on the left with no avatar, no name header and no timestamp gutter;
+   * what the agent DID collapses into one quiet expandable row; what it needs
+   * from you appears as a card exactly where it happened, and collapses to a
+   * line once answered.
    *
-   * The one thing it adds on its own is markdown: assistant bodies are
-   * rendered through the app's CSP-safe `renderMessageBodyMarkdown` (no new
-   * dependency, no raw source HTML) and handed to the timeline as pre-rendered
-   * HTML. System rows keep the plain-text path — they are our own one-liners.
+   * Assistant prose goes through the app's CSP-safe `renderMessageBodyMarkdown`
+   * (no new dependency, no raw source HTML). Operator bubbles are plain text on
+   * purpose — echoing your own message back as rendered markdown is a
+   * surprising place to find a heading.
+   *
+   * Scrolling: the transcript pins itself to the bottom while output streams,
+   * UNLESS you have scrolled up to read something — then it holds still and
+   * offers a "Jump to latest" chip. An agent that yanks the viewport out from
+   * under a reader is the single loudest way a chat surface can misbehave.
+   *
+   * Presentation-pure: blocks in, decisions out as callbacks. Nothing invokes.
    */
-  import MessageTimeline from './MessageTimeline.svelte';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
-  import { SESSION_AGENT_UID, SESSION_MEMBERS } from './transcript-adapter';
-  import type { PendingCard } from './transcript-adapter';
-  import type { WsActivityItem, WsMessage, WsScreenState } from './session-types';
+  import ToolGroupRow from './ToolGroupRow.svelte';
+  import type { ChatBlock } from './transcript-adapter';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import './sessions-tokens.css';
 
   interface Props {
-    sessionTitle: string;
-    sessionSubtitle?: string;
-    messages: WsMessage[];
-    activity: WsActivityItem[];
-    pending: PendingCard[];
-    state?: WsScreenState;
+    blocks: ChatBlock[];
+    /** True before the first replay lands — draws a quiet placeholder. */
+    loading?: boolean;
+    /** The centred hint shown when there is nothing to read yet. */
+    emptyHint?: string;
     /** Set while a decision is in flight so a card cannot double-fire. */
     busyRequestId?: string | null;
     onallowonce?: (requestId: string) => void;
@@ -39,93 +43,162 @@
       requestId: string,
       answers: { questionId: string; values: string[] }[],
     ) => void;
-    oncomposeclick?: () => void;
   }
 
   let {
-    sessionTitle,
-    sessionSubtitle = '',
-    messages,
-    activity,
-    pending,
-    state: screenState = 'loaded',
+    blocks,
+    loading = false,
+    emptyHint = '',
     busyRequestId = null,
     onallowonce,
     onallowsession,
     ondenypermission,
     onanswerquestion,
-    oncomposeclick,
   }: Props = $props();
 
+  let scroller = $state<HTMLDivElement | null>(null);
+  /** The reader has scrolled up: stop following the stream until they return. */
+  let pinned = $state(true);
+
   /**
-   * Rendered bodies, keyed by the body text itself. The timeline calls the
-   * renderer for every visible row on every render, and a streaming turn
-   * re-renders on every delta — without this, one long answer would re-parse
-   * the whole transcript's markdown per keystroke of output. Keying on the
-   * body (not the id) means a streaming row's growing text simply misses until
-   * it settles, and the map is cleared rather than grown without bound.
+   * Rendered bodies, keyed by the text itself. A streaming turn re-renders on
+   * every delta — without this, one long answer would re-parse the whole
+   * transcript's markdown per keystroke of output. Keying on the text (not the
+   * block id) means a growing row simply misses until it settles.
    */
   const BODY_CACHE_LIMIT = 200;
   const bodyCache = new Map<string, string>();
 
-  /**
-   * Render the agent's own prose as markdown; leave everything else alone.
-   * Returning null puts the row back on the plain-text path.
-   */
-  function renderBody(message: WsMessage): string | null {
-    if (message.kind !== 'message') return null;
-    if (message.authorUid !== SESSION_AGENT_UID) return null;
-    if (!message.body) return null;
-    const cached = bodyCache.get(message.body);
+  function renderProse(text: string): string {
+    const cached = bodyCache.get(text);
     if (cached !== undefined) return cached;
-    const html = renderMessageBodyMarkdown(message.body);
+    const html = renderMessageBodyMarkdown(text);
     if (bodyCache.size >= BODY_CACHE_LIMIT) bodyCache.clear();
-    bodyCache.set(message.body, html);
+    bodyCache.set(text, html);
     return html;
   }
+
+  /** Within this many pixels of the bottom still counts as "following". */
+  const PIN_SLACK_PX = 48;
+
+  function onScroll() {
+    const el = scroller;
+    if (!el) return;
+    pinned = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+  }
+
+  function jumpToLatest() {
+    pinned = true;
+    scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    const el = scroller;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // Follow the stream while the reader is at the bottom. Reading `blocks`
+  // (and the tail block's text) is what re-runs this on every delta.
+  $effect(() => {
+    const tail = blocks[blocks.length - 1];
+    void blocks.length;
+    void (tail && 'text' in tail ? tail.text : '');
+    if (!pinned) return;
+    scrollToBottom();
+  });
+
+  const isEmpty = $derived(blocks.length === 0);
 </script>
 
-<div class="transcript" data-testid="session-transcript">
-  <MessageTimeline
-    {sessionTitle}
-    {sessionSubtitle}
-    {messages}
-    members={SESSION_MEMBERS}
-    {activity}
-    state={screenState}
-    {renderBody}
-    {oncomposeclick}
-  />
-
-  {#if pending.length > 0}
-    <div class="pending" data-testid="session-pending-cards">
-      {#each pending as card (card.requestId)}
-        {#if card.type === 'permission'}
+<div class="transcript-wrap">
+<div
+  class="transcript"
+  data-testid="session-transcript"
+  bind:this={scroller}
+  onscroll={onScroll}
+>
+  {#if loading && isEmpty}
+    <p class="quiet-note" data-testid="session-transcript-loading">Loading the conversation…</p>
+  {:else if isEmpty}
+    <div class="empty" data-testid="session-transcript-empty">
+      {#if emptyHint}<p class="empty-hint">{emptyHint}</p>{/if}
+    </div>
+  {:else}
+    <div class="stream">
+      {#each blocks as block (block.id)}
+        {#if block.type === 'userBubble'}
+          <div class="user-row">
+            <div class="user-bubble" data-testid="session-user-bubble">{block.text}</div>
+          </div>
+        {:else if block.type === 'assistantProse'}
+          <div
+            class="prose"
+            class:streaming={block.streaming}
+            data-testid="session-assistant-prose"
+            aria-busy={block.streaming ? 'true' : undefined}
+          >
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            {@html renderProse(block.text)}
+          </div>
+        {:else if block.type === 'thinking'}
+          <p class="thinking" data-testid="session-thinking" title={block.text}>Thinking…</p>
+        {:else if block.type === 'toolGroup'}
+          <ToolGroupRow summary={block.summary} calls={block.calls} running={block.running} />
+        {:else if block.type === 'permissionCard'}
           <PermissionCard
-            requestId={card.requestId}
-            toolName={card.toolName}
-            input={card.input}
-            suggestions={card.suggestions}
-            busy={busyRequestId === card.requestId}
-            onallowonce={onallowonce}
-            onallowsession={onallowsession}
+            requestId={block.requestId}
+            toolName={block.toolName}
+            input={block.input}
+            suggestions={block.suggestions}
+            resolution={block.resolution}
+            busy={busyRequestId === block.requestId}
+            {onallowonce}
+            {onallowsession}
             ondeny={ondenypermission}
           />
-        {:else}
+        {:else if block.type === 'questionCard'}
           <QuestionCard
-            requestId={card.requestId}
-            questions={card.questions}
-            busy={busyRequestId === card.requestId}
+            requestId={block.requestId}
+            questions={block.questions}
+            resolution={block.resolution}
+            busy={busyRequestId === block.requestId}
             onsubmit={onanswerquestion}
           />
+        {:else if block.type === 'error'}
+          <p
+            class="inline-error"
+            class:warn={block.tone === 'warn'}
+            role={block.tone === 'error' ? 'alert' : undefined}
+            data-testid="session-inline-error"
+          >
+            {block.text}
+          </p>
+        {:else}
+          <div class="divider" data-testid="session-divider">
+            <span>{block.label}</span>
+          </div>
         {/if}
       {/each}
     </div>
   {/if}
 </div>
 
+{#if !pinned && !isEmpty}
+  <button
+    type="button"
+    class="jump"
+    data-testid="session-jump-to-latest"
+    onclick={jumpToLatest}
+  >
+    ↓ Jump to latest
+  </button>
+{/if}
+</div>
+
 <style>
-  .transcript {
+  .transcript-wrap {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -133,11 +206,215 @@
     min-width: 0;
   }
 
-  .pending {
+  .transcript {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    padding: var(--v4-space-4) 0 var(--v4-space-3);
+    font-family: var(--font-sans);
+  }
+
+  /* 760 of readable column plus the composer dock's own 16px gutter, so the
+     prose edge lands exactly on the composer bar's edge below it. */
+  .stream {
     display: flex;
     flex-direction: column;
+    gap: var(--v4-space-3);
+    box-sizing: border-box;
+    width: 100%;
+    max-width: calc(760px + 2 * var(--v4-space-4));
+    margin: 0 auto;
+    padding: 0 var(--v4-space-4);
+  }
+
+  .empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: var(--v4-space-4);
+  }
+
+  .empty-hint {
+    margin: 0;
+    max-width: 420px;
+    text-align: center;
+    font-size: var(--type-secondary);
+    line-height: 1.5;
+    color: var(--v4-text-3);
+  }
+
+  .quiet-note {
+    margin: 0;
+    padding: var(--v4-space-4);
+    text-align: center;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+  }
+
+  /* --- the operator ---------------------------------------------------- */
+
+  .user-row {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .user-bubble {
+    max-width: 70%;
+    padding: 8px 12px;
+    border-radius: 14px;
+    background: var(--v4-control-faint, var(--v4-raised));
+    color: var(--v4-text-1);
+    font-size: var(--type-body);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* --- the agent ------------------------------------------------------- */
+
+  .prose {
+    font-size: var(--type-body);
+    line-height: 1.62;
+    color: var(--v4-text-1);
+    overflow-wrap: anywhere;
+  }
+
+  .prose :global(p) {
+    margin: 0 0 0.7em;
+  }
+
+  .prose :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .prose :global(pre) {
+    margin: 0.7em 0;
+    padding: var(--v4-space-2);
+    overflow-x: auto;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: var(--type-metadata);
+  }
+
+  .prose :global(code) {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.92em;
+  }
+
+  .prose :global(ul),
+  .prose :global(ol) {
+    margin: 0 0 0.7em;
+    padding-left: 1.3em;
+  }
+
+  .prose.streaming::after {
+    content: '';
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: var(--v4-text-2);
+    animation: caret-blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes caret-blink {
+    to {
+      visibility: hidden;
+    }
+  }
+
+  .thinking {
+    margin: 0;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+    background: linear-gradient(
+      90deg,
+      var(--v4-text-3) 0%,
+      var(--v4-text-1) 50%,
+      var(--v4-text-3) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: think-shimmer 1.8s linear infinite;
+  }
+
+  @keyframes think-shimmer {
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .thinking {
+      animation: none;
+      -webkit-text-fill-color: var(--v4-text-3);
+    }
+    .prose.streaming::after {
+      animation: none;
+    }
+  }
+
+  /* --- notices --------------------------------------------------------- */
+
+  .inline-error {
+    margin: 0;
+    padding: 6px 10px;
+    border-radius: var(--v4-radius-button);
+    background: color-mix(in srgb, var(--v4-error, currentColor) 10%, transparent);
+    color: var(--v4-error, var(--v4-text-1));
+    font-size: var(--type-metadata);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .inline-error.warn {
+    background: color-mix(in srgb, var(--v4-warn, currentColor) 10%, transparent);
+    color: var(--v4-warn, var(--v4-text-2));
+  }
+
+  .divider {
+    display: flex;
+    align-items: center;
     gap: var(--v4-space-2);
-    flex: none;
-    padding: var(--v4-space-2) var(--v4-space-4) 0;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+  }
+
+  .divider::before,
+  .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--v4-hairline);
+  }
+
+  /* --- follow-the-stream escape hatch ---------------------------------- */
+
+  .jump {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 4;
+    height: 26px;
+    padding: 0 12px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-popover, var(--v4-raised));
+    color: var(--v4-text-2);
+    font-family: inherit;
+    font-size: var(--type-metadata);
+    box-shadow: var(--v4-shadow-popover, none);
+    cursor: pointer;
+  }
+
+  .jump:hover {
+    color: var(--v4-text-1);
   }
 </style>

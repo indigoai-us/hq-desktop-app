@@ -1,26 +1,40 @@
-// Fold a stream of session events into the transcript's render props.
+// Fold a stream of session events into the chat transcript's render blocks.
 //
-// PURE: one input array in, one plain result out. No clock, no I/O, no
-// mutation of the caller's array — the same events always fold to the same
-// transcript, which is what makes this testable and what keeps the components
-// presentation-pure.
+// PURE: events (plus the caller's out-of-band context) in, one plain result
+// out. No clock, no I/O, no mutation of the caller's arrays — the same input
+// always folds to the same blocks, which is what makes this directly testable
+// and what keeps the components presentation-pure.
 //
-// Timestamps: session events carry no wall-clock of their own, so the fold
-// assigns a deterministic monotonic `createdAt` — `startedAt + index * stepMs`
-// — which is enough for day dividers, grouping, and stable ordering. A live
-// host passes the real session start time.
+// THE SHAPE OF THE ANSWER — this is a CHAT surface, not an event log:
+//   - what the operator typed is a right-aligned bubble,
+//   - what the agent said is plain prose,
+//   - what the agent DID between two things it said is ONE quiet folded row
+//     ("Ran 8 commands · edited 1 file · read 5 files") that expands,
+//   - what the agent needs from the operator is an inline card at its position,
+//   - lifecycle chatter (`started`, `turnDone`, `usage`) is NOT a row at all:
+//     `usage` rides the composer footer and the rest is simply not news.
+// Every event kind is still consumed; "not a row" is a decision, not a drop.
+//
+// TIMESTAMPS — the events carry no wall-clock of their own. The store stamps
+// `receivedAt` as each LIVE event arrives and passes it here; a REPLAYED event
+// has no honest time, so it gets `null` and never contributes a day divider.
+// Inventing a time for it (the previous adapter's `startedAt + index * step`)
+// is what produced the fake "Thursday, January 1 12:00 AM" divider.
+//
+// USER TURNS — the backend event stream carries NO user-message event (see
+// `SESSION_EVENT_KINDS`), so the operator's own words never come back from
+// `agent_session_replay`. The store mirrors each send locally and passes them
+// in as `userTurns`; this fold interleaves them by the event index they were
+// sent at. That mirror is the ONLY reason a sent message survives the page
+// remount that follows the first send.
 
 import type {
   PermissionSuggestion,
   SessionEvent,
   SessionQuestion,
 } from './session-events';
-import type {
-  WsActivityClass,
-  WsActivityItem,
-  WsMember,
-  WsMessage,
-} from './session-types';
+import type { WsMember } from './session-types';
+import { formatDayLabel } from './session-types';
 
 export const SESSION_SELF_UID = 'you';
 export const SESSION_AGENT_UID = 'agent';
@@ -37,7 +51,184 @@ export const SESSION_MEMBERS: WsMember[] = [
   },
 ];
 
-/** A decision the transcript is blocked on until the operator answers. */
+// ---------------------------------------------------------------------------
+// Tool categories + the folded summary line
+// ---------------------------------------------------------------------------
+
+/**
+ * The bucket a tool counts into on the folded row. `other` is the safety net —
+ * an MCP tool, a Task, anything we have never seen — so a tool is never
+ * silently uncounted.
+ */
+export const TOOL_CATEGORIES = [
+  'command',
+  'edit',
+  'read',
+  'search',
+  'fetch',
+  'todo',
+  'other',
+] as const;
+export type ToolCategory = (typeof TOOL_CATEGORIES)[number];
+
+/** Map a tool name onto the bucket its work counts into. */
+export function toolCategory(toolName: string): ToolCategory {
+  switch (toolName) {
+    case 'Bash':
+    case 'BashOutput':
+    case 'KillShell':
+      return 'command';
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+    case 'NotebookEdit':
+      return 'edit';
+    case 'Read':
+      return 'read';
+    case 'Grep':
+    case 'Glob':
+    case 'WebSearch':
+      return 'search';
+    case 'WebFetch':
+      return 'fetch';
+    case 'TodoWrite':
+      return 'todo';
+    default:
+      return 'other';
+  }
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * The one-line summary of a folded tool group — "Ran 8 commands · edited 1
+ * file · read 5 files".
+ *
+ * Edits are counted by DISTINCT file, not by call: three edits to one file is
+ * "edited 1 file", which is what the operator actually wants to know. A group
+ * with nothing recognisable in it still reports its size ("3 tools") rather
+ * than collapsing to an empty line, and any failure is named at the end.
+ */
+export function toolGroupSummary(calls: ReadonlyArray<ToolCallSummary>): string {
+  let commands = 0;
+  let reads = 0;
+  let searches = 0;
+  let fetches = 0;
+  let todos = 0;
+  let other = 0;
+  let failed = 0;
+  const editedFiles: string[] = [];
+
+  for (const call of calls) {
+    if (call.status === 'error') failed += 1;
+    switch (toolCategory(call.name)) {
+      case 'command':
+        commands += 1;
+        break;
+      case 'edit': {
+        const file = call.detail || call.name;
+        if (!editedFiles.includes(file)) editedFiles.push(file);
+        break;
+      }
+      case 'read':
+        reads += 1;
+        break;
+      case 'search':
+        searches += 1;
+        break;
+      case 'fetch':
+        fetches += 1;
+        break;
+      case 'todo':
+        todos += 1;
+        break;
+      default:
+        other += 1;
+        break;
+    }
+  }
+
+  const segments: string[] = [];
+  if (commands > 0) segments.push(`ran ${plural(commands, 'command', 'commands')}`);
+  if (editedFiles.length > 0) {
+    segments.push(`edited ${plural(editedFiles.length, 'file', 'files')}`);
+  }
+  if (reads > 0) segments.push(`read ${plural(reads, 'file', 'files')}`);
+  if (searches > 0) segments.push(`searched ${plural(searches, 'time', 'times')}`);
+  if (fetches > 0) segments.push(`fetched ${plural(fetches, 'page', 'pages')}`);
+  if (todos > 0) segments.push('updated todos');
+  if (other > 0) segments.push(`used ${plural(other, 'tool', 'tools')}`);
+  if (segments.length === 0) segments.push(plural(calls.length, 'tool', 'tools'));
+  if (failed > 0) segments.push(`${failed} failed`);
+
+  const summary = segments.join(' · ');
+  return summary.charAt(0).toLocaleUpperCase('en-US') + summary.slice(1);
+}
+
+// ---------------------------------------------------------------------------
+// Block model
+// ---------------------------------------------------------------------------
+
+/** One tool call inside a folded group, mutated in place as it resolves. */
+export interface ToolCallSummary {
+  id: string;
+  name: string;
+  /** One line describing the input — a command, a path, a pattern. Never a payload. */
+  detail: string;
+  status: 'running' | 'ok' | 'error';
+  /** First lines of the tool result, for the expanded row. */
+  outcome: string;
+  /** Text a sub-agent streamed under this call, when it has one. */
+  output: string;
+}
+
+/** How a decision card was answered from this client, for its collapsed line. */
+export type CardResolution = 'Allowed' | 'Allowed for session' | 'Denied' | string;
+
+export type ChatBlock =
+  | { type: 'userBubble'; id: string; text: string; at: number | null }
+  | {
+      type: 'assistantProse';
+      id: string;
+      text: string;
+      streaming: boolean;
+      at: number | null;
+    }
+  /** The live "Thinking…" shimmer — only ever the tail, never history. */
+  | { type: 'thinking'; id: string; text: string; at: number | null }
+  | {
+      type: 'toolGroup';
+      id: string;
+      summary: string;
+      running: boolean;
+      calls: ToolCallSummary[];
+      at: number | null;
+    }
+  | {
+      type: 'permissionCard';
+      id: string;
+      requestId: string;
+      toolName: string;
+      input: unknown;
+      suggestions: PermissionSuggestion[];
+      /** Non-null once answered from this client: the card collapses to a line. */
+      resolution: CardResolution | null;
+      at: number | null;
+    }
+  | {
+      type: 'questionCard';
+      id: string;
+      requestId: string;
+      questions: SessionQuestion[];
+      resolution: CardResolution | null;
+      at: number | null;
+    }
+  | { type: 'error'; id: string; text: string; tone: 'error' | 'warn'; at: number | null }
+  | { type: 'divider'; id: string; label: string; at: number | null };
+
+/** A decision the session is blocked on until the operator answers. */
 export type PendingCard =
   | {
       type: 'permission';
@@ -45,303 +236,523 @@ export type PendingCard =
       toolName: string;
       input: unknown;
       suggestions: PermissionSuggestion[];
-      /** The `waiting-approval` activity row this card mirrors. */
-      activityId: string;
     }
   | { type: 'question'; requestId: string; questions: SessionQuestion[] };
 
+/** The last turn's cost, as the composer footer reports it. */
+export interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+  durationMs?: number;
+  /** "2 in · 17 out · $0.68". */
+  label: string;
+}
+
 export interface TranscriptState {
-  messages: WsMessage[];
-  activity: WsActivityItem[];
+  blocks: ChatBlock[];
+  /** Cards still awaiting an answer, in arrival order. */
   pending: PendingCard[];
+  /** The most recent `usage` event, or null before the first turn settles. */
+  lastUsage: UsageSummary | null;
+  /** The CLI process is gone — the composer stops offering to send. */
+  ended: boolean;
+}
+
+/** One locally-mirrored user turn (the event stream carries none). */
+export interface UserTurn {
+  id: string;
+  text: string;
+  /**
+   * How many events had been folded when the turn was sent. The bubble is
+   * emitted immediately before the event at this index, which is what puts it
+   * above the answer it provoked.
+   */
+  atIndex: number;
+  /** Wall-clock ms the turn was sent, or null when it cannot be known. */
+  at: number | null;
 }
 
 export interface FoldOptions {
-  /** ISO-8601 UTC instant the session started. */
-  startedAt?: string;
-  /** Milliseconds between consecutive events. */
-  stepMs?: number;
+  /**
+   * Wall-clock ms each event arrived, parallel to `events`. A replayed event
+   * has no honest arrival time and passes `null`, which keeps it out of the
+   * day-divider decision instead of inventing a date for it.
+   */
+  receivedAt?: ReadonlyArray<number | null>;
+  /** The operator's own turns, mirrored by the store. */
+  userTurns?: ReadonlyArray<UserTurn>;
+  /** requestId → the verb this client answered it with. */
+  resolutions?: Readonly<Record<string, CardResolution>>;
 }
 
-/** Deterministic default so a fixture-driven render never drifts between runs. */
-const DEFAULT_STARTED_AT = '2026-01-01T00:00:00.000Z';
-const DEFAULT_STEP_MS = 1000;
+// ---------------------------------------------------------------------------
+// Input summaries
+// ---------------------------------------------------------------------------
 
-/**
- * Map a tool name onto its presentation class. Everything unrecognised — MCP
- * tools included — lands in `generic-tool` rather than being dropped: the
- * ambient safety net is the point of that class.
- */
-export function activityClassForTool(toolName: string): WsActivityClass {
-  if (toolName === 'Bash') return 'shell-command';
-  if (toolName === 'Edit' || toolName === 'Write') return 'file-edit';
-  return 'generic-tool';
+/** The keys worth showing, in the order they best describe a call. */
+const INPUT_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'notebook_path',
+  'pattern',
+  'query',
+  'url',
+  'description',
+  'prompt',
+] as const;
+
+const DETAIL_LIMIT = 160;
+
+/** One-line label for a tool's input — never a whole payload. */
+export function describeToolInput(input: unknown): string {
+  const raw = rawToolInput(input);
+  const single = raw.replace(/\s+/g, ' ').trim();
+  return single.length > DETAIL_LIMIT ? `${single.slice(0, DETAIL_LIMIT)}…` : single;
 }
 
-/** One-line label for a tool's input, without ever dumping a whole payload. */
-function describeToolInput(input: unknown): string {
+function rawToolInput(input: unknown): string {
   if (typeof input === 'string') return input;
   if (input && typeof input === 'object') {
-    const rec = input as Record<string, unknown>;
-    for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url']) {
-      const value = rec[key];
+    const record = input as Record<string, unknown>;
+    for (const key of INPUT_KEYS) {
+      const value = record[key];
       if (typeof value === 'string' && value.length > 0) return value;
     }
   }
   return '';
 }
 
+/** Cap a tool result to a readable head rather than pasting a whole log. */
+const OUTCOME_LINES = 12;
+const OUTCOME_CHARS = 1200;
+
+function clipOutcome(content: string): string {
+  const lines = content.split('\n');
+  const head = lines.slice(0, OUTCOME_LINES).join('\n');
+  const clipped = head.length > OUTCOME_CHARS ? `${head.slice(0, OUTCOME_CHARS)}…` : head;
+  return lines.length > OUTCOME_LINES ? `${clipped}\n…` : clipped;
+}
+
+// ---------------------------------------------------------------------------
+// Usage
+// ---------------------------------------------------------------------------
+
+/** "1,240" → "1.2k", so a long turn's footer stays one quiet line. */
+function compactTokens(value: number): string {
+  if (value < 1000) return String(value);
+  return `${(value / 1000).toFixed(1)}k`;
+}
+
+function usageLabel(usage: {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+  durationMs?: number;
+}): string {
+  const parts = [
+    `${compactTokens(usage.inputTokens)} in`,
+    `${compactTokens(usage.outputTokens)} out`,
+  ];
+  if (usage.costUsd !== undefined) parts.push(`$${usage.costUsd.toFixed(2)}`);
+  return parts.join(' · ');
+}
+
+// ---------------------------------------------------------------------------
+// The fold
+// ---------------------------------------------------------------------------
+
+/** UTC day key of a wall-clock instant, for the divider decision. */
+function dayKey(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
 export function foldSessionEvents(
   events: ReadonlyArray<SessionEvent>,
   options: FoldOptions = {},
 ): TranscriptState {
-  const startedAt = Date.parse(options.startedAt ?? DEFAULT_STARTED_AT);
-  const stepMs = options.stepMs ?? DEFAULT_STEP_MS;
-  const at = (index: number): string => new Date(startedAt + index * stepMs).toISOString();
+  const receivedAt = options.receivedAt ?? [];
+  const resolutions = options.resolutions ?? {};
+  // Sorted on a copy so a caller's array is never mutated.
+  const turns = [...(options.userTurns ?? [])].sort((a, b) => a.atIndex - b.atIndex);
 
-  const messages: WsMessage[] = [];
-  const activity: WsActivityItem[] = [];
+  const blocks: ChatBlock[] = [];
   const pending: PendingCard[] = [];
+  let lastUsage: UsageSummary | null = null;
+  let ended = false;
 
-  // Open streaming assistant rows, keyed by owning tool use so a sub-agent's
-  // text coalesces into its OWN row instead of being spliced into the
-  // top-level answer. '@root' is the session's own turn.
-  const streamingByParent = new Map<string, WsMessage>();
-  const rootKey = '@root';
-  const key = (parentToolUseId?: string): string => parentToolUseId ?? rootKey;
+  /** The assistant prose row currently streaming at the top level, if any. */
+  let openProse: Extract<ChatBlock, { type: 'assistantProse' }> | null = null;
+  /** The tool group still accepting calls, if any. */
+  let openGroup: Extract<ChatBlock, { type: 'toolGroup' }> | null = null;
+  /** The live thinking row, retired the moment the agent says anything. */
+  let openThought: Extract<ChatBlock, { type: 'thinking' }> | null = null;
+  /** Every open call, so a result can close the row it belongs to. */
+  const callsById = new Map<string, ToolCallSummary>();
+  /** Thinking rows that were superseded; filtered out at the end. */
+  const retired = new Set<string>();
 
-  // Tool rows are mutated in place: one action is one row that moves through
-  // executing → done/failed.
-  const toolRows = new Map<string, WsActivityItem>();
+  let lastDay = '';
+  let nextTurn = 0;
 
-  // Thinking coalesces into ONE quiet row per turn.
-  let thoughtRow: WsActivityItem | null = null;
-  let turnIndex = 0;
-
-  const pushSystem = (index: number, body: string): void => {
-    messages.push({
-      id: `sys-${index}`,
-      kind: 'system',
-      authorUid: SESSION_AGENT_UID,
-      body,
-      createdAt: at(index),
+  /** Emit a day divider when a real-dated block crosses a UTC date boundary. */
+  function markDay(at: number | null): void {
+    if (at === null) return;
+    const day = dayKey(at);
+    if (lastDay === '') {
+      lastDay = day;
+      return;
+    }
+    if (day === lastDay) return;
+    lastDay = day;
+    blocks.push({
+      type: 'divider',
+      id: `day-${day}`,
+      label: formatDayLabel(new Date(at).toISOString()),
+      at,
     });
-  };
+  }
+
+  function push(block: ChatBlock): void {
+    markDay(block.at);
+    blocks.push(block);
+  }
+
+  /** The agent has said or done something: the "Thinking…" shimmer is over. */
+  function retireThought(): void {
+    if (!openThought) return;
+    retired.add(openThought.id);
+    openThought = null;
+  }
+
+  function closeGroup(): void {
+    openGroup = null;
+  }
+
+  function closeProse(): void {
+    if (openProse) openProse.streaming = false;
+    openProse = null;
+  }
+
+  /** The group a tool call joins — a new one after any prose. */
+  function groupFor(at: number | null): Extract<ChatBlock, { type: 'toolGroup' }> {
+    if (openGroup) return openGroup;
+    const group: Extract<ChatBlock, { type: 'toolGroup' }> = {
+      type: 'toolGroup',
+      id: `tools-${blocks.length}`,
+      summary: '',
+      running: true,
+      calls: [],
+      at,
+    };
+    openGroup = group;
+    push(group);
+    return group;
+  }
+
+  /** Emit every mirrored user turn that belongs before event `index`. */
+  function drainTurns(index: number): void {
+    while (nextTurn < turns.length && turns[nextTurn]!.atIndex <= index) {
+      const turn = turns[nextTurn]!;
+      nextTurn += 1;
+      // A user turn is the hardest boundary there is: it ends the agent's
+      // previous prose, group and thought.
+      closeProse();
+      closeGroup();
+      retireThought();
+      push({ type: 'userBubble', id: `user-${turn.id}`, text: turn.text, at: turn.at });
+    }
+  }
 
   events.forEach((event, index) => {
+    drainTurns(index);
+    const at = receivedAt[index] ?? null;
+
     switch (event.kind) {
-      case 'started': {
-        pushSystem(
-          index,
-          `Started ${event.tool} (${event.model}) in ${event.cwd} — ${event.tools.length} tools, ${event.commands.length} commands.`,
-        );
+      // `started` is not news: the strip already names the company and model,
+      // and a "Started claude (opus) in /Users/…" banner is exactly the
+      // technical narration a chat surface should not open with.
+      case 'started':
         break;
-      }
 
       case 'textDelta': {
-        const k = key(event.parentToolUseId);
-        const open = streamingByParent.get(k);
-        if (open) {
-          open.body += event.text;
+        if (event.parentToolUseId) {
+          subAgentCall(event.parentToolUseId, at).output += event.text;
+          break;
+        }
+        retireThought();
+        closeGroup();
+        if (openProse) {
+          openProse.text += event.text;
         } else {
-          const row: WsMessage = {
-            id: `msg-${index}`,
-            kind: 'message',
-            authorUid: SESSION_AGENT_UID,
-            body: event.text,
-            createdAt: at(index),
+          const prose: Extract<ChatBlock, { type: 'assistantProse' }> = {
+            type: 'assistantProse',
+            id: `say-${index}`,
+            text: event.text,
             streaming: true,
+            at,
           };
-          streamingByParent.set(k, row);
-          messages.push(row);
+          openProse = prose;
+          push(prose);
         }
         break;
       }
 
       case 'assistantMessage': {
-        const k = key(event.parentToolUseId);
-        const open = streamingByParent.get(k);
-        if (open) {
+        if (event.parentToolUseId) {
+          subAgentCall(event.parentToolUseId, at).output = event.text;
+          break;
+        }
+        retireThought();
+        closeGroup();
+        if (openProse) {
           // The finalized text is authoritative — the deltas were a preview of
           // exactly this string, so it replaces rather than appends.
-          open.body = event.text;
-          open.streaming = false;
-          streamingByParent.delete(k);
+          openProse.text = event.text;
+          openProse.streaming = false;
+          openProse = null;
         } else {
-          messages.push({
-            id: `msg-${index}`,
-            kind: 'message',
-            authorUid: SESSION_AGENT_UID,
-            body: event.text,
-            createdAt: at(index),
+          push({
+            type: 'assistantProse',
+            id: `say-${index}`,
+            text: event.text,
+            streaming: false,
+            at,
           });
         }
         break;
       }
 
       case 'thinkingDelta': {
-        if (thoughtRow) {
-          thoughtRow.detail = `${thoughtRow.detail ?? ''}${event.text}`;
-        } else {
-          thoughtRow = {
-            id: `thought-${turnIndex}`,
-            cls: 'thought',
-            status: 'done',
-            agentUid: SESSION_AGENT_UID,
-            verb: 'Thought',
-            object: 'about the request',
-            detail: event.text,
-            createdAt: at(index),
-          };
-          activity.push(thoughtRow);
+        if (openThought) {
+          openThought.text += event.text;
+          break;
         }
+        closeProse();
+        const thought: Extract<ChatBlock, { type: 'thinking' }> = {
+          type: 'thinking',
+          id: `think-${index}`,
+          text: event.text,
+          at,
+        };
+        openThought = thought;
+        push(thought);
         break;
       }
 
       case 'toolCall': {
-        const row: WsActivityItem = {
-          id: `tool-${event.id}`,
-          cls: activityClassForTool(event.name),
-          status: 'executing',
-          agentUid: SESSION_AGENT_UID,
-          verb: 'Ran',
-          object: describeToolInput(event.input) || event.name,
-          detail: event.name,
-          createdAt: at(index),
+        retireThought();
+        closeProse();
+        const call: ToolCallSummary = {
+          id: event.id,
+          name: event.name,
+          detail: describeToolInput(event.input),
+          status: 'running',
+          outcome: '',
+          output: '',
         };
-        toolRows.set(event.id, row);
-        activity.push(row);
+        callsById.set(event.id, call);
+        const group = groupFor(at);
+        group.calls.push(call);
         break;
       }
 
       case 'toolResult': {
-        const row = toolRows.get(event.id);
-        if (row) {
-          row.status = event.isError ? 'failed' : 'done';
-          row.outcome = event.content;
-        } else {
-          // A result with no call in this window (a truncated head, say) still
-          // deserves a row rather than silent loss.
-          activity.push({
-            id: `tool-${event.id}`,
-            cls: 'generic-tool',
-            status: event.isError ? 'failed' : 'done',
-            agentUid: SESSION_AGENT_UID,
-            verb: 'Ran',
-            object: event.id,
-            outcome: event.content,
-            createdAt: at(index),
+        const call = callsById.get(event.id);
+        if (call) {
+          call.status = event.isError ? 'error' : 'ok';
+          call.outcome = clipOutcome(event.content);
+          break;
+        }
+        // A result whose call fell outside the replay window still deserves a
+        // row rather than silent loss.
+        const orphan: ToolCallSummary = {
+          id: event.id,
+          name: 'Tool',
+          detail: event.id,
+          status: event.isError ? 'error' : 'ok',
+          outcome: clipOutcome(event.content),
+          output: '',
+        };
+        callsById.set(event.id, orphan);
+        groupFor(at).calls.push(orphan);
+        break;
+      }
+
+      case 'permissionRequest': {
+        retireThought();
+        closeProse();
+        closeGroup();
+        const resolution = resolutions[event.requestId] ?? null;
+        push({
+          type: 'permissionCard',
+          id: `perm-${event.requestId}`,
+          requestId: event.requestId,
+          toolName: event.toolName,
+          input: event.input,
+          suggestions: event.suggestions,
+          resolution,
+          at,
+        });
+        if (!resolution) {
+          pending.push({
+            type: 'permission',
+            requestId: event.requestId,
+            toolName: event.toolName,
+            input: event.input,
+            suggestions: event.suggestions,
           });
         }
         break;
       }
 
-      case 'permissionRequest': {
-        const activityId = `perm-${event.requestId}`;
-        activity.push({
-          id: activityId,
-          cls: 'permission',
-          status: 'waiting-approval',
-          agentUid: SESSION_AGENT_UID,
-          verb: 'Needs approval to run',
-          object: describeToolInput(event.input) || event.toolName,
-          detail: event.toolName,
-          createdAt: at(index),
-        });
-        pending.push({
-          type: 'permission',
-          requestId: event.requestId,
-          toolName: event.toolName,
-          input: event.input,
-          suggestions: event.suggestions,
-          activityId,
-        });
-        break;
-      }
-
       case 'questionRequest': {
-        pending.push({
-          type: 'question',
+        retireThought();
+        closeProse();
+        closeGroup();
+        const resolution = resolutions[event.requestId] ?? null;
+        push({
+          type: 'questionCard',
+          id: `question-${event.requestId}`,
           requestId: event.requestId,
           questions: event.questions,
+          resolution,
+          at,
         });
+        if (!resolution) {
+          pending.push({
+            type: 'question',
+            requestId: event.requestId,
+            questions: event.questions,
+          });
+        }
         break;
       }
 
+      // Not a row: the last turn's cost belongs on the composer footer, where
+      // it is available without pushing the conversation up.
       case 'usage': {
-        const parts = [`${event.inputTokens} in`, `${event.outputTokens} out`];
-        if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
-        if (event.durationMs !== undefined) parts.push(`${event.durationMs} ms`);
-        activity.push({
-          id: `usage-${index}`,
-          cls: 'tool-status',
-          status: 'done',
-          agentUid: SESSION_AGENT_UID,
-          verb: 'Used',
-          object: 'tokens',
-          outcome: parts.join(' · '),
-          createdAt: at(index),
-        });
+        lastUsage = {
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+          costUsd: event.costUsd,
+          durationMs: event.durationMs,
+          label: usageLabel(event),
+        };
         break;
       }
 
       case 'rateLimit': {
-        pushSystem(
-          index,
-          event.resetsAt
+        retireThought();
+        closeProse();
+        closeGroup();
+        push({
+          type: 'error',
+          id: `rate-${index}`,
+          tone: 'warn',
+          text: event.resetsAt
             ? `Rate limited: ${event.message} (resets ${event.resetsAt})`
             : `Rate limited: ${event.message}`,
-        );
-        break;
-      }
-
-      case 'truncated': {
-        activity.push({
-          id: `truncated-${index}`,
-          cls: 'suppressed',
-          status: 'done',
-          agentUid: SESSION_AGENT_UID,
-          verb: 'Hid',
-          object: `${event.dropped} noisy events`,
-          createdAt: at(index),
-          suppressedCount: event.dropped,
+          at,
         });
         break;
       }
 
+      case 'truncated': {
+        closeProse();
+        closeGroup();
+        push({
+          type: 'divider',
+          id: `truncated-${index}`,
+          label: `${event.dropped} older events dropped`,
+          at,
+        });
+        break;
+      }
+
+      // Not a row when it succeeded — "Turn complete." is noise the reader can
+      // already see. A turn that failed IS news, so it keeps a line.
       case 'turnDone': {
-        // A turn boundary closes anything still open: a stream that never got
-        // its final message, and the turn's thought row.
-        for (const open of streamingByParent.values()) open.streaming = false;
-        streamingByParent.clear();
-        thoughtRow = null;
-        turnIndex += 1;
-        pushSystem(
-          index,
-          event.status === 'success'
-            ? 'Turn complete.'
-            : `Turn ${event.status}${event.error ? `: ${event.error}` : ''}.`,
-        );
+        retireThought();
+        closeProse();
+        closeGroup();
+        if (event.status !== 'success') {
+          push({
+            type: 'error',
+            id: `turn-${index}`,
+            tone: event.status === 'interrupted' ? 'warn' : 'error',
+            text:
+              event.status === 'interrupted'
+                ? 'Stopped.'
+                : `Turn failed${event.error ? `: ${event.error}` : ''}.`,
+            at,
+          });
+        }
         break;
       }
 
       case 'error': {
-        pushSystem(index, event.code ? `Error (${event.code}): ${event.message}` : `Error: ${event.message}`);
+        retireThought();
+        closeProse();
+        closeGroup();
+        push({
+          type: 'error',
+          id: `error-${index}`,
+          tone: 'error',
+          text: event.code ? `${event.message} (${event.code})` : event.message,
+          at,
+        });
         break;
       }
 
       case 'exited': {
-        const how =
-          event.signal !== undefined
-            ? `signal ${event.signal}`
-            : event.code !== undefined
-              ? `code ${event.code}`
-              : 'unknown status';
-        pushSystem(index, `Session exited (${how}).`);
+        retireThought();
+        closeProse();
+        closeGroup();
+        ended = true;
+        push({ type: 'divider', id: `exited-${index}`, label: 'Session ended', at });
         break;
       }
     }
   });
 
-  return { messages, activity, pending };
+  // Anything the operator sent after the last event we have folded (the common
+  // case for the very first send: the bubble exists before any reply does).
+  drainTurns(events.length);
+
+  for (const block of blocks) {
+    if (block.type === 'toolGroup') {
+      block.summary = toolGroupSummary(block.calls);
+      block.running = block.calls.some((call) => call.status === 'running');
+    }
+  }
+
+  return {
+    blocks: blocks.filter((block) => !retired.has(block.id)),
+    pending,
+    lastUsage,
+    ended,
+  };
+
+  /**
+   * The tool row a sub-agent's stream belongs to. Sub-agent prose must never
+   * be spliced into the top-level answer, so an orphaned parent id gets a row
+   * of its own rather than a paragraph.
+   */
+  function subAgentCall(parentToolUseId: string, at: number | null): ToolCallSummary {
+    const known = callsById.get(parentToolUseId);
+    if (known) return known;
+    const call: ToolCallSummary = {
+      id: parentToolUseId,
+      name: 'Task',
+      detail: 'sub-agent',
+      status: 'running',
+      outcome: '',
+      output: '',
+    };
+    callsById.set(parentToolUseId, call);
+    groupFor(at).calls.push(call);
+    return call;
+  }
 }

@@ -3,8 +3,8 @@
  *
  * The ONE place the `agent_session_*` Tauri command surface and the three
  * `agent-session:*` events are spoken on the frontend. Everything above it —
- * the page, the list panel, the transcript, the composer — reads runes off
- * this module and calls its actions; nothing else invokes those commands.
+ * the page, the strip, the transcript, the composer — reads runes off this
+ * module and calls its actions; nothing else invokes those commands.
  *
  * Correctness model (why the seq bookkeeping looks the way it does):
  *   - `agent_session_replay(sessionId, sinceSeq)` returns `(seq, event)` pairs
@@ -17,6 +17,20 @@
  *     rendering a transcript with a hole in it.
  * That invariant is what lets the transcript be a pure fold of `events`.
  *
+ * TWO things the event stream cannot tell us, which this store supplies:
+ *
+ *   1. WHEN an event happened. Session events carry no wall-clock, so the
+ *      store stamps `receivedAt` the moment a LIVE event lands. Replayed
+ *      events get `null` — they have no honest time — and the fold keeps them
+ *      out of the day-divider decision rather than inventing one.
+ *
+ *   2. WHAT THE OPERATOR SAID. There is no user-message event in the enum
+ *      (see `SESSION_EVENT_KINDS`), so `agent_session_replay` never returns
+ *      the operator's own turns. The store mirrors every send in
+ *      `userTurnsById`, which deliberately OUTLIVES `close()`: the first send
+ *      of a new session is immediately followed by a route change and a page
+ *      remount, and the sent message has to still be on screen afterwards.
+ *
  * The fold itself (`foldSessionEvents`) is pure and lives with the components;
  * this module memoizes it on a revision counter so a render that only reads
  * `transcript` does not refold on every access.
@@ -24,11 +38,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { safeUnlisten } from '../../lib/listener-registry';
-import type { SessionCommand, SessionEvent } from '../../components/sessions/session-events';
+import type {
+  ImageAttachment,
+  SessionCommand,
+  SessionEvent,
+} from '../../components/sessions/session-events';
 import {
   foldSessionEvents,
+  type CardResolution,
+  type ChatBlock,
   type PendingCard,
   type TranscriptState,
+  type UsageSummary,
+  type UserTurn,
 } from '../../components/sessions/transcript-adapter';
 
 // ---------------------------------------------------------------------------
@@ -103,10 +125,10 @@ export interface Preflight {
   companies: PreflightCompany[];
 }
 
-/** The CLI's slash-command catalog + model list, for the composer + picker. */
+/** The CLI's slash-command catalog + model list, for the composer's pills. */
 export interface CommandCatalog {
   commands: SessionCommand[];
-  /** Free-form JSON from the CLI handshake; shape is not ours to pin. */
+  /** Free-form JSON from the CLI handshake; read via `readSessionModels`. */
   models: unknown[];
 }
 
@@ -144,6 +166,11 @@ export const AGENT_SESSION_NEEDS_YOU = 'agent-session:needs-you';
 interface SessionEntry {
   sessionId: string;
   events: SessionEvent[];
+  /**
+   * Wall-clock ms each event arrived, parallel to `events`. Live events carry
+   * a real instant; replayed ones carry `null` (see the module header).
+   */
+  receivedAt: (number | null)[];
   /** The seq to pass as `sinceSeq` on the next replay. */
   nextSeq: number;
   phase: SessionPhase;
@@ -157,21 +184,22 @@ interface SessionEntry {
   truncated: boolean;
   loading: boolean;
   error: string;
-  /** Requests already answered from this client, so their card can retire. */
-  resolvedRequests: string[];
+  /** requestId → the verb this client answered it with, so its card can retire. */
+  resolutions: Record<string, CardResolution>;
 }
 
 function newEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     events: [],
+    receivedAt: [],
     nextSeq: 0,
     phase: 'starting',
     phaseObserved: false,
     truncated: false,
     loading: true,
     error: '',
-    resolvedRequests: [],
+    resolutions: {},
   };
 }
 
@@ -183,6 +211,24 @@ let needsYou = $state<NeedsYouNotice | null>(null);
 /** Bumped on every transcript-affecting mutation; the fold memo keys on it. */
 let revision = $state(0);
 
+/**
+ * The operator's own turns, per session — the half of the transcript the
+ * backend does not have. Deliberately module-level and NOT part of `entries`:
+ * `close()` drops an entry, and the very first send is immediately followed by
+ * a route change that closes and reopens the session. Keeping the mirror out
+ * of the entry is what makes the sent message survive that remount.
+ *
+ * A plain object rather than `$state`: every mutation bumps `revision`, which
+ * is what consumers are actually subscribed to.
+ */
+let userTurnsById: Record<string, UserTurn[]> = {};
+/**
+ * The optimistic bubble for a send that is starting its own session — it has
+ * nowhere to live until the backend mints an id.
+ */
+let draftTurns: UserTurn[] = [];
+let turnSeq = 0;
+
 let unlistenEvent: UnlistenFn | null = null;
 let unlistenPhase: UnlistenFn | null = null;
 let unlistenNeedsYou: UnlistenFn | null = null;
@@ -190,7 +236,15 @@ let listenersStarting = false;
 
 let foldCache: { id: string; revision: number; value: TranscriptState } | null = null;
 
-const EMPTY_TRANSCRIPT: TranscriptState = { messages: [], activity: [], pending: [] };
+/** Fold-cache key for the pre-session optimistic bubble. */
+const DRAFT_ID = '@draft';
+
+const EMPTY_TRANSCRIPT: TranscriptState = {
+  blocks: [],
+  pending: [],
+  lastUsage: null,
+  ended: false,
+};
 
 function errorText(err: unknown): string {
   if (typeof err === 'string') return err;
@@ -213,6 +267,8 @@ function applyEvent(sessionId: string, seq: number, event: SessionEvent): void {
     return;
   }
   entry.events.push(event);
+  // A live event is the one moment we KNOW when something happened.
+  entry.receivedAt.push(Date.now());
   entry.nextSeq = seq + 1;
   revision += 1;
 }
@@ -229,10 +285,16 @@ async function replayFrom(sessionId: string, sinceSeq: number): Promise<void> {
     const target = entries[sessionId];
     if (!target) return;
     const incoming = replay.events.map(([, event]) => event);
+    // A replayed event has no honest arrival time; `null` keeps it out of the
+    // day-divider decision instead of stamping it with "now", which would put
+    // a whole day's history under today's date.
+    const stamps = incoming.map(() => null);
     // `sinceSeq === 0` is a full catch-up: replace. A partial replay fills a
     // gap from the last contiguous seq forward, so it appends onto what we
     // already folded.
     target.events = sinceSeq === 0 ? incoming : [...target.events, ...incoming];
+    target.receivedAt =
+      sinceSeq === 0 ? stamps : [...target.receivedAt, ...stamps];
     target.nextSeq = replay.nextSeq;
     target.truncated = target.truncated || replay.truncated;
     target.loading = false;
@@ -286,6 +348,24 @@ function teardownListeners(): void {
 }
 
 // ---------------------------------------------------------------------------
+// The operator's own turns
+// ---------------------------------------------------------------------------
+
+function newTurn(text: string, atIndex: number): UserTurn {
+  turnSeq += 1;
+  return { id: `t${turnSeq}`, text, atIndex, at: Date.now() };
+}
+
+/** Mirror a sent turn onto a session, at the event index it was sent from. */
+function recordTurn(sessionId: string, text: string): void {
+  const entry = entries[sessionId];
+  const turn = newTurn(text, entry ? entry.events.length : 0);
+  userTurnsById[sessionId] = [...(userTurnsById[sessionId] ?? []), turn];
+  foldCache = null;
+  revision += 1;
+}
+
+// ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
@@ -322,7 +402,13 @@ async function open(sessionId: string): Promise<void> {
   await refreshList();
 }
 
-/** Drop a session's buffered transcript; unlisten once nothing is open. */
+/**
+ * Drop a session's buffered transcript; unlisten once nothing is open.
+ *
+ * The operator's mirrored turns are NOT dropped — see the module header: a
+ * close/open pair is exactly what a route change does, and the message the
+ * user just sent has to survive it.
+ */
 function close(sessionId: string): void {
   const { [sessionId]: _dropped, ...rest } = entries;
   entries = rest;
@@ -339,11 +425,51 @@ async function start(spec: SessionSpec): Promise<string> {
   return started.sessionId;
 }
 
+/**
+ * The chat-first entry point: one message starts the session it belongs to.
+ *
+ * The bubble is mirrored BEFORE the backend is asked for anything, so the
+ * operator sees their own words the instant they press Enter rather than after
+ * a CLI handshake. When the id comes back the bubble is re-anchored onto the
+ * real session, which is what carries it through the remount that the caller's
+ * navigation triggers.
+ */
+async function startAndSend(
+  spec: SessionSpec,
+  text: string,
+  images: ImageAttachment[] = [],
+): Promise<string> {
+  const optimistic = newTurn(text, 0);
+  draftTurns = [optimistic];
+  foldCache = null;
+  revision += 1;
+  try {
+    const sessionId = await start(spec);
+    const entry = entries[sessionId];
+    userTurnsById[sessionId] = [
+      ...(userTurnsById[sessionId] ?? []),
+      { ...optimistic, atIndex: entry ? entry.events.length : 0 },
+    ];
+    draftTurns = [];
+    foldCache = null;
+    revision += 1;
+    await invoke('agent_session_send', { sessionId, text, images });
+    return sessionId;
+  } catch (err) {
+    // The send never happened, so the bubble would be a lie. Take it back.
+    draftTurns = [];
+    foldCache = null;
+    revision += 1;
+    throw err;
+  }
+}
+
 /** Send a user turn (or steer an in-flight one) to the active session. */
-async function send(text: string): Promise<void> {
+async function send(text: string, images: ImageAttachment[] = []): Promise<void> {
   const sessionId = activeId;
   if (!sessionId) return;
-  await invoke('agent_session_send', { sessionId, text });
+  recordTurn(sessionId, text);
+  await invoke('agent_session_send', { sessionId, text, images });
 }
 
 /** Answer a parked permission request on the active session. */
@@ -354,7 +480,20 @@ async function respondPermission(
   const sessionId = activeId;
   if (!sessionId) return;
   await invoke('agent_session_respond_permission', { sessionId, requestId, decision });
-  markResolved(sessionId, requestId);
+  markResolved(sessionId, requestId, permissionVerb(decision));
+}
+
+function permissionVerb(decision: PermissionDecision): CardResolution {
+  switch (decision.kind) {
+    case 'allowOnce':
+      return 'Allowed';
+    case 'allowSession':
+      return 'Allowed for session';
+    case 'allow':
+      return 'Allowed';
+    case 'deny':
+      return 'Denied';
+  }
 }
 
 /** Answer a parked `AskUserQuestion` on the active session. */
@@ -365,7 +504,8 @@ async function answerQuestion(
   const sessionId = activeId;
   if (!sessionId) return;
   await invoke('agent_session_answer_question', { sessionId, requestId, answers });
-  markResolved(sessionId, requestId);
+  const chosen = answers.flatMap((answer) => answer.values).join(', ');
+  markResolved(sessionId, requestId, chosen ? `Answered · ${chosen}` : 'Answered');
 }
 
 /**
@@ -374,10 +514,14 @@ async function answerQuestion(
  * map), so the fold — which only ever sees the ORIGINAL request event — would
  * otherwise keep showing an answered card forever.
  */
-function markResolved(sessionId: string, requestId: string): void {
+function markResolved(
+  sessionId: string,
+  requestId: string,
+  resolution: CardResolution,
+): void {
   const entry = entries[sessionId];
-  if (!entry || entry.resolvedRequests.includes(requestId)) return;
-  entry.resolvedRequests.push(requestId);
+  if (!entry || entry.resolutions[requestId]) return;
+  entry.resolutions = { ...entry.resolutions, [requestId]: resolution };
   if (needsYou?.requestId === requestId) needsYou = null;
   revision += 1;
 }
@@ -420,6 +564,9 @@ export function resetLiveSessionStore(): void {
   needsYou = null;
   revision = 0;
   foldCache = null;
+  userTurnsById = {};
+  draftTurns = [];
+  turnSeq = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -431,23 +578,32 @@ function activeEntry(): SessionEntry | null {
 }
 
 function transcriptOf(entry: SessionEntry | null): TranscriptState {
-  if (!entry) return EMPTY_TRANSCRIPT;
-  // Read the revision rune so every consumer of `transcript` stays subscribed
-  // to transcript mutations even on a memo hit.
+  // Read the revision rune so every consumer stays subscribed to transcript
+  // mutations even on a memo hit.
   const rev = revision;
+  if (!entry) {
+    // No session yet: the only thing there can be is the optimistic bubble of
+    // a first send that has not been answered by the backend.
+    if (draftTurns.length === 0) return EMPTY_TRANSCRIPT;
+    // Memoized like a real session's fold — a getter that returned a fresh
+    // object per read would re-run every `$derived` that touches it forever.
+    if (foldCache && foldCache.id === DRAFT_ID && foldCache.revision === rev) {
+      return foldCache.value;
+    }
+    const draft = foldSessionEvents([], { userTurns: draftTurns });
+    foldCache = { id: DRAFT_ID, revision: rev, value: draft };
+    return draft;
+  }
   if (foldCache && foldCache.id === entry.sessionId && foldCache.revision === rev) {
     return foldCache.value;
   }
-  const folded = foldSessionEvents(entry.events);
-  const value: TranscriptState = entry.resolvedRequests.length
-    ? { ...folded, pending: folded.pending.filter((card) => !isResolved(entry, card)) }
-    : folded;
+  const value = foldSessionEvents(entry.events, {
+    receivedAt: entry.receivedAt,
+    userTurns: userTurnsById[entry.sessionId] ?? [],
+    resolutions: entry.resolutions,
+  });
   foldCache = { id: entry.sessionId, revision: rev, value };
   return value;
-}
-
-function isResolved(entry: SessionEntry, card: PendingCard): boolean {
-  return entry.resolvedRequests.includes(card.requestId);
 }
 
 export const liveSessionStore = {
@@ -477,17 +633,36 @@ export const liveSessionStore = {
   get events(): SessionEvent[] {
     return activeEntry()?.events ?? [];
   },
+  /** Arrival stamps parallel to `events`; `null` for replayed events. */
+  get receivedAt(): (number | null)[] {
+    return activeEntry()?.receivedAt ?? [];
+  },
   /** The seq to ask for on the next replay of the active session. */
   get nextSeq(): number {
     return activeEntry()?.nextSeq ?? 0;
   },
-  /** Folded transcript of the active session, answered cards removed. */
+  /** Folded transcript of the active session. */
   get transcript(): TranscriptState {
     return transcriptOf(activeEntry());
+  },
+  /** The chat blocks the transcript renders, oldest first. */
+  get blocks(): ChatBlock[] {
+    return transcriptOf(activeEntry()).blocks;
   },
   /** Cards the active session is blocked on, in arrival order. */
   get pending(): PendingCard[] {
     return transcriptOf(activeEntry()).pending;
+  },
+  /** The last turn's token/cost summary, for the composer footer. */
+  get lastUsage(): UsageSummary | null {
+    return transcriptOf(activeEntry()).lastUsage;
+  },
+  /** The operator's mirrored turns on the active session. */
+  get userTurns(): UserTurn[] {
+    const entry = activeEntry();
+    void revision;
+    if (!entry) return draftTurns;
+    return userTurnsById[entry.sessionId] ?? [];
   },
   /** The latest "this session is blocked on you" notice, or null. */
   get needsYou(): NeedsYouNotice | null {
@@ -502,6 +677,15 @@ export const liveSessionStore = {
     }
     return [];
   },
+  /** The model id the CLI reported for the active session, when it said one. */
+  get startedModel(): string | null {
+    const entry = activeEntry();
+    if (!entry) return null;
+    for (const event of entry.events) {
+      if (event.kind === 'started' && event.model) return event.model;
+    }
+    return null;
+  },
   /** The active session's registry summary, when the list knows about it. */
   get summary(): SessionSummary | null {
     return sessions.find((s) => s.sessionId === activeId) ?? null;
@@ -510,6 +694,7 @@ export const liveSessionStore = {
   close,
   refreshList,
   start,
+  startAndSend,
   send,
   respondPermission,
   answerQuestion,

@@ -10,10 +10,11 @@ export { default as Avatar } from './Avatar.svelte';
 export { default as DayDivider } from './DayDivider.svelte';
 export { default as MessageRow } from './MessageRow.svelte';
 export { default as MessageTimeline } from './MessageTimeline.svelte';
-export { default as NewSessionPanel } from './NewSessionPanel.svelte';
 export { default as PermissionCard } from './PermissionCard.svelte';
 export { default as QuestionCard } from './QuestionCard.svelte';
 export { default as SessionComposer } from './SessionComposer.svelte';
+export { default as SessionsStrip } from './SessionsStrip.svelte';
+export { default as ToolGroupRow } from './ToolGroupRow.svelte';
 export { default as SessionTranscript } from './SessionTranscript.svelte';
 export { default as Skeleton } from './Skeleton.svelte';
 export { default as SystemMessageRow } from './SystemMessageRow.svelte';
@@ -66,6 +67,7 @@ export type {
   ThinkingDeltaEvent,
   ToolCallEvent,
   ToolResultEvent,
+  ImageAttachment,
   TruncatedEvent,
   TurnDoneEvent,
   TurnStatus,
@@ -76,10 +78,37 @@ export {
   SESSION_AGENT_UID,
   SESSION_MEMBERS,
   SESSION_SELF_UID,
-  activityClassForTool,
+  TOOL_CATEGORIES,
+  describeToolInput,
   foldSessionEvents,
+  toolCategory,
+  toolGroupSummary,
 } from './transcript-adapter';
-export type { FoldOptions, PendingCard, TranscriptState } from './transcript-adapter';
+export type {
+  CardResolution,
+  ChatBlock,
+  FoldOptions,
+  PendingCard,
+  ToolCallSummary,
+  ToolCategory,
+  TranscriptState,
+  UsageSummary,
+  UserTurn,
+} from './transcript-adapter';
+
+export {
+  EFFORT_OPTIONS,
+  FALLBACK_MODELS,
+  LAST_COMPANY_KEY,
+  LAST_EFFORT_KEY,
+  LAST_MODEL_KEY,
+  pickModel,
+  readRemembered,
+  readSessionModels,
+  remember,
+  shortenModelLabel,
+} from './session-models';
+export type { ComposerImage, EffortOption, SessionModel } from './session-models';
 
 export {
   applySlashCommand,

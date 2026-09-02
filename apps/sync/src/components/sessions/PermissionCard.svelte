@@ -8,6 +8,11 @@
    * backend's `PermissionDecision`: allow once, allow for the rest of this
    * session, or deny (optionally with a reason the agent reads).
    *
+   * Once answered the card COLLAPSES to a single line ("Allowed Write ·
+   * hello.txt"). An answered decision is history, and history in a chat should
+   * take one line — but it must not vanish, because "did I allow that?" is a
+   * question the operator will ask later.
+   *
    * Presentation-pure: props in, callbacks out. The card never invokes.
    */
   import type { PermissionSuggestion } from './session-events';
@@ -19,6 +24,8 @@
     suggestions?: PermissionSuggestion[];
     /** Set while a decision is in flight, so the buttons cannot double-fire. */
     busy?: boolean;
+    /** The verb this client answered with ("Allowed" / "Denied"), or null. */
+    resolution?: string | null;
     onallowonce?: (requestId: string) => void;
     onallowsession?: (requestId: string) => void;
     ondeny?: (requestId: string, message: string) => void;
@@ -30,6 +37,7 @@
     input,
     suggestions = [],
     busy = false,
+    resolution = null,
     onallowonce,
     onallowsession,
     ondeny,
@@ -63,6 +71,13 @@
   const truncated = $derived(preview.length > PREVIEW_LIMIT);
   const previewText = $derived(truncated ? `${preview.slice(0, PREVIEW_LIMIT)}…` : preview);
 
+  /** The resolved one-liner gets ONE line — newlines and length both collapse. */
+  const RESOLVED_LIMIT = 80;
+  const previewLine = $derived.by(() => {
+    const single = preview.replace(/\s+/g, ' ').trim();
+    return single.length > RESOLVED_LIMIT ? `${single.slice(0, RESOLVED_LIMIT)}…` : single;
+  });
+
   function submitDeny() {
     ondeny?.(requestId, denyReason.trim());
     denyReason = '';
@@ -70,6 +85,19 @@
   }
 </script>
 
+{#if resolution}
+  <p
+    class="perm-resolved"
+    data-testid="session-permission-resolved"
+    data-request-id={requestId}
+  >
+    <span class="perm-resolved-verb">{resolution}</span>
+    <span class="perm-resolved-tool">{toolName}</span>
+    {#if previewLine}
+      <span class="perm-resolved-detail">· {previewLine}</span>
+    {/if}
+  </p>
+{:else}
 <section
   class="perm-card"
   data-testid="session-permission-card"
@@ -145,8 +173,37 @@
     </div>
   {/if}
 </section>
+{/if}
 
 <style>
+  .perm-resolved {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 0;
+    min-width: 0;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+  }
+
+  .perm-resolved-verb {
+    flex: none;
+    color: var(--v4-text-2);
+  }
+
+  .perm-resolved-tool {
+    flex: none;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+
+  .perm-resolved-detail {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+
   .perm-card {
     display: flex;
     flex-direction: column;
