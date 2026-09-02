@@ -446,6 +446,69 @@ describe("createChatSidebarApi", () => {
     expect(hqProFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("routes work-feed requests through an injected hq-pro transport", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [{ projectId: "project_injected", companyUid: "cmp_work" }],
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    const api = createChatSidebarApi(adapter, [], "prs_injected", {
+      fetch: fetchImpl,
+    });
+
+    await expect(
+      api.listChannels({
+        companyUid: "cmp_work",
+        includeCompanyProjects: true,
+      }),
+    ).resolves.toMatchObject({
+      channels: [expect.objectContaining({ channelId: "project_injected" })],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith("/v1/work-mesh/work");
+    expect(hqProFetch).not.toHaveBeenCalled();
+  });
+
+  it("defaults work-feed requests to the browser hq-pro transport", async () => {
+    vi.mocked(hqProFetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [{ projectId: "project_browser", companyUid: "cmp_work" }],
+        }),
+        { status: 200 },
+      ),
+    );
+    const adapter = stubAdapter(async () =>
+      ok({
+        snapshot: true,
+        cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        rows: [],
+      }),
+    );
+    const api = createChatSidebarApi(adapter, [], "prs_browser");
+
+    await expect(
+      api.listChannels({
+        companyUid: "cmp_work",
+        includeCompanyProjects: true,
+      }),
+    ).resolves.toMatchObject({
+      channels: [expect.objectContaining({ channelId: "project_browser" })],
+    });
+    expect(hqProFetch).toHaveBeenCalledWith("/v1/work-mesh/work");
+  });
+
   it("forwards a compose DM's recipient and body to the platform adapter", async () => {
     const sendDm = vi.fn(async () => ok({}));
     const adapter = stubAdapter(async () =>

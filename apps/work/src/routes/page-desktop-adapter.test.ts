@@ -22,6 +22,8 @@ describe("HQ Work desktop platform adapter", () => {
         onUnauthorized: redirectToSigninWithCallback,
       })`,
     );
+    expect(page).toContain("const workFetch: HqProFetch = hqProFetch;");
+    expect(page).toContain("loadWorkThreads(roster, workFetch)");
 
     const commands: string[] = [];
     const adapter = createSyncPlatformAdapter({

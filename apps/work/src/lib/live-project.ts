@@ -25,7 +25,7 @@ import {
   type StatusMemberInput,
   type VaultFilePreviewRequest,
 } from "@hq/ui";
-import { hqProFetch } from "./hq-pro-client.js";
+import { hqProFetch, type HqProFetch } from "./hq-pro-client.js";
 
 export interface LiveProjectMeta {
   board: BoardTabData | null;
@@ -36,6 +36,10 @@ export interface LiveProjectMeta {
 export interface LiveProjectMetaLoad {
   meta: LiveProjectMeta | null;
   definitiveMiss: boolean;
+}
+
+export interface LiveProjectDeps {
+  fetch?: HqProFetch;
 }
 
 function rec(value: unknown): Record<string, unknown> | null {
@@ -49,9 +53,12 @@ type JsonFetchResult =
   | { kind: "not-found"; value: null }
   | { kind: "error"; value: null };
 
-async function fetchJson(path: string): Promise<JsonFetchResult> {
+async function fetchJson(
+  path: string,
+  fetchImpl: HqProFetch = hqProFetch,
+): Promise<JsonFetchResult> {
   try {
-    const res = await hqProFetch(path);
+    const res = await fetchImpl(path);
     if (res.status === 404) return { kind: "not-found", value: null };
     if (!res.ok) return { kind: "error", value: null };
     return { kind: "ok", value: await res.json() };
@@ -76,11 +83,13 @@ function vaultObjects(raw: unknown): Array<Record<string, unknown>> {
 export async function listVaultProjectFiles(
   companyUid: string,
   projectId: string,
+  deps: LiveProjectDeps = {},
 ): Promise<ChannelFileItemModel[]> {
   if (!companyUid || !projectId) return [];
   const prefix = `projects/${projectId}/`;
   const { value: raw } = await fetchJson(
     `/v1/files/list?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}`,
+    deps.fetch ?? hqProFetch,
   );
   const files: MeshProjectFile[] = [];
   for (const obj of vaultObjects(raw)) {
@@ -105,9 +114,10 @@ type WebVaultPresignResult = Awaited<
 async function presignWebVaultGet(
   companyUid: string,
   key: string,
+  fetchImpl: HqProFetch = hqProFetch,
 ): Promise<WebVaultPresignResult> {
   try {
-    const response = await hqProFetch("/v1/files/presign", {
+    const response = await fetchImpl("/v1/files/presign", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ company: companyUid, op: "get", key }),
@@ -132,11 +142,13 @@ async function presignWebVaultGet(
 export function loadWebVaultFilePreview(
   item: ChannelFileItemModel,
   selectedCompanyUid: string | null | undefined,
+  deps: LiveProjectDeps = {},
 ): Promise<ChannelFilePreview> {
   return loadVaultFilePreview({
     item,
     selectedCompanyUid,
-    presign: presignWebVaultGet,
+    presign: (companyUid, key) =>
+      presignWebVaultGet(companyUid, key, deps.fetch ?? hqProFetch),
     get: (url, maxBytes) =>
       fetch("/api/chat-attachment-bytes", {
         headers: {
@@ -219,6 +231,7 @@ export function metaFromProjectView(
 export async function loadLiveProjectMeta(
   row: ConversationRow,
   companyLabel?: string | null,
+  deps: LiveProjectDeps = {},
 ): Promise<LiveProjectMetaLoad> {
   const projectId = (row.projectId ?? "").trim();
   const companyUid = (row.companyUid ?? "").trim();
@@ -227,20 +240,24 @@ export async function loadLiveProjectMeta(
     return { meta: null, definitiveMiss: true };
   }
 
+  const fetchImpl = deps.fetch ?? hqProFetch;
   const [viewRaw, membersRaw, sessionsRaw] = await Promise.all([
     projectId && companyUid
       ? fetchJson(
           `/v1/work-mesh/projects/${encodeURIComponent(projectId)}?companyUid=${encodeURIComponent(companyUid)}`,
+          fetchImpl,
         )
       : Promise.resolve({ kind: "not-found", value: null } as const),
     channelId.startsWith("chn_")
       ? fetchJson(
           `/v1/notify/channels/${encodeURIComponent(channelId)}/members`,
+          fetchImpl,
         )
       : Promise.resolve({ kind: "not-found", value: null } as const),
     projectId && companyUid
       ? fetchJson(
           `/v1/work-mesh/work-sessions?companyUid=${encodeURIComponent(companyUid)}&projectId=${encodeURIComponent(projectId)}`,
+          fetchImpl,
         )
       : Promise.resolve({ kind: "not-found", value: null } as const),
   ]);
@@ -251,7 +268,9 @@ export async function loadLiveProjectMeta(
   if (view) {
     const meta = metaFromProjectView(view, members, sessions, companyLabel);
     if (meta.files.length > 0) return { meta, definitiveMiss: false };
-    const vaultFiles = await listVaultProjectFiles(companyUid, projectId);
+    const vaultFiles = await listVaultProjectFiles(companyUid, projectId, {
+      fetch: fetchImpl,
+    });
     return { meta: { ...meta, files: vaultFiles }, definitiveMiss: false };
   }
   if (members.length === 0 && sessions.length === 0) {
