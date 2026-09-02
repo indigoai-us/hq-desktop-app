@@ -449,3 +449,50 @@ describe('US-SESSIONS-A — @mentions: teammates and fleet agents from the compo
     expect(MENTIONS_RS).toContain('"details": details');
   });
 });
+
+describe('US-SESSIONS-A — Open / Share / Deploy on files the agent produced', () => {
+  const ROW = read('src/components/sessions/ToolGroupRow.svelte');
+  const ARTIFACT_ROW = read('src/components/sessions/ArtifactRow.svelte');
+  const ARTIFACTS = read('src/components/sessions/session-artifacts.ts');
+
+  it('derives artifacts in the adapter, purely, from the file tools only', () => {
+    expect(ADAPTER).toContain('export function toolArtifactPaths');
+    expect(ADAPTER).toContain('artifactPath?: string');
+    expect(ADAPTER).toContain('artifacts: ToolArtifact[]');
+    // A Bash command that happens to create a file is deliberately not parsed.
+    const fileTools = ADAPTER.slice(ADAPTER.indexOf('const FILE_TOOLS'));
+    expect(fileTools.slice(0, fileTools.indexOf('\n'))).not.toContain('Bash');
+  });
+
+  it('renders the action row inside the EXPANDED tool group only', () => {
+    expect(TRANSCRIPT).toContain('artifacts={block.artifacts}');
+    expect(TRANSCRIPT).toContain('{artifactActions}');
+    expect(ROW).toContain('<ArtifactRow');
+    // The artifact list sits inside the `{#if open}` branch, after the calls.
+    const openAt = ROW.indexOf('{#if open}');
+    const artifactsAt = ROW.indexOf('session-tool-artifacts');
+    expect(openAt).toBeGreaterThan(-1);
+    expect(artifactsAt).toBeGreaterThan(openAt);
+    for (const id of ['session-artifact-open', 'session-artifact-share', 'session-artifact-deploy']) {
+      expect(ARTIFACT_ROW).toContain(id);
+    }
+  });
+
+  it('shares only vault files, shows the link once, and never logs it', () => {
+    expect(ARTIFACTS).toContain("'Only company vault files can be shared'");
+    expect(ARTIFACT_ROW).toContain('session-artifact-share-card');
+    expect(ARTIFACT_ROW).toContain('session-artifact-copy');
+    expect(ARTIFACT_ROW).toContain('session-artifact-share-dismiss');
+    expect(ARTIFACT_ROW).not.toContain('console.');
+    expect(ARTIFACT_ROW).not.toContain('localStorage');
+    expect(ARTIFACTS).not.toContain('console.');
+  });
+
+  it('deploys by sending /deploy <path> as a user turn, through the store', () => {
+    expect(ARTIFACTS).toContain('export function deployCommandFor');
+    expect(PAGE).toContain('tauriArtifactActions(');
+    expect(PAGE).toContain('handleSend(deployCommandFor(path), [])');
+    expect(PAGE).toContain('{artifactActions}');
+    expect(PAGE).not.toContain('invoke(');
+  });
+});

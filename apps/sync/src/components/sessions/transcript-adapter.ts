@@ -185,6 +185,20 @@ export interface ToolCallSummary {
   outcome: string;
   /** Text a sub-agent streamed under this call, when it has one. */
   output: string;
+  /**
+   * The file this call wrote or edited, when it is one of the file tools and
+   * named an absolute path. A multi-file Codex patch keeps its first path here;
+   * the group's `artifacts` carries every one.
+   */
+  artifactPath?: string;
+}
+
+/** One file the agent produced in a turn, as the expanded tool row lists it. */
+export interface ToolArtifact {
+  path: string;
+  /** Basename, for the row label. */
+  name: string;
+  kind: 'file';
 }
 
 /** How a decision card was answered from this client, for its collapsed line. */
@@ -207,6 +221,8 @@ export type ChatBlock =
       summary: string;
       running: boolean;
       calls: ToolCallSummary[];
+      /** Files the group's SUCCESSFUL file-tool calls produced, deduped by path. */
+      artifacts: ToolArtifact[];
       at: number | null;
     }
   | {
@@ -327,6 +343,55 @@ function rawToolInput(input: unknown): string {
   return '';
 }
 
+// ---------------------------------------------------------------------------
+// Artifacts — the files a turn produced
+// ---------------------------------------------------------------------------
+
+/** The tools whose input names a file the agent is writing. */
+const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'ApplyPatch']);
+
+/** `/abs/path` or `C:\abs\path` — a relative path cannot be acted on. */
+function isAbsolutePath(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+/**
+ * Every absolute file path a tool call produced, in input order.
+ *
+ * Claude's file tools name one `file_path` (`notebook_path` for notebooks);
+ * Codex's `fileChange` items arrive as `Write` / `Edit` / `ApplyPatch` with a
+ * `changes: [{ path, kind }]` array, where a `delete` produces nothing. A tool
+ * that is not a file tool, or an input with no absolute path, yields nothing
+ * — a Bash command that happens to create a file is deliberately not parsed.
+ */
+export function toolArtifactPaths(toolName: string, input: unknown): string[] {
+  if (!FILE_TOOLS.has(toolName)) return [];
+  if (!input || typeof input !== 'object') return [];
+  const record = input as Record<string, unknown>;
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    if (typeof value === 'string' && isAbsolutePath(value) && !out.includes(value)) {
+      out.push(value);
+    }
+  };
+  add(record.file_path);
+  add(record.notebook_path);
+  if (Array.isArray(record.changes)) {
+    for (const change of record.changes) {
+      if (!change || typeof change !== 'object') continue;
+      const entry = change as Record<string, unknown>;
+      if (entry.kind === 'delete') continue;
+      add(entry.path);
+    }
+  }
+  return out;
+}
+
+function artifactName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
 /** Cap a tool result to a readable head rather than pasting a whole log. */
 const OUTCOME_LINES = 12;
 const OUTCOME_CHARS = 1200;
@@ -399,6 +464,8 @@ export function foldSessionEvents(
   const callsById = new Map<string, ToolCallSummary>();
   /** Thinking rows that were superseded; filtered out at the end. */
   const retired = new Set<string>();
+  /** Every path a file tool named, by group — settled into `artifacts` at the end. */
+  const producedByGroup = new Map<string, { path: string; call: ToolCallSummary }[]>();
 
   let lastDay = '';
   let nextTurn = 0;
@@ -451,6 +518,7 @@ export function foldSessionEvents(
       summary: '',
       running: true,
       calls: [],
+      artifacts: [],
       at,
     };
     openGroup = group;
@@ -570,9 +638,16 @@ export function foldSessionEvents(
           outcome: '',
           output: '',
         };
+        const produced = toolArtifactPaths(event.name, event.input);
+        if (produced.length > 0) call.artifactPath = produced[0];
         callsById.set(event.id, call);
         const group = groupFor(at);
         group.calls.push(call);
+        if (produced.length > 0) {
+          const list = producedByGroup.get(group.id) ?? [];
+          for (const path of produced) list.push({ path, call });
+          producedByGroup.set(group.id, list);
+        }
         break;
       }
 
@@ -743,6 +818,12 @@ export function foldSessionEvents(
     if (block.type === 'toolGroup') {
       block.summary = toolGroupSummary(block.calls);
       block.running = block.calls.some((call) => call.status === 'running');
+      // Only a call that finished cleanly produced anything; a failed or
+      // still-running write is not yet a file the operator can act on.
+      const seen = new Set<string>();
+      block.artifacts = (producedByGroup.get(block.id) ?? [])
+        .filter(({ path, call }) => call.status === 'ok' && !seen.has(path) && seen.add(path))
+        .map(({ path }) => ({ path, name: artifactName(path), kind: 'file' as const }));
     }
   }
 

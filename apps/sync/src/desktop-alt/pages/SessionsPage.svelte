@@ -35,6 +35,10 @@
     type MentionCandidate,
   } from '../../components/sessions/mentions';
   import { mergeSlashCommands } from '../../components/sessions/slash-commands';
+  import {
+    deployCommandFor,
+    tauriArtifactActions,
+  } from '../../components/sessions/session-artifacts';
   import type { SessionCommand } from '../../components/sessions/session-events';
   import {
     EFFORT_OPTIONS,
@@ -408,6 +412,12 @@
   );
 
   /**
+   * Open / Share / Deploy on files a turn produced. Deploy is a user turn —
+   * `/deploy <path>` — so the deploy skill does the work and prints the link.
+   */
+  const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
+
+  /**
    * The one send path. With no live session (or with a company pill that
    * describes a different one) the message STARTS the session it belongs to;
    * otherwise it joins the conversation already on screen, carrying whatever
@@ -583,6 +593,7 @@
     loading={Boolean(sessionId) && liveSessionStore.loading}
     {emptyHint}
     {busyRequestId}
+    {artifactActions}
     onallowonce={(requestId) =>
       void decide(requestId, () =>
         liveSessionStore.respondPermission(requestId, { kind: 'allowOnce' }),
