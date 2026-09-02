@@ -244,6 +244,24 @@ fn failure_reason_for_run(totals: &RunTotals) -> ClientHealthFailureReason {
     }
 }
 
+/// Shared success/failure bookkeeping for a completed run — the ONLY writer
+/// of `lastSyncSuccessAt`, used by both the manual seam and the watch/auto
+/// seam so their success discipline can never diverge.
+fn apply_run_outcome(state: &mut ClientHealthState, success: bool, totals: &RunTotals, now: &str) {
+    if success {
+        state.last_sync_success_at = Some(now.to_string());
+        state.consecutive_failures = 0;
+        state.conflict_count = 0;
+        state.sync_run_failed = false;
+        state.last_failure_reason = None;
+    } else {
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        state.conflict_count = u64::from(totals.conflicts);
+        state.sync_run_failed = true;
+        state.last_failure_reason = Some(failure_reason_for_run(totals).wire_value().to_string());
+    }
+}
+
 /// A sync run ended. Advances `lastSyncSuccessAt` ONLY on genuine success
 /// (including a no-change run); every other completion records a closed
 /// failure reason and increments the consecutive-failure counter.
@@ -251,25 +269,43 @@ pub(crate) fn record_sync_run_ended(exit_success: bool, totals: &RunTotals) {
     SYNC_RUNNING.store(false, Ordering::SeqCst);
     let now = now_iso();
     let success = run_was_genuine_success(exit_success, totals);
-    let reason = (!success).then(|| failure_reason_for_run(totals));
-    let conflicts = u64::from(totals.conflicts);
-    if let Err(e) = with_state(|state| {
-        if success {
-            state.last_sync_success_at = Some(now.clone());
-            state.consecutive_failures = 0;
-            state.conflict_count = 0;
-            state.sync_run_failed = false;
-            state.last_failure_reason = None;
-        } else {
-            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-            state.conflict_count = conflicts;
-            state.sync_run_failed = true;
-            state.last_failure_reason = reason.map(|r| r.wire_value().to_string());
-        }
-    }) {
+    if let Err(e) = with_state(|state| apply_run_outcome(state, success, totals, &now)) {
         eprintln!("[client-health] record-run-ended failed: {e}");
     }
     notify_client_health_state_changed();
+}
+
+/// A watch-daemon (auto-sync) pass reached `AllComplete`. The watch path has
+/// no observable pass-start seam — a pass is only visible once its events
+/// arrive — so the ATTEMPT is recorded at the same completion boundary. The
+/// success discipline is the manual path's exactly (`run_was_genuine_success`
+/// + `apply_run_outcome`): `AllComplete` with zero error events, zero auth
+/// errors, and zero conflicts — including a no-change poll pass — advances
+/// `lastSyncSuccessAt`; anything else records a closed failure reason and
+/// increments the consecutive-failure counter. Without this seam an install
+/// that only ever auto-syncs would report `never_synced` forever.
+///
+/// Watch passes recur on every chokidar tick and every 15-second poll, so an
+/// immediate state-change heartbeat fires only when the derived health
+/// actually transitions (first-ever success, any failure, or recovery from a
+/// failure). Steady-state no-change passes update the persisted timestamps
+/// silently and ride the five-minute cadence — otherwise auto-sync would
+/// heartbeat the control plane every pass.
+pub(crate) fn record_auto_sync_pass_completed(totals: &RunTotals) {
+    let now = now_iso();
+    let success = run_was_genuine_success(true, totals);
+    let transitioned = with_state(|state| {
+        let was_failed = state.sync_run_failed;
+        let first_success = state.last_sync_success_at.is_none();
+        state.last_sync_attempt_at = Some(now.clone());
+        apply_run_outcome(state, success, totals, &now);
+        !success || was_failed || first_success
+    });
+    match transitioned {
+        Ok(true) => notify_client_health_state_changed(),
+        Ok(false) => {}
+        Err(e) => eprintln!("[client-health] record-auto-pass failed: {e}"),
+    }
 }
 
 /// Wire mapping of the in-memory updater ledger. `Unchecked` (has not run)
@@ -562,6 +598,17 @@ async fn post_with_retry(
 }
 
 async fn emit_client_health_heartbeat_once() -> HeartbeatOutcome {
+    emit_client_health_heartbeat_with_desktop(None).await
+}
+
+/// `desktop_override` replaces the compile-time `env!("APP_VERSION")` of THIS
+/// (possibly dying) process — used by the post-update heartbeat, where the
+/// truthful desktop version is the freshly INSTALLED target, not the build
+/// that is about to exit. A non-SemVer override fails closed to omission
+/// (never falls back to the stale compile-time value).
+async fn emit_client_health_heartbeat_with_desktop(
+    desktop_override: Option<&str>,
+) -> HeartbeatOutcome {
     let access_token = match crate::commands::cognito::get_valid_access_token().await {
         Ok(token) => token,
         Err(_) => return HeartbeatOutcome::NoSession,
@@ -570,7 +617,10 @@ async fn emit_client_health_heartbeat_once() -> HeartbeatOutcome {
         Ok(url) => url,
         Err(_) => return HeartbeatOutcome::Failed,
     };
-    let versions = collect_versions().await;
+    let mut versions = collect_versions().await;
+    if let Some(installed) = desktop_override {
+        versions.desktop = sanitized_version(installed);
+    }
     let heartbeat = match prepare_heartbeat(versions) {
         Ok(heartbeat) => heartbeat,
         Err(e) => {
@@ -593,8 +643,22 @@ async fn emit_client_health_heartbeat_once() -> HeartbeatOutcome {
 /// Best-effort heartbeat immediately after a desktop update installs, awaited
 /// by the updater so the request can land before restart/exit. Failures are
 /// swallowed — an update must never block on reporting.
-pub async fn emit_client_health_after_update() {
-    let _ = emit_client_health_heartbeat_once().await;
+///
+/// The heartbeat must describe the POST-update installation, not the dying
+/// process: `installed_version` (the same value
+/// `emit_version_heartbeat_after_update` receives) replaces this build's
+/// compile-time `versions.desktop`, and the persisted updater state advances
+/// from `update_available`/`update_ready` to `up_to_date` FIRST, so the
+/// server never sees "old desktop version + update still available" after a
+/// successful install — and a crash before the relaunched build's first
+/// heartbeat cannot resurrect the stale pending state from disk.
+pub async fn emit_client_health_after_update(installed_version: &str) {
+    if let Err(e) = with_state(|state| {
+        state.updater_state = Some(ClientHealthUpdaterState::UpToDate.wire_value().to_string());
+    }) {
+        eprintln!("[client-health] post-update state clear failed: {e}");
+    }
+    let _ = emit_client_health_heartbeat_with_desktop(Some(installed_version)).await;
 }
 
 /// Fire-and-forget startup + 5-minute health heartbeat loop. State-change
@@ -1177,6 +1241,136 @@ mod tests {
             .get("x-hq-device-id")
             .and_then(|v| v.to_str().ok());
         assert_eq!(device_id, Some("mid-consent-off-1234"));
+    }
+
+    // ── Auto-sync (watch daemon) seam — review finding 1 ─────────────────────
+
+    #[test]
+    fn auto_sync_all_complete_advances_last_success_and_failed_pass_does_not() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        std::env::set_var("HQ_TEST_HOME", home.path());
+
+        // A clean auto-sync AllComplete pass (no-change is a genuine success)
+        // records both the attempt AND the success — an auto-sync-only
+        // install must not stay never_synced.
+        record_auto_sync_pass_completed(&RunTotals::default());
+        let after_success = with_state(|s| s.clone()).unwrap();
+        assert!(after_success.last_sync_attempt_at.is_some());
+        assert!(
+            after_success.last_sync_success_at.is_some(),
+            "auto-sync AllComplete must advance lastSyncSuccessAt"
+        );
+        assert!(!after_success.sync_run_failed);
+        assert_eq!(after_success.consecutive_failures, 0);
+        assert_ne!(
+            derive_sync_state(false, false, &after_success),
+            ClientHealthSyncState::NeverSynced,
+            "an install that only auto-syncs must leave never_synced"
+        );
+        let success_stamp = after_success.last_sync_success_at.clone();
+
+        // A failed auto pass (error events during the run) must NOT advance
+        // it, and records the closed reason + failure counter.
+        record_auto_sync_pass_completed(&error_totals("EACCES: permission denied"));
+        let after_failure = with_state(|s| s.clone()).unwrap();
+        assert_eq!(
+            after_failure.last_sync_success_at, success_stamp,
+            "failed auto run must not advance lastSyncSuccessAt"
+        );
+        assert!(after_failure.sync_run_failed);
+        assert_eq!(after_failure.consecutive_failures, 1);
+        assert_eq!(
+            after_failure.last_failure_reason.as_deref(),
+            Some("PERMISSION_DENIED")
+        );
+        assert_eq!(
+            derive_sync_state(false, false, &after_failure),
+            ClientHealthSyncState::Error
+        );
+
+        // A conflicted auto pass maps to CONFLICT_BLOCKED, same as manual.
+        let mut conflicted = RunTotals::default();
+        conflicted.conflicts = 2;
+        record_auto_sync_pass_completed(&conflicted);
+        let after_conflict = with_state(|s| s.clone()).unwrap();
+        assert_eq!(after_conflict.last_sync_success_at, success_stamp);
+        assert_eq!(after_conflict.conflict_count, 2);
+        assert_eq!(after_conflict.consecutive_failures, 2);
+
+        // Recovery: the next clean pass advances success and clears failure.
+        record_auto_sync_pass_completed(&RunTotals::default());
+        let recovered = with_state(|s| s.clone()).unwrap();
+        assert_ne!(recovered.last_sync_success_at, None);
+        assert!(!recovered.sync_run_failed);
+        assert_eq!(recovered.consecutive_failures, 0);
+
+        std::env::remove_var("HQ_TEST_HOME");
+    }
+
+    // ── Post-update heartbeat — review finding 2 ─────────────────────────────
+
+    #[tokio::test]
+    async fn post_update_heartbeat_reports_installed_version_and_clears_updater_state() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/heartbeat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "applied": true, "installationId": "mid-post-update-1234", "sequence": 1,
+                "receivedAt": "2026-09-03T17:05:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-post-update-1234"}"#);
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // The dying process observed a pending update before installing it.
+        record_updater_status(&PendingUpdateStatus::Pending(crate::updater::UpdateInfo {
+            version: "9.9.9".to_string(),
+            body: None,
+            date: None,
+            detected_at: "2026-09-03T17:00:00.000Z".to_string(),
+        }));
+        assert_eq!(
+            with_state(|s| s.updater_state.clone()).unwrap().as_deref(),
+            Some("update_available")
+        );
+
+        emit_client_health_after_update("9.9.9").await;
+
+        let persisted = with_state(|s| s.updater_state.clone()).unwrap();
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        // Persisted state advanced — a relaunch (or crash) can never
+        // resurrect update_available for the already-installed version.
+        assert_eq!(persisted.as_deref(), Some("up_to_date"));
+
+        let requests = server.received_requests().await.unwrap();
+        let posts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/heartbeat")
+            .collect();
+        assert!(!posts.is_empty(), "post-update heartbeat must be sent");
+        let body: Value = serde_json::from_slice(&posts.last().unwrap().body).unwrap();
+        assert_eq!(
+            body["versions"]["desktop"], "9.9.9",
+            "heartbeat must report the INSTALLED target version, not the dying build"
+        );
+        assert_ne!(
+            body["versions"]["desktop"],
+            env!("APP_VERSION"),
+            "compile-time version of the dying process must not cross the wire"
+        );
+        assert_eq!(
+            body["updaterState"], "up_to_date",
+            "server must never see installed version + still-available update"
+        );
     }
 
     #[tokio::test]

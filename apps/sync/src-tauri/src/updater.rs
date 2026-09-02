@@ -760,8 +760,9 @@ async fn install_verified_update(
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         crate::commands::telemetry::emit_version_heartbeat_after_update(&update.version).await;
         // Client health (US-002): best-effort heartbeat before restart so the
-        // server sees the post-update state without waiting for relaunch.
-        crate::commands::client_health::emit_client_health_after_update().await;
+        // server sees the post-update state (installed target version +
+        // cleared updater state) without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update(&update.version).await;
         app.restart();
     }
 }
@@ -957,8 +958,10 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.info.version)
             .await;
         // Client health (US-002): best-effort heartbeat before restart so the
-        // server sees the post-update state without waiting for relaunch.
-        crate::commands::client_health::emit_client_health_after_update().await;
+        // server sees the post-update state (installed target version +
+        // cleared updater state) without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update(&staged.info.version)
+            .await;
         app.restart();
     }
 }

@@ -325,6 +325,17 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
             log("daemon", &format!("failed to write journal: {e}"));
         }
         log("daemon", &format!("all-complete (conflicts={conflicts})"));
+        // Client health (US-002): the watch daemon is the primary auto-sync
+        // path — without this seam an install that never presses "Sync Now"
+        // reports never_synced forever. Read the pass's final RunTotals
+        // (before the reset below) and apply the same success discipline as
+        // the manual seam: AllComplete with zero errors/auth-errors/conflicts
+        // — including a no-change poll pass — advances lastSyncSuccessAt;
+        // anything else records a closed failure reason.
+        {
+            let final_totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            crate::commands::client_health::record_auto_sync_pass_completed(&final_totals);
+        }
         // Mirror to a git repo at the HQ root (if any). Fire-and-forget so
         // a slow `git push` can't stall the next watch pass; the mirror's
         // in-flight guard skips overlapping runs.
