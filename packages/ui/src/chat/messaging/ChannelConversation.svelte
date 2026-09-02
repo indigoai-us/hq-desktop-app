@@ -13,6 +13,7 @@
    */
   import { onDestroy, untrack, type Snippet } from "svelte";
 
+  import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
@@ -1109,7 +1110,7 @@
                   {#if msg.body?.trim()}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
-                      class="dm-bubble-body selectable-text"
+                      class="dm-bubble-body selectable-text msg-body"
                       onclick={(e) => {
                         if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
@@ -1662,7 +1663,7 @@
     flex: 0 0 36px;
     width: 36px;
     min-height: 1px;
-    padding-top: 2px;
+    padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
   .dm-msg-gutter-time {
@@ -1694,7 +1695,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
-    margin: 0 0 0.125rem;
+    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
     min-width: 0;
   }
 
@@ -1704,7 +1705,7 @@
     color: var(--t1);
     font-size: 13px;
     font-weight: 700;
-    line-height: 1.3;
+    line-height: var(--msg-author-line-height, 1.3);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1817,7 +1818,7 @@
   }
 
   .dm-bubble-body :global(p) {
-    margin: 0.375rem 0;
+    margin: var(--msg-body-p-margin, 0.375rem 0);
     color: inherit;
   }
 
