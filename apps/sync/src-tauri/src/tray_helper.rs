@@ -160,6 +160,12 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "desktop" => {
                         let _ = app.emit("tray:open-desktop", ());
                     }
+                    "updates" => {
+                        crate::recovery::spawn_tray_check_for_updates(app.clone());
+                    }
+                    "recovery" => {
+                        crate::recovery::spawn_tray_open_recovery(app.clone());
+                    }
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
                     }

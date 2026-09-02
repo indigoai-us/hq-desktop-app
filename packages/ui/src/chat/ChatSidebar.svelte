@@ -124,6 +124,7 @@
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     raceTimeout,
   } from "./boot-timeout.js";
+  import { shouldReportShellReady } from "./shell-ready.js";
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -174,6 +175,11 @@
      * Tests pass a short value; production uses the default.
      */
     bootTimeoutMs?: number;
+    /**
+     * First successful paint of the conversation rail or its empty state.
+     * Not called while loading, and not called on an error-only rail.
+     */
+    onShellReady?: () => void;
   }
 
   let {
@@ -200,6 +206,7 @@
     onsignout,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    onShellReady,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -339,6 +346,8 @@
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
+  let firstRefreshSettled = false;
+  let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
   let footerEl: HTMLDivElement | null = $state(null);
@@ -1030,7 +1039,25 @@
       await directory;
       bootAttempted = true;
       loading = false;
+      firstRefreshSettled = true;
+      maybeReportShellReady();
     }
+  }
+
+  function maybeReportShellReady(): void {
+    if (reportedShellReady) return;
+    if (
+      !shouldReportShellReady({
+        loading,
+        loadError,
+        firstRefreshSettled,
+        conversationCount: channels.length + contacts.length,
+      })
+    ) {
+      return;
+    }
+    reportedShellReady = true;
+    onShellReady?.();
   }
 
   $effect(() => {
@@ -1138,6 +1165,7 @@
   onMount(() => {
     // Cache already painted; one cursor delta in the background. Safety
     // polling stays off until we know MQTT is down.
+    maybeReportShellReady();
     void refreshLists();
     directoryReconciler.setSafetyPolling(true);
 
