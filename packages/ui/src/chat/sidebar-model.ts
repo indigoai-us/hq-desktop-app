@@ -171,6 +171,12 @@ export const CONVERSATION_CACHE_KEY = "hq.chat.conversation-cache";
 export const DM_DOTS_STORAGE_KEY = "hq.chat.dm-dots";
 export const RECENT_DMS_STORAGE_KEY = "hq.chat.recent-dms";
 export const SHOW_FILTER_STORAGE_KEY = "hq.chat.show-filter";
+/**
+ * Set once the user unpins the synthetic #setup channel. The default rail pins
+ * #setup for a fresh profile; this flag keeps it unpinned across restarts
+ * until the user pins it again.
+ */
+export const SETUP_PIN_DISMISSED_STORAGE_KEY = "hq.chat.setup-pin-dismissed";
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
 
@@ -183,7 +189,7 @@ export function parseActivityMs(
   return Number.isFinite(t) ? t : 0;
 }
 
-function startOfLocalDay(ms: number): number {
+export function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -1305,6 +1311,30 @@ export function saveShowFilter(
   if (!storage) return;
   try {
     storage.setItem(SHOW_FILTER_STORAGE_KEY, filter);
+  } catch {
+    // Quota / private mode — best-effort.
+  }
+}
+
+export function loadSetupPinDismissed(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(SETUP_PIN_DISMISSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSetupPinDismissed(
+  storage: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  dismissed: boolean,
+): void {
+  if (!storage) return;
+  try {
+    if (dismissed) storage.setItem(SETUP_PIN_DISMISSED_STORAGE_KEY, "1");
+    else storage.removeItem(SETUP_PIN_DISMISSED_STORAGE_KEY);
   } catch {
     // Quota / private mode — best-effort.
   }

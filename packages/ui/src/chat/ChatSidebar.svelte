@@ -24,6 +24,7 @@
   } from "./channels";
   import {
     isSetupChannel,
+    SETUP_ROW_ID,
     withSetupChannel,
     withSetupPin,
   } from "./setup-channel";
@@ -70,6 +71,7 @@
     loadDmDots,
     loadPins,
     loadRecentDms,
+    loadSetupPinDismissed,
     loadShowFilter,
     mergeContactActivity,
     mergeContactsWithInbox,
@@ -82,9 +84,11 @@
     saveDmDots,
     savePins,
     saveRecentDms,
+    saveSetupPinDismissed,
     saveShowFilter,
     scopeFromHotkey,
     scopePillLabel,
+    startOfLocalDay,
     searchCompanyUidFromScope,
     searchHistory,
     historyDayGroups,
@@ -222,6 +226,8 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
+  /** User unpinned #setup — sticky until they pin it again. */
+  let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
@@ -352,10 +358,40 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
-  // Synthetic pinned #setup support channel (deduped against a real server
-  // `setup` channel) — always at the top of the rail's PINNED section.
-  const channelsWithSetup = $derived(withSetupChannel(channels));
-  const pinsWithSetup = $derived(withSetupPin(pins));
+  // Synthetic #setup support channel (deduped against a real server `setup`
+  // channel) — pinned by default; once unpinned it lists under TODAY (bottom)
+  // instead of sinking into LAST WEEK with zero activity.
+  const channelsWithSetup = $derived(
+    withSetupChannel(
+      channels,
+      setupPinDismissed ? { activityAt: startOfLocalDay(Date.now()) } : {},
+    ),
+  );
+  const pinsWithSetup = $derived(
+    withSetupPin(pins, { dismissed: setupPinDismissed }),
+  );
+
+  /**
+   * Single pin toggle for both the context menu and the hover pin button.
+   * #setup is pinned by default (not stored in `pins`), so toggling it flips
+   * the persisted dismissed flag instead of the pin list.
+   */
+  function toggleRowPin(rowId: string): void {
+    if (rowId === SETUP_ROW_ID) {
+      const nowPinned = pinsWithSetup.includes(SETUP_ROW_ID);
+      setupPinDismissed = nowPinned;
+      saveSetupPinDismissed(storage, nowPinned);
+      if (nowPinned) {
+        pins = pins.filter((id) => id !== SETUP_ROW_ID);
+      } else if (!pins.includes(SETUP_ROW_ID)) {
+        pins = [SETUP_ROW_ID, ...pins];
+      }
+      savePins(pins, storage);
+      return;
+    }
+    pins = togglePin(pins, rowId);
+    savePins(pins, storage);
+  }
 
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
@@ -566,8 +602,7 @@
 
   function togglePinFromMenu(): void {
     if (!contextMenu) return;
-    pins = togglePin(pins, contextMenu.row.id);
-    savePins(pins, storage);
+    toggleRowPin(contextMenu.row.id);
     contextMenu = null;
   }
 
@@ -1224,8 +1259,7 @@
   });
 
   function handlePin(row: ConversationRow) {
-    pins = togglePin(pins, row.id);
-    savePins(pins, storage);
+    toggleRowPin(row.id);
   }
 
   async function openRow(
@@ -1885,7 +1919,7 @@
         data-testid="chat-context-pin"
         onclick={togglePinFromMenu}
       >
-        {pins.includes(contextMenu.row.id)
+        {pinsWithSetup.includes(contextMenu.row.id)
           ? "Unpin conversation"
           : "Pin conversation"}
       </button>
