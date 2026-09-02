@@ -175,14 +175,22 @@ describe("the workflow keeps both required checks reachable", () => {
     expect(trigger).toContain("pull_request:");
   });
 
-  it("gates both required jobs on the changes job", () => {
-    for (const job of ["windows-check", "windows-installer-e2e"]) {
+  it("gates every Windows job on the changes job", () => {
+    // The installer gate is three jobs -- two parallel builds feeding the
+    // required E2E context -- and all of them have to observe the same gate,
+    // or a skipped PR pays for a Windows build it decided it did not need.
+    for (const job of [
+      "windows-check",
+      "build-bridge-installers",
+      "build-target-updater",
+      "windows-installer-e2e",
+    ]) {
       const body = workflow.slice(
         workflow.indexOf(`\n  ${job}:\n`),
         workflow.indexOf("\n    steps:", workflow.indexOf(`\n  ${job}:\n`)),
       );
-      expect(body, `${job} must depend on the changes job`).toContain(
-        "needs: changes",
+      expect(body, `${job} must depend on the changes job`).toMatch(
+        /needs: (changes\n|\[changes,)/,
       );
       expect(body, `${job} must skip when the gate does not apply`).toContain(
         "needs.changes.outputs.windows == 'true'",
@@ -190,9 +198,9 @@ describe("the workflow keeps both required checks reachable", () => {
     }
   });
 
-  it("keeps the draft exclusion on both required jobs", () => {
+  it("keeps the draft exclusion on every gated job", () => {
     const drafts = workflow.match(/github\.event\.pull_request\.draft == false/g);
-    expect(drafts).toHaveLength(2);
+    expect(drafts).toHaveLength(4);
   });
 
   it("runs the relevance decision on a cheap runner", () => {
