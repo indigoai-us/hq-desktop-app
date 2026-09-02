@@ -1,11 +1,11 @@
 import {
-  emitDesktopTelemetryStrict,
+  emitDesktopOperationalTelemetry,
   type DesktopTelemetryProperties,
 } from './desktop-telemetry';
 import type { StageId } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
 
 export type OnboardingAction =
@@ -50,12 +50,6 @@ interface PersistedTelemetryState {
   version: number;
   sessionId: string;
   firstLaunchRecorded: boolean;
-  collectionDisabled: boolean;
-  /** Local-only account partition; it is never included in telemetry. */
-  ownerAccountId: string | null;
-  /** The user opted in and the consent record reached the server. */
-  consentConfirmed: boolean;
-  pending: OnboardingStepEvent[];
 }
 
 export interface OnboardingStepTelemetryOptions {
@@ -69,18 +63,13 @@ export interface OnboardingStepTelemetry {
   readonly sessionId: string;
   record(event: RecordOnboardingStep): void;
   recordFirstLaunch(): void;
-  /**
-   * Tie a persisted trace to the authenticated account. A different account
-   * starts a fresh trace so pre-consent interactions never cross accounts.
-   */
-  bindAccount(accountId: string | null | undefined): void;
-  acceptConsent(): Promise<void>;
-  discard(): void;
 }
 
 /**
- * The wizard's local, bounded pre-consent trace. No telemetry command is
- * invoked until `acceptConsent`; declining empties the queue instead.
+ * The wizard's installation trace. Setup state is operational telemetry, so
+ * each event is dispatched immediately and is deliberately independent of the
+ * skill-telemetry preference. The persisted state preserves the install
+ * session and suppresses duplicate first-launch events across a wizard remount.
  */
 export function createOnboardingStepTelemetry(
   options: OnboardingStepTelemetryOptions = {},
@@ -89,7 +78,6 @@ export function createOnboardingStepTelemetry(
   const now = options.now ?? (() => new Date());
   const emit = options.emit ?? emitOnboardingStep;
   let state = loadState(storage, options.newSessionId ?? createUuid);
-  let flushPromise: Promise<void> | null = null;
 
   function persist(): void {
     if (!storage) return;
@@ -101,7 +89,6 @@ export function createOnboardingStepTelemetry(
   }
 
   function record({ properties, occurredAt }: RecordOnboardingStep): void {
-    if (state.collectionDisabled) return;
     const event: OnboardingStepEvent = {
       sessionId: state.sessionId,
       occurredAt: occurredAt ?? now().toISOString(),
@@ -111,67 +98,8 @@ export function createOnboardingStepTelemetry(
         platform: currentPlatform(),
       },
     };
-    state.pending.push(event);
+    void emit(event).catch(() => {});
     persist();
-    if (state.consentConfirmed) void flushPending().catch(() => {});
-  }
-
-  function resetForAccount(accountId: string): void {
-    state = {
-      version: SCHEMA_VERSION,
-      sessionId: (options.newSessionId ?? createUuid)(),
-      // First launch is a device fact, not an account fact; never record it
-      // again merely because the account changed.
-      firstLaunchRecorded: state.firstLaunchRecorded,
-      collectionDisabled: false,
-      ownerAccountId: accountId,
-      consentConfirmed: false,
-      pending: [],
-    };
-    persist();
-  }
-
-  function bindAccount(accountId: string | null | undefined): void {
-    const normalized = accountId?.trim();
-    // Without a stable authenticated identity, retaining a device-wide buffer
-    // could later associate it with a different person. Drop it fail-closed.
-    if (!normalized) {
-      if (state.pending.length > 0) {
-        state = { ...state, pending: [], consentConfirmed: false };
-        persist();
-      }
-      return;
-    }
-    if (state.ownerAccountId && state.ownerAccountId !== normalized) {
-      resetForAccount(normalized);
-      return;
-    }
-    if (state.ownerAccountId !== normalized) {
-      state = { ...state, ownerAccountId: normalized };
-      persist();
-    }
-    if (state.consentConfirmed) void flushPending().catch(() => {});
-  }
-
-  async function flushPending(): Promise<void> {
-    if (!state.consentConfirmed || !state.ownerAccountId) return;
-    if (flushPromise) return flushPromise;
-
-    const flush = (async () => {
-      // Remove each event only after its own successful command invocation.
-      // A transient error therefore leaves the failed event and every later
-      // event durably queued for a retry, without duplicating prior successes.
-      while (state.pending.length > 0) {
-        const event = state.pending[0];
-        await emit(event);
-        state = { ...state, pending: state.pending.slice(1) };
-        persist();
-      }
-    })();
-    flushPromise = flush.finally(() => {
-      flushPromise = null;
-    });
-    return flushPromise;
   }
 
   return {
@@ -189,17 +117,6 @@ export function createOnboardingStepTelemetry(
           flow: 'first_launch',
         },
       });
-      persist();
-    },
-    bindAccount,
-    async acceptConsent() {
-      if (state.collectionDisabled) return;
-      state = { ...state, consentConfirmed: true };
-      persist();
-      await flushPending();
-    },
-    discard() {
-      state = { ...state, pending: [], collectionDisabled: true };
       persist();
     },
   };
@@ -225,7 +142,7 @@ async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
   }
-  await emitDesktopTelemetryStrict({
+  await emitDesktopOperationalTelemetry({
     eventName: 'desktop_onboarding_step',
     properties,
     sessionId: event.sessionId,
@@ -245,20 +162,12 @@ function loadState(
         parsed.version === SCHEMA_VERSION &&
         typeof parsed.sessionId === 'string' &&
         parsed.sessionId.length > 0 &&
-        typeof parsed.firstLaunchRecorded === 'boolean' &&
-        typeof parsed.collectionDisabled === 'boolean' &&
-        (typeof parsed.ownerAccountId === 'string' || parsed.ownerAccountId === null) &&
-        typeof parsed.consentConfirmed === 'boolean' &&
-        Array.isArray(parsed.pending)
+        typeof parsed.firstLaunchRecorded === 'boolean'
       ) {
         return {
           version: SCHEMA_VERSION,
           sessionId: parsed.sessionId,
           firstLaunchRecorded: parsed.firstLaunchRecorded,
-          collectionDisabled: parsed.collectionDisabled,
-          ownerAccountId: parsed.ownerAccountId,
-          consentConfirmed: parsed.consentConfirmed,
-          pending: parsed.pending.filter(isEvent),
         };
       }
     }
@@ -269,23 +178,7 @@ function loadState(
     version: SCHEMA_VERSION,
     sessionId: newSessionId(),
     firstLaunchRecorded: false,
-    collectionDisabled: false,
-    ownerAccountId: null,
-    consentConfirmed: false,
-    pending: [],
   };
-}
-
-function isEvent(value: unknown): value is OnboardingStepEvent {
-  if (!value || typeof value !== 'object') return false;
-  const event = value as Partial<OnboardingStepEvent>;
-  return (
-    typeof event.sessionId === 'string' &&
-    typeof event.occurredAt === 'string' &&
-    Boolean(event.properties) &&
-    typeof event.properties?.step === 'string' &&
-    typeof event.properties?.action === 'string'
-  );
 }
 
 function safeStorage(): Storage | null {

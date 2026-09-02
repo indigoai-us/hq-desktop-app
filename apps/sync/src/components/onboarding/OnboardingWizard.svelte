@@ -54,7 +54,7 @@
     type StageState,
   } from '../../lib/onboarding-setup';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
-  import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
+  import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
   import {
     createOnboardingStepTelemetry,
     type OnboardingAction,
@@ -387,15 +387,6 @@
           if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
         })
         .catch(() => {});
-      // Resume paths can bypass the interactive OAuth panel because a valid
-      // token was restored before the wizard rendered. Bind that account too,
-      // so a buffer left by another person on this device is discarded before
-      // any consent decision can flush it.
-      void invokeCommand<{ authenticated: boolean; accountId?: string | null }>('get_auth_state')
-        .then((auth) => {
-          if (auth?.authenticated) onboardingTelemetry.bindAccount(auth.accountId);
-        })
-        .catch(() => {});
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -523,15 +514,11 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
-        // Account identity stays local and only partitions the durable
-        // pre-consent buffer. It is never sent as a telemetry property.
-        onboardingTelemetry.bindAccount(result.accountId);
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
-        // No telemetry is written here. The consent question is asked later, as
-        // its own step after setup — before an answer exists we must not opt the
-        // person in NOR emit any usage event (a person who later declines must
-        // have produced zero events).
+        // The consent question is asked later as its own step after setup.
+        // Operational setup telemetry is emitted independently; skill usage
+        // remains governed by that choice.
         advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
           provider: telemetryProvider,
           outcome: 'authenticated',
@@ -899,9 +886,6 @@
       setupFailures = result.failedStages;
       markSetupStepCompleted();
       await journalInstallComplete();
-      // Capture the setup metrics now, but DON'T emit the completion event yet:
-      // consent hasn't been asked. The event is emitted from the consent step,
-      // and only when the person opts in — a decline must produce no events.
       setupCompletionMetrics = {
         stageCount: stages.length,
         failedStageCount: setupFailures.length,
@@ -915,6 +899,10 @@
             ].filter(Boolean).length
           : 0,
       };
+      void emitDesktopOperationalTelemetry({
+        eventName: 'desktop_setup_completed',
+        properties: { ...setupCompletionMetrics },
+      });
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
         failedStageCount: setupFailures.length,
@@ -946,8 +934,8 @@
   /**
    * Record the telemetry answer and, only when the SERVER confirms the write,
    * leave the consent step for the ready screen. Called from either option's
-   * Continue. Declining is first-class: it records the answer, emits nothing,
-   * withholds nothing, and finishes setup exactly like sharing does.
+   * Continue. Declining is first-class: it records the answer, withholds no
+   * product capability, and finishes setup exactly like sharing does.
    *
    * US-002: the remote write is foreground and its failure is visible.
    *   - AC1: the caller's person entity is guaranteed to exist first, so the
@@ -963,10 +951,6 @@
     consentSubmitting = true;
     consentFailure = null;
     const enabled = telemetryChoice === 'share';
-    // A refusal is final for this local trace immediately — even if its
-    // preference upload is offline or rejected, no pre-consent event may
-    // survive to a later account or a later opt-in.
-    if (!enabled) onboardingTelemetry.discard();
     try {
       // AC1 — make the ordering explicit. Ensure the person entity exists
       // before the opt-in POST fires. This resolves from cache instantly on the
@@ -1012,17 +996,6 @@
         return;
       }
 
-      // Flush only after the opt-in POST has succeeded. The trace keeps each
-      // event until its individual delivery succeeds, so an offline telemetry
-      // request can be retried without losing the pre-consent funnel.
-      if (enabled) {
-        try {
-          await onboardingTelemetry.acceptConsent();
-        } catch (err) {
-          console.warn('[onboarding-telemetry] buffered event flush deferred:', err);
-        }
-      }
-
       if (isReprompt) {
         // The stale record is now replaced with a fully versioned one. Record
         // that the re-prompt was answered for this person+version (idempotent
@@ -1034,12 +1007,6 @@
         return;
       }
 
-      if (enabled && setupCompletionMetrics) {
-        void emitDesktopTelemetry({
-          eventName: 'desktop_setup_completed',
-          properties: { ...setupCompletionMetrics },
-        });
-      }
       advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
     } finally {
       consentSubmitting = false;
@@ -1081,7 +1048,6 @@
       await finishWithRecovery();
       return;
     }
-    if (telemetryChoice === 'decline') onboardingTelemetry.discard();
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
   }
 

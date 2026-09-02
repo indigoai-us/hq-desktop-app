@@ -18,36 +18,16 @@ export function getInstallSessionId(): string {
   return installSessionId;
 }
 
-// Stable, privacy-preserving device id (a hashed MAC from the Rust side) used to
-// spot the same machine installing again. Best-effort: only a SUCCESSFUL, non-
-// empty id is memoized — a failure/empty returns undefined WITHOUT caching, so a
-// transient miss is retried on the next ping (and never permanently disables the
-// device dimension).
-let deviceIdCache: string | undefined;
-async function getDeviceId(): Promise<string | undefined> {
-  if (deviceIdCache) return deviceIdCache;
-  // Command unavailable / failed → "" → the funnel records without a device id
-  // and retries on the next ping (no negative caching).
-  const id = await invoke<string>("device_fingerprint").catch(() => "");
-  if (typeof id === "string" && id) {
-    deviceIdCache = id;
-    return id;
-  }
-  return undefined;
-}
-
-/** Test-only: clear the memoized session id + device id between cases. */
+/** Test-only: clear the memoized install session between cases. */
 export function __resetTelemetryCachesForTests(): void {
   installSessionId = null;
-  deviceIdCache = undefined;
 }
 
 /**
  * Fire-and-forget ping for one installer step (welcome → install → signin →
  * setup → done). Anonymous by `installSessionId`; attaches `personUid` once the
- * user has signed in and a best-effort hashed device id. Errors are swallowed —
- * a telemetry failure must never block the wizard. Caller gates on the user's
- * telemetry opt-in.
+ * user has signed in. Errors are swallowed — a telemetry failure must never
+ * block the wizard. Installation telemetry is independent of skill consent.
  */
 export async function pingStep(opts: {
   step: string;
@@ -55,7 +35,6 @@ export async function pingStep(opts: {
   version?: string;
 }): Promise<void> {
   try {
-    const deviceId = await getDeviceId();
     await fetch(STEP_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
@@ -63,7 +42,6 @@ export async function pingStep(opts: {
         installSessionId: getInstallSessionId(),
         step: opts.step,
         ...(opts.personUid ? { personUid: opts.personUid } : {}),
-        ...(deviceId ? { deviceId } : {}),
         version: opts.version ?? "unknown",
         ts: Date.now(),
       }),
@@ -130,8 +108,7 @@ export interface FailurePayload {
  * payload to a Slack channel so on-call engineers see install regressions
  * immediately. Errors are logged to console only — never throw.
  *
- * Caller responsibility: gate on `wizardState.telemetryEnabled` if the
- * failure happens before opt-in is meaningful.
+ * Failure delivery is operational and does not depend on skill consent.
  */
 export async function pingFailure(payload: FailurePayload): Promise<void> {
   const endpoint = getFailureEndpoint();

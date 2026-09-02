@@ -608,13 +608,15 @@ describe("Summary screen (11-summary.tsx)", () => {
     });
   });
 
-  it("does NOT call pingSuccess when telemetryEnabled=false", () => {
+  it("calls pingSuccess on mount when telemetryEnabled=false", async () => {
     render(
       <Summary
         wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: false }}
       />,
     );
-    expect(mockPingSuccess).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockPingSuccess).toHaveBeenCalledWith("test");
+    });
   });
 
   // ── 5b. US-008 — reflects the 5-step flow; no references to removed steps ─

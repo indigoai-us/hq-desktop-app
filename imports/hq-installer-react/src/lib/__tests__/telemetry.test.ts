@@ -181,14 +181,13 @@ describe("postOptIn — local cache on final failure", () => {
 
 describe("pingStep", () => {
   beforeEach(() => {
-    // The session id + device id are memoized at module scope; clear them so
-    // a success cached by one case doesn't leak into the next.
+    // The session id is memoized at module scope; clear it so a success cached
+    // by one case doesn't leak into the next.
     __resetTelemetryCachesForTests();
   });
 
-  it("POSTs the step with a stable session id, personUid, and best-effort device id", async () => {
+  it("POSTs the step with a stable session id and personUid, never a device fingerprint", async () => {
     vi.useRealTimers();
-    // device_fingerprint resolves to a hash for this test.
     (invoke as ReturnType<typeof vi.fn>).mockResolvedValue("hashed-mac-abc");
     globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
 
@@ -201,16 +200,17 @@ describe("pingStep", () => {
     expect(body).toMatchObject({
       step: "signin",
       personUid: "prs_ada",
-      deviceId: "hashed-mac-abc",
       version: "9.9.9",
       installSessionId: getInstallSessionId(),
     });
+    expect("deviceId" in body).toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith("device_fingerprint");
     // The session id is stable across pings within a process.
     expect(typeof body.installSessionId).toBe("string");
     expect(body.installSessionId.length).toBeGreaterThan(0);
   });
 
-  it("omits deviceId + personUid gracefully when unavailable", async () => {
+  it("omits personUid gracefully when unavailable", async () => {
     vi.useRealTimers();
     (invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("no command"));
     globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
@@ -219,7 +219,6 @@ describe("pingStep", () => {
 
     const [, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect("deviceId" in body).toBe(false);
     expect("personUid" in body).toBe(false);
     expect(body.step).toBe("welcome");
   });

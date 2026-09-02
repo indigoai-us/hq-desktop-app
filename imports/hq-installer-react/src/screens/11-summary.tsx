@@ -156,9 +156,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
       (async () => {
         try {
           const v = await getInstallerVersion();
-          if (wizardState.telemetryEnabled) {
-            pingSuccess(v).catch(() => {});
-          }
+          pingSuccess(v).catch(() => {});
           await recordInstallComplete(wizardState.installPath as string, v);
           const manifest = await readManifest(wizardState.installPath as string, v);
           setSetupFailures(manifest.failures);
@@ -174,17 +172,14 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           setInstallerImport(null);
         }
       })();
-    } else if (wizardState.telemetryEnabled) {
+    } else {
       getInstallerVersion()
         .then((v) => pingSuccess(v))
         .catch(() => {});
       setInstallerImport(null);
       setSetupFailures([]);
-    } else {
-      setInstallerImport(null);
-      setSetupFailures([]);
     }
-  }, [wizardState.telemetryEnabled, wizardState.installPath]);
+  }, [wizardState.installPath]);
 
   // ── Supported AI tool detection + polling while absent ──────────────────
   useEffect(() => {
