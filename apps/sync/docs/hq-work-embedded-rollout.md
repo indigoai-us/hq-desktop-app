@@ -274,7 +274,7 @@ remove the legacy shell and the boot branch.
 ## Related
 
 - US-101 consume — `docs/hq-work-ui-consume.md`
-- US-102 adapter — `src/lib/hq-work-adapter.ts`
+- US-102 adapter — `../../packages/platform/src/tauri/sync-adapter.ts`
 - US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkDesktopShell.svelte`
 - US-104 routing — notification / conversation clicks into this window
 - US-105 parity

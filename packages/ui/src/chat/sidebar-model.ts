@@ -65,6 +65,54 @@ export interface ConversationRow {
   membership?: ChannelMembership;
 }
 
+/**
+ * Metadata that can arrive after a deep-link's synthetic conversation row.
+ * Activity and local presentation state (`unreadCount`, `unreadDot`,
+ * `lastActivityAt`, `pinned`) are deliberately excluded: they fluctuate and
+ * must never make initial-row reconciliation replace a user's selection.
+ */
+const CONVERSATION_ROW_RICHNESS_FIELDS = [
+  "companyUid",
+  "projectId",
+  "channelId",
+  "channelScope",
+  "title",
+  "personUid",
+  "email",
+  "memberCount",
+  "members",
+  "browseOnly",
+  "membership",
+] as const satisfies readonly (keyof ConversationRow)[];
+
+function hasConversationRowValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+/**
+ * True only when `next` is the same conversation and fills metadata gaps
+ * without dropping any known metadata. This monotone rule prevents the shell
+ * from oscillating between a deep-link stub and a partial live directory row.
+ */
+export function isStrictlyRicherConversationRow(
+  next: ConversationRow,
+  current: ConversationRow,
+): boolean {
+  if (next.id !== current.id || next.kind !== current.kind) return false;
+
+  let fillsGap = false;
+  for (const field of CONVERSATION_ROW_RICHNESS_FIELDS) {
+    const currentHasValue = hasConversationRowValue(current[field]);
+    const nextHasValue = hasConversationRowValue(next[field]);
+    if (currentHasValue && !nextHasValue) return false;
+    if (!currentHasValue && nextHasValue) fillsGap = true;
+  }
+  return fillsGap;
+}
+
 /** Company option for the scope pill (order preserved from caller). */
 export interface ScopeCompany {
   companyUid: string;

@@ -23,7 +23,7 @@
   import {
     createSyncPlatformAdapter,
     type SyncInvokeFn,
-  } from '../lib/hq-work-adapter';
+  } from '@hq/platform';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
