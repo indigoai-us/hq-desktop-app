@@ -129,16 +129,16 @@
     align-items: flex-start;
     gap: var(--v4-space-3);
     padding: var(--v4-space-2) var(--v4-space-4);
-    border-left: 2px solid transparent;
-    border-radius: 0 var(--v4-radius-card) var(--v4-radius-card) 0;
+    border-radius: var(--v4-radius-card);
   }
 
   .ws-activity-row:hover {
     background: var(--v4-control-faint);
   }
 
+  /* DESKTOP-018: a loud row carries its meaning in the tinted wash and the
+     error-toned glyph + outcome text, never in a colored partial edge. */
   .ws-activity-row.loud {
-    border-left-color: var(--v4-error);
     background: color-mix(in srgb, var(--v4-error) 5%, transparent);
   }
 

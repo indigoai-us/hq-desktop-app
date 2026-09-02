@@ -46,6 +46,13 @@
     /** A permission row was approved/denied from the stream. */
     onactivityapprove?: (itemId: string) => void;
     onactivitydeny?: (itemId: string) => void;
+    /**
+     * OPTIONAL body renderer. Returns already-sanitized HTML for a message, or
+     * null/'' to leave that row on the plain-text path. Injected rather than
+     * imported so this component stays presentation-pure and markdown-agnostic:
+     * omitting it produces a byte-identical timeline.
+     */
+    renderBody?: (message: WsMessage) => string | null;
   }
 
   let {
@@ -63,6 +70,7 @@
     activity = [],
     onactivityapprove,
     onactivitydeny,
+    renderBody,
   }: Props = $props();
 
   const memberMap = $derived(new Map(members.map((m) => [m.uid, m])));
@@ -171,6 +179,7 @@
               message={item.message}
               author={memberMap.get(item.message.authorUid)}
               grouped={item.grouped}
+              bodyHtml={renderBody?.(item.message) ?? undefined}
             />
           </div>
         {/if}

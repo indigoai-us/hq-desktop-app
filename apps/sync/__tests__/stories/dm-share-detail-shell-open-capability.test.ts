@@ -187,8 +187,34 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .map(([relative]) => relative)
       .sort();
     // ThreadPanel's pinned root now renders through the shared <Conversation/>
-    // primitive, so Conversation is the SOLE DM-markdown render surface.
-    expect(renderers).toEqual(['components/messaging/Conversation.svelte']);
+    // primitive, so Conversation is the sole DM render surface. The session
+    // transcript is the SECOND markdown surface: it renders an in-app agent's
+    // prose through the same renderer, and its links emit the same
+    // target="_blank" anchors the shell listener intercepts. It is confined to
+    // the `desktop-alt` window (SessionsPage <- DesktopApp), which is in
+    // WINDOWS_GRANTED_SHELL_OPEN above — so the ACL is satisfied and its links
+    // open rather than rejecting.
+    expect(renderers).toEqual([
+      'components/messaging/Conversation.svelte',
+      'components/sessions/SessionTranscript.svelte',
+    ]);
+
+    // …and that confinement is itself pinned: the ONLY mount of the session
+    // transcript is the Sessions page, and the only mount of that page is the
+    // desktop-alt shell.
+    const transcriptMounts = sources
+      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionTranscript[\s/>]/.test(body))
+      .map(([relative]) => relative)
+      .sort();
+    expect(transcriptMounts).toEqual(['desktop-alt/pages/SessionsPage.svelte']);
+    const sessionsPageMounts = sources
+      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionsPage[\s/>]/.test(body))
+      .map(([relative]) => relative)
+      .sort();
+    expect(sessionsPageMounts).toEqual(['desktop-alt/DesktopApp.svelte']);
+    expect(
+      capabilities.get('desktop-alt-capability')!.permissions.map(permissionId),
+    ).toContain('shell:allow-open');
 
     const threadPanelMounts = sources
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<ThreadPanel[\s/>]/.test(body))

@@ -18,9 +18,18 @@
     message: WsMessage;
     author?: WsMember;
     grouped?: boolean;
+    /**
+     * Pre-rendered, already-sanitized HTML for this message's body.
+     *
+     * The row stays presentation-pure and markdown-agnostic: it never imports
+     * a renderer and never sanitizes. A host that wants rich bodies renders
+     * them with its own CSP-safe renderer and passes the result down; with the
+     * prop omitted the row renders plain text exactly as before.
+     */
+    bodyHtml?: string;
   }
 
-  let { message, author, grouped = false }: Props = $props();
+  let { message, author, grouped = false, bodyHtml }: Props = $props();
 
   const name = $derived(author?.displayName ?? 'Unknown');
   const isAgent = $derived(author?.kind === 'agent');
@@ -64,7 +73,13 @@
       <div class="tombstone-body" data-testid="ws-tombstone">This message was deleted.</div>
     {:else}
       <div class="body" aria-busy={message.streaming ? 'true' : undefined}>
-        {message.body}
+        {#if bodyHtml}
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- pre-sanitized
+               by the host's CSP-safe markdown renderer; see `bodyHtml` above. -->
+          <span class="body-html">{@html bodyHtml}</span>
+        {:else}
+          {message.body}
+        {/if}
         {#if message.streaming}
           <span class="stream-caret" data-testid="ws-stream-caret" aria-hidden="true"></span>
         {/if}
@@ -164,6 +179,42 @@
   .time {
     font-size: 11px;
     color: var(--v4-idle);
+  }
+
+  /* Rendered markdown keeps the row's own rhythm: block children collapse
+     their outer margins so a one-paragraph body is visually identical to the
+     plain-text path. */
+  .body :global(p) {
+    margin: 0 0 var(--v4-space-2);
+  }
+
+  .body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .body :global(pre) {
+    margin: var(--v4-space-2) 0;
+    padding: var(--v4-space-2);
+    overflow-x: auto;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: var(--type-metadata);
+  }
+
+  .body :global(code) {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.95em;
+  }
+
+  .body :global(ul),
+  .body :global(ol) {
+    margin: var(--v4-space-2) 0;
+    padding-left: 1.4em;
+  }
+
+  .body :global(a) {
+    color: var(--v4-link, var(--v4-text-1));
   }
 
   .body {
