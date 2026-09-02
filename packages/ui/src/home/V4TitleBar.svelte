@@ -133,7 +133,9 @@
    * Platform capability seam (not hardcoded): only hosts that draw native
    * window controls (desktop traffic lights / caption buttons) need the
    * left inset that clears them. On web there are no controls, so the wordmark
-   * + DAY·DATE sit flush-left.
+   * + DAY·DATE sit flush-left. Height and gutter come from the shared
+   * `--titlebar-height` / `--titlebar-leading-inset` tokens so sub-page
+   * headers stay on the same centre line as the overlay traffic lights.
    */
   const hasWindowControls = $derived(
     adapter?.capabilities?.hasWindowControls ?? false,
