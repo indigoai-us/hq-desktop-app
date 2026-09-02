@@ -572,18 +572,23 @@
   }
 
   /** Close the create modal; optionally open the channel it just created. */
-  function closeCreate(openChannelId?: string): void {
+  function closeCreate(
+    openChannelId?: string,
+    hint?: { title: string; companyUid: string | null },
+  ): void {
     createOpen = false;
     plusBtnEl?.focus();
     if (!openChannelId) return;
     // A just-created channel is opened before the directory feed lists it, so
-    // the shell would stub a row titled with the raw id. Hand it the name we
-    // already have (from the optimistic upsert) so the header is right on
-    // first paint, not only after the user clicks away and back.
+    // the shell would stub a row titled with the raw id. Hand it the name so
+    // the header is right on first paint, not only after the user clicks away
+    // and back. Prefer the modal's own hint: our `channels` copy can be
+    // overwritten by a directory refresh between create and close.
     const known = channels.find((c) => c.channelId === openChannelId);
+    const title = hint?.title?.trim() || (known ? known.name : "");
     requestChannelOpen(openChannelId, {
-      title: known ? humanizeChannelName(known.name) : null,
-      companyUid: known?.companyUid ?? null,
+      title: title ? humanizeChannelName(title) : null,
+      companyUid: hint?.companyUid ?? known?.companyUid ?? null,
     });
   }
 

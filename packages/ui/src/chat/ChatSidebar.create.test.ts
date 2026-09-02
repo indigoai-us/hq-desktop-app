@@ -9,6 +9,7 @@
  * body as its first message) are re-asserted here against the new one-modal
  * shell.
  */
+import { takePendingChannelOpen } from "./open-target.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
@@ -264,6 +265,13 @@ describe("ChatSidebar create flow", () => {
     });
     // The new channel is in the rail immediately (optimistic upsert).
     expect(host.textContent).toContain("Q4 board");
+    // …and the open request carries its NAME, so the header never paints the
+    // raw `chn_…` id while the directory feed catches up (reported bug).
+    expect(takePendingChannelOpen()).toMatchObject({
+      channelId: "chn_new",
+      title: "Q4 board",
+      companyUid: INDIGO.cloudUid,
+    });
   });
 
   // Regression: `activeIndex` was only reset when the query changed, so a live

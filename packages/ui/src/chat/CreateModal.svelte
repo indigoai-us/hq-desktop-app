@@ -68,7 +68,16 @@
     activeScope: CompanyScope;
     self?: SelfIdentity | null;
     /** Close; pass a channel id to open it on the way out. */
-    onclose: (openChannelId?: string) => void;
+    /**
+     * Close; pass a channel id to open it on the way out. `hint` carries the
+     * display name + workspace so the host can paint the header immediately —
+     * the directory feed has not listed a just-created channel yet, and the
+     * sidebar's own copy can be overwritten by a refresh mid-create.
+     */
+    onclose: (
+      openChannelId?: string,
+      hint?: { title: string; companyUid: string | null },
+    ) => void;
     onpick: (row: ConversationRow) => void;
     oncreated: (channel: Channel) => void | Promise<void>;
   }
@@ -577,10 +586,19 @@
   function closeAll(): void {
     if (creating) return;
     if (step === "summary") {
-      onclose(createdChannelId ?? undefined);
+      onclose(createdChannelId ?? undefined, createdHint());
       return;
     }
     onclose();
+  }
+
+  /** Display hint for the channel created in this session, if any. */
+  function createdHint():
+    | { title: string; companyUid: string | null }
+    | undefined {
+    if (!createdChannelId) return undefined;
+    const title = channelName.trim() || createdSlug;
+    return title ? { title, companyUid: companyUid || null } : undefined;
   }
 
   function onBackdrop(event: MouseEvent): void {
@@ -1006,7 +1024,7 @@
 
     creating = false;
     if (found.length === 0) {
-      onclose(channelId);
+      onclose(channelId, { title: name, companyUid: companyUid || null });
       return;
     }
     issues = found;
@@ -1613,7 +1631,7 @@
           class="create-submit"
           data-testid="chat-create-summary-done"
           use:focusOnMount
-          onclick={() => onclose(createdChannelId ?? undefined)}>Done</button
+          onclick={() => onclose(createdChannelId ?? undefined, createdHint())}>Done</button
         >
       </div>
     {/if}

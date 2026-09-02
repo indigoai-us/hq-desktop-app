@@ -454,7 +454,10 @@ describe("CreateModal submit", () => {
 
     $<HTMLButtonElement>('[data-testid="chat-create-summary-done"]')?.click();
     await tick();
-    expect(onclose).toHaveBeenCalledWith("chn_new");
+    expect(onclose).toHaveBeenCalledWith(
+      "chn_new",
+      expect.objectContaining({ title: expect.any(String) }),
+    );
   });
 
   it("refuses a channel id the timeline could not open", async () => {
@@ -830,7 +833,10 @@ describe("CreateModal in-flight and summary", () => {
     $<HTMLButtonElement>('[data-testid="chat-create-summary-done"]')?.click();
     await tick();
     expect(onclose).toHaveBeenCalledTimes(1);
-    expect(onclose).toHaveBeenCalledWith("chn_new");
+    expect(onclose).toHaveBeenCalledWith(
+      "chn_new",
+      expect.objectContaining({ title: expect.any(String) }),
+    );
   });
 
   // Regression: the summary step left focus on <body>, which both escapes the
