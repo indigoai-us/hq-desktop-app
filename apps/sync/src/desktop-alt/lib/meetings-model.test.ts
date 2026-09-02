@@ -19,6 +19,7 @@ import {
   isListableMeeting,
   isPlausibleMeetingUrl,
   isRecurringMeeting,
+  meetingMatchesFocusId,
   meetingUrlsMatch,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
@@ -962,6 +963,31 @@ describe('meetings-model', () => {
 
     it('falls back to "company" for an unknown uid', () => {
       expect(urlInviteDestinationLabel('co-unknown', names)).toBe('company');
+    });
+  });
+
+  describe('meetingMatchesFocusId', () => {
+    const event: MeetingEvent = {
+      id: 'evt_1',
+      status: 'confirmed',
+      start: { dateTime: '2026-09-01T16:00:00.000Z' },
+      end: { dateTime: '2026-09-01T16:30:00.000Z' },
+    };
+    const bot: ScheduledBot = {
+      botId: 'bot_1',
+      meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      platform: 'google_meet',
+      status: 'completed',
+      autoScheduled: true,
+      calendarEventId: 'evt_1',
+    };
+
+    it('matches the calendar event id, the bot id, or the bot calendarEventId', () => {
+      expect(meetingMatchesFocusId('evt_1', event, bot)).toBe(true);
+      expect(meetingMatchesFocusId('bot_1', event, bot)).toBe(true);
+      expect(meetingMatchesFocusId('missing', event, bot)).toBe(false);
+      expect(meetingMatchesFocusId('bot_1', event, undefined)).toBe(false);
+      expect(meetingMatchesFocusId('', event, bot)).toBe(false);
     });
   });
 });

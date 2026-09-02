@@ -420,27 +420,37 @@ pub async fn show_meeting_banner(
     show_banner(app, payload).await
 }
 
-/// Unattributed meeting → banner. Body-click and chip both route to the
-/// Meetings window focused on this bot id so the user can assign a company.
+/// Unattributed meeting → banner. Body-click opens the desktop Meetings page
+/// focused on this bot; the chip files the meeting to a company in place.
 pub async fn show_unattributed_meeting_banner(
     app: AppHandle,
     meeting_id: String,
     meeting_title: Option<String>,
+    scheduled_start_time: Option<String>,
+    calendar_event_id: Option<String>,
 ) -> Result<(), String> {
-    let mut body = meeting_title
-        .filter(|t| !t.trim().is_empty())
-        .map(|t| format!("\"{t}\" isn't filed to a company yet."))
-        .unwrap_or_else(|| "A meeting isn't filed to a company yet.".to_string());
+    let name = meeting_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Meeting")
+        .to_string();
+    let mut body = format!("\"{name}\" isn't filed to a company yet.");
     body.push_str(" Assign it so the transcript files correctly.");
     let payload = BannerPayload {
         kind: "meeting".to_string(),
-        title: "Meeting needs a company".to_string(),
+        title: name.clone(),
         body,
         icon_text: Some("●".to_string()),
         action_label: Some("Assign".to_string()),
         action_id: Some("assign".to_string()),
         click_action_id: "assign".to_string(),
-        data: serde_json::json!({ "meetingId": meeting_id }),
+        data: serde_json::json!({
+            "meetingId": meeting_id,
+            "meetingTitle": name,
+            "scheduledStartTime": scheduled_start_time,
+            "calendarEventId": calendar_event_id,
+        }),
     };
     show_banner(app, payload).await
 }
