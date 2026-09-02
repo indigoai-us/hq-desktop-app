@@ -323,6 +323,8 @@ describe('US-SESSIONS-A — the event contract is fully handled', () => {
       'agent_session_list',
       'agent_session_replay',
       'agent_session_slash_commands',
+      'agent_session_open_in_app',
+      'agent_session_cli_session_id',
     ]) {
       expect(STORE, `store never invokes ${command}`).toContain(`'${command}'`);
     }
@@ -693,5 +695,100 @@ describe('the "Hand off" button and the checkpoint prompt', () => {
       { userTurns: [{ id: 't1', text: '/checkpoint', atIndex: 1, at: null }] },
     );
     expect(cleared.checkpointDue).toBe(false);
+  });
+});
+
+describe('the "⋯" session menu — open in Claude Code / Codex, share to channel, end', () => {
+  const MENU = read('src/components/sessions/SessionMenu.svelte');
+  const DIALOG = read('src/components/sessions/ShareToChannelDialog.svelte');
+  const SHARE = read('src/components/sessions/share-channel.ts');
+  const EXTRA = read('src/desktop-alt/pages/SessionsExtraPage.svelte');
+
+  it('the strip hosts the menu before "+", inert without a live session', () => {
+    expect(STRIP).toContain("import SessionMenu from './SessionMenu.svelte';");
+    expect(STRIP).toContain('disabled={!menuEnabled}');
+    expect(STRIP.indexOf('<SessionMenu')).toBeLessThan(STRIP.indexOf('data-testid="sessions-new"'));
+    expect(STRIP).toContain('data-testid="session-menu-result"');
+    expect(PAGE).toContain('menuEnabled={Boolean(sessionId) && !ended}');
+    expect(PAGE).toContain('tool={summary?.tool ?? tool}');
+  });
+
+  it('the menu is labelled by the session tool and offers exactly the three actions', () => {
+    expect(MENU).toContain("tool === 'codex' ? 'Open in Codex' : 'Open in Claude Code'");
+    expect(MENU).toContain('data-testid="session-menu-open-in-app"');
+    expect(MENU).toContain('data-testid="session-menu-share"');
+    expect(MENU).toContain('data-testid="session-menu-end"');
+    expect(MENU).toContain('Share to channel…');
+    expect(MENU).toContain('End session');
+    expect(MENU).not.toContain('invoke(');
+  });
+
+  it('"Open in …" resumes through the store, which resolves the CLI-side id (Codex thread id) itself', () => {
+    expect(STORE).toContain("'agent_session_open_in_app'");
+    expect(STORE).toContain("'agent_session_cli_session_id'");
+    // The started event's sessionId IS the CLI id (Claude init / Codex thread).
+    expect(STORE).toContain("if (event.kind === 'started' && event.sessionId) return event.sessionId;");
+    expect(STORE).toContain("if (tool === 'claude') return sessionId;");
+    expect(PAGE).toContain('await liveSessionStore.openInApp()');
+    expect(PAGE).toContain("'Opened in Terminal'");
+    expect(PAGE).toContain('await liveSessionStore.end();');
+  });
+
+  it('the Rust side exposes the latched CLI id and Codex announces its thread id as Started.session_id', () => {
+    const commands = read('src-tauri/src/commands/agent_session.rs');
+    expect(commands).toContain('pub async fn agent_session_cli_session_id(session_id: String)');
+    expect(commands).toContain('.map(|session| session.cli_session_id.clone())');
+    expect(read('src-tauri/src/main.rs')).toContain(
+      'commands::agent_session::agent_session_cli_session_id,',
+    );
+    expect(read('src-tauri/src/commands/agent_session/codex.rs')).toContain(
+      'session_id: handshake.thread_id.clone(),',
+    );
+  });
+
+  it('sharing is outward ONLY on the dialog’s confirm click; opening runs read-only loads', () => {
+    expect(STORE).toContain("'session_share_to_channel'");
+    expect(SHARE).toContain("'hq_share_to_channel_preflight'");
+    expect(SHARE).toContain("'hq_company_projects'");
+    // The mutating call lives in the confirm handler, never in an effect.
+    expect(DIALOG).toContain('result = await liveSessionStore.shareToChannel(payload);');
+    expect(DIALOG).toContain('onclick={() => void share()}');
+    // Exactly one call site, and it is inside `share()`, not in any effect.
+    expect(DIALOG.match(/liveSessionStore\.shareToChannel\(/g)).toHaveLength(1);
+    const shareFn = DIALOG.slice(
+      DIALOG.indexOf('async function share()'),
+      DIALOG.indexOf('</script>'),
+    );
+    expect(shareFn).toContain('liveSessionStore.shareToChannel(payload)');
+    expect(shareFn).not.toContain('$effect');
+    expect(DIALOG).toContain('data-testid="share-confirm"');
+    expect(DIALOG).toContain('data-testid="share-cancel"');
+    expect(DIALOG).toContain('disabled={Boolean(blocker) || sharing || loading}');
+    expect(PAGE).toContain('onshare={() => (shareOpen = true)}');
+    expect(PAGE).toContain('{#if shareOpen && sessionId}');
+  });
+
+  it('the payload matches session_share_to_channel exactly', () => {
+    expect(SHARE).toContain("| { kind: 'existing'; channelId: string }");
+    expect(SHARE).toContain("| { kind: 'new'; name: string; projectPath?: string };");
+    for (const field of ['sessionId: string', 'company: string', 'target: ShareTarget', 'inviteUids: string[]', 'includeTranscript: boolean', 'note?: string']) {
+      expect(SHARE).toContain(field);
+    }
+    for (const field of ['channelId: string', 'channelName: string', 'created: boolean', 'invited: InviteOutcome[]', 'postedEventId?: string', 'digestChars: number']) {
+      expect(SHARE).toContain(field);
+    }
+  });
+
+  it('"open channel" after a share uses the shell’s own channel target', () => {
+    expect(DIALOG).toContain('data-testid="share-open-channel"');
+    expect(DIALOG).toContain('onopenchannel?.(result!.channelId)');
+    expect(PAGE).toContain('onopenchannel?: (channelId: string) => void;');
+    // HQ Work shell: the same `{ kind: 'channel' }` an hqwork://open?channel=
+    // deep link resolves to in hq-work-host's routeTarget.
+    expect(EXTRA).toContain("import { dispatchEmbeddedNavigation } from '@hq/ui';");
+    expect(EXTRA).toContain("dispatchEmbeddedNavigation({ kind: 'channel', channelId })");
+    expect(read('src/desktop-alt/hq-work-host.ts')).toContain("kind: 'channel',");
+    // Classic shell: Messages, whose native shell has no open-by-id.
+    expect(APP).toContain("onopenchannel={() => navigate({ kind: 'messages' })}");
   });
 });

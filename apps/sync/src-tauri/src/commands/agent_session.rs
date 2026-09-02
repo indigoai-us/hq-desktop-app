@@ -675,6 +675,34 @@ pub async fn agent_session_replay(session_id: String, since_seq: u64) -> Result<
     Ok(session.buffer.replay(since_seq))
 }
 
+/// The id the CLI itself knows a session by — what `claude --resume` and
+/// `codex resume` take.
+///
+/// For Claude this is the id the app minted on `--session-id` (or, after a
+/// resume, the one `system:init` reported); for Codex it is the thread id the
+/// handshake announced. `None` until that handshake has landed. The frontend
+/// reads the same value off its own `started` event and only asks here when
+/// the event ring has dropped it.
+#[tauri::command]
+pub async fn agent_session_cli_session_id(session_id: String) -> Result<Option<String>, String> {
+    ensure_in_app_sessions_allowed()?;
+    let state = state();
+    let guard = state.lock().await;
+    cli_session_id_of(&guard.registry, &session_id)
+}
+
+/// Registry half of [`agent_session_cli_session_id`], kept free of the global
+/// lock so it can be exercised with a bare registry.
+fn cli_session_id_of(
+    registry: &SessionRegistry,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    registry
+        .get(session_id)
+        .map(|session| session.cli_session_id.clone())
+        .ok_or_else(|| format!("No session {session_id}."))
+}
+
 /// The CLI's slash-command catalog and model list, for the composer.
 #[tauri::command]
 pub async fn agent_session_slash_commands(
@@ -754,6 +782,51 @@ fn write_session_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Open in Claude Code / Codex" needs the id the CLI knows the session
+    /// by. It is `None` before the handshake and whatever `Started` announced
+    /// after it — for Codex that is the thread id, which is not the app's own.
+    #[test]
+    fn cli_session_id_is_none_until_the_handshake_then_what_started_announced() {
+        let mut registry = SessionRegistry::new();
+        let spec = SessionSpec {
+            session_id: "app-1".into(),
+            tool: SessionTool::Codex,
+            cwd: "/hq".into(),
+            company: Some("indigo".into()),
+            model: None,
+            effort: None,
+            resume: None,
+            permission_mode: PermissionMode::Prompt,
+        };
+        registry
+            .insert(LiveSession::new(spec, "2026-09-02T00:00:00Z".into()))
+            .expect("insert");
+
+        assert_eq!(cli_session_id_of(&registry, "app-1"), Ok(None));
+        assert!(cli_session_id_of(&registry, "missing").is_err());
+
+        let started = SessionEvent::Started {
+            session_id: "01a06218-e436-7963-827b-6103963b4320".into(),
+            tool: SessionTool::Codex,
+            model: "gpt-5.6-codex".into(),
+            cwd: "/hq".into(),
+            tools: vec![],
+            commands: vec![],
+            permission_mode: None,
+            capabilities: vec![],
+        };
+        registry
+            .get_mut("app-1")
+            .expect("live")
+            .on_event(started, "2026-09-02T00:00:01Z".into(), 1_780_000_000_000)
+            .expect("recorded");
+
+        assert_eq!(
+            cli_session_id_of(&registry, "app-1"),
+            Ok(Some("01a06218-e436-7963-827b-6103963b4320".into()))
+        );
+    }
 
     /// The meta file the history reader consumes must round-trip through the
     /// exact keys `hq_desktop_core::sessions::claude` deserializes.

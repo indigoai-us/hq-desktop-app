@@ -6,14 +6,17 @@
    * column — a chat surface with a list glued to its side is the thing the
    * owner rejected). Centre names the session in the only two terms that
    * matter, company and model. Right is the policies chip (what HQ's hooks
-   * have bound the session to), a "Hand off" action, "+" for a new session,
-   * and a phase dot.
+   * have bound the session to), a "Hand off" action, a "⋯" session menu
+   * (open in Claude Code / Codex, share to channel, end), "+" for a new
+   * session, and a phase dot.
    *
    * Presentation-pure: props in, callbacks out.
    */
   import PoliciesChip from './PoliciesChip.svelte';
+  import SessionMenu from './SessionMenu.svelte';
   import type { HandoffState } from './hook-notices';
   import type { PolicyDigest } from './policy-digest';
+  import type { SessionTool } from '../../desktop-alt/lib/live-session-store.svelte';
 
   interface Props {
     title: string;
@@ -24,10 +27,19 @@
     /** Policies HQ's hooks reported; the chip stays hidden until one lands. */
     policies?: PolicyDigest | null;
     handoff?: HandoffState;
+    /** The session's CLI — names the menu's "Open in …" item. */
+    tool?: SessionTool;
+    /** A live session is on screen, so the "⋯" menu has something to act on. */
+    menuEnabled?: boolean;
+    /** One quiet line beside the menu ("Opened in Terminal"); empty hides it. */
+    menuResult?: string;
     ontoggledrawer?: () => void;
     onnew?: () => void;
     /** Send `/handoff` on the live session. */
     onhandoff?: () => void;
+    onopeninapp?: () => void;
+    onshare?: () => void;
+    onend?: () => void;
   }
 
   let {
@@ -37,9 +49,15 @@
     drawerOpen = false,
     policies = null,
     handoff = 'hidden',
+    tool = 'claude',
+    menuEnabled = false,
+    menuResult = '',
     ontoggledrawer,
     onnew,
     onhandoff,
+    onopeninapp,
+    onshare,
+    onend,
   }: Props = $props();
 </script>
 
@@ -105,6 +123,16 @@
         <span class="handoff-label">{handoff === 'running' ? 'Handing off…' : 'Hand off'}</span>
       </button>
     {/if}
+    {#if menuResult}
+      <span class="menu-result" role="status" data-testid="session-menu-result">{menuResult}</span>
+    {/if}
+    <SessionMenu
+      {tool}
+      disabled={!menuEnabled}
+      {onopeninapp}
+      {onshare}
+      {onend}
+    />
     <button
       type="button"
       class="strip-button"
@@ -228,6 +256,16 @@
     gap: 5px;
     font-size: 11px;
     color: var(--v4-text-3);
+  }
+
+  /* "Opened in Terminal" — the menu's one-line receipt, gone on the next action. */
+  .menu-result {
+    max-width: 220px;
+    font-size: 11px;
+    color: var(--v4-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .dot {

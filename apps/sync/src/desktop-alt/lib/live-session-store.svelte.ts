@@ -56,6 +56,10 @@ import {
   type UsageSummary,
   type UserTurn,
 } from '../../components/sessions/transcript-adapter';
+import type {
+  ShareToChannelRequest,
+  ShareToChannelResult,
+} from '../../components/sessions/share-channel';
 
 // ---------------------------------------------------------------------------
 // Command surface types — the TS half of `crates/hq-desktop-core/agent_session`
@@ -156,6 +160,14 @@ export interface CommandCatalog {
   commands: SessionCommand[];
   /** Free-form JSON from the CLI handshake; read via `readSessionModels`. */
   models: unknown[];
+}
+
+/** What `agent_session_open_in_app` did (Rust `OpenInAppOutcome`). */
+export interface OpenInAppOutcome {
+  /** `terminal` today; `desktop` once a real resume deep link exists. */
+  opened: 'terminal' | 'desktop';
+  /** Human-readable description of what was launched. */
+  detail: string;
 }
 
 /** `agent-session:event` payload. */
@@ -635,6 +647,56 @@ async function end(): Promise<void> {
 }
 
 /**
+ * The id the CLI knows the active session by — what `--resume` / `resume`
+ * take. Read off our own `started` event first (Claude's `system:init` id, or
+ * Codex's thread id); when the event ring has dropped that event, ask the
+ * registry, which latched the same value. A Claude session that has not
+ * announced itself yet still resumes by the id the app minted for it.
+ */
+async function cliSessionIdOf(sessionId: string, tool: SessionTool): Promise<string> {
+  const entry = entries[sessionId];
+  for (const event of entry?.events ?? []) {
+    if (event.kind === 'started' && event.sessionId) return event.sessionId;
+  }
+  const latched = await invoke<string | null>('agent_session_cli_session_id', { sessionId });
+  if (latched) return latched;
+  if (tool === 'claude') return sessionId;
+  throw new Error('Codex has not announced its thread id yet — try again in a moment.');
+}
+
+/**
+ * Reopen the active session in its native CLI surface (a Terminal running
+ * `claude --resume` / `codex resume` in the HQ root). Thin: the backend owns
+ * the allowlist, the id validation and the shell boundary.
+ */
+async function openInApp(): Promise<OpenInAppOutcome> {
+  const sessionId = activeId;
+  if (!sessionId) throw new Error('No live session to open.');
+  const tool: SessionTool =
+    sessions.find((s) => s.sessionId === sessionId)?.tool ?? startedToolOf(sessionId) ?? 'claude';
+  const cliSessionId = await cliSessionIdOf(sessionId, tool);
+  return invoke<OpenInAppOutcome>('agent_session_open_in_app', { tool, cliSessionId });
+}
+
+function startedToolOf(sessionId: string): SessionTool | null {
+  for (const event of entries[sessionId]?.events ?? []) {
+    if (event.kind === 'started') return event.tool === 'codex' ? 'codex' : 'claude';
+  }
+  return null;
+}
+
+/**
+ * Post a session digest to a channel (creating it if asked) and invite
+ * people. OUTWARD: this creates, invites and posts, so it is only ever called
+ * from the share dialog's confirm click — never from an effect. The payload
+ * is passed through exactly as built; the dialog and `share-channel.ts` own
+ * its shape.
+ */
+function shareToChannel(request: ShareToChannelRequest): Promise<ShareToChannelResult> {
+  return invoke<ShareToChannelResult>('session_share_to_channel', { ...request });
+}
+
+/**
  * Preflight and the catalog probe are expensive on the Rust side — the
  * preflight runs login-shell CLI probes with multi-second timeouts, and the
  * catalog probe spawns a real `claude` process that runs every HQ SessionStart
@@ -830,6 +892,8 @@ export const liveSessionStore = {
   answerQuestion,
   interrupt,
   end,
+  openInApp,
+  shareToChannel,
   preflight,
   slashCommands,
 };
