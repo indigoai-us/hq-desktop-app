@@ -34,12 +34,16 @@
     LAST_COMPANY_KEY,
     LAST_EFFORT_KEY,
     LAST_MODEL_KEY,
+    LAST_TOOL_KEY,
+    friendlyModelName,
     pickModel,
     readRemembered,
+    readRememberedTool,
     readSessionModels,
     remember,
     type ComposerImage,
     type SessionModel,
+    type SessionToolId,
   } from '../../components/sessions/session-models';
   import {
     liveSessionStore,
@@ -67,8 +71,12 @@
   let probeCommands = $state<SessionCommand[]>([]);
   let models = $state<SessionModel[]>([]);
   let drawerOpen = $state(false);
-  /** Guards the once-per-page catalog fetch. */
-  let catalogRequested = $state(false);
+  /** Guards the once-per-page preflight. */
+  let preflightRequested = $state(false);
+  /** The tool the loaded catalog belongs to — the catalog is per CLI. */
+  let catalogTool = $state<SessionToolId | null>(null);
+  /** The catalog probe's own complaint, e.g. Codex not being wired up yet. */
+  let catalogError = $state('');
   let openedId = $state<string | null>(null);
 
   // --- the composer's pills, remembered across restarts --------------------
@@ -76,6 +84,7 @@
   let model = $state<string | null>(readRemembered(LAST_MODEL_KEY));
   let effort = $state<string | null>(readRemembered(LAST_EFFORT_KEY));
   let permissionMode = $state<PermissionMode>('prompt');
+  let tool = $state<SessionToolId>(readRememberedTool());
   let companySeeded = $state(false);
   let modelSeeded = $state(false);
 
@@ -95,10 +104,10 @@
     if (openedId) liveSessionStore.close(openedId);
   });
 
-  /** Preflight + the CLI catalog: both wanted once per page, both best-effort. */
+  /** Preflight: wanted once per page, best-effort. */
   $effect(() => {
-    if (catalogRequested) return;
-    catalogRequested = true;
+    if (preflightRequested) return;
+    preflightRequested = true;
     preflightLoading = true;
     void liveSessionStore
       .preflight()
@@ -111,16 +120,35 @@
       .finally(() => {
         preflightLoading = false;
       });
+  });
+
+  /**
+   * The slash-command + model catalog, refetched whenever the tool pill moves:
+   * Claude and Codex do not share a command list or a model list, and showing
+   * one CLI's models while the other is selected would offer a model the
+   * session could never start with.
+   */
+  $effect(() => {
+    const wanted = tool;
+    if (catalogTool === wanted) return;
+    catalogTool = wanted;
+    catalogError = '';
     void liveSessionStore
-      .slashCommands('claude')
+      .slashCommands(wanted)
       .then((catalog) => {
         probeCommands = catalog.commands;
         models = readSessionModels(catalog.models);
+        modelSeeded = false;
       })
       // A missing catalog costs autocomplete and a rich model list, never the
       // session — the composer falls back and still sends whatever was typed.
-      .catch(() => {
+      // The backend's own words are kept: "In-app Codex sessions aren't
+      // supported yet" is the useful half of this failure.
+      .catch((err: unknown) => {
+        probeCommands = [];
         models = readSessionModels([]);
+        modelSeeded = false;
+        catalogError = err instanceof Error ? err.message : String(err);
       });
   });
 
@@ -190,7 +218,7 @@
 
   const title = $derived(
     sessionId && summary
-      ? `${summary.company ?? 'No company'} · ${shortModel(summary.model)}`
+      ? `${summary.company ?? 'No company'} · ${friendlyModel(summary.model)}`
       : sessionId
         ? 'Session'
         : 'New session',
@@ -252,13 +280,15 @@
     return '';
   });
 
-  const notice = $derived(blocker || actionError || liveSessionStore.error);
+  const notice = $derived(blocker || actionError || catalogError || liveSessionStore.error);
   const ended = $derived(phase === 'ended' || transcript.ended);
   const sendDisabled = $derived(Boolean(blocker) || starting || ended);
 
   const hqFolder = $derived(basename(preflight?.hqRoot ?? ''));
-  const sessionShort = $derived(sessionId ? sessionId.slice(0, 8) : '');
-  const usageLabel = $derived(transcript.lastUsage?.label ?? '');
+  // The session id, the token counts and the turn cost are deliberately NOT
+  // rendered — the store still carries them (`transcript.lastUsage`), the
+  // composer's footer just is not where telemetry belongs.
+  const resolvedModel = $derived(summary?.model ?? null);
 
   function basename(path: string): string {
     if (!path) return '';
@@ -266,10 +296,9 @@
     return parts[parts.length - 1] ?? '';
   }
 
-  /** "claude-fable-5-1[1m]" is not a title. Prefer the catalog's own label. */
-  function shortModel(value: string | null): string {
-    if (!value) return 'default model';
-    return models.find((entry) => entry.value === value)?.label ?? value;
+  /** "claude-fable-5-1[1m]" is not a title. The strip says what a person would. */
+  function friendlyModel(value: string | null): string {
+    return friendlyModelName(value) || 'default model';
   }
 
   function specFrom(resume: string | null = null): SessionSpec {
@@ -277,7 +306,7 @@
       // Empty id asks the backend to mint one; `cwd` is likewise the backend's
       // (it always runs from the HQ root) but the shape carries both.
       sessionId: '',
-      tool: 'claude',
+      tool,
       cwd: '',
       company,
       model,
@@ -372,6 +401,12 @@
     effort = next;
     remember(LAST_EFFORT_KEY, effort);
   }
+
+  function chooseTool(next: SessionToolId) {
+    markPillsDirty(next !== tool);
+    tool = next;
+    remember(LAST_TOOL_KEY, next);
+  }
 </script>
 
 <div class="sessions" data-testid="sessions-page">
@@ -435,17 +470,19 @@
       {company}
       {models}
       {model}
+      {resolvedModel}
       {effort}
       {permissionMode}
+      {tool}
+      codexAvailable={preflight?.codexAvailable ?? false}
       {newSessionPending}
       {hqFolder}
-      {sessionShort}
-      {usageLabel}
       onsend={(text, images) => void handleSend(text, images)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}
       onmodel={chooseModel}
       oneffort={chooseEffort}
+      ontool={chooseTool}
       onpermission={(mode) => {
         markPillsDirty(mode !== permissionMode);
         permissionMode = mode;

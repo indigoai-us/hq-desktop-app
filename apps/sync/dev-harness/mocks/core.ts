@@ -1380,12 +1380,34 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'checkpoint', description: 'Write a checkpoint and continue' },
       { name: 'plan', description: 'Plan the work first', argumentHint: '<goal>' },
     ],
+    // The exact shape the real CLI handshake sends, descriptions included —
+    // the model menu renders the first sentence of each as its subline.
     models: [
-      { value: 'default', displayName: 'Default (recommended)', description: 'Use the default model' },
-      { value: 'opus[1m]', displayName: 'Opus (1M context)' },
-      { value: 'claude-fable-5-1[1m]', displayName: 'Fable' },
-      { value: 'sonnet', displayName: 'Sonnet' },
-      { value: 'haiku', displayName: 'Haiku' },
+      {
+        value: 'default',
+        displayName: 'Default (recommended)',
+        description: 'Use the default model (currently Opus 5 (1M context))',
+      },
+      {
+        value: 'opus[1m]',
+        displayName: 'Opus (1M context)',
+        description: 'Most capable for your hardest and longest-running tasks. Slower.',
+      },
+      {
+        value: 'claude-fable-5-1[1m]',
+        displayName: 'Fable',
+        description: 'Fast and sharp for everyday work. A good default for coding.',
+      },
+      {
+        value: 'claude-sonnet-4-6',
+        displayName: 'Sonnet',
+        description: 'Balanced speed and depth.',
+      },
+      {
+        value: 'claude-haiku-4-5',
+        displayName: 'Haiku',
+        description: 'Fastest and cheapest for simple, well-scoped tasks.',
+      },
     ],
   }),
   agent_session_list: () => [

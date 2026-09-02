@@ -1,30 +1,51 @@
 <script lang="ts">
   /**
-   * The composer — one rounded bar that is also the whole setup screen.
+   * The composer — one rounded box that is also the whole setup screen.
    *
-   * There is no "start a session" form anywhere in this surface: company,
-   * model, effort and permission mode are PILLS on the bar itself, so the
-   * first thing a user does is type, not fill in a wizard. Changing a pill
+   * TWO ROWS, like the Claude Code desktop composer: the text on top, every
+   * control on a single baseline underneath it. Nothing sits beside the
+   * textarea, because a control parked next to the caret is a control the eye
+   * has to step over on the way to the next word.
+   *
+   * There is no "start a session" form anywhere in this surface: tool,
+   * company, model, effort and permission mode are PILLS on the bottom row, so
+   * the first thing a user does is type, not fill in a wizard. Changing a pill
    * mid-session is legal — it simply describes the session the NEXT send will
    * belong to, and the bar says so rather than silently doing something else.
    *
    * Sending WHILE the agent is working is allowed on purpose — that is
    * steering, and the backend accepts a mid-turn user line. So `working` never
-   * disables the textarea; it only turns the send arrow into Stop.
+   * disables the textarea; it only turns the send arrow into a stop.
+   *
+   * The menus are absolutely positioned against their own pill INSIDE this
+   * box, never portalled and never rendered in the transcript's scroll
+   * container — a popover that opens upward out of a scrolling ancestor is a
+   * popover with its top sliced off.
    *
    * All autocomplete decisions come from the pure helpers in
-   * `./slash-commands`; this component owns only the DOM and the keyboard.
+   * `./slash-commands`, and every model name comes from `./session-models`;
+   * this component owns only the DOM and the keyboard.
    */
   import { onMount } from 'svelte';
   import { filterSlashCommands, applySlashCommand } from './slash-commands';
   import type { SessionCommand } from './session-events';
-  import type { ComposerImage, SessionModel } from './session-models';
-  import { EFFORT_OPTIONS } from './session-models';
+  import type { ComposerImage, SessionModel, SessionToolId } from './session-models';
+  import {
+    EFFORT_OPTIONS,
+    TOOL_OPTIONS,
+    firstSentence,
+    modelPillLabel,
+    modelRowLabel,
+    selectableModels,
+  } from './session-models';
 
   interface CompanyOption {
     slug: string;
     displayName: string;
   }
+
+  /** Which pill's popover is open. One at a time — they share the same row. */
+  type MenuName = 'permission' | 'company' | 'tool' | 'model' | 'effort';
 
   interface Props {
     /** Merged slash-command catalog (probe + the session's own `started` list). */
@@ -33,7 +54,7 @@
     working?: boolean;
     /** True when nothing can be sent at all (no CLI, ended session). */
     disabled?: boolean;
-    /** A blocking preflight problem with its exact remedy. One line, above the bar. */
+    /** A blocking preflight problem with its exact remedy. One line, above the box. */
     notice?: string;
     placeholder?: string;
     /** Take the caret on mount — the composer IS this page's primary control. */
@@ -44,18 +65,19 @@
     models?: SessionModel[];
     /** The selected model's `value` (`null` = the CLI's own default). */
     model?: string | null;
+    /** The model the live session actually resolved, from `started`. */
+    resolvedModel?: string | null;
     effort?: string | null;
     permissionMode?: 'prompt' | 'bypassAll';
+    tool?: SessionToolId;
+    /** Preflight says the Codex CLI is on this machine. */
+    codexAvailable?: boolean;
 
     /** The pills now describe a DIFFERENT session than the live one. */
     newSessionPending?: boolean;
 
-    /** Footer: the HQ folder's basename. */
+    /** Footer: the HQ folder's basename. The whole footer. */
     hqFolder?: string;
-    /** Footer: a short form of the live session id. */
-    sessionShort?: string;
-    /** Footer: the last turn's cost, e.g. "2 in · 17 out · $0.68". */
-    usageLabel?: string;
 
     onsend?: (text: string, images: ComposerImage[]) => void;
     onstop?: () => void;
@@ -63,6 +85,7 @@
     onmodel?: (value: string | null) => void;
     oneffort?: (value: string | null) => void;
     onpermission?: (mode: 'prompt' | 'bypassAll') => void;
+    ontool?: (tool: SessionToolId) => void;
   }
 
   let {
@@ -76,18 +99,20 @@
     company = null,
     models = [],
     model = null,
+    resolvedModel = null,
     effort = null,
     permissionMode = 'prompt',
+    tool = 'claude',
+    codexAvailable = false,
     newSessionPending = false,
     hqFolder = '',
-    sessionShort = '',
-    usageLabel = '',
     onsend,
     onstop,
     oncompany,
     onmodel,
     oneffort,
     onpermission,
+    ontool,
   }: Props = $props();
 
   let draft = $state('');
@@ -99,6 +124,7 @@
   /** Dismissed with Escape; re-armed as soon as the draft changes. */
   let suppressed = $state(false);
   let lastDraft = $state('');
+  let openMenu = $state<MenuName | null>(null);
 
   const matches = $derived(suppressed ? [] : filterSlashCommands(draft, commands));
   const menuOpen = $derived(matches.length > 0);
@@ -109,20 +135,28 @@
   /**
    * A live session can report a model the catalog does not list (an older
    * session, a probe that failed). Carry it as its own option rather than
-   * silently showing a different model's name on the pill.
+   * silently offering a menu the current selection is missing from.
    */
-  const modelOptions = $derived(
-    model !== null && !models.some((entry) => entry.value === model)
-      ? [...models, { value: model, label: model }]
-      : models,
-  );
-  const modelLabel = $derived(
-    modelOptions.find((entry) => entry.value === model)?.label ??
-      modelOptions[0]?.label ??
-      'Default',
-  );
+  const pickable = $derived.by(() => {
+    const offered = selectableModels(models);
+    if (model !== null && !offered.some((entry) => entry.value === model)) {
+      return [...offered, { value: model, label: model } satisfies SessionModel];
+    }
+    return offered;
+  });
+
+  const modelLabel = $derived(modelPillLabel(models, model, resolvedModel));
   const effortLabel = $derived(
     EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'Auto',
+  );
+  const companyLabel = $derived(
+    companies.find((option) => option.slug === company)?.displayName ?? company ?? 'Company',
+  );
+  const permissionLabel = $derived(
+    permissionMode === 'bypassAll' ? 'Bypass permissions' : 'Prompt for permissions',
+  );
+  const toolOption = $derived(
+    TOOL_OPTIONS.find((option) => option.value === tool) ?? TOOL_OPTIONS[0],
   );
   const canSend = $derived(!disabled && draft.trim().length > 0);
 
@@ -130,7 +164,7 @@
     if (autofocus) textarea?.focus();
     // Measure again once styles have certainly landed. The first pass can run
     // against an unstyled textarea — dev-mode CSS is injected asynchronously —
-    // which reports a scrollHeight at the clamp and pins the bar open at its
+    // which reports a scrollHeight at the clamp and pins the box open at its
     // maximum height on first paint.
     requestAnimationFrame(autosize);
   });
@@ -159,6 +193,24 @@
     suppressed = false;
     highlighted = 0;
   });
+
+  function toggleMenu(name: MenuName, event: MouseEvent) {
+    // Without this the window listener below would close the menu the same
+    // click just opened.
+    event.stopPropagation();
+    openMenu = openMenu === name ? null : name;
+  }
+
+  function closeMenus() {
+    openMenu = null;
+  }
+
+  function onWindowKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && openMenu !== null) {
+      openMenu = null;
+      textarea?.focus();
+    }
+  }
 
   function pick(command: SessionCommand) {
     draft = applySlashCommand(draft, command);
@@ -261,6 +313,8 @@
   }
 </script>
 
+<svelte:window onclick={closeMenus} onkeydown={onWindowKeydown} />
+
 <div class="composer" data-testid="session-composer">
   {#if notice}
     <p class="composer-notice" role="alert" data-testid="session-composer-notice">{notice}</p>
@@ -298,7 +352,7 @@
     </ul>
   {/if}
 
-  <div class="bar">
+  <div class="box">
     {#if attached.length > 0}
       <ul class="attachments" data-testid="session-composer-attachments">
         {#each attached as image (image.name)}
@@ -316,33 +370,7 @@
       </ul>
     {/if}
 
-    <div class="bar-main">
-      <button
-        type="button"
-        class="icon-button attach"
-        aria-label="Attach an image"
-        data-testid="session-composer-attach"
-        onclick={() => fileInput?.click()}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M10.6 4.2 5.5 9.3a1.7 1.7 0 0 0 2.4 2.4l5.1-5.1a3.1 3.1 0 0 0-4.4-4.4L3.3 7.5a4.5 4.5 0 0 0 6.4 6.4l4.1-4.1"
-            stroke="currentColor"
-            stroke-width="1.2"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
-      <input
-        bind:this={fileInput}
-        class="file-input"
-        type="file"
-        accept="image/*"
-        multiple
-        data-testid="session-composer-file"
-        onchange={onFiles}
-      />
-
+    <div class="text-row">
       <textarea
         bind:this={textarea}
         bind:value={draft}
@@ -353,109 +381,276 @@
         data-testid="session-composer-input"
         onkeydown={onKeydown}
       ></textarea>
+      {#if canSend && !working}
+        <span class="enter-hint" aria-hidden="true">⏎</span>
+      {/if}
+    </div>
 
-      <div class="pills">
-        {#if companies.length > 0}
-          <label class="pill" data-testid="session-pill-company">
-            <span class="sr-only">Company</span>
-            <select
-              value={company ?? ''}
-              onchange={(event) => oncompany?.(event.currentTarget.value || null)}
-            >
-              {#each companies as option (option.slug)}
-                <option value={option.slug}>{option.displayName}</option>
-              {/each}
-            </select>
-            <span class="pill-face">{
-              companies.find((c) => c.slug === company)?.displayName ?? 'Company'
-            }</span>
-          </label>
-        {/if}
-
-        <label class="pill" data-testid="session-pill-model">
-          <span class="sr-only">Model</span>
-          <select
-            value={model ?? ''}
-            onchange={(event) => onmodel?.(event.currentTarget.value || null)}
+    <div class="controls" data-testid="session-composer-controls">
+      <div class="cluster">
+        <div class="pill-wrap">
+          <button
+            type="button"
+            class="pill subtle"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'permission'}
+            data-testid="session-pill-permission"
+            onclick={(event) => toggleMenu('permission', event)}
           >
-            {#each modelOptions as option (option.value ?? '@default')}
-              <option value={option.value ?? ''}>{option.label}</option>
-            {/each}
-          </select>
-          <span class="pill-face">{modelLabel}</span>
-        </label>
+            <span class="pill-face">{permissionLabel}</span>
+            <span class="chev" aria-hidden="true">⌄</span>
+          </button>
+          {#if openMenu === 'permission'}
+            <div class="menu" role="menu" data-testid="session-menu-permission">
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={permissionMode === 'prompt'}
+                class="menu-item"
+                class:selected={permissionMode === 'prompt'}
+                onclick={() => {
+                  onpermission?.('prompt');
+                  closeMenus();
+                }}
+              >
+                <span class="menu-label">Prompt for permissions</span>
+                <span class="menu-sub">Ask before each tool runs</span>
+              </button>
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={permissionMode === 'bypassAll'}
+                class="menu-item"
+                class:selected={permissionMode === 'bypassAll'}
+                onclick={() => {
+                  onpermission?.('bypassAll');
+                  closeMenus();
+                }}
+              >
+                <span class="menu-label">Bypass permissions</span>
+                <span class="menu-sub">Run every tool without asking</span>
+              </button>
+            </div>
+          {/if}
+        </div>
 
-        <label class="pill" data-testid="session-pill-effort">
-          <span class="sr-only">Effort</span>
-          <select
-            value={effort ?? ''}
-            onchange={(event) => oneffort?.(event.currentTarget.value || null)}
-          >
-            {#each EFFORT_OPTIONS as option (option.value ?? '@auto')}
-              <option value={option.value ?? ''}>{option.label}</option>
-            {/each}
-          </select>
-          <span class="pill-face">{effortLabel}</span>
-        </label>
-
-        <label class="pill subtle" data-testid="session-pill-permission">
-          <span class="sr-only">Permission mode</span>
-          <select
-            value={permissionMode}
-            onchange={(event) =>
-              onpermission?.(event.currentTarget.value === 'bypassAll' ? 'bypassAll' : 'prompt')}
-          >
-            <option value="prompt">Prompt</option>
-            <option value="bypassAll">Bypass</option>
-          </select>
-          <span class="pill-face">{permissionMode === 'bypassAll' ? 'Bypass' : 'Prompt'}</span>
-        </label>
-      </div>
-
-      {#if working}
         <button
           type="button"
-          class="go stop"
-          aria-label="Stop"
-          data-testid="session-composer-stop"
-          onclick={() => onstop?.()}
+          class="icon-button attach"
+          aria-label="Attach an image"
+          data-testid="session-composer-attach"
+          onclick={() => fileInput?.click()}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="7" height="7" rx="1.4" fill="currentColor" />
-          </svg>
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="go"
-          aria-label="Send"
-          disabled={!canSend}
-          data-testid="session-composer-send"
-          onclick={submit}
-        >
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path
-              d="M7 11.5v-9M3.2 6.3 7 2.5l3.8 3.8"
+              d="M7 2.4v9.2M2.4 7h9.2"
               stroke="currentColor"
-              stroke-width="1.5"
+              stroke-width="1.3"
               stroke-linecap="round"
-              stroke-linejoin="round"
             />
           </svg>
         </button>
-      {/if}
+        <input
+          bind:this={fileInput}
+          class="file-input"
+          type="file"
+          accept="image/*"
+          multiple
+          data-testid="session-composer-file"
+          onchange={onFiles}
+        />
+
+        {#if companies.length > 0}
+          <div class="pill-wrap">
+            <button
+              type="button"
+              class="pill"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === 'company'}
+              data-testid="session-pill-company"
+              onclick={(event) => toggleMenu('company', event)}
+            >
+              <span class="pill-face">{companyLabel}</span>
+              <span class="chev" aria-hidden="true">⌄</span>
+            </button>
+            {#if openMenu === 'company'}
+              <div class="menu" role="menu" data-testid="session-menu-company">
+                {#each companies as option (option.slug)}
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={option.slug === company}
+                    class="menu-item"
+                    class:selected={option.slug === company}
+                    onclick={() => {
+                      oncompany?.(option.slug);
+                      closeMenus();
+                    }}
+                  >
+                    <span class="menu-label">{option.displayName}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="cluster right">
+        <div class="pill-wrap">
+          <button
+            type="button"
+            class="pill"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'tool'}
+            data-testid="session-pill-tool"
+            onclick={(event) => toggleMenu('tool', event)}
+          >
+            <span class="glyph" aria-hidden="true">{toolOption.glyph}</span>
+            <span class="pill-face">{toolOption.label}</span>
+            <span class="chev" aria-hidden="true">⌄</span>
+          </button>
+          {#if openMenu === 'tool'}
+            <div class="menu menu-right" role="menu" data-testid="session-menu-tool">
+              {#each TOOL_OPTIONS as option (option.value)}
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === tool}
+                  class="menu-item"
+                  class:selected={option.value === tool}
+                  disabled={option.value === 'codex' && !codexAvailable}
+                  onclick={() => {
+                    ontool?.(option.value);
+                    closeMenus();
+                  }}
+                >
+                  <span class="menu-label">
+                    <span class="glyph" aria-hidden="true">{option.glyph}</span>
+                    {option.label}
+                  </span>
+                  {#if option.value === 'codex' && !codexAvailable}
+                    <span class="menu-sub">not installed</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div class="pill-wrap">
+          <button
+            type="button"
+            class="pill"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'model'}
+            data-testid="session-pill-model"
+            onclick={(event) => toggleMenu('model', event)}
+          >
+            <span class="pill-face">{modelLabel}</span>
+            <span class="chev" aria-hidden="true">⌄</span>
+          </button>
+          {#if openMenu === 'model'}
+            <div class="menu menu-right menu-wide" role="menu" data-testid="session-menu-model">
+              {#each pickable as option (option.value)}
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === model}
+                  class="menu-item"
+                  class:selected={option.value === model}
+                  data-testid="session-menu-model-item"
+                  onclick={() => {
+                    onmodel?.(option.value);
+                    closeMenus();
+                  }}
+                >
+                  <span class="menu-label">{modelRowLabel(option)}</span>
+                  {#if firstSentence(option.description)}
+                    <span class="menu-sub">{firstSentence(option.description)}</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div class="pill-wrap">
+          <button
+            type="button"
+            class="pill"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'effort'}
+            data-testid="session-pill-effort"
+            onclick={(event) => toggleMenu('effort', event)}
+          >
+            <span class="pill-face">{effortLabel}</span>
+            <span class="chev" aria-hidden="true">⌄</span>
+          </button>
+          {#if openMenu === 'effort'}
+            <div class="menu menu-right" role="menu" data-testid="session-menu-effort">
+              {#each EFFORT_OPTIONS as option (option.value ?? '@auto')}
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === effort}
+                  class="menu-item"
+                  class:selected={option.value === effort}
+                  onclick={() => {
+                    oneffort?.(option.value);
+                    closeMenus();
+                  }}
+                >
+                  <span class="menu-label">{option.label}</span>
+                  {#if option.value === null}
+                    <span class="menu-sub">Let the model decide</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if working}
+          <button
+            type="button"
+            class="go stop"
+            aria-label="Stop"
+            data-testid="session-composer-stop"
+            onclick={() => onstop?.()}
+          >
+            <span class="spinner" aria-hidden="true"></span>
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1.2" fill="currentColor" />
+            </svg>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="go"
+            aria-label="Send"
+            disabled={!canSend}
+            data-testid="session-composer-send"
+            onclick={submit}
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path
+                d="M7 11.5v-9M3.2 6.3 7 2.5l3.8 3.8"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 
   <div class="footer">
     {#if hqFolder}
       <span class="foot-pill" data-testid="session-foot-folder">{hqFolder}</span>
-    {/if}
-    {#if sessionShort}
-      <span class="foot-pill" data-testid="session-foot-id">{sessionShort}</span>
-    {/if}
-    {#if usageLabel}
-      <span class="foot-pill usage" data-testid="session-foot-usage">{usageLabel}</span>
     {/if}
     {#if newSessionPending}
       <span class="foot-note" data-testid="session-new-session-hint">
@@ -494,33 +689,34 @@
     line-height: 1.5;
   }
 
-  /* --- the bar ---------------------------------------------------------- */
+  /* --- the box ---------------------------------------------------------- */
 
-  .bar {
+  .box {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 6px 8px;
+    gap: 2px;
+    padding: 8px 8px 6px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 20px;
+    border-radius: 18px;
     background: var(--v4-raised);
   }
 
-  .bar:focus-within {
+  .box:focus-within {
     border-color: var(--v4-control-border, var(--v4-hairline));
   }
 
-  .bar-main {
+  .text-row {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: 6px;
+    padding: 0 4px;
   }
 
   .composer-input {
     flex: 1;
     min-width: 0;
     max-height: 200px;
-    padding: 6px 2px;
+    padding: 2px 0 4px;
     resize: none;
     border: 0;
     outline: none;
@@ -535,8 +731,38 @@
     color: var(--v4-text-3);
   }
 
+  .enter-hint {
+    flex: none;
+    padding-top: 3px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--v4-text-3);
+  }
+
   .file-input {
     display: none;
+  }
+
+  /* --- the control row -------------------------------------------------- */
+
+  .controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-height: 32px;
+  }
+
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .cluster.right {
+    flex: none;
+    gap: 1px;
   }
 
   .icon-button {
@@ -560,26 +786,31 @@
 
   /* --- pills ------------------------------------------------------------ */
 
-  .pills {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    flex: none;
+  .pill-wrap {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
   }
 
   .pill {
-    position: relative;
     display: inline-flex;
     align-items: center;
-    height: 24px;
-    padding: 0 8px;
+    gap: 3px;
+    height: 26px;
+    max-width: 190px;
+    padding: 0 7px;
+    border: 0;
     border-radius: var(--v4-radius-pill);
+    background: transparent;
     color: var(--v4-text-2);
+    font-family: inherit;
     font-size: var(--type-metadata);
+    line-height: 1;
     cursor: pointer;
   }
 
-  .pill:hover {
+  .pill:hover,
+  .pill[aria-expanded='true'] {
     background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
@@ -588,43 +819,125 @@
     color: var(--v4-text-3);
   }
 
-  .pill select {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    opacity: 0;
-    border: 0;
-    cursor: pointer;
-    font: inherit;
-  }
-
   .pill-face {
-    pointer-events: none;
-    max-width: 130px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .sr-only {
+  .glyph {
+    flex: none;
+    opacity: 0.7;
+  }
+
+  /* The chevron is quiet until the pill is hovered or open — Claude's own
+     restraint: a row of five permanent carets reads as a toolbar, not a line
+     of words. */
+  .chev {
+    flex: none;
+    font-size: 10px;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity 90ms ease-out;
+  }
+
+  .pill:hover .chev,
+  .pill:focus-visible .chev,
+  .pill[aria-expanded='true'] .chev {
+    opacity: 0.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chev {
+      transition: none;
+    }
+  }
+
+  /* --- popovers --------------------------------------------------------- */
+
+  .menu {
     position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 180px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-popover-strong, var(--v4-popover, var(--v4-raised)));
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    box-shadow: var(--v4-shadow-popover, none);
+  }
+
+  .menu-right {
+    left: auto;
+    right: 0;
+  }
+
+  .menu-wide {
+    min-width: 260px;
+  }
+
+  .menu-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-1);
+    font-family: inherit;
+    font-size: var(--type-metadata);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .menu-item:hover:not(:disabled) {
+    background: var(--v4-active-row);
+  }
+
+  .menu-item:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .menu-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 600;
+  }
+
+  .menu-item.selected .menu-label {
+    color: var(--v4-text-1);
+  }
+
+  .menu-sub {
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   /* --- send / stop ------------------------------------------------------ */
 
   .go {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: none;
     width: 28px;
     height: 28px;
+    margin-left: 4px;
     border: 0;
     border-radius: 50%;
     background: var(--v4-primary-bg);
@@ -642,14 +955,37 @@
     color: var(--v4-text-1);
   }
 
+  .spinner {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.5px solid transparent;
+    border-top-color: currentColor;
+    opacity: 0.7;
+    animation: composer-spin 900ms linear infinite;
+  }
+
+  @keyframes composer-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+      opacity: 0.35;
+    }
+  }
+
   /* --- attachments ------------------------------------------------------ */
 
   .attachments {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin: 0;
-    padding: 0 0 0 32px;
+    margin: 0 0 2px;
+    padding: 0 4px;
     list-style: none;
   }
 
@@ -667,6 +1003,9 @@
 
   /* --- footer ----------------------------------------------------------- */
 
+  /* The whole footer is the HQ folder's name. The session id, the token counts
+     and the turn cost were removed on the owner's call: they are telemetry, and
+     telemetry under the caret is noise. The store still carries all three. */
   .footer {
     display: flex;
     flex-wrap: wrap;

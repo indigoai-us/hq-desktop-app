@@ -151,8 +151,9 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('onopensession?.(started)');
   });
 
-  it('keeps company / model / effort / permission as composer pills', () => {
+  it('keeps tool / company / model / effort / permission as composer pills', () => {
     for (const testid of [
+      'session-pill-tool',
       'session-pill-company',
       'session-pill-model',
       'session-pill-effort',
@@ -161,6 +162,59 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
       expect(COMPOSER, `composer is missing the ${testid} pill`).toContain(testid);
     }
     expect(COMPOSER).toContain("placeholder = 'Do anything…'");
+  });
+
+  it('parks every control on its own row BELOW the text, Claude-style', () => {
+    // The owner's verdict on the one-row bar: "move the controls to the bottom
+    // like how Claude Code has them". The mounted proof is in
+    // src/components/sessions/SessionComposer.test.ts; this pins the ordering
+    // in the markup so the row cannot drift back up beside the caret.
+    const textAt = COMPOSER.indexOf('data-testid="session-composer-input"');
+    const controlsAt = COMPOSER.indexOf('data-testid="session-composer-controls"');
+    expect(textAt).toBeGreaterThan(-1);
+    expect(controlsAt).toBeGreaterThan(textAt);
+    // Both live inside the same rounded box.
+    expect(COMPOSER).toContain('class="box"');
+  });
+
+  it('leaves nothing under the box but the HQ folder', () => {
+    // "remove all the text below the text box except hq (thread id, in/out,
+    // money etc)". The store still carries the usage — the footer just is not
+    // where it belongs.
+    expect(COMPOSER).toContain('session-foot-folder');
+    expect(COMPOSER).not.toContain('session-foot-id');
+    expect(COMPOSER).not.toContain('session-foot-usage');
+    expect(COMPOSER).not.toContain('usageLabel');
+    expect(PAGE).not.toContain('sessionShort');
+    expect(PAGE).not.toContain('usageLabel');
+  });
+
+  it('picks a model by friendly name, never by raw id or the word "Default"', () => {
+    const MODELS = read('src/components/sessions/session-models.ts');
+    expect(MODELS).toContain('export function friendlyModelName');
+    expect(MODELS).toContain('export function selectableModels');
+    expect(COMPOSER).toContain('modelPillLabel');
+    expect(COMPOSER).toContain('session-menu-model');
+    // The pill's own <select> overlay is gone: menus are anchored popovers so
+    // they cannot be clipped by the transcript's scroll container.
+    expect(COMPOSER).not.toContain('<select');
+    expect(COMPOSER).toContain('bottom: calc(100% + 6px)');
+    // The strip names the model the same way the pill does.
+    expect(PAGE).toContain('friendlyModelName');
+  });
+
+  it('carries the tool choice into the spec and refetches that CLI’s catalog', () => {
+    expect(PAGE).toContain('LAST_TOOL_KEY');
+    expect(PAGE).toContain('.slashCommands(wanted)');
+    expect(PAGE).toContain('function chooseTool');
+    expect(PAGE).toContain('codexAvailable');
+    // `tool` is the page's state, not a hard-coded literal in the spec.
+    const spec = PAGE.slice(PAGE.indexOf('function specFrom'));
+    expect(spec.slice(0, spec.indexOf('\n  }'))).not.toContain("tool: 'claude'");
+    // A rejected Codex probe surfaces in the one notice line, and the pill
+    // stays selectable.
+    expect(PAGE).toContain('catalogError');
+    expect(PAGE).toContain('blocker || actionError || catalogError');
   });
 
   it('remembers the last company under the agreed localStorage key', () => {
