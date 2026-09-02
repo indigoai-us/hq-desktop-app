@@ -9,6 +9,7 @@
    */
   import { onMount, untrack } from "svelte";
 
+  import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -768,7 +769,7 @@
           {#if root.body?.trim()}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="reply-md"
+              class="reply-md msg-body"
               onclick={(e) => {
                 if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
@@ -911,7 +912,7 @@
               {#if msg.body?.trim()}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="reply-md"
+                  class="reply-md msg-body"
                   onclick={(e) => {
                     if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);
@@ -1165,6 +1166,7 @@
     display: grid;
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
+    align-items: start;
     padding: 12px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
   }
@@ -1205,6 +1207,7 @@
   .reply-author {
     font-size: 13px;
     font-weight: 700;
+    line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
   }
 
@@ -1274,7 +1277,25 @@
     overflow-wrap: anywhere;
   }
 
+  /* Same first/last/p collapse as .dm-bubble-body — UA <p> margin was the
+     extra name→body line in the thread panel. */
+  .reply-md > :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .reply-md > :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .reply-md :global(p) {
+    margin: var(--msg-body-p-margin, 0.375rem 0);
+    color: inherit;
+  }
+
   .reply-root-label {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
@@ -1318,6 +1339,15 @@
     align-items: start;
     padding: 5px 8px;
     border-radius: 6px;
+  }
+
+  .reply-avatar {
+    display: grid;
+    place-items: start center;
+    flex: 0 0 36px;
+    width: 36px;
+    min-height: 1px;
+    padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
   .reply-row:hover {
@@ -1392,13 +1422,15 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0;
   }
 
   .reply-meta {
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
+    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    min-width: 0;
   }
 
   .reply-send-state {
