@@ -29,6 +29,7 @@
   import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
   import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
+import SessionsPage from './pages/SessionsPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
@@ -254,6 +255,13 @@
   let hqFolderPath = $state<string | null>(null);
   // `realtimeSync` preference (auto-sync cadence in Home's meta line).
   let autoSyncOn = $state<boolean | null>(null);
+  // In-app Claude Code sessions (MenubarPrefs.inAppSessions). The Rust-side
+  // `HQ_DEV_IN_APP_SESSIONS=1` escape hatch is read in the backend only and
+  // never reaches the webview, so a dev build shows the palette entry too —
+  // otherwise the flag would be unreachable from the UI on the very machine
+  // that enabled it.
+  let inAppSessionsOn = $state(false);
+  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
   let statsBySlug = $state<Record<string, WorkspaceSyncStats>>({});
   let activity = $state<ActivityEntry[]>([]);
   let status = $state<SyncStatus | null>(null);
@@ -429,6 +437,18 @@
       detail: 'Live + historical view of running agent sessions',
       action: () => navigate({ kind: 'mission-control' }),
     },
+    // Flagged surface (inAppSessions), palette-only like Mission Control — it
+    // has no sidebar row in the V4 IA.
+    ...(sessionsEnabled
+      ? [
+          {
+            id: 'command-go-sessions',
+            label: 'Go to Sessions',
+            detail: 'Run a Claude Code session inside the app',
+            action: () => navigate({ kind: 'sessions' }),
+          },
+        ]
+      : []),
     {
       id: 'command-go-inbox',
       label: 'Go to Inbox',
@@ -1259,9 +1279,13 @@
         if (mounted) hqFolderPath = config?.hqFolderPath ?? null;
       })
       .catch(() => undefined);
-    void invoke<{ realtimeSync?: boolean | null }>('get_settings')
+    void invoke<{ realtimeSync?: boolean | null; inAppSessions?: boolean | null }>(
+      'get_settings',
+    )
       .then((settings) => {
-        if (mounted) autoSyncOn = settings.realtimeSync ?? null;
+        if (!mounted) return;
+        autoSyncOn = settings.realtimeSync ?? null;
+        inAppSessionsOn = settings.inAppSessions === true;
       })
       .catch(() => undefined);
     void invoke<HomeCoreState | null>('check_core_state')
@@ -1855,6 +1879,13 @@
                   <span>Browse the HQ files in the sidebar — or filter to a company.</span>
                 </div>
               {/if}
+            </div>
+          {:else if route.kind === 'sessions'}
+            <div class="page">
+              <SessionsPage
+                sessionId={route.id}
+                onopensession={(id) => navigate({ kind: 'sessions', id: id || undefined })}
+              />
             </div>
           {:else if activeCompany}
             <div class="page">

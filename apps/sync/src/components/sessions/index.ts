@@ -10,6 +10,11 @@ export { default as Avatar } from './Avatar.svelte';
 export { default as DayDivider } from './DayDivider.svelte';
 export { default as MessageRow } from './MessageRow.svelte';
 export { default as MessageTimeline } from './MessageTimeline.svelte';
+export { default as NewSessionPanel } from './NewSessionPanel.svelte';
+export { default as PermissionCard } from './PermissionCard.svelte';
+export { default as QuestionCard } from './QuestionCard.svelte';
+export { default as SessionComposer } from './SessionComposer.svelte';
+export { default as SessionTranscript } from './SessionTranscript.svelte';
 export { default as Skeleton } from './Skeleton.svelte';
 export { default as SystemMessageRow } from './SystemMessageRow.svelte';
 export { default as TimelineSkeleton } from './TimelineSkeleton.svelte';
@@ -75,3 +80,11 @@ export {
   foldSessionEvents,
 } from './transcript-adapter';
 export type { FoldOptions, PendingCard, TranscriptState } from './transcript-adapter';
+
+export {
+  applySlashCommand,
+  filterSlashCommands,
+  mergeSlashCommands,
+  slashQueryFor,
+} from './slash-commands';
+export type { SlashQuery } from './slash-commands';

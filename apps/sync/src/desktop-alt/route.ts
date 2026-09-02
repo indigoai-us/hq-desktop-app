@@ -150,6 +150,12 @@ export type DesktopRoute =
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
+  /**
+   * In-app Claude Code sessions (behind the `inAppSessions` flag). Palette-only
+   * navigation, like Mission Control: no sidebar row. `id` selects one live
+   * session; without it the page shows the list + its empty state.
+   */
+  | { kind: 'sessions'; id?: string }
   | { kind: 'company'; slug: string; tab?: CompanyTab };
 
 export type DesktopRouteKind = DesktopRoute['kind'];
@@ -276,6 +282,10 @@ export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
  */
 export function getDesktopRouteKey(route: DesktopRoute): string {
   if (route.kind === 'company') return `company:${route.slug}`;
+  // Sessions keys on the selected session so switching sessions remounts the
+  // page (and so re-opens the live store on the new id) rather than leaving a
+  // stale transcript on screen.
+  if (route.kind === 'sessions') return route.id ? `sessions:${route.id}` : 'sessions';
   // Files mode keys on its kind only (NOT slug/path): the FilesModeSidebar
   // handles company/file changes reactively, so switching company or file
   // inside Files mode must not remount the whole shell.
@@ -377,6 +387,12 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   if (kind === 'settings') {
     const tab = isSettingsTab(first) ? first : undefined;
     return tab ? { kind: 'settings', tab } : { kind: 'settings' };
+  }
+
+  // `sessions` / `sessions:<session-id>`. Session ids are opaque (uuids), so
+  // anything after the first ':' is taken verbatim as the id.
+  if (kind === 'sessions') {
+    return first ? { kind: 'sessions', id: first } : { kind: 'sessions' };
   }
 
   switch (normalized) {
