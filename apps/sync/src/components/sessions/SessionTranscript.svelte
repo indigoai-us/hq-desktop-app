@@ -36,6 +36,12 @@
     emptyHint?: string;
     /** Set while a decision is in flight so a card cannot double-fire. */
     busyRequestId?: string | null;
+    /**
+     * What the agent is doing while nothing new is on screen yet. Rendered as
+     * a shimmering tail line so a 10-second hook run or a long tool call never
+     * reads as a dead chat. Empty when text is streaming or a card is waiting.
+     */
+    status?: '' | 'starting' | 'thinking' | 'tools';
     onallowonce?: (requestId: string) => void;
     onallowsession?: (requestId: string) => void;
     ondenypermission?: (requestId: string, message: string) => void;
@@ -50,6 +56,7 @@
     loading = false,
     emptyHint = '',
     busyRequestId = null,
+    status = '',
     onallowonce,
     onallowsession,
     ondenypermission,
@@ -57,6 +64,37 @@
   }: Props = $props();
 
   let scroller = $state<HTMLDivElement | null>(null);
+
+  const STATUS_LABEL: Record<Exclude<Props['status'], undefined | ''>, string> = {
+    starting: 'Starting session…',
+    thinking: 'Thinking…',
+    tools: 'Working…',
+  };
+
+  /**
+   * Seconds since the current status began, shown after a short grace period
+   * so a quick turn stays quiet while a long one stays honest ("Thinking… 24s").
+   */
+  let statusSince = $state(0);
+  let statusElapsed = $state(0);
+  $effect(() => {
+    if (!status) {
+      statusElapsed = 0;
+      return;
+    }
+    statusSince = Date.now();
+    statusElapsed = 0;
+    const timer = setInterval(() => {
+      statusElapsed = Math.floor((Date.now() - statusSince) / 1000);
+    }, 1000);
+    return () => clearInterval(timer);
+  });
+  const statusLabel = $derived(status ? STATUS_LABEL[status] : '');
+  const statusTail = $derived(statusElapsed >= 4 ? `${statusElapsed}s` : '');
+  /** The adapter's own thinking tail already shimmers — never stack two. */
+  const showStatus = $derived(
+    Boolean(status) && blocks[blocks.length - 1]?.type !== 'thinking',
+  );
   /** The reader has scrolled up: stop following the stream until they return. */
   let pinned = $state(true);
 
@@ -180,6 +218,17 @@
           </div>
         {/if}
       {/each}
+      {#if showStatus}
+        <p
+          class="thinking working"
+          data-testid="session-working"
+          data-status={status}
+          role="status"
+          aria-live="polite"
+        >
+          {statusLabel}{#if statusTail}<span class="elapsed">{statusTail}</span>{/if}
+        </p>
+      {/if}
     </div>
   {/if}
 </div>
@@ -342,6 +391,13 @@
     background-clip: text;
     -webkit-text-fill-color: transparent;
     animation: think-shimmer 1.8s linear infinite;
+  }
+
+  .working .elapsed {
+    margin-left: var(--v4-space-2);
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    opacity: 0.7;
   }
 
   @keyframes think-shimmer {
