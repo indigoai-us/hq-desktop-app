@@ -35,6 +35,14 @@ export interface LiveProjectMeta {
 
 export interface LiveProjectMetaLoad {
   meta: LiveProjectMeta | null;
+  /**
+   * Whether every metadata source definitively reported absence.
+   *
+   * Informational only: ProjectMetaCache uses `retryable` to decide whether a
+   * no-metadata result is memoized. Every fulfilled non-retryable result,
+   * including an inconclusive one, must be cached so reactive readers do not
+   * repeatedly start loads.
+   */
   definitiveMiss: boolean;
   /** A transport error was observed; let the caller retry instead of caching it. */
   retryable?: boolean;
