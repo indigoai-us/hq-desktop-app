@@ -22,6 +22,7 @@
   import {
     codexAvailable,
     resolveClaudeLaunchPath,
+    SETUP_DEEP_LINK_PROMPT,
     SETUP_PROMPT,
   } from '../lib/setup-launch';
 
@@ -72,7 +73,10 @@
         await invoke('open_claude_code_link', {
           url: buildClaudeCodeUrl({
             folder: status.hqFolderPath,
-            prompt: SETUP_PROMPT,
+            // NOT SETUP_PROMPT: a deep-link folder is untrusted when Claude
+            // Desktop scans skills, so the project `/setup` skill is missing
+            // from the session the link opens.
+            prompt: SETUP_DEEP_LINK_PROMPT,
           }),
         });
       } else if (path === 'cli') {

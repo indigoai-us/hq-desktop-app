@@ -7,9 +7,22 @@
  */
 import type { AiTools } from '../../lib/onboarding-summary';
 
+/**
+ * The deep-link prompt is NOT `/setup`: Claude Desktop scans skills before a
+ * link-opened folder is trusted, so HQ's project `/setup` skill is suppressed
+ * and the pre-typed slash command lands as an unknown command. Re-exported
+ * from the shared @hq/ui constant so there is exactly one copy of that text.
+ */
+export { SETUP_DEEP_LINK_PROMPT, SETUP_SKILL_PATH } from '@hq/ui';
+
 export type ClaudeLaunchPath = 'deep-link' | 'cli' | 'none';
 
-/** The prompt pre-entered into the launched agent session. */
+/**
+ * The prompt pre-entered into a TERMINAL agent session, and the text copied
+ * to the clipboard when no tool is detected. Terminal launches settle folder
+ * trust before the skill scan, so the slash command works there.
+ * Deep links must use `SETUP_DEEP_LINK_PROMPT` instead.
+ */
 export const SETUP_PROMPT = '/setup';
 
 export function resolveClaudeLaunchPath(tools: AiTools | null): ClaudeLaunchPath {

@@ -43,6 +43,41 @@ export const SETUP_LAUNCH_COMMANDS = {
   grok: { kind: "terminal" as const, tool: "grok" as const },
 } as const;
 
+/**
+ * Relative path of the HQ setup wizard inside the HQ root. The deep-link
+ * prompt names it so a session that cannot see the skill can still read it.
+ */
+export const SETUP_SKILL_PATH = ".claude/skills/setup/SKILL.md";
+
+/**
+ * Prompt used for the Claude Code Desktop DEEP LINK, which cannot use the
+ * bare `/setup` slash command.
+ *
+ * WHY: Claude Desktop treats a folder handed to it by a `claude://` link as
+ * untrusted, and its plugin/skill scan runs before the trust dialog is
+ * accepted. HQ ships `/setup` as a project skill under `.claude/skills/`, so
+ * that scan suppresses it ("skipped because this workspace was not trusted
+ * when plugins were scanned") and the pre-filled `/setup` lands in the
+ * composer as an unknown command. The user has to accept trust and run
+ * `/reload-plugins` before the skill exists — which is exactly the step a
+ * one-click setup CTA is supposed to remove.
+ *
+ * The terminal-CLI path does NOT have this problem (trust is settled before
+ * the scan), so `SETUP_LAUNCH_COMMANDS.claude.prompt` stays `/setup` for
+ * terminal launches and clipboard copy. Only the deep link uses this text.
+ *
+ * Must never START with `/` — a leading slash is what makes Claude parse the
+ * message as a slash command in the first place.
+ */
+export const SETUP_DEEP_LINK_PROMPT = [
+  `Read ${SETUP_SKILL_PATH} in this folder and run the HQ setup wizard it ` +
+    "describes, start to finish.",
+  "Claude Desktop scans skills before a link-opened folder is trusted, so " +
+    "HQ's /setup skill is usually not registered in this session yet. " +
+    "Reading the file directly is the reliable path; accepting the trust " +
+    "dialog and then running /reload-plugins also makes /setup available.",
+].join("\n\n");
+
 export type SetupLaunchCommandKey = keyof typeof SETUP_LAUNCH_COMMANDS;
 
 export interface SetupWelcomeLink {
