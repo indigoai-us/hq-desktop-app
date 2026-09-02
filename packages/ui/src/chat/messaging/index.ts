@@ -27,5 +27,6 @@ export { default as AttachmentTray } from "./AttachmentTray.svelte";
 export { default as AttachmentPreview } from "./AttachmentPreview.svelte";
 export * from "./chat-attachments";
 export * from "./upload-chat-attachments";
+export * from "./composer-send-error";
 export * from "./attachment-preview";
 export * from "./channel-file-preview";

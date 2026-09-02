@@ -142,6 +142,7 @@
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
   import {
+    attachmentVaultScopeUid,
     chatAttachmentValidatorForPlatform,
     conversationPairKey,
   } from "../chat/messaging/chat-attachments.js";
@@ -1710,10 +1711,10 @@
   });
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
-    const fromRow = row?.companyUid?.trim();
-    if (fromRow) return fromRow;
-    const first = (companies ?? []).find((company) => company.cloudUid?.trim());
-    return first?.cloudUid?.trim() || null;
+    return attachmentVaultScopeUid({
+      row,
+      selfUid: self?.uid,
+    });
   }
 
   const channelFilePreviewContext = $derived(

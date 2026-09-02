@@ -43,6 +43,7 @@
     type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
+  import { formatComposerSendError } from "./composer-send-error";
   import {
     toggleReaction,
     type ReactionAggregate,
@@ -584,10 +585,8 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
-        attachError =
-          err instanceof Error && err.message.trim()
-            ? err.message.trim()
-            : "Could not upload the file";
+        const raw = err instanceof Error ? err.message.trim() : "";
+        attachError = formatComposerSendError(raw, true);
         sending = false;
         return;
       }

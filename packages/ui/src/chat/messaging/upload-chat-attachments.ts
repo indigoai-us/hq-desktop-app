@@ -57,8 +57,25 @@ function uploadFailureMessage(err: unknown, fileName: string): string {
   ) {
     return `Could not upload ${fileName}`;
   }
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    return formatUploadServerError(err.message, fileName);
+  }
   return `Could not upload ${fileName}`;
+}
+
+/** Friendly prefix, then the server's error text verbatim. */
+export function formatUploadServerError(
+  serverMessage: string,
+  fileName: string,
+): string {
+  const text = serverMessage.trim();
+  if (!text || /failed to fetch|networkerror|^load failed$/i.test(text)) {
+    return `Could not upload ${fileName}`;
+  }
+  if (text.startsWith("Could not upload ") || text.startsWith("Couldn't attach ")) {
+    return text;
+  }
+  return `Could not upload ${fileName}: ${text}`;
 }
 
 export async function uploadChatAttachments(opts: {
@@ -92,9 +109,10 @@ export async function uploadChatAttachments(opts: {
     );
     if (!signed.ok) {
       throw new Error(
-        /failed to fetch|networkerror|^load failed$/i.test(signed.message ?? "")
-          ? `Could not upload ${file.name}`
-          : signed.message || "Could not prepare the upload",
+        formatUploadServerError(
+          signed.message || "Could not prepare the upload",
+          file.name,
+        ),
       );
     }
     const target = presignUrlFromResult(signed.value);

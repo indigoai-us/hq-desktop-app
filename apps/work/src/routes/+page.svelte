@@ -40,6 +40,7 @@
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
+    attachmentVaultScopeUid,
   } from "@hq/ui";
   import {
     createChatSidebarApi,
@@ -434,10 +435,10 @@
   }
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
-    const fromRow = row?.companyUid?.trim();
-    if (fromRow) return fromRow;
-    const first = (companies ?? []).find((company) => company.cloudUid?.trim());
-    return first?.cloudUid?.trim() || null;
+    return attachmentVaultScopeUid({
+      row,
+      selfUid: personUid,
+    });
   }
 
   $effect(() => {
