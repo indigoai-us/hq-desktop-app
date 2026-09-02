@@ -308,6 +308,45 @@ pub(crate) fn record_auto_sync_pass_completed(totals: &RunTotals) {
     }
 }
 
+/// The watch-daemon runner process EXITED (terminal, not a per-pass boundary).
+/// A pass that reaches `AllComplete` reports through
+/// `record_auto_sync_pass_completed`; this seam exists for the passes that
+/// never get there — the watcher hit auth expiry (it emits `auth-error` and
+/// exits 0 with NO `AllComplete`) or crashed mid-pass. Without it those
+/// terminal failures were invisible: `sync_run_failed` stayed false and
+/// `lastSyncSuccessAt` kept its old stamp, so the control plane read a dead
+/// watcher as healthy.
+///
+/// Discipline mirrors the manual path's Exit handling (`record_sync_run_ended`
+/// after `should_synthesize_all_complete` declines auth runs): the final
+/// partial-pass `RunTotals` classify the failure (`AUTH_EXPIRED`,
+/// `CONFLICT_BLOCKED`, `RUNNER_FAILED`, …). One asymmetry is deliberate — a
+/// genuinely clean terminal exit records NOTHING. Successes are per-pass
+/// facts owned by the `AllComplete` seam; stamping `lastSyncSuccessAt` from a
+/// process exit would credit a pass that never completed.
+///
+/// Notify is transition-gated (entering failure only): the supervisor
+/// respawns a failing watcher on every backoff interval and each respawn's
+/// exit lands here, so repeated failed passes must ride the five-minute
+/// cadence instead of heartbeating per respawn.
+pub(crate) fn record_auto_sync_watch_exited(exit_success: bool, totals: &RunTotals) {
+    if run_was_genuine_success(exit_success, totals) {
+        return;
+    }
+    let now = now_iso();
+    let transitioned = with_state(|state| {
+        let was_failed = state.sync_run_failed;
+        state.last_sync_attempt_at = Some(now.clone());
+        apply_run_outcome(state, false, totals, &now);
+        !was_failed
+    });
+    match transitioned {
+        Ok(true) => notify_client_health_state_changed(),
+        Ok(false) => {}
+        Err(e) => eprintln!("[client-health] record-watch-exit failed: {e}"),
+    }
+}
+
 /// Wire mapping of the in-memory updater ledger. `Unchecked` (has not run)
 /// and `Absent` (a successful check confirmed no update → up to date) are
 /// distinct closed values and must never collapse.
@@ -1304,6 +1343,85 @@ mod tests {
         assert_ne!(recovered.last_sync_success_at, None);
         assert!(!recovered.sync_run_failed);
         assert_eq!(recovered.consecutive_failures, 0);
+
+        std::env::remove_var("HQ_TEST_HOME");
+    }
+
+    // ── Watch-exit terminal seam — round-2 review finding ────────────────────
+
+    /// The watcher's auth-expiry path emits `auth-error` and exits 0 WITHOUT
+    /// ever reaching `AllComplete`, so the per-pass seam never fires. The
+    /// terminal watch-exit recorder must turn that into an `AUTH_EXPIRED`
+    /// failure without advancing `lastSyncSuccessAt` — before this seam the
+    /// control plane read a dead watcher as healthy forever.
+    #[test]
+    fn watch_exit_auth_error_without_all_complete_records_auth_expired() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        std::env::set_var("HQ_TEST_HOME", home.path());
+
+        // Seed a prior healthy pass so the stale-success stamp is observable.
+        record_auto_sync_pass_completed(&RunTotals::default());
+        let stamp = with_state(|s| s.last_sync_success_at.clone()).unwrap();
+        assert!(stamp.is_some());
+
+        // Auth expiry: exit 0 (success=true at the process level), partial
+        // totals carrying only the auth-error — no AllComplete ever arrived.
+        let mut auth = RunTotals::default();
+        auth.saw_auth_error = true;
+        record_auto_sync_watch_exited(true, &auth);
+
+        let after = with_state(|s| s.clone()).unwrap();
+        assert_eq!(
+            after.last_sync_success_at, stamp,
+            "auth-expired watch exit must not advance lastSyncSuccessAt"
+        );
+        assert!(after.sync_run_failed, "watch auth expiry must mark the run failed");
+        assert_eq!(after.last_failure_reason.as_deref(), Some("AUTH_EXPIRED"));
+        assert_eq!(after.consecutive_failures, 1);
+        assert_eq!(
+            derive_sync_state(false, false, &after),
+            ClientHealthSyncState::Error
+        );
+
+        std::env::remove_var("HQ_TEST_HOME");
+    }
+
+    /// A watcher that crashes mid-pass (non-zero exit, no AllComplete) must
+    /// record a terminal failure; a genuinely clean terminal exit records
+    /// nothing — successes are per-pass facts owned by the AllComplete seam,
+    /// so a process exit must never stamp `lastSyncSuccessAt`.
+    #[test]
+    fn watch_exit_crash_records_failure_and_clean_exit_records_nothing() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        std::env::set_var("HQ_TEST_HOME", home.path());
+
+        record_auto_sync_pass_completed(&RunTotals::default());
+        let stamp = with_state(|s| s.last_sync_success_at.clone()).unwrap();
+
+        // Mid-pass crash: process failure with no error events accumulated.
+        record_auto_sync_watch_exited(false, &RunTotals::default());
+        let after_crash = with_state(|s| s.clone()).unwrap();
+        assert!(after_crash.sync_run_failed, "watcher crash must mark the run failed");
+        assert_eq!(after_crash.last_failure_reason.as_deref(), Some("RUNNER_FAILED"));
+        assert_eq!(after_crash.consecutive_failures, 1);
+        assert_eq!(after_crash.last_sync_success_at, stamp);
+
+        // Recovery via the normal AllComplete seam is unchanged.
+        record_auto_sync_pass_completed(&RunTotals::default());
+        let recovered = with_state(|s| s.clone()).unwrap();
+        assert!(!recovered.sync_run_failed);
+        assert_eq!(recovered.consecutive_failures, 0);
+        let recovered_stamp = recovered.last_sync_success_at.clone();
+
+        // Clean terminal exit (success, empty partial totals): no-op — it
+        // must neither stamp a fresh success nor invent a failure.
+        record_auto_sync_watch_exited(true, &RunTotals::default());
+        let after_clean = with_state(|s| s.clone()).unwrap();
+        assert_eq!(after_clean.last_sync_success_at, recovered_stamp);
+        assert!(!after_clean.sync_run_failed);
+        assert_eq!(after_clean.consecutive_failures, 0);
 
         std::env::remove_var("HQ_TEST_HOME");
     }

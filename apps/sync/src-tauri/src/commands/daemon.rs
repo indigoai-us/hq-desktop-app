@@ -1169,6 +1169,23 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // manual-sync boundary.
                         let cancellation_record =
                             cancellation_record_for_generation(DAEMON_HANDLE, daemon_generation);
+                        // Client health (US-002): a watch pass that dies WITHOUT
+                        // reaching AllComplete never crossed the per-pass seam in
+                        // handle_watch_stdout_line, so auth expiry (auth-error +
+                        // exit 0, no AllComplete) and mid-pass crashes previously
+                        // left the control plane reading a dead watcher as healthy.
+                        // Record the terminal outcome from the final partial-pass
+                        // RunTotals; deliberate stops (our cancel, bare SIGTERM at
+                        // quit/logout) carry no health signal and must not persist
+                        // a failure across an ordinary shutdown.
+                        if watch_exit_should_record_health(cancelled, signal) {
+                            let final_totals =
+                                totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            crate::commands::client_health::record_auto_sync_watch_exited(
+                                success,
+                                &final_totals,
+                            );
+                        }
                         let stderr_tail = process_stderr_tail
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1358,6 +1375,18 @@ fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: boo
         return false;
     }
     signal != Some(SIGTERM)
+}
+
+/// Pure decision: should this watch-runner exit record a terminal
+/// client-health outcome? Deliberate stops carry no health signal: our own
+/// cancel (app-quit / auto-sync-off / respawn) and a bare externally
+/// delivered SIGTERM (OS logout/shutdown) would otherwise persist
+/// `sync_run_failed` across an ordinary shutdown and report a healthy
+/// install as broken until its next completed pass. Everything else —
+/// including an auth-expiry exit 0 with no AllComplete, and any crash —
+/// must reach the recorder (which itself ignores genuinely clean exits).
+fn watch_exit_should_record_health(cancelled: bool, signal: Option<i32>) -> bool {
+    !cancelled && signal != Some(SIGTERM)
 }
 
 /// Pure signal classifier for fault-style terminations that must still alert.
@@ -5014,6 +5043,24 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    /// Terminal watch exits must reach the client-health recorder for every
+    /// genuine death (auth-expiry exit 0, crashes, fault signals), and for
+    /// nothing that is a deliberate stop: our own cancel or a bare SIGTERM
+    /// (app quit / OS logout) must never persist a failure across an
+    /// ordinary shutdown.
+    #[test]
+    fn watch_exit_health_recording_skips_deliberate_stops_only() {
+        // Auth-expiry shape: exit 0, no signal, not cancelled — must record.
+        assert!(watch_exit_should_record_health(false, None));
+        // Crash / fault shapes must record.
+        assert!(watch_exit_should_record_health(false, Some(SIGKILL)));
+        assert!(watch_exit_should_record_health(false, Some(SIGSEGV)));
+        // Deliberate stops must not.
+        assert!(!watch_exit_should_record_health(true, None));
+        assert!(!watch_exit_should_record_health(true, Some(SIGTERM)));
+        assert!(!watch_exit_should_record_health(false, Some(SIGTERM)));
+    }
 
     #[test]
     fn hard_footprint_ceiling_preempts_before_the_observed_os_kill_floor() {
