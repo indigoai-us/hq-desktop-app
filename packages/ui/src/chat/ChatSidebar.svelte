@@ -149,6 +149,10 @@
     seedDirectory?: ChannelDirectoryRow[] | null;
     /** personUid → presigned avatar URL from loaded channel rosters. */
     avatarByUid?: Record<string, string> | null;
+    /** Bump to refetch contacts (after an agent profile save). */
+    rosterWakeSeq?: number;
+    /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
+    onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -176,6 +180,8 @@
     tenantCompanyId = null,
     seedDirectory = null,
     avatarByUid = null,
+    rosterWakeSeq = 0,
+    onavatarmap,
     oncommand,
     onnavigateMessages,
     onopenSettings,
@@ -1359,6 +1365,24 @@
       loading = false;
     }
   }
+
+  $effect(() => {
+    const map: Record<string, string> = {};
+    for (const contact of contacts) {
+      const uid = contact.personUid?.trim();
+      const url = contact.avatarUrl?.trim();
+      if (uid && url) map[uid] = url;
+    }
+    untrack(() => onavatarmap?.(map));
+  });
+
+  $effect(() => {
+    const seq = rosterWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshLists();
+    });
+  });
 
   /** Peers already asked about — one thread read per bare uid, ever. */
   const dmNameLookupsTried = new Set<string>();

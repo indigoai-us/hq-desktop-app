@@ -27,7 +27,7 @@
   import { flushSync, onMount, tick } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { dismissBootLoader } from './boot-loader';
-  import { openApprovedExternalUrl } from './external-open';
+  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
@@ -626,7 +626,7 @@
         refreshAppVersion={getVersion}
         {packagesEvents}
         onOpenConsole={openApprovedExternalUrl}
-        onopenurl={openApprovedExternalUrl}
+        onopenurl={openBrowserUrl}
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
         onembeddednavigationready={() => {

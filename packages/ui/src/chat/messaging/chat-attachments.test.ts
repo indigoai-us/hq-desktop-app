@@ -4,8 +4,10 @@ import {
   buildChatAttachmentVaultPath,
   chatAttachmentValidatorForPlatform,
   conversationPairKey,
+  filesFromDataTransfer,
   isAllowedChatAttachment,
   isImageFile,
+  namePastedImageFile,
 } from "./chat-attachments.js";
 import {
   presignUrlFromResult,
@@ -48,6 +50,39 @@ describe("chat attachment helpers", () => {
       message: "report.pdf is larger than 4 MB, the web upload limit",
     });
     expect(chatAttachmentValidatorForPlatform("desktop")(file)).toBeNull();
+  });
+
+  it("reads clipboard files, falling back to items when files is empty", () => {
+    const png = new File([new Uint8Array(4)], "image.png", {
+      type: "image/png",
+    });
+    expect(filesFromDataTransfer({ files: [png], items: [] })).toEqual([png]);
+    expect(
+      filesFromDataTransfer({
+        files: [],
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => png,
+          } as DataTransferItem,
+        ],
+      }),
+    ).toEqual([png]);
+  });
+
+  it("uniquifies generic pasted screenshot names and leaves named files alone", () => {
+    const now = new Date("2026-09-02T01:17:00.000Z");
+    const shot = new File([new Uint8Array(4)], "image.png", {
+      type: "image/png",
+    });
+    expect(namePastedImageFile(shot, 1, now).name).toBe(
+      "pasted-2026-09-02T01-17-00-1.png",
+    );
+    const named = new File([new Uint8Array(4)], "hero.png", {
+      type: "image/png",
+    });
+    expect(namePastedImageFile(named, 2, now)).toBe(named);
   });
 
   it("classifies composer files as images via mime or extension", () => {

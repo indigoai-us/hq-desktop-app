@@ -45,6 +45,10 @@ jobs:
   changes:
     name: Windows-relevant changes
     runs-on: ubuntu-latest
+    # A checkout and a path diff; healthy runs finish in about six seconds.
+    # Every downstream Windows job needs this one's output, so a stall here
+    # stalls the whole workflow -- and it is the gate's own required check.
+    timeout-minutes: 10
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
     steps:
@@ -97,6 +101,15 @@ jobs:
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
+    # 30 of this job's 46 steps carry no step-level timeout, and it is the only
+    # long-running job in the repository that was missing a job-level one -- its
+    # three siblings below declare 45, 45 and 30. Without a backstop a single
+    # blocked step inherits the Actions default of 360 minutes: run 33624196971
+    # sat on "Windows app tests (e2e automation)" for an hour (normally ~2 min)
+    # holding a required check, with nothing scheduled to end it. The job's own
+    # green runs take ~25 minutes, so 60 is well clear of a healthy run while
+    # turning a hang into a fast, legible failure instead of a silent stall.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/sync
