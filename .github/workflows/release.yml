@@ -311,6 +311,18 @@ jobs:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
+      # Smoke helpers must come from the workflow commit so a dispatch retry
+      # of an older tag still fail-closes on a missing non-Indigo identity.
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/macos-artifact-smoke.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -731,6 +743,30 @@ jobs:
             apps/sync/src-tauri/target/release-artifacts/*.dmg
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+
+      # Fail-closed: a missing secret or a skeleton boot must fail this job
+      # so Publish GitHub release never runs. This is the check that would
+      # have stopped v0.10.178 — every prior test ran as an Indigo user
+      # with conversations.
+      - name: Non-Indigo artifact smoke
+        timeout-minutes: 5
+        env:
+          HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then
+            echo "::error::HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO is not set. Provision a Cognito refresh token for a non-Indigo account with an empty inbox (only #setup) and add it as a repository secret. This step is fail-closed so a missing identity cannot skip the gate that would have caught v0.10.178."
+            exit 1
+          fi
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          test -d "$APP"
+          xattr -cr "$APP" || true
+          node "$GITHUB_WORKSPACE/.release-control/scripts/macos-artifact-smoke.mjs" \
+            --app "$APP" \
+            --version "$RELEASE_VERSION" \
+            --timeout-ms 30000 \
+            --launch
 
   windows:
     name: Build Windows ${{ matrix.target }}

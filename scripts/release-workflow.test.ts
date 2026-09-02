@@ -516,6 +516,34 @@ describe("release workflow channel contract", () => {
     }
   });
 
+  it("smokes the signed macOS app as a non-Indigo identity before publish", () => {
+    const macos = jobBody("macos");
+    const publish = jobBody("publish");
+    const smoke = stepBody(macos, "Non-Indigo artifact smoke");
+
+    expect(macos.indexOf("- name: Build unsigned universal app and updater archive")).toBeLessThan(
+      macos.indexOf("- name: Non-Indigo artifact smoke"),
+    );
+    expect(macos.indexOf("- name: Sign app bundle")).toBeLessThan(
+      macos.indexOf("- name: Non-Indigo artifact smoke"),
+    );
+    expect(publish).toContain("needs: [validate, macos, windows]");
+    expect(smoke).not.toContain("continue-on-error");
+    expect(macos).not.toMatch(
+      /Non-Indigo artifact smoke[\s\S]*?continue-on-error: true/,
+    );
+    expect(smoke).toContain("HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO");
+    expect(smoke).toContain("secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO");
+    expect(smoke).toContain('if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then');
+    expect(smoke).toContain("fail-closed");
+    expect(smoke).toContain("macos-artifact-smoke.mjs");
+    expect(smoke).toContain("--launch");
+    expect(smoke).toContain("--timeout-ms 30000");
+    expect(smoke).toContain("HQ.app");
+    expect(macos).toContain("scripts/macos-artifact-smoke.mjs");
+    expect(macos).toContain("ref: ${{ github.workflow_sha }}");
+  });
+
   it("documents the release hosts and native targets the workflow actually ships", () => {
     expect(versionsToml).toContain(
       'manifest_base = "https://github.com/indigoai-us/hq-desktop-app/releases"',
