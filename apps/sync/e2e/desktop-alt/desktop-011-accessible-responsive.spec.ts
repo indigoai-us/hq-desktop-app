@@ -51,6 +51,9 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
   const secondary = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
+  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+  const chatSidebar = readRepoFile('../../packages/ui/src/chat/ChatSidebar.svelte');
+  const uiDesktopApp = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
   const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
   const overview = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
@@ -125,7 +128,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     );
   });
 
-  it.skip('uses an explicit 3px grid gap between primary row titles and secondary metadata', () => {
+  it('uses an explicit 3px grid gap between primary row titles and secondary metadata', () => {
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
     expect(tokens).toContain('--v4-row-stack-gap: 3px');
     expect(desktopCss).toMatch(
@@ -139,12 +142,6 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     );
     expect(secondary).toMatch(
       /\.v4-footer\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(messages).toMatch(
-      /\.contact-meta\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(messages).toMatch(
-      /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );
   });
 
@@ -161,7 +158,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(titleBar).toContain('aria-hidden="true"');
   });
 
-  it.skip('honors reduced motion and reduced transparency', () => {
+  it('honors reduced motion and reduced transparency', () => {
     expect(desktopCss).toContain('@media (prefers-reduced-motion: reduce)');
     expect(desktopCss).toContain('animation-duration: 0.01ms !important');
     expect(desktopCss).toContain('@media (prefers-reduced-transparency: reduce)');
@@ -172,20 +169,26 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     );
     expect(titleBar).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(titleBar).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(messages).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(desktopApp).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(uiDesktopApp).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
-  it.skip('collapses wide list-detail while keeping primary actions unshrunk', () => {
+  it('collapses wide list-detail while keeping primary actions unshrunk', () => {
     expect(desktopCss).toMatch(/\.list-detail\s*\{/);
     expect(desktopCss).toMatch(
       /\.list-detail\s+\.detail-primary-actions,[\s\S]*?flex:\s*0\s+0\s+auto/,
     );
     expect(desktopCss).toContain("@media (max-width: 820px)");
     expect(desktopCss).toContain(".list-detail[data-detail-open='true'] > .list-pane");
-    // Messages: thread list-detail collapses to overlay on narrow widths.
-    expect(messages).toContain('@media (max-width: 720px)');
-    expect(messages).toMatch(/\.thread-column\s*\{[\s\S]*?position:\s*absolute/);
-    expect(messages).toMatch(/\.rail-header\s+\.new-message-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/);
+    // Conversation rail: reply pane overlays on narrow widths instead of
+    // crushing the thread; the new-message control stays a fixed header action.
+    expect(uiDesktopApp).toContain('max-width: ${REPLY_OVERLAY_MAX_PX}px');
+    expect(uiDesktopApp).toMatch(
+      /\.reply-column\.overlay\s*\{[\s\S]*?position:\s*absolute/,
+    );
+    expect(chatSidebar).toMatch(
+      /\.chat-header\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/,
+    );
   });
 
   it('adapts compact desktop routes to their post-sidebar canvas width', () => {

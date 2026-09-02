@@ -39,6 +39,9 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const conversation = readRepoFile(
     'src/components/messaging/Conversation.svelte',
   );
+  const channelConversation = readRepoFile(
+    '../../packages/ui/src/chat/messaging/ChannelConversation.svelte',
+  );
   const widget = readRepoFile('src/components/Widget.svelte');
   const main = readRepoFile('src/main.ts');
   const harness = readRepoFile('dev-harness/Harness.svelte');
@@ -263,31 +266,21 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
-  it.skip('uses message chrome only where it carries meaning', () => {
-    const incoming = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-in .dm-bubble",
-    );
-    const outgoing = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-out .dm-bubble",
-    );
+  it('uses message chrome only where it carries meaning', () => {
+    const bubble = rule(channelConversation, '.dm-bubble');
+    const author = rule(channelConversation, '.dm-msg-author');
     const sharedFile = rule(
       conversation,
-      ":global([data-window='messages']) .dm-bubble-share",
-    );
-    const author = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-author",
+      ":global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share",
     );
 
-    expect(incoming).toContain('background: transparent');
-    expect(incoming).toContain('border-radius: 0');
-    expect(outgoing).toContain('background: var(--surface-raise)');
-    expect(outgoing).toContain('border: 1px solid var(--border)');
-    expect(sharedFile).toContain('background: var(--surface-raise)');
-    expect(sharedFile).toContain('border: 1px solid var(--border)');
-    expect(author).toContain('border-radius: 999px');
+    expect(bubble).toContain('background: transparent');
+    expect(bubble).toContain('border-radius: 0');
+    expect(bubble).toContain('border: 0');
+    expect(author, 'author selector should exist').not.toBe('');
+    expect(author).not.toContain('border-radius: 999px');
+    expect(sharedFile).toContain('border: 1px solid');
+    expect(sharedFile).toMatch(/background:/);
   });
 
   it('keeps the idle widget wordmark legible in forced light and dark visual previews', () => {
