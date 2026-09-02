@@ -678,6 +678,7 @@ fn main() {
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
             commands::agent_session::agent_session_slash_commands,
+            commands::agent_session::agent_session_cli_session_id,
             commands::agent_session_launch::agent_session_open_in_app,
             // HQ-native context for the Sessions composer (read-only).
             commands::hq_context::hq_skill_catalog,

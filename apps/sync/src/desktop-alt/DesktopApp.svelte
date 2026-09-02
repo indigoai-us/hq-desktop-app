@@ -1885,6 +1885,7 @@ import SessionsPage from './pages/SessionsPage.svelte';
               <SessionsPage
                 sessionId={route.id}
                 onopensession={(id) => navigate({ kind: 'sessions', id: id || undefined })}
+                onopenchannel={() => navigate({ kind: 'messages' })}
               />
             </div>
           {:else if activeCompany}

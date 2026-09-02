@@ -815,3 +815,145 @@ describe('probe memoization (preflight + catalog)', () => {
     expect(attempts).toBe(3);
   });
 });
+
+describe('liveSessionStore.openInApp — the strip menu’s "Open in Claude Code / Codex"', () => {
+  it('resumes a Claude session by the id its own started event announced', async () => {
+    mockBackend({ 0: page([[0, started]], 1) });
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary()]);
+      if (command === 'agent_session_replay') return Promise.resolve(page([[0, started]], 1));
+      if (command === 'agent_session_open_in_app') {
+        return Promise.resolve({ opened: 'terminal', detail: 'claude --resume session-1 in /Users/x/HQ' });
+      }
+      return Promise.reject(new Error(`unexpected ${command}`));
+    });
+    await liveSessionStore.open(SESSION);
+
+    const outcome = await liveSessionStore.openInApp();
+
+    expect(outcome).toEqual({ opened: 'terminal', detail: 'claude --resume session-1 in /Users/x/HQ' });
+    expect(invoke).toHaveBeenCalledWith('agent_session_open_in_app', {
+      tool: 'claude',
+      cliSessionId: SESSION,
+    });
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_cli_session_id', expect.anything());
+  });
+
+  it('resumes a Codex session by the THREAD id, not the app’s own session id', async () => {
+    const codexStarted: SessionEvent = {
+      ...started,
+      tool: 'codex',
+      sessionId: '01a06218-e436-7963-827b-6103963b4320',
+    };
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary({ tool: 'codex' })]);
+      if (command === 'agent_session_replay') return Promise.resolve(page([[0, codexStarted]], 1));
+      if (command === 'agent_session_open_in_app') return Promise.resolve({ opened: 'terminal', detail: 'codex resume' });
+      return Promise.reject(new Error(`unexpected ${command}`));
+    });
+    await liveSessionStore.open(SESSION);
+
+    await liveSessionStore.openInApp();
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_open_in_app', {
+      tool: 'codex',
+      cliSessionId: '01a06218-e436-7963-827b-6103963b4320',
+    });
+  });
+
+  it('asks the registry for the latched id when the event ring dropped the handshake', async () => {
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary({ tool: 'codex' })]);
+      if (command === 'agent_session_replay') {
+        return Promise.resolve(page([[7, { kind: 'assistantMessage', text: 'late' }]], 8, true));
+      }
+      if (command === 'agent_session_cli_session_id') {
+        expect(args).toEqual({ sessionId: SESSION });
+        return Promise.resolve('thread-from-registry');
+      }
+      if (command === 'agent_session_open_in_app') return Promise.resolve({ opened: 'terminal', detail: 'x' });
+      return Promise.reject(new Error(`unexpected ${command}`));
+    });
+    await liveSessionStore.open(SESSION);
+
+    await liveSessionStore.openInApp();
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_open_in_app', {
+      tool: 'codex',
+      cliSessionId: 'thread-from-registry',
+    });
+  });
+
+  it('falls back to the app-minted id for Claude, and refuses for Codex, when nothing has latched', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary({ tool: 'claude' })]);
+      if (command === 'agent_session_replay') return Promise.resolve(page([], 0));
+      if (command === 'agent_session_cli_session_id') return Promise.resolve(null);
+      if (command === 'agent_session_open_in_app') return Promise.resolve({ opened: 'terminal', detail: 'x' });
+      return Promise.reject(new Error(`unexpected ${command}`));
+    });
+    await liveSessionStore.open(SESSION);
+    await liveSessionStore.openInApp();
+    expect(invoke).toHaveBeenCalledWith('agent_session_open_in_app', {
+      tool: 'claude',
+      cliSessionId: SESSION,
+    });
+
+    resetLiveSessionStore();
+    invoke.mockClear();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary({ tool: 'codex' })]);
+      if (command === 'agent_session_replay') return Promise.resolve(page([], 0));
+      if (command === 'agent_session_cli_session_id') return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected ${command}`));
+    });
+    await liveSessionStore.open(SESSION);
+    await expect(liveSessionStore.openInApp()).rejects.toThrow(/thread id/);
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_open_in_app', expect.anything());
+  });
+
+  it('refuses with no session open, without invoking', async () => {
+    await expect(liveSessionStore.openInApp()).rejects.toThrow('No live session to open.');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('liveSessionStore.shareToChannel — the dialog’s one outward call', () => {
+  it('passes the request through as the command’s arguments, exactly', async () => {
+    const result = {
+      channelId: 'ch_1',
+      channelName: 'general',
+      created: false,
+      invited: [{ uid: 'usr_a', ok: true }],
+      postedEventId: 'evt_1',
+      digestChars: 12,
+    };
+    invoke.mockResolvedValueOnce(result);
+    const request = {
+      sessionId: SESSION,
+      company: 'indigo',
+      target: { kind: 'existing' as const, channelId: 'ch_1' },
+      inviteUids: ['usr_a'],
+      includeTranscript: true,
+      note: 'fyi',
+    };
+
+    await expect(liveSessionStore.shareToChannel(request)).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('session_share_to_channel', request);
+  });
+
+  it('lets a backend error through untouched for the dialog to show', async () => {
+    invoke.mockRejectedValueOnce('Command session_share_to_channel not found');
+    await expect(
+      liveSessionStore.shareToChannel({
+        sessionId: SESSION,
+        company: 'indigo',
+        target: { kind: 'new', name: 'p-x' },
+        inviteUids: [],
+        includeTranscript: true,
+      }),
+    ).rejects.toBe('Command session_share_to_channel not found');
+  });
+});
