@@ -632,7 +632,12 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     set_oauth_flow_active(false);
 
     if result.is_ok() {
-        if let Some(window) = app.get_webview_window("main") {
+        // Prefer the desktop workspace when it is open — signed-out sign-in
+        // happens there. Fall back to `main` for first-run onboarding.
+        let window = app
+            .get_webview_window("desktop-alt")
+            .or_else(|| app.get_webview_window("main"));
+        if let Some(window) = window {
             // AppKit / WebView2 window ops must run on the UI thread.
             // Sticky topmost is intentional here (post-OAuth only) so the
             // wizard stays above the browser for the next step.
@@ -640,7 +645,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
             let _ = app.run_on_main_thread(move || {
                 crate::util::window_focus::bring_webview_to_front_after_oauth(&win);
             });
-            eprintln!("[oauth] raised main window after successful callback");
+            eprintln!("[oauth] raised workspace window after successful callback");
         }
     }
 

@@ -744,8 +744,8 @@ pub fn hide_desktop_alt(app: &AppHandle) {
 /// popover). Kept for the global desktop shortcut which still toggles.
 ///
 /// If `desktop-alt` is already visible, hide it. Otherwise open it
-/// asynchronously; when the GA gate rejects a signed-out user, fall back to
-/// the classic popover so they still reach the SignInPrompt.
+/// asynchronously. Signed-out users are admitted so they can sign in inside
+/// the workspace; a real open failure still falls back to `main`.
 pub fn toggle_desktop_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         if win.is_visible().unwrap_or(false) {
@@ -760,9 +760,9 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
                 .await
         {
-            // GA gate rejects signed-out users — show classic popover so they
-            // still reach SignInPrompt. show_popover_window does AppKit window
-            // ops and must run on the main thread.
+            // Real open failure: keep first-run onboarding / sign-in reachable
+            // on `main`. show_popover_window does AppKit window ops and must
+            // run on the main thread.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);

@@ -4,6 +4,11 @@ import { hqWorkHandoffEnabled } from './hq-work';
 import { resolveDesktopAltShell } from '../desktop-alt/boot';
 
 describe('desktop workspace is the only launch surface', () => {
+  it('gives a signed-out user the desktop workspace', () => {
+    expect(resolveLaunchShell({ email: null, companyUid: null })).toBe('desktop-alt');
+    expect(resolveLaunchShell({ email: '', companyUid: null })).toBe('desktop-alt');
+  });
+
   it('gives a GA user with no company affiliation the desktop workspace', async () => {
     expect(
       resolveLaunchShell({

@@ -1293,20 +1293,20 @@
       await listen('tray:open-settings', () => {
         void invoke('open_desktop_alt_window', { route: 'settings' }).catch((e) => {
           console.error('tray open_desktop_alt_window (settings) failed:', e);
-          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          // Real open failure: keep first-run onboarding / sign-in reachable.
           void invoke('show_main_window').catch(console.error);
         });
       })
     );
 
     // Native tray right-click menu (hq-tray-helper): Open desktop view +
-    // Sign Out. Both route through the same guarded frontend paths the
-    // popover uses (the backend gate is re-checked by open_desktop_alt_window).
+    // Sign Out. Signed-out users still get the workspace window so they can
+    // sign in there.
     unlisteners.push(
       await listen('tray:open-desktop', () => {
         void invoke('open_desktop_alt_window').catch((e) => {
           console.error('tray open_desktop_alt_window failed:', e);
-          // Signed-out fallback: GA gate rejects alt window — surface SignInPrompt.
+          // Real open failure: keep first-run onboarding / sign-in reachable.
           void invoke('show_main_window').catch(console.error);
         });
       })
