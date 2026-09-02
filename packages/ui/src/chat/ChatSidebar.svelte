@@ -14,6 +14,10 @@
    */
   import { onMount, untrack } from "svelte";
   import {
+    COMPOSER_DRAFT_CHANGED_EVENT,
+    listDraftRowIds,
+  } from "./messaging/composer-drafts";
+  import {
     clearChannelUnread,
     type Channel,
     humanizeChannelName,
@@ -24,6 +28,7 @@
   } from "./channels";
   import {
     isSetupChannel,
+    SETUP_ROW_ID,
     withSetupChannel,
     withSetupPin,
   } from "./setup-channel";
@@ -70,6 +75,7 @@
     loadDmDots,
     loadPins,
     loadRecentDms,
+    loadSetupPinDismissed,
     loadShowFilter,
     mergeContactActivity,
     mergeContactsWithInbox,
@@ -82,9 +88,11 @@
     saveDmDots,
     savePins,
     saveRecentDms,
+    saveSetupPinDismissed,
     saveShowFilter,
     scopeFromHotkey,
     scopePillLabel,
+    startOfLocalDay,
     searchCompanyUidFromScope,
     searchHistory,
     historyDayGroups,
@@ -222,6 +230,14 @@
     loadConversationCache(storage)?.contacts ?? [],
   );
   let pins = $state<string[]>(loadPins(storage));
+  /** User unpinned #setup — sticky until they pin it again. */
+  let setupPinDismissed = $state<boolean>(loadSetupPinDismissed(storage));
+  /** Rows with an unsent composer draft (Slack-style pencil marker). */
+  let draftIds = $state<string[]>(listDraftRowIds(storage));
+  const draftIdSet = $derived(new Set(draftIds));
+  function refreshDraftIds(): void {
+    draftIds = listDraftRowIds(storage);
+  }
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
@@ -352,10 +368,40 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
-  // Synthetic pinned #setup support channel (deduped against a real server
-  // `setup` channel) — always at the top of the rail's PINNED section.
-  const channelsWithSetup = $derived(withSetupChannel(channels));
-  const pinsWithSetup = $derived(withSetupPin(pins));
+  // Synthetic #setup support channel (deduped against a real server `setup`
+  // channel) — pinned by default; once unpinned it lists under TODAY (bottom)
+  // instead of sinking into LAST WEEK with zero activity.
+  const channelsWithSetup = $derived(
+    withSetupChannel(
+      channels,
+      setupPinDismissed ? { activityAt: startOfLocalDay(Date.now()) } : {},
+    ),
+  );
+  const pinsWithSetup = $derived(
+    withSetupPin(pins, { dismissed: setupPinDismissed }),
+  );
+
+  /**
+   * Single pin toggle for both the context menu and the hover pin button.
+   * #setup is pinned by default (not stored in `pins`), so toggling it flips
+   * the persisted dismissed flag instead of the pin list.
+   */
+  function toggleRowPin(rowId: string): void {
+    if (rowId === SETUP_ROW_ID) {
+      const nowPinned = pinsWithSetup.includes(SETUP_ROW_ID);
+      setupPinDismissed = nowPinned;
+      saveSetupPinDismissed(storage, nowPinned);
+      if (nowPinned) {
+        pins = pins.filter((id) => id !== SETUP_ROW_ID);
+      } else if (!pins.includes(SETUP_ROW_ID)) {
+        pins = [SETUP_ROW_ID, ...pins];
+      }
+      savePins(pins, storage);
+      return;
+    }
+    pins = togglePin(pins, rowId);
+    savePins(pins, storage);
+  }
 
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
@@ -566,8 +612,7 @@
 
   function togglePinFromMenu(): void {
     if (!contextMenu) return;
-    pins = togglePin(pins, contextMenu.row.id);
-    savePins(pins, storage);
+    toggleRowPin(contextMenu.row.id);
     contextMenu = null;
   }
 
@@ -1207,8 +1252,10 @@
     }
 
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
 
     return () => {
+      window.removeEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
       for (const u of unlisteners) u();
       directoryReconciler.stop();
       if (refreshTimer != null) {
@@ -1224,8 +1271,7 @@
   });
 
   function handlePin(row: ConversationRow) {
-    pins = togglePin(pins, row.id);
-    savePins(pins, storage);
+    toggleRowPin(row.id);
   }
 
   async function openRow(
@@ -1885,7 +1931,7 @@
         data-testid="chat-context-pin"
         onclick={togglePinFromMenu}
       >
-        {pins.includes(contextMenu.row.id)
+        {pinsWithSetup.includes(contextMenu.row.id)
           ? "Unpin conversation"
           : "Pin conversation"}
       </button>
@@ -1988,7 +2034,12 @@
                       </span>
                     {/if}
                     <span class="chat-search-hit-copy">
-                      <span class="chat-row-title">{row.title}</span>
+                      <span class="chat-search-hit-title">
+                        {#if draftIdSet.has(row.id)}
+                          {@render draftMark()}
+                        {/if}
+                        <span class="chat-row-title">{row.title}</span>
+                      </span>
                       <span class="chat-search-snippet"
                         >{searchHitSnippet(hit)}</span
                       >
@@ -2160,6 +2211,26 @@
   onconfirm={() => void confirmSignOut()}
 />
 
+<!-- Slack-style pencil shown before a row title when it has an unsent draft.
+     Shared by the rail row and the search-hit row; colour comes from
+     `.chat-row-draft` (`var(--t3)`). -->
+{#snippet draftMark()}
+  <span
+    class="chat-row-draft"
+    data-testid="chat-row-draft"
+    role="img"
+    aria-label="Draft"
+    title="Draft"
+  >
+    <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
+      <path
+        d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
+        fill="currentColor"
+      />
+    </svg>
+  </span>
+{/snippet}
+
 {#snippet conversationRow(row: ConversationRow)}
   <div role="listitem" class="chat-li">
     <button
@@ -2196,6 +2267,9 @@
             {avatar.initials}
           {/if}
         </span>
+      {/if}
+      {#if draftIdSet.has(row.id)}
+        {@render draftMark()}
       {/if}
       <span class="chat-row-title">{row.title}</span>
       {#if row.unreadCount != null && row.unreadCount > 0}
@@ -2627,6 +2701,14 @@
     white-space: nowrap;
   }
 
+  .chat-row-draft {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    color: var(--t3);
+    line-height: 0;
+  }
+
   .chat-glyph {
     flex: 0 0 16px;
     width: 16px;
@@ -2992,6 +3074,13 @@
     flex: 1 1 auto;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+  }
+
+  .chat-search-hit-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
   }
 

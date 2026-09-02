@@ -28,6 +28,7 @@ import {
   initialsFor,
   isStrictlyRicherConversationRow,
   loadPins,
+  loadSetupPinDismissed,
   loadShowFilter,
   normalizeChannel,
   normalizeConversations,
@@ -37,6 +38,7 @@ import {
   resolveSearchHitRow,
   rowAvatar,
   savePins,
+  saveSetupPinDismissed,
   saveShowFilter,
   scopeFromHotkey,
   scopePillLabel,
@@ -849,6 +851,23 @@ describe("pin persistence", () => {
     expect(toggled).toEqual(["dm:2"]);
     savePins(toggled, storage);
     expect(loadPins(storage)).toEqual(["dm:2"]);
+  });
+
+  it("loadSetupPinDismissed defaults to false and round-trips the flag", () => {
+    const storage = memoryStorage();
+    expect(loadSetupPinDismissed(storage)).toBe(false);
+    expect(loadSetupPinDismissed(null)).toBe(false);
+    saveSetupPinDismissed(storage, true);
+    expect(loadSetupPinDismissed(storage)).toBe(true);
+    saveSetupPinDismissed(storage, false);
+    expect(loadSetupPinDismissed(storage)).toBe(false);
+    expect(storage.getItem("hq.chat.setup-pin-dismissed")).toBeNull();
+    // Unknown values are not "dismissed".
+    expect(
+      loadSetupPinDismissed(
+        memoryStorage({ "hq.chat.setup-pin-dismissed": "yes" }),
+      ),
+    ).toBe(false);
   });
 
   it("loadPins tolerates corrupt JSON", () => {

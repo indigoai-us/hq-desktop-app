@@ -11,7 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { untrack, type Snippet } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
@@ -57,6 +57,12 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import {
+    clearDraft,
+    loadDraft,
+    saveDraft,
+    type DraftStorage,
+  } from "./composer-drafts";
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
   import {
@@ -157,6 +163,15 @@
      * would lay out as a second column in the upper-right instead.
      */
     belowMessages?: Snippet;
+    /**
+     * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
+     * `draftStorage`, unsent text is restored on mount, persisted (debounced)
+     * while typing, flushed on unmount, and cleared on send — so switching
+     * conversations (the host remounts per row) never loses a draft.
+     */
+    draftKey?: string | null;
+    /** Tenant-scoped storage for `draftKey`. Omit to disable drafts. */
+    draftStorage?: DraftStorage | null;
   }
 
   let {
@@ -183,6 +198,8 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
+    draftKey = null,
+    draftStorage = null,
   }: Props = $props();
 
   /** Real avatar for a message's author, when the roster carried one. */
@@ -277,7 +294,13 @@
     return out;
   });
 
-  let replyText = $state("");
+  // One-shot restore of the stored draft — `draftKey`/`draftStorage` are fixed
+  // for this instance (the host keys the component on the row id).
+  let replyText = $state(
+    untrack(() =>
+      draftKey && draftStorage ? loadDraft(draftStorage, draftKey) : "",
+    ),
+  );
   let replyInputEl = $state<HTMLTextAreaElement | null>(null);
   let attachInputEl = $state<HTMLInputElement | null>(null);
   let pendingFiles = $state.raw<File[]>([]);
@@ -352,6 +375,82 @@
     if (!el || el.value === replyText) return;
     replyText = el.value;
   }
+
+  // ── Composer draft persistence ────────────────────────────────────────────
+  // `draftKey` is fixed for the life of this instance (the host keys the
+  // component on the row id), so the restore above is a one-shot read and the
+  // effect below only has to follow `replyText`.
+  const DRAFT_DEBOUNCE_MS = 300;
+  let draftTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Text last written to (or read from) storage — skip no-op writes. */
+  let draftPersisted = untrack(() => replyText);
+  let draftPending: string | null = null;
+
+  /**
+   * Write `text` now. `draftPersisted` only advances when storage really took
+   * it, so a quota failure is not mistaken for a saved draft.
+   */
+  function writeDraft(text: string): boolean {
+    if (!draftKey || !draftStorage) return true;
+    if (text === draftPersisted) return true;
+    if (!saveDraft(draftStorage, draftKey, text)) return false;
+    draftPersisted = text;
+    return true;
+  }
+
+  /**
+   * Write any debounced-but-unsaved text now (unmount / send). On a failed
+   * write `draftPending` stays set so the next change (or unmount) retries.
+   */
+  function flushDraft(): void {
+    if (draftTimer != null) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    if (draftPending != null && writeDraft(draftPending)) {
+      draftPending = null;
+    }
+  }
+
+  /** Send succeeded (optimistically): forget the draft outright. */
+  function discardDraft(): void {
+    if (draftTimer != null) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    draftPending = null;
+    if (!draftKey || !draftStorage || clearDraft(draftStorage, draftKey)) {
+      draftPersisted = "";
+    }
+  }
+
+  /**
+   * Send failed: put the text back (unless the user already typed something
+   * new) and persist it again so it is not lost to a remount either.
+   */
+  function restoreDraftAfterFailedSend(body: string): void {
+    if (!body) return;
+    syncComposerFromDom();
+    if (replyText.trim() !== "") return;
+    replyText = body;
+    writeDraft(body);
+  }
+
+  $effect(() => {
+    const text = replyText;
+    if (!draftKey || !draftStorage) return;
+    if (text === draftPersisted && draftPending == null) return;
+    draftPending = text;
+    if (draftTimer != null) clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      draftTimer = null;
+      flushDraft();
+    }, DRAFT_DEBOUNCE_MS);
+  });
+
+  onDestroy(() => {
+    flushDraft();
+  });
 
   const canSend = $derived(
     (replyText.trim().length > 0 && replyText.trim() !== "/") ||
@@ -764,6 +863,7 @@
     mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
+    discardDraft();
     try {
       await onsend?.(body, mentions, files);
     } catch (err) {
@@ -771,6 +871,7 @@
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
       attachError = formatComposerSendError(raw, files.length > 0);
+      restoreDraftAfterFailedSend(body);
     }
   }
 

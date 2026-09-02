@@ -64,6 +64,40 @@ describe("withSetupPin", () => {
     expect(withSetupPin(["dm:prs_1"])).toEqual([SETUP_ROW_ID, "dm:prs_1"]);
     expect(withSetupPin([SETUP_ROW_ID])).toEqual([SETUP_ROW_ID]);
   });
+
+  it("leaves the setup row out when the user dismissed the default pin", () => {
+    expect(withSetupPin([], { dismissed: true })).toEqual([]);
+    expect(withSetupPin(["dm:prs_1"], { dismissed: true })).toEqual([
+      "dm:prs_1",
+    ]);
+    // Strips a stale stored id too, so the row cannot sneak back in.
+    expect(
+      withSetupPin([SETUP_ROW_ID, "dm:prs_1"], { dismissed: true }),
+    ).toEqual(["dm:prs_1"]);
+  });
+
+  it("never mutates its input", () => {
+    const input = [SETUP_ROW_ID, "dm:prs_1"];
+    withSetupPin(input, { dismissed: true });
+    withSetupPin(input);
+    expect(input).toEqual([SETUP_ROW_ID, "dm:prs_1"]);
+  });
+});
+
+describe("withSetupChannel activity slot", () => {
+  it("stamps the synthetic row with the requested activity", () => {
+    const at = Date.parse("2026-09-02T00:00:00.000Z");
+    const out = withSetupChannel([realChannel()], { activityAt: at });
+    expect(out[0]).toMatchObject({ channelId: SETUP_CHANNEL_ID, arrivedAt: at });
+    // The shared constant is untouched.
+    expect(SETUP_CHANNEL.arrivedAt).toBeUndefined();
+  });
+
+  it("does not stamp a real server-listed setup channel", () => {
+    const real = realChannel({ channelId: SETUP_CHANNEL_ID, name: "setup" });
+    const out = withSetupChannel([real], { activityAt: Date.now() });
+    expect(out).toEqual([real]);
+  });
 });
 
 describe("setup row through the sidebar derivation", () => {
@@ -80,5 +114,37 @@ describe("setup row through the sidebar derivation", () => {
     expect(setupRow?.kind).toBe("channel");
     expect(setupRow?.title).toBe("setup");
     expect(setupRow?.channelId).toBe(SETUP_CHANNEL_ID);
+  });
+
+  it("unpinned: stays listed under TODAY (bottom), never in the collapsed LAST WEEK bucket", () => {
+    const now = Date.parse("2026-09-02T15:00:00.000Z");
+    const todayStart = new Date(now).setHours(0, 0, 0, 0);
+    const other = realChannel({
+      lastActivityAt: new Date(now - 60_000).toISOString(),
+    });
+    const rows = applySidebarFilters(
+      normalizeConversations(
+        withSetupChannel([other], { activityAt: todayStart }),
+        [],
+        { pinnedIds: withSetupPin([], { dismissed: true }) },
+      ),
+      { show: "mine" },
+    );
+    const grouped = groupByDay(rows, now);
+    expect(grouped.pinned.map((r) => r.id)).not.toContain(SETUP_ROW_ID);
+    expect(grouped.lastWeek.map((r) => r.id)).not.toContain(SETUP_ROW_ID);
+    expect(grouped.sections).toHaveLength(1);
+    expect(grouped.sections[0].label.startsWith("TODAY")).toBe(true);
+    expect(grouped.sections[0].rows.map((r) => r.id)).toEqual([
+      "ch:ch_1",
+      SETUP_ROW_ID,
+    ]);
+  });
+
+  it("unpinned without an activity slot would sink into LAST WEEK (why the sidebar stamps it)", () => {
+    const rows = normalizeConversations(withSetupChannel([]), [], {
+      pinnedIds: withSetupPin([], { dismissed: true }),
+    });
+    expect(groupByDay(rows).lastWeek.map((r) => r.id)).toEqual([SETUP_ROW_ID]);
   });
 });
