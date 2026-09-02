@@ -54,6 +54,22 @@ function preamble(workflow: string): string {
   return workflow.slice(0, workflow.indexOf("\njobs:"));
 }
 
+/**
+ * A job body with its comments stripped.
+ *
+ * `jobBody` slices to the next job key, so the comment block introducing the
+ * NEXT job lands at the end of the previous one's text. Negative assertions
+ * ("this job must not build the app") have to read configuration, not prose --
+ * otherwise a comment that merely mentions a sibling fails the test, and the
+ * fix would be to stop explaining things.
+ */
+function jobConfig(workflow: string, name: string): string {
+  return jobBody(workflow, name)
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+}
+
 /** Every top-level job key, discovered rather than listed. */
 function jobNames(workflow: string): string[] {
   const jobs = workflow.slice(workflow.indexOf("\njobs:"));
@@ -132,12 +148,15 @@ describe("superseded runs are cancelled", () => {
 });
 
 describe("windows jobs cache Rust artifacts with rust-cache", () => {
-  // Every Windows job that actually compiles. windows-installer-e2e is
-  // deliberately absent: it consumes prebuilt installers plus a prebuilt
-  // tauri-driver.exe as artifacts and runs no cargo at all, so restoring a
-  // multi-GB dependency cache into it would be pure download time.
+  // Every Windows job that actually compiles. Two are deliberately absent:
+  // windows-installer-e2e consumes prebuilt installers plus a prebuilt
+  // tauri-driver.exe as artifacts and runs no cargo at all, and windows-check
+  // is now an ubuntu adjudicator over the three jobs below. Restoring a
+  // multi-GB dependency cache into either would be pure download time.
   const windowsJobs = [
-    "windows-check",
+    "windows-check-crates",
+    "windows-check-app",
+    "windows-check-live",
     "build-bridge-installers",
     "build-target-updater",
   ] as const;
@@ -186,12 +205,32 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     // The check job builds the debug profile; the installer builds release.
     // Sharing a key (or a restore-keys fallback across them) makes each job
     // restore the other's profile and rebuild from scratch anyway.
-    const check = jobBody(windowsCheckWorkflow, "windows-check");
+    const check = jobBody(windowsCheckWorkflow, "windows-check-app");
     const installer = jobBody(windowsCheckWorkflow, "build-bridge-installers");
 
     expect(keyOf(check)).toBeDefined();
     expect(keyOf(installer)).toBeDefined();
     expect(keyOf(check)).not.toEqual(keyOf(installer));
+  });
+
+  it("lets exactly one of the three check jobs write the shared entry", () => {
+    // The three run in parallel off one debug profile and one set of
+    // lockfiles, so rust-cache computes the same key for all of them. Two
+    // writers race for one entry; three keys would triple the footprint
+    // against the same 10 GB repo budget. windows-check-app owns the write
+    // because it builds the default-feature app bins the other two either
+    // do not need or cannot share.
+    const jobs = [
+      "windows-check-crates",
+      "windows-check-app",
+      "windows-check-live",
+    ] as const;
+    const bodies = jobs.map((job) => jobBody(windowsCheckWorkflow, job));
+
+    expect(new Set(bodies.map(keyOf)).size).toBe(1);
+    expect(bodies.filter((body) => !body.includes("save-if: false"))).toEqual([
+      jobBody(windowsCheckWorkflow, "windows-check-app"),
+    ]);
   });
 
   it("lets exactly one of the two release builds write the shared entry", () => {
@@ -206,6 +245,97 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     expect(keyOf(bridge)).toEqual(keyOf(target));
     expect(bridge).not.toContain("save-if:");
     expect(target).toContain("save-if: false");
+  });
+});
+
+describe("the windows check splits its suite across three jobs", () => {
+  // One 46-step job called `cargo check` took 24m13s on run 33634531610 while
+  // the installer chain beside it took 17m, so this gate -- not the release
+  // builds -- set how long a PR waited. None of its steps consumed another's
+  // output; they were serial only because they shared a runner.
+  const checkJobs = [
+    "windows-check-crates",
+    "windows-check-app",
+    "windows-check-live",
+  ] as const;
+
+  it("runs the three jobs in parallel off the path gate", () => {
+    // Any of them depending on another reintroduces a serial critical path.
+    for (const job of checkJobs) {
+      const body = jobConfig(windowsCheckWorkflow, job);
+
+      expect(body).toContain("needs: changes");
+      for (const sibling of checkJobs.filter((name) => name !== job)) {
+        expect(body).not.toContain(sibling);
+      }
+    }
+  });
+
+  it("keeps the required status check reporting under its old name", () => {
+    // "cargo check (x86_64-pc-windows-msvc)" is in the required_status_checks
+    // of the active `main` ruleset. Retiring that context leaves every PR
+    // waiting forever on a check that no longer reports.
+    expect(windowsCheckWorkflow).toContain(
+      "name: cargo check (x86_64-pc-windows-msvc)",
+    );
+    expect(jobBody(windowsCheckWorkflow, "windows-check")).toContain(
+      "runs-on: ubuntu-latest",
+    );
+  });
+
+  it("fails that check when any of the three did not succeed", () => {
+    // Same trap as windows-installer-e2e: GitHub reports a SKIPPED required
+    // check as satisfied, so a job skipped because its `needs` failed is
+    // indistinguishable from one skipped by the path gate, and a red suite
+    // would merge green. always() starts the adjudicator anyway.
+    const gate = jobBody(windowsCheckWorkflow, "windows-check");
+
+    expect(gate).toContain("if: ${{ always() &&");
+    expect(gate).toContain("needs.changes.outputs.windows == 'true'");
+
+    for (const job of checkJobs) {
+      expect(gate).toContain(`needs.${job}.result != 'success'`);
+    }
+
+    // The guard has to be the job's only real work, before anything that
+    // could pass or fail for its own reasons.
+    const steps = gate.slice(gate.indexOf("\n    steps:"));
+    expect(steps).toContain("Fail when a Windows check job did not succeed");
+  });
+
+  it("keeps the non-test compile check alongside the test-binary build", () => {
+    // `cargo check` compiles in non-test mode and `cargo test --no-run` in
+    // test mode, so they are not duplicates: dropping the former would stop
+    // anything from catching a #[cfg(not(test))] block that fails to compile.
+    const app = jobBody(windowsCheckWorkflow, "windows-check-app");
+
+    expect(app).toContain("cargo check --target x86_64-pc-windows-msvc");
+    expect(app).toContain(
+      "cargo test --target x86_64-pc-windows-msvc --bins --no-run",
+    );
+  });
+
+  it("keeps the feature-flagged builds off the default-feature job", () => {
+    // Changing cargo features invalidates the dependency graph. Splitting
+    // these across jobs would make each one recompile what the other undid;
+    // together on one runner the churn is confined.
+    const app = jobConfig(windowsCheckWorkflow, "windows-check-app");
+    const live = jobConfig(windowsCheckWorkflow, "windows-check-live");
+
+    expect(app).not.toContain("--features");
+    expect(live).toContain("--features sync-cancel-probe");
+    expect(live).toContain("--bins --features e2e-automation");
+    expect(live).toContain("pnpm tauri build --debug");
+  });
+
+  it("keeps the crate job free of any app build", () => {
+    // It runs the shared crates through --manifest-path only, so it needs
+    // neither the Svelte bundle nor the tauri sidecar resources.
+    const crates = jobConfig(windowsCheckWorkflow, "windows-check-crates");
+
+    expect(crates).not.toContain("pnpm run build");
+    expect(crates).not.toContain("sidecar:install");
+    expect(crates).not.toContain("--bins");
   });
 });
 
