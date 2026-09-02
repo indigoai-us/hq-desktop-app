@@ -2049,13 +2049,13 @@
             class="settings-section"
             hidden={activeTab !== "widget"}
           >
-            <h2>Widget</h2>
+            <h2>Notifications widget</h2>
             <div class="settings-card">
               {#if widgetSettings}
                 {@render widgetSettings()}
               {:else}
                 <UnavailableNote
-                  label="Widget"
+                  label="Notifications widget"
                   message="The desktop widget is configured from the HQ desktop app."
                   testid="settings-widget-unavailable"
                 />

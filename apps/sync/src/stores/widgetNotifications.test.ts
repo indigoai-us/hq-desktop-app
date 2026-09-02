@@ -16,6 +16,7 @@ import {
   WIDGET_RECENT_MAX,
   WIDGET_ROW_GAP,
   WIDGET_ROW_HEIGHT,
+  DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
   WIDGET_ROW_TIMEOUT_MS,
   WIDGET_STACK_MARGIN_BOTTOM,
   WIDGET_STACK_MAX,
@@ -23,6 +24,10 @@ import {
   WIDGET_TOP_HEADROOM,
   addItem,
   bannerToStackItem,
+  clearLiveOverlay,
+  hideStack,
+  showStack,
+  stackAutoHideDue,
   channelToStackItem,
   compactActivityBursts,
   compactHoverItems,
@@ -41,6 +46,7 @@ import {
   serializeRecent,
   setOccluded,
   unreadRecentCount,
+  widgetBadgeCount,
   widgetEmptyHoverWindowSize,
   widgetHoverWindowSize,
   widgetWindowSize,
@@ -209,7 +215,7 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(state.visible.every((v) => v.expiresAt === now + WIDGET_ROW_TIMEOUT_MS)).toBe(true);
   });
 
-  it('expireItems keeps needs-action rows until resolved or dismissed', () => {
+  it('expireItems drops needs-action toast rows but keeps them in recent', () => {
     const needsAction = bannerToStackItem(
       {
         kind: 'meeting',
@@ -231,9 +237,32 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     let state = addItem(emptyWidgetStack(), notice);
     state = addItem(state, needsAction);
     const next = expireItems(state, WIDGET_ROW_TIMEOUT_MS + 1);
-    expect(next.visible.map((item) => item.id)).toEqual(['meeting:bot_1']);
-    // Dismiss still clears it.
+    expect(next.visible).toEqual([]);
+    expect(next.recent.map((item) => item.id)).toContain('meeting:bot_1');
     expect(dismissItem(next, 'meeting:bot_1').visible).toEqual([]);
+  });
+
+  it('liveOverlay=false keeps the item in recent without a live toast', () => {
+    const next = addItem(emptyWidgetStack(), item({ id: 'a', text: 'a' }), {
+      liveOverlay: false,
+    });
+    expect(next.visible).toEqual([]);
+    expect(next.queued).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['a']);
+  });
+
+  it('clearLiveOverlay drops visible and queued and leaves recent', () => {
+    const state = {
+      ...emptyWidgetStack(),
+      visible: [item({ id: 'v' })],
+      queued: [item({ id: 'q' })],
+      recent: [item({ id: 'v' }), item({ id: 'q' })],
+    };
+    const next = clearLiveOverlay(state);
+    expect(next.visible).toEqual([]);
+    expect(next.queued).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['v', 'q']);
+    expect(clearLiveOverlay(next)).toBe(next);
   });
 
   it('expireItems drops only past-due visible rows', () => {
@@ -280,6 +309,130 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(unknown.visible.map((v) => v.id)).toEqual(next.visible.map((v) => v.id));
     expect(unknown.recent.map((r) => r.id)).toEqual(next.recent.map((r) => r.id));
     expect(unknown.queued.map((q) => q.id)).toEqual(next.queued.map((q) => q.id));
+  });
+});
+
+describe('hideStack / showStack / auto-hide', () => {
+  it('hideStack idles the window without dropping needs-action rows', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const shown = addItem(emptyWidgetStack(), needsAction);
+    expect(widgetWindowSize(shown).width).toBe(WIDGET_STACK_WIDTH);
+    const hidden = hideStack(shown);
+    expect(hidden.hidden).toBe(true);
+    expect(hidden.visible.map((row) => row.id)).toEqual(['meeting:bot_1']);
+    expect(widgetWindowSize(hidden)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+    expect(showStack(hidden).hidden).toBe(false);
+    expect(widgetWindowSize(showStack(hidden)).width).toBe(WIDGET_STACK_WIDTH);
+  });
+
+  it('re-delivery of a hidden needs-action row does not re-show the overlay', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const hidden = hideStack(addItem(emptyWidgetStack(), needsAction));
+    const replayed = addItem(hidden, { ...needsAction, ts: 50 });
+    expect(replayed.hidden).toBe(true);
+    expect(widgetWindowSize(replayed)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+  });
+
+  it('a genuinely new item re-surfaces a hidden stack', () => {
+    const hidden = hideStack(
+      addItem(emptyWidgetStack(), item({ id: 'old', text: 'old' })),
+    );
+    const next = addItem(hidden, item({ id: 'new', text: 'new' }));
+    expect(next.hidden).toBe(false);
+    expect(next.visible.map((row) => row.id)).toEqual(['new', 'old']);
+  });
+
+  it('showNeedsAction=false keeps needs-action out of the live overlay', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const next = addItem(emptyWidgetStack(), needsAction, { showNeedsAction: false });
+    expect(next.visible).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['meeting:bot_1']);
+    expect(widgetWindowSize(next)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+  });
+
+  it('needs-action rows do not keep the window shown when unfocused after the auto-hide delay', () => {
+    expect(DEFAULT_WIDGET_AUTO_HIDE_SECONDS).toBe(8);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: false,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: DEFAULT_WIDGET_AUTO_HIDE_SECONDS * 1000,
+      }),
+    ).toBe(true);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: true,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: true,
+        appFocused: false,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: false,
+        autoHideSeconds: 0,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -678,6 +831,32 @@ describe('unreadRecentCount', () => {
 
     state = markRecentRead(state);
     expect(unreadRecentCount(state)).toBe(0);
+  });
+});
+
+describe('widgetBadgeCount', () => {
+  it('counts unread rows and unresolved needs-action rows once each', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    let state = addItem(emptyWidgetStack(), item({ id: 'a', text: 'hello' }));
+    state = addItem(state, needsAction);
+    expect(widgetBadgeCount(state)).toBe(2);
+
+    state = markRecentRead(state);
+    expect(unreadRecentCount(state)).toBe(0);
+    expect(widgetBadgeCount(state)).toBe(1);
+    expect(widgetBadgeCount(dismissRecent(state, 'meeting:bot_1'))).toBe(0);
   });
 });
 

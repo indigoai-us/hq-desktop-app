@@ -38,6 +38,9 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(swift).toContain('.hq/.tray-cmd');
     expect(swift).toContain('writeCommand("show ');
     expect(swift).toContain('writeCommand("quit")');
+    expect(swift).toContain('writeCommand("hide-notifications")');
+    expect(swift).toContain('Hide notifications');
+    expect(swift).toContain('writeCommand("widget-peek")');
     expect(swift).toContain('writeCommand("updates")');
     expect(swift).toContain('writeCommand("recovery")');
     expect(swift).toContain('Check for updates…');
@@ -150,6 +153,8 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
       /strip_prefix\("show"\)[\s\S]*?toggle_desktop_window/,
     );
     expect(helper).toContain('"quit" => app.exit(0)');
+    expect(helper).toContain('"hide-notifications" =>');
+    expect(helper).toContain('"widget-peek" =>');
     expect(helper).toContain('"updates" =>');
     expect(helper).toContain('"recovery" =>');
     expect(helper).toContain('spawn_tray_check_for_updates');
