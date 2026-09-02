@@ -272,3 +272,27 @@ describe('follow-ups stay in the live session', () => {
     expect(page).toContain('pillsDirty = false;');
   });
 });
+
+describe('the agent is never silently busy', () => {
+  it('renders a shimmering status tail while starting, thinking, or running tools', () => {
+    const page = readFileSync(
+      new URL('../../src/desktop-alt/pages/SessionsPage.svelte', import.meta.url),
+      'utf8',
+    );
+    const transcript = readFileSync(
+      new URL('../../src/components/sessions/SessionTranscript.svelte', import.meta.url),
+      'utf8',
+    );
+    expect(page).toContain('status={workStatus}');
+    expect(page).toMatch(/if \(starting \|\| \(sessionId && phase === 'starting'\)\) return 'starting'/);
+    expect(page).toContain("if (last.type === 'toolGroup' && last.running) return 'tools';");
+    // Streaming prose is the activity — no second indicator under it.
+    expect(page).toContain("if (last.type === 'assistantProse' && last.streaming) return '';");
+    expect(transcript).toContain('data-testid="session-working"');
+    expect(transcript).toContain("starting: 'Starting session…'");
+    expect(transcript).toContain("thinking: 'Thinking…'");
+    expect(transcript).toContain("tools: 'Working…'");
+    // Elapsed seconds only after a grace period, so quick turns stay quiet.
+    expect(transcript).toMatch(/statusElapsed >= 4/);
+  });
+});

@@ -205,6 +205,25 @@
   };
   const phaseLabel = $derived(sessionId ? (PHASE_LABEL[phase] ?? '') : '');
 
+  /**
+   * The shimmering tail line. Chosen from what is already on screen: nothing
+   * while text streams or a card waits (those ARE the activity), "Working…"
+   * while a tool group is still running, "Starting session…" until the CLI has
+   * announced itself, otherwise "Thinking…".
+   */
+  const workStatus = $derived.by((): '' | 'starting' | 'thinking' | 'tools' => {
+    if (starting || (sessionId && phase === 'starting')) return 'starting';
+    if (!sessionId || phase !== 'working') return '';
+    const last = transcript.blocks[transcript.blocks.length - 1];
+    if (!last) return 'thinking';
+    if (last.type === 'assistantProse' && last.streaming) return '';
+    if (last.type === 'toolGroup' && last.running) return 'tools';
+    if (last.type === 'permissionCard' || last.type === 'questionCard') {
+      return last.resolution === null ? '' : 'thinking';
+    }
+    return 'thinking';
+  });
+
   const emptyHint = $derived(
     sessionId
       ? ''
@@ -385,6 +404,7 @@
 
   <SessionTranscript
     blocks={transcript.blocks}
+    status={workStatus}
     loading={Boolean(sessionId) && liveSessionStore.loading}
     {emptyHint}
     {busyRequestId}
