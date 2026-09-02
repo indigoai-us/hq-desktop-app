@@ -68,18 +68,25 @@
   } from '../../components/sessions/hook-notices';
   import type { SessionCommand } from '../../components/sessions/session-events';
   import {
-    EFFORT_OPTIONS,
     LAST_COMPANY_KEY,
-    LAST_EFFORT_KEY,
-    LAST_MODEL_KEY,
     LAST_TOOL_KEY,
+    TOOL_OPTIONS,
+    clampEffort,
+    effortOptionsFor,
     friendlyModelName,
+    isFallbackCatalog,
     modelPillLabel,
     pickModel,
+    plausibleModelForTool,
     readRemembered,
+    readRememberedEffort,
+    readRememberedModel,
     readRememberedTool,
     readSessionModels,
     remember,
+    rememberEffort,
+    rememberModel,
+    validateModel,
     type ComposerImage,
     type SessionModel,
     type SessionToolId,
@@ -117,6 +124,12 @@
   let preflightRequested = $state(false);
   /** The tool the loaded catalog belongs to — the catalog is per CLI. */
   let catalogTool = $state<SessionToolId | null>(null);
+  /**
+   * The probe for `catalogTool` returned a real catalog. False while it is in
+   * flight and after it failed — the fallback rows are a courtesy, not a list
+   * a model can be validated against.
+   */
+  let catalogLoaded = $state(false);
   /** The catalog probe's own complaint, e.g. Codex not being wired up yet. */
   let catalogError = $state('');
   let openedId = $state<string | null>(null);
@@ -130,13 +143,20 @@
   let mentionStatus = $state<{ text: string; error: boolean } | null>(null);
 
   // --- the composer's pills, remembered across restarts --------------------
+  //
+  // Model and effort are remembered PER TOOL. A model is only meaningful to
+  // the CLI that offers it: one shared memory is how a Codex session's
+  // `gpt-5.6-sol` came to be sent on every turn of the next Claude session,
+  // each of which failed with `model_not_found`.
+  const initialTool = readRememberedTool();
   let company = $state<string | null>(readRemembered(LAST_COMPANY_KEY));
-  let model = $state<string | null>(readRemembered(LAST_MODEL_KEY));
-  let effort = $state<string | null>(readRemembered(LAST_EFFORT_KEY));
+  let tool = $state<SessionToolId>(initialTool);
+  let model = $state<string | null>(readRememberedModel(initialTool));
+  let effort = $state<string | null>(readRememberedEffort(initialTool));
   let permissionMode = $state<PermissionMode>('prompt');
-  let tool = $state<SessionToolId>(readRememberedTool());
   let companySeeded = $state(false);
-  let modelSeeded = $state(false);
+  /** "Model reset to Default for Claude" — the composer's footer, until the next pick. */
+  let modelNote = $state('');
 
   // --- company / project start-work -----------------------------------------
   /** The company pill's second level: a project NAME, or null for company mode. */
@@ -199,25 +219,39 @@
     const wanted = tool;
     if (catalogTool === wanted) return;
     catalogTool = wanted;
+    catalogLoaded = false;
     catalogError = '';
     void liveSessionStore
       .slashCommands(wanted)
       .then((catalog) => {
+        // The pill may have moved again while this probe ran; a stale catalog
+        // must not validate the new tool's model against the old tool's rows.
+        if (catalogTool !== wanted) return;
         probeCommands = catalog.commands;
-        models = readSessionModels(catalog.models);
-        modelSeeded = false;
+        const rows = readSessionModels(catalog.models, wanted);
+        models = rows;
+        catalogLoaded = !isFallbackCatalog(rows, wanted);
       })
       // A missing catalog costs autocomplete and a rich model list, never the
       // session — the composer falls back and still sends whatever was typed.
       // The backend's own words are kept: "In-app Codex sessions aren't
       // supported yet" is the useful half of this failure.
       .catch((err: unknown) => {
+        if (catalogTool !== wanted) return;
         probeCommands = [];
-        models = readSessionModels([]);
-        modelSeeded = false;
+        models = readSessionModels([], wanted);
+        catalogLoaded = false;
         catalogError = err instanceof Error ? err.message : String(err);
       });
   });
+
+  /** The current tool's catalog is on screen and real. */
+  const catalogReady = $derived(catalogTool === tool && catalogLoaded);
+  /** The effort ladder the current tool takes — from its catalog when it says. */
+  const effortOptions = $derived(effortOptionsFor(tool, catalogReady ? models : null));
+  const toolLabel = $derived(
+    TOOL_OPTIONS.find((option) => option.value === tool)?.label ?? 'Claude',
+  );
 
   // Seed the company pill once the preflight names the choices: the remembered
   // one when it still exists, else the first offered.
@@ -231,13 +265,69 @@
     company = offered[0]?.slug ?? null;
   });
 
-  // Same for the model pill, once the catalog has landed.
+  /**
+   * Drop the model pill's choice for one the current tool can run, and say so
+   * in the footer when an actual choice was dropped (a seed from "nothing" to
+   * the catalog's first row is not news). The dropped value is forgotten only
+   * when it was the one remembered for this tool — a live session's own bad
+   * model must not erase the operator's standing preference.
+   */
+  function resetModel(next: string | null) {
+    const dropped = model;
+    model = next;
+    if (dropped === null) return;
+    if (readRememberedModel(tool) === dropped) rememberModel(tool, next);
+    const name = next === null ? 'Default' : modelPillLabel(models, next, null, tool);
+    modelNote = `Model reset to ${name} for ${toolLabel}`;
+  }
+
+  /**
+   * The model pill never holds a model the current tool cannot run.
+   *
+   * Before the tool's catalog lands, only the CLI's own aliases are trusted
+   * (`opus`, `claude-*`; `gpt-*`). Once it has, the choice must be one of its
+   * rows — the remembered one when still offered, else the catalog's first
+   * (Default). A live session's own model is left alone as long as its CLI
+   * could plausibly run it: the catalog is what the CLI *offers*, and an alias
+   * like `opus` that a running session was launched with is not something to
+   * reset out from under it.
+   */
   $effect(() => {
-    if (modelSeeded) return;
+    const current = model;
+    const live = summary;
+    const boundToLive =
+      live !== null &&
+      pillsBoundTo === live.sessionId &&
+      live.tool === tool &&
+      current === live.requestedModel;
+    if (!catalogReady) {
+      if (!plausibleModelForTool(current, tool)) resetModel(null);
+      return;
+    }
     if (models.length === 0) return;
-    modelSeeded = true;
-    model = pickModel(models, model)?.value ?? null;
+    if (boundToLive && plausibleModelForTool(current, tool)) return;
+    const picked = pickModel(models, current)?.value ?? null;
+    if (picked !== current) resetModel(picked);
   });
+
+  /** The effort pill only ever names a rung of the current ladder. */
+  $effect(() => {
+    const clamped = clampEffort(effort, effortOptions);
+    if (clamped !== effort) effort = clamped;
+  });
+
+  /**
+   * The synchronous form of the two effects above, run on the send path so a
+   * send that lands between a tool switch and the effects' flush still
+   * carries a valid model. Effects settle in a microtask; a click does not
+   * wait for one.
+   */
+  function ensureModelValid(): void {
+    const check = validateModel(model, tool, catalogReady ? models : null);
+    if (check.reset) resetModel(null);
+    const clamped = clampEffort(effort, effortOptions);
+    if (clamped !== effort) effort = clamped;
+  }
 
   /**
    * The mention directory follows the company pill. A failed load costs the
@@ -347,7 +437,6 @@
     pillsBoundTo = live.sessionId;
     pillsDirty = false;
     companySeeded = true;
-    modelSeeded = true;
     company = live.company ?? null;
     permissionMode = live.permissionMode;
     // The pills describe the session on screen, not the last one started —
@@ -533,6 +622,8 @@
   });
 
   let pageEl = $state<HTMLDivElement | null>(null);
+  /** The composer, so the transcript's "Choose a model" can open its menu. */
+  let composer = $state<{ openModelMenu: () => void } | null>(null);
 
   /**
    * ⌘⇧H hands off. The listener lives on the window only while this page is
@@ -556,7 +647,23 @@
   // The session id, the token counts and the turn cost are deliberately NOT
   // rendered — the store still carries them (`transcript.lastUsage`), the
   // composer's footer just is not where telemetry belongs.
-  const resolvedModel = $derived(summary?.model ?? null);
+
+  /**
+   * The model the live session is ACTUALLY running: what the CLI announced on
+   * `started`, never what the pill asked for. The registry seeds its summary's
+   * `model` from the spec until `started` lands, so before that the summary is
+   * the pill in disguise — and a Claude CLI handed `gpt-5.6-sol` echoes it
+   * back on `started` before rejecting it on every turn. A model the
+   * session's own CLI could not run is therefore not "resolved" either; it is
+   * null, and the strip names the tool instead.
+   */
+  const resolvedModel = $derived.by((): string | null => {
+    const live = summary;
+    if (!live) return null;
+    const announced = liveSessionStore.startedModel ?? (live.phase === 'starting' ? null : live.model);
+    if (!announced || !plausibleModelForTool(announced, live.tool)) return null;
+    return announced;
+  });
 
   function basename(path: string): string {
     if (!path) return '';
@@ -574,17 +681,25 @@
    * Claude session read through Codex's model list would be named from a
    * table it is not in.
    */
-  function sessionModelName(live: { model: string | null; tool: SessionToolId }): string {
-    if (!live.model) return 'default model';
+  function sessionModelName(live: { tool: SessionToolId }): string {
+    // `resolvedModel` is the `started` announcement, guarded against a model
+    // the session's CLI could not run — never the pill.
+    const resolved = resolvedModel;
+    if (!resolved) {
+      return TOOL_OPTIONS.find((option) => option.value === live.tool)?.label ?? 'default model';
+    }
     const catalog = catalogTool === live.tool ? models : [];
     return (
-      modelPillLabel(catalog, live.model, null, live.tool) ||
-      friendlyModelName(live.model) ||
+      modelPillLabel(catalog, resolved, null, live.tool) ||
+      friendlyModelName(resolved) ||
       'default model'
     );
   }
 
   function specFrom(resume: string | null = null): SessionSpec {
+    // A spec never carries a model the tool cannot run — validated here, on
+    // the send path itself, not only by the effects that follow a pill move.
+    ensureModelValid();
     return {
       // Empty id asks the backend to mint one; `cwd` is likewise the backend's
       // (it always runs from the HQ root) but the shape carries both.
@@ -611,7 +726,11 @@
     // resolved, and comparing against that would read every follow-up as a
     // change.
     if (model === live.requestedModel && effort === live.effort) return null;
-    return { model, effort };
+    // Absolute, and never a model the live session's own CLI could not run.
+    return {
+      model: validateModel(model, live.tool, catalogReady && live.tool === tool ? models : null).model,
+      effort: clampEffort(effort, effortOptionsFor(live.tool, live.tool === tool ? models : null)),
+    };
   });
 
   /**
@@ -667,6 +786,8 @@
     const meta = contextTurnMeta(context);
 
     if (sessionId && !newSessionPending) {
+      // The pills are validated BEFORE the overrides are read off them.
+      ensureModelValid();
       try {
         await liveSessionStore.send(wire, attachments, pendingOverrides, meta);
       } catch (err) {
@@ -788,24 +909,35 @@
   }
 
   function chooseModel(value: string | null) {
+    modelNote = '';
     model = value;
-    remember(LAST_MODEL_KEY, value);
+    rememberModel(tool, value);
   }
 
   function chooseEffort(value: string | null) {
-    effort = EFFORT_OPTIONS.some((option) => option.value === value) ? value : null;
-    remember(LAST_EFFORT_KEY, effort);
+    effort = clampEffort(value, effortOptions);
+    rememberEffort(tool, effort);
   }
 
   /**
    * The tool cannot change under a running child either — but unlike a
    * company, a tool change on a live session is a new chat by construction, so
-   * it forks for the same reason.
+   * it forks for the same reason — for the NEXT send, not by itself.
+   *
+   * The model and effort pills move WITH the tool, synchronously, before any
+   * send can read them: each CLI has its own memory, and the other CLI's
+   * choice is never carried across. Whatever this tool remembers is then
+   * validated (aliases now, its catalog once that lands).
    */
   function chooseTool(next: SessionToolId) {
     markPillsDirty(next !== tool);
+    if (next === tool) return;
     tool = next;
     remember(LAST_TOOL_KEY, next);
+    modelNote = '';
+    model = readRememberedModel(next);
+    effort = readRememberedEffort(next);
+    ensureModelValid();
   }
 
   /** The permission pill moves on the LIVE session; it never forks. */
@@ -891,6 +1023,7 @@
       )}
     onanswerquestion={(requestId, answers) =>
       void decide(requestId, () => liveSessionStore.answerQuestion(requestId, answers))}
+    onchoosemodel={() => composer?.openModelMenu()}
   />
 
   {#if checkpointDue}
@@ -919,6 +1052,7 @@
 
   <div class="composer-dock">
     <SessionComposer
+      bind:this={composer}
       autofocus
       {commands}
       {notice}
@@ -939,10 +1073,12 @@
       {model}
       {resolvedModel}
       {effort}
+      {effortOptions}
       {permissionMode}
       {tool}
       codexAvailable={preflight?.codexAvailable ?? false}
       {newSessionPending}
+      {modelNote}
       {hqFolder}
       {mentionCandidates}
       {mentionStatus}

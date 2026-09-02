@@ -28,6 +28,13 @@ export interface SessionModel {
   /** The pill label. */
   label: string;
   description?: string;
+  /**
+   * The reasoning efforts this row says it takes, in the CLI's own order.
+   * Claude announces `supportedEffortLevels: ["low", …]`; Codex announces
+   * `supportedReasoningEfforts: [{ reasoningEffort: "low" }, …]`. Absent when
+   * the row said nothing, in which case the tool's static ladder applies.
+   */
+  efforts?: string[];
 }
 
 /**
@@ -51,6 +58,34 @@ export const FALLBACK_MODELS: SessionModel[] = [
 ];
 
 /**
+ * Codex has no CLI aliases the app could vouch for, so its fallback offers
+ * only "Default" — the CLI's own configured model. Offering `opus` / `sonnet`
+ * to a Codex session (the Claude fallback) would be offering a model that
+ * session can never start with.
+ */
+export const FALLBACK_CODEX_MODELS: SessionModel[] = [{ value: null, label: 'Default' }];
+
+/** The catalog to offer when the probe for `tool` fails. */
+export function fallbackModelsFor(tool: SessionToolId): SessionModel[] {
+  return tool === 'codex' ? [...FALLBACK_CODEX_MODELS] : [...FALLBACK_MODELS];
+}
+
+/**
+ * Is this the fallback rather than a catalog the CLI announced? The fallback
+ * is a courtesy list, not something a model can be validated against.
+ */
+export function isFallbackCatalog(
+  models: ReadonlyArray<SessionModel>,
+  tool: SessionToolId,
+): boolean {
+  const fallback = fallbackModelsFor(tool);
+  return (
+    models.length === fallback.length &&
+    models.every((entry, index) => entry.value === fallback[index]?.value)
+  );
+}
+
+/**
  * Read the CLI's model catalog.
  *
  * `{ value: 'default' }` is translated to a `null` value — the spec's `model`
@@ -58,7 +93,10 @@ export const FALLBACK_MODELS: SessionModel[] = [
  * the CLI a model name rather than declining to choose one. Entries with no
  * usable id are dropped rather than rendered; an empty result falls back.
  */
-export function readSessionModels(raw: ReadonlyArray<unknown>): SessionModel[] {
+export function readSessionModels(
+  raw: ReadonlyArray<unknown>,
+  tool: SessionToolId = 'claude',
+): SessionModel[] {
   const models: SessionModel[] = [];
   const seen = new Set<string>();
 
@@ -90,10 +128,41 @@ export function readSessionModels(raw: ReadonlyArray<unknown>): SessionModel[] {
         : ['displayName', 'display_name', 'label', 'name'];
     const label = firstString(record, labelKeys) ?? id;
     const description = firstString(record, ['description']) ?? undefined;
-    models.push({ value, label: shortenModelLabel(label), description });
+    const efforts = readEfforts(record);
+    models.push(
+      efforts.length > 0
+        ? { value, label: shortenModelLabel(label), description, efforts }
+        : { value, label: shortenModelLabel(label), description },
+    );
   }
 
-  return models.length > 0 ? models : [...FALLBACK_MODELS];
+  return models.length > 0 ? models : fallbackModelsFor(tool);
+}
+
+/**
+ * The efforts one catalog row declares. Claude: `supportedEffortLevels` as
+ * bare strings; Codex: `supportedReasoningEfforts` as `{ reasoningEffort }`
+ * objects. Anything unreadable is simply not an effort.
+ */
+function readEfforts(record: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    if (typeof value === 'string' && value.trim().length > 0 && !out.includes(value.trim())) {
+      out.push(value.trim());
+    }
+  };
+  for (const key of ['supportedEffortLevels', 'supportedReasoningEfforts']) {
+    const list = record[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (typeof entry === 'string') add(entry);
+      else if (entry && typeof entry === 'object') {
+        const row = entry as Record<string, unknown>;
+        add(row.reasoningEffort ?? row.reasoning_effort ?? row.value ?? row.effort);
+      }
+    }
+  }
+  return out;
 }
 
 function firstKey(record: Record<string, unknown>, keys: string[]): string | null {
@@ -123,10 +192,85 @@ export const EFFORT_OPTIONS: EffortOption[] = [
   { value: 'max', label: 'Max' },
 ];
 
+/** Claude's ladder — the same rows `EFFORT_OPTIONS` has always offered. */
+export const CLAUDE_EFFORT_OPTIONS: EffortOption[] = EFFORT_OPTIONS;
+
+/**
+ * Codex's ladder. Codex reasons at levels Claude has no word for (`xhigh`,
+ * `ultra`) and has no `max`; a Claude `max` sent to Codex is rejected, and a
+ * Codex `xhigh` sent to Claude likewise. The two CLIs share the three middle
+ * rungs and nothing else.
+ */
+export const CODEX_EFFORT_OPTIONS: EffortOption[] = [
+  { value: null, label: 'Auto' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra high' },
+  { value: 'ultra', label: 'Ultra' },
+];
+
+/** A person's word for an effort id, for a rung the static ladders lack. */
+export function effortLabel(value: string): string {
+  const known = [...CLAUDE_EFFORT_OPTIONS, ...CODEX_EFFORT_OPTIONS].find(
+    (option) => option.value === value,
+  );
+  if (known) return known.label;
+  if (value === 'minimal') return 'Minimal';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * The effort rows the pill offers for `tool`: the union of what the loaded
+ * catalog's rows declare, in catalog order, else the tool's static ladder.
+ * "Auto" (omit `effort`) is always the first row — it is the only rung every
+ * model takes.
+ */
+export function effortOptionsFor(
+  tool: SessionToolId,
+  models: ReadonlyArray<SessionModel> | null = null,
+): EffortOption[] {
+  const declared: string[] = [];
+  for (const model of models ?? []) {
+    for (const effort of model.efforts ?? []) {
+      if (!declared.includes(effort)) declared.push(effort);
+    }
+  }
+  if (declared.length > 0) {
+    return [{ value: null, label: 'Auto' }, ...declared.map((value) => ({ value, label: effortLabel(value) }))];
+  }
+  return tool === 'codex' ? [...CODEX_EFFORT_OPTIONS] : [...CLAUDE_EFFORT_OPTIONS];
+}
+
+/** Keep an effort only when the offered ladder has that rung; else Auto. */
+export function clampEffort(
+  value: string | null,
+  options: ReadonlyArray<EffortOption>,
+): string | null {
+  if (value === null) return null;
+  return options.some((option) => option.value === value) ? value : null;
+}
+
 /** localStorage keys for the pills that should survive a restart. */
 export const LAST_COMPANY_KEY = 'hq.sessions.lastCompany';
+/**
+ * The PRE-per-tool model key. A model is meaningful only to the CLI that
+ * offers it — remembering `gpt-5.6-sol` here and then reading it back for a
+ * Claude session is exactly how every Claude turn came to fail with
+ * `model_not_found`. Kept only so `readRememberedModel` can migrate it once.
+ */
 export const LAST_MODEL_KEY = 'hq.sessions.lastModel';
+/** Likewise for effort: Codex's `xhigh` is not a Claude effort. */
 export const LAST_EFFORT_KEY = 'hq.sessions.lastEffort';
+
+/** `hq.sessions.lastModel.claude` / `.codex` — one memory per CLI. */
+export function lastModelKey(tool: SessionToolId): string {
+  return `${LAST_MODEL_KEY}.${tool}`;
+}
+
+export function lastEffortKey(tool: SessionToolId): string {
+  return `${LAST_EFFORT_KEY}.${tool}`;
+}
 
 /**
  * Read a remembered pill choice. Storage can throw (private mode, a disabled
@@ -151,6 +295,92 @@ export function remember(key: string, value: string | null): void {
   } catch {
     // A preference that cannot be persisted is not worth failing a send over.
   }
+}
+
+/**
+ * Migrate a pre-per-tool preference into `tool`'s own slot, once. The legacy
+ * key is removed either way, so the second tool never inherits it too: a
+ * value remembered before tools had separate memories belonged to whichever
+ * tool was current when it was set, and the current tool is the best guess.
+ */
+function migrateLegacy(legacyKey: string, key: string): string | null {
+  const legacy = readRemembered(legacyKey);
+  if (legacy === null) return null;
+  remember(legacyKey, null);
+  remember(key, legacy);
+  return legacy;
+}
+
+/** The model last chosen for `tool` — never the other CLI's. */
+export function readRememberedModel(tool: SessionToolId): string | null {
+  const key = lastModelKey(tool);
+  const own = readRemembered(key);
+  if (own !== null) return own;
+  return migrateLegacy(LAST_MODEL_KEY, key);
+}
+
+/** Remember a model choice for `tool` alone. */
+export function rememberModel(tool: SessionToolId, value: string | null): void {
+  remember(lastModelKey(tool), value);
+}
+
+/** The effort last chosen for `tool` — never the other CLI's. */
+export function readRememberedEffort(tool: SessionToolId): string | null {
+  const key = lastEffortKey(tool);
+  const own = readRemembered(key);
+  if (own !== null) return own;
+  return migrateLegacy(LAST_EFFORT_KEY, key);
+}
+
+export function rememberEffort(tool: SessionToolId, value: string | null): void {
+  remember(lastEffortKey(tool), value);
+}
+
+/**
+ * Could `value` be a model of `tool`'s CLI at all? The pre-catalog check, for
+ * the moment between a tool switch and that tool's catalog landing (the probe
+ * spawns a real CLI and can take seconds).
+ *
+ * Claude: its documented aliases (`default`, `opus`, `sonnet`, `haiku`,
+ * `fable`, each with an optional `[1m]` context suffix) and any `claude-*` id,
+ * with or without a Bedrock/Vertex region prefix. Codex: `gpt-*` and the
+ * `o1`/`o3`/`o4` families. Nothing else is vouched for.
+ */
+export function plausibleModelForTool(value: string | null, tool: SessionToolId): boolean {
+  if (value === null) return true;
+  const id = value.trim();
+  if (id.length === 0) return false;
+  if (tool === 'codex') return /^gpt-/i.test(id) || /^o\d/i.test(id);
+  if (/^(?:default|opus|sonnet|haiku|fable)(?:\[\d+m\])?$/i.test(id)) return true;
+  return /^(?:(?:us|eu|apac|global)\.)?(?:anthropic\.)?claude[-.]/i.test(id);
+}
+
+/** What `validateModel` decided. `reset` is true when the choice was dropped. */
+export interface ModelValidation {
+  model: string | null;
+  reset: boolean;
+}
+
+/**
+ * The model a send may carry for `tool`. With `tool`'s catalog loaded, only a
+ * row of that catalog; without one, only an id `plausibleModelForTool` vouches
+ * for. Anything else is reset to Default (omit `model`) — the CLI's own
+ * default always exists, and a `model_not_found` on every turn does not.
+ *
+ * `models` is null when the catalog for `tool` has not landed (or the probe
+ * failed and only the fallback is showing); the fallback is not a catalog.
+ */
+export function validateModel(
+  model: string | null,
+  tool: SessionToolId,
+  models: ReadonlyArray<SessionModel> | null,
+): ModelValidation {
+  if (model === null) return { model: null, reset: false };
+  const ok =
+    models !== null && models.length > 0
+      ? models.some((entry) => entry.value === model)
+      : plausibleModelForTool(model, tool);
+  return ok ? { model, reset: false } : { model: null, reset: true };
 }
 
 /**

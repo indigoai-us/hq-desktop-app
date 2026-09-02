@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MODEL_NOT_FOUND_CODE,
+  MODEL_NOT_FOUND_TEXT,
   SESSION_AGENT_UID,
   SESSION_MEMBERS,
   SESSION_SELF_UID,
   describeToolInput,
   emptyTranscript,
   foldSessionEvents,
+  isModelNotFoundText,
   toolArtifactPaths,
   toolCategory,
   toolGroupSummary,
@@ -972,5 +975,121 @@ describe('foldSessionEvents — hidden turns and context tags', () => {
   it('a plain turn carries no tags', () => {
     const { blocks } = foldSessionEvents([{ kind: 'userMessage', text: 'hi', imageCount: 0 }]);
     expect((blocks[0] as Extract<ChatBlock, { type: 'userBubble' }>).attachments).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// model_not_found — the owner saw the same failure three times per turn
+// ---------------------------------------------------------------------------
+
+describe('foldSessionEvents — model_not_found is ONE recoverable line', () => {
+  /** The prose the Claude CLI narrates before it errors. */
+  const NARRATION =
+    "There's an issue with the selected model (gpt-5.6-sol). Please check the model name and try again. (model_not_found)";
+
+  /** Exactly what the wire delivers for one failed turn, in order. */
+  const failedTurn: SessionEvent[] = [
+    { kind: 'userMessage', text: 'hello', imageCount: 0 },
+    { kind: 'textDelta', text: "There's an issue with the selected model (gpt-5.6-sol). " },
+    { kind: 'textDelta', text: 'Please check the model name and try again. (model_not_found)' },
+    { kind: 'assistantMessage', text: NARRATION },
+    { kind: 'error', message: MODEL_NOT_FOUND_TEXT, code: MODEL_NOT_FOUND_CODE },
+    { kind: 'usage', inputTokens: 1, outputTokens: 1 },
+    { kind: 'turnDone', status: 'error', error: NARRATION },
+  ];
+
+  const errors = (blocks: ChatBlock[]) =>
+    blocks.filter((block): block is Extract<ChatBlock, { type: 'error' }> => block.type === 'error');
+
+  it('recognises the CLI’s narration of the failure', () => {
+    expect(isModelNotFoundText(NARRATION)).toBe(true);
+    expect(isModelNotFoundText("There's an issue with the selected model (x)")).toBe(true);
+    expect(isModelNotFoundText('model_not_found')).toBe(true);
+    expect(isModelNotFoundText('on it')).toBe(false);
+    expect(isModelNotFoundText(undefined)).toBe(false);
+  });
+
+  it('renders the bubble and ONE red line — no prose, no "Turn failed" echo', () => {
+    const { blocks } = foldSessionEvents(failedTurn);
+    expect(types(blocks)).toEqual(['userBubble', 'error']);
+    const [line] = errors(blocks);
+    expect(line?.text).toBe(MODEL_NOT_FOUND_TEXT);
+    expect(line?.code).toBe(MODEL_NOT_FOUND_CODE);
+    expect(line?.tone).toBe('error');
+    expect(proseText(blocks)).toEqual([]);
+  });
+
+  it('offers "Choose a model" on that line', () => {
+    const { blocks } = foldSessionEvents(failedTurn);
+    expect(errors(blocks)[0]?.action).toBe('chooseModel');
+  });
+
+  it('withdraws the narration even when only the streamed deltas arrived', () => {
+    // Mid-stream: the prose has started, the error has not landed yet.
+    const { blocks } = foldSessionEvents(failedTurn.slice(0, 3));
+    expect(types(blocks)).toEqual(['userBubble', 'error']);
+    expect(errors(blocks)[0]?.action).toBe('chooseModel');
+  });
+
+  it('folds the `error` event first when the wire delivers it before the prose', () => {
+    const reordered: SessionEvent[] = [
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      { kind: 'error', message: MODEL_NOT_FOUND_TEXT, code: MODEL_NOT_FOUND_CODE },
+      { kind: 'assistantMessage', text: NARRATION },
+      { kind: 'turnDone', status: 'error', error: NARRATION },
+    ];
+    const { blocks } = foldSessionEvents(reordered);
+    expect(types(blocks)).toEqual(['userBubble', 'error']);
+  });
+
+  it('keeps one line when only the turnDone names the model failure', () => {
+    const { blocks } = foldSessionEvents([{ kind: 'turnDone', status: 'error', error: NARRATION }]);
+    expect(types(blocks)).toEqual(['error']);
+    expect(errors(blocks)[0]?.action).toBe('chooseModel');
+    expect(errors(blocks)[0]?.text).toBe(MODEL_NOT_FOUND_TEXT);
+  });
+
+  it('is per turn: the next turn’s failure gets its own line', () => {
+    const twice = [...failedTurn, ...failedTurn];
+    const { blocks } = foldSessionEvents(twice);
+    expect(types(blocks)).toEqual(['userBubble', 'error', 'userBubble', 'error']);
+  });
+
+  it('leaves ordinary prose in a turn that did not fail on its model alone', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      { kind: 'assistantMessage', text: 'on it' },
+      { kind: 'turnDone', status: 'success' },
+    ]);
+    expect(types(blocks)).toEqual(['userBubble', 'assistantProse']);
+  });
+});
+
+describe('foldSessionEvents — an error said once is said once', () => {
+  it('drops a "Turn failed" that repeats the error event’s own message', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'error', message: 'Claude had a server error — try again.', code: 'server_error' },
+      { kind: 'turnDone', status: 'error', error: 'Claude had a server error — try again.' },
+    ]);
+    expect(types(blocks)).toEqual(['error']);
+    expect((blocks[0] as Extract<ChatBlock, { type: 'error' }>).text).toBe(
+      'Claude had a server error — try again. (server_error)',
+    );
+  });
+
+  it('keeps a "Turn failed" that says something new', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'error', message: 'first thing', code: 'E1' },
+      { kind: 'turnDone', status: 'error', error: 'a different thing' },
+    ]);
+    expect(types(blocks)).toEqual(['error', 'error']);
+    expect((blocks[1] as Extract<ChatBlock, { type: 'error' }>).text).toBe(
+      'Turn failed: a different thing.',
+    );
+  });
+
+  it('carries the CLI’s code on the block', () => {
+    const { blocks } = foldSessionEvents([{ kind: 'error', message: 'boom', code: 'E1' }]);
+    expect((blocks[0] as Extract<ChatBlock, { type: 'error' }>).code).toBe('E1');
   });
 });

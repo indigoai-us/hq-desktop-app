@@ -53,6 +53,12 @@
       requestId: string,
       answers: { questionId: string; values: string[] }[],
     ) => void;
+    /**
+     * The `model_not_found` line's one-click recovery: open the composer's
+     * model menu. Absent, the line still says what went wrong; it just cannot
+     * offer the fix.
+     */
+    onchoosemodel?: () => void;
   }
 
   let {
@@ -66,6 +72,7 @@
     onallowsession,
     ondenypermission,
     onanswerquestion,
+    onchoosemodel,
   }: Props = $props();
 
   let scroller = $state<HTMLDivElement | null>(null);
@@ -237,8 +244,24 @@
             class:warn={block.tone === 'warn'}
             role={block.tone === 'error' ? 'alert' : undefined}
             data-testid="session-inline-error"
+            data-code={block.code}
           >
             {block.text}
+            {#if block.action === 'chooseModel' && onchoosemodel}
+              <button
+                type="button"
+                class="inline-fix"
+                data-testid="session-choose-model"
+                onclick={(event) => {
+                  // The composer closes its menus on any window click; this
+                  // click is asking it to OPEN one.
+                  event.stopPropagation();
+                  onchoosemodel?.();
+                }}
+              >
+                Choose a model
+              </button>
+            {/if}
           </p>
         {:else}
           <div class="divider" data-testid="session-divider">
@@ -485,6 +508,26 @@
   .inline-error.warn {
     background: color-mix(in srgb, var(--v4-warn, currentColor) 10%, transparent);
     color: var(--v4-warn, var(--v4-text-2));
+  }
+
+  /* The recovery sits on the same line as the sentence it fixes. */
+  .inline-fix {
+    margin-left: var(--v4-space-2);
+    height: 20px;
+    padding: 0 8px;
+    border: 1px solid currentColor;
+    border-radius: var(--v4-radius-pill, 999px);
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 18px;
+    vertical-align: middle;
+    cursor: pointer;
+  }
+
+  .inline-fix:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
   }
 
   .divider {
