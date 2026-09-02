@@ -2729,6 +2729,7 @@ dependencies = [
  "block2",
  "dirs",
  "hq-desktop-core",
+ "libc",
  "objc2",
  "raw-window-handle",
  "window-vibrancy",
@@ -2738,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.175"
+version = "0.10.178"
 dependencies = [
  "aws-config",
  "aws-credential-types",

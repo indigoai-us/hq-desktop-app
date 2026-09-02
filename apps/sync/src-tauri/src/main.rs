@@ -169,31 +169,11 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     hq_telemetry::record_native_panic_seam(
         hq_telemetry::NativePanicSeam::SingleInstanceSurfaceExisting,
     );
-
-    #[cfg(target_os = "windows")]
-    {
-        tray::show_window_at_tray(app);
-        util::logfile::log(
-            "app",
-            "single-instance: showed main popover at tray on second launch",
-        );
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        util::logfile::log(
-            "app",
-            "single-instance: focused existing window on second launch",
-        );
-    } else {
-        util::logfile::log(
-            "app",
-            "single-instance: second launch with no window to focus",
-        );
-    }
+    tray::activate_primary_surface(app);
+    util::logfile::log(
+        "app",
+        "single-instance: opened primary surface on second launch",
+    );
 }
 
 fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
@@ -380,6 +360,13 @@ fn main() {
             surface_existing_instance(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
+                .on_navigation(|webview, url| {
+                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -443,6 +430,7 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(updater::DownloadedUpdate::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -567,6 +555,7 @@ fn main() {
             commands::telemetry::mark_consent_reprompt_shown,
             commands::telemetry::write_menubar_telemetry_pref,
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
+            commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
@@ -622,6 +611,7 @@ fn main() {
             commands::long_paths::open_long_paths_settings,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
+            commands::autostart::take_launch_agent_repoint_notice,
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
@@ -629,6 +619,9 @@ fn main() {
             updater::check_for_updates,
             updater::get_pending_update,
             updater::install_update,
+            updater::download_update,
+            updater::install_downloaded_update,
+            updater::get_downloaded_update,
             updater::available_channels,
             updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,
@@ -786,6 +779,7 @@ fn main() {
             commands::messages::send_channel_message,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
+            commands::messages::delete_channel,
             commands::messages::mark_channel_read,
             tray_helper::set_tray_message_badge,
             commands::messages::toggle_reaction,
@@ -893,6 +887,7 @@ fn main() {
             // possible). Best-effort and idempotent — failures log to the
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
+            commands::config::migrate_retired_hq_work_handoff();
 
             // Record this app's version to ~/.hq/sync-version.json so the
             // hq-cli can attach the installed hq-sync version to feedback
@@ -901,6 +896,13 @@ fn main() {
             commands::config::record_sync_version(
                 &app.package_info().version.to_string(),
             );
+
+            // Heal a LaunchAgent still pointing at a renamed bundle
+            // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
+            // pass, so a KeepAlive agent cannot keep the previous binary
+            // running. Best-effort and idempotent — never aborts launch.
+            #[cfg(target_os = "macos")]
+            commands::autostart::reconcile_launch_agent_on_launch();
 
             // Default-on autostart: ensure the LaunchAgent plist matches the
             // effective `startAtLogin` pref (default true) so a fresh install

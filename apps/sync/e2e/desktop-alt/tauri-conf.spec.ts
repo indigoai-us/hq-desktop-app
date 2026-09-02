@@ -15,6 +15,14 @@ const desktopCommandSource = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url)),
   'utf8',
 );
+const mainRsSource = readFileSync(
+  fileURLToPath(new URL('../../src-tauri/src/main.rs', import.meta.url)),
+  'utf8',
+);
+const externalLinksRs = readFileSync(
+  fileURLToPath(new URL('../../src-tauri/src/util/external_links.rs', import.meta.url)),
+  'utf8',
+);
 const glassSource = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/glass.rs', import.meta.url)),
   'utf8',
@@ -71,6 +79,16 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(csp).toContain('asset:');
     expect(csp).not.toMatch(/img-src[^;]*https?:/i);
     expect(csp).not.toMatch(/img-src[^;]*\*/i);
+  });
+
+  it('routes target=_blank and in-webview navigations to the OS browser', () => {
+    expect(desktopCommandSource).toContain('deny_webview_new_windows');
+    expect(mainRsSource).toContain('Builder::<tauri::Wry, ()>::new("external-links")');
+    expect(mainRsSource).toContain('.on_navigation(|webview, url|');
+    expect(externalLinksRs).toContain('.on_new_window');
+    expect(externalLinksRs).toContain('is_browser_url');
+    expect(externalLinksRs).toContain('mailto');
+    expect(externalLinksRs).toContain('NewWindowResponse::Deny');
   });
 
   it('applies AppKit Liquid Glass on the main thread with an older-macOS vibrancy fallback', () => {

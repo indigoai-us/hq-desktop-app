@@ -14,6 +14,24 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## macOS bundle identity (do not rename)
+
+The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in
+`apps/sync/src-tauri/tauri.conf.json`. The user LaunchAgent label is
+`ai.indigo.hq-sync-menubar` (`~/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist`).
+
+These two must stay stable. Renaming the `.app` bundle without repointing the
+LaunchAgent leaves a KeepAlive agent running the previous binary from the old
+path, so an in-place update looks installed while the user stays on the old
+version. `scripts/bundle-name-contract.test.ts` fails the release if
+`productName` or the LaunchAgent label constant drift.
+
+On every launch from `/Applications`, and again after an updater install, the
+app rewrites a stale LaunchAgent path to the running bundle (preserving other
+plist keys), reloads launchd (`bootout` / `bootstrap`), retires a leftover
+`HQ Sync.app` in `/Applications`, and terminates processes still running from
+that old path.
+
 ## Install Window (macOS DMG)
 
 The disk image is styled: `apps/sync/scripts/create-dmg.sh` builds it from the
@@ -58,15 +76,32 @@ Supported tag forms are `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`.
 ## Release Tag Cooldown
 
 Because the tag *is* the release, a `git push` of a `v*` tag starts a macOS
-universal build plus Windows x64 and ARM64 builds on GitHub-hosted runners.
-GitHub bills macOS minutes at 10x and Windows minutes at 2x a Linux minute, so
-each tag push spends a meaningful amount of money, and a burst of tags spends
-it repeatedly on builds nobody installs.
+universal build plus Windows x64 and ARM64 builds, runs for 20–30 minutes, and
+— for a stable tag — publishes an updater manifest that every installed copy of
+the app picks up. Releasing back to back therefore prompts users to update to
+builds that are superseded within the hour, and leaves no window in which a
+release can be observed before the next one lands on top of it.
 
-A `pre-push` hook at `.githooks/pre-push` therefore enforces two rules:
+**This is not a cost control, despite what this document used to say.** The
+repository is public, so standard GitHub-hosted runners are free, and
+`macos-14`, `windows-latest` and `ubuntu-latest` are all standard. The 10x
+macOS / 2x Windows minute multipliers apply to billable minutes on private
+repositories and have never applied here. Publication ordering is not the
+reason either: the `Revalidate stable publication order` step in `publish`
+re-checks, inside the global publication lock and immediately before the only
+public-state mutation, that the tag being published is not older than what is
+already latest. That step — not this hook, and not the `concurrency` group,
+which serializes execution without choosing an order — is what stops an older
+release from replacing a newer one.
+
+What is left — update churn, and leaving a gap in which a release can actually
+be looked at — justifies a short window rather than a long one, which is why
+the default is **2 hours**.
+
+A `pre-push` hook at `.githooks/pre-push` enforces two rules:
 
 - **One release at a time.** A `v*` tag is refused when another release went
-  out within the last **6 hours**.
+  out within the last **2 hours**.
 - **One release per push.** `git push origin v1.2.3 v1.2.4` is refused
   outright; git runs the hook once for the whole push, so a single cooldown
   check would otherwise clear two builds at once.
@@ -87,7 +122,7 @@ ten-minute-old tag.
 The marker is kept **per destination**, so pushing a tag to a personal fork or
 a local mirror does not spend the cooldown that protects `origin`. The tag-date
 signal is deliberately not scoped that way: a release tag created minutes ago
-means a billed build is probably already running, and the hook cannot tell a
+means a release build is probably already running, and the hook cannot tell a
 harmless bare mirror from a fork that would build it, so it errs toward
 blocking.
 
@@ -102,8 +137,8 @@ can also run it by hand:
 git config core.hooksPath .githooks
 ```
 
-If a release is genuinely urgent and you accept the build cost, bypass the
-cooldown explicitly rather than disabling hooks wholesale:
+If a release is genuinely urgent, bypass the cooldown explicitly rather than
+disabling hooks wholesale:
 
 ```bash
 HQ_ALLOW_TAG_PUSH=1 git push origin vX.Y.Z

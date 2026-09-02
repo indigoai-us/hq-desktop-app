@@ -9,6 +9,7 @@
 
 import {
   AGENT_PATHS,
+  DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -60,6 +61,9 @@ export const WEB_PATHS = {
     `/v1/notify/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(personUid)}`,
   /** GET/PUT the caller's editable global member profile. */
   profile: "/v1/profile",
+  /** PATCH agent profile (displayName / title / description / avatarBase64). */
+  agentProfile: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
@@ -149,7 +153,6 @@ export const WEB_PATHS = {
   agentStatus: AGENT_PATHS.status,
   agentJobs: AGENT_PATHS.jobs,
   agentPauseJob: AGENT_PATHS.pauseJob,
-  agentProfile: AGENT_PATHS.profile,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
   agentDeprovision: AGENT_PATHS.deprovision,
@@ -458,6 +461,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     getProfile: () => this.get(WEB_PATHS.profile),
     updateProfile: (input) => this.request("PUT", WEB_PATHS.profile, input),
+    updateAgentProfile: (agentUid, input) =>
+      this.request("PATCH", WEB_PATHS.agentProfile(agentUid), input),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -484,6 +489,23 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.channelMembers(channelId), { toPersonUid }),
     removeChannelMember: (channelId, personUid) =>
       this.request("DELETE", WEB_PATHS.channelMember(channelId, personUid)),
+    deleteChannel: async (channelId) => {
+      const path = WEB_PATHS.channel(channelId);
+      const res = await this.request<Json>("DELETE", path);
+      // Mirror the Tauri adapter (see `DELETE_CHANNEL_UNSUPPORTED_MESSAGE`):
+      // only the bare API-Gateway 404 — no `code`, no server `error` — means
+      // the route does not exist yet. Coded / error-carrying 404s keep the
+      // server text.
+      if (
+        !res.ok &&
+        res.code === "http-404" &&
+        (res.message === undefined ||
+          res.message === `DELETE ${path} failed`)
+      ) {
+        return failure("http-404", DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+      }
+      return res;
+    },
     listContacts: (opts) => {
       const companyUid = opts?.companyUid?.trim();
       // Company-scoped slice of the same surface — never widen to the global
@@ -904,6 +926,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getVersions: async () => DESKTOP_ONLY,
     checkForUpdates: async () => DESKTOP_ONLY,
     installUpdate: async () => DESKTOP_ONLY,
+    downloadUpdate: async () => DESKTOP_ONLY,
+    installDownloadedUpdate: async () => DESKTOP_ONLY,
+    getDownloadedUpdate: async () => DESKTOP_ONLY,
     getPendingUpdate: async () => DESKTOP_ONLY,
     checkCoreState: async () => DESKTOP_ONLY,
     installCoreUpdate: async () => DESKTOP_ONLY,

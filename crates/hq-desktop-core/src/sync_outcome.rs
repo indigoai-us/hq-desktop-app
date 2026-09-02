@@ -2051,6 +2051,13 @@ pub const SIGBUS_SIGNAL_LINUX: i32 = 7;
 pub const SIGBUS_SIGNAL_MACOS: i32 = 10;
 /// POSIX SIGSEGV — a segmentation fault, always a genuine crash.
 pub const SIGSEGV_SIGNAL: i32 = 11;
+/// POSIX SIGHUP — a controlling-terminal / session hangup. On macOS this is the
+/// shape a session end or logout delivers to an unattended child; it is not a
+/// fault, but it is unexplained until its producer is named, so it stays
+/// alertable while being reported by name rather than as a raw Debug tuple.
+pub const SIGHUP_SIGNAL: i32 = 1;
+/// POSIX SIGINT — an interactive interrupt (Ctrl-C).
+pub const SIGINT_SIGNAL: i32 = 2;
 
 /// True when a termination signal denotes a genuine process crash (segfault,
 /// bus error, illegal instruction, abort, or SIGKILL — which can be an OOM
@@ -2548,6 +2555,29 @@ pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
         Some(1) => "killed by SIGHUP".into(),
         Some(n) => format!("killed by signal {}", n),
         None => "with code unknown".into(),
+    }
+}
+
+/// Closed, content-safe vocabulary naming the DISPOSITION of the signal that
+/// terminated an auto-sync watcher, so a signal-only termination is filterable in
+/// Sentry without parsing the message text. Every arm returns a fixed token that
+/// carries no machine-specific byte, and the returned value is independently
+/// re-validated at the telemetry egress.
+///
+/// The `fault` arm is defined by [`is_crash_signal`] so it can never drift from
+/// the fault set the watcher-exit seam already alerts on
+/// (SIGABRT/SIGBUS/SIGILL/SIGKILL/SIGSEGV); a drift-guard test in `daemon.rs`
+/// additionally pins it to `is_fault_signal`. The remaining arms name SIGTERM
+/// (`cancel`), SIGHUP (`hangup`), and SIGINT (`interrupt`); any other signal is
+/// `other`, and a signal-free exit is `none`.
+pub fn watcher_exit_signal_class(signal: Option<i32>) -> &'static str {
+    match signal {
+        None => "none",
+        Some(sig) if is_crash_signal(Some(sig)) => "fault",
+        Some(SIGTERM_SIGNAL) => "cancel",
+        Some(SIGHUP_SIGNAL) => "hangup",
+        Some(SIGINT_SIGNAL) => "interrupt",
+        Some(_) => "other",
     }
 }
 
@@ -4219,6 +4249,111 @@ mod tests {
     fn describe_exit_prefers_code_over_signal() {
         // Should never happen in practice (POSIX is XOR), but be defensive.
         assert_eq!(describe_exit(Some(42), Some(9)), "with code 42");
+    }
+
+    #[test]
+    fn describe_exit_names_every_signal_only_shape_the_watcher_fallback_reaches() {
+        // The watcher-exit fallback now routes signal-only terminations through
+        // this renderer instead of a raw Debug tuple, so pin the exact strings —
+        // SIGHUP being the one HQ-DESKTOP-5Y observed as `code=None signal=Some(1)`.
+        assert_eq!(describe_exit(None, Some(SIGHUP_SIGNAL)), "killed by SIGHUP");
+        assert_eq!(describe_exit(None, Some(SIGINT_SIGNAL)), "killed by SIGINT");
+        assert_eq!(
+            describe_exit(None, Some(SIGKILL_SIGNAL)),
+            "killed by SIGKILL (likely OOM or force-quit)"
+        );
+        assert_eq!(
+            describe_exit(None, Some(SIGSEGV_SIGNAL)),
+            "crashed with SIGSEGV (segfault)"
+        );
+        assert_eq!(
+            describe_exit(None, Some(SIGBUS_SIGNAL_MACOS)),
+            "crashed with SIGBUS"
+        );
+        assert_eq!(
+            describe_exit(None, Some(SIGABRT_SIGNAL)),
+            "aborted with SIGABRT"
+        );
+        assert_eq!(
+            describe_exit(None, Some(SIGTERM_SIGNAL)),
+            "killed by SIGTERM (cancelled)"
+        );
+        // An unmapped signal still names itself rather than leaking a raw tuple.
+        assert_eq!(describe_exit(None, Some(31)), "killed by signal 31");
+    }
+
+    #[test]
+    fn watcher_exit_signal_class_is_a_closed_vocabulary() {
+        // A signal-free exit is `none`; SIGHUP is `hangup`.
+        assert_eq!(watcher_exit_signal_class(None), "none");
+        assert_eq!(watcher_exit_signal_class(Some(SIGHUP_SIGNAL)), "hangup");
+        assert_eq!(watcher_exit_signal_class(Some(SIGINT_SIGNAL)), "interrupt");
+        assert_eq!(watcher_exit_signal_class(Some(SIGTERM_SIGNAL)), "cancel");
+
+        // Exhaustive over the POSIX signal range: every signal maps to exactly one
+        // of the six fixed tokens, and the `fault` arm is byte-for-byte the
+        // `is_crash_signal` set (so the two can never drift).
+        const VOCAB: [&str; 6] = ["fault", "cancel", "hangup", "interrupt", "other", "none"];
+        for sig in 1..=31 {
+            let class = watcher_exit_signal_class(Some(sig));
+            assert!(
+                VOCAB.contains(&class),
+                "signal {sig} produced out-of-vocabulary class {class}"
+            );
+            assert_eq!(
+                class == "fault",
+                is_crash_signal(Some(sig)),
+                "fault-arm drift from is_crash_signal at signal {sig}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fingerprint_tokens_are_unchanged_across_the_shape_matrix() {
+        // This fix is reporting-only: it changes the message text, never the
+        // fingerprint. Pin the three fingerprint helpers for the full shape matrix
+        // so a grouping regression fails loudly. SIGHUP stays `signal:1`.
+        let none = MemoryExhaustionEvidence::default();
+        let cases: [(Option<i32>, Option<i32>, &str); 6] = [
+            (None, Some(SIGHUP_SIGNAL), "signal:1"),
+            (None, Some(SIGKILL_SIGNAL), "signal:9"),
+            (Some(221), None, "exit:221"),
+            (Some(0xC000_0409u32 as i32), None, "windows:fault:0xC0000409"),
+            (Some(3), Some(9), "invalid:exit:3+signal:9"),
+            (None, None, "unknown"),
+        ];
+        for (code, signal, token) in cases {
+            assert_eq!(termination_fingerprint_token(code, signal), token);
+            // With no memory evidence the watcher token is exactly the host token.
+            assert_eq!(
+                watcher_termination_fingerprint_token(
+                    code,
+                    signal,
+                    TerminationHost::Posix,
+                    none
+                ),
+                termination_fingerprint_token_for_host(code, signal, TerminationHost::Posix)
+            );
+        }
+        // SIGABRT is the one shape normalized away from its raw signal token, on
+        // BOTH hosts — pinned so the fix does not disturb that convergence.
+        assert_eq!(
+            termination_fingerprint_token_for_host(None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            "abort:sigabrt"
+        );
+        assert_eq!(
+            termination_fingerprint_token_for_host(
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Windows
+            ),
+            "abort:sigabrt"
+        );
+        // SIGHUP is NOT normalized: its host token is its raw signal token.
+        assert_eq!(
+            termination_fingerprint_token_for_host(None, Some(SIGHUP_SIGNAL), TerminationHost::Posix),
+            "signal:1"
+        );
     }
 
     #[test]

@@ -34,6 +34,14 @@
     onremovemember?: (row: StatusPersonRow) => void;
     /** personUid currently mid-removal — disables its button + shows "…". */
     removingUid?: string | null;
+    /**
+     * Delete the whole channel (owner only). The popover only raises the
+     * intent — the shell owns the confirm dialog + the call, because this
+     * popover closes on any outside mousedown and would eat the dialog.
+     */
+    ondeletechannel?: () => void;
+    /** Delete in flight — disables the trash control + shows "…". */
+    deleting?: boolean;
   }
 
   let {
@@ -44,6 +52,8 @@
     onopenprofile,
     onremovemember,
     removingUid = null,
+    ondeletechannel,
+    deleting = false,
   }: Props = $props();
 
   /** The signed-in member's role in this channel — gates removing others. */
@@ -414,6 +424,37 @@
       {/each}
     </section>
   {/if}
+
+  {#if ondeletechannel && selfIsOwner}
+    <div class="p-footer" data-testid="status-channel-actions">
+      <button
+        type="button"
+        class="m-remove p-delete"
+        data-testid="status-channel-delete"
+        aria-label="Delete channel"
+        title="Delete channel"
+        disabled={deleting}
+        onclick={() => ondeletechannel?.()}
+      >
+        {#if deleting}
+          …
+        {:else}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="13"
+            height="13"
+            fill="currentColor"
+            viewBox="0 0 256 256"
+            aria-hidden="true"
+          >
+            <path
+              d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"
+            ></path>
+          </svg>
+        {/if}
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -742,6 +783,24 @@
   .m-remove:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Owner-only channel actions: one right-justified trash control. */
+  .p-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 4px;
+    padding: 6px 8px 2px;
+    border-top: 1px solid var(--panel-border);
+  }
+
+  .p-delete {
+    font-size: 12px;
+  }
+
+  .p-delete svg {
+    display: block;
   }
 
   .member-open:focus-visible,

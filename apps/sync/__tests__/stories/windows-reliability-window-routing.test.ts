@@ -87,29 +87,24 @@ describe('US-004: Single-window activation and navigation', () => {
     });
   });
 
-  describe('tray left-click and taskbar → compact popover', () => {
-    it('Given HQ is running, when the tray icon is activated, then one compact popover is toggled and no desktop window is created', () => {
+  describe('tray left-click and taskbar → desktop workspace', () => {
+    it('Given HQ is running, when the tray icon is activated, then the desktop workspace is shown', () => {
       const tray = readTray();
       expect(tray).toMatch(
-        /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?toggle_popover_window/,
+        /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?activate_primary_surface/,
       );
-      // Left-click must not open the full desktop.
       const clickBlock = tray.match(
         /on_tray_icon_event[\s\S]*?\.build\(app\)/,
       )?.[0];
       expect(clickBlock).toBeTruthy();
-      expect(clickBlock).toContain('toggle_popover_window');
+      expect(clickBlock).toContain('activate_primary_surface');
       expect(clickBlock).not.toContain('toggle_desktop_window');
     });
 
-    it('Given a second-process / taskbar activation, when single-instance fires, then the compact popover is shown (not desktop-alt)', () => {
+    it('Given a second-process / taskbar activation, when single-instance fires, then the desktop workspace is shown', () => {
       const main = readMain();
       expect(main).toMatch(/TaskbarSecondProcess/);
-      expect(main).toMatch(/single-instance[\s\S]*?show_window_at_tray|show_window_at_tray/);
-      // Must not prefer focusing desktop-alt on second launch.
-      expect(main).not.toMatch(
-        /single_instance::init[\s\S]*?get_webview_window\("desktop-alt"\)[\s\S]*?set_focus/,
-      );
+      expect(main).toContain('activate_primary_surface');
     });
   });
 

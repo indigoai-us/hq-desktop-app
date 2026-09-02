@@ -134,20 +134,20 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // US-004: menu-bar click toggles the COMPACT popover (not the full
-            // desktop). Desktop is reserved for the right-click "Open desktop
-            // view" command below. Still parse the icon's on-screen centre
-            // ("show <x>", Cocoa points) so the popover anchors UNDER the icon.
+            // Menu-bar click opens the desktop workspace (first-run onboarding
+            // still keeps the installer card on `main`). Parse the icon's
+            // on-screen centre ("show <x>", Cocoa points) so a leftover
+            // popover still anchors under the icon if onboarding is showing.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);
                 }
-                // Window ops (esp. the `is_visible()` toggle query) MUST run on
-                // the main thread — calling them from this poll thread deadlocks
-                // AppKit and wedges the poller after the first click. Marshal it.
+                // Window ops MUST run on the main thread — calling them from
+                // this poll thread deadlocks AppKit.
                 let app_main = app.clone();
-                let _ =
-                    app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+                let _ = app.run_on_main_thread(move || {
+                    crate::tray::activate_primary_surface(&app_main)
+                });
             } else {
                 match cmd {
                     "sync" => {

@@ -21,8 +21,10 @@ use crate::commands::process::{
     run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessError,
     ProcessEvent,
 };
-#[cfg(target_os = "windows")]
-use crate::commands::session_end_observer::SessionEndObserverHandle;
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_session_end_reading,
+    current_windows_terminator_attribution, SessionEndReading,
+};
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use hq_desktop_core::sync_outcome::{runner_assertion_for_class, RUNNER_PHASE_PRE_PROTOCOL};
@@ -55,6 +57,7 @@ use hq_desktop_core::sync_outcome::{
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_termination_fingerprint_token,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class,
     windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
     DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
     TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
@@ -1852,105 +1855,14 @@ fn watcher_exit_capture_context(
     }
 }
 
-/// One read of the session-end observer: the attribution capture policy
-/// consumes, plus the readiness that explains it. Both are fixed-vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionEndReading {
-    attribution: WindowsTerminatorAttribution,
-    readiness: &'static str,
-}
-
-#[cfg(target_os = "windows")]
-fn read_session_end_attribution<R: tauri::Runtime>(app: &AppHandle<R>) -> SessionEndReading {
-    match app.try_state::<SessionEndObserverHandle>() {
-        Some(observer) => SessionEndReading {
-            attribution: observer.tracker().attribution_now(),
-            readiness: observer.tracker().readiness().class_name(),
-        },
-        None => SessionEndReading {
-            attribution: WindowsTerminatorAttribution::ObserverUnavailable,
-            readiness: "unavailable",
-        },
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return None;
-    }
-    // Install the re-read probe from the same handle that produces the reading
-    // below, so a deferral created downstream can ask this same observer again
-    // once its grace has elapsed. Idempotent, and deliberately sited here: this
-    // is the one function that both owns an `AppHandle` and runs before any
-    // deferral can exist, so the probe can never be missing when one is.
-    install_session_end_attribution_probe(app);
-    Some(read_session_end_attribution(app).attribution)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    _app: &AppHandle<R>,
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    None
-}
-
-/// Read the durable session-end latch at the exit boundary, but ONLY on the
-/// `DBG_TERMINATE_PROCESS`/no-signal shape — the one exit that may consult it, so
-/// a genuine fault on any other code can never be suppressed by a coincident
-/// session end. The latch is a process-global, so this needs no `AppHandle`.
-#[cfg(target_os = "windows")]
-fn current_session_end_latch_reading_for_exit(
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> SessionEndLatchReading {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return SessionEndLatchReading::Unavailable;
-    }
-    crate::commands::session_end_latch::current_session_end_latch_reading()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_session_end_latch_reading_for_exit(
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> SessionEndLatchReading {
-    SessionEndLatchReading::Unavailable
-}
-
-/// Re-read the observer after a grace, from wherever the deferral resolves.
-///
-/// The exit callback owns an `AppHandle`; the bounded task that resolves the
-/// deferral does not, and threading one through every watcher-exit signature
-/// would put a Tauri handle in the pure decision path. A process-global probe
-/// keeps that path handle-free while still asking the real observer.
-type SessionEndAttributionProbe = Box<dyn Fn() -> Option<SessionEndReading> + Send + Sync>;
-
-static SESSION_END_ATTRIBUTION_PROBE: OnceLock<SessionEndAttributionProbe> = OnceLock::new();
-
-#[cfg(target_os = "windows")]
-fn install_session_end_attribution_probe<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if SESSION_END_ATTRIBUTION_PROBE.get().is_some() {
-        return;
-    }
-    let app = app.clone();
-    let _ = SESSION_END_ATTRIBUTION_PROBE
-        .set(Box::new(move || Some(read_session_end_attribution(&app))));
-}
-
-/// The reading a deferral resolves against. `None` means no observer could be
-/// consulted at all, which fails closed: the held-back event is sent.
-fn current_session_end_reading() -> Option<SessionEndReading> {
-    SESSION_END_ATTRIBUTION_PROBE
-        .get()
-        .and_then(|probe| probe())
-}
+// The Windows session-end attribution readers (`current_windows_terminator_
+// attribution`, `current_session_end_latch_reading_for_exit`, the observer read,
+// the deferral re-read probe, and `current_session_end_reading`) moved to
+// `crate::commands::session_end_attribution` so BOTH child-exit capture seams —
+// this daemon/watcher route and the manual `Sync Now` runner-exit seam in
+// `commands::sync` — call the one shared source (HQ-DESKTOP-5X). Bodies and cfg
+// gates are unchanged; see that module. They are `use`d in at the top of this
+// file, so every existing call site here resolves without change.
 
 /// A watcher-exit capture held back while the session-end decision is re-read.
 ///
@@ -3329,15 +3241,25 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
-    } else if windows_termination.is_some() {
-        let exit_description = describe_exit(code, signal);
+    } else if code.is_some() && signal.is_some() {
+        // Malformed both-present exit. `describe_exit` prefers `code` and would
+        // silently drop the signal, so keep the raw rendering that preserves both
+        // values here — mirroring the `invalid:exit:{code}+signal:{signal}`
+        // isolation the fingerprint token already applies to this one shape.
         format!(
-            "auto-sync watcher exited unexpectedly ({exit_description}), \
+            "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     } else {
+        // Every remaining shape — a signal-only termination (e.g. macOS SIGHUP),
+        // a Windows status, or a plain exit code — routes through the renderer
+        // that already names it (HQ-DESKTOP-5Y). This subsumes the old
+        // Windows-status arm, which called `describe_exit` for the identical
+        // string, and replaces the raw `(code=.. signal=..)` Debug fallback that
+        // left a SIGHUP reported as `code=None signal=Some(1)`.
+        let exit_description = describe_exit(code, signal);
         format!(
-            "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
+            "auto-sync watcher exited unexpectedly ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     };
@@ -3396,6 +3318,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Name the terminating signal's disposition as a fixed, closed-vocabulary
+    // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
+    // Sentry without parsing the message text. Always present (`none` for a
+    // signal-free exit); content-safe by construction and re-validated at the
+    // telemetry egress. The bare signal integer rides an extra below.
+    tags.push((
+        "watcher_exit_signal_class",
+        watcher_exit_signal_class(signal).to_string(),
+    ));
     // Symmetric with the manual route: attach the libuv syscall + errno wherever
     // runner_fatal_class is attached. Both are fixed/integer; absent when the
     // fatal class is not a libuv fatal syscall.
@@ -3548,6 +3479,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    // Carry the bare terminating signal integer alongside its content-safe class
+    // tag, so a signal-only watcher exit is filterable both by disposition and by
+    // exact signal number. Absent for a signal-free exit; a bare integer, so it is
+    // type-safe at the egress by construction.
+    if let Some(signal) = signal {
+        extras.push((
+            "watcher_exit_signal",
+            sentry::protocol::Value::Number(signal.into()),
+        ));
+    }
     // The integer source line for an assertion abort, kept consistent with the
     // source/signature computed above (present only when an assertion parsed).
     if let Some(line) = runner_assert_line {
@@ -5959,6 +5900,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sighup_watcher_exit_is_named_and_classified() {
+        // HQ-DESKTOP-5Y: a macOS SIGHUP (code=None, signal=Some(1)) with none of
+        // the self-teardown discriminators set is captured — but must now be named
+        // 'killed by SIGHUP' and carry a queryable signal class + integer, not the
+        // raw Debug tuple 'code=None signal=Some(1)' the issue observed.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(1),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.captures.len(), 1);
+        let capture = &effects.captures[0];
+        assert!(
+            capture.message.contains("killed by SIGHUP"),
+            "message did not name SIGHUP: {}",
+            capture.message
+        );
+        assert!(
+            !capture.message.contains("signal=Some(1)"),
+            "message still leaked the raw Debug tuple: {}",
+            capture.message
+        );
+        assert_eq!(recorded_tag(capture, "watcher_exit_signal_class"), "hangup");
+        assert_eq!(recorded_number_extra(capture, "watcher_exit_signal"), 1);
+        assert!(
+            capture.fingerprint.iter().any(|part| part == "signal:1"),
+            "fingerprint no longer contains signal:1: {:?}",
+            capture.fingerprint
+        );
+    }
+
+    #[test]
+    fn sighup_capture_and_lifecycle_behaviour_is_unchanged() {
+        // Reporting-only scope: naming the signal must not change capture policy,
+        // lifecycle category, or crash-streak accounting for (None, Some(1)).
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(1),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        // One capture, the same 'running -> backoff (crash)' lifecycle this issue
+        // carried, and no exec-not-runnable streak extra — that tier belongs to the
+        // 126/127 exec layer, whose shared streak SIGHUP must never consume.
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
+        );
+        assert!(
+            effects.captures[0]
+                .extras
+                .iter()
+                .all(|(name, _)| name != "exec_not_runnable_streak"),
+            "SIGHUP must not touch the exec-not-runnable streak"
+        );
+    }
+
+    #[test]
+    fn malformed_dual_status_keeps_the_raw_rendering() {
+        // describe_exit prefers `code` and would drop the signal, so the malformed
+        // both-present shape must keep the raw rendering that preserves both values.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(3),
+            Some(9),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.captures.len(), 1);
+        let message = &effects.captures[0].message;
+        assert!(
+            message.contains("code=Some(3)") && message.contains("signal=Some(9)"),
+            "malformed both-present exit dropped a value: {message}"
+        );
+    }
+
+    #[test]
+    fn signal_class_tag_is_emitted_for_every_captured_shape() {
+        // The class tag is present and correct on every captured watcher exit: a
+        // SIGKILL is `fault`, a plain exit 221 is `none` — so it can never be absent
+        // or wrong on a captured termination.
+        let host = current_termination_host();
+        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")] {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                None,
+                host,
+                &WatcherExitCaptureContext::default(),
+            );
+            assert_eq!(effects.captures.len(), 1, "code={code:?} signal={signal:?}");
+            assert_eq!(
+                recorded_tag(&effects.captures[0], "watcher_exit_signal_class"),
+                expected_class,
+                "code={code:?} signal={signal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_exit_signal_class_matches_is_fault_signal() {
+        // The classifier's `fault` arm and daemon.rs is_fault_signal must name the
+        // same signal set, or a future signal could be alerted by one path and
+        // silently reclassified by the other.
+        for sig in 1..=31 {
+            assert_eq!(
+                is_fault_signal(Some(sig)),
+                watcher_exit_signal_class(Some(sig)) == "fault",
+                "fault-set drift at signal {sig}"
+            );
+        }
+        assert!(!is_fault_signal(None));
+        assert_eq!(watcher_exit_signal_class(None), "none");
+    }
+
     #[cfg(unix)]
     #[test]
     fn real_child_crash_flood_keeps_power_of_two_capture_bound() {
@@ -6410,9 +6491,9 @@ mod tests {
             unknown_capture.fingerprint,
             vec!["sync", "auto-sync-watcher-termination", "exit:221", "none", "none", "none"]
         );
-        assert!(unknown_capture
-            .message
-            .contains("code=Some(221) signal=None"));
+        // Post-fix: the plain exit code is named by describe_exit rather than
+        // dumped as a raw Debug tuple. Grouping is unchanged (fingerprint above).
+        assert!(unknown_capture.message.contains("with code 221"));
         assert!(unknown_capture
             .extras
             .iter()
@@ -6472,9 +6553,9 @@ mod tests {
             posix_134_capture.fingerprint,
             vec!["sync", "auto-sync-watcher-termination", "exit:134", "none", "none", "none"]
         );
-        assert!(posix_134_capture
-            .message
-            .contains("code=Some(134) signal=None"));
+        // Post-fix: named by describe_exit (a bare exit 134 is only a Node abort
+        // on Windows; on POSIX it stays a plain exit code). Grouping unchanged.
+        assert!(posix_134_capture.message.contains("with code 134"));
         assert!(posix_134_capture
             .extras
             .iter()
@@ -6793,7 +6874,7 @@ mod tests {
         assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
         assert_eq!(
             recorded_tag(held, "watcher_fault_read"),
-            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
+            "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
         assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
         assert_eq!(
@@ -6917,7 +6998,7 @@ mod tests {
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
-                ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+                ("watcher_fault_read", "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
             ],
             &[],
             WatcherFaultDeferredRead {

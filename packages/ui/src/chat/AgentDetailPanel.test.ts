@@ -5,6 +5,20 @@ import { mount, tick, unmount } from "svelte";
 import { failure, ok, type AgentsApi } from "@hq/platform";
 
 import AgentDetailPanel from "./AgentDetailPanel.svelte";
+import type { AvatarPack } from "../avatars/types.js";
+
+const PACKS: AvatarPack[] = [
+  {
+    id: "generated-marks",
+    name: "Generated marks",
+    version: "1.0.0",
+    author: "HQ",
+    baseUrl: "builtin:generated-marks",
+    items: [
+      { id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] },
+    ],
+  },
+];
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -102,6 +116,7 @@ async function mountPanel(over: Record<string, unknown> = {}) {
       companyNames: { cmp_indigo: "Indigo" },
       adapter: { agents: agentsApi() },
       self: { uid: "prs_corey" },
+      packs: PACKS,
       ...over,
     },
   });
@@ -157,6 +172,9 @@ describe("AgentDetailPanel", () => {
     expect(
       host.querySelector('[data-testid="agent-detail-avatar-picker-slot"]'),
     ).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-picker"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-use-generated"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-save"]')).not.toBeNull();
   });
 
   it("expands a job row to the full prompt", async () => {
@@ -248,5 +266,25 @@ describe("AgentDetailPanel", () => {
         description: "Updated",
       });
     });
+  });
+
+  it("forwards pack-picker save from the avatar slot", async () => {
+    const onsaveavatar = vi.fn(async () => {});
+    await mountPanel({ isAdmin: true, onsaveavatar });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="avatar-pack-picker"]'),
+      ).not.toBeNull();
+    });
+    (
+      host.querySelector(
+        '[data-testid="avatar-use-generated"]',
+      ) as HTMLButtonElement
+    ).click();
+    (
+      host.querySelector('[data-testid="avatar-pack-save"]') as HTMLButtonElement
+    ).click();
+    await tick();
+    expect(onsaveavatar).toHaveBeenCalledWith({ kind: "generated" });
   });
 });

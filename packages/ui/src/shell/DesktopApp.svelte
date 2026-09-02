@@ -19,7 +19,7 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import type { PlatformAdapter } from "@hq/platform";
+  import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
@@ -28,6 +28,11 @@
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
+  import {
+    CONVERSATION_BOOT_GRACE_MS,
+    DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    raceTimeout,
+  } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
@@ -44,8 +49,19 @@
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import { avatarBase64FromFile } from "../settings/avatar-image.js";
+  import { canEditAgentProfile } from "../avatars/can-edit.js";
+  import { loadRegisteredPacks } from "../avatars/load-pack.js";
+  import {
+    avatarsFromContactPayload,
+    composeAvatarByUid,
+    fetchBytesWith,
+    saveAgentAvatar,
+  } from "../avatars/save-agent-avatar.js";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
   import {
@@ -91,6 +107,11 @@
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import LinkContextMenu from "../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
     mentionTargetsFromContacts,
@@ -354,6 +375,12 @@
      * Vault buckets do not grant browser CORS to raw presigned URLs.
      */
     getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
+    /**
+     * Bound for first-paint optional fetches (directory, contacts, DM
+     * threads). Tests pass a short value so a hung/404 call cannot leave the
+     * conversation pane on a skeleton.
+     */
+    bootTimeoutMs?: number;
   }
 
   let {
@@ -400,6 +427,7 @@
     onselectrow,
     putAttachmentObject,
     getAttachmentObject,
+    bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -470,6 +498,21 @@
   let sidebarCollapsed = $state(false);
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let conversationBootTimedOut = $state(false);
+  $effect(() => {
+    if (selectedRow) {
+      conversationBootTimedOut = false;
+      return;
+    }
+    const handle = setTimeout(() => {
+      conversationBootTimedOut = true;
+      console.info("[hq-desktop]", {
+        t: Date.now(),
+        event: "conversation-boot-timeout",
+      });
+    }, bootTimeoutMs + CONVERSATION_BOOT_GRACE_MS);
+    return () => clearTimeout(handle);
+  });
   $effect(() => {
     const next = initialRow;
     if (!next) return;
@@ -520,6 +563,7 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
@@ -872,6 +916,12 @@
   let channelRosterById = $state<
     Record<string, ReturnType<typeof parseChannelMembers>>
   >({});
+  let contactAvatarByUid = $state<Record<string, string>>({});
+  let avatarOverridesByUid = $state<Record<string, string>>({});
+  let rosterWakeSeq = $state(0);
+  let agentAvatarSaving = $state(false);
+  let agentAvatarSaveError = $state<string | null>(null);
+  let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
 
   async function loadChannelRoster(channelId: string): Promise<void> {
     const id = channelId.trim();
@@ -888,22 +938,57 @@
   let openProfileMember = $state<StatusPersonRow | null>(null);
   let openAgentMember = $state<StatusPersonRow | null>(null);
   let removingMemberUid = $state<string | null>(null);
+  /**
+   * Owner-only "Delete channel" (members popover → trash). The shell owns the
+   * confirm + the call: the popover closes on outside mousedown and would eat
+   * a dialog it rendered itself.
+   */
+  let deleteChannelConfirmOpen = $state(false);
+  let deletingChannel = $state(false);
+  /** Last channel-level action failure — rendered under the header, never console-only. */
+  let channelActionError = $state<string | null>(null);
+
+  // A new selection starts clean — a stale delete error must not follow the
+  // user into the next conversation.
+  $effect(() => {
+    void selectedRow?.id;
+    channelActionError = null;
+  });
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
-   *  roster plus the signed-in user's own profile. Feeds chat/thread/panel
-   *  photos — including agent DMs whose photo arrived on a channel roster. */
-  const avatarByUid = $derived.by(() => {
-    const map: Record<string, string> = {};
-    for (const roster of Object.values(channelRosterById)) {
-      for (const m of roster) {
-        if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
-      }
-    }
-    if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
-    return map;
-  });
+   *  roster, the contacts list, the signed-in user's own profile, and any
+   *  just-saved override. Feeds chat/thread/panel photos — including agent
+   *  DMs whose photo arrived on a channel roster or contacts. */
+  const avatarByUid = $derived(
+    composeAvatarByUid({
+      rosters: Object.values(channelRosterById).flat(),
+      contacts: contactAvatarByUid,
+      selfUid: self?.uid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+    }),
+  );
+
+  const canEditOpenAgent = $derived(
+    canEditAgentProfile({
+      agentUid: openProfileMember?.personUid,
+      agentCompanyUid: selectedRow?.companyUid,
+      companies,
+      isAdmin,
+    }),
+  );
+
+  const canEditSelectedAgent = $derived(
+    selectedRow?.kind === "dm" &&
+      canEditAgentProfile({
+        agentUid: selectedRow.personUid,
+        agentCompanyUid: selectedRow.companyUid,
+        companies,
+        isAdmin,
+      }),
+  );
 
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
@@ -940,6 +1025,83 @@
 
   function closeMemberProfile(): void {
     openProfileMember = null;
+    agentAvatarSaveError = null;
+  }
+
+  function openAgentProfileFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim();
+    if (!uid) return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow?.email?.trim() || null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+    });
+  }
+
+  async function refreshAvatarsAfterSave(): Promise<void> {
+    const ids = Object.keys(channelRosterById);
+    await Promise.all(ids.map((id) => loadChannelRoster(id)));
+    try {
+      const contactsRes = await adapter.messaging.listContacts();
+      if (contactsRes.ok) {
+        contactAvatarByUid = {
+          ...contactAvatarByUid,
+          ...avatarsFromContactPayload(contactsRes.value),
+        };
+      }
+    } catch {
+      /* keep the optimistic override */
+    }
+    rosterWakeSeq += 1;
+  }
+
+  async function saveOpenAgentAvatar(selection: AvatarSelection): Promise<void> {
+    const uid =
+      openAgentMember?.personUid?.trim() ||
+      openProfileMember?.personUid?.trim();
+    if (!uid || agentAvatarSaving) return;
+    agentAvatarSaving = true;
+    agentAvatarSaveError = null;
+    try {
+      const packs =
+        loadedAvatarPacks ??
+        (await loadRegisteredPacks()).map((row) => row.pack);
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(uid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) =>
+          avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (agentUid, input) =>
+          adapter.identity.updateAgentProfile(agentUid, input),
+      });
+      avatarOverridesByUid = {
+        ...avatarOverridesByUid,
+        [uid]: saved.previewDataUrl,
+      };
+      if (openAgentMember) {
+        openAgentMember = {
+          ...openAgentMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      if (openProfileMember) {
+        openProfileMember = {
+          ...openProfileMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      await refreshAvatarsAfterSave();
+    } catch (err) {
+      agentAvatarSaveError =
+        err instanceof Error ? err.message : "Could not save the avatar.";
+    } finally {
+      agentAvatarSaving = false;
+    }
   }
 
   function closeAgentDetail(): void {
@@ -1004,6 +1166,43 @@
       }
     } finally {
       removingMemberUid = null;
+    }
+  }
+
+  async function deleteSelectedChannel(): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    deleteChannelConfirmOpen = false;
+    if (!row || !channelId.startsWith("chn_") || deletingChannel) return;
+    deletingChannel = true;
+    channelActionError = null;
+    try {
+      const res = await adapter.messaging.deleteChannel(channelId);
+      if (!res.ok) {
+        channelActionError =
+          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        return;
+      }
+      // Optimistic: drop the rail row now. The server fans out a directory
+      // feed change so every other member's rail follows.
+      wakes?.emit?.("channel:removed", { channelId });
+      timelineCache.delete(row.id);
+      // Clear the selection the way changeTenantCompany does so the pane
+      // falls back to its empty state instead of a dead conversation.
+      membersOpen = false;
+      projectAboutOpen = false;
+      selectedRow = null;
+      liveTimeline = [];
+      liveTimelineId = null;
+      timelineHydrating = false;
+      openReplyRootId = null;
+      openProfileMember = null;
+      attachTray = null;
+      replyPreviewByRoot = {};
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      deletingChannel = false;
     }
   }
 
@@ -1421,6 +1620,8 @@
         channelId: pending.channelId,
         personUid: null,
         replyRootEventId: pending.replyRootEventId,
+        title: pending.title,
+        companyUid: pending.companyUid,
       },
       { preserveView: pending.automatic && view !== "conversation" },
     );
@@ -1437,6 +1638,30 @@
       { preserveView: target.automatic === true && view !== "conversation" },
     );
   }
+
+  /**
+   * Self-heal a placeholder selection. `selectedRow` is a snapshot taken at
+   * open time; when the channel was opened before the directory listed it
+   * (a just-created channel, a deep link, a notification), the snapshot is a
+   * stub — possibly titled with the raw `chn_…` id — and nothing ever
+   * refreshed it, so the header stayed wrong until the user clicked away and
+   * back. Once the real row shows up under the same id, adopt it in place.
+   * Never touches `view`, replies, or focus: only the row's metadata changes.
+   */
+  $effect(() => {
+    const rows = searchRows;
+    const current = untrack(() => selectedRow);
+    if (!current) return;
+    const real = rows.find((row) => row.id === current.id);
+    if (!real || real === current) return;
+    if (
+      real.title === current.title &&
+      (real.companyUid ?? null) === (current.companyUid ?? null)
+    ) {
+      return;
+    }
+    selectedRow = real;
+  });
 
   $effect(() => {
     const scope = messageScope;
@@ -1637,12 +1862,20 @@
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
     const [res, threadsRes] = await Promise.all([
-      notifications.fetchDmInbox({
-        ...(since ? { since } : {}),
-        limit: "50",
-      }),
+      raceTimeout(
+        notifications.fetchDmInbox({
+          ...(since ? { since } : {}),
+          limit: "50",
+        }),
+        bootTimeoutMs,
+        "dm-inbox",
+      ).catch(() => failure("timeout", "dm-inbox timed out")),
       wantThreads
-        ? notifications.fetchDmThreads!({ limit: 100 }).catch(() => null)
+        ? raceTimeout(
+            notifications.fetchDmThreads!({ limit: 100 }),
+            bootTimeoutMs,
+            "dm-threads",
+          ).catch(() => null)
         : Promise.resolve(null),
     ]);
     if (
@@ -2107,6 +2340,14 @@
     onOpenSettings?.();
   }
 
+  function onShellLinkEvent(event: Event): void {
+    handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "shell",
+    });
+  }
+
   function closeSettings(): void {
     view = "conversation";
     settingsSection = null;
@@ -2276,6 +2517,8 @@
         createdAt: detail.createdAt ?? null,
         replyRootEventId: reply,
         automatic: detail.automatic === true,
+        title: detail.title ?? null,
+        companyUid: detail.companyUid ?? null,
       });
     }
     function onMessagePerson(event: Event): void {
@@ -2326,7 +2569,18 @@
   });
 </script>
 
-<div class="desktop-shell chat-shell" data-testid="desktop-shell">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="desktop-shell chat-shell"
+  data-testid="desktop-shell"
+  onclick={onShellLinkEvent}
+  onauxclick={onShellLinkEvent}
+  oncontextmenu={onShellLinkEvent}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
+  }}
+>
   <V4TitleBar
     {adapter}
     {version}
@@ -2361,6 +2615,16 @@
       Couldn’t open requested destination. {embeddedNavigationError}
     </div>
   {/if}
+
+  <ConfirmDialog
+    open={deleteChannelConfirmOpen && selectedRow != null}
+    title={`Delete #${selectedRow?.title ?? "channel"}?`}
+    message="This permanently deletes the channel and its messages for everyone in it. This can't be undone."
+    confirmLabel="Delete channel"
+    danger
+    oncancel={() => (deleteChannelConfirmOpen = false)}
+    onconfirm={() => void deleteSelectedChannel()}
+  />
 
   {#if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
@@ -2403,6 +2667,8 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
+          {rosterWakeSeq}
+          onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2416,6 +2682,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
           onrows={(rows) => (railRows = rows)}
+          {bootTimeoutMs}
         />
         {/key}
       {/if}
@@ -2561,6 +2828,16 @@
             </div>
 
             <div class="channel-header-trailing">
+              {#if canEditSelectedAgent}
+                <button
+                  type="button"
+                  class="edit-profile-btn"
+                  data-testid="agent-edit-profile"
+                  onclick={openAgentProfileFromHeader}
+                >
+                  Edit profile
+                </button>
+              {/if}
               {#if isProjectChannel}
                 <nav
                   class="project-tabs"
@@ -2724,12 +3001,26 @@
                       }}
                       onremovemember={(row) => void removeMember(row)}
                       removingUid={removingMemberUid}
+                      ondeletechannel={() => {
+                        membersOpen = false;
+                        deleteChannelConfirmOpen = true;
+                      }}
+                      deleting={deletingChannel}
                     />
                   {/if}
                 </div>
               {/if}
             </div>
           </header>
+          {#if channelActionError}
+            <div
+              class="channel-action-error"
+              data-testid="channel-action-error"
+              role="alert"
+            >
+              {channelActionError}
+            </div>
+          {/if}
           {#if projectAboutOpen && isProjectChannel}
             <ProjectAboutDialog
               title={headerTitle}
@@ -2789,6 +3080,8 @@
                     ? setupHeader
                     : undefined}
                   belowMessages={agentThinkingBelow}
+                  draftKey={selectedRow.id}
+                  draftStorage={tenantStorage}
                 />
               {/key}
               {#if openAgentMember}
@@ -2810,6 +3103,10 @@
                     {self}
                     {isAdmin}
                     {adapter}
+                    packs={loadedAvatarPacks}
+                    avatarSaving={agentAvatarSaving}
+                    avatarSaveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeAgentDetail}
                   />
                 </div>
@@ -2824,6 +3121,11 @@
                     member={openProfileMember}
                     {self}
                     avatarUrl={profilePanelAvatarUrl}
+                    editable={canEditOpenAgent}
+                    packs={loadedAvatarPacks}
+                    saving={agentAvatarSaving}
+                    saveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
                   />
                 </div>
@@ -2879,6 +3181,14 @@
               onopen={openChannelFile}
             />
           {/if}
+        {:else if conversationBootTimedOut}
+          <div
+            class="conversation-boot-error"
+            data-testid="conversation-boot-error"
+            role="alert"
+          >
+            Couldn’t load conversations.
+          </div>
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
           <ChannelSkeleton />
@@ -2918,6 +3228,13 @@
       resolveUrl={resolveTrayUrl}
       onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>
@@ -2967,6 +3284,19 @@
     min-height: 0;
     padding: 0;
     overflow: hidden;
+  }
+
+  .conversation-boot-error {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
   }
 
   .notifications-layer {
@@ -3041,6 +3371,17 @@
 
   /* Channel header — ported from the real ChannelView: title left, tabs +
      member pill grouped right in `.channel-header-trailing`. */
+  .channel-action-error {
+    margin: 0 16px 6px;
+    padding: 6px 10px;
+    border: 1px solid
+      color-mix(in srgb, var(--warn-ink, #d9584a) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn-ink, #d9584a) 12%, transparent);
+    color: var(--t1);
+    font: 400 12px/1.4 var(--font-ui);
+  }
+
   .channel-header {
     position: relative;
     z-index: 20;
@@ -3179,6 +3520,28 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
+  }
+
+  .edit-profile-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font: 500 12px/1.45 inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .edit-profile-btn:hover {
+    color: var(--t1);
+  }
+
+  .edit-profile-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
   }
 
   .project-tabs {

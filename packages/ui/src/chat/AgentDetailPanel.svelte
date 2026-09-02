@@ -9,6 +9,7 @@
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import type { SelfIdentity } from "../identity/self.js";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
     defaultTelemetryRange,
     formatTokenCount,
@@ -38,6 +39,10 @@
     self?: SelfIdentity | null;
     isAdmin?: boolean | null;
     adapter: Pick<PlatformAdapter, "agents"> | { agents: AgentsApi };
+    packs?: AvatarPack[] | null;
+    avatarSaving?: boolean;
+    avatarSaveError?: string | null;
+    onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
     onclose?: () => void;
   }
 
@@ -51,6 +56,10 @@
     self = null,
     isAdmin = null,
     adapter,
+    packs = null,
+    avatarSaving = false,
+    avatarSaveError = null,
+    onsaveavatar,
     onclose,
   }: Props = $props();
 
@@ -559,6 +568,10 @@
           agentUid={header.uid}
           displayName={header.displayName}
           avatarUrl={header.avatarUrl}
+          {packs}
+          saving={avatarSaving}
+          error={avatarSaveError}
+          onsave={onsaveavatar}
         />
         {#if header.modelLabel || header.provider}
           <p class="ad-muted" data-testid="agent-detail-model">

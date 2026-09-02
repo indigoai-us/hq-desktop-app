@@ -45,6 +45,10 @@ jobs:
   changes:
     name: Windows-relevant changes
     runs-on: ubuntu-latest
+    # A checkout and a path diff; healthy runs finish in about six seconds.
+    # Every downstream Windows job needs this one's output, so a stall here
+    # stalls the whole workflow -- and it is the gate's own required check.
+    timeout-minutes: 10
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
     steps:
@@ -92,11 +96,183 @@ jobs:
           echo "windows=$verdict" >>"$GITHUB_OUTPUT"
           echo "Windows gate applies: $verdict"
 
-  windows-check:
+  # This gate used to be one 46-step job called `cargo check`, which was
+  # misleading in both directions: the literal `cargo check` step takes about a
+  # minute, and the other ~24 were a Windows test and live-app suite riding
+  # along behind that name. Measured on run 33634531610 the job took 24m13s
+  # while the installer chain beside it took 17m -- so this single job, not the
+  # release builds, was what set how long a PR waited.
+  #
+  # The steps are independent: none consumes another's output, so they were
+  # serial only because they shared a runner. They now run as three jobs split
+  # along what each one has to BUILD, which is where the time actually goes:
+  #
+  #   windows-check-crates  root workspace only, no app build   (~7.8 min)
+  #   windows-check-app     app bins, default features          (~8.1 min)
+  #   windows-check-live    app bins, two extra feature sets    (~11.5 min)
+  #
+  # Critical path becomes the longest of the three rather than the sum, so the
+  # gate lands near 11.5 minutes and stops being the PR bottleneck. The extra
+  # cost is two more runner prologues (~90s each); this repository is public,
+  # so standard runners are free and that trade is pure wall-clock win.
+  #
+  # Splitting by feature set is not cosmetic. Changing cargo features
+  # invalidates the dependency graph, so the old job compiled the app four
+  # separate times -- default, sync-cancel-probe, e2e-automation, and the
+  # launchable tauri build -- each partly undoing the last. Grouping the two
+  # feature-flagged builds into one job keeps that churn on a single runner
+  # instead of interleaving it with the default-feature suite.
+
+  windows-check-crates:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    name: cargo check (x86_64-pc-windows-msvc)
+    name: Windows crate tests (shared crates on msvc)
     runs-on: windows-latest
+    # Its own compile plus ~200s of tests; git_mirror alone is ~3m15s.
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Version comes from the root package.json "packageManager" field;
+      # passing an explicit version here too is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      # rust-cache prunes to the registry plus dependency artifacts and covers
+      # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
+      # new PRs restore from main instead of starting cold, and so PRs with an
+      # exact hit do not each save their own copy.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-check-debug
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
+          # One writer only. This job compiles the root workspace; windows-check-app
+          # compiles the app workspace and saves the shared entry for both. Two
+          # writers under one key just race, and a second key would double the
+          # footprint against an already-oversubscribed 10 GB repo budget.
+          save-if: false
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
+      # allow-list, the WER Application Error 1000 XML parse, the pid/window/
+      # no_record/unavailable provenance decision, and the unmatched-stderr shape
+      # rollup — all content-safe and platform-independent, so they run as their
+      # own named gate rather than being buried in the full core run.
+      - name: Watcher fault provenance core tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml watcher_fault::tests
+
+      # The independent hq-telemetry egress allow-list for every new fault field:
+      # each survives before_send when valid and degrades to [Filtered] when a
+      # producer bug would ship a path or raw byte (the PR #397 blanking failure
+      # mode), with a cross-crate anti-drift pin on the token vocabulary.
+      - name: Watcher fault telemetry egress tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml watcher_fault
+
+      # Keep each native command in its own step. PowerShell otherwise continues
+      # after a failed native command and can falsely report success when a
+      # later focused test passes.
+      - name: Windows path tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
+
+      - name: HQ CLI update tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_cli_update::tests
+
+      - name: HQ resolver tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
+
+      - name: Sync outcome tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
+
+      - name: Runtime diagnosis tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runtime_diagnosis::tests
+
+      # The missing-Node capture proof asserts envelope COUNTS through the real
+      # `hq_telemetry::before_send` pipeline — including that a proven
+      # user-owned runtime gap emits none. Windows resolves `npx.cmd` through a
+      # different branch of `paths::resolve_bin` than macOS, so the provenance
+      # and bare-name checks that scope the downgrade have to be exercised on
+      # the msvc target too rather than inferred from the macOS run.
+      - name: Missing-Node capture envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test provision_missing_node_capture_e2e
+
+      # The index-lock over-reporting fix bills at most one warning per wedge
+      # episode and demotes the self-heal notice to Info. The `fs::remove_file`
+      # fails branch — an unrecoverable wedge whose lock another process still
+      # holds — is the Windows-specific route into the warning path, so the
+      # envelope proof runs on the msvc target too rather than being inferred from
+      # the Linux `cargo test -p hq-telemetry` job.
+      - name: Index-lock episode capture envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test index_lock_episode_capture_e2e
+
+      # The bulk-delete refusal gate persists its per-root cooldown anchor with
+      # `fs::write` of a temp file plus `fs::rename` over an existing
+      # destination inside the `.git` directory. Rename-over-existing is the one
+      # genuinely platform-sensitive operation in this module, and `cargo check`
+      # never builds `#[cfg(test)]` code — so without this step the persistence
+      # path ships to the Windows fleet (which produced the tightest observed
+      # refusal flood) having never been executed on the msvc target.
+      - name: Git mirror tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml git_mirror::tests
+
+      # The runner-target probe has a Windows-specific arm: there is no POSIX
+      # mode bit, so executability is never asserted and "exists" means any of
+      # npm's `.cmd`/`.ps1`/extensionless shims. That arm compiles under the
+      # `cargo check --target` above but only *runs* here, and getting it wrong
+      # would report a healthy Windows cache as Missing.
+      - name: Runner target probe tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
+
+  # Everything that runs against the app's bins under DEFAULT features, so the
+  # binaries built by `cargo test --bins --no-run` below are compiled once and
+  # reused by every step after it. `Rust check` is kept rather than folded into
+  # that build: `cargo check` compiles in non-test mode, so it is the only step
+  # that would catch a `#[cfg(not(test))]` block failing to compile.
+  windows-check-app:
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Windows app tests (msvc bins)
+    runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/sync
@@ -220,23 +396,6 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
-      # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
-      # allow-list, the WER Application Error 1000 XML parse, the pid/window/
-      # no_record/unavailable provenance decision, and the unmatched-stderr shape
-      # rollup — all content-safe and platform-independent, so they run as their
-      # own named gate rather than being buried in the full core run.
-      - name: Watcher fault provenance core tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml watcher_fault::tests
-
-      # The independent hq-telemetry egress allow-list for every new fault field:
-      # each survives before_send when valid and degrades to [Filtered] when a
-      # producer bug would ship a path or raw byte (the PR #397 blanking failure
-      # mode), with a cross-crate anti-drift pin on the token vocabulary.
-      - name: Watcher fault telemetry egress tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml watcher_fault
-
       # The capture wiring: the new watcher_fault_* tags + runner_stderr_line_count
       # ride the watcher exit capture, additive to the untouched classifier
       # channels and fingerprint. Compiled and run on the msvc target (cargo check
@@ -309,6 +468,87 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::install_deps::toolchain_swap_e2e_tests -- --nocapture --include-ignored --test-threads=1
 
+      - name: Provision telemetry envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::run_cli_provision::tests
+
+      # The Connect self-repair policy decides whether HQ downloads a Node
+      # runtime. Its bound (one repair, one retry) is what stops a machine that
+      # cannot install Node from looping on the download, so it is verified on
+      # every target the app ships to.
+      - name: Connect managed-Node self-repair tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::workspaces::node_self_repair_tests
+
+  # The two feature-flagged builds plus everything that drives a running app.
+  # `sync-cancel-probe` and `e2e-automation` each rebuild the dependency graph,
+  # and the launchable tauri build is a third; keeping all three on one runner
+  # confines that churn instead of interleaving it with the default-feature
+  # suite in windows-check-app.
+  windows-check-live:
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Windows live app (e2e automation)
+    runs-on: windows-latest
+    # The longest of the three: ~11.5 min, dominated by three compiles.
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Version comes from the root package.json "packageManager" field;
+      # passing an explicit version here too is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      # rust-cache prunes to the registry plus dependency artifacts and covers
+      # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
+      # new PRs restore from main instead of starting cold, and so PRs with an
+      # exact hit do not each save their own copy.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-check-debug
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
+          # Reader. windows-check-app owns the write for this key; see the note
+          # there. The feature-flagged builds here produce artifacts the other
+          # jobs cannot reuse anyway, so saving them would evict shared ones.
+          save-if: false
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps (build.rs resource)
+        run: pnpm run sidecar:install
+
+      - name: Build Svelte bundle (satisfies tauri frontendDist)
+        run: pnpm run build
+
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
       # decision seam to report capture for code 1/no signal.
@@ -342,80 +582,6 @@ jobs:
       - name: Windows app tests (e2e automation)
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins --features e2e-automation
-
-      # Keep each native command in its own step. PowerShell otherwise continues
-      # after a failed native command and can falsely report success when a
-      # later focused test passes.
-      - name: Windows path tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
-
-      - name: HQ CLI update tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_cli_update::tests
-
-      - name: HQ resolver tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_resolver::tests
-
-      - name: Sync outcome tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
-
-      - name: Runtime diagnosis tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runtime_diagnosis::tests
-
-      - name: Provision telemetry envelope tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins commands::run_cli_provision::tests
-
-      # The missing-Node capture proof asserts envelope COUNTS through the real
-      # `hq_telemetry::before_send` pipeline — including that a proven
-      # user-owned runtime gap emits none. Windows resolves `npx.cmd` through a
-      # different branch of `paths::resolve_bin` than macOS, so the provenance
-      # and bare-name checks that scope the downgrade have to be exercised on
-      # the msvc target too rather than inferred from the macOS run.
-      - name: Missing-Node capture envelope tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test provision_missing_node_capture_e2e
-
-      # The index-lock over-reporting fix bills at most one warning per wedge
-      # episode and demotes the self-heal notice to Info. The `fs::remove_file`
-      # fails branch — an unrecoverable wedge whose lock another process still
-      # holds — is the Windows-specific route into the warning path, so the
-      # envelope proof runs on the msvc target too rather than being inferred from
-      # the Linux `cargo test -p hq-telemetry` job.
-      - name: Index-lock episode capture envelope tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test index_lock_episode_capture_e2e
-
-      # The Connect self-repair policy decides whether HQ downloads a Node
-      # runtime. Its bound (one repair, one retry) is what stops a machine that
-      # cannot install Node from looping on the download, so it is verified on
-      # every target the app ships to.
-      - name: Connect managed-Node self-repair tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins commands::workspaces::node_self_repair_tests
-
-      # The bulk-delete refusal gate persists its per-root cooldown anchor with
-      # `fs::write` of a temp file plus `fs::rename` over an existing
-      # destination inside the `.git` directory. Rename-over-existing is the one
-      # genuinely platform-sensitive operation in this module, and `cargo check`
-      # never builds `#[cfg(test)]` code — so without this step the persistence
-      # path ships to the Windows fleet (which produced the tightest observed
-      # refusal flood) having never been executed on the msvc target.
-      - name: Git mirror tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml git_mirror::tests
-      # The runner-target probe has a Windows-specific arm: there is no POSIX
-      # mode bit, so executability is never asserted and "exists" means any of
-      # npm's `.cmd`/`.ps1`/extensionless shims. That arm compiles under the
-      # `cargo check --target` above but only *runs* here, and getting it wrong
-      # would report a healthy Windows cache as Missing.
-      - name: Runner target probe tests
-        working-directory: apps/sync/src-tauri
-        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
@@ -489,20 +655,74 @@ jobs:
           if-no-files-found: warn
           path: ${{ runner.temp }}/desktop-alt-driver-logs/**
 
-      # Enabled after the existing warning backlog is cleaned up:
-      # - name: Clippy (deny warnings)
-      #   working-directory: apps/sync/src-tauri
-      #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
+  # `cargo check (x86_64-pc-windows-msvc)` is a required status check in the
+  # `main` ruleset. Splitting the work into three jobs would have retired that
+  # context entirely, leaving every PR waiting forever on a check that no
+  # longer reports -- and adding the three new jobs to the ruleset instead
+  # would leave a window in which none of them blocked a merge.
+  #
+  # So the name stays, on a job that now only adjudicates. It is deliberately
+  # on ubuntu-latest and runs for seconds.
+  #
+  # The `always()` is load-bearing for the same reason it is on
+  # windows-installer-e2e: GitHub reports a required check that was SKIPPED as
+  # satisfied, so a job skipped because its `needs` failed is indistinguishable
+  # from one skipped by the path gate, and a red suite would merge green.
+  # `needs.changes.outputs.windows == 'true'` is still ANDed in, so the
+  # intended path-gate skip survives -- when `changes` itself fails its outputs
+  # are empty, that term is false, and this job skips exactly as before.
+  #
+  # Follow-up worth doing: add the three real jobs to the ruleset and delete
+  # this one. That needs a settings change, which is why it is not bundled here.
+  windows-check:
+    needs: [changes, windows-check-crates, windows-check-app, windows-check-live]
+    if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: cargo check (x86_64-pc-windows-msvc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
 
-  windows-installer-e2e:
+    steps:
+      - name: Fail when a Windows check job did not succeed
+        if: ${{ needs.windows-check-crates.result != 'success' || needs.windows-check-app.result != 'success' || needs.windows-check-live.result != 'success' }}
+        run: |
+          echo "windows-check-crates: ${{ needs.windows-check-crates.result }}"
+          echo "windows-check-app:    ${{ needs.windows-check-app.result }}"
+          echo "windows-check-live:   ${{ needs.windows-check-live.result }}"
+          exit 1
+
+  # The installer E2E used to be one job that built the bridge installers,
+  # built the target updater, and then ran the upgrade test. Both builds are
+  # mandatory -- windows-installer-e2e.ps1 asserts the upgraded binary has a
+  # different SHA256 AND a ProductVersion matching the target, so neither can be
+  # replaced by reinstalling the same artifact -- but they are independent of
+  # each other, and running them back to back put ~22 minutes of compile on the
+  # critical path of a required check.
+  #
+  # They now run as two parallel build jobs feeding a thin E2E job. Critical
+  # path becomes the longer build plus the test, not the sum of both builds.
+  #
+  # Deliberately NOT a caching change: cargo fingerprints workspace crates by
+  # source mtime, and actions/checkout does not preserve mtimes, so a restored
+  # workspace artifact is always stale and recompiles anyway. This split saves
+  # wall clock without depending on any cache behaviour.
+  #
+  # The honest cost: on a cold cache both build jobs compile the dependency
+  # graph, where the single job compiled it once. That is CPU, not wall clock,
+  # and cache-warm.yml keeps `windows-installer-release` populated from main so
+  # the cold path is the exception.
+  build-bridge-installers:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    name: installer E2E (x64 MSI + NSIS)
+    name: Build bridge installers (x64 MSI + NSIS)
     runs-on: windows-latest
-    timeout-minutes: 55
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/sync
+    outputs:
+      base: ${{ steps.versions.outputs.base }}
+      bridge: ${{ steps.versions.outputs.bridge }}
+      target: ${{ steps.versions.outputs.target }}
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
@@ -528,6 +748,10 @@ jobs:
       # profile and that one builds debug. shared-key is shared with
       # cache-warm.yml on main so new PRs restore from main instead of starting
       # cold, and so PRs with an exact hit do not each save their own copy.
+      #
+      # This is the only writer of that key. The sibling build job and the E2E
+      # job compute the identical key, so letting them save too would just race
+      # for the same entry and add nothing.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -540,49 +764,58 @@ jobs:
           # artifacts and the next run starts cold again.
           cache-on-failure: true
 
+      # Written AFTER rust-cache on purpose. The action hashes
+      # `**/.cargo/config.toml` into its key, so writing this earlier forks a
+      # second multi-GB cache lane out of the 10 GB the whole repository
+      # shares. Writing it later is sound only because of what it overrides --
+      # the rationale and the invariant are in the file itself.
+      - name: Apply the CI fixture cargo profile
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/.cargo | Out-Null
+          Copy-Item -LiteralPath src-tauri/ci/fixture-profile.toml -Destination src-tauri/.cargo/config.toml -Force
+          Get-Content src-tauri/.cargo/config.toml
+
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
       # Install this PR at one synthetic patch, then build the same PR at the
       # next patch. The running parent and copied helper therefore contain the
-      # same updater implementation, exactly as they do in production.
-      - name: Prepare bridge and target versions
+      # same updater implementation, exactly as they do in production. The
+      # sibling build job derives the same numbers from the same script.
+      - name: Derive synthetic bridge and target versions
         id: versions
         shell: pwsh
         run: |
-          $baseVersion = node -p "require('./package.json').version"
-          $parts = $baseVersion.Split('.')
-          if ($parts.Count -ne 3) {
-            throw "Expected stable X.Y.Z base version, got $baseVersion"
-          }
-          $bridgeVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
-          $targetVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 2)"
-          pnpm -C ../.. version:app --set-version $bridgeVersion
+          $versions = node ../../scripts/windows-e2e-versions.mjs
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to stamp bridge version $bridgeVersion"
+            throw "Failed to derive the synthetic installer versions"
           }
-          "base=$baseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "bridge=$bridgeVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "target=$targetVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $versions | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host $versions
+
+      - name: Stamp the bridge version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.bridge }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp bridge version ${{ steps.versions.outputs.bridge }}"
+          }
 
       - name: Install Recall sidecar deps
         run: pnpm run sidecar:install
 
+      # Built here rather than in the E2E job so the E2E job needs no Rust
+      # toolchain and no rust-cache restore at all. rust-cache caches
+      # ~/.cargo/bin, and cache-warm.yml installs it under the same key on main,
+      # so this is a no-op lookup on a warm runner.
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
-      # the WebView2 runtime the app embeds; when they drift by a major version
-      # session creation fails ("only supports Microsoft Edge version N").
-      # Install a driver matched to the runtime and shadow the preinstalled one.
-      - name: Install msedgedriver matching the WebView2 runtime
-        shell: pwsh
-        run: scripts/ensure-msedgedriver.ps1
-
       # Same flag as the windows-check job: `e2e-automation` is what lets
       # msedgedriver attach, and it is never on in a shipped build. The honest
-      # consequence is that this job packages and installs a binary that is NOT
-      # byte-identical to the released one — it differs by that one feature.
+      # consequence is that this job packages an installer whose binary is NOT
+      # byte-identical to the released one -- it differs by that one feature.
       # `cfg!(debug_assertions)` could not have been the gate instead: this is a
       # release build.
       - name: Generate Windows MSI version overlay
@@ -644,11 +877,219 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
+      # if-no-files-found: error, so a missing installer fails the job that
+      # built it instead of surfacing later as an unexplained E2E failure.
+      # The MSI is verified above and never installed, so only NSIS travels.
+      - name: Upload bridge NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-bridge
+          if-no-files-found: error
+          retention-days: 1
+          path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_${{ steps.versions.outputs.bridge }}_x64-setup.exe
+
+      - name: Upload Tauri WebDriver bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-tauri-driver
+          if-no-files-found: error
+          retention-days: 1
+          path: ~/.cargo/bin/tauri-driver.exe
+
+  build-target-updater:
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Build target updater (x64 NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Same key as the bridge build -- same profile, same lockfiles, same
+      # RUST*/CARGO* env -- so this restores exactly what that job restores.
+      # save-if:false because both jobs would otherwise race to write one entry.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-installer-release
+          cache-on-failure: true
+          save-if: false
+
+      # Written AFTER rust-cache on purpose. The action hashes
+      # `**/.cargo/config.toml` into its key, so writing this earlier forks a
+      # second multi-GB cache lane out of the 10 GB the whole repository
+      # shares. Writing it later is sound only because of what it overrides --
+      # the rationale and the invariant are in the file itself.
+      - name: Apply the CI fixture cargo profile
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/.cargo | Out-Null
+          Copy-Item -LiteralPath src-tauri/ci/fixture-profile.toml -Destination src-tauri/.cargo/config.toml -Force
+          Get-Content src-tauri/.cargo/config.toml
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Derive synthetic bridge and target versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = node ../../scripts/windows-e2e-versions.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to derive the synthetic installer versions"
+          }
+          $versions | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host $versions
+
+      - name: Stamp the target version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
+          }
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
+
+      # NSIS only, and no MSI version overlay: the target build exists to be
+      # handed to the running bridge's copied updater helper, and only the NSIS
+      # package takes that path.
+      - name: Build next synthetic NSIS updater
+        run: >-
+          pnpm tauri build
+          --target x86_64-pc-windows-msvc
+          --bundles nsis
+          --config src-tauri/tauri.windows.conf.json
+          --config src-tauri/tauri.windows.release.conf.json
+          --config src-tauri/tauri.windows.ci.conf.json
+          --features e2e-automation
+
+      - name: Upload target NSIS updater
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-target
+          if-no-files-found: error
+          retention-days: 1
+          path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_${{ steps.versions.outputs.target }}_x64-setup.exe
+
+  # This job's NAME is a required status check on `main`. Renaming it orphans
+  # the context and every PR sits unmergeable.
+  #
+  # `always()` in the `if:` is load-bearing and subtle. Without it, a failed
+  # build job would leave this job "skipped" -- and GitHub reports a skipped
+  # required check as satisfied, so a broken installer build would merge green.
+  # With it, the job starts regardless and the first step fails loudly. The
+  # `needs.changes.outputs.windows == 'true'` term still evaluates to false when
+  # the gate does not apply (and when `changes` itself failed, since its outputs
+  # are then empty), so the intended skip-reports-Success path is unchanged.
+  windows-installer-e2e:
+    needs: [changes, build-bridge-installers, build-target-updater]
+    if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: installer E2E (x64 MSI + NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}
+      TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}
+
+    steps:
+      # First step on purpose: this is what converts "a build job failed" from a
+      # green required check into a red one.
+      - name: Fail when an installer build job did not succeed
+        if: ${{ needs.build-bridge-installers.result != 'success' || needs.build-target-updater.result != 'success' }}
+        shell: pwsh
+        run: |
+          Write-Host "bridge build: ${{ needs.build-bridge-installers.result }}"
+          Write-Host "target build: ${{ needs.build-target-updater.result }}"
+          throw "A Windows installer build job did not succeed; failing the required check rather than reporting it satisfied."
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Download bridge NSIS installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-bridge
+          path: ${{ runner.temp }}/installers/bridge
+
+      - name: Download target NSIS updater
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-target
+          path: ${{ runner.temp }}/installers/target
+
+      # No Rust toolchain in this job: the bridge build already produced
+      # tauri-driver.exe, and the live harness only needs it on PATH
+      # (e2e/desktop-alt/live-driver.ts resolves it by name).
+      - name: Download Tauri WebDriver bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-tauri-driver
+          path: ${{ runner.temp }}/tauri-driver
+
+      - name: Put the Tauri WebDriver bridge on PATH
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "tauri-driver"
+          $exe = Join-Path $dir "tauri-driver.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "tauri-driver.exe was not restored from the bridge build job"
+          }
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
+
       - name: Install PR bridge NSIS package
         id: install_bridge
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $bridgeDir = Join-Path $env:RUNNER_TEMP "installers\bridge"
+          $installer = Get-ChildItem $bridgeDir -Filter "*_$($env:BRIDGE_VERSION)_x64-setup.exe" -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
             throw "Bridge NSIS installer was not produced"
           }
@@ -663,36 +1104,19 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
-
-      - name: Build next synthetic NSIS updater
-        shell: pwsh
-        run: |
-          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
-          }
-          pnpm tauri build `
-            --target x86_64-pc-windows-msvc `
-            --bundles nsis `
-            --config src-tauri/tauri.windows.conf.json `
-            --config src-tauri/tauri.windows.release.conf.json `
-            --config src-tauri/tauri.windows.ci.conf.json `
-            --features e2e-automation
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to build target NSIS updater"
-          }
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
       - name: Upgrade running PR bridge through its copied helper
         id: upgrade
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.target }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $targetDir = Join-Path $env:RUNNER_TEMP "installers\target"
+          $installer = Get-ChildItem $targetDir -Filter "*_$($env:TARGET_VERSION)_x64-setup.exe" -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
             throw "Target NSIS installer was not produced"
           }
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Upgraded application: $app"
@@ -701,7 +1125,7 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.

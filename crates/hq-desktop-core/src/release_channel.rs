@@ -628,6 +628,35 @@ mod tests {
     }
 
     #[test]
+    fn beta_channel_is_offered_newer_stable_over_older_beta() {
+        // Field case: a Beta-channel user on v0.10.173-beta.11 must be offered
+        // public v0.10.173. SemVer ranks a release above its own prereleases
+        // (`0.10.173` > `0.10.173-beta.11`), and Beta includes Stable.
+        let tags = vec![
+            "v0.10.173".to_string(),
+            "v0.10.173-beta.11".to_string(),
+            "v0.10.172".to_string(),
+            "v0.10.172-beta.4".to_string(),
+        ];
+        assert_eq!(
+            pick_release_for_channel(ReleaseChannel::Beta, &tags),
+            Some("v0.10.173".to_string())
+        );
+        let (_, stable) = parse_channel_from_tag("v0.10.173").unwrap();
+        let (_, beta11) = parse_channel_from_tag("v0.10.173-beta.11").unwrap();
+        assert!(stable > beta11);
+        assert!(!is_channel_downgrade("0.10.173-beta.11", "v0.10.173"));
+        assert!(!is_channel_downgrade("v0.10.173-beta.11", "v0.10.173"));
+
+        let resolved = resolve_endpoint_from_tags(ReleaseChannel::Beta, &tags);
+        assert_eq!(
+            resolved.url,
+            "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.173/latest.json"
+        );
+        assert_eq!(resolved.provenance, EndpointProvenance::ChannelRelease);
+    }
+
+    #[test]
     fn beta_falls_back_to_newest_stable_when_no_beta_available() {
         let tags = vec![
             "v0.1.107".to_string(),

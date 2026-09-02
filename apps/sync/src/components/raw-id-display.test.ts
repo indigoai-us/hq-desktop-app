@@ -8,20 +8,10 @@ function source(relativePath: string): string {
 describe('assigned raw-ID display surfaces', () => {
   it('resolves request and contact labels before rendering messaging surfaces', () => {
     const app = source('../App.svelte');
-    const requestCard = source('./messaging/DmRequestCard.svelte');
-    const shell = source('./messaging/MessagesShell.svelte');
     const conversation = source('./messaging/Conversation.svelte');
-    const thread = source('./messaging/ThreadPanel.svelte');
-    const catchUp = source('./messaging/v4/CatchUp.svelte');
 
     expect(app).toContain('enrichIncomingRequest(e.payload)');
-    expect(requestCard).toContain('sanitizeVisibleIdentifiers(requestDisplayName(request))');
-    expect(shell).toContain('return humanPersonLabel(c);');
-    expect(shell).toContain('enrichRequestFromContacts(request, response.contacts ?? [])');
-    expect(shell).not.toContain('c.email?.trim() || c.personUid');
     expect(conversation).toContain("sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')");
-    expect(thread).toContain('sanitizeVisibleIdentifiers(title)');
-    expect(catchUp).toContain('sanitizeVisibleIdentifiers(item.title)');
   });
 
   it('uses company names or generic labels in meeting and desktop surfaces', () => {

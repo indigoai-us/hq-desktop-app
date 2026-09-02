@@ -175,22 +175,55 @@ export function isSetupChannel(id: string | null | undefined): boolean {
   return id === SETUP_CHANNEL_ID;
 }
 
+export interface WithSetupChannelOptions {
+  /**
+   * Epoch-ms activity stamp for the SYNTHETIC row. The constant carries no
+   * activity (it is never "unread"); while pinned that is irrelevant, but an
+   * UNPINNED #setup with zero activity would sink into the collapsed
+   * LAST WEEK bucket. Callers pass e.g. the start of today so it renders at
+   * the bottom of TODAY instead. Ignored when a real server row wins.
+   */
+  activityAt?: number | null;
+}
+
 /**
  * Prepend the synthetic #setup channel to a channels list, deduped against a
  * real server-listed `setup` channel (the real row wins — it carries server
  * unread/activity/membership). Pure; never mutates the input.
  */
-export function withSetupChannel(channels: readonly Channel[]): Channel[] {
+export function withSetupChannel(
+  channels: readonly Channel[],
+  { activityAt = null }: WithSetupChannelOptions = {},
+): Channel[] {
   if (channels.some((c) => isSetupChannel(c.channelId))) {
     return channels.slice();
   }
-  return [SETUP_CHANNEL, ...channels];
+  const synthetic =
+    activityAt != null && activityAt > 0
+      ? { ...SETUP_CHANNEL, arrivedAt: activityAt }
+      : SETUP_CHANNEL;
+  return [synthetic, ...channels];
+}
+
+export interface WithSetupPinOptions {
+  /**
+   * The user unpinned #setup. Persisted per tenant (see
+   * `loadSetupPinDismissed`); when true the setup row id is NOT re-added and
+   * is stripped if present, so the channel lists like any other row.
+   */
+  dismissed?: boolean;
 }
 
 /**
  * Ensure the #setup row id is part of the pinned-id set so the rail renders
- * it in the PINNED section at the top. Pure; never mutates the input.
+ * it in the PINNED section at the top — the default for a fresh profile.
+ * Once the user unpins it (`dismissed`), it stays out of the set until they
+ * pin it again. Pure; never mutates the input.
  */
-export function withSetupPin(pins: readonly string[]): string[] {
+export function withSetupPin(
+  pins: readonly string[],
+  { dismissed = false }: WithSetupPinOptions = {},
+): string[] {
+  if (dismissed) return pins.filter((id) => id !== SETUP_ROW_ID);
   return pins.includes(SETUP_ROW_ID) ? pins.slice() : [SETUP_ROW_ID, ...pins];
 }

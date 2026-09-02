@@ -33,38 +33,14 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   const globalError = readRepoFile(
     'src/components/GlobalErrorBoundary.svelte',
   );
-  const dmRequest = readRepoFile(
-    'src/components/messaging/DmRequestCard.svelte',
-  );
-  const composeMessage = readRepoFile(
-    'src/components/messaging/ComposeMessage.svelte',
-  );
   const meetings = readRepoFile('src/components/MeetingsWindow.svelte');
   const drift = readRepoFile('src/components/DriftDetail.svelte');
   const shares = readRepoFile('src/components/ShareMainPane.svelte');
-  const messages = readRepoFile(
-    'src/components/messaging/MessagesShell.svelte',
-  );
-  const catchUp = readRepoFile(
-    'src/components/messaging/v4/CatchUp.svelte',
-  );
-  const channelView = readRepoFile(
-    'src/components/messaging/ChannelView.svelte',
-  );
-  const createChannel = readRepoFile(
-    'src/components/messaging/CreateChannel.svelte',
-  );
-  const channelList = readRepoFile(
-    'src/components/messaging/ChannelList.svelte',
-  );
   const conversation = readRepoFile(
     'src/components/messaging/Conversation.svelte',
   );
-  const channelRoster = readRepoFile(
-    'src/components/messaging/ChannelRoster.svelte',
-  );
-  const systemEvent = readRepoFile(
-    'src/components/messaging/v4/SystemEventCard.svelte',
+  const channelConversation = readRepoFile(
+    '../../packages/ui/src/chat/messaging/ChannelConversation.svelte',
   );
   const widget = readRepoFile('src/components/Widget.svelte');
   const main = readRepoFile('src/main.ts');
@@ -187,19 +163,6 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
-  it('keeps connection requests and compose guidance in the open message flow', () => {
-    expectOpenSection(dmRequest, '.request-card', 'DM request');
-    expect(rule(dmRequest, '.request-card')).toContain(
-      'border-top: 1px solid var(--border)',
-    );
-    expectOpenSection(dmRequest, '.request-message', 'DM request message');
-
-    expectOpenSection(composeMessage, '.compose-note', 'compose guidance');
-    expect(rule(composeMessage, '.compose-note')).toContain(
-      'border-top: 1px solid var(--border)',
-    );
-  });
-
   it('exposes every standalone main-window mount to the visual harness', () => {
     const standaloneMounts = [
       ['meetings-window', 'MeetingsWindow', 'meetings'],
@@ -211,7 +174,6 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
       ['dm-detail', 'DmDetail', 'dm-detail'],
       ['dm-banner', 'BannerNotification', 'banner'],
       ['widget', 'Widget', 'widget'],
-      ['messages', 'MessagesShell', 'messages'],
     ] as const;
 
     for (const [windowLabel, component, view] of standaloneMounts) {
@@ -304,117 +266,21 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     );
   });
 
-  it('keeps widget fixtures deterministic and message selection neutral', () => {
-    expect(harness).toContain('WIDGET_RECENT_STORAGE_KEY');
-    expect(harness).toContain(
-      'localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY)',
-    );
-    expect(messages).not.toContain('.contact-row.active::before');
-    expect(rule(messages, '.contact-row')).toContain('border-radius: 0');
-    expect(rule(messages, '.compact-list .contact-row')).toContain('border-radius: 6px');
-    expect(rule(messages, '.compact-list .contact-row.active')).toContain(
-      'background: color-mix(in srgb, var(--fg) 10%, transparent)',
-    );
-    expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
-  });
-
-  it('renders catch-up entries as open rows instead of inset cards', () => {
-    expectOpenSection(catchUp, '.ranked-card', 'message catch-up entry');
-    expect(rule(catchUp, '.ranked-card')).toContain(
-      'border-top: 1px solid var(--border)',
-    );
-    expect(rule(catchUp, '.ranked-list')).toContain('gap: 0');
-    expect(catchUp).not.toContain('class="rank"');
-  });
-
   it('uses message chrome only where it carries meaning', () => {
-    const incoming = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-in .dm-bubble",
-    );
-    const outgoing = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-out .dm-bubble",
-    );
+    const bubble = rule(channelConversation, '.dm-bubble');
+    const author = rule(channelConversation, '.dm-msg-author');
     const sharedFile = rule(
       conversation,
-      ":global([data-window='messages']) .dm-bubble-share",
-    );
-    const author = rule(
-      conversation,
-      ":global([data-window='messages']) .dm-msg-author",
+      ":global(html[data-window='dm-detail']) .dm-bubble.dm-bubble-share",
     );
 
-    expect(incoming).toContain('background: transparent');
-    expect(incoming).toContain('border-radius: 0');
-    expect(outgoing).toContain('background: var(--surface-raise)');
-    expect(outgoing).toContain('border: 1px solid var(--border)');
-    expect(sharedFile).toContain('background: var(--surface-raise)');
-    expect(sharedFile).toContain('border: 1px solid var(--border)');
-    expect(author).toContain('border-radius: 999px');
-  });
-
-  it('marks intentionally captured messaging props as untracked initial state', () => {
-    expect(channelView).toContain("import { untrack } from 'svelte'");
-    expect(channelView).toContain(
-      'let current = $state<Channel>(untrack(() => channel));',
-    );
-    expect(channelView).toContain(
-      'untrack(() => channel.memberCount ?? null)',
-    );
-    expect(createChannel).toContain("import { untrack } from 'svelte'");
-    expect(createChannel).toContain(
-      "untrack(() => presetCompanyUid ?? 'personal')",
-    );
-  });
-
-  it('keeps routine messaging and meeting workflow metadata fully neutral', () => {
-    for (const [source, selector, label] of [
-      [channelList, '.invited-chip', 'channel invitation'],
-      [conversation, '.dm-msg-pending', 'pending message'],
-      [channelRoster, '.member-role.owner', 'channel owner'],
-    ] as const) {
-      const block = rule(source, selector);
-      expect(block, `${label} selector should exist`).not.toBe('');
-      expect(block, `${label} should not use warning colors`).not.toMatch(
-        /(?:amber|v4-warn|#b45309|#fcd34d)/i,
-      );
-    }
-
-    expect(rule(channelList, '.invited-chip')).toContain(
-      'background: transparent',
-    );
-    expect(rule(channelList, '.invited-chip')).toContain('border-radius: 0');
-    expect(rule(conversation, '.dm-msg-pending')).toContain(
-      'background: transparent',
-    );
-    expect(rule(conversation, '.dm-msg-pending')).toContain(
-      'border-radius: 0',
-    );
-    expect(rule(channelRoster, '.member-role.owner')).toContain(
-      'color: var(--pop-muted)',
-    );
-
-    expect(rule(meetings, '.row-icon-joining')).toContain(
-      'color: var(--c-muted)',
-    );
-    expect(rule(meetings, '.row-icon-bot-now')).toContain(
-      'color: var(--c-text)',
-    );
-    expect(rule(meetings, '.row-icon-spinner-amber')).toContain(
-      'color: var(--c-muted)',
-    );
-  });
-
-  it('reserves the SystemEventCard warning color for its explicit compact attention dot', () => {
-    expect(rule(systemEvent, '.dot')).toContain('width: 7px');
-    expect(rule(systemEvent, '.dot')).toContain('height: 7px');
-    expect(rule(systemEvent, "[data-tone='warn'] .dot")).toContain(
-      'background: var(--amber)',
-    );
-    expect(rule(systemEvent, "[data-tone='warn'] .dot")).not.toMatch(
-      /(?:border|box-shadow|padding)/,
-    );
+    expect(bubble).toContain('background: transparent');
+    expect(bubble).toContain('border-radius: 0');
+    expect(bubble).toContain('border: 0');
+    expect(author, 'author selector should exist').not.toBe('');
+    expect(author).not.toContain('border-radius: 999px');
+    expect(sharedFile).toContain('border: 1px solid');
+    expect(sharedFile).toMatch(/background:/);
   });
 
   it('keeps the idle widget wordmark legible in forced light and dark visual previews', () => {

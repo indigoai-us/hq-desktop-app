@@ -166,10 +166,6 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   openDesktopAltWindow(): DesktopAltWindowState {
     this.assertWindowLifecycleSourceContracts();
 
-    if (!this.isDesktopAltEnabled()) {
-      throw new Error('desktop-alt requires a signed-in user');
-    }
-
     if (this.desktopAltWindow) {
       this.desktopAltWindow.focused = true;
       return { ...this.desktopAltWindow, created: false };

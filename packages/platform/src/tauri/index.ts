@@ -8,6 +8,7 @@
 
 import {
   AGENT_PATHS,
+  DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -52,6 +53,23 @@ export type InvokeFn = (
 
 export interface TauriPlatformAdapterConfig {
   invoke: InvokeFn;
+}
+
+/**
+ * True when a non-OK result is the generic API-Gateway 404 — `http-404` code
+ * (the body carried no `code`) and the default "<METHOD> <path> failed"
+ * message (the body carried no `error` string either).
+ */
+function isCodelessHttp404(
+  res: { ok: boolean; code?: string; message?: string },
+  method: string,
+  path: string,
+): boolean {
+  return (
+    !res.ok &&
+    res.code === "http-404" &&
+    (res.message === undefined || res.message === `${method} ${path} failed`)
+  );
 }
 
 export class TauriPlatformAdapter implements PlatformAdapter {
@@ -172,6 +190,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     },
     getProfile: () => this.hqProJson("GET", "/v1/profile"),
     updateProfile: (input) => this.hqProJson("PUT", "/v1/profile", input),
+    updateAgentProfile: (agentUid, input) =>
+      this.hqProJson(
+        "PATCH",
+        `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -197,6 +221,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "DELETE",
         `/v1/notify/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(personUid)}`,
       ),
+    deleteChannel: async (channelId) => {
+      const path = `/v1/notify/channels/${encodeURIComponent(channelId)}`;
+      const res = await this.hqProJson<Json>("DELETE", path);
+      // Only the bare API-Gateway `{"message":"Not Found"}` shape (no `code`
+      // AND no server `error` string) means the route does not exist yet. A
+      // coded 404 (CHANNEL_NOT_FOUND) or any 404 that carries a server
+      // `error` keeps the server text.
+      if (isCodelessHttp404(res, "DELETE", path)) {
+        return failure("http-404", DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+      }
+      return res;
+    },
     // Scoped reads go through the existing company-scoped command rather than
     // a new IPC surface: list_company_members is GET /v1/notify/contacts
     // ?companyUid=… and is already registered + capability-listed.
@@ -524,6 +560,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     },
     checkForUpdates: () => this.call("check_for_updates"),
     installUpdate: () => this.call("install_update"),
+    downloadUpdate: () => this.call("download_update"),
+    installDownloadedUpdate: () => this.call("install_downloaded_update"),
+    getDownloadedUpdate: () => this.call("get_downloaded_update"),
     getPendingUpdate: () => this.call("get_pending_update"),
     checkCoreState: () => this.call("check_core_state"),
     installCoreUpdate: () => this.call("install_hq_core_update"),

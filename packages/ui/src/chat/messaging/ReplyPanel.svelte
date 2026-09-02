@@ -7,10 +7,12 @@
    * ZERO extra fetch after send — cache-first; the host must not re-GET the
    * whole reply thread on ack (hq-work-desktop-io-off-main-thread).
    */
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
 
+  import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
@@ -38,7 +40,8 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isImageFile,
+    filesFromDataTransfer,
+    namePastedImageFile,
     validateChatAttachment,
     type ChatAttachmentValidator,
     type ChatAttachmentWire,
@@ -49,7 +52,11 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
-  import { safeHref } from "../../common/markdown.js";
+  import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../../common/external-links.js";
   import type {
     ChatWakeBus,
     ConversationApi,
@@ -196,23 +203,15 @@
     });
   }
 
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
-  function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-    node: EventTarget | null,
-  ): boolean {
-    if (!(node instanceof Element)) return false;
-    const body = event.currentTarget;
-    if (!(body instanceof Element)) return false;
-    const anchor = node.closest("a[href]");
-    if (!anchor || !body.contains(anchor)) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const href = safeHref(anchor.getAttribute("href") ?? "");
-    if (!href) return true;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-    return true;
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "message",
+    });
   }
 
   function storedMentions(
@@ -244,7 +243,7 @@
   let localSeq = 0;
   let seenIds = $state(new Set<string>());
   let localReactions = $state<ReactionMap>({});
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -501,50 +500,15 @@
     attachError = null;
   }
 
-  /**
-   * Lazy object URLs for image previews of pending composer files. The
-   * $effect below revokes URLs whenever a file leaves pendingFiles (remove,
-   * send-clear), and onDestroy revokes whatever is left.
-   */
-  const pendingPreviewUrls = new Map<File, string>();
-  function pendingPreviewUrl(file: File): string {
-    let url = pendingPreviewUrls.get(file);
-    if (!url) {
-      url = URL.createObjectURL(file);
-      pendingPreviewUrls.set(file, url);
-    }
-    return url;
-  }
-  $effect(() => {
-    const current = new Set(pendingFiles);
-    for (const [file, url] of pendingPreviewUrls) {
-      if (!current.has(file)) {
-        URL.revokeObjectURL(url);
-        pendingPreviewUrls.delete(file);
-      }
-    }
-  });
-  onDestroy(() => {
-    for (const url of pendingPreviewUrls.values()) URL.revokeObjectURL(url);
-    pendingPreviewUrls.clear();
-  });
-
-  /** Pasted screenshots all arrive named "image.png" — make each unique. */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
     if (!onuploadfiles) return;
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -745,11 +709,20 @@
   });
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
   class="reply-panel"
   aria-label="Thread"
   data-testid="reply-panel"
   data-root-event-id={rootEventId}
+  onclick={onBodyLinkActivate}
+  onauxclick={onBodyLinkActivate}
+  oncontextmenu={onBodyLinkActivate}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
+  }}
 >
   <header class="reply-header">
     <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
@@ -796,14 +769,14 @@
           {#if root.body?.trim()}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="reply-md"
+              class="reply-md msg-body"
               onclick={(e) => {
-                if (onBodyLinkActivate(e, e.target)) return;
+                if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
               }}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
-                  if (onBodyLinkActivate(e, e.target)) return;
+                  if (onBodyLinkActivate(e)) return;
                   onMentionActivate(e, e.target);
                 }
               }}
@@ -939,14 +912,14 @@
               {#if msg.body?.trim()}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="reply-md"
+                  class="reply-md msg-body"
                   onclick={(e) => {
-                    if (onBodyLinkActivate(e, e.target)) return;
+                    if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);
                   }}
                   onkeydown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e, e.target)) return;
+                      if (onBodyLinkActivate(e)) return;
                       onMentionActivate(e, e.target);
                     }
                   }}
@@ -1042,43 +1015,12 @@
         />
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="reply-pending" data-testid="reply-panel-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            {#if isImageFile(file)}
-              <span class="reply-thumb">
-                <img
-                  class="reply-thumb-img"
-                  src={pendingPreviewUrl(file)}
-                  alt={file.name}
-                />
-                <span class="reply-thumb-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="reply-thumb-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {:else}
-              <span class="reply-chip">
-                <span class="reply-chip-name">{file.name}</span>
-                <button
-                  type="button"
-                  class="reply-chip-remove"
-                  aria-label={`Remove ${file.name}`}
-                  onclick={() => removePendingFile(i)}
-                >
-                  ×
-                </button>
-              </span>
-            {/if}
-          {/each}
-          {#if attachError}
-            <span class="reply-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          testid="reply-panel-pending"
+          onremove={removePendingFile}
+        />
       {/if}
       <textarea
         class="reply-input"
@@ -1153,6 +1095,13 @@
       </div>
     </div>
   </div>
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
+    />
+  {/if}
 </aside>
 
 <style>
@@ -1217,6 +1166,7 @@
     display: grid;
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
+    align-items: start;
     padding: 12px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
   }
@@ -1257,6 +1207,7 @@
   .reply-author {
     font-size: 13px;
     font-weight: 700;
+    line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
   }
 
@@ -1326,7 +1277,25 @@
     overflow-wrap: anywhere;
   }
 
+  /* Same first/last/p collapse as .dm-bubble-body — UA <p> margin was the
+     extra name→body line in the thread panel. */
+  .reply-md > :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .reply-md > :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .reply-md :global(p) {
+    margin: var(--msg-body-p-margin, 0.375rem 0);
+    color: inherit;
+  }
+
   .reply-root-label {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
@@ -1370,6 +1339,15 @@
     align-items: start;
     padding: 5px 8px;
     border-radius: 6px;
+  }
+
+  .reply-avatar {
+    display: grid;
+    place-items: start center;
+    flex: 0 0 36px;
+    width: 36px;
+    min-height: 1px;
+    padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
   .reply-row:hover {
@@ -1444,13 +1422,15 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0;
   }
 
   .reply-meta {
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
+    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    min-width: 0;
   }
 
   .reply-send-state {
@@ -1471,94 +1451,6 @@
     font-size: 11px;
     font-weight: 400;
     cursor: pointer;
-  }
-
-  .reply-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .reply-thumb {
-    position: relative;
-    display: inline-flex;
-    width: 56px;
-    height: 56px;
-    overflow: hidden;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-  }
-
-  .reply-thumb-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-
-  .reply-thumb-name {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 1px 3px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 10px;
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    opacity: 0.9;
-  }
-
-  .reply-thumb-remove {
-    position: absolute;
-    top: 0;
-    right: 0;
-    appearance: none;
-    border: 0;
-    padding: 0 4px;
-    line-height: 16px;
-    background: var(--bg, rgba(0, 0, 0, 0.6));
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-thumb-remove:hover {
-    background: var(--sel, rgba(255, 255, 255, 0.12));
-    color: var(--t1, #fff);
-  }
-
-  .reply-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 200px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .reply-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .reply-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .reply-attach {

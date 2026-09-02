@@ -76,9 +76,8 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             // Dock icon defaults ON — a fresh install shows up in the Dock
             // without the user finding the toggle first.
             dock_icon: Some(true),
-            // HQ Work handoff defaults OFF — existing installs keep desktop-alt
-            // until ~/.hq/menubar.json is flipped (no rebuild).
-            hq_work_handoff: Some(false),
+            // Retired. The desktop workspace is the only UI.
+            hq_work_handoff: None,
         });
     }
 
@@ -171,9 +170,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // activation policy at launch and on toggle; this branch only keeps
         // the Settings round-trip honest.
         dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
-        // HQ Work handoff defaults OFF when absent so existing installs keep
-        // desktop-alt until the flag is flipped in menubar.json.
-        hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
+        // Retired. Ignore any leftover hqWorkHandoff so Settings cannot
+        // resurrect the classic shell.
+        hq_work_handoff: None,
     })
 }
 

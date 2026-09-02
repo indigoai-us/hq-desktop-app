@@ -50,6 +50,12 @@ function webAdapter(): PlatformAdapter {
       listOwners: async () => ok({ owners: [] }),
       getCompanyTelemetry: async () => ok({ perMember: [] }),
     },
+    meetings: {
+      listUpcoming: async () => ok([]),
+      listMemberships: async () => ok([]),
+      listAccounts: async () => ok([]),
+      listScheduledBots: async () => ok([]),
+    },
     settings: {
       getSetupStatus: async () =>
         ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
@@ -69,6 +75,10 @@ let component: ReturnType<typeof mount> | null = null;
 beforeEach(() => {
   window.localStorage?.clear?.();
   takePendingConversation();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("missing", { status: 404 })),
+  );
 });
 
 afterEach(async () => {
@@ -77,9 +87,15 @@ afterEach(async () => {
   component = null;
   host?.remove();
   window.localStorage?.clear?.();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
-async function mountOpen(personUid: string, displayName: string) {
+async function mountOpen(
+  personUid: string,
+  displayName: string,
+  extra: Record<string, unknown> = {},
+) {
   requestConversation({ personUid, email: "", displayName });
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -104,6 +120,7 @@ async function mountOpen(personUid: string, displayName: string) {
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Stefan", email: "s@x.y" },
       coreFixtures: false,
+      ...extra,
     },
   });
   await tick();
@@ -133,6 +150,27 @@ describe("DesktopApp agent detail pane", () => {
       host.querySelector('[data-testid="agent-detail-name"]')?.textContent,
     ).toContain(AGENT_NAME);
     expect(host.querySelector('[data-testid="profile-column"]')).toBeNull();
+  });
+
+  it("wires the pack picker into the agent pane for an admin", async () => {
+    await mountOpen(AGENT_UID, AGENT_NAME, { isAdmin: true });
+    const opener = host.querySelector(
+      '[data-testid="channel-header-agent"]',
+    ) as HTMLButtonElement;
+    expect(opener).not.toBeNull();
+    opener.click();
+    await tick();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="agent-detail-panel"]'),
+      ).not.toBeNull();
+      expect(
+        host.querySelector('[data-testid="agent-detail-avatar-picker-slot"]'),
+      ).not.toBeNull();
+      expect(
+        host.querySelector('[data-testid="avatar-pack-picker"]'),
+      ).not.toBeNull();
+    });
   });
 
   it("does not open the agent pane from a human DM header", async () => {

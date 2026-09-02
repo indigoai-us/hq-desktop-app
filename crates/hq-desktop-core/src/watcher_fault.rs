@@ -178,8 +178,9 @@ pub enum WatcherFaultProvenance {
     /// The query ran and the Application log yielded ZERO "Application Error"
     /// (Event 1000) records for the whole read.
     NoRecords,
-    /// Records were parsed, but every one fell outside the generation binding
-    /// window (or carried no readable timestamp to time-bind against).
+    /// At least one parsed record fell AFTER the generation binding window's upper
+    /// bound — a genuine near-miss adjacent to this generation's lifetime, distinct
+    /// from a stale record that predates it (that resolves to `DeadlineExpired`).
     RejectedOutOfWindow,
     /// At least one in-window record was parsed, but its exception code disagreed
     /// with the fault the exit itself carried — a coincidental unrelated crash.
@@ -187,8 +188,11 @@ pub enum WatcherFaultProvenance {
     /// Raw event XML was returned, but none of it parsed into a valid Application
     /// Error 1000 record (wrong template, truncated, or unrecognised).
     RejectedUnparsable,
-    /// The deferred read reached its bounded deadline while the log was still
-    /// empty — WER had not published the Event 1000 entry in time.
+    /// WER never published the Event 1000 entry for OUR fault within the bounded
+    /// deadline: the Application log stayed empty for the whole horizon, or held
+    /// only records that PREDATE this generation (stale evidence about other
+    /// crashes). Both are "our record never appeared", not "records existed, none
+    /// were ours" — the honesty distinction the stale-vs-near-miss split restores.
     DeadlineExpired,
     /// The read has been deferred off the exit path and has not resolved yet.
     /// Emitted only when a teardown flush preempts the deferred worker before it
@@ -405,8 +409,15 @@ pub struct WatcherFaultReadCounters {
     pub records_seen: u32,
     /// Fragments that parsed into a valid Application Error 1000 record.
     pub records_parsed: u32,
-    /// Parsed records rejected because they fell outside the binding window (or
-    /// carried no readable timestamp to time-bind against).
+    /// Parsed records that PREDATE the binding window (timestamp before
+    /// `gen_start_ms`) or carry no readable timestamp — stale evidence about some
+    /// OTHER crash, never ours. Counted apart from the near-miss class so an
+    /// all-stale read resolves to `deadline_expired` ("WER never published our
+    /// record") instead of the misleading "records existed, none were ours".
+    pub rejected_stale: u32,
+    /// Parsed records rejected because they fell AFTER the binding window's upper
+    /// bound — a genuine near-miss adjacent to this generation's lifetime, kept
+    /// distinct from the stale class above.
     pub rejected_out_of_window: u32,
     /// In-window parsed records rejected because their exception code disagreed
     /// with the fault the exit itself carried.
@@ -420,12 +431,15 @@ pub struct WatcherFaultReadCounters {
 impl WatcherFaultReadCounters {
     /// Compact, fixed-vocabulary rollup for a Sentry tag, always rendered (even
     /// all-zero) so `seen:0` is an assertable, comparable fact. Bounded well under
-    /// Sentry's 200-char limit: six `token:integer` pairs.
+    /// Sentry's 200-char limit: seven `token:integer` pairs. The ordered key set
+    /// is mirrored by `hq_telemetry`'s `is_watcher_fault_read_counters` egress
+    /// guard — the two MUST change together or the tag degrades to `[Filtered]`.
     pub fn tag_value(&self) -> String {
         format!(
-            "seen:{},parsed:{},rej_win:{},rej_code:{},sweeps:{},ms:{}",
+            "seen:{},parsed:{},stale:{},rej_win:{},rej_code:{},sweeps:{},ms:{}",
             self.records_seen,
             self.records_parsed,
+            self.rejected_stale,
             self.rejected_out_of_window,
             self.rejected_code_mismatch,
             self.sweeps,
@@ -433,12 +447,17 @@ impl WatcherFaultReadCounters {
         )
     }
 
-    /// Total rejected-record evidence across both reasons, saturating. Used only
-    /// to tie-break which of two equally-specific rejections to retain across the
-    /// deferred read's polling sweeps — never rendered on its own.
+    /// Total non-binding record evidence across ALL reasons (stale, out-of-window,
+    /// code-mismatch), saturating. Used only to tie-break which of two
+    /// equally-specific outcomes to retain across the deferred read's polling
+    /// sweeps — never rendered on its own. `rejected_stale` is included so an
+    /// all-stale `DeadlineExpired` sweep carrying MORE stale records is not
+    /// discarded in favour of an earlier, sparser one — which would underreport the
+    /// resolved read's `parsed`/`stale` counts on the wire.
     pub fn total_rejected(&self) -> u32 {
         self.rejected_out_of_window
             .saturating_add(self.rejected_code_mismatch)
+            .saturating_add(self.rejected_stale)
     }
 }
 
@@ -567,8 +586,10 @@ impl WatcherFaultOutcome {
 ///  2. `WindowOnly` — time ∈ window AND (no observed code, or codes agree).
 ///  3. Otherwise a distinct non-binding reason with per-reason counters:
 ///     `NoRecords` (empty), `RejectedCodeMismatch` (an in-window record for a
-///     different fault), or `RejectedOutOfWindow` (all records outside the
-///     window / untimebindable).
+///     different fault), `RejectedOutOfWindow` (a near-miss record AFTER the
+///     window's upper bound), or `DeadlineExpired` (every parsed record predates
+///     the window start / is untimebindable — stale evidence about other crashes,
+///     so WER never published OUR record).
 ///
 /// A weaker binding is never upgraded, and a record outside the window is never
 /// reported, so PID reuse or a coincidental unrelated crash on the same machine
@@ -625,21 +646,39 @@ pub fn attribute_watcher_fault(
             .with_counters(counters);
     }
 
-    // Nothing bound: diagnose precisely why, counting each rejection reason so
-    // the next occurrence is actionable rather than a repeat of the blind retry.
+    // Nothing bound: diagnose precisely why, splitting the non-binding records by
+    // the window START so a stale record about a DIFFERENT crash is never counted
+    // as a near-miss for ours. Each reason is counted so the next occurrence is
+    // actionable rather than a repeat of the blind retry.
     for record in records {
         if in_window(record) && !code_agrees(record) {
+            // An in-window record for a different fault code — the strongest
+            // "records existed, none were ours" signal.
             counters.rejected_code_mismatch = counters.rejected_code_mismatch.saturating_add(1);
-        } else {
+        } else if record
+            .event_time_unix_ms
+            .is_some_and(|ms| ms >= gen_start_ms)
+        {
+            // Timestamped at/after this generation's start but outside the window
+            // (past its upper bound) — a genuine near-miss adjacent to our lifetime.
             counters.rejected_out_of_window = counters.rejected_out_of_window.saturating_add(1);
+        } else {
+            // Predates the window start, or carries no readable timestamp: stale
+            // evidence about some OTHER crash. Never our fault.
+            counters.rejected_stale = counters.rejected_stale.saturating_add(1);
         }
     }
-    // A code mismatch on an in-window record is the more specific, more
-    // actionable finding, so it wins the headline provenance when present.
+    // A code mismatch (in-window, wrong fault) is the most actionable finding and
+    // wins; a near-miss (adjacent, past the upper edge) is next. When EVERY parsed
+    // record is stale — all predate this generation — WER never published OUR
+    // record: that is the deadline-expired shape, NOT "records existed, none were
+    // ours". The deferred reader carries this verdict to its deadline.
     let provenance = if counters.rejected_code_mismatch > 0 {
         WatcherFaultProvenance::RejectedCodeMismatch
-    } else {
+    } else if counters.rejected_out_of_window > 0 {
         WatcherFaultProvenance::RejectedOutOfWindow
+    } else {
+        WatcherFaultProvenance::DeadlineExpired
     };
     WatcherFaultOutcome::unresolved(provenance).with_counters(counters)
 }
@@ -1444,19 +1483,22 @@ mod tests {
         assert_eq!(outcome.provenance, WatcherFaultProvenance::WindowOnly);
         assert_eq!(outcome.image_token(), "node_exe");
 
-        // Record timestamped OUTSIDE the window → rejected_out_of_window, unnamed,
-        // with the rejection counted — no longer the ambiguous `no_record`.
+        // Record timestamped BEFORE the window start → stale (predates this
+        // generation): the honest `deadline_expired` verdict, counted as `stale`
+        // and never the near-miss `rejected_out_of_window` nor the ambiguous
+        // `no_record`.
         let stale = WerApplicationError {
             event_time_unix_ms: Some(999_000),
             ..base
         };
         let outcome = attribute_watcher_fault(&[stale], &[6700], window.0, window.1, Some(0xC000_0409));
-        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::DeadlineExpired);
         assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE);
         assert_eq!(outcome.module_token(), WATCHER_FAULT_UNAVAILABLE);
         assert_eq!(outcome.exception_code, None);
         assert_eq!(outcome.counters.records_parsed, 1);
-        assert_eq!(outcome.counters.rejected_out_of_window, 1);
+        assert_eq!(outcome.counters.rejected_stale, 1);
+        assert_eq!(outcome.counters.rejected_out_of_window, 0);
         assert_eq!(outcome.counters.rejected_code_mismatch, 0);
 
         // No records at all → no_records (distinct from the all-rejected case),
@@ -1471,21 +1513,25 @@ mod tests {
     fn zero_records_and_all_rejected_are_distinct_tokens() {
         // The exact honesty gap the prior fix had: with zero records and with
         // records that all fall outside the window, base emitted the SAME
-        // `no_record`. The resolved vocabulary must separate them.
+        // `no_record`. The resolved vocabulary must separate them. Here the record
+        // is a genuine NEAR-MISS (past the window's upper bound, not stale), so it
+        // is the `rejected_out_of_window` token — distinct from `no_records`.
         let window = (1_000_000_i64, 1_001_000_i64);
-        let out_of_window = WerApplicationError {
+        let near_miss = WerApplicationError {
             image: WatcherFaultBinary::NodeExe,
             module: WatcherFaultBinary::NtdllDll,
             exception_code: Some(0xC000_0409),
             fault_offset: None,
             faulting_pid: Some(6700),
-            event_time_unix_ms: Some(500_000),
+            event_time_unix_ms: Some(1_500_000),
         };
         let zero = attribute_watcher_fault(&[], &[6700], window.0, window.1, Some(0xC000_0409));
         let rejected =
-            attribute_watcher_fault(&[out_of_window], &[6700], window.0, window.1, Some(0xC000_0409));
+            attribute_watcher_fault(&[near_miss], &[6700], window.0, window.1, Some(0xC000_0409));
         assert_eq!(zero.provenance, WatcherFaultProvenance::NoRecords);
         assert_eq!(rejected.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
+        assert_eq!(rejected.counters.rejected_out_of_window, 1);
+        assert_eq!(rejected.counters.rejected_stale, 0);
         assert_ne!(zero.provenance_token(), rejected.provenance_token());
         // Neither ever names an image.
         assert_eq!(zero.image_token(), WATCHER_FAULT_UNAVAILABLE);
@@ -1535,7 +1581,72 @@ mod tests {
         assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
         assert_eq!(outcome.counters.rejected_code_mismatch, 1);
         assert_eq!(outcome.counters.rejected_out_of_window, 0);
+        assert_eq!(outcome.counters.rejected_stale, 0);
         assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE);
+    }
+
+    #[test]
+    fn attribute_splits_stale_near_miss_and_code_mismatch_into_distinct_verdicts() {
+        // The three non-binding classes each get their OWN provenance and their OWN
+        // counter, and a genuine binding still outranks all of them. This is the
+        // honesty split HQ-DESKTOP-5W turned on: an all-stale read (records that
+        // predate this generation, about OTHER crashes) must not masquerade as
+        // "records existed, none were ours".
+        let window = (1_000_000_i64, 1_001_000_i64);
+        let base = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: None,
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_500),
+        };
+        let stale = WerApplicationError { event_time_unix_ms: Some(400_000), ..base };
+        let no_time = WerApplicationError { event_time_unix_ms: None, ..base };
+        let near_miss = WerApplicationError { event_time_unix_ms: Some(2_000_000), ..base };
+        let mismatch = WerApplicationError {
+            exception_code: Some(0xC000_0005),
+            event_time_unix_ms: Some(1_000_400),
+            ..base
+        };
+
+        // Stale only: every record predates the window start (or is untimebindable).
+        // WER never published OUR record → deadline_expired, counted as `stale`.
+        let stale_only =
+            attribute_watcher_fault(&[stale, no_time], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(stale_only.provenance, WatcherFaultProvenance::DeadlineExpired);
+        assert_eq!(stale_only.counters.rejected_stale, 2);
+        assert_eq!(stale_only.counters.rejected_out_of_window, 0);
+        assert_eq!(stale_only.counters.rejected_code_mismatch, 0);
+
+        // A near-miss (past the upper bound) wins the headline over a stale record,
+        // but the stale count is still reported separately — no information lost.
+        let mixed =
+            attribute_watcher_fault(&[near_miss, stale], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(mixed.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
+        assert_eq!(mixed.counters.rejected_out_of_window, 1);
+        assert_eq!(mixed.counters.rejected_stale, 1);
+
+        // A code mismatch (in-window, wrong fault) outranks both near-miss and stale.
+        let ranked = attribute_watcher_fault(
+            &[mismatch, near_miss, stale],
+            &[42],
+            window.0,
+            window.1,
+            Some(0xC000_0409),
+        );
+        assert_eq!(ranked.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        assert_eq!(ranked.counters.rejected_code_mismatch, 1);
+        assert_eq!(ranked.counters.rejected_out_of_window, 1);
+        assert_eq!(ranked.counters.rejected_stale, 1);
+
+        // A genuine binding still wins over every rejection class: a bound record
+        // is never downgraded by the presence of stale or near-miss neighbours.
+        let bound =
+            attribute_watcher_fault(&[base, stale, near_miss], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(bound.provenance, WatcherFaultProvenance::PidMatched);
+        assert!(bound.provenance.is_bound());
+        assert_eq!(bound.image_token(), "node_exe");
     }
 
     #[test]
@@ -1583,8 +1694,9 @@ mod tests {
     #[test]
     fn read_counters_render_a_bounded_fixed_vocabulary_tag() {
         let counters = WatcherFaultReadCounters {
-            records_seen: 3,
-            records_parsed: 2,
+            records_seen: 4,
+            records_parsed: 3,
+            rejected_stale: 1,
             rejected_out_of_window: 2,
             rejected_code_mismatch: 0,
             sweeps: 5,
@@ -1592,12 +1704,12 @@ mod tests {
         };
         assert_eq!(
             counters.tag_value(),
-            "seen:3,parsed:2,rej_win:2,rej_code:0,sweeps:5,ms:8123"
+            "seen:4,parsed:3,stale:1,rej_win:2,rej_code:0,sweeps:5,ms:8123"
         );
         // Always renders, even all-zero, so `seen:0` is an assertable fact.
         assert_eq!(
             WatcherFaultReadCounters::default().tag_value(),
-            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
+            "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
         // Bounded and denylist-free: no counter renderer can emit an input byte.
         assert!(counters.tag_value().len() <= 128);
@@ -1741,13 +1853,36 @@ mod tests {
         assert_eq!(sparse.stronger_rejection(out_of_window).counters.rejected_out_of_window, 5);
         assert_eq!(out_of_window.stronger_rejection(sparse).counters.rejected_out_of_window, 5);
 
-        // total_rejected sums both reasons, saturating.
+        // total_rejected sums ALL non-binding reasons, saturating (stale included).
         let both = WatcherFaultReadCounters {
             rejected_out_of_window: 3,
             rejected_code_mismatch: 4,
+            rejected_stale: 5,
             ..Default::default()
         };
-        assert_eq!(both.total_rejected(), 7);
+        assert_eq!(both.total_rejected(), 12);
+
+        // Two all-stale DeadlineExpired sweeps (equal specificity 0): the one with
+        // MORE stale records is retained, so the resolved read never underreports
+        // parsed/stale by keeping an earlier, sparser sweep.
+        let stale_sparse = WatcherFaultOutcome::unresolved(WatcherFaultProvenance::DeadlineExpired)
+            .with_counters(WatcherFaultReadCounters {
+                rejected_stale: 3,
+                ..Default::default()
+            });
+        let stale_rich = WatcherFaultOutcome::unresolved(WatcherFaultProvenance::DeadlineExpired)
+            .with_counters(WatcherFaultReadCounters {
+                rejected_stale: 12,
+                ..Default::default()
+            });
+        assert_eq!(
+            stale_sparse.stronger_rejection(stale_rich).counters.rejected_stale,
+            12
+        );
+        assert_eq!(
+            stale_rich.stronger_rejection(stale_sparse).counters.rejected_stale,
+            12
+        );
     }
 
     #[test]
