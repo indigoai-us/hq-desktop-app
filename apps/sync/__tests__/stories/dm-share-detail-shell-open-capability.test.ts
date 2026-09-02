@@ -200,8 +200,11 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
     ]);
 
     // …and that confinement is itself pinned: the ONLY mount of the session
-    // transcript is the Sessions page, and the only mount of that page is the
-    // desktop-alt shell.
+    // transcript is the Sessions page, and every mount of that page resolves
+    // back to the desktop-alt window — the classic shell mounts it directly,
+    // and the HQ Work shell mounts it through the `extraPages` adapter. Both
+    // shells are entered only from `desktop-alt/main.ts`, so neither path can
+    // carry the transcript into a window without `shell:allow-open`.
     const transcriptMounts = sources
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionTranscript[\s/>]/.test(body))
       .map(([relative]) => relative)
@@ -211,7 +214,24 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionsPage[\s/>]/.test(body))
       .map(([relative]) => relative)
       .sort();
-    expect(sessionsPageMounts).toEqual(['desktop-alt/DesktopApp.svelte']);
+    expect(sessionsPageMounts).toEqual([
+      'desktop-alt/DesktopApp.svelte',
+      'desktop-alt/pages/SessionsExtraPage.svelte',
+    ]);
+    const extraPageMounts = sources
+      .filter(([relative, body]) => relative.endsWith('.svelte') && /SessionsExtraPage[\s/>,]/.test(body))
+      .map(([relative]) => relative)
+      .sort();
+    expect(extraPageMounts).toEqual(['desktop-alt/HqWorkDesktopShell.svelte']);
+    const shellEntries = sources
+      .filter(
+        ([relative, body]) =>
+          !relative.endsWith('.svelte') &&
+          /import\([\s'"./]*(?:HqWorkDesktopShell|DesktopApp)\.svelte['"\s)]/.test(body),
+      )
+      .map(([relative]) => relative)
+      .sort();
+    expect(shellEntries).toEqual(['desktop-alt/main.ts']);
     expect(
       capabilities.get('desktop-alt-capability')!.permissions.map(permissionId),
     ).toContain('shell:allow-open');

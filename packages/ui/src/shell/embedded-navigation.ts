@@ -43,6 +43,13 @@ export type EmbeddedNavigationTarget =
       personUid: string;
       replyRootEventId?: string | null;
     }
+  /**
+   * A host-registered destination (`DesktopApp`'s `extraPages`). The shared
+   * shell owns no knowledge of the page: `page` names an `extraPages` key and
+   * `param` is the page's own opaque selection (for example a record id).
+   * Unknown ids surface the shell's navigation error rather than a blank view.
+   */
+  | { kind: 'extra'; page: string; param?: string | null }
   | { kind: 'unsupported'; route: string; reason: string };
 
 /** Deliver a target only after the mounted DesktopApp has registered its listener. */
