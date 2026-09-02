@@ -35,7 +35,7 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 /// Map a frontend tool identifier to the CLI binary we launch. The allowlist is
 /// the security boundary: only these three values ever reach a shell.
-fn cli_binary_for(tool: &str) -> Result<&'static str, String> {
+pub(crate) fn cli_binary_for(tool: &str) -> Result<&'static str, String> {
     match tool {
         "claude" => Ok("claude"),
         "codex" => Ok("codex"),

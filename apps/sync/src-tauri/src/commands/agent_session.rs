@@ -20,6 +20,7 @@
 //! honest about the session that is running right now.
 
 pub mod claude;
+pub mod codex;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -29,6 +30,7 @@ use hq_desktop_core::agent_session::claude_wire::{
     answers_updated_input, allow_response, control_response_line, deny_response, user_message_line,
     user_message_line_with_images,
 };
+use hq_desktop_core::agent_session::codex_wire::{approval_reply, user_input, user_input_reply};
 use hq_desktop_core::agent_session::registry::{
     LiveSession, PendingRequest, Replay, SessionRegistry, SessionSummary,
 };
@@ -88,6 +90,30 @@ impl SessionState {
     }
 }
 
+/// A child that has been started (and, for Codex, handshaken) but not yet
+/// handed to its driver task. Boxed handshake because it is much larger than
+/// the Claude arm, and a lopsided enum would pay for that on every start.
+enum Spawned {
+    Claude(hq_desktop_core::stdio::StdioChild),
+    Codex(
+        hq_desktop_core::stdio::StdioChild,
+        Box<codex::CodexHandshake>,
+    ),
+}
+
+/// Which CLI a live session is driving.
+///
+/// Read from the REGISTRY rather than taken as a command argument: the tool is
+/// a property of the running session, and trusting the caller to restate it
+/// would let a stale frontend send Claude-shaped bytes to a Codex child.
+fn session_tool(guard: &SessionState, session_id: &str) -> Result<SessionTool, String> {
+    guard
+        .registry
+        .get(session_id)
+        .map(|session| session.spec.tool)
+        .ok_or_else(|| format!("Session {session_id} is not running."))
+}
+
 fn state() -> Arc<Mutex<SessionState>> {
     static STATE: OnceLock<Arc<Mutex<SessionState>>> = OnceLock::new();
     STATE
@@ -138,6 +164,10 @@ pub struct Preflight {
     /// not — so this is a first-class preflight signal, not a detail.
     pub claude_logged_in: bool,
     pub codex_available: bool,
+    /// The Codex CLI signs in separately from the ChatGPT desktop app, and a
+    /// signed-out CLI starts fine and then fails at the model call — so this
+    /// is a preflight signal for the same reason `claude_logged_in` is.
+    pub codex_logged_in: bool,
     pub companies: Vec<CompanyOption>,
 }
 
@@ -162,6 +192,15 @@ pub struct ImageAttachment {
 struct SessionMetaOut {
     company_slug: Option<String>,
     started_at: String,
+    /// Which CLI ran the session. The reader ignores unknown keys, so this is
+    /// additive — but without it a Codex transcript on disk is indistinguishable
+    /// from a Claude one.
+    tool: String,
+    /// The CLI's OWN session handle — Codex's thread id — which is what a
+    /// resume needs and what our session id is not. `None` for Claude, whose
+    /// id is only known once the child's `init` frame lands, after this file
+    /// is written.
+    cli_session_id: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +216,9 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
     let hooks_error = check_hq_hooks_ready(&hq_root).err();
     let tools = crate::commands::ai_tools::detect_ai_tools();
     let ready = crate::commands::ai_tools::detect_claude_ready();
+
+    // Only worth a subprocess when there is a CLI to ask.
+    let codex_logged_in = tools.codex_cli && codex::codex_logged_in().await;
 
     let (entries, _manifest_error) = discover_local_companies(&hq_root);
     let companies = entries
@@ -197,6 +239,7 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         claude_available: tools.claude_cli,
         claude_logged_in: ready.logged_in,
         codex_available: tools.codex_cli,
+        codex_logged_in,
         companies,
     })
 }
@@ -208,9 +251,6 @@ pub async fn agent_session_start(
     spec: SessionSpec,
 ) -> Result<StartedSession, String> {
     ensure_in_app_sessions_allowed()?;
-    if spec.tool != SessionTool::Claude {
-        return Err("In-app Codex sessions aren't supported yet — use Claude for now.".into());
-    }
 
     let hq_root = resolve_hq_folder_path()?;
     // The session always runs from the HQ root. Anywhere else is a different
@@ -236,8 +276,30 @@ pub async fn agent_session_start(
             .insert(LiveSession::new(spec.clone(), now_iso()))?;
     }
 
-    let child = match claude::spawn_claude(&spec, hq_root.clone()).await {
-        Ok(child) => child,
+    // Dispatch by tool. Both drivers own their child, their wire, and their
+    // normalizer, and both reduce to the same event stream on the same
+    // channel — which is why everything downstream of here is tool-agnostic.
+    let spawned = match spec.tool {
+        SessionTool::Claude => claude::spawn_claude(&spec, hq_root.clone())
+            .await
+            .map(Spawned::Claude),
+        SessionTool::Codex => match codex::spawn_codex(hq_root.clone()).await {
+            Ok(mut child) => match codex::handshake(&mut child, &spec).await {
+                Ok(handshake) => Ok(Spawned::Codex(child, Box::new(handshake))),
+                Err(e) => {
+                    // A child whose handshake failed is not a session; reap it
+                    // rather than leak it for the length of the error message.
+                    child
+                        .shutdown_with_reap(hq_desktop_core::stdio::child::REAP_TIMEOUT)
+                        .await;
+                    Err(e)
+                }
+            },
+            Err(e) => Err(e),
+        },
+    };
+    let spawned = match spawned {
+        Ok(spawned) => spawned,
         Err(e) => {
             state.lock().await.registry.remove(&session_id);
             return Err(e);
@@ -248,17 +310,47 @@ pub async fn agent_session_start(
     state.lock().await.set_channel(&session_id, tx);
 
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));
-    tokio::spawn(claude::run_session_loop(
-        child,
-        session_id.clone(),
-        state.clone(),
-        sink,
-        rx,
-    ));
+    // Claude's own session id only exists once its `init` frame lands, which is
+    // after this function returns; Codex's is known now.
+    let mut cli_session_id: Option<String> = None;
+    match spawned {
+        Spawned::Claude(child) => {
+            tokio::spawn(claude::run_session_loop(
+                child,
+                session_id.clone(),
+                state.clone(),
+                sink,
+                rx,
+            ));
+        }
+        Spawned::Codex(child, handshake) => {
+            // Codex's own thread id is the resume handle; the registry key
+            // stays our session id, so nothing downstream has to know.
+            cli_session_id = Some(handshake.thread_id.clone());
+            if let Some(session) = state.lock().await.registry.get_mut(&session_id) {
+                session.cli_session_id = Some(handshake.thread_id.clone());
+            }
+            tokio::spawn(codex::run_session_loop(
+                child,
+                session_id.clone(),
+                spec.clone(),
+                *handshake,
+                state.clone(),
+                sink,
+                rx,
+            ));
+        }
+    }
 
     // Best-effort: the session works without it, but the existing history feed
     // reads it to show the company and the true start time.
-    if let Err(e) = write_session_meta(&hq_root, &session_id, spec.company.as_deref()) {
+    if let Err(e) = write_session_meta(
+        &hq_root,
+        &session_id,
+        spec.company.as_deref(),
+        spec.tool,
+        cli_session_id.as_deref(),
+    ) {
         log(LOG_TAG, &format!("session={session_id} meta write failed: {e}"));
     }
 
@@ -280,16 +372,19 @@ pub async fn agent_session_send(
         .into_iter()
         .map(|image| (image.media_type, image.base64))
         .collect();
-    // Slash commands need no client-side expansion: the CLI executes them from
-    // a plain user turn (verified against claude 2.1.247).
-    let line = if attachments.is_empty() {
-        user_message_line(&text)
-    } else {
-        user_message_line_with_images(&text, &attachments)
-    };
-
     let state = state();
     let mut guard = state.lock().await;
+
+    // Slash commands need no client-side expansion on either CLI: both execute
+    // them from a plain user turn (verified against claude 2.1.247 and
+    // codex-cli 0.144.1).
+    let line = match session_tool(&guard, &session_id)? {
+        SessionTool::Claude if attachments.is_empty() => user_message_line(&text),
+        SessionTool::Claude => user_message_line_with_images(&text, &attachments),
+        // Codex takes the turn's `input` array; JSON keeps the attachments
+        // intact across the string-shaped outbound channel.
+        SessionTool::Codex => user_input(&text, &attachments).to_string(),
+    };
     record_and_queue_user_turn(
         &mut guard,
         &claude::AppSink(app),
@@ -368,21 +463,36 @@ pub async fn agent_session_respond_permission(
     let tool_name = tool_name.clone();
     let input = input.clone();
 
-    let response = match &decision {
-        PermissionDecision::AllowOnce => allow_response(input),
-        PermissionDecision::AllowSession => {
-            // Session-scoped memory only — never a durable settings edit.
-            session.remember_allowed_tool(&tool_name);
-            allow_response(input)
+    // `allowSession` is session-scoped memory on BOTH wires — never a durable
+    // settings edit, and never Codex's own `acceptForSession`, which would
+    // write an allowance the user only granted a chat window.
+    if matches!(decision, PermissionDecision::AllowSession) {
+        session.remember_allowed_tool(&tool_name);
+    }
+    let tool = session.spec.tool;
+
+    let message = match tool {
+        SessionTool::Claude => {
+            let response = match &decision {
+                PermissionDecision::AllowOnce | PermissionDecision::AllowSession => {
+                    allow_response(input)
+                }
+                PermissionDecision::Allow { updated_input } => {
+                    allow_response(updated_input.clone())
+                }
+                PermissionDecision::Deny { message } => deny_response(message),
+            };
+            Outbound::Line(control_response_line(&request_id, response))
         }
-        PermissionDecision::Allow { updated_input } => allow_response(updated_input.clone()),
-        PermissionDecision::Deny { message } => deny_response(message),
+        // Codex takes accept/decline and nothing else: it has no notion of a
+        // rewritten tool input, so an `allow` with edits is still an accept.
+        SessionTool::Codex => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: approval_reply(!matches!(decision, PermissionDecision::Deny { .. })),
+        },
     };
 
-    guard.send(
-        &session_id,
-        Outbound::Line(control_response_line(&request_id, response)),
-    )?;
+    guard.send(&session_id, message)?;
     if let Some(session) = guard.registry.get_mut(&session_id) {
         if let Some(change) = session.on_response_sent(&request_id, now_iso()) {
             claude::AppSink(app).emit_phase(&session_id, change);
@@ -412,13 +522,22 @@ pub async fn agent_session_answer_question(
         return Err(format!("Request {request_id} is no longer waiting."));
     };
 
-    // `AskUserQuestion` is answered by ALLOWING the tool call with the answers
-    // merged into its input, keyed by question text — not by a bespoke reply.
-    let updated = answers_updated_input(input, &answers, questions);
-    guard.send(
-        &session_id,
-        Outbound::Line(control_response_line(&request_id, allow_response(updated))),
-    )?;
+    let message = match session.spec.tool {
+        // `AskUserQuestion` is answered by ALLOWING the tool call with the
+        // answers merged into its input, keyed by question text — not by a
+        // bespoke reply.
+        SessionTool::Claude => Outbound::Line(control_response_line(
+            &request_id,
+            allow_response(answers_updated_input(input, &answers, questions)),
+        )),
+        // Codex answers on the request's own JSON-RPC id, keyed by each
+        // question's wire id (which `Question::id` carries).
+        SessionTool::Codex => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: user_input_reply(questions, &answers),
+        },
+    };
+    guard.send(&session_id, message)?;
     if let Some(session) = guard.registry.get_mut(&session_id) {
         if let Some(change) = session.on_response_sent(&request_id, now_iso()) {
             claude::AppSink(app).emit_phase(&session_id, change);
@@ -499,11 +618,11 @@ pub async fn agent_session_slash_commands(
     tool: SessionTool,
 ) -> Result<claude::CommandCatalog, String> {
     ensure_in_app_sessions_allowed()?;
-    if tool != SessionTool::Claude {
-        return Err("Only Claude exposes a command catalog today.".into());
-    }
     let hq_root = resolve_hq_folder_path()?;
-    claude::probe_command_catalog(hq_root).await
+    match tool {
+        SessionTool::Claude => claude::probe_command_catalog(hq_root).await,
+        SessionTool::Codex => codex::probe_command_catalog(hq_root).await,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +660,8 @@ fn write_session_meta(
     hq_root: &Path,
     session_id: &str,
     company: Option<&str>,
+    tool: SessionTool,
+    cli_session_id: Option<&str>,
 ) -> Result<(), String> {
     let dir = hq_root.join("workspace").join("sessions").join(session_id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -550,6 +671,14 @@ fn write_session_meta(
             .filter(|slug| !slug.is_empty())
             .map(str::to_owned),
         started_at: now_iso(),
+        tool: match tool {
+            SessionTool::Claude => "claude".into(),
+            SessionTool::Codex => "codex".into(),
+        },
+        cli_session_id: cli_session_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
     };
     let yaml = serde_yaml::to_string(&meta).map_err(|e| format!("serialize meta: {e}"))?;
     std::fs::write(dir.join("meta.yaml"), yaml).map_err(|e| format!("write meta.yaml: {e}"))
@@ -569,7 +698,8 @@ mod tests {
     fn session_meta_uses_the_keys_the_history_reader_parses() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        write_session_meta(&root, "sess-1", Some("indigo")).expect("write");
+        write_session_meta(&root, "sess-1", Some("indigo"), SessionTool::Claude, None)
+            .expect("write");
 
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-1/meta.yaml"))
             .expect("read");
@@ -582,11 +712,34 @@ mod tests {
 
         // A company-less session writes a null slug rather than omitting the
         // key, which the reader's `#[serde(default)]` handles either way.
-        write_session_meta(&root, "sess-2", Some("   ")).expect("write");
+        write_session_meta(&root, "sess-2", Some("   "), SessionTool::Claude, None).expect("write");
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-2/meta.yaml"))
             .expect("read");
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
         assert!(parsed["company_slug"].is_null(), "blank slug is not a company");
+        assert_eq!(parsed["tool"].as_str(), Some("claude"));
+        assert!(
+            parsed["cli_session_id"].is_null(),
+            "Claude's own id is not known when this file is written"
+        );
+
+        // A Codex session records the thread id a resume needs.
+        write_session_meta(
+            &root,
+            "sess-3",
+            Some("indigo"),
+            SessionTool::Codex,
+            Some("01a06218-e436-7963-827b-6103963b4320"),
+        )
+        .expect("write");
+        let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-3/meta.yaml"))
+            .expect("read");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
+        assert_eq!(parsed["tool"].as_str(), Some("codex"));
+        assert_eq!(
+            parsed["cli_session_id"].as_str(),
+            Some("01a06218-e436-7963-827b-6103963b4320")
+        );
     }
 
     #[tokio::test]
