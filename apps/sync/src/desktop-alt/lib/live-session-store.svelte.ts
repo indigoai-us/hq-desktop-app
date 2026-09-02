@@ -47,6 +47,7 @@ import type {
   SessionEvent,
 } from '../../components/sessions/session-events';
 import {
+  emptyTranscript,
   foldSessionEvents,
   type CardResolution,
   type ChatBlock,
@@ -281,12 +282,7 @@ let foldCache: { id: string; revision: number; value: TranscriptState } | null =
 /** Fold-cache key for the pre-session optimistic bubble. */
 const DRAFT_ID = '@draft';
 
-const EMPTY_TRANSCRIPT: TranscriptState = {
-  blocks: [],
-  pending: [],
-  lastUsage: null,
-  ended: false,
-};
+const EMPTY_TRANSCRIPT: TranscriptState = emptyTranscript();
 
 function errorText(err: unknown): string {
   if (typeof err === 'string') return err;

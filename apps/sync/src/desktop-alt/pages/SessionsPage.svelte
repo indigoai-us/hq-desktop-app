@@ -32,6 +32,11 @@
     deployCommandFor,
     tauriArtifactActions,
   } from '../../components/sessions/session-artifacts';
+  import {
+    CHECKPOINT_COMMAND,
+    HANDOFF_COMMAND,
+    type HandoffState,
+  } from '../../components/sessions/hook-notices';
   import type { SessionCommand } from '../../components/sessions/session-events';
   import {
     EFFORT_OPTIONS,
@@ -305,6 +310,76 @@
   const ended = $derived(phase === 'ended' || transcript.ended);
   const sendDisabled = $derived(Boolean(blocker) || starting || ended);
 
+  /**
+   * "Hand off" is a `/handoff` turn the strip can send for you. It is offered
+   * only on a live session that is idle — a handoff written mid-turn would
+   * describe work that is still moving — and it shows as running from the
+   * moment the turn is mirrored until the fold sees that turn end.
+   */
+  const handoffState = $derived.by((): HandoffState => {
+    if (!sessionId) return 'hidden';
+    if (transcript.handoff === 'running') return 'running';
+    if (sendDisabled || phase !== 'idle') return 'disabled';
+    return 'ready';
+  });
+
+  async function handleHandoff() {
+    if (handoffState !== 'ready') return;
+    actionError = '';
+    try {
+      await liveSessionStore.send(HANDOFF_COMMAND);
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /**
+   * HQ's context-warning hook printed its AUTO-CHECKPOINT banner and no
+   * `/checkpoint` has followed. Dismissal is keyed on the prompt COUNT, so a
+   * later banner (the pre-compaction one) reopens the line after the first
+   * was waved away.
+   */
+  let checkpointDismissedAt = $state(0);
+  const checkpointDue = $derived(
+    Boolean(sessionId) &&
+      transcript.checkpointDue &&
+      transcript.checkpointPrompts > checkpointDismissedAt,
+  );
+
+  async function handleCheckpoint() {
+    if (sendDisabled) return;
+    actionError = '';
+    try {
+      await liveSessionStore.send(CHECKPOINT_COMMAND);
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function dismissCheckpoint() {
+    checkpointDismissedAt = transcript.checkpointPrompts;
+  }
+
+  let pageEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * ⌘⇧H hands off. The listener lives on the window only while this page is
+   * mounted (the same pattern as the drawer's Escape), and a keystroke aimed at
+   * some other surface — a palette, a dialog outside the page — is left alone.
+   */
+  function onPageKeydown(event: KeyboardEvent) {
+    if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+    if (event.key.toLowerCase() !== 'h') return;
+    const target = event.target;
+    const insidePage =
+      !(target instanceof Node) ||
+      target === document.body ||
+      (pageEl?.contains(target) ?? false);
+    if (!insidePage) return;
+    event.preventDefault();
+    void handleHandoff();
+  }
+
   const hqFolder = $derived(basename(preflight?.hqRoot ?? ''));
   // The session id, the token counts and the turn cost are deliberately NOT
   // rendered — the store still carries them (`transcript.lastUsage`), the
@@ -496,17 +571,22 @@
   }
 </script>
 
-<div class="sessions" data-testid="sessions-page">
+<svelte:window onkeydown={onPageKeydown} />
+
+<div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
   <SessionsStrip
     {title}
     {phase}
     {phaseLabel}
     drawerOpen={drawerOpen}
+    policies={sessionId ? transcript.policies : null}
+    handoff={handoffState}
     ontoggledrawer={() => (drawerOpen = !drawerOpen)}
     onnew={() => {
       drawerOpen = false;
       onopensession?.('');
     }}
+    onhandoff={() => void handleHandoff()}
   />
 
   {#if drawerOpen}
@@ -546,6 +626,30 @@
     onanswerquestion={(requestId, answers) =>
       void decide(requestId, () => liveSessionStore.answerQuestion(requestId, answers))}
   />
+
+  {#if checkpointDue}
+    <div class="checkpoint-notice" role="status" data-testid="session-checkpoint-notice">
+      <span class="checkpoint-text">Context is filling up —</span>
+      <button
+        type="button"
+        class="checkpoint-now"
+        data-testid="session-checkpoint-now"
+        disabled={sendDisabled}
+        onclick={() => void handleCheckpoint()}
+      >
+        Checkpoint now
+      </button>
+      <button
+        type="button"
+        class="checkpoint-dismiss"
+        aria-label="Dismiss"
+        data-testid="session-checkpoint-dismiss"
+        onclick={dismissCheckpoint}
+      >
+        ×
+      </button>
+    </div>
+  {/if}
 
   <div class="composer-dock">
     <SessionComposer
@@ -599,5 +703,60 @@
     padding: var(--v4-space-2) var(--v4-space-4) 0;
     font-size: var(--type-metadata);
     color: var(--v4-text-3);
+  }
+
+  /* One quiet line above the composer, aligned to its column. */
+  .checkpoint-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--v4-space-2);
+    flex: none;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: calc(760px + 2 * var(--v4-space-4));
+    margin: 0 auto;
+    padding: var(--v4-space-2) var(--v4-space-4) 0;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-2);
+  }
+
+  .checkpoint-now {
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill, 999px);
+    background: transparent;
+    color: var(--v4-text-1);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .checkpoint-now:hover:not(:disabled) {
+    background: var(--v4-active-row);
+  }
+
+  .checkpoint-now:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .checkpoint-dismiss {
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-3);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .checkpoint-dismiss:hover {
+    color: var(--v4-text-1);
+    background: var(--v4-active-row);
   }
 </style>

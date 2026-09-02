@@ -227,6 +227,20 @@ pub enum SessionEvent {
         message: String,
         resets_at: Option<String>,
     },
+    /// A hook in the CLI's host reported text — HQ's policy injection at
+    /// SessionStart, a checkpoint directive, a blocked tool's reason. Not
+    /// transcript prose: the UI folds it into session state (the policies
+    /// chip, the checkpoint prompt) and never draws a row for it.
+    ///
+    /// `hook_event` is the host's event name (`SessionStart`, Codex
+    /// `sessionStart`); `hook_name` the host's own id for the hook run.
+    /// `text` is capped at [`HOOK_NOTICE_TEXT_CAP`] bytes by the normalizers
+    /// and otherwise verbatim.
+    HookNotice {
+        hook_event: String,
+        hook_name: String,
+        text: String,
+    },
     TurnDone {
         status: DoneStatus,
         error: Option<String>,
@@ -243,6 +257,25 @@ pub enum SessionEvent {
     },
     /// Backpressure dropped `dropped` events.
     Truncated { dropped: u64 },
+}
+
+/// Longest [`SessionEvent::HookNotice`] text kept, in bytes. A SessionStart
+/// in the HQ root runs a dozen hooks whose stdout can reach tens of kilobytes
+/// (a plugin's whole guidance document); the replay ring must not spend its
+/// budget on that, and the policy parser only needs the policy lines.
+pub const HOOK_NOTICE_TEXT_CAP: usize = 8 * 1024;
+
+/// Cap hook text at [`HOOK_NOTICE_TEXT_CAP`] bytes without splitting a
+/// UTF-8 sequence. Nothing else is altered.
+pub fn cap_hook_text(text: &str) -> String {
+    if text.len() <= HOOK_NOTICE_TEXT_CAP {
+        return text.to_owned();
+    }
+    let mut end = HOOK_NOTICE_TEXT_CAP;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 #[cfg(test)]
@@ -361,6 +394,15 @@ mod tests {
                 },
             ),
             (
+                "hookNotice",
+                SessionEvent::HookNotice {
+                    hook_event: "SessionStart".into(),
+                    hook_name: "SessionStart:startup".into(),
+                    text: "<policy-reminder>\n> Policy `x` applies here: y\n</policy-reminder>"
+                        .into(),
+                },
+            ),
+            (
                 "turnDone",
                 SessionEvent::TurnDone {
                     status: DoneStatus::Success,
@@ -390,11 +432,37 @@ mod tests {
     fn every_session_event_variant_round_trips_with_a_camel_case_tag() {
         let samples = sample_events();
         // Guard against a variant being added to the enum without a sample.
-        assert_eq!(samples.len(), 15, "one sample per SessionEvent variant");
+        assert_eq!(samples.len(), 16, "one sample per SessionEvent variant");
         for (tag, event) in samples {
             let raw = roundtrip(&event);
             assert_eq!(raw["kind"], tag, "wire tag for {event:?}");
         }
+    }
+
+    #[test]
+    fn hook_notice_fields_are_camel_case_and_the_cap_respects_char_boundaries() {
+        let raw = serde_json::to_value(SessionEvent::HookNotice {
+            hook_event: "SessionStart".into(),
+            hook_name: "SessionStart:startup".into(),
+            text: "t".into(),
+        })
+        .expect("serialize");
+        assert_eq!(raw["kind"], "hookNotice");
+        assert_eq!(raw["hookEvent"], "SessionStart");
+        assert_eq!(raw["hookName"], "SessionStart:startup");
+        assert!(raw.get("hook_event").is_none());
+
+        assert_eq!(cap_hook_text("short"), "short");
+        // Two-byte chars straddling the cap: the cut lands on a boundary and
+        // the result is at most the cap.
+        let long = "é".repeat(HOOK_NOTICE_TEXT_CAP);
+        let capped = cap_hook_text(&long);
+        assert!(capped.len() <= HOOK_NOTICE_TEXT_CAP);
+        assert!(capped.len() >= HOOK_NOTICE_TEXT_CAP - 1);
+        assert!(capped.chars().all(|c| c == 'é'));
+        // Exactly at the cap is untouched.
+        let exact = "a".repeat(HOOK_NOTICE_TEXT_CAP);
+        assert_eq!(cap_hook_text(&exact), exact);
     }
 
     #[test]

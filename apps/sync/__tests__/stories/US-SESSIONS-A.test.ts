@@ -19,6 +19,8 @@ import {
   resolvePendingDesktopRoute,
 } from '../../src/desktop-alt/route';
 import { SESSION_EVENT_KINDS } from '../../src/components/sessions/session-events';
+import { foldSessionEvents } from '../../src/components/sessions/transcript-adapter';
+import { parsePolicyDigest } from '../../src/components/sessions/policy-digest';
 
 const read = (relative: string): string =>
   readFileSync(fileURLToPath(new URL(`../../${relative}`, import.meta.url)), 'utf8');
@@ -30,6 +32,9 @@ const STORE = read('src/desktop-alt/lib/live-session-store.svelte.ts');
 const ADAPTER = read('src/components/sessions/transcript-adapter.ts');
 const TRANSCRIPT = read('src/components/sessions/SessionTranscript.svelte');
 const COMPOSER = read('src/components/sessions/SessionComposer.svelte');
+const STRIP = read('src/components/sessions/SessionsStrip.svelte');
+const CHIP = read('src/components/sessions/PoliciesChip.svelte');
+const EVENTS = read('src/components/sessions/session-events.ts');
 
 describe('US-SESSIONS-A — the route', () => {
   it('DesktopRoute carries a sessions kind with an optional id', () => {
@@ -442,5 +447,199 @@ describe('US-SESSIONS-A — Open / Share / Deploy on files the agent produced', 
     expect(PAGE).toContain('handleSend(deployCommandFor(path), [])');
     expect(PAGE).toContain('{artifactActions}');
     expect(PAGE).not.toContain('invoke(');
+  });
+});
+
+describe('the "Policies applied" chip — HQ hooks are visible in the strip', () => {
+  it('the event contract carries hook notices, camelCase like the Rust enum', () => {
+    expect(SESSION_EVENT_KINDS).toContain('hookNotice');
+    expect(EVENTS).toContain("kind: 'hookNotice'");
+    expect(EVENTS).toContain('hookEvent: string');
+    expect(EVENTS).toContain('hookName: string');
+    // The Rust side names the same variant and the same fields.
+    const types = readFileSync(
+      new URL('../../../../crates/hq-desktop-core/src/agent_session/types.rs', import.meta.url),
+      'utf8',
+    );
+    expect(types).toContain('HookNotice {');
+    expect(types).toContain('hook_event: String');
+    expect(types).toContain('hook_name: String');
+    expect(types).toContain('pub const HOOK_NOTICE_TEXT_CAP: usize = 8 * 1024;');
+  });
+
+  it('both normalizers emit the notice; the Claude one no longer drops hook_response', () => {
+    const claude = readFileSync(
+      new URL(
+        '../../../../crates/hq-desktop-core/src/agent_session/claude_normalize.rs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const codex = readFileSync(
+      new URL(
+        '../../../../crates/hq-desktop-core/src/agent_session/codex_normalize.rs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(claude).toContain('if subtype == "hook_response"');
+    expect(claude).toContain('SessionEvent::HookNotice {');
+    expect(codex).toContain('"hook/completed" => hook_notice(&params)');
+    expect(codex).toContain('SessionEvent::HookNotice {');
+  });
+
+  it('a hook notice is folded into state, never drawn as a row', () => {
+    // Executed for real: the fold produces no block and fills `policies`.
+    const state = foldSessionEvents([
+      {
+        kind: 'hookNotice',
+        hookEvent: 'SessionStart',
+        hookName: 'SessionStart:startup',
+        text: '> Policy `hq-git-discipline` (HARD — binding rule from `x.md`):\n> Anchor it.\n<company-policy-digest co="indigo">\n</company-policy-digest>',
+      },
+    ]);
+    expect(state.blocks).toEqual([]);
+    expect(state.policies.company).toBe('indigo');
+    expect(state.policies.entries).toEqual([
+      { slug: 'hq-git-discipline', hard: true, excerpt: 'Anchor it.' },
+    ]);
+    // And the adapter's case is there by name, so the exhaustiveness test
+    // above keeps covering it.
+    expect(ADAPTER).toContain("case 'hookNotice':");
+    expect(ADAPTER).toContain('mergePolicyDigest(policies, parsePolicyDigest(event.text))');
+  });
+
+  it('the Rust and TS parsers are pinned on ONE shared fixture', () => {
+    const fixture = 'src/components/sessions/__fixtures__/hook-policy-reminder.txt';
+    const text = read(fixture);
+    const digest = parsePolicyDigest(text);
+    // The exact shape the Rust test `the_shared_fixture_parses_to_the_pinned_shape` asserts.
+    expect(digest.company).toBe('indigo');
+    expect(digest.entries).toHaveLength(6);
+    expect(digest.entries.filter((entry) => entry.hard)).toHaveLength(4);
+    const rust = readFileSync(
+      new URL(
+        '../../../../crates/hq-desktop-core/src/agent_session/policy_digest.rs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(rust).toContain('__fixtures__/hook-policy-reminder.txt');
+    expect(rust).toContain('assert_eq!(digest.entries.iter().filter(|e| e.hard).count(), 4);');
+    expect(read('src/components/sessions/policy-digest.test.ts')).toContain(
+      '__fixtures__/hook-policy-reminder.txt',
+    );
+  });
+
+  it('the strip mounts the chip beside the phase dot and the page feeds it the fold', () => {
+    expect(STRIP).toContain("import PoliciesChip from './PoliciesChip.svelte'");
+    expect(STRIP).toContain('<PoliciesChip digest={policies} />');
+    const chipAt = STRIP.indexOf('<PoliciesChip');
+    const phaseAt = STRIP.indexOf('data-testid="sessions-phase"');
+    expect(chipAt).toBeGreaterThan(-1);
+    expect(phaseAt).toBeGreaterThan(chipAt);
+    expect(PAGE).toContain('policies={sessionId ? transcript.policies : null}');
+  });
+
+  it('the chip is quiet: hidden until a policy lands, counts hard, groups Hard / Advisory, names the company', () => {
+    expect(CHIP).toContain('data-testid="session-policies-chip"');
+    expect(CHIP).toContain('Policies · {label}');
+    expect(CHIP).toContain('digest.entries.length > 0 || digest.company !== null');
+    expect(CHIP).toContain('data-testid="session-policies-company"');
+    expect(CHIP).toContain('Bound to');
+    expect(CHIP).toContain('data-testid="session-policies-hard"');
+    expect(CHIP).toContain('data-testid="session-policies-advisory"');
+    expect(read('src/components/sessions/policy-digest.ts')).toContain(
+      'export function policyCountLabel',
+    );
+    // The mounted proof lives in PoliciesChip.test.ts.
+    expect(read('src/components/sessions/PoliciesChip.test.ts')).toContain(
+      "'Policies · 3 (1 hard)'",
+    );
+  });
+});
+
+describe('the "Hand off" button and the checkpoint prompt', () => {
+  it('the strip offers a handoff button that is live only on an idle session', () => {
+    expect(STRIP).toContain('data-testid="session-handoff"');
+    expect(STRIP).toContain("disabled={handoff !== 'ready'}");
+    expect(STRIP).toContain("{#if handoff === 'running'}");
+    expect(STRIP).toContain('class="spinner"');
+    expect(STRIP).toContain('Hand off');
+    // Icon + label-on-hover, not a wide always-on label.
+    expect(STRIP).toContain('.handoff:hover .handoff-label');
+    expect(PAGE).toContain("if (transcript.handoff === 'running') return 'running';");
+    expect(PAGE).toContain("if (sendDisabled || phase !== 'idle') return 'disabled';");
+    expect(PAGE).toContain('handoff={handoffState}');
+  });
+
+  it('a click sends /handoff as a user turn through the store’s own send', () => {
+    expect(read('src/components/sessions/hook-notices.ts')).toContain(
+      "export const HANDOFF_COMMAND = '/handoff';",
+    );
+    expect(PAGE).toContain('await liveSessionStore.send(HANDOFF_COMMAND);');
+    expect(PAGE).toContain('onhandoff={() => void handleHandoff()}');
+    expect(PAGE).not.toContain("invoke(");
+  });
+
+  it('the fold marks the handoff running from the mirrored turn and done at turnDone, with a divider', () => {
+    const state = foldSessionEvents(
+      [
+        { kind: 'assistantMessage', text: 'Handoff written.' },
+        { kind: 'turnDone', status: 'success' },
+      ],
+      { userTurns: [{ id: 't1', text: '/handoff', atIndex: 0, at: null }] },
+    );
+    expect(state.handoff).toBe('done');
+    const last = state.blocks[state.blocks.length - 1];
+    expect(last?.type).toBe('divider');
+    expect(last && 'label' in last ? last.label : '').toBe('Session handed off');
+    // The transcript already renders dividers, so no new row type was needed.
+    expect(TRANSCRIPT).toContain('data-testid="session-divider"');
+  });
+
+  it('⌘⇧H hands off while the Sessions page is mounted and focused', () => {
+    expect(PAGE).toContain('<svelte:window onkeydown={onPageKeydown} />');
+    expect(PAGE).toContain("if (event.key.toLowerCase() !== 'h') return;");
+    expect(PAGE).toContain('if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;');
+    expect(PAGE).toContain('pageEl?.contains(target)');
+    expect(STRIP).toContain('⌘⇧H');
+  });
+
+  it('the checkpoint prompt reads the real banner wording and offers one-click /checkpoint', () => {
+    const hooks = read('src/components/sessions/hook-notices.ts');
+    expect(hooks).toContain("const CHECKPOINT_BANNER = 'AUTO-CHECKPOINT REQUIRED';");
+    expect(hooks).toContain("export const CHECKPOINT_COMMAND = '/checkpoint';");
+    expect(PAGE).toContain('data-testid="session-checkpoint-notice"');
+    expect(PAGE).toContain('Context is filling up —');
+    expect(PAGE).toContain('data-testid="session-checkpoint-now"');
+    expect(PAGE).toContain('Checkpoint now');
+    expect(PAGE).toContain('await liveSessionStore.send(CHECKPOINT_COMMAND);');
+    // Dismissable, and a later banner reopens it.
+    expect(PAGE).toContain('data-testid="session-checkpoint-dismiss"');
+    expect(PAGE).toContain('checkpointDismissedAt = transcript.checkpointPrompts;');
+    expect(PAGE).toContain('transcript.checkpointPrompts > checkpointDismissedAt');
+    // Rendered ABOVE the composer, inside the page — not inside the composer.
+    const noticeAt = PAGE.indexOf('data-testid="session-checkpoint-notice"');
+    const composerAt = PAGE.indexOf('<SessionComposer');
+    expect(noticeAt).toBeGreaterThan(-1);
+    expect(noticeAt).toBeLessThan(composerAt);
+
+    // Executed for real: the banner raises the prompt, /checkpoint clears it.
+    const raised = foldSessionEvents([
+      {
+        kind: 'hookNotice',
+        hookEvent: 'Stop',
+        hookName: 'Stop',
+        text: '║  AUTO-CHECKPOINT REQUIRED — context ~50%                     ║',
+      },
+    ]);
+    expect(raised.blocks).toEqual([]);
+    expect(raised.checkpointDue).toBe(true);
+    const cleared = foldSessionEvents(
+      [{ kind: 'hookNotice', hookEvent: 'Stop', hookName: 'Stop', text: 'AUTO-CHECKPOINT REQUIRED' }],
+      { userTurns: [{ id: 't1', text: '/checkpoint', atIndex: 1, at: null }] },
+    );
+    expect(cleared.checkpointDue).toBe(false);
   });
 });

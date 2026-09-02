@@ -38,6 +38,13 @@ import type {
 } from './session-events';
 import type { WsMember } from './session-types';
 import { formatDayLabel } from './session-types';
+import { isCheckpointDirective, isCheckpointTurn, isHandoffTurn } from './hook-notices';
+import {
+  emptyPolicyDigest,
+  mergePolicyDigest,
+  parsePolicyDigest,
+  type PolicyDigest,
+} from './policy-digest';
 
 export const SESSION_SELF_UID = 'you';
 export const SESSION_AGENT_UID = 'agent';
@@ -276,6 +283,31 @@ export interface TranscriptState {
   lastUsage: UsageSummary | null;
   /** The CLI process is gone — the composer stops offering to send. */
   ended: boolean;
+  /**
+   * Every policy HQ's hooks said applies, deduped by slug, plus the bound
+   * company. Folded from `hookNotice` events — never a row.
+   */
+  policies: PolicyDigest;
+  /** A hook asked for a checkpoint and no `/checkpoint` turn has followed. */
+  checkpointDue: boolean;
+  /** How many checkpoint directives have arrived (dismissal is keyed on it). */
+  checkpointPrompts: number;
+  /** Where the latest `/handoff` turn stands: none sent, running, or written. */
+  handoff: 'none' | 'running' | 'done';
+}
+
+/** The state of a transcript with nothing in it. */
+export function emptyTranscript(): TranscriptState {
+  return {
+    blocks: [],
+    pending: [],
+    lastUsage: null,
+    ended: false,
+    policies: emptyPolicyDigest(),
+    checkpointDue: false,
+    checkpointPrompts: 0,
+    handoff: 'none',
+  };
 }
 
 /** One locally-mirrored user turn (the event stream carries none). */
@@ -453,6 +485,10 @@ export function foldSessionEvents(
   const pending: PendingCard[] = [];
   let lastUsage: UsageSummary | null = null;
   let ended = false;
+  let policies = emptyPolicyDigest();
+  let checkpointDue = false;
+  let checkpointPrompts = 0;
+  let handoff: TranscriptState['handoff'] = 'none';
 
   /** The assistant prose row currently streaming at the top level, if any. */
   let openProse: Extract<ChatBlock, { type: 'assistantProse' }> | null = null;
@@ -509,6 +545,16 @@ export function foldSessionEvents(
     openProse = null;
   }
 
+  /**
+   * A user turn's slash command moves session state: `/handoff` starts a
+   * handoff the next `turnDone` finishes, `/checkpoint` answers a pending
+   * checkpoint prompt. Mirrored and backend-recorded turns both pass here.
+   */
+  function noteUserTurn(text: string): void {
+    if (isHandoffTurn(text)) handoff = 'running';
+    if (isCheckpointTurn(text)) checkpointDue = false;
+  }
+
   /** The group a tool call joins — a new one after any prose. */
   function groupFor(at: number | null): Extract<ChatBlock, { type: 'toolGroup' }> {
     if (openGroup) return openGroup;
@@ -536,6 +582,7 @@ export function foldSessionEvents(
       closeProse();
       closeGroup();
       retireThought();
+      noteUserTurn(turn.text);
       push({ type: 'userBubble', id: `user-${turn.id}`, text: turn.text, at: turn.at });
     }
   }
@@ -558,7 +605,20 @@ export function foldSessionEvents(
         closeProse();
         closeGroup();
         retireThought();
+        noteUserTurn(event.text);
         push({ type: 'userBubble', id: `user-ev-${index}`, text: event.text, at });
+        break;
+      }
+
+      // Not a row: what a hook told the model is session STATE — the policies
+      // chip in the strip, the checkpoint prompt above the composer — not
+      // something the operator said or the agent answered.
+      case 'hookNotice': {
+        policies = mergePolicyDigest(policies, parsePolicyDigest(event.text));
+        if (isCheckpointDirective(event.text)) {
+          checkpointDue = true;
+          checkpointPrompts += 1;
+        }
         break;
       }
 
@@ -770,6 +830,14 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
+        // The turn a `/handoff` started has ended: written on success, and
+        // simply over (the error row below says why) on anything else.
+        if (handoff === 'running') {
+          handoff = event.status === 'success' ? 'done' : 'none';
+          if (handoff === 'done') {
+            push({ type: 'divider', id: `handoff-${index}`, label: 'Session handed off', at });
+          }
+        }
         if (event.status !== 'success') {
           push({
             type: 'error',
@@ -832,6 +900,10 @@ export function foldSessionEvents(
     pending,
     lastUsage,
     ended,
+    policies,
+    checkpointDue,
+    checkpointPrompts,
+    handoff,
   };
 
   /**

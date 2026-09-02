@@ -128,6 +128,21 @@ export interface RateLimitEvent {
   resetsAt?: string;
 }
 
+/**
+ * A hook in the CLI's host reported text (Rust `HookNotice`) — HQ's policy
+ * injection at SessionStart, a checkpoint directive, a blocked tool's reason.
+ * Never a transcript row: the adapter folds it into `policies` / checkpoint
+ * state. `text` is capped at 8 KB by the backend and otherwise verbatim.
+ */
+export interface HookNoticeEvent {
+  kind: 'hookNotice';
+  /** The host's event name: `SessionStart`, `UserPromptSubmit`, Codex `sessionStart`. */
+  hookEvent: string;
+  /** The host's own id for the hook run (`SessionStart:startup`). */
+  hookName: string;
+  text: string;
+}
+
 export interface TurnDoneEvent {
   kind: 'turnDone';
   status: TurnStatus;
@@ -164,6 +179,7 @@ export type SessionEvent =
   | QuestionRequestEvent
   | UsageEvent
   | RateLimitEvent
+  | HookNoticeEvent
   | TurnDoneEvent
   | ErrorEvent
   | ExitedEvent
@@ -187,6 +203,7 @@ export const SESSION_EVENT_KINDS = [
   'questionRequest',
   'usage',
   'rateLimit',
+  'hookNotice',
   'turnDone',
   'error',
   'exited',
