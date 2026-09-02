@@ -237,28 +237,22 @@
   let tenantGeneration = $state(0);
   let tenantHydration = 0;
   let shellEpoch = $state(0);
+  const effectiveTenantAccountId = $derived(
+    hostOwnsNativeSession
+      ? (hostTenantAccountId?.trim() || null)
+      : tenantAccountId,
+  );
+  const effectiveTenantGeneration = $derived(
+    hostOwnsNativeSession ? (hostTenantGeneration ?? 0) : tenantGeneration,
+  );
   const personUid = $derived(self?.uid ?? "");
   let shallow = $state(readShallowCache(personUid));
   const conversationCacheStorage = $derived(
     createTenantStorage(
       typeof window !== "undefined" ? window.localStorage : null,
-      { accountId: tenantAccountId, companyId: "all" },
+      { accountId: effectiveTenantAccountId, companyId: "all" },
     ),
   );
-  $effect(() => {
-    if (!hostOwnsNativeSession) return;
-    const nextGeneration = hostTenantGeneration ?? 0;
-    if (nextGeneration < tenantGeneration) return;
-    const nextAccountId = hostTenantAccountId?.trim() || null;
-    if (
-      nextGeneration === tenantGeneration &&
-      nextAccountId === tenantAccountId
-    ) {
-      return;
-    }
-    tenantAccountId = nextAccountId;
-    tenantGeneration = nextGeneration;
-  });
   $effect(() => {
     shallow = readShallowCache(personUid);
   });
@@ -654,8 +648,8 @@
       {wakes}
       {companies}
       {self}
-      {tenantAccountId}
-      {tenantGeneration}
+      tenantAccountId={effectiveTenantAccountId}
+      tenantGeneration={effectiveTenantGeneration}
       {initialRow}
       {initialReplyRootEventId}
       {seedDirectory}

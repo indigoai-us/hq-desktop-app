@@ -374,8 +374,8 @@ describe("Tauri attachment handlers", () => {
     );
     expect(source).toMatch(/self = hydratedSelf/);
     expect(source).toMatch(/await nativeInvoke\("get_auth_session"\)/);
-    expect(source).toContain("{tenantAccountId}");
-    expect(source).toContain("{tenantGeneration}");
+    expect(source).toContain("tenantAccountId={effectiveTenantAccountId}");
+    expect(source).toContain("tenantGeneration={effectiveTenantGeneration}");
     expect(source).toMatch(
       /const conversationCacheStorage = \$derived\(\s*createTenantStorage\(/,
     );
