@@ -57,22 +57,27 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
   const trafficY = titleBarHeight / 2;
 
   it('keeps one titlebar height across CSS, TS, and Rust', () => {
+    const tokens = readRepoFile('../../packages/ui/src/home/tokens.css');
     expect(titleBarHeight).toBe(48);
     expect(rustF64Const('TITLEBAR_HEIGHT_PX')).toBe(titleBarHeight);
-    expect(titleBar).toContain('TITLEBAR_HEIGHT_PX');
-    expect(titleBar).toContain('--v4-titlebar-height');
-    expect(titleBar).toMatch(/flex:\s*0 0 var\(--v4-titlebar-height\)/);
-    expect(titleBar).toMatch(/height:\s*var\(--v4-titlebar-height\)/);
+    expect(tokens).toContain('--titlebar-height: 48px');
+    expect(titleBar).toContain('--titlebar-height');
+    expect(titleBar).toMatch(/flex:\s*0 0 var\(--titlebar-height/);
+    expect(titleBar).toMatch(/height:\s*var\(--titlebar-height/);
     expect(titleBar).not.toMatch(/flex:\s*0 0 48px/);
     expect(titleBar).not.toMatch(/height:\s*48px/);
   });
 
   it('keeps the macOS traffic-light gutter as the same shared constant', () => {
+    const tokens = readRepoFile('../../packages/ui/src/home/tokens.css');
     expect(gutter).toBe(78);
     expect(rustF64Const('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX')).toBe(gutter);
-    expect(titleBar).toContain('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX');
-    expect(titleBar).toContain('--v4-traffic-light-gutter');
-    expect(titleBar).toMatch(/padding-left:\s*var\(--v4-traffic-light-gutter\)/);
+    expect(tokens).toMatch(
+      /\.has-window-controls\s*\{[\s\S]*--titlebar-leading-inset:\s*78px/,
+    );
+    expect(titleBar).toContain('--titlebar-leading-inset');
+    expect(titleBar).toContain('has-window-controls');
+    expect(titleBar).toMatch(/padding-left:\s*var\(--titlebar-leading-inset\)/);
     expect(titleBar).not.toMatch(/padding-left:\s*78px/);
   });
 

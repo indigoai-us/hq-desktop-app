@@ -9,7 +9,7 @@ right-click / Opt+Shift+H), not a second chat app.
 
 - Tray left-click, Dock, and second-process activation open the `desktop-alt` window.
 - First-run onboarding still uses the compact `main` card, then hands off to the desktop workspace.
-- Signed-out users open the same window; `HqWorkDesktopShell` shows sign-in there.
+- Signed-out users open the same window; `HqWorkWorkShell` shows sign-in there.
 - `desktop_alt_enabled` still reports whether a Cognito email is present (used by some command paths). It no longer blocks opening the window.
 - Indigo-only checks still protect admin/pre-release surfaces such as Moderation and non-stable update channels.
 

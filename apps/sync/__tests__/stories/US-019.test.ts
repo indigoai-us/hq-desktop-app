@@ -33,7 +33,7 @@ describe('US-019: attribution byline links to the creator profile', () => {
     expect(panel).toContain("const CREATOR_PROFILE_BASE = 'https://hq.computer/creators'");
     // URL = base + the (encoded) handle; a missing handle → no link.
     expect(src).toContain('function creatorProfileHref(listing: MarketplaceListing): string | null');
-    expect(src).toContain('const handle = listing.author?.trim();');
+    expect(src).toContain('const handle = listingAuthor(listing).handle;');
     expect(src).toContain('if (!handle) return null;');
     expect(src).toContain('return `${CREATOR_PROFILE_BASE}/${encodeURIComponent(handle)}`;');
   });
@@ -64,9 +64,10 @@ describe('US-019: attribution byline links to the creator profile', () => {
     // Both surfaces gate the link on `creatorProfileHref(...)` and fall back to a
     // plain <span> byline (still carrying the testid) when there's no handle.
     expect(src).toContain('{#if creatorProfileHref(listing)}');
-    expect(src).toContain('<span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>');
+    expect(src).toContain('<span class="author">{authorLabel(listing)}</span>');
     expect(src).toContain('{#if creatorProfileHref(selected)}');
-    expect(src).toContain('<p class="section-body" data-testid="marketplace-detail-author">{authorLabel(selected)}</p>');
+    expect(src).toContain('data-testid="marketplace-detail-author"');
+    expect(src).toContain('<span>{authorLabel(selected)}</span>');
   });
 });
 

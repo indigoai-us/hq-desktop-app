@@ -227,6 +227,31 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo fmt --check
 
+  # NAME IS LOAD-BEARING once added to the main ruleset required checks.
+  # Cheap mocked mounts of HqWorkDesktopShell for the four release-gate
+  # personas (non-Indigo empty inbox, personal-only, multi-company, Indigo).
+  # This is the PR-time layer that would have caught v0.10.178: every prior
+  # check ran as an Indigo member with conversations.
+  shell-boot-matrix:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Shell boot matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - name: Persona shell boot (vitest)
+        working-directory: apps/sync
+        run: pnpm exec vitest run __tests__/stories/shell-boot-persona-matrix.test.ts
+      - name: Persona shell boot (desktop-alt e2e)
+        working-directory: apps/sync
+        run: pnpm exec vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/shell-boot-persona-matrix.spec.ts
+
   e2e-desktop-alt:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Desktop-alt E2E

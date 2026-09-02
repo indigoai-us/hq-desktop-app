@@ -306,6 +306,19 @@ describe("release workflow channel contract", () => {
     expect(releaseDocs).toContain("git tag -a vX.Y.Z <rollback-commit>");
   });
 
+  it("documents the latest.json rollback feed and the mark-bad operator command", () => {
+    expect(releaseDocs).toContain('"rollback": true');
+    expect(releaseDocs).toContain('"bad_versions": ["0.10.178"]');
+    expect(releaseDocs).toContain("min_supported");
+    expect(releaseDocs).toContain("node scripts/release-mark-bad.mjs 0.10.178 --to 0.10.177");
+    expect(releaseDocs).toContain("gh release upload v0.10.177 latest.json --clobber");
+    expect(releaseDocs).toContain("HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO");
+    expect(releaseDocs).toContain("gh release edit <tag> --latest --prerelease=false");
+    expect(releaseDocs).toContain("gh release edit v0.10.178");
+    expect(clientClassifier).toContain("pub struct UpdateFeedPolicy");
+    expect(clientClassifier).toContain("pub fn should_offer_update");
+  });
+
   it("classifies stable separately from beta and alpha", () => {
     const validate = jobBody("validate");
 
@@ -453,9 +466,14 @@ describe("release workflow channel contract", () => {
       ".release-control/scripts/release-asset-contract.mjs plan",
     );
     expect(publish).toContain("create-draft");
-    expect(publish).toContain("reset-draft|already-published");
+    expect(publish).toContain("reset-draft|already-published|promote-pending");
     expect(publish).toContain("draft: true");
-    expect(publish.match(/action != 'already-published'/g)).toHaveLength(5);
+    expect(publish.match(/action != 'already-published'/g)).toHaveLength(3);
+    expect(
+      publish.match(
+        /action == 'create-draft' \|\| steps\.release-plan\.outputs\.action == 'reset-draft'/g,
+      ),
+    ).toHaveLength(4);
     expect(publish).toContain('gh release upload "$TAG" release/* -R "$REPOSITORY"');
     expect(publish).toContain(
       ".release-control/scripts/release-asset-contract.mjs verify",
@@ -488,7 +506,36 @@ describe("release workflow channel contract", () => {
       "node .release-control/scripts/release-stable-order.mjs confirm-channel",
     );
     expect(publish).toContain('--make-latest "$MAKE_LATEST"');
+    expect(publish).toContain("--make-latest false");
     expect(publish).not.toContain('releases/latest" 2>/dev/null || true');
+  });
+
+  it("publishes a stable tag as a prerelease until the tag latest.json smokes, then promotes to latest", () => {
+    const publish = jobBody("publish");
+    const makePublic = publish.indexOf("- name: Publish verified GitHub release");
+    const smokeFeed = publish.indexOf("- name: Smoke published latest.json for this tag");
+    const promote = publish.indexOf("- name: Promote stable release to latest");
+    const confirm = publish.indexOf("- name: Confirm public release and channel isolation");
+
+    expect(smokeFeed).toBeGreaterThan(makePublic);
+    expect(promote).toBeGreaterThan(smokeFeed);
+    expect(confirm).toBeGreaterThan(promote);
+    expect(publish).toContain("--staged-stable");
+    expect(publish).toContain("promote-pending");
+    expect(publish).toContain("make_latest: false");
+    expect(stepBody(publish, "Publish verified GitHub release")).toContain(
+      "make_latest: false",
+    );
+    expect(stepBody(publish, "Publish verified GitHub release")).not.toContain(
+      "MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}",
+    );
+    expect(publish).toContain("macos-artifact-smoke.mjs");
+    expect(publish).toContain("/releases/download/${TAG}/latest.json");
+    expect(publish).toContain('gh release edit "$TAG" -R "$REPOSITORY" --latest --prerelease=false');
+    expect(stepBody(publish, "Promote stable release to latest")).toContain(
+      "needs.validate.outputs.channel == 'stable'",
+    );
+    expect(publish).toContain("scripts/macos-artifact-smoke.mjs");
   });
 
   it("loads retry-safe publication helpers from the exact workflow commit", () => {
@@ -504,6 +551,35 @@ describe("release workflow channel contract", () => {
       expect(job).toContain("sparse-checkout-cone-mode: false");
       expect(job).toContain("persist-credentials: false");
     }
+    expect(publish).toContain("scripts/macos-artifact-smoke.mjs");
+  });
+
+  it("smokes the signed macOS app as a non-Indigo identity before publish", () => {
+    const macos = jobBody("macos");
+    const publish = jobBody("publish");
+    const smoke = stepBody(macos, "Non-Indigo artifact smoke");
+
+    expect(macos.indexOf("- name: Build unsigned universal app and updater archive")).toBeLessThan(
+      macos.indexOf("- name: Non-Indigo artifact smoke"),
+    );
+    expect(macos.indexOf("- name: Sign app bundle")).toBeLessThan(
+      macos.indexOf("- name: Non-Indigo artifact smoke"),
+    );
+    expect(publish).toContain("needs: [validate, macos, windows]");
+    expect(smoke).not.toContain("continue-on-error");
+    expect(macos).not.toMatch(
+      /Non-Indigo artifact smoke[\s\S]*?continue-on-error: true/,
+    );
+    expect(smoke).toContain("HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO");
+    expect(smoke).toContain("secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO");
+    expect(smoke).toContain('if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then');
+    expect(smoke).toContain("fail-closed");
+    expect(smoke).toContain("macos-artifact-smoke.mjs");
+    expect(smoke).toContain("--launch");
+    expect(smoke).toContain("--timeout-ms 30000");
+    expect(smoke).toContain("HQ.app");
+    expect(macos).toContain("scripts/macos-artifact-smoke.mjs");
+    expect(macos).toContain("ref: ${{ github.workflow_sha }}");
   });
 
   it("documents the release hosts and native targets the workflow actually ships", () => {

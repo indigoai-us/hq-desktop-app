@@ -41,7 +41,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: openExternal }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
@@ -238,7 +238,7 @@ let component: ReturnType<typeof mount> | null = null;
 async function mountShell(options: Options = {}): Promise<void> {
   host = document.createElement('div');
   document.body.appendChild(host);
-  component = mount(HqWorkDesktopShell, {
+  component = mount(HqWorkWorkShell, {
     target: host,
     props: { invokeFn: invokeFor(options) },
   });
@@ -293,7 +293,7 @@ describe('embedded Work navigation and lifecycle', () => {
   it('shows a truthful initial loading state before identity settles', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
-    component = mount(HqWorkDesktopShell, {
+    component = mount(HqWorkWorkShell, {
       target: host,
       props: { invokeFn: invokeFor() },
     });
@@ -1038,7 +1038,7 @@ describe('embedded Work navigation and lifecycle', () => {
     const calls: string[] = [];
     host = document.createElement('div');
     document.body.appendChild(host);
-    component = mount(HqWorkDesktopShell, {
+    component = mount(HqWorkWorkShell, {
       target: host,
       props: { invokeFn: invokeFor({ pendingRoute: 'settings', calls }) },
     });

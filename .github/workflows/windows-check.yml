@@ -764,6 +764,18 @@ jobs:
           # artifacts and the next run starts cold again.
           cache-on-failure: true
 
+      # Written AFTER rust-cache on purpose. The action hashes
+      # `**/.cargo/config.toml` into its key, so writing this earlier forks a
+      # second multi-GB cache lane out of the 10 GB the whole repository
+      # shares. Writing it later is sound only because of what it overrides --
+      # the rationale and the invariant are in the file itself.
+      - name: Apply the CI fixture cargo profile
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/.cargo | Out-Null
+          Copy-Item -LiteralPath src-tauri/ci/fixture-profile.toml -Destination src-tauri/.cargo/config.toml -Force
+          Get-Content src-tauri/.cargo/config.toml
+
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
@@ -925,6 +937,18 @@ jobs:
           shared-key: windows-installer-release
           cache-on-failure: true
           save-if: false
+
+      # Written AFTER rust-cache on purpose. The action hashes
+      # `**/.cargo/config.toml` into its key, so writing this earlier forks a
+      # second multi-GB cache lane out of the 10 GB the whole repository
+      # shares. Writing it later is sound only because of what it overrides --
+      # the rationale and the invariant are in the file itself.
+      - name: Apply the CI fixture cargo profile
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/.cargo | Out-Null
+          Copy-Item -LiteralPath src-tauri/ci/fixture-profile.toml -Destination src-tauri/.cargo/config.toml -Force
+          Get-Content src-tauri/.cargo/config.toml
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile

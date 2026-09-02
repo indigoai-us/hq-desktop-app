@@ -99,7 +99,7 @@ describe("MemberProfilePanel", () => {
             id: "generated-marks",
             name: "Generated marks",
             version: "1.0.0",
-            author: "HQ",
+            author: "Default",
             baseUrl: "builtin:generated-marks",
             items: [
               { id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] },

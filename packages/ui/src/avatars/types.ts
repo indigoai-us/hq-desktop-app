@@ -22,7 +22,13 @@ export type AvatarSelection =
   | { kind: "item"; packId: string; itemId: string };
 
 export const GENERATED_MARKS_PACK_ID = "generated-marks";
+export const GENERATED_MARKS_PACK_NAME = "Generated marks";
+export const GENERATED_MARKS_AUTHOR = "Default";
 export const GENERATED_MARKS_BASE_URL = "builtin:generated-marks";
+
+export const HQ_AGENT_MASCOTS_PACK_ID = "hq-agent-mascots";
+export const HQ_AGENT_MASCOTS_PACK_NAME = "Animals";
+export const HQ_AGENT_MASCOTS_AUTHOR = "Lizzy";
 export const HQ_AGENT_MASCOTS_BASE_URL =
   "https://hq-agent-mascots.indigo-hq.com";
 

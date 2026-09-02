@@ -1,6 +1,12 @@
 import { agentAvatarFor } from "../chat/messaging/agent-avatars.js";
 import { resolvePackItemSrc } from "./parse-pack.js";
-import { GENERATED_MARKS_PACK_ID, type AvatarPack, type AvatarSelection } from "./types.js";
+import {
+  GENERATED_MARKS_AUTHOR,
+  GENERATED_MARKS_PACK_ID,
+  GENERATED_MARKS_PACK_NAME,
+  type AvatarPack,
+  type AvatarSelection,
+} from "./types.js";
 
 export interface PreparedAvatarBytes {
   base64: string;
@@ -52,9 +58,9 @@ function itemForSelection(
     return {
       pack: generated ?? {
         id: GENERATED_MARKS_PACK_ID,
-        name: "Generated marks",
+        name: GENERATED_MARKS_PACK_NAME,
         version: "1.0.0",
-        author: "HQ",
+        author: GENERATED_MARKS_AUTHOR,
         baseUrl: "builtin:generated-marks",
         items: [],
       },

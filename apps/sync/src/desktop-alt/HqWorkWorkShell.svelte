@@ -1,64 +1,69 @@
 <script lang="ts">
   /**
-   * Embedded HQ Work shell for the Sync desktop-alt window (US-103).
+   * Native desktop host for the shared @hq/work shell.
    *
-   * Mounts @hq/ui DesktopApp with the Sync PlatformAdapter. ⌘, is handled
-   * inside DesktopApp (openSettings) — never a second settings window.
+   * This deliberately retains the Sync-owned lifecycle and event bridges.
+   * The product UI below the host boundary is WorkShell; this component only
+   * supplies native authority and delivery seams.
    */
-  import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { flushSync, onMount, tick } from 'svelte';
+  import WorkShell from '@hq/work/WorkShell';
+  import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
   import {
-    DesktopApp,
     applyAvailableUpdate,
     createChatWakeBus,
-    createLiveNotificationsApi,
     dispatchEmbeddedNavigation,
     markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
     reportInstallFailed,
-    settingsProfileFromSelf,
     toSelfIdentity,
     workspacesFromMembershipRows,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import {
-    createSyncPlatformAdapter,
-    type SyncInvokeFn,
-  } from '@hq/platform';
+  import { flushSync, onMount, tick } from 'svelte';
+  import { safeUnlisten } from '../lib/listener-registry';
+  import { dismissBootLoader } from './boot-loader';
+  import SignInPrompt from '../components/SignInPrompt.svelte';
+  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
     createHqWorkPackagesEvents,
-    createHqWorkSidebarApi,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
-  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
-  import { safeUnlisten } from '../lib/listener-registry';
-  import { getVaultObject, putVaultObject } from './vault-s3-put';
-  import { dismissBootLoader } from './boot-loader';
-  import SignInPrompt from '../components/SignInPrompt.svelte';
+  import {
+    createNativeWorkShellCapabilities,
+    type NativeInvokeFn,
+    type NativeWorkShellCapabilities,
+  } from './work-shell-capabilities';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
+    /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
+    bootTimeoutMs?: number;
   }
 
-  let { invokeFn = tauriInvoke as SyncInvokeFn }: Props = $props();
+  let {
+    invokeFn = tauriInvoke as SyncInvokeFn,
+    bootTimeoutMs,
+  }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
-    invoke: (cmd, args) => invokeFn(cmd, args),
+    invoke: (command, args) => invokeFn(command, args),
   });
-  const sidebarApi = createHqWorkSidebarApi(adapter);
-  const notificationsApi = createLiveNotificationsApi(adapter);
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();
   const packagesEvents = createHqWorkPackagesEvents(listen);
+  const nativeInvoke: NativeInvokeFn = (command, args) =>
+    invokeFn(command, args) as Promise<never>;
 
   let self = $state<SelfIdentity | null>(null);
   let companies = $state<Workspace[] | null>(null);
+  let capabilities = $state<NativeWorkShellCapabilities | null>(null);
   let version = $state('0.0.0');
   type Lifecycle =
     | 'loading'
@@ -89,8 +94,6 @@
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
-  // Incrementing, rather than storing an update payload, guarantees the pane
-  // re-reads each authoritative command after every native state edge.
   let updateWakeSeq = $state(0);
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
@@ -146,12 +149,6 @@
     );
   }
 
-  /**
-   * The native session event is the only authority allowed to cross tenants.
-   * Clear synchronously before starting a B request: every mounted descendant
-   * is keyed by this generation, so its async work is cancelled at the same
-   * boundary rather than being asked to recognize a future account later.
-   */
   function acceptAuthSession(next: AuthSessionEnvelope): void {
     if (next.generation < authGeneration) return;
     if (
@@ -168,6 +165,7 @@
     detachNavigation = null;
     self = null;
     companies = null;
+    capabilities = null;
     workspaceError = null;
     identityError = null;
     signOutError = null;
@@ -241,12 +239,9 @@
     // Do not render stale tenant/account data while a new auth probe runs.
     self = null;
     companies = null;
+    capabilities = null;
 
     try {
-      // Start the identity request under this request/generation lease while
-      // native resolves credentials. If native reports a newer tenant, its
-      // completion is ignored below; starting both keeps the no-transition
-      // bootstrap path from adding a second visible loading turn.
       const whoami = bounded(adapter.identity.whoami(), 'Identity lookup');
       const nativeSession = parseAuthSessionEnvelope(
         await bounded(invokeFn('get_auth_session'), 'Auth session lookup'),
@@ -258,9 +253,6 @@
           nativeSession.accountId !== authAccountId ||
           nativeSession.status !== 'active')
       ) {
-        // This request no longer owns the shell. Its speculative identity
-        // result cannot update a later tenant, but must still be observed so
-        // a rejected network promise never becomes an unhandled rejection.
         void whoami.catch(() => undefined);
         acceptAuthSession(nativeSession);
         return;
@@ -282,6 +274,20 @@
         email: who.value.email,
         displayName: who.value.displayName,
       });
+      capabilities = await createNativeWorkShellCapabilities({
+        invoke: nativeInvoke,
+        onUnauthorized: () => {
+          void signOut();
+        },
+        hostIdentity: self
+          ? {
+              sub: self.uid,
+              ...(self.email ? { email: self.email } : {}),
+              ...(self.displayName ? { name: self.displayName } : {}),
+            }
+          : null,
+      });
+      if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
       void refreshWorkspaces(request, expectedGeneration);
     } catch (error) {
@@ -304,10 +310,6 @@
   }
 
   function requestRevalidation(options: { automatic?: boolean } = {}): void {
-    // Browser wakeups are recovery probes only. Revalidating a ready session
-    // forces `hydrateSession()` through loading and remounts DesktopApp,
-    // which discards the user's current destination for no auth transition.
-    // OAuth completion and explicit Retry remain allowed outside recovery.
     if (options.automatic && lifecycle !== 'recovery') return;
     if (revalidationPending) return;
     revalidationPending = true;
@@ -327,6 +329,7 @@
       authAccountId = null;
       self = null;
       companies = null;
+      capabilities = null;
       workspaceError = null;
       signedOutReason = 'signed-out';
       lifecycle = 'signed-out';
@@ -342,9 +345,6 @@
     void invokeFn('open_desktop_alt_window');
   }
 
-  // Sync owns MQTT credentials and turns wake-only publishes into reconciled,
-  // authenticated native events. Subscribe only for the currently mounted
-  // account/membership snapshot; explicit foreign company payloads fail closed.
   $effect(() => {
     const personUid = self?.uid?.trim() ?? '';
     const scopedCompanies = companies;
@@ -397,13 +397,9 @@
             seenReplyIds: active.seenReplyIds,
           }
         : { rootEventId: null },
-    ).catch(() => {
-      // Native active-thread registration is a realtime optimization. The
-      // shared UI retains its bounded disconnected-state fallback when absent.
-    });
+    ).catch(() => undefined);
   }
 
-  /** Hung whoami / listWorkspaces must not shimmer this window forever. */
   const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
 
   onMount(() => {
@@ -419,16 +415,8 @@
       if (!cancelled) dismissBootLoader();
     };
 
-    // Race the initial session hydration with a timeout so a hung invoke
-    // cannot blank/spinner the boot loader forever; either way the shell's
-    // own lifecycle states take over once revealed.
     const bootRevealTimeoutId = setTimeout(() => void reveal(), IDENTITY_SETTLE_TIMEOUT_MS);
 
-    // The route must be restored before its optional meeting-focus payload.
-    // Consume them in this order so a specific focus target is the final
-    // navigation request during a slow auth mount. A live request received
-    // after this window was created is newer than both cold-start values: still
-    // consume them to clear native state, but never let them navigate backward.
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
@@ -440,9 +428,6 @@
           );
         }
         const meetingId = await invokeFn('meetings_take_pending_focus');
-        // Native emits a meeting-focus event before its paired live Meetings
-        // route. If listener registration missed only that first event, the
-        // one-shot pending ID still belongs to the latest visible destination.
         const pendingFocusIsCurrent =
           latestLiveNavigation === null ||
           (latestLiveNavigation === 'meetings' && !receivedLiveMeetingFocus);
@@ -454,13 +439,9 @@
         ) return;
         navigation.navigate({ kind: 'meetings', meetingId });
       } catch {
-        // Pending desktop navigation is best-effort; a mounted route still
-        // accepts future native navigation events.
+        // A mounted shell still receives later native route events.
       }
     };
-    // Hydration may perform an extra native session lookup before the shared
-    // app mounts. Deferring cold delivery until that boundary has settled keeps
-    // a pending route/focus pair from racing a not-yet-attached renderer.
     void hydrateSession().finally(() => {
       void reveal();
       if (!cancelled) void restoreInitialNavigation();
@@ -485,8 +466,6 @@
       },
     ).catch(() => () => {});
 
-    // Emitted only after OAuth tokens have been persisted by native code. This
-    // is an authoritative completion edge, not a timing-based reauth poll.
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
@@ -494,8 +473,6 @@
     const updateEvents = [
       'update:available',
       'update:cleared',
-      // `check_core_state` emits this after every successful probe. Treating
-      // that completion as a wake would recursively re-run the same probe.
       'hq-cli-update:available',
       'hq-cli-update:cleared',
     ];
@@ -503,14 +480,14 @@
       listen(eventName, (event) => {
         if (cancelled) return;
         if (eventName === 'update:available') {
-          const version =
+          const nextVersion =
             event.payload &&
             typeof event.payload === 'object' &&
             'version' in event.payload &&
             typeof (event.payload as { version?: unknown }).version === 'string'
               ? (event.payload as { version: string }).version
               : null;
-          applyAvailableUpdate(version);
+          applyAvailableUpdate(nextVersion);
         } else if (eventName === 'update:cleared') {
           applyAvailableUpdate(null);
         }
@@ -542,6 +519,17 @@
       if (next) acceptAuthSession(next);
     }).catch(() => () => {});
 
+    // WorkShell adds one component boundary before DesktopApp attaches its
+    // shortcut listener. Keep the existing host shortcut live during that
+    // handoff; the navigation controller queues it until the renderer is
+    // ready, and duplicate delivery after attachment is idempotent.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== ',') return;
+      event.preventDefault();
+      navigation.navigate({ kind: 'settings' });
+    };
+    window.addEventListener('keydown', onKeyDown);
+
     const revalidateOnRecovery = () => {
       if (!cancelled) requestRevalidation({ automatic: true });
     };
@@ -550,8 +538,6 @@
     };
     window.addEventListener('focus', revalidateOnRecovery);
     window.addEventListener('online', revalidateOnRecovery);
-    // `pageshow` covers a restored/resumed webview where focus is not
-    // re-dispatched (for example after an OS sleep/wake cycle).
     window.addEventListener('pageshow', revalidateOnRecovery);
     document.addEventListener('visibilitychange', onVisibilityChange);
 
@@ -561,8 +547,6 @@
       hydration += 1;
       detachNavigation?.();
       detachNavigation = null;
-      // Shared teardown boundary: idempotent, and a throw here can never
-      // escape into Svelte's cleanup pass.
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -574,6 +558,7 @@
       void unlistenDownloadedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenInstallFailedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
+      window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
       window.removeEventListener('pageshow', revalidateOnRecovery);
@@ -618,7 +603,7 @@
       <p>{identityError ?? 'Check your connection and retry.'}</p>
       <button type="button" onclick={() => void hydrateSession()}>Retry</button>
     </section>
-  {:else}
+  {:else if capabilities}
     {#if workspaceError}
       <div class="workspace-warning" data-testid="hq-work-workspace-error" role="alert">
         <span>{workspaceError}</span>
@@ -631,42 +616,42 @@
       </div>
     {/if}
     {#key authGeneration}
-    <DesktopApp
-      {adapter}
-      {version}
-      {updateWakeSeq}
-      refreshAppVersion={getVersion}
-      {sidebarApi}
-      {notificationsApi}
-      {wakes}
-      {notificationWakeSeq}
-      {packagesEvents}
-      {companies}
-      {self}
-      tenantAccountId={authAccountId}
-      tenantGeneration={authGeneration}
-      settingsProfile={settingsProfileFromSelf(self)}
-      hydrateLiveMessages={true}
-      coreFixtures={false}
-      putAttachmentObject={putVaultObject}
-      getAttachmentObject={getVaultObject}
-      onsignout={signOut}
-      onOpenConsole={openApprovedExternalUrl}
-      onopenurl={openBrowserUrl}
-      onactivethreadchange={setActiveReplyThread}
-      onembeddednavigationready={() => {
-        detachNavigation?.();
-        const detach = navigation.attach((target) => {
-          // DesktopApp installed its event listener before calling this hook.
-          dispatchEmbeddedNavigation(target);
-        });
-        detachNavigation = detach;
-        return () => {
-          detach();
-          if (detachNavigation === detach) detachNavigation = null;
-        };
-      }}
-    />
+      <WorkShell
+        data={{ user: capabilities.hostIdentity }}
+        runtimeKind={capabilities.runtimeKind}
+        fetch={capabilities.fetch}
+        onUnauthorized={capabilities.onUnauthorized}
+        loadFilePreview={capabilities.loadFilePreview}
+        hostIdentity={capabilities.hostIdentity}
+        hostTenantAccountId={authAccountId}
+        hostTenantGeneration={authGeneration}
+        invoke={invokeFn}
+        {listen}
+        {wakes}
+        {version}
+        {updateWakeSeq}
+        refreshAppVersion={getVersion}
+        {packagesEvents}
+        onOpenConsole={openApprovedExternalUrl}
+        onopenurl={openBrowserUrl}
+        {notificationWakeSeq}
+        onactivethreadchange={setActiveReplyThread}
+        bootTimeoutMs={bootTimeoutMs}
+        onShellReady={() => {
+          void invokeFn('shell_ready');
+        }}
+        onembeddednavigationready={() => {
+          detachNavigation?.();
+          const detach = navigation.attach((target) => {
+            dispatchEmbeddedNavigation(target);
+          });
+          detachNavigation = detach;
+          return () => {
+            detach();
+            if (detachNavigation === detach) detachNavigation = null;
+          };
+        }}
+      />
     {/key}
   {/if}
 </div>
@@ -744,6 +729,7 @@
     color: #fef3c7;
     background: #3b2f10;
   }
+
   .hq-work-boot {
     width: 100%;
     height: 100%;
@@ -763,12 +749,8 @@
   }
 
   @keyframes hq-work-boot-pulse {
-    from {
-      opacity: 0.35;
-    }
-    to {
-      opacity: 0.9;
-    }
+    from { opacity: 0.35; }
+    to { opacity: 0.9; }
   }
 
   @media (prefers-reduced-motion: reduce) {

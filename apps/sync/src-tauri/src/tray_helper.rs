@@ -160,6 +160,12 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "desktop" => {
                         let _ = app.emit("tray:open-desktop", ());
                     }
+                    "updates" => {
+                        crate::recovery::spawn_tray_check_for_updates(app.clone());
+                    }
+                    "recovery" => {
+                        crate::recovery::spawn_tray_open_recovery(app.clone());
+                    }
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
                     }
@@ -233,5 +239,16 @@ mod tests {
             .path()
             .join(format!(".tray-badge.{}.tmp", std::process::id()))
             .exists());
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_tray_message_badge_is_a_noop_off_macos() {
+        assert_eq!(set_tray_message_badge(0), Ok(()));
+        assert_eq!(set_tray_message_badge(12), Ok(()));
     }
 }

@@ -1,7 +1,7 @@
 {
   "name": "hq-sync",
   "private": true,
-  "version": "0.10.175",
+  "version": "0.10.179",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,6 +22,7 @@
     "@hq/core": "workspace:*",
     "@hq/platform": "workspace:*",
     "@hq/ui": "workspace:*",
+    "@hq/work": "workspace:*",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",

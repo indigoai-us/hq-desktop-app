@@ -25,6 +25,7 @@
   import {
     codexAvailable,
     resolveClaudeLaunchPath,
+    SETUP_DEEP_LINK_PROMPT,
     SETUP_PROMPT,
     type AiTools,
   } from "./setup-launch";
@@ -90,7 +91,10 @@
         const res = await shell.openClaudeCodeLink(
           buildClaudeCodeUrl({
             folder: status.hqFolderPath,
-            prompt: SETUP_PROMPT,
+            // NOT SETUP_PROMPT: a deep-link folder is untrusted when Claude
+            // Desktop scans skills, so the project `/setup` skill does not
+            // exist in the session this link opens.
+            prompt: SETUP_DEEP_LINK_PROMPT,
           }),
         );
         if (!res.ok) launchError = failureMessage(res, "Claude Code");

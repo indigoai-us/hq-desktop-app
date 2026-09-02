@@ -1,22 +1,29 @@
 // Contract tests for the CI runner-cost invariants.
 //
-// GitHub bills macOS minutes at 10x and Windows at 2x a Linux minute, so the
-// three rules asserted here are what keep the PR gate affordable:
+// This repository is public, so GitHub's standard runners are free and the 10x
+// macOS / 2x Windows minute multipliers -- which this comment used to cite as
+// the reason for all of it -- are never applied to anything here. The costs
+// that are real are the wall clock a contributor waits on a required check,
+// and the repository's 10 GB Actions cache budget, which every branch shares
+// and which is currently close to full. The three rules asserted here defend
+// those:
 //
 //   1. Every PR-triggered workflow cancels superseded runs. Without a
 //      concurrency group, a branch that is pushed to N times leaves N-1 full
-//      Windows runs executing against commits nobody will merge.
+//      Windows runs executing against commits nobody will merge, holding
+//      concurrency slots the runs people are waiting on then queue behind.
 //   2. The Windows jobs cache Rust artifacts with Swatinem/rust-cache, which
 //      prunes to registry + dependency artifacts. Caching a raw `target/`
 //      directory with actions/cache produces multi-GB entries that evict each
-//      other out of the repository's 10 GB cache budget, so every run compiles
-//      cold while still paying to upload the archive.
+//      other out of the 10 GB budget, so every run compiles cold -- and takes
+//      the eviction out on every other branch's entries too.
 //   3. Work that is not macOS-specific runs on ubuntu-latest. Only the Tauri
-//      app crate and the real-child process regressions need a macOS runner.
+//      app crate and the real-child process regressions need a macOS runner;
+//      macOS runners are the scarcest pool and the slowest to be assigned.
 //
 // These are shape assertions over the workflow YAML, in the same style as
 // release-workflow.test.ts, so a regression fails the frontend job (which is
-// cheap) instead of silently costing runner minutes.
+// fast) instead of silently costing everyone minutes.
 
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -27,11 +34,26 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let ciWorkflow = "";
 let windowsCheckWorkflow = "";
+let releaseWorkflow = "";
+let fixtureProfile = "";
+let appManifest = "";
 
 beforeAll(async () => {
-  [ciWorkflow, windowsCheckWorkflow] = await Promise.all([
+  [
+    ciWorkflow,
+    windowsCheckWorkflow,
+    releaseWorkflow,
+    fixtureProfile,
+    appManifest,
+  ] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
+    readFile(
+      resolve(rootDir, "apps/sync/src-tauri/ci/fixture-profile.toml"),
+      "utf8",
+    ),
+    readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
   ]);
 });
 
@@ -139,9 +161,7 @@ describe("superseded runs are cancelled", () => {
       const head = preamble(get());
 
       expect(head).toMatch(/\nconcurrency:\n/);
-      expect(head).toContain(
-        "group: ${{ github.workflow }}-${{ github.ref }}",
-      );
+      expect(head).toContain("group: ${{ github.workflow }}-${{ github.ref }}");
       expect(head).toContain("cancel-in-progress: true");
     });
   }
@@ -382,8 +402,56 @@ describe("the installer gate splits its two release builds", () => {
     // The guard has to be the first step, before anything that could fail or
     // pass for its own reasons.
     const steps = e2e.slice(e2e.indexOf("\n    steps:"));
-    expect(steps.indexOf("Fail when an installer build job did not succeed"))
-      .toBeLessThan(steps.indexOf("uses: actions/checkout@v4"));
+    expect(
+      steps.indexOf("Fail when an installer build job did not succeed"),
+    ).toBeLessThan(steps.indexOf("uses: actions/checkout@v4"));
+  });
+
+  it("writes the fixture cargo profile only after rust-cache has keyed", () => {
+    // rust-cache hashes `**/.cargo/config.toml` into its key. Writing the
+    // overlay before the action therefore forks a second multi-GB lane out of
+    // a 10 GB budget every branch in the repository shares -- which is the
+    // exact cost this file's rule 2 exists to prevent. Writing it after is
+    // sound because of the scope invariant asserted in the next test, so these
+    // two assertions have to be read together.
+    for (const job of ["build-bridge-installers", "build-target-updater"]) {
+      const body = jobConfig(windowsCheckWorkflow, job);
+      const cache = body.indexOf("uses: Swatinem/rust-cache@v2");
+      const apply = body.indexOf("name: Apply the CI fixture cargo profile");
+      const build = body.indexOf("pnpm tauri build");
+
+      expect(cache).toBeGreaterThan(-1);
+      expect(apply).toBeGreaterThan(cache);
+      expect(build).toBeGreaterThan(apply);
+    }
+  });
+
+  it("scopes the fixture profile to a crate the cache never stores", () => {
+    // rust-cache deletes workspace-member artifacts before saving, so
+    // hq-sync-menubar is never in the cache and overriding it cannot make the
+    // lane disagree with its own key. Every dependency still builds at the
+    // profile's own opt-level. Widen this to a dependency and the lane starts
+    // holding artifacts its key does not describe -- silently, for every job
+    // that restores the shared key, release builds warmed from main included.
+    const overridden = [
+      ...fixtureProfile.matchAll(/^\[profile\.[^\]]*\]/gm),
+    ].map((m) => m[0]);
+    expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
+
+    // Cargo accepts a package spec that matches nothing without so much as a
+    // warning -- verified against cargo 1.x directly. A typo here would build
+    // exactly as before and read as "the override bought us nothing", so the
+    // name is checked against the manifest rather than trusted.
+    const pkg = /^name = "(.+)"$/m.exec(appManifest)?.[1];
+    expect(pkg).toBe("hq-sync-menubar");
+    expect(overridden[0]).toBe(`[profile.release.package.${pkg}]`);
+
+    // And it must not be checked in at a path cargo reads on its own, or it
+    // stops being CI-only and starts shipping.
+    expect(windowsCheckWorkflow).toContain(
+      "Copy-Item -LiteralPath src-tauri/ci/fixture-profile.toml -Destination src-tauri/.cargo/config.toml",
+    );
+    expect(releaseWorkflow).not.toContain("fixture-profile.toml");
   });
 
   it("derives both synthetic versions from one tested script", () => {
@@ -482,6 +550,35 @@ describe("only macOS-specific work runs on a macOS runner", () => {
 
     expect(linux).toContain(
       "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+    );
+  });
+});
+
+describe("the shell boot matrix is a cheap required PR gate", () => {
+  // v0.10.178 froze every signed-in non-Indigo user with an empty inbox on
+  // an infinite conversation skeleton. The matrix mounts HqWorkDesktopShell
+  // for four personas on ubuntu — not on a macOS runner, and not behind
+  // continue-on-error — so a missing identity cannot skip the check.
+  it("runs on ubuntu-latest under the load-bearing check name", () => {
+    const job = jobBody(ciWorkflow, "shell-boot-matrix");
+
+    expect(ciWorkflow).toContain("name: Shell boot matrix");
+    expect(job).toContain("runs-on: ubuntu-latest");
+    expect(job).toContain("timeout-minutes: 15");
+    expect(job).not.toContain("continue-on-error");
+    expect(job).toContain(
+      "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+    );
+  });
+
+  it("mounts every release-gate persona in vitest and desktop-alt e2e", () => {
+    const job = jobBody(ciWorkflow, "shell-boot-matrix");
+
+    expect(job).toContain(
+      "pnpm exec vitest run __tests__/stories/shell-boot-persona-matrix.test.ts",
+    );
+    expect(job).toContain(
+      "pnpm exec vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/shell-boot-persona-matrix.spec.ts",
     );
   });
 });

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { loadPackFromUrl, loadRegisteredPacks } from "./load-pack.js";
+import { cspSafeAvatarSrc } from "./parse-pack.js";
 import { HQ_AGENT_MASCOTS_SNAPSHOT } from "./snapshots.js";
-import { HQ_AGENT_MASCOTS_BASE_URL, PACK_REGISTRY_STORAGE_KEY } from "./types.js";
-import { GENERATED_MARKS_PACK_ID } from "./types.js";
+import {
+  GENERATED_MARKS_PACK_ID,
+  HQ_AGENT_MASCOTS_BASE_URL,
+  HQ_AGENT_MASCOTS_PACK_NAME,
+  PACK_REGISTRY_STORAGE_KEY,
+} from "./types.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -33,6 +38,32 @@ describe("loadPackFromUrl", () => {
     expect(loaded.pack.items).toHaveLength(1);
   });
 
+  it("rewrites a live catalog's relative srcs onto bundled snapshot files", async () => {
+    const live = {
+      id: "hq-agent-mascots",
+      name: "Live mascots",
+      version: "9.0.0",
+      author: "Lizzy",
+      baseUrl: HQ_AGENT_MASCOTS_BASE_URL,
+      items: [
+        {
+          id: "v2-dot",
+          name: "Dot · simplified",
+          src: "mascots/v2/dot.png",
+          tags: [],
+        },
+      ],
+    };
+    const loaded = await loadPackFromUrl(HQ_AGENT_MASCOTS_BASE_URL, {
+      fetch: async () => jsonResponse(live),
+    });
+    expect(loaded.source).toBe("remote");
+    const src = loaded.pack.items[0]?.src ?? "";
+    expect(cspSafeAvatarSrc(src)).toBe(src);
+    expect(src).not.toMatch(/^https?:/i);
+    expect(src).toContain("hq-agent-mascots");
+  });
+
   it("falls back to the bundled snapshot when pack.json is missing", async () => {
     const loaded = await loadPackFromUrl(HQ_AGENT_MASCOTS_BASE_URL, {
       fetch: async () => jsonResponse({ error: "nope" }, 404),
@@ -40,6 +71,11 @@ describe("loadPackFromUrl", () => {
     expect(loaded.source).toBe("fallback");
     expect(loaded.pack.items).toHaveLength(HQ_AGENT_MASCOTS_SNAPSHOT.items.length);
     expect(loaded.pack.id).toBe("hq-agent-mascots");
+    expect(loaded.pack.name).toBe(HQ_AGENT_MASCOTS_PACK_NAME);
+    for (const item of loaded.pack.items) {
+      expect(cspSafeAvatarSrc(item.src), item.id).toBe(item.src);
+      expect(item.src).not.toMatch(/^https?:/i);
+    }
   });
 
   it("falls back when the live body fails validation", async () => {
@@ -80,7 +116,7 @@ describe("loadRegisteredPacks", () => {
         id: GENERATED_MARKS_PACK_ID,
         name: "Generated marks",
         version: "1.0.0",
-        author: "HQ",
+        author: "Default",
         baseUrl: "builtin:generated-marks",
         items: [{ id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] }],
       },
@@ -108,7 +144,7 @@ describe("loadRegisteredPacks", () => {
         id: GENERATED_MARKS_PACK_ID,
         name: "Generated marks",
         version: "1.0.0",
-        author: "HQ",
+        author: "Default",
         baseUrl: "builtin:generated-marks",
         items: [],
       },

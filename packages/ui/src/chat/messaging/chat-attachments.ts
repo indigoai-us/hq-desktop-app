@@ -91,6 +91,32 @@ export function conversationPairKey(a: string, b: string): string {
   return [a, b].sort().join("#");
 }
 
+/** Personal HQ vaults are keyed by the owner's person uid (`prs_*`). */
+export function isPersonalVaultScopeUid(uid: string): boolean {
+  return uid.trim().startsWith("prs_");
+}
+
+/**
+ * Vault scope to send to files-presign for a chat attachment.
+ *
+ * Company conversations use the company uid. Personal DMs/channels use the
+ * owner's person uid (the personal vault). A `prs_*` on the row is the
+ * personal HQ "company" key — never treat it as a company membership uid.
+ * Does not fall back to "first company in the list".
+ */
+export function attachmentVaultScopeUid(args: {
+  row?: {
+    kind?: string | null;
+    companyUid?: string | null;
+  } | null;
+  selfUid?: string | null;
+}): string | null {
+  const fromRow = args.row?.companyUid?.trim() ?? "";
+  const selfUid = args.selfUid?.trim() ?? "";
+  if (fromRow && !isPersonalVaultScopeUid(fromRow)) return fromRow;
+  return selfUid || fromRow || null;
+}
+
 export function dmAttachmentScopeId(pairKey: string): string {
   return pairKey.replace(/#/g, "--");
 }

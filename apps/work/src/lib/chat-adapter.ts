@@ -272,6 +272,26 @@ export function resetLiveRailHydrate(): void {
   workFeedCache = null;
 }
 
+/**
+ * PlatformAdapter promises a bare array for search results. The web adapter
+ * predates that contract and still returns its API envelope, so absorb both
+ * forms at this UI boundary without changing the hosted adapter response.
+ */
+function asMessageSearchResult(value: unknown): MessageSearchResult {
+  if (Array.isArray(value)) {
+    return { results: value as MessageSearchResult["results"] };
+  }
+  const record =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  return {
+    results: Array.isArray(record?.results)
+      ? (record.results as MessageSearchResult["results"])
+      : [],
+  };
+}
+
 export function createChatSidebarApi(
   adapter: PlatformAdapter,
   previousDirectory: ChannelDirectoryRow[] = [],
@@ -316,21 +336,31 @@ export function createChatSidebarApi(
       ),
     }),
     listChannels: async (args) => {
+      if (adapter.kind === "desktop") {
+        const native = await call<
+          ChannelsResponse | NonNullable<ChannelsResponse["channels"]>
+        >(adapter.messaging.listChannels(args));
+        return Array.isArray(native) ? { channels: native } : native;
+      }
       const items = await loadWorkFeed(personUid, deps.fetch ?? hqProFetch);
       return {
         channels: workItemsAsChannels(items, args.companyUid),
       } as ChannelsResponse;
     },
+    fetchDmThread: (args) =>
+      call<DmThreadResponse>(adapter.messaging.fetchDmThread(args)),
     markDmThreadRead: (withPersonUid) =>
       call<void>(adapter.messaging.markDmThreadRead(withPersonUid)),
     markChannelRead: (channelId) =>
       call<void>(adapter.messaging.markChannelRead(channelId)),
-    searchMessages: (args) =>
-      call<MessageSearchResult>(
-        adapter.messaging.searchMessages(args.q, {
-          ...(args.companyUid ? { companyUid: args.companyUid } : {}),
-          ...(args.limit != null ? { limit: args.limit } : {}),
-        }),
+    searchMessages: async (args) =>
+      asMessageSearchResult(
+        await call<unknown>(
+          adapter.messaging.searchMessages(args.q, {
+            ...(args.companyUid ? { companyUid: args.companyUid } : {}),
+            ...(args.limit != null ? { limit: args.limit } : {}),
+          }),
+        ),
       ),
     createChannel: async (args) => {
       const value = await call<Record<string, unknown>>(

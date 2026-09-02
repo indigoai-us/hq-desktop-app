@@ -36,7 +36,26 @@ export const NO_AI_TOOLS: AiTools = {
 
 export type ClaudeLaunchPath = "deep-link" | "cli" | "none";
 
-/** The prompt pre-entered into the launched agent session. */
+/**
+ * Deep links cannot use the `/setup` slash command — Claude Desktop scans
+ * skills before a link-opened folder is trusted, so HQ's project `/setup`
+ * skill is suppressed in the session the link creates. Re-exported from the
+ * shared constant so there is exactly one copy of that prompt text.
+ */
+export {
+  SETUP_DEEP_LINK_PROMPT,
+  SETUP_SKILL_PATH,
+  SETUP_CORE_MARKER,
+  SETUP_REPAIR_COMMAND,
+  SETUP_BOOTSTRAP_COMMAND,
+} from "../chat/setup-channel.js";
+
+/**
+ * The prompt pre-entered into a TERMINAL agent session, and the text copied
+ * to the clipboard when no tool is detected. Terminal launches settle folder
+ * trust before the skill scan, so the slash command works there.
+ * Deep links must use `SETUP_DEEP_LINK_PROMPT` instead.
+ */
 export const SETUP_PROMPT = "/setup";
 
 export function resolveClaudeLaunchPath(

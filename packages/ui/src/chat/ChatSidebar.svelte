@@ -65,6 +65,7 @@
     clearPairUnread,
     conversationKindLabel,
     distinctDmPeople,
+    duplicateHumanDmTitles,
     formatSearchHitTime,
     groupByDay,
     groupByType,
@@ -99,6 +100,8 @@
     searchHitSnippet,
     takeRailConversations,
     pickAutoOpenConversation,
+    pickSettledBootConversation,
+    railRowScopeLabel,
     togglePin,
     type CompanyScope,
     type ConversationRow,
@@ -118,6 +121,17 @@
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
+  import {
+    BootTimeoutError,
+    DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    raceTimeout,
+  } from "./boot-timeout.js";
+  import { shouldReportShellReady } from "./shell-ready.js";
+  import {
+    parseSettingsPrefs,
+    readSettingsPrefs,
+    SETTINGS_PREFS_KEY,
+  } from "../settings/settings-prefs.js";
 
   interface Props {
     /** Platform backend seam (web: REST via the platform adapter). */
@@ -162,6 +176,17 @@
     onsignout?: () => Promise<void> | void;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
+    /**
+     * Bound for first-paint directory/contacts/DM-request reads. A hung or
+     * 404'd optional fetch must not keep the conversation pane on a skeleton.
+     * Tests pass a short value; production uses the default.
+     */
+    bootTimeoutMs?: number;
+    /**
+     * First successful paint of the conversation rail or its empty state.
+     * Not called while loading, and not called on an error-only rail.
+     */
+    onShellReady?: () => void;
   }
 
   let {
@@ -187,6 +212,8 @@
     oncompanyscopechange,
     onsignout,
     onrows,
+    bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    onShellReady,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -204,6 +231,21 @@
     typeof window !== "undefined" ? window.localStorage : null,
     { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
   );
+
+  function readShowScopeLabels(): boolean {
+    try {
+      const scoped = storage.getItem(SETTINGS_PREFS_KEY);
+      if (scoped != null) {
+        return parseSettingsPrefs(JSON.parse(scoped) as unknown)
+          .showSidebarScopeLabels;
+      }
+    } catch {
+      /* tenant partition missing or junk */
+    }
+    return readSettingsPrefs().showSidebarScopeLabels;
+  }
+
+  let showScopeLabels = $state(readShowScopeLabels());
 
   let channels = $state<Channel[]>(
     loadConversationCache(storage)?.channels ?? [],
@@ -324,6 +366,10 @@
   } | null>(null);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
+  /** First directory/contacts attempt has settled or timed out. */
+  let bootAttempted = $state(false);
+  let firstRefreshSettled = false;
+  let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
   let footerEl: HTMLDivElement | null = $state(null);
@@ -474,22 +520,38 @@
 
   /** US-016: open the newest rail row when the shell has no selection. */
   let autoOpenRequestedId = $state<string | null>(null);
+  const hasNonSetupRows = $derived(
+    allRows.some((row) => !isSetupChannel(row.channelId)),
+  );
   $effect(() => {
     if (selectedId) {
       autoOpenRequestedId = null;
       return;
     }
     if (autoOpenRequestedId) return;
-    // The synthetic #setup row never auto-opens — it exists from first paint,
-    // so it would win the empty-selection race against deep links and real
-    // conversations that hydrate a beat later.
-    const pick = pickAutoOpenConversation(
+    // Real conversations auto-open immediately. #setup exists from first
+    // paint, so it must not win the empty-selection race against deep links
+    // and rows that hydrate a beat later — but once the first fetch has
+    // settled (or timed out) with nothing else, open #setup so the pane is
+    // never an infinite skeleton.
+    const live = pickAutoOpenConversation(
       filteredRows.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
     );
-    if (!pick) return;
-    autoOpenRequestedId = pick.id;
-    void openRow(pick, undefined, true);
+    if (live) {
+      autoOpenRequestedId = live.id;
+      void openRow(live, undefined, true);
+      return;
+    }
+    if (!bootAttempted || loading) return;
+    const fallback = pickSettledBootConversation(filteredRows, selectedId);
+    if (!fallback) return;
+    autoOpenRequestedId = fallback.id;
+    sidebarLog("auto-open-fallback", {
+      id: fallback.id,
+      reason: "no-other-conversations",
+    });
+    void openRow(fallback, undefined, true);
   });
   const grouped = $derived(
     sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
@@ -498,6 +560,7 @@
     Math.max(0, filteredRows.length - railRows.length),
   );
   const people = $derived(distinctDmPeople(allRows));
+  const duplicateHumanTitles = $derived(duplicateHumanDmTitles(allRows));
   const liveSwitcherRows = $derived(
     switcherRowsFromConversations([...directoryRows, ...browseRows], (uid) => {
       if (!uid) return "";
@@ -889,7 +952,12 @@
   // old list_channels refetch loop AND the scan_local_projects-driven channel
   // provisioning (the server directory is the source of truth).
   const directoryReconciler = createChannelDirectoryReconciler({
-    fetchFeed: async (cursor) => api.fetchChannelDirectory(cursor ?? null),
+    fetchFeed: async (cursor) =>
+      raceTimeout(
+        api.fetchChannelDirectory(cursor ?? null),
+        bootTimeoutMs,
+        "channel-directory",
+      ),
     storage: localDirectoryCursorStorage(storage),
     onApply: (rows) => {
       channels = applyDirectoryFeed(rows, channels, seedDirectory);
@@ -900,11 +968,17 @@
       );
     },
     onError: (err) => {
-      // Surface the failure only when there is nothing to show — with rows
-      // painted (cache or a prior apply), the reconciler retries silently.
+      // Surface the failure when the rail has no real conversations — the
+      // synthetic #setup row is always injected, so "nothing to show" is
+      // channels+contacts empty, not allRows empty.
       if (channels.length === 0 && contacts.length === 0) {
-        loadError = err.message || "Could not load conversations";
+        loadError = "Couldn’t load conversations.";
       }
+      sidebarLog("boot-error", {
+        source: "channel-directory",
+        timeout: err instanceof BootTimeoutError,
+        message: err.message,
+      });
       console.error("chat-sidebar: channel directory reconcile failed", err);
     },
   });
@@ -934,15 +1008,30 @@
     if (firstPaint) loading = true;
     loadError = null;
     // Channels reconcile through the directory feed; contacts + requests keep
-    // their existing reads. All three settle before the loading gate clears.
+    // their existing reads. All three settle (or time out) before the loading
+    // gate clears so first paint cannot wait forever.
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        api.listContacts().catch((err) => {
-          console.error("chat-sidebar: list_contacts failed", err);
-          return { contacts: contacts };
-        }),
-        api.listDmRequests().catch((err) => {
+        raceTimeout(api.listContacts(), bootTimeoutMs, "list_contacts").catch(
+          (err) => {
+            sidebarLog("boot-error", {
+              source: "list_contacts",
+              timeout: err instanceof BootTimeoutError,
+              message: err instanceof Error ? err.message : String(err),
+            });
+            console.error("chat-sidebar: list_contacts failed", err);
+            if (channels.length === 0 && contacts.length === 0) {
+              loadError = "Couldn’t load conversations.";
+            }
+            return { contacts: contacts };
+          },
+        ),
+        raceTimeout(
+          api.listDmRequests(),
+          bootTimeoutMs,
+          "list_dm_requests",
+        ).catch((err) => {
           console.error("chat-sidebar: list_dm_requests failed", err);
           return { requests: pendingRequests };
         }),
@@ -963,13 +1052,35 @@
         storage,
       );
     } catch (err) {
-      loadError =
-        typeof err === "string" ? err : "Could not load conversations";
+      loadError = "Couldn’t load conversations.";
+      sidebarLog("boot-error", {
+        source: "refresh",
+        message: err instanceof Error ? err.message : String(err),
+      });
       console.error("chat-sidebar: refresh failed", err);
     } finally {
       await directory;
+      bootAttempted = true;
       loading = false;
+      firstRefreshSettled = true;
+      maybeReportShellReady();
     }
+  }
+
+  function maybeReportShellReady(): void {
+    if (reportedShellReady) return;
+    if (
+      !shouldReportShellReady({
+        loading,
+        loadError,
+        firstRefreshSettled,
+        conversationCount: channels.length + contacts.length,
+      })
+    ) {
+      return;
+    }
+    reportedShellReady = true;
+    onShellReady?.();
   }
 
   $effect(() => {
@@ -1077,6 +1188,7 @@
   onMount(() => {
     // Cache already painted; one cursor delta in the background. Safety
     // polling stays off until we know MQTT is down.
+    maybeReportShellReady();
     void refreshLists();
     directoryReconciler.setSafetyPolling(true);
 
@@ -1848,11 +1960,13 @@
         : ""}…
     </button>
 
+    {#if loadError && !hasNonSetupRows}
+      <div class="chat-empty" role="alert" data-testid="chat-load-error">
+        {loadError}
+      </div>
+    {/if}
     {#if loading && allRows.length === 0}
       <div class="chat-empty" role="status">Loading…</div>
-    {:else if loadError && allRows.length === 0}
-      <div class="chat-empty" role="alert">{loadError}</div>
-      <div class="chat-empty">No conversations</div>
     {:else if filteredRows.length === 0}
       <div class="chat-empty">No conversations</div>
     {/if}
@@ -2232,14 +2346,24 @@
 {/snippet}
 
 {#snippet conversationRow(row: ConversationRow)}
+  {@const scopeLabel = railRowScopeLabel(row, {
+    scope,
+    companies: scopeCompanies,
+    enabled: showScopeLabels,
+    duplicateHumanTitles,
+  })}
+  {@const hasBadge =
+    (row.unreadCount != null && row.unreadCount > 0) || row.unreadDot}
   <div role="listitem" class="chat-li">
     <button
       type="button"
       class="chat-row"
       class:unread={!!row.unreadCount || row.unreadDot}
       class:active={activeId === row.id}
+      class:has-badge={hasBadge}
       data-kind={row.kind}
       data-conversation-id={row.id}
+      title={scopeLabel?.text}
       onclick={() => void openRow(row)}
       oncontextmenu={(e) => openContextMenu(row, e)}
     >
@@ -2271,7 +2395,24 @@
       {#if draftIdSet.has(row.id)}
         {@render draftMark()}
       {/if}
-      <span class="chat-row-title">{row.title}</span>
+      <span class="chat-row-copy">
+        <span class="chat-row-title">{row.title}</span>
+        {#if scopeLabel}
+          <span
+            class="chat-row-scope"
+            data-testid="chat-row-scope"
+            data-kind={scopeLabel.kind}
+            title={scopeLabel.text}>{scopeLabel.text}</span
+          >
+        {/if}
+      </span>
+      {#if scopeLabel}
+        <span
+          class="chat-row-reveal"
+          data-testid="chat-row-reveal"
+          aria-hidden="true">{scopeLabel.text}</span
+        >
+      {/if}
       {#if row.unreadCount != null && row.unreadCount > 0}
         <span
           class="chat-unread-badge"
@@ -2650,6 +2791,7 @@
   }
 
   .chat-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -2699,6 +2841,68 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .chat-row-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .chat-row-copy .chat-row-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-scope {
+    flex: 0 1000 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .chat-row-reveal {
+    display: none;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--elevated);
+    box-shadow: -10px 0 8px 0 var(--elevated);
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.3;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
+  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
+  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
+    display: inline-block;
+  }
+
+  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
+  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
+  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
+    visibility: hidden;
   }
 
   .chat-row-draft {

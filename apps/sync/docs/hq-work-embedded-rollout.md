@@ -1,7 +1,7 @@
 # Desktop workspace — the single HQ UI
 
 The desktop workspace (`desktop-alt` window, `@hq/ui` DesktopApp via
-`HqWorkDesktopShell`) is the only HQ surface. Every signed-in user gets it.
+`HqWorkWorkShell`) is the only HQ surface. Every signed-in user gets it.
 Signed-out and first-run onboarding lead into it. There is no email-domain
 cohort and no classic popover chat shell.
 
@@ -18,7 +18,7 @@ This file remains the source of truth for the combined-app embed
 true. `hqWorkHandoffEnabled` is always true. Settings does not re-persist the
 key.
 
-The window always mounts `@hq/ui` DesktopApp via `HqWorkDesktopShell` +
+The window always mounts `@hq/ui` DesktopApp via `HqWorkWorkShell` +
 `createSyncPlatformAdapter`. Live `maybe_intercept_desktop_alt_handoff` is a
 no-op (always false). Combined-app does not launch HQ Work, does not show a
 handoff card, does not co-install. Auth is the same Cognito vault-users
@@ -38,7 +38,7 @@ strips the key.
 
 There is no Settings toggle. There is no opt-out to the classic chat shell.
 
-3. Confirm flag-on mounts `HqWorkDesktopShell` (`@hq/ui` DesktopApp via
+3. Confirm flag-on mounts `HqWorkWorkShell` (`@hq/ui` DesktopApp via
    `createSyncPlatformAdapter`) in the same desktop-alt window.
 
 Existing installs without the key keep the legacy shell. Tray popover,
@@ -190,7 +190,7 @@ branch.
 - desktop-alt JS (minified, no maps): **+2.00 MiB** vs BEFORE 0.53 MiB.
 
 If AFTER exceeds the JS budget, **code-split**: change
-`apps/sync/src/desktop-alt/main.ts` so `HqWorkDesktopShell` is a
+`apps/sync/src/desktop-alt/main.ts` so `HqWorkWorkShell` is a
 `dynamic import()` only on the flag-on branch (today it is a static import,
 so flag-off users still download `@hq/ui`). Vite already splits the
 `desktopAlt` entry from `main`. Do not implement that dynamic import in
@@ -224,7 +224,7 @@ remove the legacy shell and the boot branch.
 
 - US-101 consume — `docs/hq-work-ui-consume.md`
 - US-102 adapter — `../../packages/platform/src/tauri/sync-adapter.ts`
-- US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkDesktopShell.svelte`
+- US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkWorkShell.svelte`
 - US-104 routing — notification / conversation clicks into this window
 - US-105 parity
 - US-107 live smoke: [hq-work-embedded-smoke.md](hq-work-embedded-smoke.md)

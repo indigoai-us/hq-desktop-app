@@ -50,6 +50,10 @@ import {
   takeDirectorySeed,
   takeRailConversations,
   pickAutoOpenConversation,
+  pickSettledBootConversation,
+  railRowScopeLabel,
+  duplicateHumanDmTitles,
+  resolveRailCompanyName,
   titlebarDayDate,
   togglePin,
   type ConversationRow,
@@ -586,6 +590,56 @@ describe("pickAutoOpenConversation", () => {
   });
 });
 
+describe("pickSettledBootConversation", () => {
+  function row(
+    partial: Partial<ConversationRow> & { id: string; lastActivityAt: number },
+  ): ConversationRow {
+    return {
+      kind: "channel",
+      title: partial.id,
+      companyUid: null,
+      unreadDot: false,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  it("still prefers a real conversation over #setup", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 99,
+    });
+    const live = row({
+      id: "ch:chn_ops",
+      channelId: "chn_ops",
+      lastActivityAt: 1,
+    });
+    expect(pickSettledBootConversation([setup, live], null)?.id).toBe(
+      "ch:chn_ops",
+    );
+  });
+
+  it("falls back to #setup so an empty tenant is not stuck on the skeleton", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+      pinned: true,
+    });
+    expect(pickSettledBootConversation([setup], null)?.id).toBe("ch:setup");
+  });
+
+  it("returns null when a selection already exists", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+    });
+    expect(pickSettledBootConversation([setup], "ch:setup")).toBeNull();
+  });
+});
+
 describe("company scope filtering", () => {
   const rows: ConversationRow[] = [
     {
@@ -1067,6 +1121,139 @@ describe("US-013 palette conversation ranking", () => {
     const companies = [{ companyUid: "cmp_acme", label: "Acme" }];
     expect(companyLabelFor("cmp_acme", companies)).toBe("Acme");
     expect(companyLabelFor(null, companies)).toBeNull();
+  });
+});
+
+describe("rail scope labels", () => {
+  const companies = [
+    { companyUid: "cmp_indigo", label: "Indigo" },
+    { companyUid: "cmp_lr", label: "Liverecover" },
+  ];
+
+  function channelRow(
+    name: string,
+    companyUid: string,
+  ): ConversationRow {
+    return normalizeChannel(
+      channel({ channelId: name, name, companyUid, companyName: null }),
+    );
+  }
+
+  function humanRow(
+    personUid: string,
+    displayName: string,
+    email: string,
+  ): ConversationRow {
+    return normalizeDm(dm({ personUid, displayName, email }));
+  }
+
+  function agentRow(
+    personUid: string,
+    displayName: string,
+    companyUid: string,
+  ): ConversationRow {
+    return normalizeDm(
+      dm({
+        personUid,
+        displayName,
+        email: null,
+        companyUid,
+      }),
+    );
+  }
+
+  it("resolveRailCompanyName prefers the memberships list and hides raw uids", () => {
+    expect(resolveRailCompanyName("cmp_indigo", companies)).toBe("Indigo");
+    expect(resolveRailCompanyName("cmp_missing", companies)).toBeNull();
+    expect(resolveRailCompanyName("Liverecover", companies)).toBe("Liverecover");
+    expect(resolveRailCompanyName(null, companies)).toBeNull();
+  });
+
+  it("channel rows in All scope show the company name", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "all",
+        companies,
+        enabled: true,
+      }),
+    ).toEqual({ kind: "company", text: "Indigo" });
+  });
+
+  it("agent DMs in All scope show the company name", () => {
+    expect(
+      railRowScopeLabel(agentRow("agt_fleet", "Fleet", "cmp_lr"), {
+        scope: "all",
+        companies,
+        enabled: true,
+      }),
+    ).toEqual({ kind: "company", text: "Liverecover" });
+  });
+
+  it("human DMs in All scope show email", () => {
+    expect(
+      railRowScopeLabel(
+        humanRow("prs_ada", "Ada Lovelace", "ada@getindigo.ai"),
+        { scope: "all", companies, enabled: true },
+      ),
+    ).toEqual({ kind: "email", text: "ada@getindigo.ai" });
+  });
+
+  it("single-company scope hides company labels", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+      }),
+    ).toBeNull();
+    expect(
+      railRowScopeLabel(agentRow("agt_fleet", "Fleet", "cmp_indigo"), {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("duplicate-name humans keep email in single-company scope", () => {
+    const alexA = humanRow("prs_a", "Alex", "alex@indigo.ai");
+    const alexB = humanRow("prs_b", "Alex", "alex@liverecover.com");
+    const unique = humanRow("prs_c", "Sofia", "sofia@indigo.ai");
+    const dupes = duplicateHumanDmTitles([alexA, alexB, unique]);
+    expect(dupes.has("alex")).toBe(true);
+    expect(dupes.has("sofia")).toBe(false);
+    expect(
+      railRowScopeLabel(alexA, {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+        duplicateHumanTitles: dupes,
+      }),
+    ).toEqual({ kind: "email", text: "alex@indigo.ai" });
+    expect(
+      railRowScopeLabel(unique, {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+        duplicateHumanTitles: dupes,
+      }),
+    ).toBeNull();
+  });
+
+  it("toggle off hides every label", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "all",
+        companies,
+        enabled: false,
+      }),
+    ).toBeNull();
+    expect(
+      railRowScopeLabel(
+        humanRow("prs_ada", "Ada", "ada@getindigo.ai"),
+        { scope: "all", companies, enabled: false },
+      ),
+    ).toBeNull();
   });
 });
 

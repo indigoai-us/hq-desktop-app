@@ -1,0 +1,23 @@
+{
+  "version": "0.10.177",
+  "notes": "HQ v0.10.177",
+  "pub_date": "2026-09-01T12:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "mac-signature",
+      "url": "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.177/HQ_0.10.177_universal.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "mac-signature",
+      "url": "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.177/HQ_0.10.177_universal.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "x64-signature",
+      "url": "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.177/HQ_0.10.177_x64-setup.exe"
+    },
+    "windows-aarch64": {
+      "signature": "arm64-signature",
+      "url": "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.177/HQ_0.10.177_arm64-setup.exe"
+    }
+  }
+}

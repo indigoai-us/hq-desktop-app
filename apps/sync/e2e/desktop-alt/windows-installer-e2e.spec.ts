@@ -7,6 +7,7 @@ const repoUrl = (rel: string) =>
   fileURLToPath(new URL(`../../../../${rel}`, import.meta.url));
 
 const workflow = readFileSync(repoUrl('.github/workflows/windows-check.yml'), 'utf8');
+const releaseWorkflow = readFileSync(repoUrl('.github/workflows/release.yml'), 'utf8');
 const installerHarness = readFileSync(
   appUrl('scripts/windows-installer-e2e.ps1'),
   'utf8',
@@ -50,6 +51,39 @@ describe('Windows production installer E2E', () => {
     expect(workflow).toContain('--config $env:TAURI_MSI_VERSION_CONFIG');
     expect(workflow).toContain('Verify prerelease MSI package');
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
+  });
+
+  it('packs the CI installers with a fast compressor and ships the slow one', () => {
+    // Tauri's NSIS default is LZMA, which spent ~120s of every installer job
+    // squeezing a throwaway fixture -- roughly a sixth of the job. zlib is
+    // deflate: seconds instead of minutes, for an installer that exists only
+    // to be installed, upgraded, and uninstalled on the same runner. What
+    // ships to users keeps LZMA, because there the download size is the thing
+    // that matters and the compression happens once.
+    expect(ciOverlay.bundle?.windows?.nsis?.compression).toBe('zlib');
+    expect(windowsConf.bundle?.windows?.nsis?.compression).toBeUndefined();
+
+    // The whole scheme rests on release.yml never picking up this overlay --
+    // if it did, every user would download a much larger installer and nothing
+    // would fail to tell us.
+    expect(releaseWorkflow).not.toContain('tauri.windows.ci.conf.json');
+    expect(releaseWorkflow).toContain(
+      '--config src-tauri/tauri.windows.conf.json',
+    );
+  });
+
+  it('overrides only the compression key so the base NSIS settings survive', () => {
+    // `--config` files are merged with RFC 7386 (a deep merge), so naming
+    // `bundle.windows.nsis` here does not replace the base block. That is easy
+    // to believe and expensive to be wrong about: installerHooks is what stops
+    // NSIS dying on locked files, and installMode is what keeps HQ a per-user
+    // install. Adding a second key to the CI overlay is fine -- this test
+    // exists so it happens deliberately.
+    expect(Object.keys(ciOverlay.bundle.windows.nsis)).toEqual(['compression']);
+    expect(windowsConf.bundle?.windows?.nsis?.installerHooks).toBe(
+      './windows/installer-hooks.nsh',
+    );
+    expect(windowsConf.bundle?.windows?.nsis?.installMode).toBe('currentUser');
   });
 
   it('tests the upgraded x64 application and always uninstalls it', () => {

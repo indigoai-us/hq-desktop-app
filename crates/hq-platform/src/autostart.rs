@@ -8,14 +8,14 @@ use std::path::PathBuf;
 use std::path::Path;
 
 #[cfg(any(target_os = "macos", test))]
-const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+use crate::launchagent::{CURRENT_BUNDLE_EXECUTABLE, LAUNCH_AGENT_LABEL};
 /// Last-resort path, used only when the running executable can't be resolved.
 /// It names the ACTUAL bundled binary (`hq-sync-menubar`) inside `HQ.app`, not
 /// the product name `HQ` — the two differ, and assuming they were the same is
 /// what pointed the LaunchAgent at a nonexistent `.../MacOS/HQ` and made
 /// launchd exit EX_CONFIG.
 #[cfg(any(target_os = "macos", test))]
-const FALLBACK_APP_PATH: &str = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+const FALLBACK_APP_PATH: &str = CURRENT_BUNDLE_EXECUTABLE;
 
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
@@ -34,7 +34,7 @@ fn plist_path() -> Result<PathBuf, String> {
     Ok(home
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{}.plist", BUNDLE_ID)))
+        .join(format!("{}.plist", LAUNCH_AGENT_LABEL)))
 }
 
 /// The LaunchAgent must relaunch the exact binary that is running, so its
@@ -58,19 +58,11 @@ fn resolve_app_path() -> String {
     }
 }
 
-/// Extract the first `ProgramArguments` entry from a LaunchAgent plist.
-/// Returns None when the structure isn't present. Deliberately minimal — the
-/// plist we generate carries a single-element ProgramArguments array.
+/// Extract the first `ProgramArguments` entry (or `Program`) from a LaunchAgent
+/// plist. Returns None when the structure isn't present.
 #[cfg(any(target_os = "macos", test))]
 fn extract_program_path(plist: &str) -> Option<String> {
-    let after_key = plist.split("<key>ProgramArguments</key>").nth(1)?;
-    let array = after_key
-        .split("<array>")
-        .nth(1)?
-        .split("</array>")
-        .next()?;
-    let value = array.split("<string>").nth(1)?.split("</string>").next()?;
-    Some(value.trim().to_string())
+    crate::launchagent::registered_program_path(plist)
 }
 
 /// Generate the LaunchAgent plist XML content for the given app path.
@@ -92,7 +84,7 @@ fn generate_plist(app_path: &str) -> String {
 </dict>
 </plist>
 "#,
-        BUNDLE_ID, app_path
+        LAUNCH_AGENT_LABEL, app_path
     )
 }
 
@@ -301,7 +293,7 @@ mod tests {
         assert!(plist.contains("<?xml version=\"1.0\""));
         assert!(plist.contains("<!DOCTYPE plist"));
         assert!(plist.contains("<key>Label</key>"));
-        assert!(plist.contains(&format!("<string>{}</string>", BUNDLE_ID)));
+        assert!(plist.contains(&format!("<string>{}</string>", LAUNCH_AGENT_LABEL)));
         assert!(plist.contains("<key>ProgramArguments</key>"));
         assert!(plist.contains("<string>/Applications/HQ Sync.app/Contents/MacOS/HQ Sync</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
@@ -338,7 +330,7 @@ mod tests {
 
         // Verify content
         let read_back = std::fs::read_to_string(&plist_file).unwrap();
-        assert!(read_back.contains(BUNDLE_ID));
+        assert!(read_back.contains(LAUNCH_AGENT_LABEL));
 
         // Remove
         std::fs::remove_file(&plist_file).unwrap();

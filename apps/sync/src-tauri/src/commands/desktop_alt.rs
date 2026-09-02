@@ -38,27 +38,25 @@ use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 pub use hq_desktop_core::desktop_alt::{
     activity_url, board_url, bool_field, build_file_tree, build_node,
     canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
-    deployment_entry_from_value, deployment_last_deploy,
-    deployment_matches_selected_slug, deployment_org_slug, deployment_rows, deployment_size,
-    deployment_version, deployments_url, derive_initials, dir_has_visible_children,
-    first_row_key_names, format_board_date, format_bytes, format_deployment_age,
-    is_activity_not_provisioned, is_auth_required_error, is_board_not_provisioned,
-    is_deployments_not_provisioned, is_dev_noise, is_safe_deployment_host,
-    is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id, is_within, json_code,
-    json_kind, lexically_normalize, list_dir_entries, live_cloud_uid_from_broken_reason,
-    nested_number_field, nested_string_field, normalize_deployment_host,
-    normalize_deployment_state, normalize_slug, number_field, parse_activity_response,
-    parse_board_response, parse_company_activity, parse_company_board,
+    deployment_entry_from_value, deployment_last_deploy, deployment_matches_selected_slug,
+    deployment_org_slug, deployment_rows, deployment_size, deployment_version, deployments_url,
+    derive_initials, dir_has_visible_children, first_row_key_names, format_board_date,
+    format_bytes, format_deployment_age, is_activity_not_provisioned, is_auth_required_error,
+    is_board_not_provisioned, is_deployments_not_provisioned, is_dev_noise,
+    is_safe_deployment_host, is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id,
+    is_within, json_code, json_kind, lexically_normalize, list_dir_entries,
+    live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
+    normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
+    parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
-    read_file_content, read_file_content_capped,
-    resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
-    secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
-    string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
-    workspace_grants_company_file_access, workspace_grants_company_file_read_access,
-    ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
-    BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
+    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
+    resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
+    secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
+    summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
+    workspace_grants_company_file_read_access, ActivityContributor, ActivityEntry, ActivityStats,
+    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
     CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
     LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
     DEV_NOISE_NAMES,
@@ -98,7 +96,10 @@ pub fn set_desktop_active_company(
         .map(|slug| slug.trim().to_string())
         .filter(|slug| !slug.is_empty());
     if let Some(slug) = &normalized {
-        if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+        if !slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
             return Err(format!("invalid company_slug: {slug:?}"));
         }
     }
@@ -110,14 +111,13 @@ pub fn set_desktop_active_company(
 }
 
 #[tauri::command]
-pub fn get_desktop_active_company(scope: State<'_, DesktopSessionScope>) -> Result<Option<String>, String> {
+pub fn get_desktop_active_company(
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<Option<String>, String> {
     Ok(scope.active_company_slug())
 }
 
-fn enforce_desktop_read_scope(
-    rel_path: &str,
-    scope: &DesktopSessionScope,
-) -> Result<(), String> {
+fn enforce_desktop_read_scope(rel_path: &str, scope: &DesktopSessionScope) -> Result<(), String> {
     enforce_read_scope(rel_path, scope.active_company_slug().as_deref())
 }
 
@@ -765,6 +765,7 @@ pub async fn open_desktop_alt_window_inner(
     builder = crate::util::external_links::deny_webview_new_windows(builder, &app);
 
     let _window = builder.build().map_err(|e| e.to_string())?;
+    crate::recovery::note_desktop_window_created(&app);
 
     // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a
     // `PageLoadEvent::Finished` for the first load. That event can be dropped
@@ -885,7 +886,10 @@ fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-fn require_company_file_read_access(workspaces: &[Workspace], rel_path: &str) -> Result<(), String> {
+fn require_company_file_read_access(
+    workspaces: &[Workspace],
+    rel_path: &str,
+) -> Result<(), String> {
     let Some(slug) = company_slug_for_hq_path(rel_path)? else {
         return Ok(());
     };
