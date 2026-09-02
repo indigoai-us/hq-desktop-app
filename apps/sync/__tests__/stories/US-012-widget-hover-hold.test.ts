@@ -123,6 +123,7 @@ describe('US-012: never hide under pointer or during reply', () => {
         recent: [],
         occluded: false,
         held: false,
+        hidden: false,
       });
     });
   });

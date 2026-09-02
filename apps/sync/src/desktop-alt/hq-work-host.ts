@@ -346,6 +346,11 @@ function asContacts(value: unknown): ContactsResponse['contacts'] {
   return Array.isArray(rows) ? (rows as ContactsResponse['contacts']) : [];
 }
 
+/**
+ * @deprecated Retired production host. DesktopApp now mounts
+ * `createChatSidebarApi` from apps/work; this remains only for legacy
+ * handoff-test compatibility until that suite is retired.
+ */
 export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi {
   return {
     fetchChannelDirectory: async (cursor) => {

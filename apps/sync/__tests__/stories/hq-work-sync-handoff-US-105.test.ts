@@ -564,7 +564,9 @@ describe('US-105 embedded feature-parity QA', () => {
       });
     });
 
-    // The cross-company confirmation (D7) has no other source: the unscoped
+    // Retired-host compatibility only: live-path coverage lives beside
+    // createChatSidebarApi in apps/work. The cross-company confirmation (D7)
+    // has no other source: the unscoped
     // `list_contacts` feed carries no companyUid at all, so without this seam
     // the modal can never tell an outsider from a teammate.
     it('listCompanyMembers maps list_company_members and unwraps its envelope', async () => {

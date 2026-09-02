@@ -151,6 +151,16 @@ function defaultInvoke(command: string, args?: Record<string, unknown>): unknown
     };
   }
   if (command === 'open_meetings_window') return null;
+  if (command === 'get_settings') {
+    return {
+      widgetEnabled: true,
+      widgetDisplay: null,
+      widgetPlacement: 'bottom-right',
+      widgetAutoHideSeconds: 8,
+      widgetShowNeedsAction: true,
+    };
+  }
+  if (command === 'hide_widget_stack') return null;
   return undefined;
 }
 
@@ -170,9 +180,14 @@ async function waitForNativeReady(): Promise<void> {
         'sync:complete',
         'update:available',
         'update:cleared',
+        'widget:app-active',
         'widget:click-away',
+        'widget:escape',
+        'widget:hide',
         'widget:notification',
         'widget:occlusion',
+        'widget:settings',
+        'widget:show',
       ].sort(),
     );
     expect(tauri.invoke).toHaveBeenCalledWith('widget_ready');
@@ -446,7 +461,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(9);
+    expect([...unlisteners.values()]).toHaveLength(14);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }
@@ -777,6 +792,60 @@ describe('Widget restored native standalone behavior', () => {
     expect(
       tauri.invoke.mock.calls.some(([command]) => command === 'open_share_detail'),
     ).toBe(false);
+  });
+
+  it('files a meeting from Messages Activity and resolves the row', async () => {
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: '"Standup" isn’t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Standup' },
+      }),
+    );
+    expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
+
+    host.querySelector<HTMLElement>('.wm')!.click();
+    flushSync();
+    expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    const list = host.querySelector('[data-testid="widget-hover-list"]');
+    expect(list).toBeTruthy();
+    expect(list?.textContent).toContain('Activity');
+    expect(list?.textContent).toContain('Standup');
+
+    const trigger = list!.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-resolve-trigger"]',
+    )!;
+    expect(trigger.textContent?.trim()).toBe('File to company');
+    trigger.click();
+    flushSync();
+
+    const option = await vi.waitFor(() => {
+      const node = list!.querySelector<HTMLButtonElement>(
+        '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
+      );
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    option.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(tauri.invoke).toHaveBeenCalledWith(
+        'meetings_set_company',
+        expect.objectContaining({
+          meetingId: 'bot_1',
+          companyId: 'cmp_indigo',
+        }),
+      );
+      expect(
+        list!.querySelector('[data-testid="notification-resolve-trigger"]'),
+      ).toBeNull();
+    });
   });
 
   it('files a meeting to a company inline and resolves the row', async () => {

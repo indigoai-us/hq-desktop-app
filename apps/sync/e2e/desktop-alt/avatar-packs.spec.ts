@@ -70,8 +70,9 @@ describe('avatar pack picker source contract', () => {
     expect(csp.app.security.csp).toContain("img-src 'self'");
     expect(csp.app.security.csp).toContain('blob:');
     // Pack tiles never load over http(s) (`cspSafeAvatarSrc` returns null).
-    // Marketplace listing covers are the only remote img-src — one origin,
-    // no scheme wildcard. Same contract as tauri-conf.spec.ts.
+    // Marketplace listing covers and HQ profile photos share this one remote
+    // img-src — one origin, no scheme wildcard. Same contract as
+    // tauri-conf.spec.ts.
     expect(csp.app.security.csp).toContain(
       'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
     );

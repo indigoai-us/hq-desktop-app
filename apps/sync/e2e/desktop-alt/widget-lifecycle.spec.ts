@@ -65,6 +65,8 @@ describe('US-006: widget lifecycle — appears on launch, default ON', () => {
 
   it('WINDOW_LABEL is "widget" and setup no-ops when disabled', () => {
     expect(widget).toContain('pub const WINDOW_LABEL: &str = "widget"');
+    expect(widget).toContain('There is no separate `widget-stack` window.');
+    expect(widget).not.toMatch(/pub const WINDOW_LABEL: &str = "widget-stack"/);
     expect(widget).toContain('pub fn setup_widget_window(app: &AppHandle)');
     expect(widget).toContain('if !widget_enabled()');
     expect(widget).toContain('setup: widgetEnabled=false — skipping');
@@ -209,13 +211,15 @@ describe('US-006/US-010: unread superscript indicator', () => {
   const widgetUi = readRepoFile('src/components/Widget.svelte');
 
   it('renders the unified unread badge as a plain superscript count with no badge chrome', () => {
-    // US-010 replaced the queued-only superscript with a unified unread badge
-    // (badgeCount = unread recent count, falling back to the queued count).
-    // The locked no-circle design rule still holds: same .qd superscript, no chip.
+    // US-010 replaced the queued-only superscript with a unified unread badge.
+    // The mark now counts unread rows plus unresolved needs-action rows
+    // (widgetBadgeCount), falling back to the queued count. The locked
+    // no-circle design rule still holds: same .qd superscript, no chip.
     expect(widgetUi).toContain(
       '<span class="qd" data-testid="widget-unread-badge">{badgeCount}</span>',
     );
-    expect(widgetUi).toContain('unreadCount > 0 ? unreadCount : queuedCount');
+    expect(widgetUi).toContain('widgetBadgeCount(stack)');
+    expect(widgetUi).toContain('fromRecent > 0) return fromRecent');
     expect(widgetUi).toContain('Plain superscript — no background, border, or border-radius');
 
     // The .qd style block must stay chrome-free (plain numeral, not a chip).
@@ -240,9 +244,21 @@ describe('US-006: toggle-off restores native + closes window', () => {
     // Instant restore contract: after close, takeover_active is false.
     expect(widget).toContain('After close, takeover_active() is false');
     expect(widget).toContain('next notification goes native');
+    // Widget-off suppresses the mark, the Messages panel, and the toast —
+    // they all live in this single window.
+    expect(widget).toContain('There is no separate `widget-stack` window.');
   });
 
   it('WidgetSettings invokes apply_widget_settings after save', () => {
     expect(settings).toContain("invoke('apply_widget_settings')");
+  });
+
+  it('hide_widget_stack shrinks the native window and is registered', () => {
+    expect(widget).toContain('pub fn hide_widget_stack_now');
+    expect(widget).toContain('pub async fn hide_widget_stack');
+    expect(widget).toContain('widget:hide');
+    expect(widget).toContain('set_ignore_cursor_events(false)');
+    const main = readRepoFile('src-tauri/src/main.rs');
+    expect(main).toContain('commands::widget::hide_widget_stack');
   });
 });

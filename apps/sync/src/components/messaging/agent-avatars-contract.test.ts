@@ -54,10 +54,10 @@ describe('sync messaging agent-avatar contract', () => {
       "kind={isAgentUid(msg.fromPersonUid) ? 'agent' : 'person'}",
     );
     expect(conversation).toContain('agentUid={msg.fromPersonUid}');
-    expect(desktopApp).toContain(
-      'kind={isAgentUid(selectedRow.personUid ?? "")',
-    );
+    expect(desktopApp).toContain('kind="agent"');
+    expect(desktopApp).toContain('kind="person"');
     expect(desktopApp).toContain('agentUid={selectedRow.personUid}');
+    expect(desktopApp).toContain('data-testid="channel-header-agent"');
     expect(channelConversation).toContain('agentUid={msg.fromPersonUid}');
     expect(channelConversation).toContain('kind="agent"');
     expect(channelConversation).toContain(

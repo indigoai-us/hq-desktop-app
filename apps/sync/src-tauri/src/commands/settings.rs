@@ -73,6 +73,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             widget_enabled: Some(default_widget_enabled()),
             // None = primary display.
             widget_display: None,
+            widget_placement: Some("bottom-right".to_string()),
+            widget_auto_hide_seconds: Some(8),
+            widget_show_needs_action: Some(true),
             // Dock icon defaults ON — a fresh install shows up in the Dock
             // without the user finding the toggle first.
             dock_icon: Some(true),
@@ -164,6 +167,13 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         widget_enabled: Some(prefs.widget_enabled.unwrap_or_else(default_widget_enabled)),
         // Pass-through — None = primary display (NSScreen.localizedName match).
         widget_display: prefs.widget_display,
+        widget_placement: Some(
+            prefs
+                .widget_placement
+                .unwrap_or_else(|| "bottom-right".to_string()),
+        ),
+        widget_auto_hide_seconds: Some(prefs.widget_auto_hide_seconds.unwrap_or(8)),
+        widget_show_needs_action: Some(prefs.widget_show_needs_action.unwrap_or(true)),
         // Dock icon defaults ON. Absent in pre-dock-icon menubar.json files →
         // true, so existing installs gain the Dock icon on upgrade. Mirrors
         // `dock::effective_dock_icon`, which is what actually drives the

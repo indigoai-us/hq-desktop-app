@@ -330,6 +330,16 @@ export function createChatSidebarApi(
       );
       return { contacts: rail.contacts };
     },
+    // `listContacts()` without a companyUid is the global compose feed and
+    // carries no companyUid per row. CreateModal needs this scoped roster to
+    // distinguish a teammate from an outside invitee before creating a
+    // company channel. Older Tauri stubs return a bare array while the live
+    // endpoint returns `{ contacts: [...] }`, so retain both wire shapes.
+    listCompanyMembers: async (companyUid) => ({
+      contacts: contactsFromRaw(
+        await call<unknown>(adapter.messaging.listContacts({ companyUid })),
+      ),
+    }),
     listDmRequests: async () => ({
       requests: await call<NonNullable<RequestsResponse["requests"]>>(
         adapter.messaging.listDmRequests(),

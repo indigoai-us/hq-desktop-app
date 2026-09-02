@@ -249,6 +249,42 @@ impl Drop for VersionProbeContainment {
     }
 }
 
+/// True when creating a tempfile or spawning the version-probe child failed
+/// from resource exhaustion the next attempt can recover from. Mirrors the
+/// daemon's spawn-failure policy (Linux EAGAIN/ENOMEM/ENFILE/EMFILE, macOS
+/// EAGAIN/ENOMEM/ENFILE/EMFILE). `Interrupted` is deliberately excluded:
+/// `try_wait` can surface EINTR after the child is already running, and
+/// retrying the whole probe would leak that process group.
+fn is_transient_probe_io_error(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::OutOfMemory
+    ) {
+        return true;
+    }
+    match error.raw_os_error() {
+        #[cfg(target_os = "linux")]
+        Some(11 | 12 | 23 | 24) => true,
+        #[cfg(target_os = "macos")]
+        Some(12 | 23 | 24 | 35) => true,
+        _ => false,
+    }
+}
+
+fn retry_transient_io<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 0u32;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error) if is_transient_probe_io_error(&error) && attempt < 3 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20 * u64::from(attempt)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Run a tiny version command with a hard process boundary. `Command::output`
 /// has no timeout and can strand both the process and its blocking worker; this
 /// helper kills and reaps the child before returning `None` on timeout.
@@ -260,12 +296,12 @@ pub(crate) fn output_with_timeout(
     // lifetime. A background process may inherit the handles, but unlike a
     // pipe an open regular file still returns EOF at its current length. The
     // byte cap also bounds a descendant that continuously writes.
-    let stdout = tempfile::tempfile()?;
-    let stderr = tempfile::tempfile()?;
+    let stdout = retry_transient_io(tempfile::tempfile)?;
+    let stderr = retry_transient_io(tempfile::tempfile)?;
     cmd.stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
     VersionProbeContainment::prepare(cmd);
-    let mut child = cmd.spawn()?;
+    let mut child = retry_transient_io(|| cmd.spawn())?;
     let mut containment = match VersionProbeContainment::establish(&child) {
         Ok(containment) => containment,
         Err(error) => {
@@ -12861,6 +12897,40 @@ mod tests {
             VersionProbeOutcome::ProcessSpawnFailed,
             "unclassified spawn errors must keep the original residual bucket"
         );
+    }
+
+    /// Linux CI labelled the production-quadruple probe `ProcessSpawnFailed`
+    /// when a parallel run hit EAGAIN/EMFILE. Those are retries, not a new
+    /// outcome; classified spawn failures stay classified.
+    #[test]
+    fn transient_probe_io_errors_are_the_resource_exhaustion_set() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(is_transient_probe_io_error(&Error::from(
+            ErrorKind::WouldBlock
+        )));
+        assert!(!is_transient_probe_io_error(&Error::from(
+            ErrorKind::Interrupted
+        )));
+        assert!(is_transient_probe_io_error(&Error::from(
+            ErrorKind::OutOfMemory
+        )));
+        assert!(!is_transient_probe_io_error(&Error::from(ErrorKind::NotFound)));
+        assert!(!is_transient_probe_io_error(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(is_transient_probe_io_error(&Error::from_raw_os_error(11)));
+            assert!(is_transient_probe_io_error(&Error::from_raw_os_error(24)));
+            assert!(!is_transient_probe_io_error(&Error::from_raw_os_error(2)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(is_transient_probe_io_error(&Error::from_raw_os_error(35)));
+            assert!(is_transient_probe_io_error(&Error::from_raw_os_error(24)));
+            assert!(!is_transient_probe_io_error(&Error::from_raw_os_error(2)));
+        }
     }
 
     /// **The anti-silencing pin.** A resolved-but-non-spawnable `hq` is a

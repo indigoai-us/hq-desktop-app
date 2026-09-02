@@ -39,6 +39,28 @@ function adapter(): PlatformAdapter {
           slackUpdated: false,
         }),
     },
+    agents: {
+      getStatus: async () =>
+        ok({
+          agent: {
+            uid: "agt_izzy",
+            name: "Izzy",
+            companyUid: "cmp_indigo",
+            profile: { displayName: "Izzy" },
+            runtime: { status: "running" },
+          },
+          setupState: { phase: "ready" },
+        }),
+      listMobileRoster: async () => ok({ agents: [] }),
+      listJobs: async () => ok({ jobs: [] }),
+      pauseJob: async () => ok({}),
+      updateProfile: async () => ok({}),
+      stop: async () => ok({}),
+      start: async () => ok({}),
+      deprovision: async () => ok({}),
+      listOwners: async () => ok({ owners: [] }),
+      getCompanyTelemetry: async () => ok({ perMember: [] }),
+    },
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
@@ -137,7 +159,10 @@ describe("DesktopApp agent avatar picker", () => {
       ) as HTMLButtonElement
     ).click();
     await settle();
-    expect(host.querySelector('[data-testid="member-profile-panel"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="agent-detail-panel"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="agent-detail-avatar-picker-slot"]'),
+    ).not.toBeNull();
     expect(host.querySelector('[data-testid="avatar-pack-picker"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="avatar-use-generated"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="avatar-pack-save"]')).not.toBeNull();
