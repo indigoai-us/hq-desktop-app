@@ -253,6 +253,8 @@ export interface DmContactInput {
   email?: string | null;
   displayName?: string | null;
   companyUid?: string | null;
+  /** Presigned avatar URL when hq-pro included it on the contacts roster. */
+  avatarUrl?: string | null;
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;

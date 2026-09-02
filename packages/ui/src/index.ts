@@ -94,6 +94,7 @@ export {
   readSettingsPrefs,
   writeSettingsPrefs,
 } from "./settings/settings-prefs.js";
+export * from "./avatars/index.js";
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";

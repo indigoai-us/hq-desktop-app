@@ -350,6 +350,8 @@ export function createSyncPlatformAdapter(
       // native command for the global member profile, so it goes over hq_pro_fetch.
       getProfile: () => hqProJson('GET', WEB_PATHS.profile),
       updateProfile: (input) => hqProJson('PUT', WEB_PATHS.profile, input),
+      updateAgentProfile: (agentUid, input) =>
+        hqProJson('PATCH', WEB_PATHS.agentProfile(agentUid), input),
     },
 
     messaging: {

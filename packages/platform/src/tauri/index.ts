@@ -113,7 +113,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
    * sync fetch_reply_thread / send_reply command.
    */
   private async hqProJson<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -171,6 +171,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     },
     getProfile: () => this.hqProJson("GET", "/v1/profile"),
     updateProfile: (input) => this.hqProJson("PUT", "/v1/profile", input),
+    updateAgentProfile: (agentUid, input) =>
+      this.hqProJson(
+        "PATCH",
+        `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {

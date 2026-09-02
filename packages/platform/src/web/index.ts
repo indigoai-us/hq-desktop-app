@@ -59,6 +59,9 @@ export const WEB_PATHS = {
     `/v1/notify/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(personUid)}`,
   /** GET/PUT the caller's editable global member profile. */
   profile: "/v1/profile",
+  /** PATCH agent profile (displayName / title / description / avatarBase64). */
+  agentProfile: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
@@ -372,7 +375,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   // -- HTTP plumbing --------------------------------------------------------
 
   private async request<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -446,6 +449,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     getProfile: () => this.get(WEB_PATHS.profile),
     updateProfile: (input) => this.request("PUT", WEB_PATHS.profile, input),
+    updateAgentProfile: (agentUid, input) =>
+      this.request("PATCH", WEB_PATHS.agentProfile(agentUid), input),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
