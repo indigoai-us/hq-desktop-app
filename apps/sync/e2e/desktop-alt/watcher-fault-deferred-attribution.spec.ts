@@ -182,6 +182,27 @@ describe('watcher fault deferred attribution — source contracts', () => {
     expect(coreSource).toContain('pub fn rejection_specificity(');
     expect(processSource).toContain('.stronger_rejection(outcome)');
   });
+
+  it('splits the rejection accounting by the window START and reaches deadline_expired', () => {
+    // HQ-DESKTOP-5W: a stale record that PREDATES the generation must not be
+    // counted as a near-miss for our fault. The pure attributor splits by
+    // gen_start_ms into a distinct `stale` class, and an all-stale read resolves to
+    // deadline_expired ("WER never published our record"), never the misleading
+    // "records existed, none were ours".
+    expect(coreSource).toContain('rejected_stale');
+    // The split is relative to the window START (gen_start_ms), not the whole window.
+    expect(coreSource).toContain('ms >= gen_start_ms');
+    // The all-stale verdict is DeadlineExpired, in BOTH the pure attributor and the
+    // reader that carries it to the bounded deadline.
+    expect(coreSource).toContain('WatcherFaultProvenance::DeadlineExpired');
+    expect(processSource).toContain('WatcherFaultProvenance::DeadlineExpired');
+    // The counters tag gains the `stale` key, and the independent egress guard's
+    // ordered key set is updated in lockstep, or the tag degrades to [Filtered].
+    expect(coreSource).toContain('stale:{}');
+    expect(telemetrySource).toContain(
+      '&["seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms"]',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -295,14 +316,15 @@ function readAndEnvelope(scenario: Scenario, policy: Policy): SentryEnvelope {
     env.tags.watcher_fault_provenance = bound.provenance;
     env.tags.watcher_fault_faulting_image = bound.image;
     env.tags.watcher_fault_faulting_module = bound.module;
-    env.tags.watcher_fault_read = 'seen:1,parsed:1,rej_win:0,rej_code:0,sweeps:9,ms:8003';
+    env.tags.watcher_fault_read = 'seen:1,parsed:1,stale:0,rej_win:0,rej_code:0,sweeps:9,ms:8003';
   } else {
     // No record ever published within the horizon → the DISTINCT deadline-expired
-    // token, never the ambiguous no_record, with populated counters.
+    // token, never the ambiguous no_record, with populated counters. The counters
+    // now carry the `stale` key (HQ-DESKTOP-5W) between `parsed` and `rej_win`.
     env.tags.watcher_fault_provenance = 'deadline_expired';
     env.tags.watcher_fault_faulting_image = 'unavailable';
     env.tags.watcher_fault_faulting_module = 'unavailable';
-    env.tags.watcher_fault_read = 'seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:60,ms:60002';
+    env.tags.watcher_fault_read = 'seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:60,ms:60002';
   }
   // The job-image descriptor names a culprit candidate regardless of WER.
   const nonShim = scenario.jobImages.filter((i) => i !== 'cmd_exe' && i !== 'npx_cmd');
@@ -378,7 +400,9 @@ describe('watcher fault deferred attribution — envelope model (both directions
     expect(env.tags.watcher_fault_provenance).toBe('deadline_expired');
     expect(env.tags.watcher_fault_provenance).not.toBe('no_record');
     expect(env.tags.watcher_fault_faulting_image).toBe('unavailable');
-    expect(env.tags.watcher_fault_read).toBe('seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:60,ms:60002');
+    expect(env.tags.watcher_fault_read).toBe(
+      'seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:60,ms:60002',
+    );
     // Even with no WER record, the app's own tree sampling names a culprit candidate.
     expect(env.tags.watcher_fault_job_culprit_candidate).toBe('node_exe');
   });
@@ -402,6 +426,88 @@ describe('watcher fault deferred attribution — envelope model (both directions
         for (const [key, value] of Object.entries(env.tags)) {
           expect(value, `${key}=${value}`).toMatch(CONTENT_SAFE);
         }
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale-only rejection accounting (HQ-DESKTOP-5W) — this lane's before/after
+// ---------------------------------------------------------------------------
+//
+// The 0.10.167 recurrence: a 0xC0000409 watcher fault whose deferred WER read
+// returned 12 Application Error records that ALL predate this watcher generation
+// (stale evidence about other crashes). Before this lane every non-binding record
+// was lumped into rejected_out_of_window, so the envelope read
+// watcher_fault_provenance=rejected_out_of_window with rej_win:12 — "records
+// existed, none were ours" — hiding that WER never published OUR record. After,
+// the stale records are counted apart and the verdict is deadline_expired.
+
+type LanePolicy = 'pre-split' | 'post-split';
+
+/** Model the reported HQ-DESKTOP-5W envelope under each accounting policy. */
+function staleOnlyEnvelope(policy: LanePolicy): SentryEnvelope {
+  const env = baseEnvelope();
+  // The app's own live tree sampling still names node_exe as the culprit
+  // CANDIDATE regardless of WER (a tree observation, never a fault attribution).
+  env.tags.watcher_fault_job_images = 'node_exe,cmd_exe,npx_cmd';
+  env.tags.watcher_fault_job_culprit_candidate = 'node_exe';
+  env.tags.watcher_fault_job_image_provenance = 'job_tree_observed';
+  env.tags.watcher_fault_faulting_image = 'unavailable';
+  env.tags.watcher_fault_faulting_module = 'unavailable';
+  if (policy === 'pre-split') {
+    // Every stale record lumped as a near-miss — the reported 5W envelope.
+    env.tags.watcher_fault_provenance = 'rejected_out_of_window';
+    env.tags.watcher_fault_read = 'seen:12,parsed:12,rej_win:12,rej_code:0,sweeps:57,ms:60668';
+  } else {
+    // The stale records are counted apart; the verdict is the honest deadline.
+    env.tags.watcher_fault_provenance = 'deadline_expired';
+    env.tags.watcher_fault_read =
+      'seen:12,parsed:12,stale:12,rej_win:0,rej_code:0,sweeps:57,ms:60668';
+  }
+  return env;
+}
+
+describe('watcher fault stale-only accounting — the HQ-DESKTOP-5W leg', () => {
+  it('pre-split reproduces the observed 0.10.167 envelope verbatim', () => {
+    const env = staleOnlyEnvelope('pre-split');
+    expect(env.tags.watcher_fault_provenance).toBe('rejected_out_of_window');
+    expect(env.tags.watcher_fault_read).toBe(
+      'seen:12,parsed:12,rej_win:12,rej_code:0,sweeps:57,ms:60668',
+    );
+    expect(env.tags.watcher_fault_faulting_image).toBe('unavailable');
+    expect(env.tags.watcher_fault_faulting_module).toBe('unavailable');
+  });
+
+  it('post-split renders deadline_expired with the stale count reported apart', () => {
+    const env = staleOnlyEnvelope('post-split');
+    expect(env.tags.watcher_fault_provenance).toBe('deadline_expired');
+    expect(env.tags.watcher_fault_provenance).not.toBe('rejected_out_of_window');
+    // The stale count is reported SEPARATELY from rej_win — no information lost.
+    expect(env.tags.watcher_fault_read).toBe(
+      'seen:12,parsed:12,stale:12,rej_win:0,rej_code:0,sweeps:57,ms:60668',
+    );
+    // The job-tree culprit candidate is still named, WER-independent.
+    expect(env.tags.watcher_fault_job_culprit_candidate).toBe('node_exe');
+    expect(env.tags.watcher_fault_job_image_provenance).toBe('job_tree_observed');
+  });
+
+  it('only the watcher_fault_* fields differ between the two accountings', () => {
+    const pre = staleOnlyEnvelope('pre-split');
+    const post = staleOnlyEnvelope('post-split');
+    expect(post.message).toBe(pre.message);
+    expect(post.fingerprint).toEqual(pre.fingerprint);
+    for (const key of Object.keys(pre.tags)) {
+      if (!key.startsWith('watcher_fault_')) {
+        expect(post.tags[key]).toBe(pre.tags[key]);
+      }
+    }
+  });
+
+  it('every stale-only envelope tag is content-safe (fixed vocabulary + integers)', () => {
+    for (const policy of ['pre-split', 'post-split'] as LanePolicy[]) {
+      for (const [key, value] of Object.entries(staleOnlyEnvelope(policy).tags)) {
+        expect(value, `${key}=${value}`).toMatch(CONTENT_SAFE);
       }
     }
   });

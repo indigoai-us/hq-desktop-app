@@ -89,6 +89,100 @@ export function dmActivityFromInboxPage(
   return [...latest.values()];
 }
 
+/**
+ * Newest `createdAt` across a DM timeline, regardless of direction, sender,
+ * messageKind, or empty body (delegation/handoff cards still count).
+ */
+export function dmActivityFromTimeline<T extends { createdAt?: unknown }>(
+  personUid: string,
+  messages: ReadonlyArray<T | null | undefined>,
+): InboxDmActivity | null {
+  const uid = personUid.trim();
+  if (!uid) return null;
+  let lastMessageAt: string | null = null;
+  for (const item of messages) {
+    if (!item || typeof item !== "object") continue;
+    const createdAt = (item as { createdAt?: unknown }).createdAt;
+    if (typeof createdAt !== "string" || !createdAt) continue;
+    if (!lastMessageAt || createdAt > lastMessageAt) lastMessageAt = createdAt;
+  }
+  if (!lastMessageAt) return null;
+  return { personUid: uid, lastMessageAt };
+}
+
+/**
+ * GET /v1/notify/dm-threads page → rail activity, one entry per peer. Unlike
+ * the inbox this index is written for BOTH directions of every DM, so a pair
+ * where the owner sent last (and one whose history fell out of the capped
+ * inbox window) still yields a stamp. Rows carry no names or content.
+ */
+export function dmActivityFromThreadsPage(
+  page: unknown,
+  opts?: { selfUid?: string },
+): InboxDmActivity[] {
+  const rec =
+    page && typeof page === "object" && !Array.isArray(page)
+      ? (page as Record<string, unknown>)
+      : null;
+  if (!rec) return [];
+  const threads = Array.isArray(rec.threads) ? rec.threads : [];
+  const selfUid = opts?.selfUid?.trim() ?? "";
+  const latest = new Map<string, InboxDmActivity>();
+  for (const item of threads) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const uid = typeof row.peerUid === "string" ? row.peerUid.trim() : "";
+    if (!uid || uid === selfUid) continue;
+    const at = row.lastActivityAt;
+    if (typeof at !== "string" || !at) continue;
+    const prev = latest.get(uid);
+    if (prev && at <= prev.lastMessageAt) continue;
+    latest.set(uid, { personUid: uid, lastMessageAt: at });
+  }
+  return [...latest.values()];
+}
+
+/** Newest stamp per peer across several activity lists (names kept when known). */
+export function mergeDmActivity(
+  ...lists: ReadonlyArray<readonly InboxDmActivity[]>
+): InboxDmActivity[] {
+  const byUid = new Map<string, InboxDmActivity>();
+  for (const list of lists) {
+    for (const entry of list) {
+      const uid = entry.personUid.trim();
+      if (!uid || !entry.lastMessageAt) continue;
+      const prev = byUid.get(uid);
+      if (!prev) {
+        byUid.set(uid, { ...entry, personUid: uid });
+        continue;
+      }
+      const newer = entry.lastMessageAt > prev.lastMessageAt ? entry : prev;
+      byUid.set(uid, {
+        personUid: uid,
+        lastMessageAt: newer.lastMessageAt,
+        ...(prev.displayName || entry.displayName
+          ? { displayName: prev.displayName || entry.displayName }
+          : {}),
+      });
+    }
+  }
+  return [...byUid.values()];
+}
+
+/**
+ * True when a failed adapter call means "this host/server has no such
+ * endpoint" (HTTP 404, a NOT_FOUND-style code, or an adapter that reports the
+ * API as unavailable) — i.e. fall back rather than retry.
+ */
+export function isMissingEndpointFailure(
+  failure: { ok: false; reason?: string; code?: string } | null | undefined,
+): boolean {
+  if (!failure) return false;
+  if (failure.reason === "unavailable") return true;
+  const code = (failure.code ?? "").trim().toUpperCase();
+  return code === "HTTP-404" || code.includes("NOT_FOUND") || code.includes("NOT-FOUND");
+}
+
 /** Turn an inbox page into a one-row unread patch + the next exclusive since. */
 export function pairUnreadsFromInboxPage(
   page: unknown,

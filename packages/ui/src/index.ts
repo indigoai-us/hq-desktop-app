@@ -42,10 +42,12 @@ export * from "./chat/dm-requests.js";
 export * from "./chat/workspaces.js";
 export * from "./chat/pending-conversation.js";
 export * from "./chat/open-target.js";
+export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
 export * from "./chat/create-flow.js";
+export * from "./chat/channel-create-scope.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
 export * from "./chat/portfolio-session.js";
@@ -87,15 +89,33 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
   readSettingsPrefs,
   writeSettingsPrefs,
 } from "./settings/settings-prefs.js";
+export * from "./avatars/index.js";
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
+export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
+export * from "./common/external-links.js";
+
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export {
+  updateStore,
+  checkDesktopUpdates,
+  downloadDesktopUpdate,
+  restartToUpdate,
+  hydrateDownloadedUpdate,
+  resetUpdateStore,
+  reportDownloadProgress,
+  markDownloaded,
+  markInstallStarted,
+  reportInstallFailed,
+  applyAvailableUpdate,
+} from "./settings/update-store.svelte.js";
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";

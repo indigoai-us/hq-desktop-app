@@ -89,6 +89,15 @@ export interface ChatSidebarApi {
     toPersonUid?: string;
     body: string;
   }): Promise<{ state: "delivered" | "connectionRequested" }>;
+  /**
+   * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
+   * rail uses it only to resolve a display name for a peer the contacts
+   * roster does not carry (the DM peer index returns bare uids).
+   */
+  fetchDmThread?(args: {
+    withPersonUid: string;
+    limit?: number;
+  }): Promise<DmThreadResponse>;
 }
 
 // ---------------------------------------------------------------------------

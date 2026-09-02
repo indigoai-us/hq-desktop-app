@@ -3,6 +3,7 @@
     botAttachmentState,
     botForEvent,
     companyLabel,
+    meetingMatchesFocusId,
     durationLabel,
     eventMeetingUrl,
     isRecurringMeeting,
@@ -103,9 +104,13 @@
     const id = focusedMeetingId?.trim();
     if (!id) return;
     const frame = requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>(
-        `[data-testid="meeting-row"][data-meeting-id="${CSS.escape(id)}"]`,
-      );
+      const row =
+        document.querySelector<HTMLElement>(
+          `[data-testid="meeting-row"][data-meeting-id="${CSS.escape(id)}"]`,
+        ) ??
+        document.querySelector<HTMLElement>(
+          `[data-testid="meeting-row"][data-bot-id="${CSS.escape(id)}"]`,
+        );
       row?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
     return () => cancelAnimationFrame(frame);
@@ -150,9 +155,10 @@
             class:past={state === "past"}
             class:live={state === "live"}
             class:next={state === "next"}
-            class:focused={focusedMeetingId === event.id}
+            class:focused={meetingMatchesFocusId(focusedMeetingId, event, bot)}
             data-bot-state={attachment}
             data-meeting-id={event.id}
+            data-bot-id={bot?.botId ?? ""}
             data-testid="meeting-row"
           >
             <div class="mtime">{timeLabel(event)}</div>

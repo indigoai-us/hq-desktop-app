@@ -18,6 +18,7 @@ import {
   type ChannelsResponse,
   type ChatSidebarApi,
   type ContactsResponse,
+  type DmThreadResponse,
   type MessageSearchResult,
   type RequestsResponse,
   type EmbeddedNavigationTarget,
@@ -399,6 +400,16 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
     },
     sendDm: async ({ toPersonUid, body }) => {
       await call<unknown>(adapter.messaging.sendDm(toPersonUid, body));
+    },
+    fetchDmThread: async (args) => {
+      const raw = await call<unknown>(adapter.messaging.fetchDmThread(args));
+      const rec = asRecord(raw);
+      const messages = Array.isArray(raw)
+        ? raw
+        : Array.isArray(rec?.messages)
+          ? rec.messages
+          : [];
+      return { messages: messages as DmThreadResponse['messages'] };
     },
     createChannel: async (args) => {
       const value = await call<Record<string, unknown>>(

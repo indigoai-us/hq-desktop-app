@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentKindForContentType,
   buildChatAttachmentVaultPath,
+  chatAttachmentValidatorForPlatform,
   conversationPairKey,
+  filesFromDataTransfer,
   isAllowedChatAttachment,
+  isImageFile,
+  namePastedImageFile,
 } from "./chat-attachments.js";
 import {
   presignUrlFromResult,
@@ -34,6 +38,64 @@ describe("chat attachment helpers", () => {
       type: "application/x-msdownload",
     });
     expect(isAllowedChatAttachment(exe)).toMatch(/supported/);
+  });
+
+  it("rejects oversized web uploads without reducing the desktop limit", () => {
+    const file = new File([new Uint8Array(5 * 1024 * 1024)], "report.pdf", {
+      type: "application/pdf",
+    });
+
+    expect(chatAttachmentValidatorForPlatform("web")(file)).toEqual({
+      code: "attachment-too-large",
+      message: "report.pdf is larger than 4 MB, the web upload limit",
+    });
+    expect(chatAttachmentValidatorForPlatform("desktop")(file)).toBeNull();
+  });
+
+  it("reads clipboard files, falling back to items when files is empty", () => {
+    const png = new File([new Uint8Array(4)], "image.png", {
+      type: "image/png",
+    });
+    expect(filesFromDataTransfer({ files: [png], items: [] })).toEqual([png]);
+    expect(
+      filesFromDataTransfer({
+        files: [],
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => png,
+          } as DataTransferItem,
+        ],
+      }),
+    ).toEqual([png]);
+  });
+
+  it("uniquifies generic pasted screenshot names and leaves named files alone", () => {
+    const now = new Date("2026-09-02T01:17:00.000Z");
+    const shot = new File([new Uint8Array(4)], "image.png", {
+      type: "image/png",
+    });
+    expect(namePastedImageFile(shot, 1, now).name).toBe(
+      "pasted-2026-09-02T01-17-00-1.png",
+    );
+    const named = new File([new Uint8Array(4)], "hero.png", {
+      type: "image/png",
+    });
+    expect(namePastedImageFile(named, 2, now)).toBe(named);
+  });
+
+  it("classifies composer files as images via mime or extension", () => {
+    const png = new File([new Uint8Array(4)], "shot.png", {
+      type: "image/png",
+    });
+    expect(isImageFile(png)).toBe(true);
+    const noMime = new File([new Uint8Array(4)], "photo.jpeg", { type: "" });
+    expect(isImageFile(noMime)).toBe(true);
+    const pdf = new File([new Uint8Array(4)], "doc.pdf", {
+      type: "application/pdf",
+    });
+    expect(isImageFile(pdf)).toBe(false);
   });
 
   it("puts bytes through the host hop instead of S3", async () => {

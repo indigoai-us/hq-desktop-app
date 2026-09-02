@@ -21,8 +21,10 @@ use crate::commands::process::{
     run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessError,
     ProcessEvent,
 };
-#[cfg(target_os = "windows")]
-use crate::commands::session_end_observer::SessionEndObserverHandle;
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_session_end_reading,
+    current_windows_terminator_attribution, SessionEndReading,
+};
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use hq_desktop_core::sync_outcome::{runner_assertion_for_class, RUNNER_PHASE_PRE_PROTOCOL};
@@ -1455,12 +1457,14 @@ struct WatcherExitCaptureContext {
     runner_stack_redacted_frames: u8,
     runner_stack_input: String,
     /// Retained V8 heap-OOM evidence (HQ-DESKTOP-55), read from the shared
-    /// `RunTotals` at the exit boundary. All four are `None` unless the runner
+    /// `RunTotals` at the exit boundary. All five are `None` unless the runner
     /// aborted on a heap OOM this pass; absence never renders as evidence. The
-    /// banner is a fixed constant, the MB/frame figures bare integers.
+    /// banner is a fixed constant, the MB/frame figures bare integers. The
+    /// used/total pair is the final GC reading; peak-used is independent.
     runner_oom_banner: Option<&'static str>,
     runner_heap_used_mb: Option<u64>,
     runner_heap_total_mb: Option<u64>,
+    runner_heap_peak_used_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
     /// Version from the exact `_npx` cache entry that supplies the watcher
     /// target. The resolver is fail-soft and returns the fixed `unknown` token
@@ -1633,6 +1637,7 @@ impl Default for WatcherExitCaptureContext {
             runner_oom_banner: None,
             runner_heap_used_mb: None,
             runner_heap_total_mb: None,
+            runner_heap_peak_used_mb: None,
             runner_oom_frame_count: None,
             runner_hq_cloud_version: "unknown".to_string(),
             windows_terminator: None,
@@ -1801,6 +1806,7 @@ fn watcher_exit_capture_context(
         runner_oom_banner: totals.runner_heap_oom_banner(),
         runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
+        runner_heap_peak_used_mb: totals.runner_heap_peak_used_mb(),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
         // Replaced in the exit callback with the immutable launch snapshot.
         // Keep this constructor conservative for unit-only callers that have
@@ -1848,105 +1854,14 @@ fn watcher_exit_capture_context(
     }
 }
 
-/// One read of the session-end observer: the attribution capture policy
-/// consumes, plus the readiness that explains it. Both are fixed-vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionEndReading {
-    attribution: WindowsTerminatorAttribution,
-    readiness: &'static str,
-}
-
-#[cfg(target_os = "windows")]
-fn read_session_end_attribution<R: tauri::Runtime>(app: &AppHandle<R>) -> SessionEndReading {
-    match app.try_state::<SessionEndObserverHandle>() {
-        Some(observer) => SessionEndReading {
-            attribution: observer.tracker().attribution_now(),
-            readiness: observer.tracker().readiness().class_name(),
-        },
-        None => SessionEndReading {
-            attribution: WindowsTerminatorAttribution::ObserverUnavailable,
-            readiness: "unavailable",
-        },
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return None;
-    }
-    // Install the re-read probe from the same handle that produces the reading
-    // below, so a deferral created downstream can ask this same observer again
-    // once its grace has elapsed. Idempotent, and deliberately sited here: this
-    // is the one function that both owns an `AppHandle` and runs before any
-    // deferral can exist, so the probe can never be missing when one is.
-    install_session_end_attribution_probe(app);
-    Some(read_session_end_attribution(app).attribution)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    _app: &AppHandle<R>,
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    None
-}
-
-/// Read the durable session-end latch at the exit boundary, but ONLY on the
-/// `DBG_TERMINATE_PROCESS`/no-signal shape — the one exit that may consult it, so
-/// a genuine fault on any other code can never be suppressed by a coincident
-/// session end. The latch is a process-global, so this needs no `AppHandle`.
-#[cfg(target_os = "windows")]
-fn current_session_end_latch_reading_for_exit(
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> SessionEndLatchReading {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return SessionEndLatchReading::Unavailable;
-    }
-    crate::commands::session_end_latch::current_session_end_latch_reading()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_session_end_latch_reading_for_exit(
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> SessionEndLatchReading {
-    SessionEndLatchReading::Unavailable
-}
-
-/// Re-read the observer after a grace, from wherever the deferral resolves.
-///
-/// The exit callback owns an `AppHandle`; the bounded task that resolves the
-/// deferral does not, and threading one through every watcher-exit signature
-/// would put a Tauri handle in the pure decision path. A process-global probe
-/// keeps that path handle-free while still asking the real observer.
-type SessionEndAttributionProbe = Box<dyn Fn() -> Option<SessionEndReading> + Send + Sync>;
-
-static SESSION_END_ATTRIBUTION_PROBE: OnceLock<SessionEndAttributionProbe> = OnceLock::new();
-
-#[cfg(target_os = "windows")]
-fn install_session_end_attribution_probe<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if SESSION_END_ATTRIBUTION_PROBE.get().is_some() {
-        return;
-    }
-    let app = app.clone();
-    let _ = SESSION_END_ATTRIBUTION_PROBE
-        .set(Box::new(move || Some(read_session_end_attribution(&app))));
-}
-
-/// The reading a deferral resolves against. `None` means no observer could be
-/// consulted at all, which fails closed: the held-back event is sent.
-fn current_session_end_reading() -> Option<SessionEndReading> {
-    SESSION_END_ATTRIBUTION_PROBE
-        .get()
-        .and_then(|probe| probe())
-}
+// The Windows session-end attribution readers (`current_windows_terminator_
+// attribution`, `current_session_end_latch_reading_for_exit`, the observer read,
+// the deferral re-read probe, and `current_session_end_reading`) moved to
+// `crate::commands::session_end_attribution` so BOTH child-exit capture seams —
+// this daemon/watcher route and the manual `Sync Now` runner-exit seam in
+// `commands::sync` — call the one shared source (HQ-DESKTOP-5X). Bodies and cfg
+// gates are unchanged; see that module. They are `use`d in at the top of this
+// file, so every existing call site here resolves without change.
 
 /// A watcher-exit capture held back while the session-end decision is re-read.
 ///
@@ -3443,6 +3358,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "runner_heap_ceiling_source",
         heap_ceiling.source.as_str().to_string(),
     ));
+    // The exact V8 final pre-OOM heap-used MB stays in an integer extra. Its
+    // fixed-vocabulary tag instead derives from the true pre-banner maximum, so
+    // a later lower GC reading cannot underreport a tag called `peak`.
+    if let Some(peak_used) = context.runner_heap_peak_used_mb {
+        tags.push((
+            "runner_heap_peak_used_bucket",
+            hq_desktop_core::daemon::runner_heap_peak_used_bucket(peak_used).to_string(),
+        ));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
     // fixed constant; absent otherwise so absence never renders as evidence.
     if let Some(banner) = context.runner_oom_banner {
@@ -5049,6 +4973,37 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    #[test]
+    fn hard_footprint_ceiling_preempts_before_the_observed_os_kill_floor() {
+        use hq_desktop_core::daemon::{
+            effective_watcher_footprint_ceiling_mb, OBSERVED_OS_KILL_FLOOR_MB,
+            RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
+            WATCHER_FOOTPRINT_HARD_CEILING_MB,
+        };
+
+        // Pin the deliberate split: the ordinary backstop remains anti-spike,
+        // while the hard ceiling is the single-sample OS-kill safety guard.
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_CONSECUTIVE, 2);
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_MB, 4608);
+        assert_eq!(
+            effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB),
+            5632
+        );
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_MB, 5120);
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
+
+        // A 20 MB/s runaway may go unobserved for one full supervisor interval.
+        // Its next sample remains below the approximately observed OS-kill floor.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC)
+                    * SUPERVISOR_INTERVAL.as_secs()
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+            "the single-sample hard threshold must leave one full sampling interval of runaway growth below the OS-kill floor"
+        );
+    }
 
     // ── Cloud Off gating (V2 US-001 / US-016) ─────────────────────────────
 
@@ -6749,7 +6704,7 @@ mod tests {
         assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
         assert_eq!(
             recorded_tag(held, "watcher_fault_read"),
-            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
+            "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
         assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
         assert_eq!(
@@ -6873,7 +6828,7 @@ mod tests {
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
-                ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+                ("watcher_fault_read", "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
             ],
             &[],
             WatcherFaultDeferredRead {
@@ -10561,6 +10516,7 @@ mod tests {
         assert_eq!(context.runner_oom_banner, Some("reached_heap_limit"));
         assert_eq!(context.runner_heap_used_mb, Some(48));
         assert_eq!(context.runner_heap_total_mb, Some(81));
+        assert_eq!(context.runner_heap_peak_used_mb, Some(48));
         assert_eq!(context.runner_oom_frame_count, Some(3));
         assert_eq!(
             context.runner_stack_shape,
@@ -10576,6 +10532,9 @@ mod tests {
             runner_oom_banner: Some("reached_heap_limit"),
             runner_heap_used_mb: Some(48),
             runner_heap_total_mb: Some(81),
+            // Proves the tag takes the independently retained true maximum,
+            // while the established numeric extra remains the final GC reading.
+            runner_heap_peak_used_mb: Some(3000),
             runner_oom_frame_count: Some(3),
             runner_stack_shape: "node_oom_handler>v8_report_oom>v8_runtime".to_string(),
             runner_stack_signature: "0123456789abcdef".to_string(),
@@ -10615,8 +10574,8 @@ mod tests {
         let heap_capture = heap_effects.captures.first().expect("heap capture");
         let base_capture = base_effects.captures.first().expect("baseline capture");
 
-        // Heap evidence attaches: banner tag, class-scoped v8_* shape, and the
-        // three integer extras.
+        // Heap evidence attaches: banner and true-peak-used bucket tags, a
+        // class-scoped v8_* shape, and the established three integer extras.
         assert_eq!(
             recorded_tag(heap_capture, "runner_oom_banner"),
             "reached_heap_limit"
@@ -10630,6 +10589,10 @@ mod tests {
             "unknown",
             "every watcher-exit event carries the runner version tag"
         );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_heap_peak_used_bucket"),
+            "2_5gb_to_3gb"
+        );
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
         assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
         assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
@@ -10637,6 +10600,10 @@ mod tests {
         // The baseline (no heap evidence) carries none of them — absence never
         // renders as evidence.
         assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_heap_peak_used_bucket"));
         assert!(base_capture
             .extras
             .iter()

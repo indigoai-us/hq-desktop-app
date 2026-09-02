@@ -44,16 +44,24 @@ beforeAll(async () => {
 describe("paths that need the Windows gate", () => {
   const relevant = [
     "apps/sync/src-tauri/src/main.rs",
+    "apps/sync/src-tauri/tauri.windows.conf.json",
+    "apps/sync/src-tauri/icons/icon.ico",
+    "apps/sync/sidecar/recall-sdk-bridge/package.json",
+    "apps/sync/e2e/desktop-alt/live-preauth.spec.ts",
     "apps/sync/package.json",
+    "apps/sync/pnpm-lock.yaml",
     "crates/hq-desktop-core/src/paths.rs",
     "imports/hq-installer-react/src/App.tsx",
     "Cargo.toml",
     "Cargo.lock",
+    "rust-toolchain.toml",
     "versions.toml",
     "scripts/release-asset-contract.mjs",
     "scripts/release-stable-order.test.ts",
     "scripts/windows-msi-version.mjs",
     "scripts/windows-msi-version.test.ts",
+    "scripts/windows-check-relevant.mjs",
+    "scripts/windows-test-watchdog.ps1",
     ".github/workflows/release.yml",
     ".github/workflows/windows-check.yml",
     "workspace/evidence/run-1/log.txt",
@@ -74,6 +82,12 @@ describe("paths that do not need the Windows gate", () => {
     "README.md",
     ".github/workflows/ci.yml",
     "reports/whatever.md",
+    "apps/sync/src/App.svelte",
+    "apps/sync/src/lib/stores/auth.ts",
+    "apps/sync/__tests__/stories/US-001.test.ts",
+    "apps/sync/scripts/create-dmg.sh",
+    "apps/sync/desktop-alt.html",
+    "apps/sync/.claude/CLAUDE.md",
   ];
 
   it.each(irrelevant)("skips the gate for %s", (path) => {
@@ -112,7 +126,7 @@ describe("pattern matching is anchored", () => {
   });
 
   it("does not match a suffix of an exact-file pattern", () => {
-    expect(isWindowsRelevant(["apps/sync/Cargo.toml"])).toBe(true);
+    expect(isWindowsRelevant(["apps/sync/src-tauri/Cargo.toml"])).toBe(true);
     expect(isWindowsRelevant(["vendor/Cargo.toml"])).toBe(false);
   });
 });
@@ -161,14 +175,22 @@ describe("the workflow keeps both required checks reachable", () => {
     expect(trigger).toContain("pull_request:");
   });
 
-  it("gates both required jobs on the changes job", () => {
-    for (const job of ["windows-check", "windows-installer-e2e"]) {
+  it("gates every Windows job on the changes job", () => {
+    // The installer gate is three jobs -- two parallel builds feeding the
+    // required E2E context -- and all of them have to observe the same gate,
+    // or a skipped PR pays for a Windows build it decided it did not need.
+    for (const job of [
+      "windows-check",
+      "build-bridge-installers",
+      "build-target-updater",
+      "windows-installer-e2e",
+    ]) {
       const body = workflow.slice(
         workflow.indexOf(`\n  ${job}:\n`),
         workflow.indexOf("\n    steps:", workflow.indexOf(`\n  ${job}:\n`)),
       );
-      expect(body, `${job} must depend on the changes job`).toContain(
-        "needs: changes",
+      expect(body, `${job} must depend on the changes job`).toMatch(
+        /needs: (changes\n|\[changes,)/,
       );
       expect(body, `${job} must skip when the gate does not apply`).toContain(
         "needs.changes.outputs.windows == 'true'",
@@ -176,9 +198,9 @@ describe("the workflow keeps both required checks reachable", () => {
     }
   });
 
-  it("keeps the draft exclusion on both required jobs", () => {
+  it("keeps the draft exclusion on every gated job", () => {
     const drafts = workflow.match(/github\.event\.pull_request\.draft == false/g);
-    expect(drafts).toHaveLength(2);
+    expect(drafts).toHaveLength(4);
   });
 
   it("runs the relevance decision on a cheap runner", () => {
@@ -196,20 +218,25 @@ describe("the workflow keeps both required checks reachable", () => {
     expect(workflow).toContain("name: installer E2E (x64 MSI + NSIS)");
   });
 
-  it("still covers every path the old trigger filter listed", () => {
-    // The filter moved from YAML into the matcher; nothing may be dropped in
-    // the move, or a real Windows regression stops being gated.
+  it("pins the exact relevance list", () => {
     expect(WINDOWS_RELEVANT_PATTERNS).toEqual([
-      "apps/sync/**",
+      "apps/sync/src-tauri/**",
+      "apps/sync/sidecar/**",
+      "apps/sync/e2e/desktop-alt/**",
+      "apps/sync/package.json",
+      "apps/sync/pnpm-lock.yaml",
+      "apps/sync/pnpm-workspace.yaml",
       "imports/hq-installer-react/**",
       "crates/**",
       "Cargo.toml",
       "Cargo.lock",
+      "rust-toolchain.toml",
       "versions.toml",
       "scripts/release-*.mjs",
       "scripts/release-*.test.ts",
-      "scripts/windows-msi-version.mjs",
-      "scripts/windows-msi-version.test.ts",
+      "scripts/windows-*.mjs",
+      "scripts/windows-*.test.ts",
+      "scripts/windows-*.ps1",
       ".github/workflows/release.yml",
       ".github/workflows/windows-check.yml",
       "workspace/evidence/**",

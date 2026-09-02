@@ -73,7 +73,7 @@ that in this story.
 
 ## Related
 
-- Adapter: [`hq-work-adapter.ts`](../src/lib/hq-work-adapter.ts)
+- Adapter: [`sync-adapter.ts`](../../../packages/platform/src/tauri/sync-adapter.ts)
 - Shell: [`HqWorkDesktopShell.svelte`](../src/desktop-alt/HqWorkDesktopShell.svelte)
 - Native hop: [`vault-s3-put.ts`](../src/desktop-alt/vault-s3-put.ts),
   [`vault_s3.rs`](../src-tauri/src/commands/vault_s3.rs)

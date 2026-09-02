@@ -28,7 +28,7 @@
     withSetupPin,
   } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
-  import { creatableCompanies } from "./create-flow.js";
+  import { companiesForChannelCreate } from "./channel-create-scope.js";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
@@ -77,6 +77,7 @@
     normalizeConversations,
     rememberRecentDm,
     resolveSearchHitRow,
+    rowAvatar,
     saveConversationCache,
     saveDmDots,
     savePins,
@@ -136,6 +137,12 @@
      * the rail.
      */
     seedDirectory?: ChannelDirectoryRow[] | null;
+    /** personUid → presigned avatar URL from loaded channel rosters. */
+    avatarByUid?: Record<string, string> | null;
+    /** Bump to refetch contacts (after an agent profile save). */
+    rosterWakeSeq?: number;
+    /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
+    onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -144,7 +151,9 @@
     /** Synchronously clears/rekeys the parent when a company tenant changes. */
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
+    /** Emits the full normalized conversation list whenever it changes. */
+    onrows?: (rows: ConversationRow[]) => void;
   }
 
   let {
@@ -160,12 +169,16 @@
     tenantAccountId = null,
     tenantCompanyId = null,
     seedDirectory = null,
+    avatarByUid = null,
+    rosterWakeSeq = 0,
+    onavatarmap,
     oncommand,
     onnavigateMessages,
     onopenSettings,
     onselect,
     oncompanyscopechange,
     onsignout,
+    onrows,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -333,7 +346,9 @@
    * companies the user can only look at; creating in one of those is rejected
    * by the server, so the create modal gets the narrower list.
    */
-  const createScopeCompanies = $derived(creatableCompanies(companies ?? []));
+  const createScopeCompanies = $derived(
+    companiesForChannelCreate(companies, accountLabel),
+  );
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
@@ -349,6 +364,16 @@
       recentDms,
     }),
   );
+
+  let lastEmittedRows: ConversationRow[] | null = null;
+  $effect(() => {
+    const rows = allRows;
+    const emit = onrows;
+    if (!emit) return;
+    if (rows === lastEmittedRows) return;
+    lastEmittedRows = rows;
+    emit(rows);
+  });
 
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
@@ -902,6 +927,71 @@
     }
   }
 
+  $effect(() => {
+    const map: Record<string, string> = {};
+    for (const contact of contacts) {
+      const uid = contact.personUid?.trim();
+      const url = contact.avatarUrl?.trim();
+      if (uid && url) map[uid] = url;
+    }
+    untrack(() => onavatarmap?.(map));
+  });
+
+  $effect(() => {
+    const seq = rosterWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshLists();
+    });
+  });
+
+  /** Peers already asked about — one thread read per bare uid, ever. */
+  const dmNameLookupsTried = new Set<string>();
+
+  /**
+   * The DM peer index (dm-threads) carries bare uids. When such a peer is not
+   * in the contacts roster its row would be titled by uid; read the newest
+   * page of that thread once and take the counterpart's name/email from it.
+   */
+  async function resolveUnnamedDmPeers(): Promise<void> {
+    const fetchThread = api.fetchDmThread;
+    if (typeof fetchThread !== "function") return;
+    const pending = contacts.filter(
+      (contact) =>
+        !contact.displayName?.trim() &&
+        !contact.email?.trim() &&
+        !dmNameLookupsTried.has(contact.personUid),
+    );
+    for (const contact of pending) {
+      const uid = contact.personUid;
+      dmNameLookupsTried.add(uid);
+      try {
+        const page = await fetchThread.call(api, {
+          withPersonUid: uid,
+          limit: 10,
+        });
+        const messages = Array.isArray(page?.messages) ? page.messages : [];
+        const theirs = messages.find(
+          (message) => (message.fromPersonUid ?? "").trim() === uid,
+        );
+        const displayName = theirs?.fromDisplayName?.trim() ?? "";
+        const email = theirs?.fromEmail?.trim() ?? "";
+        if (!displayName && !email) continue;
+        contacts = contacts.map((entry) =>
+          entry.personUid === uid
+            ? {
+                ...entry,
+                displayName: entry.displayName || displayName || null,
+                email: entry.email || email || null,
+              }
+            : entry,
+        );
+      } catch {
+        /* best effort — the row still lists, titled by email or uid */
+      }
+    }
+  }
+
   function mergePairUnreadsPayload(
     payload: PairUnreadsPayload | null | undefined,
   ): void {
@@ -915,6 +1005,7 @@
           fromDisplayName: entry.displayName,
         })),
       );
+      void resolveUnnamedDmPeers();
     }
     const entries = payload?.pairUnreads;
     if (!Array.isArray(entries)) return;
@@ -995,6 +1086,18 @@
 
       track(
         wakes.on("dm:new-message", (payload) => {
+          const fromPersonUid = (payload.fromPersonUid ?? "").trim();
+          const stamp = payload.createdAt;
+          if (
+            fromPersonUid &&
+            fromPersonUid !== self?.uid &&
+            typeof stamp === "string" &&
+            stamp
+          ) {
+            contacts = mergeContactsWithInbox(contacts, [
+              { fromPersonUid, createdAt: stamp },
+            ]);
+          }
           if (
             !shouldBumpDmUnread({
               selectedId: selectedId ?? activeId,
@@ -1007,17 +1110,6 @@
           if (payload.absoluteUnread !== true) {
             pairUnreads = incrementPairUnread(pairUnreads, payload.fromPersonUid);
           }
-          const stamp = payload.createdAt;
-          contacts = contacts.map((contact) =>
-            contact.personUid === payload.fromPersonUid
-              ? {
-                  ...contact,
-                  ...(stamp
-                    ? { lastActivityAt: stamp, lastMessageAt: stamp }
-                    : {}),
-                }
-              : contact,
-          );
         }),
       );
 
@@ -1249,10 +1341,31 @@
   }
 
   let signOutConfirmOpen = $state(false);
+  let signOutError = $state<string | null>(null);
+  let signingOut = $state(false);
 
   function signOut() {
     footerMenuOpen = false;
+    signOutError = null;
     signOutConfirmOpen = true;
+  }
+
+  async function confirmSignOut(): Promise<void> {
+    if (signingOut) return;
+    signOutError = null;
+    if (!onsignout) {
+      signOutError = "Sign out is unavailable in this host.";
+      return;
+    }
+    signingOut = true;
+    try {
+      await onsignout();
+      signOutConfirmOpen = false;
+    } catch (error) {
+      signOutError = `Couldn’t sign out: ${String(error)}`;
+    } finally {
+      signingOut = false;
+    }
   }
 
   function openSettings() {
@@ -1861,9 +1974,18 @@
                         {row.memberCount ?? row.members?.length ?? 0}
                       </span>
                     {:else}
-                      <span class="chat-avatar" aria-hidden="true"
-                        >{initialsFor(row.title)}</span
+                      {@const avatar = rowAvatar(row, avatarByUid)}
+                      <span
+                        class="chat-avatar"
+                        aria-hidden="true"
+                        data-avatar={avatar.kind}
                       >
+                        {#if avatar.src}
+                          <img src={avatar.src} alt="" />
+                        {:else}
+                          {avatar.initials}
+                        {/if}
+                      </span>
                     {/if}
                     <span class="chat-search-hit-copy">
                       <span class="chat-row-title">{row.title}</span>
@@ -1907,9 +2029,18 @@
                       {row.memberCount ?? row.members?.length ?? 0}
                     </span>
                   {:else}
-                    <span class="chat-switcher-avatar" aria-hidden="true"
-                      >{initialsFor(row.title)}</span
+                    {@const avatar = rowAvatar(row, avatarByUid)}
+                    <span
+                      class="chat-switcher-avatar"
+                      aria-hidden="true"
+                      data-avatar={avatar.kind}
                     >
+                      {#if avatar.src}
+                        <img src={avatar.src} alt="" />
+                      {:else}
+                        {avatar.initials}
+                      {/if}
+                    </span>
                   {/if}
                   <span class="chat-switcher-name">{row.title}</span>
                 </button>
@@ -2018,15 +2149,15 @@
 
 <ConfirmDialog
   open={signOutConfirmOpen}
-  title="Sign out"
-  message="Sign out of HQ Work on this machine?"
+  title={signOutError ? "Couldn’t sign out" : "Sign out"}
+  message={signOutError ?? "Sign out of HQ Work on this machine?"}
   confirmLabel="Sign out"
   danger
-  oncancel={() => (signOutConfirmOpen = false)}
-  onconfirm={() => {
+  oncancel={() => {
     signOutConfirmOpen = false;
-    onsignout?.();
+    signOutError = null;
   }}
+  onconfirm={() => void confirmSignOut()}
 />
 
 {#snippet conversationRow(row: ConversationRow)}
@@ -2052,12 +2183,18 @@
           {row.memberCount ?? row.members?.length ?? 0}
         </span>
       {:else}
+        {@const avatar = rowAvatar(row, avatarByUid)}
         <span
           class="chat-avatar"
           aria-hidden="true"
           data-testid="chat-dm-avatar"
+          data-avatar={avatar.kind}
         >
-          {initialsFor(row.title)}
+          {#if avatar.src}
+            <img src={avatar.src} alt="" />
+          {:else}
+            {avatar.initials}
+          {/if}
         </span>
       {/if}
       <span class="chat-row-title">{row.title}</span>
@@ -2515,6 +2652,15 @@
   .chat-avatar.group {
     border-radius: 50%;
     font-variant-numeric: tabular-nums;
+  }
+
+  .chat-avatar img,
+  .chat-switcher-avatar img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .chat-unread-badge {

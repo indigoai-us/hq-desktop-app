@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   dmActivityFromInboxPage,
+  dmActivityFromThreadsPage,
+  isMissingEndpointFailure,
+  mergeDmActivity,
+  dmActivityFromTimeline,
   pairUnreadsFromInboxPage,
   shouldArmDirectorySafety,
   shouldBumpDmUnread,
@@ -171,5 +175,188 @@ describe("dmActivityFromInboxPage", () => {
     expect(dmActivityFromInboxPage([])).toEqual([]);
     expect(dmActivityFromInboxPage("nope")).toEqual([]);
     expect(dmActivityFromInboxPage({ events: "nope" })).toEqual([]);
+  });
+});
+
+describe("dmActivityFromTimeline", () => {
+  it("keeps the newest createdAt across mixed inbound and outbound messages", () => {
+    expect(
+      dmActivityFromTimeline("prs_jacob", [
+        {
+          createdAt: "2026-08-18T16:09:15.946Z",
+          direction: "in",
+          fromPersonUid: "prs_jacob",
+          body: "older",
+        },
+        {
+          createdAt: "2026-09-01T21:38:07.000Z",
+          direction: "in",
+          fromPersonUid: "prs_jacob",
+          body: "Hey",
+        },
+        {
+          createdAt: "2026-09-01T21:38:30.000Z",
+          direction: "out",
+          fromPersonUid: "prs_self",
+          body: "Hey there",
+        },
+      ]),
+    ).toEqual({
+      personUid: "prs_jacob",
+      lastMessageAt: "2026-09-01T21:38:30.000Z",
+    });
+  });
+
+  it("counts a delegation card with details+prompt and empty body", () => {
+    expect(
+      dmActivityFromTimeline("prs_jacob", [
+        {
+          createdAt: "2026-08-18T12:00:00.000Z",
+          direction: "in",
+          body: "Hey",
+        },
+        {
+          createdAt: "2026-09-01T15:00:00.000Z",
+          body: "",
+          details: "Hand this off to Deacon",
+          prompt: "Please take the next step",
+          messageKind: "delegation",
+        },
+      ]),
+    ).toEqual({
+      personUid: "prs_jacob",
+      lastMessageAt: "2026-09-01T15:00:00.000Z",
+    });
+  });
+
+  it("ignores messages whose createdAt is not a non-empty string", () => {
+    expect(
+      dmActivityFromTimeline("prs_jacob", [
+        { createdAt: 1_725_000_000_000 },
+        { createdAt: "" },
+        { createdAt: null },
+        {},
+        { createdAt: "2026-09-01T21:38:07.000Z" },
+      ]),
+    ).toEqual({
+      personUid: "prs_jacob",
+      lastMessageAt: "2026-09-01T21:38:07.000Z",
+    });
+  });
+
+  it("returns null for an empty list or a blank uid", () => {
+    expect(dmActivityFromTimeline("prs_jacob", [])).toBeNull();
+    expect(
+      dmActivityFromTimeline("  ", [
+        { createdAt: "2026-09-01T21:38:07.000Z" },
+      ]),
+    ).toBeNull();
+    expect(dmActivityFromTimeline("", [{ createdAt: "2026-09-01T21:38:07.000Z" }])).toBeNull();
+  });
+});
+
+describe("dmActivityFromThreadsPage — the per-user DM peer index", () => {
+  it("yields one stamp per peer from { threads: [{ peerUid, lastActivityAt }] }", () => {
+    const out = dmActivityFromThreadsPage({
+      threads: [
+        {
+          peerUid: "prs_jacob",
+          lastActivityAt: "2026-09-01T21:38:30.000Z",
+          lastEventId: "evt_2",
+        },
+        {
+          peerUid: "prs_sent_last",
+          lastActivityAt: "2026-08-27T09:00:00.000Z",
+          lastEventId: "evt_1",
+        },
+      ],
+      nextCursor: "abc",
+    });
+    expect(out).toEqual([
+      { personUid: "prs_jacob", lastMessageAt: "2026-09-01T21:38:30.000Z" },
+      { personUid: "prs_sent_last", lastMessageAt: "2026-08-27T09:00:00.000Z" },
+    ]);
+  });
+
+  it("skips self, blank uids, malformed rows and non-string stamps", () => {
+    const out = dmActivityFromThreadsPage(
+      {
+        threads: [
+          { peerUid: "prs_me", lastActivityAt: "2026-09-01T00:00:00.000Z" },
+          { peerUid: "  ", lastActivityAt: "2026-09-01T00:00:00.000Z" },
+          { peerUid: "prs_no_stamp", lastActivityAt: 12345 },
+          null,
+          "junk",
+          { peerUid: "prs_ok", lastActivityAt: "2026-09-01T00:00:00.000Z" },
+        ],
+      },
+      { selfUid: "prs_me" },
+    );
+    expect(out).toEqual([
+      { personUid: "prs_ok", lastMessageAt: "2026-09-01T00:00:00.000Z" },
+    ]);
+  });
+
+  it("returns [] for a non-object page or a page without threads", () => {
+    expect(dmActivityFromThreadsPage(null)).toEqual([]);
+    expect(dmActivityFromThreadsPage([])).toEqual([]);
+    expect(dmActivityFromThreadsPage({ events: [] })).toEqual([]);
+  });
+});
+
+describe("mergeDmActivity — newest stamp per peer wins, names survive", () => {
+  it("prefers the newer stamp regardless of source order and keeps a known name", () => {
+    const inbox = [
+      {
+        personUid: "prs_jacob",
+        lastMessageAt: "2026-09-01T21:38:07.837Z",
+        displayName: "Jacob Posel",
+      },
+    ];
+    const threads = [
+      { personUid: "prs_jacob", lastMessageAt: "2026-09-01T21:38:30.000Z" },
+      { personUid: "prs_sent_last", lastMessageAt: "2026-08-27T09:00:00.000Z" },
+    ];
+    expect(mergeDmActivity(inbox, threads)).toEqual([
+      {
+        personUid: "prs_jacob",
+        lastMessageAt: "2026-09-01T21:38:30.000Z",
+        displayName: "Jacob Posel",
+      },
+      { personUid: "prs_sent_last", lastMessageAt: "2026-08-27T09:00:00.000Z" },
+    ]);
+    expect(mergeDmActivity(threads, inbox)).toEqual([
+      {
+        personUid: "prs_jacob",
+        lastMessageAt: "2026-09-01T21:38:30.000Z",
+        displayName: "Jacob Posel",
+      },
+      { personUid: "prs_sent_last", lastMessageAt: "2026-08-27T09:00:00.000Z" },
+    ]);
+  });
+});
+
+describe("isMissingEndpointFailure — feature-detecting dm-threads", () => {
+  it("treats HTTP 404, NOT_FOUND codes, and unavailable adapters as missing", () => {
+    expect(isMissingEndpointFailure({ ok: false, code: "http-404" })).toBe(true);
+    expect(
+      isMissingEndpointFailure({ ok: false, reason: "error", code: "ROUTE_NOT_FOUND" }),
+    ).toBe(true);
+    expect(
+      isMissingEndpointFailure({
+        ok: false,
+        reason: "unavailable",
+        code: "not-yet-implemented-api",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not mistake other failures for a missing endpoint", () => {
+    expect(isMissingEndpointFailure({ ok: false, code: "http-500" })).toBe(false);
+    expect(isMissingEndpointFailure({ ok: false, reason: "error", code: "network" })).toBe(
+      false,
+    );
+    expect(isMissingEndpointFailure(null)).toBe(false);
+    expect(isMissingEndpointFailure(undefined)).toBe(false);
   });
 });

@@ -24,6 +24,7 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
@@ -45,6 +46,16 @@
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
+  import { avatarBase64FromFile } from "../settings/avatar-image.js";
+  import { canEditAgentProfile } from "../avatars/can-edit.js";
+  import { loadRegisteredPacks } from "../avatars/load-pack.js";
+  import {
+    avatarsFromContactPayload,
+    composeAvatarByUid,
+    fetchBytesWith,
+    saveAgentAvatar,
+  } from "../avatars/save-agent-avatar.js";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
   import {
@@ -90,6 +101,11 @@
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import LinkContextMenu from "../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
     mentionTargetsFromContacts,
@@ -141,13 +157,27 @@
     fileCompanyScope,
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
-  import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
+  import {
+    chatAttachmentValidatorForPlatform,
+    conversationPairKey,
+  } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
     uploadChatAttachments,
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
-  import type { ConversationRow } from "../chat/sidebar-model.js";
+  import {
+    isStrictlyRicherConversationRow,
+    type ConversationRow,
+  } from "../chat/sidebar-model.js";
+  import {
+    composerPlaceholderFor,
+    DIRECT_MESSAGE_PLACEHOLDER,
+    GROUP_MESSAGE_PLACEHOLDER,
+    isRawParticipantUid,
+    resolveConversationRow,
+    resolveConversationTitle,
+  } from "../chat/conversation-title.js";
   import {
     mergeFetchedTimeline,
     mergeTimelineMessages,
@@ -161,6 +191,11 @@
   import {
     DM_INBOX_SINCE_KEY,
     dmActivityFromInboxPage,
+    dmActivityFromThreadsPage,
+    dmActivityFromTimeline,
+    type InboxDmActivity,
+    isMissingEndpointFailure,
+    mergeDmActivity,
     pairUnreadsFromInboxPage,
     shouldArmDirectorySafety,
     TIMELINE_SAFETY_INTERVAL_MS,
@@ -449,12 +484,36 @@
   let narrowViewport = $state(false);
   let sidebarCollapsed = $state(false);
   let selectedRow = $state<ConversationRow | null>(initialRow);
+  let railRows = $state<ConversationRow[]>([]);
   $effect(() => {
     const next = initialRow;
     if (!next) return;
     untrack(() => {
-      if (!selectedRow) selectedRow = next;
+      if (
+        !selectedRow ||
+        isStrictlyRicherConversationRow(next, selectedRow)
+      ) {
+        selectedRow = next;
+      }
     });
+  });
+
+  $effect(() => {
+    const selected = selectedRow;
+    const rows = railRows;
+    if (!selected) return;
+    const rail = resolveConversationRow(selected, rows);
+    if (!rail || rail.id !== selected.id) return;
+    const currentTitle = untrack(() => selected.title);
+    if (rail.title === currentTitle) return;
+    if (
+      !isRawParticipantUid(currentTitle) &&
+      currentTitle !== DIRECT_MESSAGE_PLACEHOLDER &&
+      currentTitle !== GROUP_MESSAGE_PLACEHOLDER
+    ) {
+      return;
+    }
+    selectedRow = rail;
   });
   let pendingReplyRootId = $state<string | null>(
     initialReplyRootEventId?.trim() || null,
@@ -476,6 +535,7 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
@@ -580,18 +640,24 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
+  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
-  const composerPlaceholder = $derived.by(() => {
-    const row = selectedRow;
-    if (!row) return "Reply…";
-    const isGroup = row.kind === "dm" || row.kind === "group";
-    return `Message ${isGroup ? row.title : `# ${row.title}`} — or type @ to mention an agent…`;
-  });
+  const composerPlaceholder = $derived(
+    composerPlaceholderFor(selectedRow, headerTitle),
+  );
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
   let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
+  /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
+  const lastDmTimelineStampByUid = new Map<string, string>();
+  /**
+   * GET /v1/notify/dm-threads answered 404 for this tenant — the server
+   * predates the peer index. Stop asking; the inbox path still runs.
+   */
+  let dmThreadsUnsupported = false;
 
   // Client-side "agent is thinking" rows for the open channel. Local only —
   // the backend has no typing/ack events. Per-conversation: a row switch
@@ -631,6 +697,16 @@
     liveTimelineId = row.id;
     timelineCache.set(row.id, next);
     onlivemessages?.(row, next);
+    if (row.kind === "dm" && row.personUid) {
+      const entry = dmActivityFromTimeline(row.personUid, next);
+      if (entry) {
+        const prev = lastDmTimelineStampByUid.get(entry.personUid);
+        if (!prev || entry.lastMessageAt > prev) {
+          lastDmTimelineStampByUid.set(entry.personUid, entry.lastMessageAt);
+          wakes?.emit?.("dm:pair-unreads", { activity: [entry] });
+        }
+      }
+    }
   }
 
   async function fetchTimelineRaw(
@@ -812,6 +888,12 @@
   let channelRosterById = $state<
     Record<string, ReturnType<typeof parseChannelMembers>>
   >({});
+  let contactAvatarByUid = $state<Record<string, string>>({});
+  let avatarOverridesByUid = $state<Record<string, string>>({});
+  let rosterWakeSeq = $state(0);
+  let agentAvatarSaving = $state(false);
+  let agentAvatarSaveError = $state<string | null>(null);
+  let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
 
   async function loadChannelRoster(channelId: string): Promise<void> {
     const id = channelId.trim();
@@ -846,18 +928,38 @@
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
-  /** personUid → presigned avatar URL, sourced from the active channel roster
-   *  plus the signed-in user's own profile. Feeds chat/thread/panel photos. */
-  const avatarByUid = $derived.by(() => {
-    const map: Record<string, string> = {};
-    const roster =
-      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
-    for (const m of roster) {
-      if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
-    }
-    if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
-    return map;
-  });
+  /** personUid → presigned avatar URL, sourced from every loaded channel
+   *  roster, the contacts list, the signed-in user's own profile, and any
+   *  just-saved override. Feeds chat/thread/panel photos — including agent
+   *  DMs whose photo arrived on a channel roster or contacts. */
+  const avatarByUid = $derived(
+    composeAvatarByUid({
+      rosters: Object.values(channelRosterById).flat(),
+      contacts: contactAvatarByUid,
+      selfUid: self?.uid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+    }),
+  );
+
+  const canEditOpenAgent = $derived(
+    canEditAgentProfile({
+      agentUid: openProfileMember?.personUid,
+      agentCompanyUid: selectedRow?.companyUid,
+      companies,
+      isAdmin,
+    }),
+  );
+
+  const canEditSelectedAgent = $derived(
+    selectedRow?.kind === "dm" &&
+      canEditAgentProfile({
+        agentUid: selectedRow.personUid,
+        agentCompanyUid: selectedRow.companyUid,
+        companies,
+        isAdmin,
+      }),
+  );
 
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
@@ -888,6 +990,75 @@
 
   function closeMemberProfile(): void {
     openProfileMember = null;
+    agentAvatarSaveError = null;
+  }
+
+  function openAgentProfileFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim();
+    if (!uid) return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow?.email?.trim() || null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+    });
+  }
+
+  async function refreshAvatarsAfterSave(): Promise<void> {
+    const ids = Object.keys(channelRosterById);
+    await Promise.all(ids.map((id) => loadChannelRoster(id)));
+    try {
+      const contactsRes = await adapter.messaging.listContacts();
+      if (contactsRes.ok) {
+        contactAvatarByUid = {
+          ...contactAvatarByUid,
+          ...avatarsFromContactPayload(contactsRes.value),
+        };
+      }
+    } catch {
+      /* keep the optimistic override */
+    }
+    rosterWakeSeq += 1;
+  }
+
+  async function saveOpenAgentAvatar(selection: AvatarSelection): Promise<void> {
+    const uid = openProfileMember?.personUid?.trim();
+    if (!uid || agentAvatarSaving) return;
+    agentAvatarSaving = true;
+    agentAvatarSaveError = null;
+    try {
+      const packs =
+        loadedAvatarPacks ??
+        (await loadRegisteredPacks()).map((row) => row.pack);
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(uid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) =>
+          avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (agentUid, input) =>
+          adapter.identity.updateAgentProfile(agentUid, input),
+      });
+      avatarOverridesByUid = {
+        ...avatarOverridesByUid,
+        [uid]: saved.previewDataUrl,
+      };
+      if (openProfileMember) {
+        openProfileMember = {
+          ...openProfileMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      await refreshAvatarsAfterSave();
+    } catch (err) {
+      agentAvatarSaveError =
+        err instanceof Error ? err.message : "Could not save the avatar.";
+    } finally {
+      agentAvatarSaving = false;
+    }
   }
 
   /** Resolve a message author against the live roster to enrich email/role. */
@@ -1350,7 +1521,7 @@
     options?: { preserveView?: boolean },
   ): void {
     const row =
-      conversationRowForDeepLink(link, searchRows) ??
+      conversationRowForDeepLink(link, [...searchRows, ...railRows]) ??
       (link.replyRootEventId ? selectedRow : null);
     if (!row) return;
     const reply = link.replyRootEventId?.trim() || null;
@@ -1393,6 +1564,7 @@
         channelId: null,
         personUid: target.personUid?.trim() || null,
         replyRootEventId: target.replyRootEventId ?? null,
+        displayName: target.displayName?.trim() || null,
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
@@ -1476,6 +1648,8 @@
     liveTimeline = [];
     liveTimelineId = null;
     timelineHydrating = false;
+    lastDmTimelineStampByUid.clear();
+    dmThreadsUnsupported = false;
     openReplyRootId = null;
     openProfileMember = null;
     attachTray = null;
@@ -1607,24 +1781,55 @@
     if (!notifications || typeof notifications.fetchDmInbox !== "function") {
       return;
     }
-    const res = await notifications.fetchDmInbox({
-      ...(since ? { since } : {}),
-      limit: "50",
-    });
+    // The inbox is a feed of messages RECEIVED, capped to a window: a pair
+    // where the owner sent last, or whose history predates the window, has
+    // no row in it. The backfill pass therefore also reads the per-user DM
+    // peer index (GET /v1/notify/dm-threads), which is stamped for both
+    // directions. Feature-detected: a 404 (older server) or a host without
+    // the method falls back to inbox-only, so old servers keep working.
+    const wantThreads =
+      backfill &&
+      !dmThreadsUnsupported &&
+      typeof notifications.fetchDmThreads === "function";
+    const [res, threadsRes] = await Promise.all([
+      notifications.fetchDmInbox({
+        ...(since ? { since } : {}),
+        limit: "50",
+      }),
+      wantThreads
+        ? notifications.fetchDmThreads!({ limit: 100 }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
     if (
       expectedGeneration !== tenantGeneration ||
       expectedCompanyId !== tenantCompanyId
     ) {
       return;
     }
-    if (!res.ok) return;
+    let threadActivity: InboxDmActivity[] = [];
+    if (threadsRes) {
+      if (threadsRes.ok) {
+        threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
+          selfUid: self?.uid,
+        });
+      } else if (isMissingEndpointFailure(threadsRes)) {
+        dmThreadsUnsupported = true;
+      }
+    }
+    if (!res.ok) {
+      if (threadActivity.length > 0) {
+        bus.emit?.("dm:pair-unreads", { activity: threadActivity });
+      }
+      return;
+    }
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
       selfUid: self?.uid,
     });
-    const activity = dmActivityFromInboxPage(res.value, {
-      selfUid: self?.uid,
-    });
+    const activity = mergeDmActivity(
+      dmActivityFromInboxPage(res.value, { selfUid: self?.uid }),
+      threadActivity,
+    );
     const hasUnreads = Boolean(
       parsed.pairUnreads && parsed.pairUnreads.length > 0,
     );
@@ -1671,9 +1876,11 @@
   // Stamp DM history on a fresh load (and tenant switch), not only after a
   // live wake. untrack so the fetch itself cannot retrigger this effect.
   $effect(() => {
-    if (!wakes) return;
     void tenantGeneration;
     void tenantCompanyId;
+    lastDmTimelineStampByUid.clear();
+    dmThreadsUnsupported = false;
+    if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
     });
@@ -2003,21 +2210,22 @@
   function openNotification(item: NotificationItem): void {
     const dest = notificationDestination(item);
     if (dest.kind === "dm") {
-      const existing = (searchRows ?? []).find(
-        (row) => row.personUid === dest.personUid,
-      );
-      handleSelect(
-        existing ?? {
-          id: `dm:${dest.personUid}`,
-          kind: "dm",
-          title: dest.title,
-          companyUid: null,
-          unreadDot: false,
-          lastActivityAt: item.createdAtMs,
-          pinned: false,
-          personUid: dest.personUid,
-        },
-      );
+      const stub: ConversationRow = {
+        id: `dm:${dest.personUid}`,
+        kind: "dm",
+        title: dest.title,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: item.createdAtMs,
+        pinned: false,
+        personUid: dest.personUid,
+      };
+      const existing =
+        resolveConversationRow(stub, railRows) ??
+        (searchRows ?? []).find(
+          (row) => row.personUid === dest.personUid && !row.channelId,
+        );
+      handleSelect(existing ?? stub);
       return;
     }
     if (dest.kind === "files") {
@@ -2052,6 +2260,14 @@
     membersOpen = false;
     projectAboutOpen = false;
     onOpenSettings?.();
+  }
+
+  function onShellLinkEvent(event: Event): void {
+    handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "shell",
+    });
   }
 
   function closeSettings(): void {
@@ -2275,7 +2491,18 @@
   });
 </script>
 
-<div class="desktop-shell chat-shell" data-testid="desktop-shell">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="desktop-shell chat-shell"
+  data-testid="desktop-shell"
+  onclick={onShellLinkEvent}
+  onauxclick={onShellLinkEvent}
+  oncontextmenu={onShellLinkEvent}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
+  }}
+>
   <V4TitleBar
     {adapter}
     {version}
@@ -2361,6 +2588,9 @@
           {tenantAccountId}
           {tenantCompanyId}
           {seedDirectory}
+          {avatarByUid}
+          {rosterWakeSeq}
+          onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2373,6 +2603,7 @@
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
+          onrows={(rows) => (railRows = rows)}
         />
         {/key}
       {/if}
@@ -2425,7 +2656,24 @@
                 {#if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
-                <h2 data-testid="channel-name">{selectedRow.title}</h2>
+                {#if selectedRow.kind === "dm"}
+                  <span
+                    class="channel-header-avatar"
+                    data-testid="channel-header-avatar"
+                  >
+                    <IdentityMark
+                      kind={isAgentUid(selectedRow.personUid ?? "")
+                        ? "agent"
+                        : "person"}
+                      label={headerTitle}
+                      agentUid={selectedRow.personUid}
+                      avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
+                        null}
+                      size="small"
+                    />
+                  </span>
+                {/if}
+                <h2 data-testid="channel-name">{headerTitle}</h2>
                 {#if channelSubtitle}
                   <span class="channel-sub-row">
                     <span class="channel-sub" data-testid="channel-sub"
@@ -2477,6 +2725,16 @@
             </div>
 
             <div class="channel-header-trailing">
+              {#if canEditSelectedAgent}
+                <button
+                  type="button"
+                  class="edit-profile-btn"
+                  data-testid="agent-edit-profile"
+                  onclick={openAgentProfileFromHeader}
+                >
+                  Edit profile
+                </button>
+              {/if}
               {#if isProjectChannel}
                 <nav
                   class="project-tabs"
@@ -2662,7 +2920,7 @@
           {/if}
           {#if projectAboutOpen && isProjectChannel}
             <ProjectAboutDialog
-              title={selectedRow.title}
+              title={headerTitle}
               description={channelStatus?.project.description ?? null}
               onclose={() => (projectAboutOpen = false)}
             />
@@ -2707,6 +2965,7 @@
                   onopenattachment={openAttachmentTray}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}
                   {displayNameByUid}
@@ -2729,6 +2988,11 @@
                     member={openProfileMember}
                     {self}
                     avatarUrl={profilePanelAvatarUrl}
+                    editable={canEditOpenAgent}
+                    packs={loadedAvatarPacks}
+                    saving={agentAvatarSaving}
+                    saveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
                   />
                 </div>
@@ -2755,6 +3019,7 @@
                     onopenattachment={openAttachmentTray}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                    attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     onactivethreadchange={onactivethreadchange}
@@ -2822,6 +3087,13 @@
       resolveUrl={resolveTrayUrl}
       onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>
@@ -2985,6 +3257,13 @@
     min-width: 0;
   }
 
+  .channel-header-avatar {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: center;
+    align-items: center;
+  }
+
   .channel-hash {
     color: var(--t3);
     font-size: 15px;
@@ -3052,6 +3331,28 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
+  }
+
+  .edit-profile-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font: 500 12px/1.45 inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .edit-profile-btn:hover {
+    color: var(--t1);
+  }
+
+  .edit-profile-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
   }
 
   .project-tabs {

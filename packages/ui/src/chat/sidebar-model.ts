@@ -14,6 +14,8 @@ import {
   type ChannelParticipant,
 } from "./channels";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
+import { isAgentUid } from "./agent-thinking";
+import { agentAvatarFor } from "./messaging/agent-avatars";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,54 @@ export interface ConversationRow {
    * the member directory only returns the caller's own channels).
    */
   membership?: ChannelMembership;
+}
+
+/**
+ * Metadata that can arrive after a deep-link's synthetic conversation row.
+ * Activity and local presentation state (`unreadCount`, `unreadDot`,
+ * `lastActivityAt`, `pinned`) are deliberately excluded: they fluctuate and
+ * must never make initial-row reconciliation replace a user's selection.
+ */
+const CONVERSATION_ROW_RICHNESS_FIELDS = [
+  "companyUid",
+  "projectId",
+  "channelId",
+  "channelScope",
+  "title",
+  "personUid",
+  "email",
+  "memberCount",
+  "members",
+  "browseOnly",
+  "membership",
+] as const satisfies readonly (keyof ConversationRow)[];
+
+function hasConversationRowValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+/**
+ * True only when `next` is the same conversation and fills metadata gaps
+ * without dropping any known metadata. This monotone rule prevents the shell
+ * from oscillating between a deep-link stub and a partial live directory row.
+ */
+export function isStrictlyRicherConversationRow(
+  next: ConversationRow,
+  current: ConversationRow,
+): boolean {
+  if (next.id !== current.id || next.kind !== current.kind) return false;
+
+  let fillsGap = false;
+  for (const field of CONVERSATION_ROW_RICHNESS_FIELDS) {
+    const currentHasValue = hasConversationRowValue(current[field]);
+    const nextHasValue = hasConversationRowValue(next[field]);
+    if (currentHasValue && !nextHasValue) return false;
+    if (!currentHasValue && nextHasValue) fillsGap = true;
+  }
+  return fillsGap;
 }
 
 /** Company option for the scope pill (order preserved from caller). */
@@ -203,6 +253,8 @@ export interface DmContactInput {
   email?: string | null;
   displayName?: string | null;
   companyUid?: string | null;
+  /** Presigned avatar URL when hq-pro included it on the contacts roster. */
+  avatarUrl?: string | null;
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
@@ -1479,6 +1531,32 @@ export function initialsFor(title: string): string {
     );
   }
   return title.trim().slice(0, 2).toUpperCase() || "?";
+}
+
+export type RowAvatarKind = "photo" | "generated" | "initials";
+
+export interface RowAvatar {
+  kind: RowAvatarKind;
+  src?: string;
+  initials?: string;
+}
+
+/**
+ * Rail avatar for a conversation row: real photo when known, else a
+ * deterministic generated avatar for agents, else initials.
+ */
+export function rowAvatar(
+  row: Pick<ConversationRow, "kind" | "personUid" | "title">,
+  avatarByUid?: Record<string, string> | null,
+): RowAvatar {
+  const uid = (row.personUid ?? "").trim();
+  const photo = uid ? avatarByUid?.[uid] : undefined;
+  if (photo) return { kind: "photo", src: photo };
+  if (row.kind === "dm" && uid && isAgentUid(uid)) {
+    const generated = agentAvatarFor(uid);
+    if (generated) return { kind: "generated", src: generated };
+  }
+  return { kind: "initials", initials: initialsFor(row.title) };
 }
 
 // ── Command palette conversation ranking (US-013) ────────────────────────────

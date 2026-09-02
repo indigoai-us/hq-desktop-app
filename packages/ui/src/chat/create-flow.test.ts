@@ -8,7 +8,6 @@ import {
   checkSlug,
   classifyFindQuery,
   companyRelation,
-  creatableCompanies,
   inviteRequestBody,
   isValidEmail,
   knownSlugsInScope,
@@ -784,80 +783,6 @@ describe("inviteRequestBody", () => {
     expect(body).not.toContain("(");
     expect(body).not.toContain("—  ");
     expect(body.endsWith("channel.")).toBe(true);
-  });
-});
-
-describe("creatableCompanies", () => {
-  const ws = (over: Record<string, unknown> = {}) => ({
-    slug: "indigo",
-    displayName: "Indigo",
-    kind: "company",
-    state: "synced",
-    cloudUid: "cmp_indigo",
-    membershipStatus: "active",
-    ...over,
-  });
-
-  it("keeps active company memberships, labelled by display name", () => {
-    expect(creatableCompanies([ws()])).toEqual([
-      { companyUid: "cmp_indigo", label: "Indigo" },
-    ]);
-  });
-
-  it("drops a company whose membership is present but not active", () => {
-    // The reported bug: "In: Stefan Johnson" was offered, then the server
-    // answered "You're not an active member of that workspace."
-    const rows = [
-      ws(),
-      ws({
-        slug: "stefan-johnson",
-        displayName: "Stefan Johnson",
-        cloudUid: "cmp_sj",
-        membershipStatus: "revoked",
-      }),
-    ];
-    expect(creatableCompanies(rows).map((c) => c.companyUid)).toEqual([
-      "cmp_indigo",
-    ]);
-  });
-
-  it("drops pending invites — accepting comes first", () => {
-    expect(creatableCompanies([ws({ membershipStatus: "pending" })])).toEqual(
-      [],
-    );
-  });
-
-  it("drops broken and cloud-less rows", () => {
-    expect(creatableCompanies([ws({ state: "broken" })])).toEqual([]);
-    expect(creatableCompanies([ws({ cloudUid: null })])).toEqual([]);
-  });
-
-  it("drops the personal workspace (offered separately as Personal)", () => {
-    expect(creatableCompanies([ws({ kind: "personal", state: "personal" })]))
-      .toEqual([]);
-  });
-
-  it("FAILS OPEN when membership is unknown", () => {
-    // membershipStatus is cloud-enriched; a transient outage nulls it for
-    // companies the user really is in. Hiding those would be worse than the
-    // server error we already surface.
-    expect(creatableCompanies([ws({ membershipStatus: null })])).toEqual([
-      { companyUid: "cmp_indigo", label: "Indigo" },
-    ]);
-    expect(
-      creatableCompanies([ws({ membershipStatus: undefined })]),
-    ).toHaveLength(1);
-  });
-
-  it("is case/space tolerant on membership status", () => {
-    expect(creatableCompanies([ws({ membershipStatus: " Active " })])).toHaveLength(1);
-  });
-
-  it("falls back to slug when there is no display name, and dedupes by uid", () => {
-    const rows = [ws({ displayName: "  " }), ws()];
-    expect(creatableCompanies(rows)).toEqual([
-      { companyUid: "cmp_indigo", label: "indigo" },
-    ]);
   });
 });
 

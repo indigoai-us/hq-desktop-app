@@ -59,6 +59,8 @@ export interface ConversationDeepLink {
   /** Optional display hints for a channel the row list does not have yet. */
   title?: string | null;
   companyUid?: string | null;
+  /** Optional peer label when the opener already knows it (never a raw uid). */
+  displayName?: string | null;
 }
 
 let pendingChannelId: string | null = null;
@@ -225,7 +227,8 @@ export function conversationRowForDeepLink(
       id: `ch:${link.channelId}`,
       kind: "channel",
       // Prefer the caller's display hint: a raw `chn_…` id is a last resort.
-      title: trimOrNull(link.title) ?? link.channelId,
+      title:
+        trimOrNull(link.title) ?? trimOrNull(link.displayName) ?? link.channelId,
       companyUid: trimOrNull(link.companyUid),
       unreadDot: false,
       lastActivityAt: 0,
@@ -241,7 +244,7 @@ export function conversationRowForDeepLink(
     return {
       id: `dm:${link.personUid}`,
       kind: "dm",
-      title: link.personUid,
+      title: link.displayName?.trim() || "Direct message",
       companyUid: null,
       unreadDot: false,
       lastActivityAt: 0,

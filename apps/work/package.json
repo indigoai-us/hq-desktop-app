@@ -1,0 +1,44 @@
+{
+  "name": "@hq/work",
+  "version": "0.1.24",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./WorkShell": {
+      "svelte": "./src/lib/WorkShell.svelte",
+      "default": "./src/lib/WorkShell.svelte"
+    }
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "svelte-check --tsconfig ./tsconfig.json --threshold error",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=json-summary",
+    "test:e2e": "playwright test --project=smoke",
+    "test:canary": "PW_NO_SERVER=1 playwright test --project=canary"
+  },
+  "dependencies": {
+    "@hq/auth": "workspace:*",
+    "@hq/core": "workspace:*",
+    "@hq/platform": "workspace:*",
+    "@hq/ui": "workspace:*",
+    "@tauri-apps/api": "^2.0.0",
+    "jose": "^6.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@sveltejs/adapter-static": "^3.0.8",
+    "@sveltejs/adapter-vercel": "^5.7.0",
+    "@sveltejs/kit": "^2.20.7",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "happy-dom": "^20.10.3",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.4.8",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.5"
+  }
+}

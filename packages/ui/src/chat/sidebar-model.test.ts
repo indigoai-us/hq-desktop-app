@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Channel } from "./channels";
+import { dmActivityFromTimeline } from "./live-catchup";
 import {
   applyDirectoryFeed,
   applyDirectoryRows,
@@ -25,6 +26,7 @@ import {
   groupByType,
   historySearchScopeLabel,
   initialsFor,
+  isStrictlyRicherConversationRow,
   loadPins,
   loadShowFilter,
   normalizeChannel,
@@ -33,6 +35,7 @@ import {
   nextScope,
   rankPaletteConversations,
   resolveSearchHitRow,
+  rowAvatar,
   savePins,
   saveShowFilter,
   scopeFromHotkey,
@@ -51,6 +54,7 @@ import {
   type DmContactInput,
   type MessageSearchHit,
 } from "./sidebar-model";
+import { agentAvatarAssets, agentAvatarFor } from "./messaging/agent-avatars";
 
 // Fixed "now": Wednesday Aug 12, 2026 15:00 local — tests use local day math.
 const NOW = new Date(2026, 7, 12, 15, 0, 0, 0).getTime();
@@ -111,6 +115,44 @@ function memoryStorage(seed: Record<string, string> = {}): Storage {
     },
   } as Storage;
 }
+
+describe("isStrictlyRicherConversationRow", () => {
+  const stub: ConversationRow = {
+    id: "ch:chn_atlas",
+    kind: "channel",
+    title: "",
+    companyUid: null,
+    unreadDot: false,
+    lastActivityAt: 0,
+    pinned: false,
+  };
+  const enriched: ConversationRow = {
+    ...stub,
+    title: "Atlas",
+    companyUid: "cmp_acme",
+    channelId: "chn_atlas",
+    channelScope: "project",
+    projectId: "atlas",
+    membership: "joined",
+  };
+
+  it("adopts metadata that fills gaps without dropping known values", () => {
+    expect(isStrictlyRicherConversationRow(enriched, stub)).toBe(true);
+  });
+
+  it("does not adopt an identical row, a row that drops metadata, or a different conversation", () => {
+    expect(isStrictlyRicherConversationRow(enriched, enriched)).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow(
+        { ...enriched, companyUid: null },
+        enriched,
+      ),
+    ).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow({ ...enriched, id: "ch:chn_other" }, stub),
+    ).toBe(false);
+  });
+});
 
 describe("normalizeChannel / normalizeDm", () => {
   it("maps company channels with numeric unread and no DM-style assumptions", () => {
@@ -1247,6 +1289,98 @@ describe("inbox activity stamps older DMs into their true day bucket", () => {
   });
 });
 
+describe("every DM with messages is a rail row", () => {
+  it("promotes a human DM with a message today when the contact is not cached", () => {
+    const stamped = mergeContactsWithInbox([], [
+      {
+        fromPersonUid: "prs_jacob",
+        fromDisplayName: "Jacob Posel",
+        createdAt: iso(msOnDay(0, 15)),
+      },
+    ]);
+    const rows = normalizeConversations([], stamped);
+    const grouped = groupByDay(rows, NOW);
+    const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+    const row = today?.rows.find((r) => r.id === "dm:prs_jacob");
+    expect(row).toBeTruthy();
+    expect(row!.title).toBe("Jacob Posel");
+  });
+
+  it("stamps a delegation-style timeline so the newest outbound lands under TODAY", () => {
+    const inbound = msOnDay(0, 15);
+    const outbound = inbound + 20_000;
+    const activity = dmActivityFromTimeline("prs_jacob", [
+      {
+        createdAt: iso(msOnDay(9)),
+        body: "",
+        details: "Hand this off to Deacon",
+        prompt: "Please take the next step",
+      },
+      {
+        createdAt: iso(inbound),
+        body: "Hey",
+        direction: "in",
+        fromPersonUid: "prs_jacob",
+      },
+      {
+        createdAt: iso(outbound),
+        body: "Hey there",
+        direction: "out",
+        fromPersonUid: "prs_self",
+      },
+    ]);
+    expect(activity).toEqual({
+      personUid: "prs_jacob",
+      lastMessageAt: iso(outbound),
+    });
+    const stamped = mergeContactsWithInbox(
+      [dm({ personUid: "prs_jacob", displayName: "Jacob Posel" })],
+      [{ fromPersonUid: activity!.personUid, createdAt: activity!.lastMessageAt }],
+    );
+    const rows = normalizeConversations([], stamped);
+    const dmRow = rows.find((r) => r.id === "dm:prs_jacob");
+    expect(dmRow?.lastActivityAt).toBe(outbound);
+    const grouped = groupByDay(rows, NOW);
+    expect(
+      grouped.sections
+        .find((s) => s.label.startsWith("TODAY"))
+        ?.rows.some((r) => r.id === "dm:prs_jacob") ?? false,
+    ).toBe(true);
+  });
+
+  it("keeps one DM row for a peer in two companies and does not leak the other company's channel", () => {
+    const today = iso(msOnDay(0, 12));
+    const rows = normalizeConversations(
+      [
+        channel({
+          channelId: "ch_other",
+          name: "other-proj",
+          companyUid: "cmp_other",
+          lastActivityAt: today,
+        }),
+      ],
+      [
+        dm({
+          personUid: "prs_peer",
+          displayName: "Peer",
+          companyUid: "cmp_indigo",
+          lastMessageAt: today,
+        }),
+        dm({
+          personUid: "prs_peer",
+          displayName: "Peer",
+          companyUid: "cmp_other",
+          lastMessageAt: today,
+        }),
+      ],
+    );
+    expect(rows.filter((r) => r.id === "dm:prs_peer")).toHaveLength(1);
+    const scoped = filterByCompanyScope(rows, "cmp_indigo");
+    expect(scoped.filter((r) => r.id === "dm:prs_peer")).toHaveLength(1);
+    expect(scoped.some((r) => r.id === "ch:ch_other")).toBe(false);
+  });
+});
+
 describe("mergeContactsWithInbox — 1:1 DMs are not channel-directory rows", () => {
   it("stamps lastMessageAt from the newest inbox event onto a roster contact", () => {
     const merged = mergeContactsWithInbox(
@@ -1687,5 +1821,52 @@ describe("collapseDuplicateGroupRows", () => {
     expect(rows.filter((row) => row.kind === "group")).toHaveLength(1);
     expect(rows.find((row) => row.kind === "group")?.channelId).toBe("g-new");
     expect(rows.find((row) => row.kind === "channel")?.channelId).toBe("ops");
+  });
+});
+
+describe("rowAvatar", () => {
+  const agent = {
+    kind: "dm" as const,
+    personUid: "agt_parker",
+    title: "Parker",
+  };
+  const human = {
+    kind: "dm" as const,
+    personUid: "prs_ada",
+    title: "Ada Lovelace",
+  };
+
+  it("uses a known photo for anyone", () => {
+    expect(
+      rowAvatar(agent, { agt_parker: "https://cdn/parker.jpg" }),
+    ).toEqual({ kind: "photo", src: "https://cdn/parker.jpg" });
+    expect(rowAvatar(human, { prs_ada: "https://cdn/ada.jpg" })).toEqual({
+      kind: "photo",
+      src: "https://cdn/ada.jpg",
+    });
+  });
+
+  it("uses a deterministic generated avatar for a photo-less agent", () => {
+    const avatar = rowAvatar(agent);
+    expect(avatar.kind).toBe("generated");
+    expect(agentAvatarAssets).toContain(avatar.src);
+    expect(avatar.src).toBe(agentAvatarFor("agt_parker"));
+    expect(rowAvatar(agent).src).toBe(avatar.src);
+  });
+
+  it("uses initials for a photo-less human", () => {
+    expect(rowAvatar(human)).toEqual({ kind: "initials", initials: "AL" });
+  });
+
+  it("never shows bare initials for an agent while the set is bundled", () => {
+    expect(rowAvatar(agent, null)).toMatchObject({ kind: "generated" });
+    expect(rowAvatar(agent, {})).toMatchObject({ kind: "generated" });
+  });
+
+  it("only generates for agent DM rows, never for channels or humans", () => {
+    expect(
+      rowAvatar({ kind: "channel", personUid: "agt_parker", title: "ops" }),
+    ).toEqual({ kind: "initials", initials: "OP" });
+    expect(rowAvatar(human, {})).toEqual({ kind: "initials", initials: "AL" });
   });
 });

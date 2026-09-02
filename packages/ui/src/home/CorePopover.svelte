@@ -14,7 +14,6 @@
   import {
     buildCorePopoverViewModel,
     coreNeedsRestore,
-    detectedCoreVersion,
     parseInstalledPacks,
     CORE_POPOVER_FIXTURE_PACKS,
     CORE_POPOVER_FIXTURE_CORE,
@@ -23,6 +22,20 @@
     type CorePopoverPack,
   } from "./core-popover-model.js";
   import { packDisplayName } from "./pack-display-name.js";
+  import { type AdapterResult } from "../settings/update-orchestration.js";
+  import {
+    appRowActions,
+    appRowStatusLabel,
+  } from "../settings/update-presentation.js";
+  import {
+    checkDesktopUpdates,
+    downloadDesktopUpdate,
+    hydrateDownloadedUpdate,
+    orchestrationAdapterFrom,
+    restartToUpdate,
+    updateStore,
+    type UpdateStoreAdapter,
+  } from "../settings/update-store.svelte";
   import "./tokens.css";
 
   interface Props {
@@ -61,12 +74,6 @@
     onopenMarketplace?: () => void;
   }
 
-  interface UpdateInfo {
-    version: string;
-    body?: string;
-    date?: string;
-  }
-
   interface CoreStateWire {
     channel?: "release" | "staging";
     targetVersion?: string;
@@ -92,20 +99,10 @@
   }: Props = $props();
 
   let packsExpanded = $state(true);
-  let hqVersion = $state<string | null>(null);
-  let coreState = $state<CoreStateWire | null>(null);
-  let updateAvailable = $state(false);
-  let updateInstalling = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
   let loadError = $state<string | null>(null);
-  /**
-   * True while the open-time version/state read is in flight. Drives the
-   * neutral "Checking HQ core…" / CHECKING presentation — the popover must
-   * never claim "not detected" before the read has actually resolved.
-   */
-  let coreLoading = $state(false);
   /** Updates/packages are desktop-only; web renders the degraded row. */
   let updatesUnavailable = $state(false);
   let disposed = false;
@@ -134,31 +131,58 @@
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
   });
 
+  const storeCore = $derived.by((): CoreStateWire | null => {
+    const raw = updateStore.coreState;
+    if (!raw || typeof raw !== "object") return null;
+    return raw as CoreStateWire;
+  });
+
   // D-08: show an available update in the designed fixture state — but only
   // when no packs are present, so a populated packs list and a phantom fixture
   // "Update" row never appear together (spec v4 CorePopover).
-  const modelUpdateAvailable = $derived(
-    updateAvailable || (useFixtures && packs.length === 0),
+  const fixtureAppAvailable = $derived(useFixtures && packs.length === 0);
+  const appStatusForLabel = $derived(
+    fixtureAppAvailable && updateStore.appStatus === "unchecked"
+      ? "available"
+      : updateStore.appStatus,
+  );
+  const appStatusLabel = $derived(
+    appRowStatusLabel({
+      status: appStatusForLabel,
+      installPhase: updateStore.installPhase,
+      downloadPercent: updateStore.downloadPercent,
+    }),
+  );
+  const appActions = $derived(
+    appRowActions({
+      status: appStatusForLabel,
+      installPhase: updateStore.installPhase,
+    }),
   );
 
   // Core version/drift row. Live data wins; otherwise D-08 injects a healthy
   // "NO DRIFT" core so the popover renders the designed state instead of the
   // empty "HQ core not detected" fallback.
   const modelCore = $derived.by(() => {
-    const liveHqVersion = hqVersion ?? coreState?.localVersion ?? null;
+    const liveHqVersion =
+      updateStore.coreVersion ?? storeCore?.localVersion ?? null;
     if (!liveHqVersion && useFixtures) {
       return CORE_POPOVER_FIXTURE_CORE;
     }
     return {
       hqVersion: liveHqVersion,
-      driftCount: coreState?.driftReport?.count ?? 0,
+      driftCount: storeCore?.driftReport?.count ?? 0,
       needsRestore: coreNeedsRestore(
-        Boolean(coreState?.versionBehind),
-        coreState?.driftReport?.count ?? 0,
+        Boolean(storeCore?.versionBehind),
+        storeCore?.driftReport?.count ?? 0,
       ),
-      channel: coreState?.channel ?? null,
+      channel: storeCore?.channel ?? null,
     };
   });
+
+  const coreChecking = $derived(
+    updateStore.coreStatus === "checking" && !updateStore.coreVersion,
+  );
 
   const model = $derived(
     buildCorePopoverViewModel({
@@ -166,8 +190,10 @@
       conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: modelCore,
       appVersion,
-      coreChecking: coreLoading,
-      updateAvailable: modelUpdateAvailable,
+      coreChecking,
+      updateAvailable:
+        appStatusForLabel === "available" ||
+        updateStore.installPhase !== "idle",
       packs: modelPacks,
       packsLoading,
       cloudPaused,
@@ -180,20 +206,35 @@
       adapter.isAvailable("canManagePackages"),
   );
 
+  function orchAdapter(): UpdateStoreAdapter {
+    const updates = adapter.updates;
+    return orchestrationAdapterFrom({
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+  }
+
   async function refresh(): Promise<void> {
     const generation = ++loadGeneration;
     loadError = null;
     if (!canInspectCore) {
       updatesUnavailable = true;
-      hqVersion = null;
-      coreState = null;
-      updateAvailable = false;
       packs = [];
       packsLoading = false;
-      coreLoading = false;
       return;
     }
-    coreLoading = true;
     let hadCache = false;
     try {
       const cachedResult = await adapter.packages.listPackagesCached();
@@ -211,39 +252,27 @@
       // on a true first run (no cache, fetch in flight).
       if (packs.length === 0 && !hadCache) packsLoading = true;
       const packagesPromise = adapter.packages.listPackages();
-      // Kick all three reads together, but commit the cheap local version
-      // read the moment it lands. checkCoreState can involve a slow scan or
-      // network lookup — gating the version behind it is exactly what made
-      // an installed core read "not detected" for the whole check window.
-      const statePromise = adapter.updates.checkCoreState();
-      const pendingPromise = adapter.updates.getPendingUpdate();
-      const versionsResult = await adapter.updates.getVersions();
-      if (disposed || generation !== loadGeneration) return;
-      updatesUnavailable =
-        !versionsResult.ok && versionsResult.reason === "unavailable";
-      hqVersion = versionsResult.ok
-        ? detectedCoreVersion(versionsResult.value)
-        : null;
-      // The version read resolved — from here "no version" genuinely means
-      // "not detected", so the checking presentation ends.
-      coreLoading = false;
-      const [stateResult, pendingResult] = await Promise.all([
-        statePromise,
-        pendingPromise,
-      ]);
-      if (disposed || generation !== loadGeneration) return;
-      const state = stateResult.ok
-        ? (stateResult.value as unknown as CoreStateWire | null)
-        : null;
-      const pending = pendingResult.ok
-        ? (pendingResult.value as unknown as UpdateInfo | null)
-        : null;
-      coreState = state;
-      const pendingVersion =
-        pending && typeof pending === "object" && "version" in pending
-          ? (pending as UpdateInfo).version
-          : null;
-      updateAvailable = Boolean(pendingVersion);
+      // Shared checker: the same runUpdateCheck Settings › Updates uses.
+      // Auto-run only when nothing has checked yet so an already-populated
+      // store (the Updates pane) paints immediately without a CHECKING flash.
+      if (adapter.isAvailable("canSelfUpdate")) {
+        // A download that finished while the popover was closed paints as
+        // RESTART TO UPDATE immediately.
+        void hydrateDownloadedUpdate(orchAdapter()).catch(() => {});
+      }
+      if (
+        adapter.isAvailable("canSelfUpdate") &&
+        updateStore.appStatus === "unchecked" &&
+        !updateStore.checking
+      ) {
+        void checkDesktopUpdates(orchAdapter()).then((outcome) => {
+          if (disposed || generation !== loadGeneration) return;
+          updatesUnavailable = false;
+          void outcome;
+        }).catch((err) => {
+          console.error("core-popover: shared update check failed", err);
+        });
+      }
 
       const packagesResult = await packagesPromise;
       if (disposed || generation !== loadGeneration) return;
@@ -266,23 +295,19 @@
       console.error("core-popover: refresh failed", err);
       if (!hadCache) loadError = "Could not load Core status";
       packsLoading = false;
-    } finally {
-      // Whatever path we exited through, never leave the neutral checking
-      // presentation stuck for this (still-current) load.
-      if (!disposed && generation === loadGeneration) coreLoading = false;
     }
   }
 
   async function handleRestore(): Promise<void> {
-    if (coreRestoring || !coreState) return;
+    if (coreRestoring || !storeCore) return;
     coreRestoring = true;
     try {
       const result =
-        coreState.channel === "staging"
+        storeCore.channel === "staging"
           ? await adapter.updates.replaceFromStaging()
           : await adapter.updates.installCoreUpdate();
       if (!result.ok) throw new Error(result.message ?? "Core restore failed");
-      await refresh();
+      await checkDesktopUpdates(orchAdapter());
     } catch (err) {
       console.error("core-popover: core restore failed", err);
     } finally {
@@ -290,17 +315,30 @@
     }
   }
 
-  async function handleUpdate(): Promise<void> {
-    if (updateInstalling || !updateAvailable) return;
-    updateInstalling = true;
+  async function handleCheckUpdates(): Promise<void> {
+    if (useFixtures || !canInspectCore || updateStore.isInstallBusy) return;
     try {
-      const result = await adapter.updates.installUpdate();
-      if (!result.ok) throw new Error(result.message ?? "Update failed");
-      updateAvailable = false;
+      await checkDesktopUpdates(orchAdapter());
     } catch (err) {
-      console.error("core-popover: install_update failed", err);
-    } finally {
-      updateInstalling = false;
+      console.error("core-popover: check for updates failed", err);
+    }
+  }
+
+  async function handleDownloadInstall(): Promise<void> {
+    if (useFixtures || !canInspectCore || updateStore.isInstallBusy) return;
+    try {
+      await downloadDesktopUpdate(orchAdapter());
+    } catch (err) {
+      console.error("core-popover: download_update failed", err);
+    }
+  }
+
+  async function handleRestartToUpdate(): Promise<void> {
+    if (useFixtures || !canInspectCore) return;
+    try {
+      await restartToUpdate(orchAdapter());
+    } catch (err) {
+      console.error("core-popover: install_downloaded_update failed", err);
     }
   }
 
@@ -312,7 +350,7 @@
     }
     // Parent didn't wire a handler — open with the live core-state report when
     // we have one (same command DesktopApp / Settings use).
-    const report = (coreState as { driftReport?: unknown } | null)?.driftReport;
+    const report = (storeCore as { driftReport?: unknown } | null)?.driftReport;
     if (!report) return;
     const result = await adapter.appShell.openDriftDetail(
       report as Record<string, unknown>,
@@ -486,6 +524,17 @@
           >
             {coreRestoring ? "Restoring…" : "Restore"}
           </button>
+        {:else if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
+          <button
+            type="button"
+            class="core-text-btn"
+            data-testid="core-popover-core-check"
+            disabled={updateStore.checking}
+            aria-busy={updateStore.checking}
+            onclick={() => void handleCheckUpdates()}
+          >
+            {updateStore.checking ? "Checking…" : "Check"}
+          </button>
         {/if}
       </span>
     </div>
@@ -493,21 +542,57 @@
     <div class="core-row" data-testid="core-popover-app-row">
       <span class="core-row-label">{model.appVersionLabel}</span>
       <span class="core-row-actions">
-        {#if model.updateAvailable}
-          <button
-            type="button"
-            class="core-btn primary"
-            data-testid="core-popover-app-update"
-            disabled={updateInstalling}
-            aria-busy={updateInstalling}
-            onclick={() => void handleUpdate()}
-          >
-            {updateInstalling ? "Installing…" : "Update"}
-          </button>
-        {:else}
-          <span class="core-pill" data-testid="core-popover-app-up-to-date"
-            >Up to date</span
-          >
+        <span
+          class="core-pill"
+          class:ok={appStatusLabel === "UP TO DATE"}
+          class:neutral={appStatusLabel === "NOT CHECKED" ||
+            appStatusLabel === "CHECKING" ||
+            appStatusLabel === "QUEUED" ||
+            appStatusLabel === "INSTALLING" ||
+            appStatusLabel.startsWith("DOWNLOADING")}
+          class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
+            appStatusLabel === "CHECK FAILED" ||
+            appStatusLabel === "UPDATE FAILED"}
+          data-testid={appStatusLabel === "UP TO DATE"
+            ? "core-popover-app-up-to-date"
+            : "core-popover-app-status"}
+        >
+          {appStatusLabel}
+        </span>
+        {#if !useFixtures && canInspectCore}
+          {#if appActions.showDownload}
+            <button
+              type="button"
+              class="core-text-btn accent"
+              data-testid="core-popover-download-install"
+              title={updateStore.installError ?? undefined}
+              onclick={() => void handleDownloadInstall()}
+            >
+              Download &amp; install
+            </button>
+          {:else if appActions.showRestart}
+            <button
+              type="button"
+              class="core-text-btn accent"
+              data-testid="core-popover-restart-update"
+              title={updateStore.installError ?? undefined}
+              onclick={() => void handleRestartToUpdate()}
+            >
+              Restart to update
+            </button>
+          {/if}
+          {#if appActions.showCheck}
+            <button
+              type="button"
+              class="core-text-btn"
+              data-testid="core-popover-check-updates"
+              disabled={updateStore.checking}
+              aria-busy={updateStore.checking}
+              onclick={() => void handleCheckUpdates()}
+            >
+              {updateStore.checking ? "Checking…" : "Check for updates"}
+            </button>
+          {/if}
         {/if}
       </span>
     </div>
@@ -789,6 +874,41 @@
     gap: 4px;
   }
 
+  /* Ghost text actions on the row's right side — typography only, no chrome. */
+  .core-text-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .core-text-btn.accent {
+    color: var(--ice-ink);
+  }
+
+  .core-text-btn:hover:not(:disabled) {
+    color: var(--t1);
+  }
+
+  .core-text-btn:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .core-text-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
   .core-row-chevron {
     color: var(--t3);
     font-size: 14px;
@@ -827,6 +947,10 @@
   /* Not-detected core: neutral, never the green success ink (G6). */
   .core-pill.neutral {
     color: var(--t3);
+  }
+
+  .core-pill.ok {
+    color: var(--ok-ink);
   }
 
   button.core-pill:hover:not(:disabled) {

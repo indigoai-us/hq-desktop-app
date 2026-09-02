@@ -49,6 +49,18 @@
     type PickerCandidate,
     type SlugTarget,
   } from "./create-flow.js";
+  import {
+    channelCreateValidationMessage,
+    channelExistsWithName,
+    companyUidsByPerson,
+    defaultChannelCompanyUid,
+    directoryRowsFromFeed,
+    personalScopeAllowed,
+    pickChannelCompanyUid,
+    unavailableChannelScopes,
+    unconfirmedCreateMessage,
+    type ChannelCreateMember,
+  } from "./channel-create-scope.js";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -156,6 +168,13 @@
   let firstMessage = $state("");
   let creating = $state(false);
   let createError = $state<string | null>(null);
+  /**
+   * The last create call failed AND a channel with that name is now visible
+   * somewhere we can list — the create may have committed despite the error,
+   * so retry is held until the name changes (a duplicate is worse than a
+   * second click).
+   */
+  let createUnconfirmed = $state(false);
   /** `${scopeKey}#${slug}` keys learned from 409s — the only way we hear about
    *  a channel we cannot see. */
   let serverTaken = $state<ReadonlySet<string>>(new Set<string>());
@@ -200,26 +219,29 @@
   });
 
   /**
-   * Default workspace for a new channel. The old modal always picked
-   * `scopeCompanies[0]`, ignoring the company the user was looking at.
+   * The "In" options. Never `scopeCompanies` — creating in a workspace you are
+   * not an active member of always fails server-side, and offering it means
+   * the user only learns that after filling the whole form in. The host builds
+   * this with `companiesForChannelCreate`, the one create-scope rule set.
+   */
+  const targetCompanies = $derived(createCompanies ?? scopeCompanies);
+
+  /**
+   * Default workspace for a new channel: the company the user is looking at,
+   * never "the first membership in the list" (often the owner's personal
+   * vault). Shared with the rest of the create-scope rules.
    */
   function defaultCompanyUid(
     scope: CompanyScope,
     list: readonly ScopeCompany[],
   ): string {
-    if (scope === "personal") return "";
-    if (scope !== "all" && list.some((c) => c.companyUid === scope)) {
-      return scope;
-    }
-    return list[0]?.companyUid ?? "";
+    return defaultChannelCompanyUid({
+      activeScope: scope,
+      companies: list,
+      members: [],
+      selfUid,
+    });
   }
-
-  /**
-   * The "In" options. Never `scopeCompanies` — creating in a workspace you are
-   * not an active member of always fails server-side, and offering it means
-   * the user only learns that after filling the whole form in.
-   */
-  const targetCompanies = $derived(createCompanies ?? scopeCompanies);
 
   const findCompanyUid = $derived(
     defaultCompanyUid(activeScope, targetCompanies),
@@ -352,6 +374,48 @@
   const pickedKeys = $derived(
     members.map((chip) => chip.personUid ?? chip.email ?? chip.key),
   );
+
+  // ── Create-scope rules (shared with the sidebar via channel-create-scope) ─
+  /** Every company each person is KNOWN to be in, from DM rows + contacts. */
+  const memberCompanies = $derived(companyUidsByPerson(rows, contacts));
+  /** Picked people/agents as the create-scope rules see them. Email chips are
+   *  invited over DM, not added, so they never constrain the scope. */
+  const scopeMembers = $derived<ChannelCreateMember[]>(
+    members
+      .filter((chip) => chip.type !== "email" && chip.personUid)
+      .map((chip) => ({
+        personUid: chip.personUid as string,
+        label: chip.label,
+        companyUids: memberCompanies.get(chip.personUid as string) ?? [],
+      })),
+  );
+  /** Personal is only for the owner and their own agents. */
+  const personalAllowed = $derived(personalScopeAllowed(scopeMembers, selfUid));
+  const scopeUnavailable = $derived(
+    unavailableChannelScopes(targetCompanies, scopeMembers, selfUid),
+  );
+  /** Pre-submit membership check — shown inline, and it disables Create. */
+  const createBlock = $derived(
+    channelCreateValidationMessage({
+      activeScope,
+      companies: targetCompanies,
+      members: scopeMembers,
+      companyUid,
+      selfUid,
+    }),
+  );
+
+  /** Re-pick "In" after the roster changed: keep the current choice when it is
+   *  still valid, otherwise move to the one company everyone shares. */
+  function syncScope(): void {
+    companyUid = pickChannelCompanyUid({
+      activeScope,
+      companies: targetCompanies,
+      members: scopeMembers,
+      currentUid: companyUid,
+      selfUid,
+    });
+  }
   const pickerCandidates = $derived(
     pickerQuery.trim()
       ? buildPickerCandidates({
@@ -447,9 +511,11 @@
 
   const submitDisabled = $derived(
     creating ||
+      createUnconfirmed ||
       slugCanonical === "" ||
       slugVerdict.status === "taken" ||
       confirmSubject !== null ||
+      createBlock !== null ||
       channelName.trim().length > 200,
   );
 
@@ -459,6 +525,9 @@
    */
   const blockReason = $derived.by<string | null>(() => {
     if (creating || slugVerdict.status === "taken") return null;
+    // The membership block and the unconfirmed-create notice render as their
+    // own alerts right above the footer — do not say it twice.
+    if (createUnconfirmed || createBlock) return null;
     if (slugCanonical === "") return "Name the channel to create it.";
     if (channelName.trim().length > 200) {
       return "That name is too long — 200 characters max.";
@@ -561,6 +630,7 @@
     members = [];
     firstMessage = "";
     createError = null;
+    createUnconfirmed = false;
     pickerQuery = "";
     confirmPick = null;
     step = "create";
@@ -703,10 +773,12 @@
     channelName = (event.currentTarget as HTMLInputElement).value;
     // Typing the name re-derives the slug.
     slugOverride = null;
+    createUnconfirmed = false;
   }
 
   function onSlugInput(event: Event): void {
     slugOverride = slugInputValue((event.currentTarget as HTMLInputElement).value);
+    createUnconfirmed = false;
   }
 
   /**
@@ -758,6 +830,7 @@
   ): void {
     if (!members.some((chip) => chip.key === candidate.key)) {
       members = [...members, chipFor(candidate, confirmedFor)];
+      syncScope();
     }
     pickerQuery = "";
     pickerIndex = 0;
@@ -765,15 +838,20 @@
   }
 
   function pickCandidate(candidate: PickerCandidate): void {
-    if (
-      candidate.type === "person" &&
-      candidate.personUid &&
-      companyUid &&
-      companyRelation(candidate.personUid, companyUid, contacts, roster) ===
-        "outside"
-    ) {
-      confirmPick = candidate;
-      return;
+    const uid = candidate.personUid;
+    if (candidate.type === "person" && uid && companyUid) {
+      // Contacts/DM rows positively place them elsewhere: the shared scope
+      // rules take over (the "In" list narrows or the inline block explains),
+      // so asking "add anyway?" first would promise something Create refuses.
+      const known = memberCompanies.get(uid) ?? [];
+      const restricted = known.length > 0 && !known.includes(companyUid);
+      if (
+        !restricted &&
+        companyRelation(uid, companyUid, contacts, roster) === "outside"
+      ) {
+        confirmPick = candidate;
+        return;
+      }
     }
     addChip(candidate, null);
   }
@@ -805,12 +883,16 @@
       return;
     }
     const chip = pendingRecheck;
-    if (chip) members = members.filter((m) => m.key !== chip.key);
+    if (chip) {
+      members = members.filter((m) => m.key !== chip.key);
+      syncScope();
+    }
     pickerInputEl?.focus();
   }
 
   function removeChip(key: string): void {
     members = members.filter((chip) => chip.key !== key);
+    syncScope();
   }
 
   function onPickerKey(event: KeyboardEvent): void {
@@ -826,6 +908,7 @@
     if (event.key === "Backspace" && pickerQuery === "" && members.length > 0) {
       event.preventDefault();
       members = members.slice(0, -1);
+      syncScope();
       return;
     }
     if (event.key !== "Enter") return;
@@ -896,6 +979,43 @@
     });
   }
 
+  /**
+   * After a failed create: is a channel with this name now visible anywhere we
+   * can look? Best-effort — a failed lookup is not proof the create committed,
+   * so it must never block a safe retry.
+   */
+  async function createdChannelAlreadyExists(name: string): Promise<boolean> {
+    if (
+      channelExistsWithName(
+        name,
+        rows.filter((row) => row.kind !== "dm").map((row) => ({ name: row.title })),
+      )
+    ) {
+      return true;
+    }
+    const uids = companyUid
+      ? [companyUid]
+      : targetCompanies.map((company) => company.companyUid);
+    for (const uid of uids) {
+      try {
+        const resp = await api.listChannels({
+          companyUid: uid,
+          includeCompanyProjects: false,
+        });
+        if (channelExistsWithName(name, resp?.channels ?? [])) return true;
+      } catch {
+        // Lookup is best-effort; a failed list must not block a safe retry.
+      }
+    }
+    try {
+      const feed = await api.fetchChannelDirectory(null);
+      if (channelExistsWithName(name, directoryRowsFromFeed(feed))) return true;
+    } catch {
+      // Same: directory lookup failure is not proof the create committed.
+    }
+    return false;
+  }
+
   async function submitCreate(): Promise<void> {
     const create = api.createChannel;
     if (submitDisabled || !create) return;
@@ -917,9 +1037,22 @@
     } catch (err) {
       const failure = parseCreateChannelError(err, name);
       if (failure.code === "slug-taken") {
+        // A 409 is proof the name is owned — by someone else, or by our own
+        // earlier attempt. Either way the slug UI takes over from here.
         serverTaken = new Set([...serverTaken, `${scopeKey}#${slug}`]);
+        createError = failure.message;
+      } else {
+        // Any other rejection is ambiguous: the server may have committed the
+        // channel before answering. Retry only when nothing by that name shows
+        // up anywhere we can list.
+        const exists = await createdChannelAlreadyExists(name);
+        createUnconfirmed = exists;
+        createError = unconfirmedCreateMessage({
+          detail: failure.message.replace(/\.$/, ""),
+          name,
+          exists,
+        });
       }
-      createError = failure.message;
       creating = false;
       slugInputEl?.focus();
       return;
@@ -1414,11 +1547,24 @@
             bind:value={companyUid}
           >
             {#each targetCompanies as company (company.companyUid)}
-              <option value={company.companyUid}>{company.label}</option>
+              {@const blocked = scopeUnavailable.find(
+                (row) => row.company.companyUid === company.companyUid,
+              )}
+              <option value={company.companyUid} disabled={Boolean(blocked)}>
+                {blocked ? `${company.label} — ${blocked.reason}` : company.label}
+              </option>
             {/each}
-            <option value="">Personal</option>
+            <!-- Personal is the owner's own scope: only they and their agents
+                 can be in it, so it is held (not hidden) once a teammate is
+                 picked — the value stays legible instead of a blank select. -->
+            <option value="" disabled={!personalAllowed}>Personal</option>
           </select>
         </div>
+        {#if scopeUnavailable.length > 0}
+          <p class="create-help" data-testid="chat-channel-scope-unavailable">
+            {scopeUnavailable[0].reason}
+          </p>
+        {/if}
 
         {#if canAddMembers}
           <div class="create-members">
@@ -1552,6 +1698,10 @@
         <p class="create-error" role="alert" data-testid="chat-channel-error">
           {createError}
         </p>
+      {:else if createBlock}
+        <p class="create-error" role="alert" data-testid="chat-channel-validation">
+          {createBlock}
+        </p>
       {/if}
 
       <div class="create-footer" inert={confirmSubject !== null}>
@@ -1571,7 +1721,11 @@
           aria-describedby={blockReason ? "create-submit-reason" : undefined}
           onclick={() => void submitCreate()}
         >
-          {creating ? "Creating…" : "Create channel"}
+          {creating
+            ? "Creating…"
+            : createUnconfirmed
+              ? "Creation unconfirmed"
+              : "Create channel"}
         </button>
       </div>
     {:else}

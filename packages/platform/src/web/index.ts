@@ -49,7 +49,7 @@ export const WEB_PATHS = {
   dmThread: "/v1/notify/thread",
   /** POST body `{ withPersonUid }` — pair lastReadAt (US-010). */
   markDmThreadRead: "/v1/notify/thread/read",
-  searchMessages: "/v1/messaging/search",
+  searchMessages: "/v1/notify/search",
   /** Canonical roster: uid + live companyName. Not written into work-mesh. */
   workspaces: "/membership/me",
   channel: (id: string) => `/v1/notify/channels/${encodeURIComponent(id)}`,
@@ -59,6 +59,9 @@ export const WEB_PATHS = {
     `/v1/notify/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(personUid)}`,
   /** GET/PUT the caller's editable global member profile. */
   profile: "/v1/profile",
+  /** PATCH agent profile (displayName / title / description / avatarBase64). */
+  agentProfile: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
@@ -74,6 +77,8 @@ export const WEB_PATHS = {
     `/v1/notify/notifications/${encodeURIComponent(id)}/actions/${encodeURIComponent(action)}`,
   dmInbox: "/v1/notify/inbox",
   dmInboxAck: "/v1/notify/inbox/ack",
+  /** Per-user DM peer index (hq-pro PR #2813). 404 on servers that predate it. */
+  dmThreads: "/v1/notify/dm-threads",
   sharedWithMe: "/v1/files/shared-with-me",
   sharedWithMeAck: "/v1/files/shared-with-me/ack",
   reactions: "/v1/notify/reactions",
@@ -321,6 +326,27 @@ function membershipRowsFromPayload(value: unknown): Json[] {
   return [];
 }
 
+function encodeMessageSearchValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/** Matches the desktop core's `build_search_url` query contract. */
+export function buildWebMessageSearchPath(
+  q: string,
+  opts?: { companyUid?: string; limit?: number },
+): string {
+  let path = `${WEB_PATHS.searchMessages}?q=${encodeMessageSearchValue(q)}`;
+  const companyUid = opts?.companyUid?.trim();
+  if (companyUid) {
+    path += `&companyUid=${encodeMessageSearchValue(companyUid)}`;
+  }
+  if (opts?.limit != null) path += `&limit=${opts.limit}`;
+  return path;
+}
+
 export class WebPlatformAdapter implements PlatformAdapter {
   readonly kind = "web" as const;
   readonly capabilities = WEB_CAPABILITIES;
@@ -349,7 +375,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   // -- HTTP plumbing --------------------------------------------------------
 
   private async request<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -423,6 +449,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     getProfile: () => this.get(WEB_PATHS.profile),
     updateProfile: (input) => this.request("PUT", WEB_PATHS.profile, input),
+    updateAgentProfile: (agentUid, input) =>
+      this.request("PATCH", WEB_PATHS.agentProfile(agentUid), input),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -470,10 +498,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       return this.post(WEB_PATHS.markDmThreadRead, { withPersonUid });
     },
     searchMessages: (q, opts) => {
-      const params = new URLSearchParams({ q });
-      if (opts?.companyUid) params.set("companyUid", opts.companyUid);
-      if (opts?.limit != null) params.set("limit", String(opts.limit));
-      return this.get(`${WEB_PATHS.searchMessages}?${params.toString()}`);
+      return this.get(buildWebMessageSearchPath(q, opts));
     },
     fetchChannel: ({ channelId, limit, cursor, since }) => {
       const params = new URLSearchParams();
@@ -562,6 +587,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
           : WEB_PATHS.dmInbox,
       ),
     ackDmInbox: (eventIds) => this.post(WEB_PATHS.dmInboxAck, { eventIds }),
+    fetchDmThreads: (opts) =>
+      this.get(
+        opts && Object.keys(opts).length > 0
+          ? `${WEB_PATHS.dmThreads}?${new URLSearchParams(opts as Record<string, string>).toString()}`
+          : WEB_PATHS.dmThreads,
+      ),
     fetchSharedWithMe: (opts) =>
       this.get(
         opts && Object.keys(opts).length > 0
@@ -849,6 +880,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getVersions: async () => DESKTOP_ONLY,
     checkForUpdates: async () => DESKTOP_ONLY,
     installUpdate: async () => DESKTOP_ONLY,
+    downloadUpdate: async () => DESKTOP_ONLY,
+    installDownloadedUpdate: async () => DESKTOP_ONLY,
+    getDownloadedUpdate: async () => DESKTOP_ONLY,
     getPendingUpdate: async () => DESKTOP_ONLY,
     checkCoreState: async () => DESKTOP_ONLY,
     installCoreUpdate: async () => DESKTOP_ONLY,

@@ -36,4 +36,12 @@ describe('US-006: menubar launcher opens desktop view', () => {
   it('popover no longer carries the desktop-alt toggle chrome', () => {
     expect(popover).not.toContain('data-testid="desktop-alt-toggle"');
   });
+
+  it('keeps compact sync status without a live progress bar', () => {
+    expect(popover).toContain('data-testid="popover-status-row"');
+    expect(popover).toContain('data-testid="popover-sync-sublabel"');
+    expect(popover).not.toContain('mbp-progress-track');
+    expect(popover).not.toContain('const barPct');
+    expect(popover).not.toContain('role="progressbar"');
+  });
 });

@@ -9,15 +9,12 @@
 import {
   type AdapterResult,
   type AdapterPromise,
-  type Capability,
   type ChannelSummary,
   type Json,
   type PlatformAdapter,
   type VersionProbe,
   type WhoAmI,
   type VersionInfo,
-  TAURI_CAPABILITIES,
-  WEB_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -26,8 +23,10 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
-} from '@hq/platform';
-import { updateSettings, type SettingsInvoker } from './settings-mutations';
+} from '../adapter.js';
+import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
+import { WEB_PATHS } from '../web/index.js';
+import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -351,6 +350,8 @@ export function createSyncPlatformAdapter(
       // native command for the global member profile, so it goes over hq_pro_fetch.
       getProfile: () => hqProJson('GET', WEB_PATHS.profile),
       updateProfile: (input) => hqProJson('PUT', WEB_PATHS.profile, input),
+      updateAgentProfile: (agentUid, input) =>
+        hqProJson('PATCH', WEB_PATHS.agentProfile(agentUid), input),
     },
 
     messaging: {
@@ -582,6 +583,22 @@ export function createSyncPlatformAdapter(
       },
       ackDmInbox: (eventIds) =>
         hqProJson('POST', WEB_PATHS.dmInboxAck, { eventIds }),
+      fetchDmThreads: (opts) => {
+        const rec = asRecord(opts) ?? {};
+        const limit =
+          typeof rec.limit === 'number'
+            ? rec.limit
+            : typeof rec.limit === 'string' && /^\d+$/.test(rec.limit)
+              ? Number(rec.limit)
+              : undefined;
+        return hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.dmThreads, {
+            limit,
+            cursor: typeof rec.cursor === 'string' ? rec.cursor : undefined,
+          }),
+        );
+      },
       fetchSharedWithMe: (opts) => {
         const rec = asRecord(opts) ?? {};
         return hqProJson(
@@ -934,6 +951,9 @@ export function createSyncPlatformAdapter(
       getVersions,
       checkForUpdates: () => call('check_for_updates'),
       installUpdate: () => call('install_update'),
+      downloadUpdate: () => call('download_update'),
+      installDownloadedUpdate: () => call('install_downloaded_update'),
+      getDownloadedUpdate: () => call('get_downloaded_update'),
       getPendingUpdate: () => call('get_pending_update'),
       checkCoreState: () => call('check_core_state'),
       installCoreUpdate: () => call('install_hq_core_update'),

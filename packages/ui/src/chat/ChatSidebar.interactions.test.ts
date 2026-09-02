@@ -155,6 +155,41 @@ describe("ChatSidebar sign out", () => {
     await tick();
     expect(onsignout).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the confirmation open and surfaces a rejected sign-out callback", async () => {
+    const onsignout = vi.fn(async () => {
+      throw new Error("native token store unavailable");
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [seedRow],
+        accountLabel: "Stefan Johnson",
+        onsignout,
+      },
+    });
+    await tick();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-user-card"]')
+      ?.click();
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="chat-sign-out"]')
+      ?.click();
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')
+      ?.click();
+
+    await vi.waitFor(() => {
+      expect(onsignout).toHaveBeenCalledOnce();
+      expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeTruthy();
+      expect(document.body.textContent).toContain(
+        "Couldn’t sign out: Error: native token store unavailable",
+      );
+    });
+  });
 });
 
 describe("ChatSidebar filters", () => {
@@ -519,5 +554,157 @@ describe("ChatSidebar inbox activity stamps older-day DM rows", () => {
     const heading = list?.previousElementSibling;
     expect(heading?.classList.contains("chat-day-head")).toBe(true);
     expect(heading?.textContent ?? "").not.toMatch(/TODAY/);
+  });
+});
+
+describe("ChatSidebar stamps DM activity even when the thread is open", () => {
+  it("moves the open DM into TODAY without an unread badge when a message lands", async () => {
+    const wakes = createChatWakeBus();
+    const tenDaysAgo = new Date();
+    tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
+    tenDaysAgo.setHours(12, 0, 0, 0);
+
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listContacts: async () => ({
+            contacts: [
+              {
+                personUid: "prs_jacob",
+                displayName: "Jacob Posel",
+                lastActivityAt: tenDaysAgo.toISOString(),
+                lastMessageAt: tenDaysAgo.toISOString(),
+              },
+            ],
+          }),
+        }),
+        seedDirectory: [seedRow],
+        selectedId: "dm:prs_jacob",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-last-week"]')).toBeTruthy();
+    });
+    expect(host.querySelector('[data-conversation-id="dm:prs_jacob"]')).toBeNull();
+
+    wakes.emit("dm:new-message", {
+      fromPersonUid: "prs_jacob",
+      createdAt: now(),
+    });
+    await tick();
+
+    const row = await vi.waitFor(() => {
+      const found = host.querySelector('[data-conversation-id="dm:prs_jacob"]');
+      expect(found).toBeTruthy();
+      return found as HTMLElement;
+    });
+    const list = row.closest('[role="list"]');
+    const heading = list?.previousElementSibling;
+    expect(heading?.classList.contains("chat-day-head")).toBe(true);
+    expect(heading?.textContent ?? "").toMatch(/TODAY/);
+    expect(row.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(row.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
+  });
+
+  it("creates a rail row for a peer who is not in the cached roster", async () => {
+    const wakes = createChatWakeBus();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [seedRow],
+        selectedId: "dm:prs_jacob",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_proj"]'),
+      ).toBeTruthy();
+    });
+    expect(host.querySelector('[data-conversation-id="dm:prs_new"]')).toBeNull();
+
+    wakes.emit("dm:new-message", {
+      fromPersonUid: "prs_new",
+      createdAt: now(),
+    });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="dm:prs_new"]'),
+      ).toBeTruthy();
+    });
+  });
+});
+
+describe("ChatSidebar resolves a name for a bare-uid DM peer", () => {
+  it("titles a peer the roster does not carry from the thread's counterpart message", async () => {
+    const wakes = createChatWakeBus();
+    const asked: string[] = [];
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          listContacts: async () => ({ contacts: [] }),
+          fetchDmThread: async ({ withPersonUid }) => {
+            asked.push(withPersonUid);
+            return {
+              messages: [
+                {
+                  eventId: "evt_out",
+                  fromPersonUid: "prs_stefan",
+                  fromDisplayName: "Stefan",
+                  body: "Hey there",
+                  createdAt: now(),
+                  direction: "out",
+                },
+                {
+                  eventId: "evt_in",
+                  fromPersonUid: "prs_ghost",
+                  fromDisplayName: "Ghost Peer",
+                  fromEmail: "ghost@example.com",
+                  body: "Hey",
+                  createdAt: now(),
+                  direction: "in",
+                },
+              ],
+            };
+          },
+        }),
+        seedDirectory: [seedRow],
+        selectedId: "ch:chn_proj",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await tick();
+
+    // The peer index carries bare uids — no name, no email.
+    wakes.emit("dm:pair-unreads", {
+      activity: [{ personUid: "prs_ghost", lastMessageAt: now() }],
+    });
+
+    const row = await vi.waitFor(() => {
+      const found = host.querySelector('[data-conversation-id="dm:prs_ghost"]');
+      expect(found).toBeTruthy();
+      return found as HTMLElement;
+    });
+    await vi.waitFor(() => {
+      expect(row.textContent ?? "").toContain("Ghost Peer");
+    });
+    expect(asked).toEqual(["prs_ghost"]);
+
+    // A second stamp for the same peer must not trigger another thread read.
+    wakes.emit("dm:pair-unreads", {
+      activity: [{ personUid: "prs_ghost", lastMessageAt: now() }],
+    });
+    await tick();
+    expect(asked).toEqual(["prs_ghost"]);
   });
 });

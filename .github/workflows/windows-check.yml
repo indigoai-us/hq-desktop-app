@@ -34,12 +34,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# rust-cache hashes CARGO_* env vars into the cache key. Must match
+# cache-warm.yml so PRs restore the main-branch cache.
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   # Cheap ubuntu gate that decides whether the two windows-latest jobs below
   # have anything to check. A manual dispatch always runs them.
   changes:
     name: Windows-relevant changes
     runs-on: ubuntu-latest
+    # A checkout and a path diff; healthy runs finish in about six seconds.
+    # Every downstream Windows job needs this one's output, so a stall here
+    # stalls the whole workflow -- and it is the gate's own required check.
+    timeout-minutes: 10
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
     steps:
@@ -92,6 +101,15 @@ jobs:
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
+    # 30 of this job's 46 steps carry no step-level timeout, and it is the only
+    # long-running job in the repository that was missing a job-level one -- its
+    # three siblings below declare 45, 45 and 30. Without a backstop a single
+    # blocked step inherits the Actions default of 360 minutes: run 33624196971
+    # sat on "Windows app tests (e2e automation)" for an hour (normally ~2 min)
+    # holding a required check, with nothing scheduled to end it. The job's own
+    # green runs take ~25 minutes, so 60 is well clear of a healthy run while
+    # turning a hang into a fast, legible failure instead of a silent stall.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/sync
@@ -104,13 +122,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       # Version comes from the root package.json "packageManager" field;
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -118,19 +138,16 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
-      # actions/cache archived target/ wholesale (several GB for this app), so
-      # entries evicted each other out of the repository's 10 GB cache budget:
-      # the restore step measured 0-1s (a miss) on every run while the save step
-      # still paid 231s to upload. rust-cache prunes to the registry plus
-      # dependency artifacts and cleans stale ones, and covers BOTH workspaces —
-      # the old key hashed only the app Cargo.lock and cached only the app
-      # target/, so root-workspace changes neither invalidated nor reused it.
+      # rust-cache prunes to the registry plus dependency artifacts and covers
+      # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
+      # new PRs restore from main instead of starting cold, and so PRs with an
+      # exact hit do not each save their own copy.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             apps/sync/src-tauri
-          key: windows-check-debug
+          shared-key: windows-check-debug
           # This job is red ~15% of the time and the compile step that fills
           # the cache runs BEFORE the tests that fail. rust-cache defaults to
           # cache-on-failure:false, so those runs discard valid dependency
@@ -490,15 +507,39 @@ jobs:
       #   working-directory: apps/sync/src-tauri
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
 
-  windows-installer-e2e:
+  # The installer E2E used to be one job that built the bridge installers,
+  # built the target updater, and then ran the upgrade test. Both builds are
+  # mandatory -- windows-installer-e2e.ps1 asserts the upgraded binary has a
+  # different SHA256 AND a ProductVersion matching the target, so neither can be
+  # replaced by reinstalling the same artifact -- but they are independent of
+  # each other, and running them back to back put ~22 minutes of compile on the
+  # critical path of a required check.
+  #
+  # They now run as two parallel build jobs feeding a thin E2E job. Critical
+  # path becomes the longer build plus the test, not the sum of both builds.
+  #
+  # Deliberately NOT a caching change: cargo fingerprints workspace crates by
+  # source mtime, and actions/checkout does not preserve mtimes, so a restored
+  # workspace artifact is always stale and recompiles anyway. This split saves
+  # wall clock without depending on any cache behaviour.
+  #
+  # The honest cost: on a cold cache both build jobs compile the dependency
+  # graph, where the single job compiled it once. That is CPU, not wall clock,
+  # and cache-warm.yml keeps `windows-installer-release` populated from main so
+  # the cold path is the exception.
+  build-bridge-installers:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    name: installer E2E (x64 MSI + NSIS)
+    name: Build bridge installers (x64 MSI + NSIS)
     runs-on: windows-latest
-    timeout-minutes: 55
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/sync
+    outputs:
+      base: ${{ steps.versions.outputs.base }}
+      bridge: ${{ steps.versions.outputs.bridge }}
+      target: ${{ steps.versions.outputs.target }}
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
@@ -507,27 +548,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - uses: pnpm/action-setup@v4
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      # Disjoint from the check job's key: this job builds the release profile
-      # and that one builds debug. The old restore-keys fallback to
-      # `${{ runner.os }}-cargo-` pulled the debug artifacts in here, rebuilt
-      # from scratch anyway, then paid to re-upload the mismatched archive.
+      # Disjoint from the check job's shared-key: this job builds the release
+      # profile and that one builds debug. shared-key is shared with
+      # cache-warm.yml on main so new PRs restore from main instead of starting
+      # cold, and so PRs with an exact hit do not each save their own copy.
+      #
+      # This is the only writer of that key. The sibling build job and the E2E
+      # job compute the identical key, so letting them save too would just race
+      # for the same entry and add nothing.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             apps/sync/src-tauri
-          key: windows-installer-release
+          shared-key: windows-installer-release
           # This job is red ~15% of the time and the compile step that fills
           # the cache runs BEFORE the tests that fail. rust-cache defaults to
           # cache-on-failure:false, so those runs discard valid dependency
@@ -539,44 +586,41 @@ jobs:
 
       # Install this PR at one synthetic patch, then build the same PR at the
       # next patch. The running parent and copied helper therefore contain the
-      # same updater implementation, exactly as they do in production.
-      - name: Prepare bridge and target versions
+      # same updater implementation, exactly as they do in production. The
+      # sibling build job derives the same numbers from the same script.
+      - name: Derive synthetic bridge and target versions
         id: versions
         shell: pwsh
         run: |
-          $baseVersion = node -p "require('./package.json').version"
-          $parts = $baseVersion.Split('.')
-          if ($parts.Count -ne 3) {
-            throw "Expected stable X.Y.Z base version, got $baseVersion"
-          }
-          $bridgeVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
-          $targetVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 2)"
-          pnpm -C ../.. version:app --set-version $bridgeVersion
+          $versions = node ../../scripts/windows-e2e-versions.mjs
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to stamp bridge version $bridgeVersion"
+            throw "Failed to derive the synthetic installer versions"
           }
-          "base=$baseVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "bridge=$bridgeVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "target=$targetVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $versions | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host $versions
+
+      - name: Stamp the bridge version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.bridge }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp bridge version ${{ steps.versions.outputs.bridge }}"
+          }
 
       - name: Install Recall sidecar deps
         run: pnpm run sidecar:install
 
+      # Built here rather than in the E2E job so the E2E job needs no Rust
+      # toolchain and no rust-cache restore at all. rust-cache caches
+      # ~/.cargo/bin, and cache-warm.yml installs it under the same key on main,
+      # so this is a no-op lookup on a warm runner.
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
-      # the WebView2 runtime the app embeds; when they drift by a major version
-      # session creation fails ("only supports Microsoft Edge version N").
-      # Install a driver matched to the runtime and shadow the preinstalled one.
-      - name: Install msedgedriver matching the WebView2 runtime
-        shell: pwsh
-        run: scripts/ensure-msedgedriver.ps1
-
       # Same flag as the windows-check job: `e2e-automation` is what lets
       # msedgedriver attach, and it is never on in a shipped build. The honest
-      # consequence is that this job packages and installs a binary that is NOT
-      # byte-identical to the released one — it differs by that one feature.
+      # consequence is that this job packages an installer whose binary is NOT
+      # byte-identical to the released one -- it differs by that one feature.
       # `cfg!(debug_assertions)` could not have been the gate instead: this is a
       # release build.
       - name: Generate Windows MSI version overlay
@@ -638,11 +682,207 @@ jobs:
           }
           $msi | ForEach-Object { Write-Host "Built MSI: $($_.Name)" }
 
+      # if-no-files-found: error, so a missing installer fails the job that
+      # built it instead of surfacing later as an unexplained E2E failure.
+      # The MSI is verified above and never installed, so only NSIS travels.
+      - name: Upload bridge NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-bridge
+          if-no-files-found: error
+          retention-days: 1
+          path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_${{ steps.versions.outputs.bridge }}_x64-setup.exe
+
+      - name: Upload Tauri WebDriver bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-tauri-driver
+          if-no-files-found: error
+          retention-days: 1
+          path: ~/.cargo/bin/tauri-driver.exe
+
+  build-target-updater:
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Build target updater (x64 NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Same key as the bridge build -- same profile, same lockfiles, same
+      # RUST*/CARGO* env -- so this restores exactly what that job restores.
+      # save-if:false because both jobs would otherwise race to write one entry.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          shared-key: windows-installer-release
+          cache-on-failure: true
+          save-if: false
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Derive synthetic bridge and target versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = node ../../scripts/windows-e2e-versions.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to derive the synthetic installer versions"
+          }
+          $versions | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host $versions
+
+      - name: Stamp the target version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
+          }
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
+
+      # NSIS only, and no MSI version overlay: the target build exists to be
+      # handed to the running bridge's copied updater helper, and only the NSIS
+      # package takes that path.
+      - name: Build next synthetic NSIS updater
+        run: >-
+          pnpm tauri build
+          --target x86_64-pc-windows-msvc
+          --bundles nsis
+          --config src-tauri/tauri.windows.conf.json
+          --config src-tauri/tauri.windows.release.conf.json
+          --config src-tauri/tauri.windows.ci.conf.json
+          --features e2e-automation
+
+      - name: Upload target NSIS updater
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-target
+          if-no-files-found: error
+          retention-days: 1
+          path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_${{ steps.versions.outputs.target }}_x64-setup.exe
+
+  # This job's NAME is a required status check on `main`. Renaming it orphans
+  # the context and every PR sits unmergeable.
+  #
+  # `always()` in the `if:` is load-bearing and subtle. Without it, a failed
+  # build job would leave this job "skipped" -- and GitHub reports a skipped
+  # required check as satisfied, so a broken installer build would merge green.
+  # With it, the job starts regardless and the first step fails loudly. The
+  # `needs.changes.outputs.windows == 'true'` term still evaluates to false when
+  # the gate does not apply (and when `changes` itself failed, since its outputs
+  # are then empty), so the intended skip-reports-Success path is unchanged.
+  windows-installer-e2e:
+    needs: [changes, build-bridge-installers, build-target-updater]
+    if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: installer E2E (x64 MSI + NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      HQ_SYNC_SENTRY_DSN: ""
+      BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}
+      TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}
+
+    steps:
+      # First step on purpose: this is what converts "a build job failed" from a
+      # green required check into a red one.
+      - name: Fail when an installer build job did not succeed
+        if: ${{ needs.build-bridge-installers.result != 'success' || needs.build-target-updater.result != 'success' }}
+        shell: pwsh
+        run: |
+          Write-Host "bridge build: ${{ needs.build-bridge-installers.result }}"
+          Write-Host "target build: ${{ needs.build-target-updater.result }}"
+          throw "A Windows installer build job did not succeed; failing the required check rather than reporting it satisfied."
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - name: Install JS deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Download bridge NSIS installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-bridge
+          path: ${{ runner.temp }}/installers/bridge
+
+      - name: Download target NSIS updater
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-target
+          path: ${{ runner.temp }}/installers/target
+
+      # No Rust toolchain in this job: the bridge build already produced
+      # tauri-driver.exe, and the live harness only needs it on PATH
+      # (e2e/desktop-alt/live-driver.ts resolves it by name).
+      - name: Download Tauri WebDriver bridge
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-tauri-driver
+          path: ${{ runner.temp }}/tauri-driver
+
+      - name: Put the Tauri WebDriver bridge on PATH
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "tauri-driver"
+          $exe = Join-Path $dir "tauri-driver.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "tauri-driver.exe was not restored from the bridge build job"
+          }
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
+
       - name: Install PR bridge NSIS package
         id: install_bridge
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.bridge }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $bridgeDir = Join-Path $env:RUNNER_TEMP "installers\bridge"
+          $installer = Get-ChildItem $bridgeDir -Filter "*_$($env:BRIDGE_VERSION)_x64-setup.exe" -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
             throw "Bridge NSIS installer was not produced"
           }
@@ -657,36 +897,19 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
-
-      - name: Build next synthetic NSIS updater
-        shell: pwsh
-        run: |
-          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
-          }
-          pnpm tauri build `
-            --target x86_64-pc-windows-msvc `
-            --bundles nsis `
-            --config src-tauri/tauri.windows.conf.json `
-            --config src-tauri/tauri.windows.release.conf.json `
-            --config src-tauri/tauri.windows.ci.conf.json `
-            --features e2e-automation
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to build target NSIS updater"
-          }
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
       - name: Upgrade running PR bridge through its copied helper
         id: upgrade
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*_${{ steps.versions.outputs.target }}_x64-setup.exe' -File -ErrorAction Stop | Select-Object -First 1
+          $targetDir = Join-Path $env:RUNNER_TEMP "installers\target"
+          $installer = Get-ChildItem $targetDir -Filter "*_$($env:TARGET_VERSION)_x64-setup.exe" -File -ErrorAction Stop | Select-Object -First 1
           if (-not $installer) {
             throw "Target NSIS installer was not produced"
           }
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+          $app = & "scripts\windows-installer-e2e.ps1" -Action upgrade -InstallerPath $installer.FullName -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
           "app=$app" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Upgraded application: $app"
@@ -695,7 +918,7 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "hq-installer-e2e"
-          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "${{ steps.versions.outputs.target }}" -InstallDir $installDir
+          & "scripts\windows-installer-e2e.ps1" -Action rollback -TargetVersion "$env:TARGET_VERSION" -InstallDir $installDir
 
       # Same pre-auth scope as the windows-check job, against the installed
       # production package rather than a debug build.

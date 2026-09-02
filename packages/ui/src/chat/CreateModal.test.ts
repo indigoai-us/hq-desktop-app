@@ -287,19 +287,28 @@ describe("CreateModal create step", () => {
   });
 
   it("confirms a cross-company invite and adds nothing when dismissed", async () => {
+    // "Outside" comes from the authoritative company roster; the contacts row
+    // carries no companyUid (the wire shape), so the shared create-scope rules
+    // have nothing to block on and the question is the right surface.
     const outsider = personRow({
       id: "dm:prs_kai",
       title: "Kai",
       personUid: "prs_kai",
     });
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_ada", displayName: "Ada" }],
+    }));
     open({
+      api: stubApi({ listCompanyMembers }),
       rows: [outsider],
-      contacts: [
-        { personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_other" },
-      ],
+      contacts: [{ personUid: "prs_kai", displayName: "Kai" }],
     });
     await tick();
     await gotoCreate("Growth");
+    await vi.waitFor(() => {
+      expect(listCompanyMembers).toHaveBeenCalledWith("cmp_indigo");
+    });
+    await tick();
 
     const picker = $<HTMLInputElement>(
       '[data-testid="chat-channel-participants"]',
@@ -592,21 +601,81 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     { companyUid: "cmp_indigo", label: "Indigo" },
     { companyUid: "cmp_other", label: "Holler" },
   ];
+  /** Company rosters (`list_company_members`): Kai is in Holler only. */
+  const rosters = () =>
+    vi.fn(async (companyUid: string) => ({
+      contacts:
+        companyUid === "cmp_other"
+          ? [{ personUid: "prs_kai", displayName: "Kai" }]
+          : [{ personUid: "prs_ada", displayName: "Ada" }],
+    }));
+  /** Wire shape of GET /v1/notify/contacts — no companyUid. */
+  const kaiContact = [{ personUid: "prs_kai", displayName: "Kai" }];
+
+  // Contacts/DM rows that positively place someone in ANOTHER company are the
+  // shared create-scope rules' business (#597): the "In" option is marked
+  // unavailable and Create is blocked inline. Asking "add anyway?" first would
+  // promise something Create then refuses.
+  it("hands a member contacts place elsewhere to the scope rules, not the confirmation", async () => {
+    const createChannel = vi.fn(async () => ({ channelId: "chn_new" }));
+    open({
+      api: stubApi({ createChannel }),
+      rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
+      contacts: [
+        { personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_other" },
+      ],
+    });
+    await tick();
+    await gotoCreate("Growth");
+    await pickMember("Kai");
+
+    expect($('[data-testid="chat-create-confirm-external"]')).toBeNull();
+    expect(
+      document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+    ).toHaveLength(1);
+    // Indigo is the only company on offer and Kai is not in it, so the shared
+    // rules fall back to Personal — which a teammate cannot be in either.
+    expect(
+      $('[data-testid="chat-channel-validation"]')?.textContent,
+    ).toMatch(/Kai isn't a member of/);
+    expect(
+      $('[data-testid="chat-channel-scope-unavailable"]')?.textContent,
+    ).toContain("Kai isn't a member of Indigo");
+    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
+    expect(
+      [...scope.options].find((option) => option.value === "cmp_indigo")
+        ?.disabled,
+    ).toBe(true);
+    const create = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
+    expect(create.disabled).toBe(true);
+    create.click();
+    await tick();
+    expect(createChannel).not.toHaveBeenCalled();
+
+    // Removing the chip lifts the block.
+    $<HTMLButtonElement>('[aria-label="Remove Kai"]')?.click();
+    await tick();
+    expect($('[data-testid="chat-channel-validation"]')).toBeNull();
+  });
 
   // Regression: `external` was decided once, at pick time. Switching the
   // workspace afterwards smuggled the member across companies with no
   // confirmation and no `external` tag.
   it("re-asks when the workspace changes under an already-picked member", async () => {
+    const listCompanyMembers = rosters();
     open({
+      api: stubApi({ listCompanyMembers }),
       rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
-      contacts: [
-        { personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_other" },
-      ],
+      contacts: kaiContact,
       scopeCompanies: TWO_COMPANIES,
       activeScope: "cmp_other",
     });
     await tick();
     await gotoCreate("Growth");
+    await vi.waitFor(() => {
+      expect(listCompanyMembers).toHaveBeenCalledWith("cmp_other");
+    });
+    await tick();
 
     // Inside the active workspace → straight in, no question, no tag.
     await pickMember("Kai");
@@ -618,7 +687,10 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
     scope.value = "cmp_indigo";
     scope.dispatchEvent(new Event("change", { bubbles: true }));
-    await tick();
+    // The Indigo roster loads asynchronously; the question follows it.
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
+    });
 
     const confirm = $('[data-testid="chat-create-confirm-external"]');
     expect(confirm?.textContent?.replace(/\s+/g, " ")).toContain(
@@ -646,16 +718,20 @@ describe("CreateModal cross-company confirmation (D7)", () => {
   });
 
   it("keeps the member, tagged, once the switch is confirmed", async () => {
+    const listCompanyMembers = rosters();
     open({
+      api: stubApi({ listCompanyMembers }),
       rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
-      contacts: [
-        { personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_other" },
-      ],
+      contacts: kaiContact,
       scopeCompanies: TWO_COMPANIES,
       activeScope: "cmp_other",
     });
     await tick();
     await gotoCreate("Growth");
+    await vi.waitFor(() => {
+      expect(listCompanyMembers).toHaveBeenCalledWith("cmp_other");
+    });
+    await tick();
     await pickMember("Kai");
 
     const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
@@ -666,6 +742,11 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     };
 
     await select("cmp_indigo");
+    await vi.waitFor(() => {
+      expect(
+        $('[data-testid="chat-create-confirm-external-add"]'),
+      ).toBeTruthy();
+    });
     $<HTMLButtonElement>(
       '[data-testid="chat-create-confirm-external-add"]',
     )?.click();
@@ -748,14 +829,18 @@ describe("CreateModal cross-company confirmation (D7)", () => {
   // Regression: the alertdialog shared the card's Tab ring, so Tab walked out
   // of it and into the still-enabled form it was asking about.
   it("keeps Tab inside the confirmation", async () => {
+    const listCompanyMembers = rosters();
     open({
+      api: stubApi({ listCompanyMembers }),
       rows: [personRow({ id: "dm:prs_kai", title: "Kai", personUid: "prs_kai" })],
-      contacts: [
-        { personUid: "prs_kai", displayName: "Kai", companyUid: "cmp_other" },
-      ],
+      contacts: kaiContact,
     });
     await tick();
     await gotoCreate("Growth");
+    await vi.waitFor(() => {
+      expect(listCompanyMembers).toHaveBeenCalledWith("cmp_indigo");
+    });
+    await tick();
     await pickMember("Kai");
 
     const add = $<HTMLButtonElement>(

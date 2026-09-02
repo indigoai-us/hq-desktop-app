@@ -16,16 +16,16 @@
 // vite/client where those types are loaded (apps/sync); packages/ui's own
 // tsconfig has `types: []`, so the call is ts-ignored rather than redeclared
 // (a local ambient declaration would collide with vite/client downstream).
+// Call it unconditionally: a `typeof` guard on the glob
+// survives Vite's rewrite (Vite only rewrites the *call*) and evaluates to
+// false in the browser, so the production bundle would ship an empty set.
 const modules: Record<string, unknown> =
   // @ts-ignore -- vite/client typing not loaded in @hq/ui's typecheck
-  typeof import.meta.glob === "function"
-    ? // @ts-ignore -- see above
-      import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg}", {
-        eager: true,
-        query: "?url",
-        import: "default",
-      })
-    : {};
+  import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg}", {
+    eager: true,
+    query: "?url",
+    import: "default",
+  });
 
 /** Bundled generated-avatar URLs, sorted by filename for a stable order. */
 export const agentAvatarAssets: string[] = Object.keys(modules)

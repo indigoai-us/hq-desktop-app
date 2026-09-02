@@ -7,23 +7,29 @@
 // busy flag always clears, and the explicit check button + release-channel
 // selector drive the SAME orchestration.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
+import { resetUpdateStore } from "./update-store.svelte";
 
 const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+beforeEach(() => {
+  resetUpdateStore();
+});
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
   memoryStorage.clear();
+  resetUpdateStore();
   vi.clearAllMocks();
 });
 
@@ -45,6 +51,7 @@ function updatesAdapter(overrides: Record<string, unknown> = {}) {
       checkForUpdates: vi.fn(async () => ok(null)),
       checkCoreState: vi.fn(async () => ok({ versionBehind: false })),
       checkCliUpdate: vi.fn(async () => ok(null)),
+      installUpdate: vi.fn(async () => ok(undefined)),
       availableChannels: vi.fn(async () => ok(["stable", "beta", "alpha"])),
       ...overrides,
     },
@@ -173,5 +180,72 @@ describe("Updates pane: release channel selector", () => {
     // The guard model is unit-tested directly; here we assert the pane never
     // presents an install action for an older build.
     expect(statusTexts()).not.toContain("Restart to update");
+  });
+});
+
+describe("Updates pane: versions land before the slow core check", () => {
+  it("shows installed versions while the core row is still CHECKING", async () => {
+    const { adapter } = updatesAdapter({
+      getVersions: vi.fn(async () =>
+        ok({ core: "15.0.120-beta.3", cli: "5.105.1" }),
+      ),
+      checkCoreState: vi.fn(() => new Promise(() => {})),
+    });
+    mountUpdates(adapter);
+
+    await vi.waitFor(() => {
+      expect(statusTexts()).toContain("v15.0.120-beta.3");
+      expect(statusTexts()).toContain("v5.105.1");
+    });
+    expect(statusTexts()).toContain("CHECKING");
+    expect(statusTexts()).not.toContain("Checking installed location…");
+  });
+
+  it("does not start a second core check when focus fires while one is in flight", async () => {
+    let releaseCore: ((value: unknown) => void) | undefined;
+    const coreGate = new Promise((resolve) => {
+      releaseCore = resolve;
+    });
+    const checkCoreState = vi.fn(() =>
+      coreGate.then(() => ok({ versionBehind: false })),
+    );
+    const { adapter } = updatesAdapter({ checkCoreState });
+    mountUpdates(adapter);
+
+    await vi.waitFor(() => expect(checkCoreState).toHaveBeenCalledTimes(1));
+
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("focus"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(checkCoreState).toHaveBeenCalledTimes(1);
+
+    releaseCore?.(ok({ versionBehind: false }));
+    await vi.waitFor(() => expect(checkButton().disabled).toBe(false));
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(checkCoreState).toHaveBeenCalledTimes(2));
+  });
+
+  it("never renders a blank failed/unchecked reason after a core check reject", async () => {
+    const checkCoreState = vi.fn(async () => {
+      throw new Error("staging index build failed: HTTP 502");
+    });
+    const { adapter } = updatesAdapter({ checkCoreState });
+    mountUpdates(adapter);
+
+    // The rows render NOT CHECKED for a tick before hydration starts, so wait
+    // for the check to actually run and then for every row to leave CHECKING.
+    await vi.waitFor(() => expect(checkCoreState).toHaveBeenCalled());
+    await vi.waitFor(() => {
+      expect(statusTexts()).not.toContain("CHECKING");
+      expect(checkButton().disabled).toBe(false);
+    });
+    const text = statusTexts();
+    expect(text).toMatch(/CHECK FAILED|NOT CHECKED/);
+    expect(text).not.toMatch(/failed:\s*$/);
+    expect(text).toMatch(
+      /staging index build failed: HTTP 502|could not be checked|did not finish|Try again/,
+    );
   });
 });
