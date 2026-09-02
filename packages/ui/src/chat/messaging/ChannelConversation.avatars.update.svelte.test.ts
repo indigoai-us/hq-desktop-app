@@ -3,7 +3,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 import ChannelConversation from "./ChannelConversation.svelte";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_h/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -38,11 +41,11 @@ describe("ChannelConversation message avatars (reactive roster)", () => {
     );
     expect(host.querySelector(".dm-msg-avatar img")).toBeNull();
 
-    props.avatarByUid = { prs_h: "https://cdn.test/ada.jpg" };
+    props.avatarByUid = { prs_h: ADA_PHOTO };
     await tick();
     expect(
       host.querySelector(".dm-msg-avatar img.avatar-img")?.getAttribute("src"),
-    ).toBe("https://cdn.test/ada.jpg");
+    ).toBe(ADA_PHOTO);
     expect(host.querySelector(".dm-msg-avatar .monogram")).toBeNull();
   });
 });

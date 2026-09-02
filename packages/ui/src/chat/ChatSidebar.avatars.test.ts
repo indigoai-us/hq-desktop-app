@@ -6,13 +6,15 @@ import { mount, tick, unmount } from "svelte";
 import ChatSidebar from "./ChatSidebar.svelte";
 import type { ChatSidebarApi } from "./chat-api";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src";
 import { agentAvatarAssets, agentAvatarFor } from "./messaging/agent-avatars";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 const now = () => new Date().toISOString();
-const PHOTO_URL = "https://cdn.test/agent.png";
+const PHOTO_URL = `https://${MARKETPLACE_COVER_HOST}/members/agt_photo/h.png?X-Amz-Signature=mock`;
+const HUMAN_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_h/h.png?X-Amz-Signature=mock`;
 
 const seedRow: ChannelDirectoryRow = {
   channelId: "chn_proj",
@@ -182,7 +184,7 @@ describe("ChatSidebar DM avatars", () => {
       props: {
         api,
         seedDirectory: [seedRow],
-        avatarByUid: { prs_h: PHOTO_URL },
+        avatarByUid: { prs_h: HUMAN_PHOTO },
         self: { uid: "prs_stefan" },
       },
     });
@@ -198,6 +200,6 @@ describe("ChatSidebar DM avatars", () => {
       '[data-conversation-id="dm:prs_h"] [data-testid="chat-dm-avatar"]',
     );
     expect(human?.getAttribute("data-avatar")).toBe("photo");
-    expect(human?.querySelector("img")?.getAttribute("src")).toBe(PHOTO_URL);
+    expect(human?.querySelector("img")?.getAttribute("src")).toBe(HUMAN_PHOTO);
   });
 });

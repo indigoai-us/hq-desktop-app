@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./parse-pack.js";
+export * from "./csp-image-src.js";
 export * from "./registry.js";
 export * from "./load-pack.js";
 export * from "./filter-items.js";

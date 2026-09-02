@@ -8,8 +8,10 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
+import type { ConversationMessageWire } from "../chat/chat-api.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import { agentAvatarAssets } from "../chat/messaging/agent-avatars";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src.js";
 
 const CHANNEL_ROW = {
   id: "ch:chn_visual",
@@ -18,8 +20,9 @@ const CHANNEL_ROW = {
   channelId: "chn_visual",
 } as ConversationRow;
 
-const HUMAN_PHOTO = "https://cdn.test/corey.jpg";
-const SELF_PHOTO = "https://cdn.test/me.jpg";
+const HUMAN_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_corey/h.png?X-Amz-Signature=mock`;
+const SELF_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_me/h.png?X-Amz-Signature=mock`;
+const JACOB_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_jacob/h.png?X-Amz-Signature=mock`;
 const now = () => new Date().toISOString();
 
 function adapter(opts: {
@@ -84,7 +87,7 @@ async function mountChannel(opts: {
   members?: Array<Record<string, unknown>>;
   membersDelay?: () => Promise<void>;
   selfAvatarUrl?: string | null;
-  messages: Array<Record<string, unknown>>;
+  messages: ConversationMessageWire[];
 }): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -180,7 +183,7 @@ describe("DesktopApp channel message avatars", () => {
         {
           personUid: "prs_jacob",
           displayName: "Jacob",
-          avatarUrl: "https://cdn.test/jacob.jpg",
+          avatarUrl: JACOB_PHOTO,
         },
       ],
       messages: [
@@ -206,7 +209,7 @@ describe("DesktopApp channel message avatars", () => {
         host
           .querySelector(".dm-msg-avatar img.avatar-img")
           ?.getAttribute("src"),
-      ).toBe("https://cdn.test/jacob.jpg");
+      ).toBe(JACOB_PHOTO);
     });
   });
 

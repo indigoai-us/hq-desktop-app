@@ -3,11 +3,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 import {
   agentAvatarAssets,
   agentAvatarFor,
   authorAvatarUrl,
 } from "./agent-avatars";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
+const AGENT_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_x/h.png?X-Amz-Signature=mock`;
 
 const src = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "agent-avatars.ts"),
@@ -52,16 +56,23 @@ describe("agent-avatars", () => {
   });
 
   it("returns a roster photo for any uid and null otherwise", () => {
-    expect(authorAvatarUrl("prs_ada", { prs_ada: "https://cdn/ada.jpg" })).toBe(
-      "https://cdn/ada.jpg",
-    );
-    expect(authorAvatarUrl(" agt_x ", { agt_x: " https://cdn/x.jpg " })).toBe(
-      "https://cdn/x.jpg",
+    expect(authorAvatarUrl("prs_ada", { prs_ada: ADA_PHOTO })).toBe(ADA_PHOTO);
+    expect(authorAvatarUrl(" agt_x ", { agt_x: ` ${AGENT_PHOTO} ` })).toBe(
+      AGENT_PHOTO,
     );
     expect(authorAvatarUrl("prs_ada", {})).toBeNull();
     expect(authorAvatarUrl("prs_ada", null)).toBeNull();
-    expect(authorAvatarUrl("", { prs_ada: "https://cdn/ada.jpg" })).toBeNull();
-    expect(authorAvatarUrl(null, { prs_ada: "https://cdn/ada.jpg" })).toBeNull();
+    expect(authorAvatarUrl("", { prs_ada: ADA_PHOTO })).toBeNull();
+    expect(authorAvatarUrl(null, { prs_ada: ADA_PHOTO })).toBeNull();
+  });
+
+  it("drops arbitrary http(s) roster URLs that the packaged CSP cannot paint", () => {
+    expect(
+      authorAvatarUrl("prs_ada", { prs_ada: "https://cdn.test/ada.jpg" }),
+    ).toBeNull();
+    expect(
+      authorAvatarUrl("agt_x", { agt_x: "https://cdn.example.com/x.jpg" }),
+    ).toBeNull();
   });
 
   it("does not guard import.meta.glob behind typeof", () => {

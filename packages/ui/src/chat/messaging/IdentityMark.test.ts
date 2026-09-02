@@ -3,8 +3,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount, flushSync } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 import IdentityMark from "./IdentityMark.svelte";
 import { agentAvatarAssets, agentAvatarFor } from "./agent-avatars";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
+const AGENT_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_parker/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -21,10 +25,10 @@ describe("IdentityMark avatar", () => {
     document.body.appendChild(host);
     component = mount(IdentityMark, {
       target: host,
-      props: { kind: "person", label: "Ada", avatarUrl: "https://cdn/x.jpg" },
+      props: { kind: "person", label: "Ada", avatarUrl: ADA_PHOTO },
     });
     const img = host.querySelector("img.avatar-img") as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn/x.jpg");
+    expect(img?.getAttribute("src")).toBe(ADA_PHOTO);
     expect(host.querySelector(".monogram")).toBeNull();
   });
 
@@ -44,7 +48,7 @@ describe("IdentityMark avatar", () => {
     document.body.appendChild(host);
     component = mount(IdentityMark, {
       target: host,
-      props: { kind: "person", label: "Ada", avatarUrl: "https://cdn/x.jpg" },
+      props: { kind: "person", label: "Ada", avatarUrl: ADA_PHOTO },
     });
     const img = host.querySelector("img.avatar-img") as HTMLImageElement;
     img.dispatchEvent(new Event("error"));
@@ -61,12 +65,12 @@ describe("IdentityMark avatar", () => {
       props: {
         kind: "agent",
         label: "Parker",
-        avatarUrl: "https://cdn/agent.jpg",
+        avatarUrl: AGENT_PHOTO,
         agentUid: "agt_parker",
       },
     });
     const img = host.querySelector("img.avatar-img") as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn/agent.jpg");
+    expect(img?.getAttribute("src")).toBe(AGENT_PHOTO);
   });
 
   it("renders a deterministic generated avatar for a photo-less agent", () => {
@@ -127,9 +131,24 @@ describe("IdentityMark avatar", () => {
       props: {
         kind: "channel",
         label: "general",
-        avatarUrl: "https://cdn/x.jpg",
+        avatarUrl: ADA_PHOTO,
       },
     });
     expect(host.querySelector("img.avatar-img")).toBeNull();
+  });
+
+  it("does not paint an arbitrary https avatarUrl (packaged CSP contract)", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: {
+        kind: "person",
+        label: "Ada Lovelace",
+        avatarUrl: "https://cdn.test/ada.jpg",
+      },
+    });
+    expect(host.querySelector("img.avatar-img")).toBeNull();
+    expect(host.querySelector(".monogram")?.textContent).toBe("AL");
   });
 });

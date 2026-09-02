@@ -3,8 +3,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src.js";
 import MemberProfilePanel from "./MemberProfilePanel.svelte";
 import type { StatusPersonRow } from "./channel-status-model.js";
+
+const MARCUS_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_marcus/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -54,12 +57,24 @@ describe("MemberProfilePanel", () => {
     document.body.appendChild(host);
     component = mount(MemberProfilePanel, {
       target: host,
-      props: { member: row(), avatarUrl: "https://cdn.test/a.jpg" },
+      props: { member: row(), avatarUrl: MARCUS_PHOTO },
     });
     const img = host.querySelector(
       '[data-testid="member-profile-avatar-img"]',
     ) as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn.test/a.jpg");
+    expect(img?.getAttribute("src")).toBe(MARCUS_PHOTO);
+  });
+
+  it("does not paint an arbitrary https avatarUrl (packaged CSP contract)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: { member: row(), avatarUrl: "https://cdn.test/a.jpg" },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-img"]'),
+    ).toBeNull();
   });
 
   it("tags the panel 'you' for the signed-in member", async () => {
@@ -131,11 +146,11 @@ describe("MemberProfilePanel", () => {
     document.body.appendChild(host);
     component = mount(MemberProfilePanel, {
       target: host,
-      props: { member: row({ avatarUrl: "https://cdn/m.jpg" }) },
+      props: { member: row({ avatarUrl: MARCUS_PHOTO }) },
     });
     const img = host.querySelector(
       '[data-testid="member-profile-avatar-img"]',
     ) as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn/m.jpg");
+    expect(img?.getAttribute("src")).toBe(MARCUS_PHOTO);
   });
 });

@@ -3,9 +3,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 import ReplyPanel from "./ReplyPanel.svelte";
 import type { ConversationApi } from "../chat-api";
 import { agentAvatarAssets } from "./agent-avatars";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -59,7 +62,7 @@ describe("ReplyPanel avatars", () => {
         channelId: "chn_1",
         seedRoot: root,
         onclose: () => {},
-        avatarByUid: { prs_ada: "https://cdn.test/ada.jpg" },
+        avatarByUid: { prs_ada: ADA_PHOTO },
       },
     });
     await tick();
@@ -68,7 +71,7 @@ describe("ReplyPanel avatars", () => {
     const rootImg = host.querySelector(
       '[data-testid="reply-panel-root"] img.avatar-img',
     );
-    expect(rootImg?.getAttribute("src")).toBe("https://cdn.test/ada.jpg");
+    expect(rootImg?.getAttribute("src")).toBe(ADA_PHOTO);
 
     await tick();
     const replyImgs = [

@@ -16,6 +16,7 @@ import {
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
+import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
@@ -1603,7 +1604,7 @@ export function rowAvatar(
   avatarByUid?: Record<string, string> | null,
 ): RowAvatar {
   const uid = (row.personUid ?? "").trim();
-  const photo = uid ? avatarByUid?.[uid] : undefined;
+  const photo = uid ? paintableAvatarSrc(avatarByUid?.[uid]) : null;
   if (photo) return { kind: "photo", src: photo };
   if (row.kind === "dm" && uid && isAgentUid(uid)) {
     const generated = agentAvatarFor(uid);

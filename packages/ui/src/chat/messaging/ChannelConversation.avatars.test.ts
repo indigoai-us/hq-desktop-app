@@ -3,8 +3,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 import ChannelConversation from "./ChannelConversation.svelte";
 import { agentAvatarAssets } from "./agent-avatars";
+
+const AGENT_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_photo/h.png?X-Amz-Signature=mock`;
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_h/h.png?X-Amz-Signature=mock`;
+const SELF_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_me/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -56,7 +61,7 @@ describe("ChannelConversation message avatars", () => {
   it("renders photo, generated, and initials avatars on group-start rows", async () => {
     const root = mountWith({
       messages,
-      avatarByUid: { agt_photo: "https://cdn.test/agent.png" },
+      avatarByUid: { agt_photo: AGENT_PHOTO },
     });
     await tick();
 
@@ -64,7 +69,7 @@ describe("ChannelConversation message avatars", () => {
     expect(avatars).toHaveLength(3);
 
     expect(avatars[0]?.querySelector("img.avatar-img")?.getAttribute("src")).toBe(
-      "https://cdn.test/agent.png",
+      AGENT_PHOTO,
     );
 
     const generatedSrc = avatars[1]
@@ -81,12 +86,12 @@ describe("ChannelConversation message avatars", () => {
   it("renders a roster photo for a human author", async () => {
     const root = mountWith({
       messages: [messages[2]],
-      avatarByUid: { prs_h: "https://cdn.test/ada.jpg" },
+      avatarByUid: { prs_h: ADA_PHOTO },
     });
     await tick();
     const avatar = root.querySelector(".dm-msg-avatar");
     expect(avatar?.querySelector("img.avatar-img")?.getAttribute("src")).toBe(
-      "https://cdn.test/ada.jpg",
+      ADA_PHOTO,
     );
     expect(avatar?.querySelector(".monogram")).toBeNull();
   });
@@ -104,11 +109,22 @@ describe("ChannelConversation message avatars", () => {
         },
       ],
       selfPersonUid: "prs_me",
-      avatarByUid: { prs_me: "https://cdn.test/me.jpg" },
+      avatarByUid: { prs_me: SELF_PHOTO },
     });
     await tick();
     expect(
       root.querySelector(".dm-msg-avatar img.avatar-img")?.getAttribute("src"),
-    ).toBe("https://cdn.test/me.jpg");
+    ).toBe(SELF_PHOTO);
+  });
+
+  it("does not paint an arbitrary https roster URL (packaged CSP contract)", async () => {
+    const root = mountWith({
+      messages: [messages[2]],
+      avatarByUid: { prs_h: "https://cdn.test/ada.jpg" },
+    });
+    await tick();
+    const avatar = root.querySelector(".dm-msg-avatar");
+    expect(avatar?.querySelector("img")).toBeNull();
+    expect(avatar?.querySelector(".monogram")?.textContent).toBe("AL");
   });
 });

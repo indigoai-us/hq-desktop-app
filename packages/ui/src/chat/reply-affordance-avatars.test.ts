@@ -9,7 +9,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src";
 import ChannelConversation from "./messaging/ChannelConversation.svelte";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 import type { ConversationMessageWire } from "./chat-api";
 import type { ReplyPreview } from "./messaging/ReplyPanel.svelte";
 
@@ -75,7 +78,7 @@ describe("thread-reply affordance avatars", () => {
       target: host,
       props: {
         messages: [root],
-        avatarByUid: { prs_ada: "https://cdn.test/ada.jpg" },
+        avatarByUid: { prs_ada: ADA_PHOTO },
         replyPreviewByRoot: {
           [root.eventId]: {
             author: "Ada",
@@ -92,7 +95,7 @@ describe("thread-reply affordance avatars", () => {
     const stack = host.querySelector('[data-testid="reply-authors"]');
     expect(
       stack?.querySelector("img.avatar-img")?.getAttribute("src"),
-    ).toBe("https://cdn.test/ada.jpg");
+    ).toBe(ADA_PHOTO);
   });
 
   it("caps the avatar stack at 3 authors", async () => {
