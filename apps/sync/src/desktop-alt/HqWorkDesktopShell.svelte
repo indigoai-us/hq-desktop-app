@@ -660,6 +660,9 @@
       onopenurl={openBrowserUrl}
       onactivethreadchange={setActiveReplyThread}
       bootTimeoutMs={bootTimeoutMs}
+      onShellReady={() => {
+        void invokeFn('shell_ready');
+      }}
       onembeddednavigationready={() => {
         detachNavigation?.();
         const detach = navigation.attach((target) => {

@@ -1253,6 +1253,11 @@
         if (mounted) hqVersion = version;
       })
       .catch(() => undefined);
+    void invoke<string | null>('take_launch_agent_repoint_notice')
+      .then((note) => {
+        if (mounted && note) flashToast(note, 'neutral');
+      })
+      .catch(() => undefined);
     void invoke<{ hqFolderPath?: string | null }>('get_config')
       .then((config) => {
         if (mounted) hqFolderPath = config?.hqFolderPath ?? null;
@@ -1900,7 +1905,13 @@
   {/if}
 
   {#if actionToast}
-    <div class={`action-toast ${actionToast.tone}`} role="status">
+    <div
+      class={`action-toast ${actionToast.tone}`}
+      role="status"
+      data-testid={actionToast.text === 'HQ updated its launch settings; the old copy was retired'
+        ? 'launchagent-repoint-notice'
+        : undefined}
+    >
       <span class="toast-dot" aria-hidden="true"></span>
       <span class="toast-text">{actionToast.text}</span>
       <button class="toast-dismiss" type="button" aria-label="Dismiss" onclick={dismissToast}>×</button>

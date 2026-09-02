@@ -18,6 +18,9 @@ Implemented:
 - `onboarding-release-monitor.ts` — verify stable updater targets and installer
   links, plus the tag-pinned beta or alpha updater manifest when the current
   `versions.toml` is a prerelease.
+- `release-mark-bad.mjs` — operator pull: stamp `rollback` / `bad_versions` /
+  `min_supported` onto a published `latest.json` (`gh release upload --clobber`)
+  and move GitHub latest off a yanked build. Dry-run with `--fixture`.
 
 Planned:
 

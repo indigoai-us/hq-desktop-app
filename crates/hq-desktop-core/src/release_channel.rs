@@ -258,6 +258,142 @@ fn strip_tag_v(s: &str) -> &str {
     s.trim().strip_prefix('v').unwrap_or_else(|| s.trim())
 }
 
+/// Extra fields on a Tauri `latest.json` that direct a rollback.
+///
+/// Tauri's updater ignores unknown keys, so these sit alongside `version`,
+/// `notes`, `pub_date`, and `platforms` without breaking older clients.
+///
+/// ```json
+/// {
+///   "version": "0.10.177",
+///   "rollback": true,
+///   "bad_versions": ["0.10.178"],
+///   "min_supported": "0.10.177",
+///   "platforms": { "...": { "url": "...", "signature": "..." } }
+/// }
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateFeedPolicy {
+    /// Version the feed itself offers (the Tauri `version` field).
+    pub version: Option<semver::Version>,
+    /// When true, a running version newer than the offered one is treated as
+    /// a rollback target (the feed is an intentional pull).
+    pub rollback: bool,
+    /// Running versions that must accept the offered build even if it is older.
+    pub bad_versions: Vec<semver::Version>,
+    /// Floor: a running version below this is treated as needing the offer.
+    pub min_supported: Option<semver::Version>,
+}
+
+impl UpdateFeedPolicy {
+    /// True when `current` is listed as bad, is below `min_supported`, or the
+    /// feed is a rollback pull and `current` is not the offered version.
+    pub fn marks_running_version_bad(&self, current: &semver::Version) -> bool {
+        if self.bad_versions.iter().any(|version| version == current) {
+            return true;
+        }
+        if self
+            .min_supported
+            .as_ref()
+            .is_some_and(|min| current < min)
+        {
+            return true;
+        }
+        if self.rollback {
+            if let Some(offered) = &self.version {
+                return current != offered;
+            }
+            return true;
+        }
+        false
+    }
+}
+
+/// Parse a SemVer from a feed field (`0.10.178` or `v0.10.178`). Invalid
+/// values are skipped so a typo in `bad_versions` cannot take the updater down.
+pub fn parse_feed_version(raw: &str) -> Option<semver::Version> {
+    semver::Version::parse(strip_tag_v(raw)).ok()
+}
+
+/// Read the rollback / bad-version / min-supported markers from a
+/// `latest.json` body. Unknown or malformed extra fields are ignored.
+pub fn parse_update_feed_policy(value: &serde_json::Value) -> UpdateFeedPolicy {
+    let version = value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .and_then(parse_feed_version);
+    let rollback = value
+        .get("rollback")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bad_versions = value
+        .get("bad_versions")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().and_then(parse_feed_version))
+                .collect()
+        })
+        .unwrap_or_default();
+    let min_supported = value
+        .get("min_supported")
+        .and_then(|v| v.as_str())
+        .and_then(parse_feed_version);
+    UpdateFeedPolicy {
+        version,
+        rollback,
+        bad_versions,
+        min_supported,
+    }
+}
+
+/// Whether the updater should treat `offered` as an installable update for
+/// `current`. Newer is always an update. An older (or equal) offer is accepted
+/// only when the running version is marked bad — the "only newer" bypass.
+pub fn should_offer_update(
+    current: &semver::Version,
+    offered: &semver::Version,
+    policy: &UpdateFeedPolicy,
+) -> bool {
+    if offered > current {
+        return true;
+    }
+    if offered == current {
+        return false;
+    }
+    policy.marks_running_version_bad(current)
+}
+
+/// Recovery "Reinstall latest": always install the feed target, including
+/// when it matches the running version, so a wedged same-version install
+/// can still be replaced. Signature verification still applies.
+pub fn should_reinstall_feed_target(
+    current: &semver::Version,
+    offered: &semver::Version,
+) -> bool {
+    let _ = (current, offered);
+    true
+}
+
+/// Fetch and parse the extra rollback fields from a `latest.json` URL.
+/// Network / JSON failures return the empty policy so a marker fetch can
+/// never disable ordinary forward updates.
+pub async fn fetch_update_feed_policy(url: &str) -> UpdateFeedPolicy {
+    let client = build_client();
+    let resp = match client.get(url).timeout(REQUEST_TIMEOUT).send().await {
+        Ok(resp) => resp,
+        Err(_) => return UpdateFeedPolicy::default(),
+    };
+    if !resp.status().is_success() {
+        return UpdateFeedPolicy::default();
+    }
+    match resp.json::<serde_json::Value>().await {
+        Ok(value) => parse_update_feed_policy(&value),
+        Err(_) => UpdateFeedPolicy::default(),
+    }
+}
+
 fn stable_fallback() -> ResolvedChannelEndpoint {
     ResolvedChannelEndpoint {
         url: STABLE_FALLBACK_ENDPOINT.to_string(),
@@ -838,5 +974,98 @@ mod tests {
             "https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.170-beta.3/latest.json"
         );
         assert_eq!(resolved.provenance, EndpointProvenance::ChannelRelease);
+    }
+
+    fn v(raw: &str) -> semver::Version {
+        parse_feed_version(raw).unwrap()
+    }
+
+    #[test]
+    fn newer_offer_is_always_an_update_without_markers() {
+        let policy = UpdateFeedPolicy::default();
+        assert!(should_offer_update(&v("0.10.177"), &v("0.10.179"), &policy));
+        assert!(!should_offer_update(&v("0.10.177"), &v("0.10.177"), &policy));
+        assert!(!should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+    }
+
+    #[test]
+    fn bad_version_marker_allows_an_older_offer() {
+        let policy = UpdateFeedPolicy {
+            version: Some(v("0.10.177")),
+            rollback: false,
+            bad_versions: vec![v("0.10.178")],
+            min_supported: None,
+        };
+        assert!(should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+        assert!(policy.marks_running_version_bad(&v("0.10.178")));
+        // A healthy neighbor on 0.10.179 is not listed as bad — no silent
+        // downgrade just because the feed is older.
+        assert!(!should_offer_update(&v("0.10.179"), &v("0.10.177"), &policy));
+        assert!(!policy.marks_running_version_bad(&v("0.10.177")));
+    }
+
+    #[test]
+    fn rollback_flag_treats_anything_other_than_the_offered_version_as_bad() {
+        let policy = UpdateFeedPolicy {
+            version: Some(v("0.10.177")),
+            rollback: true,
+            bad_versions: vec![],
+            min_supported: None,
+        };
+        assert!(should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+        assert!(!should_offer_update(&v("0.10.177"), &v("0.10.177"), &policy));
+        assert!(should_offer_update(&v("0.10.176"), &v("0.10.177"), &policy));
+    }
+
+    #[test]
+    fn min_supported_flags_a_build_below_the_floor() {
+        let policy = UpdateFeedPolicy {
+            version: Some(v("0.10.177")),
+            rollback: false,
+            bad_versions: vec![],
+            min_supported: Some(v("0.10.177")),
+        };
+        assert!(policy.marks_running_version_bad(&v("0.10.176")));
+        assert!(!policy.marks_running_version_bad(&v("0.10.177")));
+        assert!(should_offer_update(&v("0.10.176"), &v("0.10.177"), &policy));
+    }
+
+    #[test]
+    fn parse_update_feed_policy_reads_the_documented_json_shape() {
+        let value = serde_json::json!({
+            "version": "0.10.177",
+            "notes": "pull 178",
+            "rollback": true,
+            "bad_versions": ["0.10.178", "v0.10.178-beta.1", "not-a-version"],
+            "min_supported": "v0.10.177",
+            "platforms": {}
+        });
+        let policy = parse_update_feed_policy(&value);
+        assert_eq!(policy.version, Some(v("0.10.177")));
+        assert!(policy.rollback);
+        assert_eq!(policy.bad_versions, vec![v("0.10.178"), v("0.10.178-beta.1")]);
+        assert_eq!(policy.min_supported, Some(v("0.10.177")));
+        assert!(should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+    }
+
+    #[test]
+    fn parse_update_feed_policy_defaults_when_markers_are_absent() {
+        let policy = parse_update_feed_policy(&serde_json::json!({
+            "version": "0.10.177",
+            "platforms": {}
+        }));
+        assert_eq!(policy, UpdateFeedPolicy {
+            version: Some(v("0.10.177")),
+            rollback: false,
+            bad_versions: vec![],
+            min_supported: None,
+        });
+        assert!(!should_offer_update(&v("0.10.178"), &v("0.10.177"), &policy));
+    }
+
+    #[test]
+    fn reinstall_mode_offers_even_the_running_version() {
+        assert!(should_reinstall_feed_target(&v("0.10.177"), &v("0.10.177")));
+        assert!(should_reinstall_feed_target(&v("0.10.178"), &v("0.10.177")));
     }
 }
