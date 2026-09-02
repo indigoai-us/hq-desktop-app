@@ -292,7 +292,12 @@
     load: (row) => {
       const projectId = projectIdFor(row);
       return loadLiveProjectMeta(
-        { ...row, projectId: projectId || row.projectId },
+        {
+          channelId: row.channelId,
+          companyUid: row.companyUid,
+          projectId: projectId || row.projectId,
+          title: row.title,
+        },
         companyLabelFor(row.companyUid),
         { fetch: workFetch },
       );
