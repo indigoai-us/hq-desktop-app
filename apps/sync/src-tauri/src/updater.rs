@@ -110,6 +110,8 @@ pub(crate) fn emit_update_install_failed(app: &AppHandle, version: &str, message
         "update:install-failed",
         UpdateInstallFailed { version, message },
     );
+    // Client health (US-002): persist + report the failed install.
+    crate::commands::client_health::record_updater_install_failed();
 }
 
 fn emit_update_downloaded(app: &AppHandle, version: &str) {
@@ -473,6 +475,11 @@ fn apply_absent_and_emit(
     if transition.applied && transition.cleared_pending {
         let _ = app.emit("update:cleared", ());
     }
+    if transition.applied {
+        // Client health (US-002): a successful check confirmed no update —
+        // persist `up_to_date` (distinct from never-checked `unchecked`).
+        crate::commands::client_health::record_updater_status(&transition.status);
+    }
     Ok(transition.status)
 }
 
@@ -484,6 +491,10 @@ async fn record_and_announce_update(
     announcement: UpdateAnnouncement,
 ) -> Result<Option<UpdateInfo>, String> {
     let transition = apply_discovered_to_app(app, ticket, discovered, authoritative)?;
+    if transition.applied {
+        // Client health (US-002): persist + report the updater transition.
+        crate::commands::client_health::record_updater_status(&transition.status);
+    }
     let info = transition.status.pending_info();
     if !transition.applied || !transition.announce_available {
         return Ok(info);
@@ -748,6 +759,9 @@ async fn install_verified_update(
         crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         crate::commands::telemetry::emit_version_heartbeat_after_update(&update.version).await;
+        // Client health (US-002): best-effort heartbeat before restart so the
+        // server sees the post-update state without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update().await;
         app.restart();
     }
 }
@@ -942,6 +956,9 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.info.version)
             .await;
+        // Client health (US-002): best-effort heartbeat before restart so the
+        // server sees the post-update state without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update().await;
         app.restart();
     }
 }

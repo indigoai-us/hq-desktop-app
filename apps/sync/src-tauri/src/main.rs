@@ -1039,6 +1039,10 @@ fn main() {
             updater::setup_update_checker(app.handle());
             commands::telemetry::setup_daily_active_emit();
             commands::telemetry::setup_version_heartbeat();
+            // Client health (US-002): startup + 5-minute operational health
+            // heartbeat, woken immediately on sync/updater/auth/pause/conflict
+            // state changes. Consent-free operational reporting.
+            commands::client_health::setup_client_health_heartbeat();
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());

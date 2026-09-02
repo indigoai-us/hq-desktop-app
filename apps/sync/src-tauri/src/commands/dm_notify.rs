@@ -764,7 +764,10 @@ pub(crate) async fn clear_notification_credentials<R: Runtime>(
         .ok_or_else(|| "Notification session state is unavailable".to_string())?;
     invalidate_notification_session(app).await;
     let _credential_write = state.credential_write_gate.lock().await;
-    cognito::clear_tokens().await
+    let cleared = cognito::clear_tokens().await;
+    // Client health (US-002): sign-out is an auth state change.
+    crate::commands::client_health::notify_client_health_state_changed();
+    cleared
 }
 
 pub(crate) async fn refresh_notification_credentials<R: Runtime>(

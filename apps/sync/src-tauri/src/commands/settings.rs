@@ -200,7 +200,11 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
 #[tauri::command]
 pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
-    save_settings_at(&path, &prefs)
+    save_settings_at(&path, &prefs)?;
+    // Client health (US-002): cloudPaused / realtimeSync / instantSync live in
+    // these prefs — report the new pause state immediately.
+    crate::commands::client_health::notify_client_health_state_changed();
+    Ok(())
 }
 
 /// The command's durable write seam. A new caller/repository that reads this

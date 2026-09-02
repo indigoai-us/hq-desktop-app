@@ -1799,6 +1799,13 @@ impl RunnerErrorRollup {
         self.enospc > 0 && !self.has_non_disk_full_error()
     }
 
+    /// True when at least one filesystem-permission error (`EPERM`/`EACCES`) was
+    /// recorded this pass. The client-health reporter (US-002) maps this to the
+    /// closed `PERMISSION_DENIED` reason code — a class token, never a path.
+    pub fn has_permission_error(&self) -> bool {
+        self.eperm > 0 || self.eacces > 0
+    }
+
     /// True when at least one runner error of a class OTHER than disk exhaustion
     /// was recorded this pass. The disk-full disposition gate requires this to be
     /// false, so a mixed rollup (e.g. `EPERM:1,ENOSPC:1`) never suppresses.

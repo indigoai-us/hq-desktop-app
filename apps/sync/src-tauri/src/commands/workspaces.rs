@@ -682,6 +682,8 @@ pub fn set_workspace_sync_enabled(slug: String, enabled: bool) -> Result<bool, S
         return Err("personal sync is managed through settings".to_string());
     }
     write_workspace_sync_enabled(&slug, enabled)?;
+    // Client health (US-002): per-workspace pause is a reportable state change.
+    crate::commands::client_health::notify_client_health_state_changed();
     Ok(enabled)
 }
 

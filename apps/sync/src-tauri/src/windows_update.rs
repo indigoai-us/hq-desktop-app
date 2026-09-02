@@ -639,6 +639,8 @@ pub async fn install_verified_bytes(
         ),
     );
     crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.version).await;
+    // Client health (US-002): best-effort heartbeat before the handoff exits.
+    crate::commands::client_health::emit_client_health_after_update().await;
     quiescence.commit();
     app.exit(0);
     Ok(())
