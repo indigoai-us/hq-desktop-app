@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -43,19 +43,49 @@ describe('avatar pack picker source contract', () => {
       process.cwd(),
       '../../packages/ui/src/avatars/packs/hq-agent-mascots/mascots',
     );
-    const pngs = ['v1', 'v2'].flatMap((ver) =>
+    const images = ['v1', 'v2'].flatMap((ver) =>
       readdirSync(join(root, ver))
-        .filter((name) => name.endsWith('.png'))
+        .filter((name) => /\.(png|jpe?g|webp)$/i.test(name))
         .map((name) => `${ver}/${name}`),
     );
-    expect(pngs).toHaveLength(24);
-    expect(existsSync(join(root, 'v2/dot.png'))).toBe(true);
+    expect(images).toHaveLength(24);
+    expect(existsSync(join(root, 'v2/dot.jpg'))).toBe(true);
     expect(snapshots).toMatch(/import\.meta\.glob\(/);
     expect(snapshots).not.toMatch(/typeof\s+import\.meta\.glob/);
     expect(snapshots).toContain('./packs/hq-agent-mascots/');
     expect(snapshots).toContain('bindBundledPackSrcs');
+    expect(snapshots).toContain('lookupBundledAsset');
     expect(agentAvatars).toMatch(/import\.meta\.glob\(/);
     expect(agentAvatars).toContain('query: "?url"');
+    expect(agentAvatars).toContain('agent-*.{png,svg,jpg,jpeg}');
+  });
+
+  it('keeps globbed avatar snapshots small enough for the universal binary', () => {
+    // Vite dist is embedded in EACH slice of the macOS universal binary.
+    // Uncompressed 512px PNGs in v0.10.181 added ~13 MB and failed the
+    // 120 MB app-binary budget. JPEG 512px snapshots are the gate.
+    const mascotRoot = join(
+      process.cwd(),
+      '../../packages/ui/src/avatars/packs/hq-agent-mascots/mascots',
+    );
+    const marksRoot = join(
+      process.cwd(),
+      '../../packages/ui/src/assets/agent-avatars',
+    );
+    const dirBytes = (dir: string, pattern: RegExp): number =>
+      readdirSync(dir)
+        .filter((name) => pattern.test(name))
+        .reduce((sum, name) => sum + statSync(join(dir, name)).size, 0);
+    const mascotBytes = ['v1', 'v2'].reduce(
+      (sum, ver) =>
+        sum + dirBytes(join(mascotRoot, ver), /\.(png|jpe?g|webp)$/i),
+      0,
+    );
+    const markBytes = dirBytes(marksRoot, /^agent-.*\.(png|svg|jpe?g)$/i);
+    expect(mascotBytes).toBeGreaterThan(0);
+    expect(markBytes).toBeGreaterThan(0);
+    expect(mascotBytes).toBeLessThan(1.5 * 1024 * 1024);
+    expect(markBytes).toBeLessThan(0.75 * 1024 * 1024);
   });
 
   it('does not join Vite asset URLs onto builtin: and never paints http(s) tiles', () => {

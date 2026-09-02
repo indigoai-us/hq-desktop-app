@@ -11,6 +11,7 @@ import { generatedMarksPack } from "./generated-marks.js";
 import {
   bundledMascotAssets,
   HQ_AGENT_MASCOTS_SNAPSHOT,
+  lookupBundledAsset,
 } from "./snapshots.js";
 import {
   GENERATED_MARKS_AUTHOR,
@@ -159,5 +160,31 @@ describe("bundled mascots snapshot", () => {
       expect(src).not.toMatch(/^builtin:/);
       expect(src).toContain("hq-agent-mascots");
     }
+  });
+
+  it("maps live .png catalog srcs onto the compressed JPEG snapshot files", () => {
+    expect(Object.keys(bundledMascotAssets).some((key) => key.endsWith(".jpg"))).toBe(
+      true,
+    );
+    expect(lookupBundledAsset("mascots/v2/dot.png", bundledMascotAssets)).toBe(
+      bundledMascotAssets["mascots/v2/dot.jpg"],
+    );
+    expect(lookupBundledAsset("mascots/v2/dot.jpg", bundledMascotAssets)).toBe(
+      bundledMascotAssets["mascots/v2/dot.jpg"],
+    );
+    expect(lookupBundledAsset("mascots/missing.png", bundledMascotAssets)).toBeUndefined();
+  });
+});
+
+describe("lookupBundledAsset", () => {
+  it("resolves a .png catalog path to a .jpg snapshot of the same stem", () => {
+    const assets = { "mascots/v2/dot.jpg": "/assets/dot-hash.jpg" };
+    expect(lookupBundledAsset("mascots/v2/dot.png", assets)).toBe(
+      "/assets/dot-hash.jpg",
+    );
+    expect(lookupBundledAsset("mascots/v2/dot.jpg", assets)).toBe(
+      "/assets/dot-hash.jpg",
+    );
+    expect(lookupBundledAsset("mascots/v2/other.png", assets)).toBeUndefined();
   });
 });

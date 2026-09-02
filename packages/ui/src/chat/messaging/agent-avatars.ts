@@ -39,9 +39,12 @@ export function authorAvatarUrl(
 // Call it unconditionally: a `typeof` guard on the glob
 // survives Vite's rewrite (Vite only rewrites the *call*) and evaluates to
 // false in the browser, so the production bundle would ship an empty set.
+// Keep these at 512px JPEG: Vite dist is embedded in each macOS universal
+// slice, and the previous 1536px PNGs were ~12 MB on disk (~24 MB in the
+// fat binary) on their own.
 const modules: Record<string, unknown> =
   // @ts-ignore -- vite/client typing not loaded in @hq/ui's typecheck
-  import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg}", {
+  import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg,jpg,jpeg}", {
     eager: true,
     query: "?url",
     import: "default",
