@@ -115,7 +115,11 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
-  import { focusOnMount, portal } from "./portal.js";
+  import { focusOnMount, menuPortal, portal } from "./portal.js";
+  import {
+    FILTER_POPOVER_MAX_PX,
+    FILTER_POPOVER_RAIL_OVERHANG_PX,
+  } from "./popover-placement.js";
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -571,65 +575,6 @@
   );
 
   /**
-   * Portal a dropdown menu to the app shell AND anchor it (fixed-positioned) to
-   * its trigger. The scope/filter/footer menus were `position:absolute` inside
-   * `.chat-sidebar` (overflow:hidden + backdrop-filter), so they were clipped to
-   * the sidebar box and appeared to hide behind it. Escaping to `.desktop-shell`
-   * as a `position:fixed` node — the same trick `.chat-overlay` already uses —
-   * lets them spill past the sidebar edge. Re-anchors on scroll/resize.
-   */
-  type MenuPlacement = "bottom-start" | "bottom-end" | "top-stretch";
-  function menuPortal(
-    node: HTMLElement,
-    params: { anchor: HTMLElement | null; placement: MenuPlacement },
-  ) {
-    if (typeof document === "undefined") return {};
-    const host =
-      document.querySelector<HTMLElement>(".desktop-shell") ?? document.body;
-    host.appendChild(node);
-    node.style.position = "fixed";
-    node.style.margin = "0";
-    let current = params;
-    function place() {
-      const anchor = current.anchor;
-      if (!anchor) return;
-      const r = anchor.getBoundingClientRect();
-      const gap = 4;
-      node.style.top = "auto";
-      node.style.bottom = "auto";
-      node.style.left = "auto";
-      node.style.right = "auto";
-      if (current.placement === "bottom-start") {
-        node.style.top = `${r.bottom + gap}px`;
-        node.style.left = `${r.left}px`;
-      } else if (current.placement === "bottom-end") {
-        node.style.top = `${r.bottom + gap}px`;
-        node.style.right = `${window.innerWidth - r.right}px`;
-      } else {
-        // top-stretch: above the anchor, spanning its width (footer account menu).
-        node.style.bottom = `${window.innerHeight - r.top + gap}px`;
-        node.style.left = `${r.left + 8}px`;
-        node.style.right = `${window.innerWidth - r.right + 8}px`;
-      }
-    }
-    place();
-    const reposition = () => place();
-    window.addEventListener("resize", reposition);
-    window.addEventListener("scroll", reposition, true);
-    return {
-      update(next: { anchor: HTMLElement | null; placement: MenuPlacement }) {
-        current = next;
-        place();
-      },
-      destroy() {
-        window.removeEventListener("resize", reposition);
-        window.removeEventListener("scroll", reposition, true);
-        node.remove();
-      },
-    };
-  }
-
-  /**
    * Right-click on a conversation opens a context menu at the cursor (previously
    * right-click toggled the pin outright, with no menu). The menu offers
    * Pin/Unpin; the click that opens it never selects the row.
@@ -799,11 +744,19 @@
       // Any outside mousedown dismisses the cursor context menu. Clicks inside
       // it call stopPropagation, so they never reach this handler.
       if (contextMenu) contextMenu = null;
-      if (scopeMenuOpen && scopeMenuEl && !scopeMenuEl.contains(event.target)) {
-        scopeMenuOpen = false;
+      if (scopeMenuOpen) {
+        const menu = document.querySelector('[data-testid="chat-scope-menu"]');
+        const inside =
+          (scopeMenuEl?.contains(event.target) ?? false) ||
+          (menu?.contains(event.target) ?? false);
+        if (!inside) scopeMenuOpen = false;
       }
-      if (filterOpen && filterWrapEl && !filterWrapEl.contains(event.target)) {
-        filterOpen = false;
+      if (filterOpen) {
+        const menu = document.querySelector('[data-testid="chat-filter-popover"]');
+        const inside =
+          (filterWrapEl?.contains(event.target) ?? false) ||
+          (menu?.contains(event.target) ?? false);
+        if (!inside) filterOpen = false;
       }
       if (footerMenuOpen) {
         const menu = document.querySelector('[data-testid="chat-user-menu"]');
@@ -1685,7 +1638,12 @@
             role="dialog"
             tabindex="-1"
             aria-label="Conversation filters"
-            use:menuPortal={{ anchor: filterWrapEl, placement: "bottom-end" }}
+            use:menuPortal={{
+              anchor: filterWrapEl,
+              placement: "bottom-end",
+              maxWidth: FILTER_POPOVER_MAX_PX,
+              railOverhang: FILTER_POPOVER_RAIL_OVERHANG_PX,
+            }}
             onmousedown={(e) => e.stopPropagation()}
           >
             <div class="chat-filter-caption">Sort by</div>
@@ -3248,14 +3206,18 @@
 
   /* ===== Filter popover (?view=v2) ===== */
   .chat-filter-menu {
+    box-sizing: border-box;
     gap: 2px;
-    min-width: 220px;
-    padding: 10px;
+    min-width: 0;
+    max-width: min(360px, calc(100vw - 16px));
+    padding: 6px;
+    overflow-x: hidden;
+    z-index: 80;
   }
 
   .chat-filter-caption {
     margin: 0;
-    padding: 4px 4px 6px;
+    padding: 2px 6px 4px;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -3265,13 +3227,13 @@
   }
 
   .chat-filter-caption.pad-top {
-    padding-top: 12px;
+    padding-top: 8px;
   }
 
   .chat-sort-toggle {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    gap: 4px;
   }
 
   .chat-sort-pill {
@@ -3279,14 +3241,14 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    height: 30px;
-    padding: 0 10px;
+    height: 26px;
+    padding: 0 8px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill, 980px);
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--type-metadata, 13px);
     font-weight: 500;
     cursor: pointer;
     transition:
@@ -3316,13 +3278,13 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 7px 8px;
+    padding: 5px 6px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--type-metadata, 13px);
     font-weight: 400;
     text-align: left;
     cursor: pointer;
@@ -3344,6 +3306,7 @@
 
   .chat-filter-text {
     flex: 1 1 auto;
+    min-width: 0;
   }
 
   .chat-filter-check {
@@ -3363,13 +3326,13 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 5px 8px;
+    padding: 5px 6px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--type-metadata, 13px);
     font-weight: 400;
     text-align: left;
     cursor: pointer;
