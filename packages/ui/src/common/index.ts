@@ -5,6 +5,8 @@
  */
 
 export * from "./markdown";
+export * from "./external-links";
+export { default as LinkContextMenu } from "./LinkContextMenu.svelte";
 export * from "./latest-request";
 export * from "./activity-request";
 export * from "./progressive-collection";

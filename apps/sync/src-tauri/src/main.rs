@@ -380,6 +380,13 @@ fn main() {
             surface_existing_instance(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
+                .on_navigation(|webview, url| {
+                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())

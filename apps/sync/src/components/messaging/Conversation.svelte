@@ -14,8 +14,12 @@
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import {
+    LinkContextMenu,
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from '@hq/ui';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
-  import { safeHref } from '../../lib/markdown';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
@@ -132,22 +136,20 @@
     return (uid ?? '').startsWith('agt_');
   }
 
-  async function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-  ): Promise<void> {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const anchor = target.closest('a[href]');
-    if (!anchor) return;
-    event.preventDefault();
-    const href = anchor.getAttribute('href') ?? '';
-    const safe = safeHref(href);
-    if (!safe || !/^https?:/i.test(safe)) return;
-    try {
-      await openExternal(safe);
-    } catch {
-      window.open(safe, '_blank', 'noopener,noreferrer');
-    }
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
+  function openConversationLink(url: string): void {
+    void openExternal(url).catch(() => {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+  }
+
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl: openConversationLink,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: 'message',
+    });
   }
 
   let replyText = $state('');
@@ -407,7 +409,18 @@
   }
 </script>
 
-<div class="dm-thread-wrap">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="dm-thread-wrap"
+  onclick={(event) => void onBodyLinkActivate(event)}
+  onauxclick={(event) => void onBodyLinkActivate(event)}
+  oncontextmenu={(event) => void onBodyLinkActivate(event)}
+  onkeydown={(event) => {
+    if (event.key === 'Enter' || event.key === ' ')
+      void onBodyLinkActivate(event);
+  }}
+>
   <div
     class="dm-thread"
     bind:this={scrollEl}
@@ -556,6 +569,8 @@
           <div
             class="dm-bubble-body selectable-text"
             onclick={(event) => void onBodyLinkActivate(event)}
+            onauxclick={(event) => void onBodyLinkActivate(event)}
+            oncontextmenu={(event) => void onBodyLinkActivate(event)}
             onkeydown={(event) => {
               if (event.key === 'Enter' || event.key === ' ')
                 void onBodyLinkActivate(event);
@@ -685,6 +700,13 @@
       New messages
       <span aria-hidden="true">↓</span>
     </button>
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      onopenurl={openConversationLink}
+      onclose={() => (linkMenu = null)}
+    />
   {/if}
 </div>
 

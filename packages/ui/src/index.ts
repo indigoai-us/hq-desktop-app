@@ -96,6 +96,9 @@ export {
 } from "./settings/settings-prefs.js";
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
+export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
+export * from "./common/external-links.js";
+
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
 export {
