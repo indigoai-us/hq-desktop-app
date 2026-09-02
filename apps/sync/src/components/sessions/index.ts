@@ -149,6 +149,8 @@ export {
   isHandoffTurn,
 } from './hook-notices';
 export type { HandoffState } from './hook-notices';
+
+export {
   addMention,
   applyMention,
   deliveryStatusLine,
