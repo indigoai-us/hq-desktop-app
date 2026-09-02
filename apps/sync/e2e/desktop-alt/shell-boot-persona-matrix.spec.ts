@@ -29,7 +29,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import { PERSONA_IDS, createPersonaInvoke, type PersonaId } from '../../dev-harness/personas';
 
 const BOOT_DEADLINE_MS = 5_000;
@@ -46,7 +46,7 @@ async function mountPersona(id: PersonaId) {
   const { invokeFn, calls, persona } = createPersonaInvoke(id);
   host = document.createElement('div');
   document.body.appendChild(host);
-  component = mount(HqWorkDesktopShell, {
+  component = mount(HqWorkWorkShell, {
     target: host,
     props: { invokeFn, bootTimeoutMs: 40 },
   });
