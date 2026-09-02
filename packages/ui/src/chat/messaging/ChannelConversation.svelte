@@ -11,7 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { untrack, type Snippet } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
 
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
@@ -32,7 +32,9 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isAllowedChatAttachment,
+    isImageFile,
+    validateChatAttachment,
+    type ChatAttachmentValidator,
   } from "./chat-attachments";
   import {
     clipMessageBodyForDisplay,
@@ -131,6 +133,8 @@
     /** personUid → live roster display name (profile override), preferred over
      *  the name baked into each message at send time. */
     displayNameByUid?: Record<string, string>;
+    /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
+    attachmentValidator?: ChatAttachmentValidator;
     /**
      * Optional header rendered at the very top of the `.dm-thread` scroller
      * (before empty-state / load-earlier). Used for Slack-style channel intros
@@ -167,6 +171,7 @@
     onopenprofile,
     avatarByUid = {},
     displayNameByUid = {},
+    attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
   }: Props = $props();
@@ -592,9 +597,9 @@
         errors.push(`You can attach up to ${MAX_CHAT_ATTACHMENTS} files`);
         break;
       }
-      const reason = isAllowedChatAttachment(file);
-      if (reason) {
-        errors.push(reason);
+      const error = attachmentValidator(file);
+      if (error) {
+        errors.push(error.message);
         continue;
       }
       if (
@@ -615,6 +620,34 @@
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
   }
+
+  /**
+   * Lazy object URLs for image previews of pending composer files. The
+   * $effect below revokes URLs whenever a file leaves pendingFiles (remove,
+   * send-clear), and onDestroy revokes whatever is left.
+   */
+  const pendingPreviewUrls = new Map<File, string>();
+  function pendingPreviewUrl(file: File): string {
+    let url = pendingPreviewUrls.get(file);
+    if (!url) {
+      url = URL.createObjectURL(file);
+      pendingPreviewUrls.set(file, url);
+    }
+    return url;
+  }
+  $effect(() => {
+    const current = new Set(pendingFiles);
+    for (const [file, url] of pendingPreviewUrls) {
+      if (!current.has(file)) {
+        URL.revokeObjectURL(url);
+        pendingPreviewUrls.delete(file);
+      }
+    }
+  });
+  onDestroy(() => {
+    for (const url of pendingPreviewUrls.values()) URL.revokeObjectURL(url);
+    pendingPreviewUrls.clear();
+  });
 
   /**
    * Pasted screenshots arrive as clipboard files all named "image.png" — give
@@ -1191,17 +1224,36 @@
       {#if pendingFiles.length > 0 || attachError}
         <div class="composer-pending" data-testid="composer-pending">
           {#each pendingFiles as file, i (file.name + file.size + i)}
-            <span class="composer-chip">
-              <span class="composer-chip-name">{file.name}</span>
-              <button
-                type="button"
-                class="composer-chip-remove"
-                aria-label={`Remove ${file.name}`}
-                onclick={() => removePendingFile(i)}
-              >
-                ×
-              </button>
-            </span>
+            {#if isImageFile(file)}
+              <span class="composer-thumb">
+                <img
+                  class="composer-thumb-img"
+                  src={pendingPreviewUrl(file)}
+                  alt={file.name}
+                />
+                <span class="composer-thumb-name">{file.name}</span>
+                <button
+                  type="button"
+                  class="composer-thumb-remove"
+                  aria-label={`Remove ${file.name}`}
+                  onclick={() => removePendingFile(i)}
+                >
+                  ×
+                </button>
+              </span>
+            {:else}
+              <span class="composer-chip">
+                <span class="composer-chip-name">{file.name}</span>
+                <button
+                  type="button"
+                  class="composer-chip-remove"
+                  aria-label={`Remove ${file.name}`}
+                  onclick={() => removePendingFile(i)}
+                >
+                  ×
+                </button>
+              </span>
+            {/if}
           {/each}
           {#if attachError}
             <span class="composer-attach-error">{attachError}</span>
@@ -1444,6 +1496,56 @@
     flex-wrap: wrap;
     gap: 6px;
     padding: 0 2px 8px;
+  }
+
+  .composer-thumb {
+    position: relative;
+    display: inline-flex;
+    width: 56px;
+    height: 56px;
+    overflow: hidden;
+    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    background: var(--sel, rgba(255, 255, 255, 0.06));
+  }
+
+  .composer-thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .composer-thumb-name {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 1px 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    color: var(--t2, rgba(255, 255, 255, 0.56));
+    background: var(--bg, rgba(0, 0, 0, 0.6));
+    opacity: 0.9;
+  }
+
+  .composer-thumb-remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    appearance: none;
+    border: 0;
+    padding: 0 4px;
+    line-height: 16px;
+    background: var(--bg, rgba(0, 0, 0, 0.6));
+    color: var(--t2);
+    cursor: pointer;
+  }
+
+  .composer-thumb-remove:hover {
+    background: var(--sel, rgba(255, 255, 255, 0.12));
+    color: var(--t1, #fff);
   }
 
   .composer-chip {

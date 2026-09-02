@@ -9,15 +9,12 @@
 import {
   type AdapterResult,
   type AdapterPromise,
-  type Capability,
   type ChannelSummary,
   type Json,
   type PlatformAdapter,
   type VersionProbe,
   type WhoAmI,
   type VersionInfo,
-  TAURI_CAPABILITIES,
-  WEB_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -26,8 +23,10 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
-} from '@hq/platform';
-import { updateSettings, type SettingsInvoker } from './settings-mutations';
+} from '../adapter.js';
+import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
+import { WEB_PATHS } from '../web/index.js';
+import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 
 export type SyncInvokeFn = (
   cmd: string,

@@ -141,13 +141,19 @@
     fileCompanyScope,
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
-  import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
+  import {
+    chatAttachmentValidatorForPlatform,
+    conversationPairKey,
+  } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
     uploadChatAttachments,
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
-  import type { ConversationRow } from "../chat/sidebar-model.js";
+  import {
+    isStrictlyRicherConversationRow,
+    type ConversationRow,
+  } from "../chat/sidebar-model.js";
   import {
     composerPlaceholderFor,
     DIRECT_MESSAGE_PLACEHOLDER,
@@ -467,7 +473,12 @@
     const next = initialRow;
     if (!next) return;
     untrack(() => {
-      if (!selectedRow) selectedRow = next;
+      if (
+        !selectedRow ||
+        isStrictlyRicherConversationRow(next, selectedRow)
+      ) {
+        selectedRow = next;
+      }
     });
   });
 
@@ -2707,6 +2718,7 @@
                   onopenattachment={openAttachmentTray}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}
                   {displayNameByUid}
@@ -2755,6 +2767,7 @@
                     onopenattachment={openAttachmentTray}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                    attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     onactivethreadchange={onactivethreadchange}

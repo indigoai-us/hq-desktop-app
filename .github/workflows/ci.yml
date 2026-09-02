@@ -46,7 +46,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Frontend (typecheck + lint + coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       # pnpm version is read from the root package.json "packageManager" field;
@@ -80,6 +80,26 @@ jobs:
       - name: Vitest + coverage
         working-directory: apps/sync
         run: pnpm coverage
+      - name: Work app typecheck (svelte-check)
+        working-directory: apps/work
+        run: pnpm typecheck
+      - name: Work app lint (svelte-check --threshold error)
+        working-directory: apps/work
+        run: pnpm lint
+      - name: Work app tests
+        working-directory: apps/work
+        run: pnpm test
+      - name: Work app build (desktop, adapter-static)
+        working-directory: apps/work
+        env:
+          TAURI: "1"
+        run: pnpm build
+      - name: Clean overlapping Work app build outputs
+        # The desktop and web targets share SvelteKit output directories.
+        run: rm -rf apps/work/.svelte-kit/output apps/work/build
+      - name: Work app build (web, adapter-vercel)
+        working-directory: apps/work
+        run: pnpm build
       - name: Coverage summary
         if: always()
         working-directory: apps/sync

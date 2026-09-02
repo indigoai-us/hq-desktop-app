@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from '../../src/lib/hq-work-adapter';
+} from '@hq/platform';
 
 const require = createRequire(import.meta.url);
 

@@ -9,7 +9,7 @@ import { createLiveNotificationsApi } from "@hq/ui";
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from "../../src/lib/hq-work-adapter";
+} from "@hq/platform";
 
 function invoker(): SyncInvokeFn {
   return async (command, args) => {

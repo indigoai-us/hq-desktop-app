@@ -3,13 +3,16 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "build/**"]
+      "outputs": ["dist/**", "build/**", ".vercel/output/**"]
     },
     "dev": {
       "cache": false,
       "persistent": true
     },
     "test": {
+      "dependsOn": ["build"]
+    },
+    "coverage": {
       "dependsOn": ["build"]
     },
     "lint": {},

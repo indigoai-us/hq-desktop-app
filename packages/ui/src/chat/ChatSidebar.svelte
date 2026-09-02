@@ -103,6 +103,20 @@
     switcherRowsFromConversations,
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
+  import {
+    channelCreateValidationMessage,
+    channelExistsWithName,
+    companiesForChannelCreate,
+    companyUidsByPerson,
+    defaultChannelCompanyUid,
+    directoryRowsFromFeed,
+    formatChannelCreateFailure,
+    pickChannelCompanyUid,
+    personalScopeAllowed,
+    unavailableChannelScopes,
+    unconfirmedCreateMessage,
+    type ChannelCreateMember,
+  } from "./channel-create-scope";
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -143,7 +157,7 @@
     /** Synchronously clears/rekeys the parent when a company tenant changes. */
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
-    onsignout?: () => void;
+    onsignout?: () => Promise<void> | void;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
   }
@@ -286,7 +300,7 @@
   /** "" = personal scope; otherwise the companyUid. */
   let channelCompanyUid = $state("");
   let channelQuery = $state("");
-  let channelParticipants = $state<{ personUid: string; label: string }[]>([]);
+  let channelParticipants = $state<ChannelCreateMember[]>([]);
   let channelCreating = $state(false);
   let channelError = $state<string | null>(null);
   /** Compose body carried into the create-channel flow — sent as the new
@@ -477,14 +491,45 @@
   );
   const people = $derived(distinctDmPeople(allRows));
   const canCreateChannel = $derived(typeof api.createChannel === "function");
+  const channelCreateCompanies = $derived(
+    companiesForChannelCreate(companies, accountLabel),
+  );
+  const memberCompanies = $derived(
+    companyUidsByPerson(allRows, contactsWithUnreads),
+  );
+  const channelCreatePeople = $derived(
+    people.map((person) => ({
+      ...person,
+      companyUids: memberCompanies.get(person.personUid) ?? [],
+    })),
+  );
   const channelPeopleResults = $derived.by(() => {
     const q = channelQuery.trim().toLowerCase();
     const picked = new Set(channelParticipants.map((p) => p.personUid));
-    return people
+    return channelCreatePeople
       .filter((p) => !picked.has(p.personUid))
       .filter((p) => !q || p.label.toLowerCase().includes(q))
       .slice(0, 8);
   });
+  const channelPersonalAllowed = $derived(
+    personalScopeAllowed(channelParticipants, self?.uid),
+  );
+  const channelScopeUnavailable = $derived(
+    unavailableChannelScopes(
+      channelCreateCompanies,
+      channelParticipants,
+      self?.uid,
+    ),
+  );
+  const channelCreateBlock = $derived(
+    channelCreateValidationMessage({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: channelParticipants,
+      companyUid: channelCompanyUid,
+      selfUid: self?.uid,
+    }),
+  );
   const liveSwitcherRows = $derived(
     switcherRowsFromConversations([...directoryRows, ...browseRows], (uid) => {
       if (!uid) return "";
@@ -695,17 +740,32 @@
     composeError = null;
   }
 
+  function syncChannelScope(): void {
+    channelCompanyUid = pickChannelCompanyUid({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: channelParticipants,
+      currentUid: channelCompanyUid,
+      selfUid: self?.uid,
+    });
+  }
+
   function openNewChannel(): void {
     closeAllOverlays();
     newChannelOpen = true;
     channelName = "";
-    channelCompanyUid = scopeCompanies[0]?.companyUid ?? "";
     channelQuery = "";
     channelParticipants = [];
     channelError = null;
     pendingChannelFirstMessage = "";
     createdChannel = null;
     channelCreationUnconfirmed = false;
+    channelCompanyUid = defaultChannelCompanyUid({
+      activeScope: scope,
+      companies: channelCreateCompanies,
+      members: [],
+      selfUid: self?.uid,
+    });
   }
 
   function closeNewChannel(): void {
@@ -731,18 +791,24 @@
     pendingChannelFirstMessage = body;
   }
 
-  function addChannelParticipant(p: {
-    personUid: string;
-    label: string;
-  }): void {
-    channelParticipants = [...channelParticipants, p];
+  function addChannelParticipant(p: ChannelCreateMember): void {
+    channelParticipants = [
+      ...channelParticipants,
+      {
+        personUid: p.personUid,
+        label: p.label,
+        companyUids: p.companyUids ?? [],
+      },
+    ];
     channelQuery = "";
+    syncChannelScope();
   }
 
   function removeChannelParticipant(uid: string): void {
     channelParticipants = channelParticipants.filter(
       (p) => p.personUid !== uid,
     );
+    syncChannelScope();
   }
 
   function upsertCreatedChannel(
@@ -763,9 +829,32 @@
   }
 
   function createErrorDetail(err: unknown, fallback: string): string {
-    return err instanceof Error && err.message.trim()
-      ? err.message.trim()
-      : fallback;
+    return formatChannelCreateFailure(err) || fallback;
+  }
+
+  async function createdChannelAlreadyExists(name: string): Promise<boolean> {
+    if (channelExistsWithName(name, channels)) return true;
+    const uids = channelCompanyUid
+      ? [channelCompanyUid]
+      : channelCreateCompanies.map((company) => company.companyUid);
+    for (const uid of uids) {
+      try {
+        const resp = await api.listChannels({
+          companyUid: uid,
+          includeCompanyProjects: false,
+        });
+        if (channelExistsWithName(name, resp?.channels ?? [])) return true;
+      } catch {
+        // Lookup is best-effort; a failed list must not block a safe retry.
+      }
+    }
+    try {
+      const feed = await api.fetchChannelDirectory(null);
+      if (channelExistsWithName(name, directoryRowsFromFeed(feed))) return true;
+    } catch {
+      // Same: directory lookup failure is not proof the create committed.
+    }
+    return false;
   }
 
   async function submitCreateChannel(): Promise<void> {
@@ -779,6 +868,19 @@
       createdChannel?.firstMessageDelivery === "unconfirmed"
     ) {
       return;
+    }
+    if (!createdChannel) {
+      const blocked = channelCreateValidationMessage({
+        activeScope: scope,
+        companies: channelCreateCompanies,
+        members: channelParticipants,
+        companyUid: channelCompanyUid,
+        selfUid: self?.uid,
+      });
+      if (blocked) {
+        channelError = blocked;
+        return;
+      }
     }
     channelCreating = true;
     channelError = null;
@@ -867,8 +969,9 @@
           ? `Channel created, but ${pending.length} invitation${pending.length === 1 ? " is" : "s are"} incomplete (${pending.map((invitee) => invitee.label).join(", ")}): ${detail}. Retry to resume the same channel.`
           : detail;
       } else {
-        channelCreationUnconfirmed = true;
-        channelError = `Channel creation could not be confirmed: ${detail}. Retry is disabled to prevent creating a duplicate channel; check your channel list before trying again.`;
+        const exists = await createdChannelAlreadyExists(name);
+        channelCreationUnconfirmed = exists;
+        channelError = unconfirmedCreateMessage({ detail, name, exists });
       }
     } finally {
       channelCreating = false;
@@ -1642,10 +1745,31 @@
   }
 
   let signOutConfirmOpen = $state(false);
+  let signOutError = $state<string | null>(null);
+  let signingOut = $state(false);
 
   function signOut() {
     footerMenuOpen = false;
+    signOutError = null;
     signOutConfirmOpen = true;
+  }
+
+  async function confirmSignOut(): Promise<void> {
+    if (signingOut) return;
+    signOutError = null;
+    if (!onsignout) {
+      signOutError = "Sign out is unavailable in this host.";
+      return;
+    }
+    signingOut = true;
+    try {
+      await onsignout();
+      signOutConfirmOpen = false;
+    } catch (error) {
+      signOutError = `Couldn’t sign out: ${String(error)}`;
+    } finally {
+      signingOut = false;
+    }
   }
 
   function openSettings() {
@@ -2683,12 +2807,29 @@
             aria-label="Channel workspace"
             disabled={createdChannel !== null}
           >
-            {#each scopeCompanies as company (company.companyUid)}
-              <option value={company.companyUid}>{company.label}</option>
+            {#each channelCreateCompanies as company (company.companyUid)}
+              {@const blocked = channelScopeUnavailable.find(
+                (row) => row.company.companyUid === company.companyUid,
+              )}
+              <option value={company.companyUid} disabled={Boolean(blocked)}>
+                {blocked
+                  ? `${company.label} — ${blocked.reason}`
+                  : company.label}
+              </option>
             {/each}
-            <option value="">Personal</option>
+            {#if channelPersonalAllowed}
+              <option value="">Personal</option>
+            {/if}
           </select>
         </div>
+        {#if channelScopeUnavailable.length > 0}
+          <p
+            class="chat-channel-scope-hint"
+            data-testid="chat-channel-scope-unavailable"
+          >
+            {channelScopeUnavailable[0].reason}
+          </p>
+        {/if}
 
         <div class="chat-compose-to">
           <span class="chat-compose-to-label">With</span>
@@ -2742,6 +2883,14 @@
 
         {#if channelError}
           <div class="chat-channel-error" role="alert">{channelError}</div>
+        {:else if channelCreateBlock}
+          <div
+            class="chat-channel-error"
+            role="alert"
+            data-testid="chat-channel-validation"
+          >
+            {channelCreateBlock}
+          </div>
         {/if}
 
         {#if createdChannel && pendingChannelFirstMessage.trim()}
@@ -2760,7 +2909,8 @@
                 channelCreating ||
                 !channelName.trim() ||
                 channelCreationUnconfirmed ||
-                createdChannel?.firstMessageDelivery === "unconfirmed"
+                createdChannel?.firstMessageDelivery === "unconfirmed" ||
+                (!createdChannel && Boolean(channelCreateBlock))
               }
               aria-busy={channelCreating}
               onclick={() => void submitCreateChannel()}
@@ -2786,15 +2936,15 @@
 
 <ConfirmDialog
   open={signOutConfirmOpen}
-  title="Sign out"
-  message="Sign out of HQ Work on this machine?"
+  title={signOutError ? "Couldn’t sign out" : "Sign out"}
+  message={signOutError ?? "Sign out of HQ Work on this machine?"}
   confirmLabel="Sign out"
   danger
-  oncancel={() => (signOutConfirmOpen = false)}
-  onconfirm={() => {
+  oncancel={() => {
     signOutConfirmOpen = false;
-    onsignout?.();
+    signOutError = null;
   }}
+  onconfirm={() => void confirmSignOut()}
 />
 
 {#snippet conversationRow(row: ConversationRow)}
@@ -3886,6 +4036,14 @@
     color: var(--t1);
     font: inherit;
     cursor: pointer;
+  }
+
+  .chat-channel-scope-hint {
+    margin: 0;
+    padding: 0 16px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.35;
   }
 
   .chat-channel-with {

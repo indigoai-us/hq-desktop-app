@@ -46,6 +46,7 @@ export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export * from "./chat/channel-create-scope.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
 export * from "./chat/portfolio-session.js";
@@ -87,6 +88,7 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
   readSettingsPrefs,
