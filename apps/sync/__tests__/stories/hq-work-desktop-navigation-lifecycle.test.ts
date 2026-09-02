@@ -644,7 +644,11 @@ describe('embedded Work navigation and lifecycle', () => {
     warmRoute('hqwork://open?person=prs_ada&reply=evt_root');
     await flush();
 
-    expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toContain('prs_ada');
+    // The person deep link only carries a uid; the header must resolve the
+    // contact's display name from the rail and never paint the raw uid.
+    const dmHeader = host.querySelector('[data-testid="channel-name"]')?.textContent ?? '';
+    expect(dmHeader).toContain('Ada');
+    expect(dmHeader).not.toContain('prs_ada');
     expect(host.querySelector('[data-testid="reply-panel"]')).toBeTruthy();
   });
 

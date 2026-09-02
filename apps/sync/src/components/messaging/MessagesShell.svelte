@@ -528,6 +528,10 @@
     return humanPersonLabel(c);
   }
 
+  function isAgentUid(uid: string | null | undefined): boolean {
+    return (uid ?? '').startsWith('agt_');
+  }
+
   function contactSubline(c: Contact): string | null {
     return contactPreviewText(c) ?? c.email?.trim() ?? null;
   }
@@ -1727,7 +1731,12 @@
             aria-busy={isActive && loadingThread}
             data-provenance="direct-message"
           >
-            <IdentityMark kind="person" label={displayLabel(c)} size="small" />
+            <IdentityMark
+              kind={isAgentUid(c.personUid) ? 'agent' : 'person'}
+              label={displayLabel(c)}
+              agentUid={c.personUid}
+              size="small"
+            />
             <span class="contact-meta">
               <span class="contact-top">
                 <span class="contact-name">{displayLabel(c)}</span>

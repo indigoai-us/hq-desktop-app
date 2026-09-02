@@ -1,5 +1,5 @@
 /**
- * Decide which caption to render under the live-progress bar during a sync.
+ * Decide which caption to render in the popover status row during a sync.
  *
  * The denominator for "N of M transferred" MUST be the strict transfer count
  * (sum of push + pull + conflict files from per-company `sync:plan` events),

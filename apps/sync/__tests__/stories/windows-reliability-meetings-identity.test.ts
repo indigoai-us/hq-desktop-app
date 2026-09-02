@@ -205,7 +205,10 @@ describe('US-005: Meeting bot identity and duplicate-invite recovery', () => {
       expect(page).toContain("invoke<string | null>('meetings_take_pending_focus')");
       expect(page).toContain('{focusedMeetingId}');
       expect(agenda).toContain('data-meeting-id={event.id}');
-      expect(agenda).toContain('class:focused={focusedMeetingId === event.id}');
+      expect(agenda).toContain('data-bot-id={bot?.botId ?? \'\'}');
+      expect(agenda).toContain(
+        'class:focused={meetingMatchesFocusId(focusedMeetingId, event, bot)}',
+      );
     });
   });
 

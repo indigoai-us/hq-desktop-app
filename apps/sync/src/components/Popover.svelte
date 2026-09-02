@@ -246,22 +246,6 @@
       : '',
   );
 
-  const barPct = $derived.by(() => {
-    if (syncTotalFiles > 0) {
-      return Math.min(100, Math.max(0, (syncFilesProgressed / syncTotalFiles) * 100));
-    }
-    let p = 0;
-    if (personalFirstPushDone) {
-      p += 0.5;
-    } else if (personalFilesTotal != null && personalFilesTotal > 0) {
-      p += (personalFilesDone / personalFilesTotal) * 0.5;
-    }
-    if (fanoutTotal > 0) {
-      p += (fanoutDoneCount / fanoutTotal) * 0.5;
-    }
-    return Math.min(100, Math.max(0, p * 100));
-  });
-
   const caption = $derived(
     liveProgressCaption({
       syncFilesProgressed,
@@ -501,16 +485,10 @@
       <span class="gd" aria-hidden="true"></span>
       <span class="mbp-s1">{statusTitle}</span>
       <span class="mbp-s2">{lastSyncLabel}</span>
+      {#if syncState === 'syncing'}
+        <p class="mbp-sync-sub" data-testid="popover-sync-sublabel">{liveWorkspaceLine}</p>
+      {/if}
     </div>
-
-    {#if syncState === 'syncing'}
-      <div class="mbp-progress">
-        <p>{liveWorkspaceLine}</p>
-        <div class="mbp-progress-track">
-          <span style="width: {barPct}%"></span>
-        </div>
-      </div>
-    {/if}
 
     <button
       class="mbp-messages-entry"
@@ -1027,10 +1005,6 @@
     display: inline-flex;
   }
 
-  .mbp-progress p {
-    margin: 0;
-  }
-
   .mbp-mini:focus-visible {
     outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
     outline-offset: var(--popover-focus-offset, 2px);
@@ -1038,6 +1012,7 @@
 
   .mbp-status {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 9px;
     padding: 12px;
@@ -1084,26 +1059,17 @@
     white-space: nowrap;
   }
 
-  .mbp-progress {
-    padding: 0 14px 10px;
+  /* Full-width wrap; 17px = 8px status dot + 9px gap so it lines up with the title. */
+  .mbp-sync-sub {
+    flex: 1 0 100%;
+    margin: 0;
+    padding-left: 17px;
     color: var(--pop-muted);
     font-size: 11px;
-  }
-
-  .mbp-progress-track {
-    height: 5px;
-    margin-top: 6px;
-    border-radius: 999px;
-    background: var(--pop-hover);
+    line-height: 1.3;
     overflow: hidden;
-  }
-
-  .mbp-progress-track span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--pop-accent);
-    transition: width 0.25s ease-out;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .mbp-messages-entry {

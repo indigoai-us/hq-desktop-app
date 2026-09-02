@@ -1,6 +1,6 @@
 <script lang="ts">
   import {
-    runUpdateCheck,
+    createUpdateCheckRunner,
     type AdapterResult,
   } from "./update-orchestration";
   import {
@@ -159,6 +159,7 @@
   let nativeReadGeneration = 0;
   let nativeReconcileAfterWrites = false;
   let versionsReadGeneration = 0;
+  const updateCheckRunner = createUpdateCheckRunner();
   // "failed" covers a timed-out/hung check: the pane must show a real failed
   // state with a retry affordance rather than an endless CHECKING.
   let appUpdateStatus = $state<
@@ -646,6 +647,24 @@
 
   async function refreshVersions(): Promise<void> {
     if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    const updates = adapter.updates;
+    const orchAdapter = {
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+    };
+    // Focus / wake events must not pile up concurrent scans. A second call
+    // while one is in flight shares the same promise and does not bump the
+    // generation (which would strand the first caller's busy flag).
+    if (updateCheckRunner.isRunning()) {
+      await updateCheckRunner.run(orchAdapter);
+      return;
+    }
     const generation = ++versionsReadGeneration;
     versionsRefreshing = true;
     appUpdateStatus = "checking";
@@ -653,7 +672,6 @@
     cliUpdateStatus = "checking";
     coreProbeError = null;
     cliProbeError = null;
-    const updates = adapter.updates;
     try {
       const refreshedAppVersion = refreshAppVersion
         ? await refreshAppVersion().catch(() => null)
@@ -667,29 +685,24 @@
       // the explicit button, and a channel change). Each row commits as its
       // own check settles and every call is time-bounded, so a slow or hung
       // check can no longer pin all three rows on CHECKING forever.
-      const outcome = await runUpdateCheck(
-        {
-          getVersions: () =>
-            updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
-          checkForUpdates: () =>
-            updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
-          checkCoreState: () =>
-            updates.checkCoreState() as Promise<AdapterResult<unknown>>,
-          checkCliUpdate: () =>
-            updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      const outcome = await updateCheckRunner.run(orchAdapter, {
+        onRow: (row, status) => {
+          if (generation !== versionsReadGeneration) return;
+          // The app row has no "unlocated" arm (there is no path to
+          // locate) — fold it into "unchecked".
+          if (row === "app")
+            appUpdateStatus = status === "unlocated" ? "unchecked" : status;
+          else if (row === "core") coreUpdateStatus = status;
+          else cliUpdateStatus = status;
         },
-        {
-          onRow: (row, status) => {
-            if (generation !== versionsReadGeneration) return;
-            // The app row has no "unlocated" arm (there is no path to
-            // locate) — fold it into "unchecked".
-            if (row === "app")
-              appUpdateStatus = status === "unlocated" ? "unchecked" : status;
-            else if (row === "core") coreUpdateStatus = status;
-            else cliUpdateStatus = status;
-          },
+        onVersions: (versions) => {
+          if (generation !== versionsReadGeneration) return;
+          coreVersion = versions.coreVersion;
+          cliVersion = versions.cliVersion;
+          coreProbeError = versions.coreProbeError;
+          cliProbeError = versions.cliProbeError;
         },
-      );
+      });
       if (generation !== versionsReadGeneration) return;
       coreVersion = outcome.coreVersion;
       cliVersion = outcome.cliVersion;
@@ -1358,9 +1371,9 @@
         {#if coreUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-core-remediation">Choose the HQ root above (or set hqPath/hqFolderPath), then refresh.</div>
         {:else if coreUpdateStatus === "failed"}
-          <div class="sd">Core version probe failed: {coreProbeError}</div>
+          <div class="sd">Core version probe failed: {coreProbeError ?? "The check did not finish. Try again."}</div>
         {:else if coreUpdateStatus === "unchecked"}
-          <div class="sd">Core update status could not be checked. Refresh and verify your connection.</div>
+          <div class="sd">Core update status could not be checked{coreProbeError ? `: ${coreProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
       <span class="mono" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
@@ -1382,9 +1395,9 @@
         {#if cliUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-cli-remediation">Add the CLI directory to this HQ root’s .claude/settings.local.json (or settings.json) env.PATH, then refresh. The host uses that Claude settings PATH before broader PATH locations.</div>
         {:else if cliUpdateStatus === "failed"}
-          <div class="sd">CLI version probe failed: {cliProbeError}</div>
+          <div class="sd">CLI version probe failed: {cliProbeError ?? "The check did not finish. Try again."}</div>
         {:else if cliUpdateStatus === "unchecked"}
-          <div class="sd">CLI update status could not be checked. Refresh and verify your connection.</div>
+          <div class="sd">CLI update status could not be checked{cliProbeError ? `: ${cliProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
       <span class="mono" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>

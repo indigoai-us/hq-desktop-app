@@ -129,7 +129,7 @@ function installTauriWindow(): void {
   });
 }
 
-function defaultInvoke(command: string): unknown {
+function defaultInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (failedCommands.has(command)) {
     throw new Error(`${command} unavailable`);
   }
@@ -137,6 +137,20 @@ function defaultInvoke(command: string): unknown {
   if (command === 'get_activity_log') return [];
   if (command === 'get_pending_update') return pendingUpdate;
   if (command === 'list_channels') return { channels: [] };
+  if (command === 'meetings_list_memberships') {
+    return [
+      { companyUid: 'cmp_indigo', companyName: 'Indigo', status: 'active' },
+      { companyUid: 'cmp_alive', companyName: 'Alive', status: 'active' },
+    ];
+  }
+  if (command === 'meetings_set_company') {
+    return {
+      ok: true,
+      meetingId: args?.meetingId ?? 'bot_1',
+      companyId: args?.companyId ?? 'cmp_indigo',
+    };
+  }
+  if (command === 'open_meetings_window') return null;
   return undefined;
 }
 
@@ -246,8 +260,9 @@ beforeEach(() => {
       return unlisten;
     },
   );
-  tauri.invoke.mockImplementation(async (command: string) =>
-    defaultInvoke(command),
+  tauri.invoke.mockImplementation(
+    async (command: string, args?: Record<string, unknown>) =>
+      defaultInvoke(command, args),
   );
 });
 
@@ -682,9 +697,12 @@ describe('Widget restored native standalone behavior', () => {
         body: 'Starting now',
       }),
     );
+    expect(tauri.invoke).toHaveBeenCalledWith('open_meetings_window', {
+      focusMeetingId: null,
+    });
     expect(
       tauri.invoke.mock.calls.some(([command]) => command === 'show_main_window'),
-    ).toBe(true);
+    ).toBe(false);
 
     await openVisibleNotification(
       notification({
@@ -726,20 +744,16 @@ describe('Widget restored native standalone behavior', () => {
         clickActionId: 'assign',
         actionId: 'assign',
         actionLabel: 'Assign',
-        data: { meetingId: 'meeting-1' },
+        data: { meetingId: 'meeting-1', calendarEventId: 'evt-1' },
       }),
     );
 
-    expect(tauri.invoke).toHaveBeenCalledWith(
-      'banner_action',
-      expect.objectContaining({
-        action: 'assign',
-        payload: expect.objectContaining({
-          kind: 'meeting',
-          clickActionId: 'assign',
-        }),
-      }),
-    );
+    expect(tauri.invoke).toHaveBeenCalledWith('open_meetings_window', {
+      focusMeetingId: 'evt-1',
+    });
+    expect(
+      tauri.invoke.mock.calls.some(([command]) => command === 'banner_action'),
+    ).toBe(false);
     expect(
       tauri.invoke.mock.calls.some(([command]) => command === 'show_main_window'),
     ).toBe(false);
@@ -763,6 +777,97 @@ describe('Widget restored native standalone behavior', () => {
     expect(
       tauri.invoke.mock.calls.some(([command]) => command === 'open_share_detail'),
     ).toBe(false);
+  });
+
+  it('files a meeting to a company inline and resolves the row', async () => {
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: '"Standup" isn’t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Standup' },
+      }),
+    );
+
+    const trigger = host.querySelector<HTMLButtonElement>(
+      '[data-testid="notification-resolve-trigger"]',
+    )!;
+    expect(trigger.textContent?.trim()).toBe('File to company');
+    trigger.click();
+    flushSync();
+
+    const option = await vi.waitFor(() => {
+      const node = host.querySelector<HTMLButtonElement>(
+        '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
+      );
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    option.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(tauri.invoke).toHaveBeenCalledWith(
+        'meetings_set_company',
+        expect.objectContaining({
+          meetingId: 'bot_1',
+          companyId: 'cmp_indigo',
+        }),
+      );
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    });
+  });
+
+  it('keeps the meeting row and surfaces an error toast when filing fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'meetings_set_company') {
+          return { ok: false, error: 'Company is unavailable.' };
+        }
+        return defaultInvoke(command, args);
+      },
+    );
+    mountWidget();
+    await waitForNativeReady();
+    emitNative(
+      'widget:notification',
+      notification({
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: '"Standup" isn’t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Standup' },
+      }),
+    );
+
+    host.querySelector<HTMLButtonElement>('[data-testid="notification-resolve-trigger"]')!.click();
+    flushSync();
+    const option = await vi.waitFor(() => {
+      const node = host.querySelector<HTMLButtonElement>(
+        '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
+      );
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    option.click();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-filing-error"]')?.textContent).toContain(
+        'Company is unavailable',
+      );
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeTruthy();
+      expect(
+        host.querySelector('[data-testid="notification-resolve-error"]')?.textContent,
+      ).toContain('Couldn’t save');
+    });
+    consoleError.mockRestore();
   });
 
   it('neutralizes a successful one-shot action in the mini panel', async () => {

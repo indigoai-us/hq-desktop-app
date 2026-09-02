@@ -263,13 +263,28 @@ pub fn build_watch_runner_args_for_target(
 // Runner memory ceiling (auto-sync watcher child unbounded-memory cluster)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Declared V8 old-space ceiling (MB) for the auto-sync runner child. Sized for
-/// a background menubar helper and STRICTLY below every observed lethal point (a
-/// ~3.8GB heap abort and a ~5.9GB OS kill in the field): the runner's mid-pull
-/// growth now aborts at THIS app-declared point instead of a host-derived
-/// default, so a footprint is comparable across machines. Overridable per host
-/// without a rebuild via [`RUNNER_HEAP_CEILING_ENV`].
-pub const RUNNER_HEAP_CEILING_DEFAULT_MB: u32 = 2048;
+/// Declared V8 old-space ceiling (MB) for the auto-sync runner child. The
+/// fixed runner's Linux peak tree RSS was 3,617 MB; subtracting the measured
+/// 102-1,331 MB non-heap overhead infers roughly 2,286-3,105 MB of old-space
+/// demand. 3,584 MB clears that upper inference by about 479 MB. It is kept
+/// deliberately below 4,096 MB because the derived footprint backstop is then
+/// 3,584 + 2,048 = 5,632 MB, below the observed approximately 5.9 GB OS-kill
+/// point. Expected peak tree footprint is 3,584 + 1,331 = 4,915 MB, below both
+/// that backstop and the OS kill. Overridable per host without a rebuild via
+/// [`RUNNER_HEAP_CEILING_ENV`].
+pub const RUNNER_HEAP_CEILING_DEFAULT_MB: u32 = 3584;
+
+/// Approximate field-observed lower bound (MB) for a macOS OS kill, not a
+/// platform specification. The default derived footprint backstop must remain
+/// below it: margin below this physical limit matters more than surplus margin
+/// above inferred V8 demand because the app must pre-empt before the OS does.
+pub const OBSERVED_OS_KILL_FLOOR_MB: u32 = 5900;
+
+/// Assumed runaway whole-tree footprint growth for the hard safety threshold.
+/// 20 MB/s (1,200 MB/min) is deliberately conservative for an unbounded runner:
+/// it protects a full 30-second supervisor sampling gap rather than assuming the
+/// next sample catches a gradual leak immediately.
+pub const WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC: u32 = 20;
 
 /// Escape-hatch env var: a per-host integer-MB override of the declared runner
 /// old-space ceiling, so a user with a genuinely large workspace can raise it
@@ -424,17 +439,45 @@ pub fn effective_runner_heap_ceiling() -> RunnerHeapCeiling {
     resolve_runner_heap_ceiling(inherited.as_deref(), override_mb)
 }
 
+/// Fixed-vocabulary bucket for the runner's retained V8 heap-used measurement
+/// immediately before a heap OOM. The exact MB figure remains a numeric Sentry
+/// extra; this bounded tag makes the peak-at-abort queryable without high
+/// cardinality. It is only emitted when V8 supplied that measurement.
+pub fn runner_heap_peak_used_bucket(used_mb: u64) -> &'static str {
+    match used_mb {
+        0..=2047 => "under_2gb",
+        2048..=2559 => "2gb_to_2_5gb",
+        2560..=3071 => "2_5gb_to_3gb",
+        3072..=3583 => "3gb_to_3_5gb",
+        3584..=4095 => "3_5gb_to_4gb",
+        _ => "over_4gb",
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Supervisor footprint ceiling (the RSS backstop --max-old-space-size cannot give)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Supervisor high-water mark (MB) for the watcher's WHOLE-TREE footprint. Above
-/// the observed healthy working set and the ~3.8GB heap-abort tree, and below the
-/// ~5.9GB OS kill: `--max-old-space-size` bounds only V8 old space, so external /
-/// Buffer memory can still outrun it (the 5.9GB SIGKILL proved total RSS does).
-/// This is the platform-independent backstop that lets the APP decide the
-/// outcome before a macOS jetsam SIGKILL or a Windows commit failure does.
+/// Supervisor high-water mark (MB) for the watcher's WHOLE-TREE footprint. This
+/// stays as the floor for lower heap overrides whose heap plus non-heap headroom
+/// would otherwise be smaller; the 3,584 MB default instead derives a 5,632 MB
+/// backstop, leaving this floor nonbinding. `--max-old-space-size` bounds only V8
+/// old space, so external / Buffer memory can still outrun it. This is the
+/// platform-independent backstop that lets the app decide the outcome before a
+/// macOS jetsam SIGKILL or a Windows commit failure does.
 pub const WATCHER_FOOTPRINT_CEILING_MB: u32 = 4608;
+
+/// Absolute whole-tree footprint safety threshold (MB) that pre-empts on ONE
+/// comparable supervisor sample. The ordinary ceiling below intentionally needs
+/// two samples to ignore a healthy transient, but that would leave the 5,632 MB
+/// default-derived backstop only 268 MB below the observed 5,900 MB OS-kill
+/// floor. At the 30s supervisor cadence, 5,120 + (20 MB/s * 30s) = 5,720 MB,
+/// still below 5,900 MB and leaving 180 MB for termination after the sample.
+/// This hard ceiling therefore tolerates a 20 MB/s runaway for a complete missed
+/// sampling interval while preserving the ordinary backstop's anti-spike policy.
+/// It is absolute even for a user heap override: an override may not trade away
+/// the app's ability to pre-empt before the observed OS kill.
+pub const WATCHER_FOOTPRINT_HARD_CEILING_MB: u32 = 5120;
 
 /// Consecutive over-ceiling supervisor samples required before a pre-empt. At the
 /// 30s supervisor cadence this is ~60s of SUSTAINED over-ceiling footprint, so a
@@ -443,13 +486,15 @@ pub const WATCHER_FOOTPRINT_CEILING_MB: u32 = 4608;
 pub const WATCHER_FOOTPRINT_CEILING_CONSECUTIVE: u32 = 2;
 
 /// Non-heap headroom (MB) the runner may legitimately hold above its declared
-/// old-space ceiling — external/Buffer/ArrayBuffer, code, and stacks that
-/// `--max-old-space-size` does not bound. The footprint backstop must sit at
-/// least this far above the heap ceiling.
+/// old-space ceiling: external/Buffer/ArrayBuffer, code, and stacks that
+/// `--max-old-space-size` does not bound. Across 33 heap aborts, tree RSS minus
+/// the 2,048 MB cap measured 102 MB minimum, 512 MB p50, and 1,331 MB maximum,
+/// so this leaves 717 MB above the observed maximum. The footprint backstop must
+/// sit at least this far above the heap ceiling.
 pub const WATCHER_FOOTPRINT_HEADROOM_MB: u32 = 2048;
 
 /// The effective supervisor footprint ceiling (MB) for a resolved heap ceiling:
-/// the LARGER of the declared default and the heap ceiling plus non-heap
+/// the LARGER of the fixed footprint floor and the heap ceiling plus non-heap
 /// headroom. Raising the heap override (`HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB` or a
 /// user `--max-old-space-size` above the default) therefore also raises the
 /// footprint backstop, so the escape hatch that grants more heap is never
@@ -468,11 +513,12 @@ pub enum FootprintCeilingDecision {
 
 /// Pure supervisor decision: given a fresh scoped footprint sample and the
 /// running over-ceiling streak, return the UPDATED streak and whether to
-/// pre-empt. ONLY a comparable (whole-tree / job) sample at or above the ceiling
-/// advances the streak; a withheld/shim sample, a missing sample, or one below
-/// the ceiling resets it to zero. Pre-empt only once the streak reaches the
-/// required consecutive count — never on a single spike, never on an unsampled or
-/// withheld footprint.
+/// pre-empt. A comparable (whole-tree / job) sample at or above the hard safety
+/// threshold pre-empts immediately. Otherwise, ONLY a comparable sample at or
+/// above the ordinary ceiling advances the streak; a withheld/shim sample, a
+/// missing sample, or one below the ceiling resets it to zero. Pre-empt the
+/// ordinary backstop only once the streak reaches the required consecutive count
+/// — never on a single spike, never on an unsampled or withheld footprint.
 pub fn footprint_ceiling_step(
     sample_kb: Option<u64>,
     scope_comparable: bool,
@@ -480,6 +526,10 @@ pub fn footprint_ceiling_step(
     prior_streak: u32,
     required_consecutive: u32,
 ) -> (u32, FootprintCeilingDecision) {
+    let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
+        return (0, FootprintCeilingDecision::Preempt);
+    }
     let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
     if !over {
         return (0, FootprintCeilingDecision::KeepRunning);
@@ -1402,11 +1452,12 @@ mod tests {
 
     #[test]
     fn test_effective_watcher_footprint_ceiling_honours_heap_override() {
-        // At or below the default heap, the footprint backstop stays at its floor.
+        // The default has a derived backstop below the observed OS-kill floor.
         assert_eq!(
             effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB),
-            WATCHER_FOOTPRINT_CEILING_MB
+            5632
         );
+        // The fixed floor still protects lower overrides.
         assert_eq!(
             effective_watcher_footprint_ceiling_mb(1024),
             WATCHER_FOOTPRINT_CEILING_MB
@@ -1421,6 +1472,40 @@ mod tests {
         assert!(effective_watcher_footprint_ceiling_mb(raised) > raised);
         // Saturating: an absurd override never overflows.
         assert!(effective_watcher_footprint_ceiling_mb(u32::MAX) >= u32::MAX - 1);
+    }
+
+    #[test]
+    fn test_declared_runner_heap_ceiling_default_and_provenance() {
+        assert_eq!(RUNNER_HEAP_CEILING_DEFAULT_MB, 3584);
+        assert_eq!(
+            resolve_runner_heap_ceiling(None, None),
+            RunnerHeapCeiling {
+                mb: 3584,
+                source: RunnerHeapCeilingSource::DeclaredDefault,
+            }
+        );
+    }
+
+    #[test]
+    fn test_default_footprint_backstop_stays_below_observed_os_kill_floor() {
+        // With 2,048 MB headroom, a 3,852 MB default is the first whole-MB value
+        // that fails this strict inequality; 4,096 MB would derive 6,144 MB.
+        assert!(
+            effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)
+                < OBSERVED_OS_KILL_FLOOR_MB,
+            "the app must pre-empt before the observed OS-kill floor"
+        );
+    }
+
+    #[test]
+    fn test_runner_heap_peak_used_bucket_is_fixed_vocabulary() {
+        assert_eq!(runner_heap_peak_used_bucket(0), "under_2gb");
+        assert_eq!(runner_heap_peak_used_bucket(2047), "under_2gb");
+        assert_eq!(runner_heap_peak_used_bucket(2048), "2gb_to_2_5gb");
+        assert_eq!(runner_heap_peak_used_bucket(2560), "2_5gb_to_3gb");
+        assert_eq!(runner_heap_peak_used_bucket(3072), "3gb_to_3_5gb");
+        assert_eq!(runner_heap_peak_used_bucket(3584), "3_5gb_to_4gb");
+        assert_eq!(runner_heap_peak_used_bucket(4096), "over_4gb");
     }
 
     #[test]
@@ -1560,6 +1645,25 @@ mod tests {
         assert_eq!(
             footprint_ceiling_step(None, true, ceiling_kb, required - 1, required),
             (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_hard_footprint_ceiling_preempts_one_comparable_sample() {
+        let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+        let ordinary_ceiling_kb = hard_ceiling_kb + 1;
+
+        // A hard safety breach bypasses the ordinary two-sample anti-spike
+        // backstop even when the ordinary ceiling itself has not been crossed.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_ceiling_kb),
+                true,
+                ordinary_ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            ),
+            (0, FootprintCeilingDecision::Preempt)
         );
     }
 

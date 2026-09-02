@@ -103,6 +103,7 @@ export type WidgetRowType =
   | 'share'
   | 'sync'
   | 'deploy'
+  | 'meeting'
   | 'system';
 
 /**
@@ -319,10 +320,91 @@ export function resolutionForItem(item: {
 }): NotificationResolution | null {
   const wantsAssign = item.actionId === 'assign' || item.clickActionId === 'assign';
   if (item.kind !== 'meeting' || !wantsAssign) return null;
-  if (item.data === null || typeof item.data !== 'object') return null;
-  const meetingId = (item.data as Record<string, unknown>).meetingId;
-  if (typeof meetingId !== 'string' || meetingId === '') return null;
+  const meetingId = recordString(item.data, 'meetingId');
+  if (!meetingId) return null;
   return { kind: 'company-picker', meetingId, prompt: 'File to company' };
+}
+
+function recordString(data: unknown, key: string): string {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return '';
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Desktop Meetings deep-link id for a widget meeting row.
+ *
+ * Prefers the calendar event id (agenda rows key off `event.id`) and falls
+ * back to the Recall bot id the unattributed poller puts on the banner.
+ */
+export function meetingFocusId(data: unknown): string | undefined {
+  return recordString(data, 'calendarEventId') || recordString(data, 'meetingId') || undefined;
+}
+
+/** Collapse key for unattributed-meeting rows — one row per Recall bot id. */
+export function meetingIdentityKey(item: {
+  kind: string;
+  id: string;
+  data?: unknown;
+}): string | null {
+  if (item.kind !== 'meeting') return null;
+  const meetingId = recordString(item.data, 'meetingId');
+  if (meetingId) return `meeting:${meetingId}`;
+  return item.id.startsWith('meeting:') ? item.id : null;
+}
+
+const GENERIC_MEETING_TITLES = new Set(['meeting needs a company', 'meeting']);
+
+function quotedMeetingName(body: string): string {
+  const match = body.match(/"([^"]+)"/);
+  return match?.[1]?.replace(/…+$/, '').trim() ?? '';
+}
+
+function formatMeetingWhen(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(ms));
+}
+
+/**
+ * One-line widget title for a meeting notification: meeting name + date/time.
+ *
+ * Needs-action banners used to start with the generic "Meeting needs a company"
+ * prefix, which ellipsized to "Meeting …" and made stacked rows indistinguishable.
+ */
+export function formatMeetingNotificationTitle(payload: {
+  title?: string;
+  body?: string;
+  data?: unknown;
+}): string {
+  const title = (payload.title ?? '').trim();
+  const body = payload.body ?? '';
+  const name =
+    recordString(payload.data, 'meetingTitle') ||
+    quotedMeetingName(body) ||
+    (title && !GENERIC_MEETING_TITLES.has(title.toLowerCase()) ? title : '') ||
+    'Meeting';
+  const when = formatMeetingWhen(recordString(payload.data, 'scheduledStartTime'));
+  return when ? `${name} · ${when}` : name;
+}
+
+function sameNotification(existing: WidgetStackItem, incoming: WidgetStackItem): boolean {
+  if (existing.id === incoming.id) return true;
+  const incomingKey = meetingIdentityKey(incoming);
+  return incomingKey !== null && meetingIdentityKey(existing) === incomingKey;
+}
+
+function withoutMatching(
+  items: WidgetStackItem[],
+  incoming: WidgetStackItem,
+): WidgetStackItem[] {
+  return items.filter((existing) => !sameNotification(existing, incoming));
 }
 
 /**
@@ -410,8 +492,16 @@ export function bannerToStackItem(
       actor = payload.title;
       text = payload.body ?? '';
       break;
+    case 'meeting': {
+      type = 'meeting';
+      const wantsAssign =
+        payload.actionId === 'assign' || payload.clickActionId === 'assign';
+      text = wantsAssign
+        ? formatMeetingNotificationTitle(payload)
+        : joinTitleBody(payload.title, payload.body);
+      break;
+    }
     case 'update':
-    case 'meeting':
     default:
       type = 'system';
       text = joinTitleBody(payload.title, payload.body);
@@ -450,10 +540,10 @@ function joinTitleBody(title: string, body: string | undefined): string {
   return t || b;
 }
 
-/** Prepend into recent history: unread, dedupe by id, trim to max. */
+/** Prepend into recent history: unread, dedupe by id / meeting id, trim to max. */
 function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): WidgetStackItem[] {
   const entry: WidgetStackItem = { ...item, unread: true };
-  return [entry, ...recent.filter((r) => r.id !== item.id)].slice(0, WIDGET_RECENT_MAX);
+  return [entry, ...withoutMatching(recent, item)].slice(0, WIDGET_RECENT_MAX);
 }
 
 /**
@@ -483,15 +573,15 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
   if (base.occluded) {
     return {
       ...base,
-      visible: base.visible.slice(),
-      queued: [item, ...base.queued],
+      visible: withoutMatching(base.visible, item),
+      queued: [item, ...withoutMatching(base.queued, item)],
       recent,
     };
   }
   return {
     ...base,
-    queued: base.queued.slice(),
-    visible: [item, ...base.visible].slice(0, WIDGET_STACK_MAX),
+    queued: withoutMatching(base.queued, item),
+    visible: [item, ...withoutMatching(base.visible, item)].slice(0, WIDGET_STACK_MAX),
     recent,
   };
 }
@@ -546,11 +636,21 @@ export function setOccluded(
  * Drop visible items whose `expiresAt <= now`. Queued/recent are untouched.
  * No-op while `held` — auto-collapse is suspended under the pointer / mid-reply.
  */
+/** True for rows the user can complete in place (they wait for a decision). */
+export function isNeedsActionItem(item: WidgetStackItem): boolean {
+  return resolutionForItem(item) !== null;
+}
+
 export function expireItems(state: WidgetStackState, now: number): WidgetStackState {
   if (state.held === true) {
     return state;
   }
-  const visible = state.visible.filter((item) => item.expiresAt > now);
+  // Needs-action rows stay until resolved or dismissed: the 8 s auto-collapse
+  // is for glanceable notices, and pulling a picker out from under the user
+  // was one of the ways these rows dead-ended.
+  const visible = state.visible.filter(
+    (item) => item.expiresAt > now || isNeedsActionItem(item),
+  );
   if (visible.length === state.visible.length) {
     return state;
   }
@@ -875,6 +975,7 @@ export function deserializeRecent(
       e.type === 'share' ||
       e.type === 'sync' ||
       e.type === 'deploy' ||
+      e.type === 'meeting' ||
       e.type === 'system'
         ? e.type
         : 'system';
