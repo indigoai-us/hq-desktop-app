@@ -5768,7 +5768,6 @@ mod windows_job_attachment_failure_tests {
             // attempt: that would hide a live child with no cancellation
             // authority. An unreaped fixture aborts the focused test process
             // after printing every identity needed to diagnose it.
-            clear_test_windows_termination_results();
             if let Err(error) = self.try_teardown(DEADLINE) {
                 eprintln!(
                     "[process] unreaped Windows fixture: handle={}, generation={}, root_pid={}, descendant_pid={}: {error}",
