@@ -155,6 +155,14 @@
     type ConversationRow,
   } from "../chat/sidebar-model.js";
   import {
+    composerPlaceholderFor,
+    DIRECT_MESSAGE_PLACEHOLDER,
+    GROUP_MESSAGE_PLACEHOLDER,
+    isRawParticipantUid,
+    resolveConversationRow,
+    resolveConversationTitle,
+  } from "../chat/conversation-title.js";
+  import {
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -460,6 +468,7 @@
   let narrowViewport = $state(false);
   let sidebarCollapsed = $state(false);
   let selectedRow = $state<ConversationRow | null>(initialRow);
+  let railRows = $state<ConversationRow[]>([]);
   $effect(() => {
     const next = initialRow;
     if (!next) return;
@@ -471,6 +480,24 @@
         selectedRow = next;
       }
     });
+  });
+
+  $effect(() => {
+    const selected = selectedRow;
+    const rows = railRows;
+    if (!selected) return;
+    const rail = resolveConversationRow(selected, rows);
+    if (!rail || rail.id !== selected.id) return;
+    const currentTitle = untrack(() => selected.title);
+    if (rail.title === currentTitle) return;
+    if (
+      !isRawParticipantUid(currentTitle) &&
+      currentTitle !== DIRECT_MESSAGE_PLACEHOLDER &&
+      currentTitle !== GROUP_MESSAGE_PLACEHOLDER
+    ) {
+      return;
+    }
+    selectedRow = rail;
   });
   let pendingReplyRootId = $state<string | null>(
     initialReplyRootEventId?.trim() || null,
@@ -596,13 +623,12 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
+  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
-  const composerPlaceholder = $derived.by(() => {
-    const row = selectedRow;
-    if (!row) return "Reply…";
-    const isGroup = row.kind === "dm" || row.kind === "group";
-    return `Message ${isGroup ? row.title : `# ${row.title}`} — or type @ to mention an agent…`;
-  });
+  const composerPlaceholder = $derived(
+    composerPlaceholderFor(selectedRow, headerTitle),
+  );
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
   let liveTimelineId = $state<string | null>(null);
@@ -1331,7 +1357,7 @@
     options?: { preserveView?: boolean },
   ): void {
     const row =
-      conversationRowForDeepLink(link, searchRows) ??
+      conversationRowForDeepLink(link, [...searchRows, ...railRows]) ??
       (link.replyRootEventId ? selectedRow : null);
     if (!row) return;
     const reply = link.replyRootEventId?.trim() || null;
@@ -1372,6 +1398,7 @@
         channelId: null,
         personUid: target.personUid?.trim() || null,
         replyRootEventId: target.replyRootEventId ?? null,
+        displayName: target.displayName?.trim() || null,
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
@@ -1993,21 +2020,22 @@
   function openNotification(item: NotificationItem): void {
     const dest = notificationDestination(item);
     if (dest.kind === "dm") {
-      const existing = (searchRows ?? []).find(
-        (row) => row.personUid === dest.personUid,
-      );
-      handleSelect(
-        existing ?? {
-          id: `dm:${dest.personUid}`,
-          kind: "dm",
-          title: dest.title,
-          companyUid: null,
-          unreadDot: false,
-          lastActivityAt: item.createdAtMs,
-          pinned: false,
-          personUid: dest.personUid,
-        },
-      );
+      const stub: ConversationRow = {
+        id: `dm:${dest.personUid}`,
+        kind: "dm",
+        title: dest.title,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: item.createdAtMs,
+        pinned: false,
+        personUid: dest.personUid,
+      };
+      const existing =
+        resolveConversationRow(stub, railRows) ??
+        (searchRows ?? []).find(
+          (row) => row.personUid === dest.personUid && !row.channelId,
+        );
+      handleSelect(existing ?? stub);
       return;
     }
     if (dest.kind === "files") {
@@ -2352,6 +2380,7 @@
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
+          onrows={(rows) => (railRows = rows)}
         />
         {/key}
       {/if}
@@ -2413,7 +2442,7 @@
                       kind={isAgentUid(selectedRow.personUid ?? "")
                         ? "agent"
                         : "person"}
-                      label={selectedRow.title}
+                      label={headerTitle}
                       agentUid={selectedRow.personUid}
                       avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
                         null}
@@ -2421,7 +2450,7 @@
                     />
                   </span>
                 {/if}
-                <h2 data-testid="channel-name">{selectedRow.title}</h2>
+                <h2 data-testid="channel-name">{headerTitle}</h2>
                 {#if channelSubtitle}
                   <span class="channel-sub-row">
                     <span class="channel-sub" data-testid="channel-sub"
@@ -2644,7 +2673,7 @@
           </header>
           {#if projectAboutOpen && isProjectChannel}
             <ProjectAboutDialog
-              title={selectedRow.title}
+              title={headerTitle}
               description={channelStatus?.project.description ?? null}
               onclose={() => (projectAboutOpen = false)}
             />
