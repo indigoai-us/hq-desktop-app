@@ -7,9 +7,9 @@
  * module and calls its actions; nothing else invokes those commands.
  *
  * Correctness model (why the seq bookkeeping looks the way it does):
- *   - `agent_session_replay(sessionId, sinceSeq)` returns `(seq, event)` pairs
- *     with `seq >= sinceSeq`, plus the `nextSeq` to ask for next time. A full
- *     catch-up is `sinceSeq = 0`.
+ *   - `agent_session_replay(sessionId, sinceSeq)` returns
+ *     `{ seq, receivedAtMs, event }` entries with `seq >= sinceSeq`, plus the
+ *     `nextSeq` to ask for next time. A full catch-up is `sinceSeq = 0`.
  *   - Live `agent-session:event` payloads carry the same seq. A payload whose
  *     seq is EXACTLY `nextSeq` appends; a lower seq is a duplicate and is
  *     dropped; a higher seq means we missed events (a dropped Tauri emit, a
@@ -17,19 +17,22 @@
  *     rendering a transcript with a hole in it.
  * That invariant is what lets the transcript be a pure fold of `events`.
  *
- * TWO things the event stream cannot tell us, which this store supplies:
+ * TIMESTAMPS. The backend stamps every buffered event with `receivedAtMs` and
+ * ships the same instant on the live `agent-session:event` payload and in
+ * `agent_session_replay`, so a reopened transcript is dated by when things
+ * actually happened rather than by when it was reopened. The store keeps those
+ * stamps parallel to `events`; `null` survives only as "unknown", which the
+ * fold keeps out of the day-divider decision.
  *
- *   1. WHEN an event happened. Session events carry no wall-clock, so the
- *      store stamps `receivedAt` the moment a LIVE event lands. Replayed
- *      events get `null` — they have no honest time — and the fold keeps them
- *      out of the day-divider decision rather than inventing one.
- *
- *   2. WHAT THE OPERATOR SAID. There is no user-message event in the enum
- *      (see `SESSION_EVENT_KINDS`), so `agent_session_replay` never returns
- *      the operator's own turns. The store mirrors every send in
- *      `userTurnsById`, which deliberately OUTLIVES `close()`: the first send
- *      of a new session is immediately followed by a route change and a page
- *      remount, and the sent message has to still be on screen afterwards.
+ * USER TURNS — mirror first, then defer to the backend. `agent_session_send`
+ * records a `userMessage` event, so the operator's own words DO come back from
+ * a replay. But the bubble has to appear the instant Enter is pressed, before
+ * any round trip, so the store still mirrors each send in `userTurnsById` —
+ * which deliberately OUTLIVES `close()`, because the first send of a new
+ * session is immediately followed by a route change and a page remount. The
+ * moment a backend `userMessage` lands for a session, the mirror for that
+ * session is dropped: the authoritative copy has arrived and rendering both
+ * would double every bubble.
  *
  * The fold itself (`foldSessionEvents`) is pure and lives with the components;
  * this module memoizes it on a revision counter so a render that only reads
@@ -101,6 +104,10 @@ export interface SessionSummary {
   phase: SessionPhase;
   company: string | null;
   model: string | null;
+  /** The reasoning effort the session was launched with, when one was chosen. */
+  effort: string | null;
+  /** How this session answers tool-permission requests. */
+  permissionMode: PermissionMode;
   cwd: string;
   startedAt: string;
   lastActivityAt: string;
@@ -136,7 +143,23 @@ export interface CommandCatalog {
 interface SessionEventPayload {
   sessionId: string;
   seq: number;
+  /** Unix ms the backend recorded the event — the same stamp a replay returns. */
+  receivedAtMs: number;
   event: SessionEvent;
+}
+
+/** One entry of an `agent_session_replay` page. */
+interface ReplayEntry {
+  seq: number;
+  receivedAtMs: number;
+  event: SessionEvent;
+}
+
+/** What `agent_session_replay` returns. */
+interface ReplayPage {
+  events: ReplayEntry[];
+  nextSeq: number;
+  truncated: boolean;
 }
 
 /** `agent-session:phase` payload. */
@@ -167,8 +190,9 @@ interface SessionEntry {
   sessionId: string;
   events: SessionEvent[];
   /**
-   * Wall-clock ms each event arrived, parallel to `events`. Live events carry
-   * a real instant; replayed ones carry `null` (see the module header).
+   * Wall-clock ms each event was recorded by the backend, parallel to
+   * `events`. `null` only where an instant is genuinely unknown — the fold
+   * keeps those out of the day-divider decision (see the module header).
    */
   receivedAt: (number | null)[];
   /** The seq to pass as `sinceSeq` on the next replay. */
@@ -256,7 +280,12 @@ function errorText(err: unknown): string {
 // Event plumbing
 // ---------------------------------------------------------------------------
 
-function applyEvent(sessionId: string, seq: number, event: SessionEvent): void {
+function applyEvent(
+  sessionId: string,
+  seq: number,
+  receivedAtMs: number | undefined,
+  event: SessionEvent,
+): void {
   const entry = entries[sessionId];
   if (!entry) return; // Not a session this store has open — nothing to fold into.
   if (seq < entry.nextSeq) return; // Duplicate (a replay already covered it).
@@ -267,28 +296,50 @@ function applyEvent(sessionId: string, seq: number, event: SessionEvent): void {
     return;
   }
   entry.events.push(event);
-  // A live event is the one moment we KNOW when something happened.
-  entry.receivedAt.push(Date.now());
+  // The backend's stamp is authoritative — it is the same instant a later
+  // replay will report. `Date.now()` is only a fallback for a payload from an
+  // older backend that carries none.
+  entry.receivedAt.push(receivedAtMs ?? Date.now());
   entry.nextSeq = seq + 1;
+  adoptBackendTurns(sessionId, [event]);
   revision += 1;
+}
+
+/**
+ * The backend's own record of the operator's turns has arrived — drop the
+ * local mirror for this session so the bubble is not rendered twice.
+ *
+ * The mirror exists only to paint a bubble before the round trip completes;
+ * once a `userMessage` event is in the event log it is both authoritative and
+ * correctly positioned, and the two would otherwise stack.
+ */
+function adoptBackendTurns(sessionId: string, incoming: ReadonlyArray<SessionEvent>): void {
+  if (!incoming.some((event) => event.kind === 'userMessage')) return;
+  if (!(sessionId in userTurnsById)) return;
+  delete userTurnsById[sessionId];
+  foldCache = null;
 }
 
 async function replayFrom(sessionId: string, sinceSeq: number): Promise<void> {
   const entry = entries[sessionId];
   if (!entry) return;
   try {
-    const replay = await invoke<{
-      events: [number, SessionEvent][];
-      nextSeq: number;
-      truncated: boolean;
-    }>('agent_session_replay', { sessionId, sinceSeq });
+    const replay = await invoke<ReplayPage>('agent_session_replay', {
+      sessionId,
+      sinceSeq,
+    });
     const target = entries[sessionId];
     if (!target) return;
-    const incoming = replay.events.map(([, event]) => event);
-    // A replayed event has no honest arrival time; `null` keeps it out of the
-    // day-divider decision instead of stamping it with "now", which would put
-    // a whole day's history under today's date.
-    const stamps = incoming.map(() => null);
+    const incoming = replay.events.map((entry) => entry.event);
+    // The backend stamped each event when it recorded it, so a replayed
+    // transcript is dated by when it happened rather than by when it was
+    // reopened. A page from an older backend carries no stamp; `null` keeps
+    // those events out of the day-divider decision instead of filing a week of
+    // history under today.
+    const stamps = replay.events.map((entry) =>
+      typeof entry.receivedAtMs === 'number' ? entry.receivedAtMs : null,
+    );
+    adoptBackendTurns(sessionId, incoming);
     // `sinceSeq === 0` is a full catch-up: replace. A partial replay fills a
     // gap from the last contiguous seq forward, so it appends onto what we
     // already folded.
@@ -314,7 +365,7 @@ async function ensureListeners(): Promise<void> {
   try {
     const [onEvent, onPhase, onNeeds] = await Promise.all([
       listen<SessionEventPayload>(AGENT_SESSION_EVENT, ({ payload }) => {
-        applyEvent(payload.sessionId, payload.seq, payload.event);
+        applyEvent(payload.sessionId, payload.seq, payload.receivedAtMs, payload.event);
       }),
       listen<SessionPhasePayload>(AGENT_SESSION_PHASE, ({ payload }) => {
         const entry = entries[payload.sessionId];
@@ -633,7 +684,7 @@ export const liveSessionStore = {
   get events(): SessionEvent[] {
     return activeEntry()?.events ?? [];
   },
-  /** Arrival stamps parallel to `events`; `null` for replayed events. */
+  /** Backend record-time stamps parallel to `events`; `null` when unknown. */
   get receivedAt(): (number | null)[] {
     return activeEntry()?.receivedAt ?? [];
   },

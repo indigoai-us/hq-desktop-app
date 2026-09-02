@@ -41,6 +41,8 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     lastActivityAt: '2026-01-01T00:00:00.000Z',
     lastSeq: 0,
     pendingCount: 0,
+    effort: null,
+    permissionMode: 'prompt',
     ...overrides,
   };
 }
@@ -56,7 +58,27 @@ const started: SessionEvent = {
 };
 
 /** Replay pages, keyed by the `sinceSeq` the store will ask for. */
-type ReplayPage = { events: [number, SessionEvent][]; nextSeq: number; truncated: boolean };
+type ReplayPage = {
+  events: { seq: number; receivedAtMs: number; event: SessionEvent }[];
+  nextSeq: number;
+  truncated: boolean;
+};
+
+/** A fixed backend clock, so a stamp assertion is about the plumbing. */
+const T0 = Date.parse('2026-09-02T14:00:00.000Z');
+
+/** `[seq, event]` shorthand → the entry shape the backend actually returns. */
+function page(
+  pairs: [number, SessionEvent][],
+  nextSeq: number,
+  truncated = false,
+): ReplayPage {
+  return {
+    events: pairs.map(([seq, event]) => ({ seq, receivedAtMs: T0 + seq * 1000, event })),
+    nextSeq,
+    truncated,
+  };
+}
 
 function mockBackend(pages: Record<number, ReplayPage>, list: SessionSummary[] = [summary()]) {
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
@@ -105,7 +127,7 @@ afterEach(() => {
 describe('liveSessionStore.open', () => {
   it('replays the whole transcript, then folds live events on top of it', async () => {
     mockBackend({
-      0: { events: [[0, started]], nextSeq: 1, truncated: false },
+      0: page([[0, started]], 1),
     });
 
     await liveSessionStore.open(SESSION);
@@ -132,13 +154,13 @@ describe('liveSessionStore.open', () => {
   });
 
   it('carries the started event’s slash commands', async () => {
-    mockBackend({ 0: { events: [[0, started]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, started]], 1) });
     await liveSessionStore.open(SESSION);
     expect(liveSessionStore.startedCommands.map((c) => c.name)).toEqual(['handoff']);
   });
 
   it('ignores an event for a session it does not have open', async () => {
-    mockBackend({ 0: { events: [[0, started]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, started]], 1) });
     await liveSessionStore.open(SESSION);
 
     emit(AGENT_SESSION_EVENT, {
@@ -151,7 +173,7 @@ describe('liveSessionStore.open', () => {
   });
 
   it('drops a duplicate event rather than folding it twice', async () => {
-    mockBackend({ 0: { events: [[0, started]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, started]], 1) });
     await liveSessionStore.open(SESSION);
 
     emit(AGENT_SESSION_EVENT, { sessionId: SESSION, seq: 0, event: started });
@@ -166,15 +188,11 @@ describe('liveSessionStore seq gaps', () => {
     const missed: SessionEvent = { kind: 'assistantMessage', text: 'missed' };
     const arrived: SessionEvent = { kind: 'assistantMessage', text: 'arrived' };
     mockBackend({
-      0: { events: [[0, started]], nextSeq: 1, truncated: false },
-      1: {
-        events: [
+      0: page([[0, started]], 1),
+      1: page([
           [1, missed],
           [2, arrived],
-        ],
-        nextSeq: 3,
-        truncated: false,
-      },
+        ], 3),
     });
 
     await liveSessionStore.open(SESSION);
@@ -195,7 +213,7 @@ describe('liveSessionStore seq gaps', () => {
 
 describe('liveSessionStore phase + needs-you', () => {
   it('updates the phase and refreshes the session list on a phase event', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
     expect(liveSessionStore.phase).toBe('idle');
 
@@ -215,7 +233,7 @@ describe('liveSessionStore phase + needs-you', () => {
   });
 
   it('records the needs-you notice', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
 
     emit(AGENT_SESSION_NEEDS_YOU, {
@@ -244,7 +262,7 @@ describe('liveSessionStore decisions', () => {
   };
 
   it('sends the exact respond-permission payload the backend expects', async () => {
-    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, permission]], 1) });
     await liveSessionStore.open(SESSION);
     expect(liveSessionStore.pending).toHaveLength(1);
 
@@ -260,7 +278,7 @@ describe('liveSessionStore decisions', () => {
   });
 
   it('retires an answered card (the backend emits no resolution event)', async () => {
-    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, permission]], 1) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
 
@@ -277,7 +295,7 @@ describe('liveSessionStore decisions', () => {
         { id: 'q1', header: 'Scope', text: 'How far?', options: [{ label: 'All' }], multiSelect: false },
       ],
     };
-    mockBackend({ 0: { events: [[0, question]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, question]], 1) });
     await liveSessionStore.open(SESSION);
 
     invoke.mockClear();
@@ -293,7 +311,7 @@ describe('liveSessionStore decisions', () => {
   });
 
   it('sends, interrupts, and ends against the open session id', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
 
     invoke.mockClear();
@@ -322,7 +340,7 @@ describe('liveSessionStore.start', () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'agent_session_start') return Promise.resolve({ sessionId: 'fresh' });
       if (command === 'agent_session_replay') {
-        return Promise.resolve({ events: [], nextSeq: 0, truncated: false });
+        return Promise.resolve(page([], 0));
       }
       if (command === 'agent_session_list') return Promise.resolve([]);
       return Promise.resolve(undefined);
@@ -348,7 +366,7 @@ describe('liveSessionStore.start', () => {
 
 describe('liveSessionStore.close', () => {
   it('drops the transcript and unlistens once nothing is open', async () => {
-    mockBackend({ 0: { events: [[0, started]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, started]], 1) });
     await liveSessionStore.open(SESSION);
 
     liveSessionStore.close(SESSION);
@@ -363,8 +381,24 @@ describe('liveSessionStore.close', () => {
 
 
 describe('liveSessionStore receivedAt stamps', () => {
-  it('stamps a LIVE event with the moment it arrived', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+  it('takes a live event\u2019s stamp from the backend, not from its own clock', async () => {
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      receivedAtMs: T0,
+      event: { kind: 'assistantMessage', text: 'live' } satisfies SessionEvent,
+    });
+
+    expect(liveSessionStore.receivedAt).toEqual([T0]);
+  });
+
+  it('falls back to now for a payload that carries no stamp', async () => {
+    // Defensive: an older backend emits no `receivedAtMs`. Guessing "now" is
+    // wrong by less than dropping the event\u2019s date entirely.
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
 
     const before = Date.now();
@@ -381,39 +415,51 @@ describe('liveSessionStore receivedAt stamps', () => {
     expect(stamp!).toBeLessThanOrEqual(after);
   });
 
-  it('leaves a REPLAYED event unstamped rather than dating it "now"', async () => {
-    // A replayed event has no honest arrival time. Stamping it with the replay
-    // instant would file a week of history under today and draw a fake day
-    // divider — the exact bug this contract exists to prevent.
+  it('dates a REPLAYED event by when the backend recorded it', async () => {
+    // The gap this closes: replayed events used to carry no time at all, so a
+    // reopened transcript could not tell yesterday from a minute ago. The
+    // backend now stamps every buffered event, and the fold uses that instant.
     mockBackend({
-      0: {
-        events: [
+      0: page([
           [0, started],
           [1, { kind: 'assistantMessage', text: 'old' }],
-        ],
-        nextSeq: 2,
-        truncated: false,
-      },
+        ], 2),
     });
     await liveSessionStore.open(SESSION);
 
-    expect(liveSessionStore.receivedAt).toEqual([null, null]);
-    expect(liveSessionStore.transcript.blocks.every((block) => block.at === null)).toBe(true);
+    expect(liveSessionStore.receivedAt).toEqual([T0, T0 + 1000]);
+    const prose = liveSessionStore.transcript.blocks.find((b) => b.type === 'assistantProse');
+    expect(prose?.at).toBe(T0 + 1000);
+  });
+
+  it('treats a stampless replay entry as unknown rather than as now', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary()]);
+      if (command === 'agent_session_replay') {
+        // An older backend: `(seq, event)` with no stamp at all.
+        return Promise.resolve({
+          events: [{ seq: 0, event: { kind: 'assistantMessage', text: 'old' } }],
+          nextSeq: 1,
+          truncated: false,
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await liveSessionStore.open(SESSION);
+
+    expect(liveSessionStore.receivedAt).toEqual([null]);
     expect(liveSessionStore.transcript.blocks.some((b) => b.type === 'divider')).toBe(false);
   });
 
   it('keeps the stamps parallel to the events across a gap replay', async () => {
     const arrived: SessionEvent = { kind: 'assistantMessage', text: 'arrived' };
     mockBackend({
-      0: { events: [[0, started]], nextSeq: 1, truncated: false },
-      1: {
-        events: [
+      0: page([[0, started]], 1),
+      1: page([
           [1, { kind: 'assistantMessage', text: 'missed' }],
           [2, arrived],
-        ],
-        nextSeq: 3,
-        truncated: false,
-      },
+        ], 3),
     });
     await liveSessionStore.open(SESSION);
     emit(AGENT_SESSION_EVENT, { sessionId: SESSION, seq: 2, event: arrived });
@@ -424,8 +470,8 @@ describe('liveSessionStore receivedAt stamps', () => {
 });
 
 describe('liveSessionStore mirrors the operator\'s own turns', () => {
-  it('shows a sent message immediately — the event stream carries none back', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+  it('shows a sent message immediately, before the backend has echoed it', async () => {
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
 
@@ -434,16 +480,79 @@ describe('liveSessionStore mirrors the operator\'s own turns', () => {
     expect(bubbleText()).toEqual(['do the thing']);
   });
 
+  it('hands the bubble over to the backend\u2019s own userMessage instead of doubling it', async () => {
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+    await liveSessionStore.send('do the thing');
+    expect(bubbleText()).toEqual(['do the thing']);
+
+    // The backend records the turn as it writes it to the CLI. Rendering both
+    // copies would show every message twice.
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      receivedAtMs: T0,
+      event: { kind: 'userMessage', text: 'do the thing', imageCount: 0 } satisfies SessionEvent,
+    });
+
+    expect(bubbleText()).toEqual(['do the thing']);
+    expect(liveSessionStore.userTurns).toEqual([]);
+  });
+
+  it('rebuilds the operator\u2019s half of the conversation from a replay alone', async () => {
+    // The gap this closes: a reopened session used to show the agent answering
+    // questions nobody could see having been asked.
+    mockBackend({
+      0: page([
+          [0, started],
+          [1, { kind: 'userMessage', text: 'do the thing', imageCount: 1 }],
+          [2, { kind: 'assistantMessage', text: 'on it' }],
+        ], 3),
+    });
+
+    await liveSessionStore.open(SESSION);
+
+    expect(liveSessionStore.transcript.blocks.map((block) => block.type)).toEqual([
+      'userBubble',
+      'assistantProse',
+    ]);
+    expect(bubbleText()).toEqual(['do the thing']);
+  });
+
+  it('prefers the replayed turn over a mirror of the same send', async () => {
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+    invoke.mockResolvedValue(undefined);
+    await liveSessionStore.send('do the thing');
+
+    // Exactly what a route change does — and this time the backend has the
+    // turn, so the mirror must stand down rather than stack.
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_list') return Promise.resolve([summary()]);
+      if (command === 'agent_session_replay') {
+        return Promise.resolve(
+          page([[0, { kind: 'userMessage', text: 'do the thing', imageCount: 0 }]], 1),
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    liveSessionStore.close(SESSION);
+    await liveSessionStore.open(SESSION);
+
+    expect(bubbleText()).toEqual(['do the thing']);
+  });
+
   it('SURVIVES the close/open pair a route change performs', async () => {
     // This is the whole point of keeping the mirror outside the session entry:
     // the first send is followed by a navigation, the page remounts, and the
     // message the user just sent has to still be on screen.
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
     invoke.mockImplementation((command: string) => {
       if (command === 'agent_session_list') return Promise.resolve([summary()]);
       if (command === 'agent_session_replay') {
-        return Promise.resolve({ events: [], nextSeq: 0, truncated: false });
+        return Promise.resolve(page([], 0));
       }
       return Promise.resolve(undefined);
     });
@@ -457,7 +566,7 @@ describe('liveSessionStore mirrors the operator\'s own turns', () => {
   });
 
   it('interleaves the bubble above the reply it provoked', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
     await liveSessionStore.send('do the thing');
@@ -475,7 +584,7 @@ describe('liveSessionStore mirrors the operator\'s own turns', () => {
   });
 
   it('carries images on the send', async () => {
-    mockBackend({ 0: { events: [], nextSeq: 0, truncated: false } });
+    mockBackend({ 0: page([], 0) });
     await liveSessionStore.open(SESSION);
     invoke.mockClear();
     invoke.mockResolvedValue(undefined);
@@ -500,7 +609,7 @@ describe('liveSessionStore.startAndSend', () => {
         return Promise.resolve({ sessionId: 'fresh' });
       }
       if (command === 'agent_session_replay') {
-        return Promise.resolve({ events: [], nextSeq: 0, truncated: false });
+        return Promise.resolve(page([], 0));
       }
       if (command === 'agent_session_list') return Promise.resolve([]);
       return Promise.resolve(undefined);
@@ -572,7 +681,7 @@ describe('liveSessionStore resolutions', () => {
   };
 
   it('records the verb so an answered card collapses instead of vanishing', async () => {
-    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, permission]], 1) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
 
@@ -585,7 +694,7 @@ describe('liveSessionStore resolutions', () => {
   });
 
   it('records a denial as a denial', async () => {
-    mockBackend({ 0: { events: [[0, permission]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, permission]], 1) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
 
@@ -603,7 +712,7 @@ describe('liveSessionStore resolutions', () => {
         { id: 'q1', header: 'Scope', text: 'How far?', options: [{ label: 'All' }], multiSelect: false },
       ],
     };
-    mockBackend({ 0: { events: [[0, question]], nextSeq: 1, truncated: false } });
+    mockBackend({ 0: page([[0, question]], 1) });
     await liveSessionStore.open(SESSION);
     invoke.mockResolvedValue(undefined);
 
@@ -617,11 +726,7 @@ describe('liveSessionStore resolutions', () => {
 describe('liveSessionStore.lastUsage', () => {
   it('surfaces the last turn cost for the composer footer', async () => {
     mockBackend({
-      0: {
-        events: [[0, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }]],
-        nextSeq: 1,
-        truncated: false,
-      },
+      0: page([[0, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }]], 1),
     });
     await liveSessionStore.open(SESSION);
     expect(liveSessionStore.lastUsage?.label).toBe('2 in · 17 out · $0.68');

@@ -53,7 +53,7 @@ use tokio::time::Instant;
 
 use crate::util::logfile::log;
 
-use super::{now_iso, SessionState};
+use super::{now_iso, now_ms, SessionState};
 
 /// Tauri event carrying one transcript event.
 pub const EVENT_SESSION_EVENT: &str = "agent-session:event";
@@ -94,7 +94,10 @@ const PROBE_BUDGET: Duration = Duration::from_secs(20);
 /// standing up a Tauri app. An untested driver is the one thing in this feature
 /// that would actually hurt.
 pub trait SessionEventSink: Send + Sync + 'static {
-    fn emit_event(&self, session_id: &str, seq: u64, event: &SessionEvent);
+    /// `received_at_ms` is the same unix-ms stamp the replay buffer recorded,
+    /// so a live listener and a later `agent_session_replay` date the event
+    /// identically.
+    fn emit_event(&self, session_id: &str, seq: u64, received_at_ms: u64, event: &SessionEvent);
     fn emit_phase(&self, session_id: &str, change: PhaseChange);
     fn emit_needs_you(&self, session_id: &str, needs: &NeedsYou);
 }
@@ -103,10 +106,15 @@ pub trait SessionEventSink: Send + Sync + 'static {
 pub struct AppSink(pub AppHandle);
 
 impl SessionEventSink for AppSink {
-    fn emit_event(&self, session_id: &str, seq: u64, event: &SessionEvent) {
+    fn emit_event(&self, session_id: &str, seq: u64, received_at_ms: u64, event: &SessionEvent) {
         let _ = self.0.emit(
             EVENT_SESSION_EVENT,
-            serde_json::json!({ "sessionId": session_id, "seq": seq, "event": event }),
+            serde_json::json!({
+                "sessionId": session_id,
+                "seq": seq,
+                "receivedAtMs": received_at_ms,
+                "event": event,
+            }),
         );
     }
 
@@ -512,7 +520,7 @@ async fn handle_event(
     let Some(session) = guard.registry.get_mut(session_id) else {
         return true;
     };
-    let Some(outcome) = session.on_event(event.clone(), now_iso()) else {
+    let Some(outcome) = session.on_event(event.clone(), now_iso(), now_ms()) else {
         // Suppressed (a duplicate exit) — nothing to emit.
         return true;
     };
@@ -526,7 +534,7 @@ async fn handle_event(
     // A `Truncated` marker is deliberately NOT emitted live: a connected
     // listener already received every event the ring just dropped. It matters
     // only to `agent_session_replay`, which reports it in-band.
-    sink.emit_event(session_id, outcome.seq, &event);
+    sink.emit_event(session_id, outcome.seq, outcome.received_at_ms, &event);
     if let Some(change) = outcome.phase_change {
         sink.emit_phase(session_id, change);
     }
@@ -548,12 +556,12 @@ async fn record(
         let Some(session) = guard.registry.get_mut(session_id) else {
             return;
         };
-        session.on_event(event.clone(), now_iso())
+        session.on_event(event.clone(), now_iso(), now_ms())
     };
     let Some(outcome) = outcome else {
         return;
     };
-    sink.emit_event(session_id, outcome.seq, &event);
+    sink.emit_event(session_id, outcome.seq, outcome.received_at_ms, &event);
     if let Some(change) = outcome.phase_change {
         sink.emit_phase(session_id, change);
     }
@@ -638,6 +646,7 @@ async fn probe_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hq_desktop_core::agent_session::claude_wire::user_message_line;
     use hq_desktop_core::agent_session::registry::LiveSession;
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool,
@@ -649,13 +658,14 @@ mod tests {
     /// stream the frontend would receive.
     #[derive(Default)]
     struct RecordingSink {
-        events: std::sync::Mutex<Vec<(u64, SessionEvent)>>,
+        events: std::sync::Mutex<Vec<(u64, u64, SessionEvent)>>,
         phases: std::sync::Mutex<Vec<PhaseChange>>,
         needs: std::sync::Mutex<Vec<NeedsYou>>,
     }
 
     impl RecordingSink {
-        fn events(&self) -> Vec<(u64, SessionEvent)> {
+        /// `(seq, receivedAtMs, event)` in emission order.
+        fn events(&self) -> Vec<(u64, u64, SessionEvent)> {
             self.events.lock().unwrap().clone()
         }
         fn phases(&self) -> Vec<SessionPhase> {
@@ -667,8 +677,17 @@ mod tests {
     }
 
     impl SessionEventSink for Arc<RecordingSink> {
-        fn emit_event(&self, _session_id: &str, seq: u64, event: &SessionEvent) {
-            self.events.lock().unwrap().push((seq, event.clone()));
+        fn emit_event(
+            &self,
+            _session_id: &str,
+            seq: u64,
+            received_at_ms: u64,
+            event: &SessionEvent,
+        ) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((seq, received_at_ms, event.clone()));
         }
         fn emit_phase(&self, _session_id: &str, change: PhaseChange) {
             self.phases.lock().unwrap().push(change);
@@ -747,6 +766,21 @@ id=$(printf '%s' "$reply" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
 printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"still_queued":[]}}}\n' "$id"
 printf '%s\n' "$HQ_FAKE_RESULT"
 # stay alive until the client closes stdin, exactly like the real CLI
+while IFS= read -r _line; do :; done
+exit 0
+"#;
+
+    /// A fake `claude` that blocks on the operator's turn before answering, so
+    /// the ordering the buffer records is the ordering that actually happened
+    /// rather than a race the test won by luck.
+    const FAKE_CLAUDE_ECHO: &str = r#"
+set -u
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"cli-echo","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":[]}'
+# Say nothing until the user has said something.
+IFS= read -r turn
+printf '%s\n' "$turn" >> "$HQ_FAKE_REPLIES"
+printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"On it."}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"On it.","usage":{"input_tokens":3,"output_tokens":4},"session_id":"cli-echo","total_cost_usd":0.0001,"duration_ms":11}'
 while IFS= read -r _line; do :; done
 exit 0
 "#;
@@ -857,23 +891,23 @@ exit 0
         // Started → Idle, and the transcript so far.
         let events = h.sink.events();
         assert!(
-            matches!(&events[0].1, SessionEvent::Started { session_id, model, tools, .. }
+            matches!(&events[0].2, SessionEvent::Started { session_id, model, tools, .. }
                 if session_id == "cli-abc"
                     && model == "claude-haiku-4-5-20251001"
                     && tools.contains(&"Write".to_string())),
             "first event should be Started: {:?}",
-            events[0].1
+            events[0].2
         );
         assert!(
             events
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::TextDelta { text, .. } if text == "Writing the file.")),
+                .any(|(_, _, e)| matches!(e, SessionEvent::TextDelta { text, .. } if text == "Writing the file.")),
             "the streamed text reached the sink"
         );
         assert!(
             events
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::ToolCall { name, .. } if name == "Write")),
+                .any(|(_, _, e)| matches!(e, SessionEvent::ToolCall { name, .. } if name == "Write")),
             "the tool call reached the sink"
         );
 
@@ -916,20 +950,20 @@ exit 0
             h.sink
                 .events()
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+                .any(|(_, _, e)| matches!(e, SessionEvent::TurnDone { .. }))
         })
         .await;
 
         let events = h.sink.events();
         assert!(
-            events.iter().any(|(_, e)| matches!(
+            events.iter().any(|(_, _, e)| matches!(
                 e,
                 SessionEvent::ToolResult { id, is_error: false, .. } if id == "toolu_01"
             )),
             "the tool ran and reported back"
         );
         assert!(
-            events.iter().any(|(_, e)| matches!(
+            events.iter().any(|(_, _, e)| matches!(
                 e,
                 SessionEvent::TurnDone { status: DoneStatus::Success, .. }
             )),
@@ -969,13 +1003,135 @@ exit 0
             .replay(0)
             .events
             .into_iter()
-            .filter(|(_, e)| matches!(e, SessionEvent::Exited { .. }))
+            .filter(|entry| matches!(entry.event, SessionEvent::Exited { .. }))
             .count();
         assert_eq!(exits, 1, "exactly one Exited");
         assert!(
             !guard.has_channel("sess-e2e"),
             "the write channel is released when the child is gone"
         );
+    }
+
+    /// The operator's own turn is part of the transcript, and every buffered
+    /// entry carries the instant it arrived.
+    ///
+    /// Both are replay properties, not live-stream properties: a UI that was
+    /// closed and reopened rebuilds the conversation from
+    /// `agent_session_replay` alone. Before this, that call returned only the
+    /// agent's half — a reopened session showed answers to questions nobody
+    /// could see having been asked — and nothing in it was dated, so the
+    /// transcript could not tell yesterday from a minute ago.
+    #[tokio::test]
+    async fn a_replayed_transcript_carries_the_user_turn_first_and_stamps_every_entry() {
+        let h = start_with(PermissionMode::BypassAll, FAKE_CLAUDE_ECHO).await;
+
+        // The fake is blocked reading stdin until we send, so the assistant
+        // cannot get ahead of the turn it is answering.
+        until("the handshake", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, _, e)| matches!(e, SessionEvent::Started { .. }))
+        })
+        .await;
+
+        let before_send = now_ms();
+        {
+            let mut guard = h.state.lock().await;
+            crate::commands::agent_session::record_and_queue_user_turn(
+                &mut guard,
+                &h.sink.clone(),
+                "sess-e2e",
+                "do the thing",
+                user_message_line("do the thing"),
+                2,
+            )
+            .expect("queued");
+        }
+
+        until("the turn to finish", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, _, e)| matches!(e, SessionEvent::TurnDone { .. }))
+        })
+        .await;
+
+        let replay = {
+            let guard = h.state.lock().await;
+            guard.registry.get("sess-e2e").expect("session").buffer.replay(0)
+        };
+
+        let user_at = replay
+            .events
+            .iter()
+            .position(|entry| matches!(&entry.event, SessionEvent::UserMessage { .. }))
+            .expect("the operator's turn is in the replay");
+        let said_at = replay
+            .events
+            .iter()
+            .position(|entry| matches!(
+                &entry.event,
+                SessionEvent::AssistantMessage { text, .. } if text == "On it."
+            ))
+            .expect("the agent's answer is in the replay");
+        assert!(
+            user_at < said_at,
+            "the question must precede the answer: {:?}",
+            replay.events.iter().map(|e| &e.event).collect::<Vec<_>>()
+        );
+        assert!(
+            matches!(
+                &replay.events[user_at].event,
+                SessionEvent::UserMessage { text, image_count }
+                    if text == "do the thing" && *image_count == 2
+            ),
+            "the turn replays verbatim, images counted but not stored: {:?}",
+            replay.events[user_at].event
+        );
+
+        // Every entry is dated, and the dates only move forward.
+        let mut previous = 0u64;
+        for entry in &replay.events {
+            assert!(
+                entry.received_at_ms >= before_send.saturating_sub(60_000),
+                "entry {:?} has no plausible stamp ({})",
+                entry.event,
+                entry.received_at_ms
+            );
+            assert!(
+                entry.received_at_ms >= previous,
+                "stamps must not go backwards: {} then {}",
+                previous,
+                entry.received_at_ms
+            );
+            previous = entry.received_at_ms;
+        }
+        assert!(
+            replay.events[user_at].received_at_ms >= before_send,
+            "the user turn is stamped when it was sent"
+        );
+
+        // The same stamp the buffer holds is the one the live listener got.
+        let (_, emitted_at, _) = h
+            .sink
+            .events()
+            .into_iter()
+            .find(|(_, _, e)| matches!(e, SessionEvent::UserMessage { .. }))
+            .expect("the user turn was emitted live too");
+        assert_eq!(
+            emitted_at, replay.events[user_at].received_at_ms,
+            "a live listener and a replay must date the same event identically"
+        );
+
+        // And it really reached the child, unchanged.
+        let sent = std::fs::read_to_string(&h.replies).expect("replies");
+        let line: Value = serde_json::from_str(sent.trim()).expect("json");
+        assert_eq!(line["type"], "user");
+        assert_eq!(line["message"]["content"], "do the thing");
+
+        h.tx.send(Outbound::End).expect("send end");
+        h.join.await.expect("loop finished");
     }
 
     #[tokio::test]
@@ -986,7 +1142,7 @@ exit 0
             h.sink
                 .events()
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+                .any(|(_, _, e)| matches!(e, SessionEvent::TurnDone { .. }))
         })
         .await;
 
@@ -994,7 +1150,7 @@ exit 0
         assert!(
             !events
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::PermissionRequest { .. })),
+                .any(|(_, _, e)| matches!(e, SessionEvent::PermissionRequest { .. })),
             "bypass must not surface a prompt: {events:?}"
         );
         assert!(h.sink.needs().is_empty(), "and must never need the user");
@@ -1004,7 +1160,7 @@ exit 0
             h.sink.phases()
         );
         assert!(
-            events.iter().any(|(_, e)| matches!(
+            events.iter().any(|(_, _, e)| matches!(
                 e,
                 SessionEvent::ToolResult { id, .. } if id == "toolu_01"
             )),
@@ -1058,7 +1214,7 @@ exit 0
             h.sink
                 .events()
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::TextDelta { .. }))
+                .any(|(_, _, e)| matches!(e, SessionEvent::TextDelta { .. }))
         })
         .await;
 
@@ -1069,13 +1225,13 @@ exit 0
             h.sink
                 .events()
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::TurnDone { .. }))
+                .any(|(_, _, e)| matches!(e, SessionEvent::TurnDone { .. }))
         })
         .await;
 
         let events = h.sink.events();
         assert!(
-            events.iter().any(|(_, e)| matches!(
+            events.iter().any(|(_, _, e)| matches!(
                 e,
                 SessionEvent::TurnDone { status: DoneStatus::Interrupted, error: None, .. }
             )),
@@ -1084,7 +1240,7 @@ exit 0
         assert!(
             !events
                 .iter()
-                .any(|(_, e)| matches!(e, SessionEvent::Error { .. })),
+                .any(|(_, _, e)| matches!(e, SessionEvent::Error { .. })),
             "and produces no error event: {events:?}"
         );
         assert_eq!(

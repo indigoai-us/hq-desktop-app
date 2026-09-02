@@ -986,6 +986,9 @@ mod tests {
             .iter()
             .map(|e| match e {
                 SessionEvent::Started { .. } => "started",
+                // The normalizer never produces one — a user turn is recorded
+                // by the command layer, not decoded from a CLI frame.
+                SessionEvent::UserMessage { .. } => "userMessage",
                 SessionEvent::TextDelta { .. } => "textDelta",
                 SessionEvent::ThinkingDelta { .. } => "thinkingDelta",
                 SessionEvent::AssistantMessage { .. } => "assistantMessage",

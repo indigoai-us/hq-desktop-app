@@ -97,6 +97,7 @@ describe('foldSessionEvents — purity and determinism', () => {
 describe('foldSessionEvents — every event kind is handled', () => {
   const oneOfEach: SessionEvent[] = [
     started,
+    { kind: 'userMessage', text: 'do the thing', imageCount: 0 },
     { kind: 'thinkingDelta', text: 'weighing it up' },
     { kind: 'textDelta', text: 'on ' },
     { kind: 'assistantMessage', text: 'on it' },
@@ -146,10 +147,42 @@ describe('foldSessionEvents — every event kind is handled', () => {
 });
 
 describe('foldSessionEvents — the operator’s own turns', () => {
-  it('mirrors a sent turn as a bubble, because the event stream carries none', () => {
-    // The whole reason `userTurns` exists: there is no user-message event kind.
-    expect([...SESSION_EVENT_KINDS]).not.toContain('userMessage');
+  it('renders a backend userMessage as a bubble', () => {
+    // The backend records the operator's turn as it writes it to the CLI, so a
+    // replayed transcript is a conversation rather than the agent's half of one.
+    expect([...SESSION_EVENT_KINDS]).toContain('userMessage');
 
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'do the thing', imageCount: 2 },
+      { kind: 'assistantMessage', text: 'on it' },
+    ]);
+    expect(types(blocks)).toEqual(['userBubble', 'assistantProse']);
+    expect((blocks[0] as Extract<ChatBlock, { type: 'userBubble' }>).text).toBe('do the thing');
+  });
+
+  it('dates a backend userMessage by when it was received', () => {
+    const at = Date.parse('2026-09-02T14:00:00.000Z');
+    const { blocks } = foldSessionEvents(
+      [{ kind: 'userMessage', text: 'do the thing', imageCount: 0 }],
+      { receivedAt: [at] },
+    );
+    expect(blocks[0]!.at).toBe(at);
+  });
+
+  it('closes the agent’s open prose, group and thought at a backend turn', () => {
+    // A user turn is the hardest boundary in the transcript — whatever the
+    // agent had open before it belongs to the previous exchange.
+    const { blocks } = foldSessionEvents([
+      { kind: 'thinkingDelta', text: 'hmm' },
+      { kind: 'textDelta', text: 'partly said' },
+      { kind: 'userMessage', text: 'actually, stop', imageCount: 0 },
+      { kind: 'textDelta', text: 'ok' },
+    ]);
+    expect(types(blocks)).toEqual(['assistantProse', 'userBubble', 'assistantProse']);
+    expect(proseText(blocks)).toEqual(['partly said', 'ok']);
+  });
+
+  it('mirrors a sent turn as a bubble, for the moment before the backend echoes it', () => {
     const { blocks } = foldSessionEvents([{ kind: 'assistantMessage', text: 'on it' }], {
       userTurns: [turn({ text: 'do the thing', atIndex: 0 })],
     });

@@ -54,6 +54,19 @@ export interface StartedEvent {
   commands: SessionCommand[];
 }
 
+/**
+ * A turn the OPERATOR sent, recorded by the backend as it writes the line to
+ * the CLI. It is what makes `agent_session_replay` a conversation rather than
+ * the agent's half of one.
+ *
+ * Only the image COUNT crosses the wire — the bytes are never buffered.
+ */
+export interface UserMessageEvent {
+  kind: 'userMessage';
+  text: string;
+  imageCount: number;
+}
+
 export interface TextDeltaEvent {
   kind: 'textDelta';
   text: string;
@@ -141,6 +154,7 @@ export interface TruncatedEvent {
 
 export type SessionEvent =
   | StartedEvent
+  | UserMessageEvent
   | TextDeltaEvent
   | ThinkingDeltaEvent
   | AssistantMessageEvent
@@ -163,6 +177,7 @@ export type SessionEventKind = SessionEvent['kind'];
  */
 export const SESSION_EVENT_KINDS = [
   'started',
+  'userMessage',
   'textDelta',
   'thinkingDelta',
   'assistantMessage',
