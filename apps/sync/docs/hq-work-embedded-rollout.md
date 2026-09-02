@@ -31,7 +31,7 @@ answer "is it explicitly enabled" for the retained two-app paths and cannot
 express the cohort default — do not route the boot decision through them.
 
 Flag on: the same desktop-alt window mounts `@hq/ui` DesktopApp via
-`HqWorkDesktopShell` + `createSyncPlatformAdapter` (US-103). Flag off:
+`HqWorkWorkShell` + `createSyncPlatformAdapter` (US-103). Flag off:
 legacy desktop-alt (`src/desktop-alt/DesktopApp.svelte`); no extra probes /
 no `[handoff]` log on open (finding-6). Live
 `maybe_intercept_desktop_alt_handoff` is a no-op (always false). Combined-app
@@ -89,7 +89,7 @@ Enable explicitly (redundant for the cohort, kept for completeness):
 
 2. Quit and relaunch Sync so boot re-reads the flag.
 
-3. Confirm flag-on mounts `HqWorkDesktopShell` (`@hq/ui` DesktopApp via
+3. Confirm flag-on mounts `HqWorkWorkShell` (`@hq/ui` DesktopApp via
    `createSyncPlatformAdapter`) in the same desktop-alt window.
 
 Existing installs without the key keep the legacy shell. Tray popover,
@@ -241,7 +241,7 @@ branch.
 - desktop-alt JS (minified, no maps): **+2.00 MiB** vs BEFORE 0.53 MiB.
 
 If AFTER exceeds the JS budget, **code-split**: change
-`apps/sync/src/desktop-alt/main.ts` so `HqWorkDesktopShell` is a
+`apps/sync/src/desktop-alt/main.ts` so `HqWorkWorkShell` is a
 `dynamic import()` only on the flag-on branch (today it is a static import,
 so flag-off users still download `@hq/ui`). Vite already splits the
 `desktopAlt` entry from `main`. Do not implement that dynamic import in
@@ -275,7 +275,7 @@ remove the legacy shell and the boot branch.
 
 - US-101 consume — `docs/hq-work-ui-consume.md`
 - US-102 adapter — `../../packages/platform/src/tauri/sync-adapter.ts`
-- US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkDesktopShell.svelte`
+- US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkWorkShell.svelte`
 - US-104 routing — notification / conversation clicks into this window
 - US-105 parity
 - US-107 live smoke: [hq-work-embedded-smoke.md](hq-work-embedded-smoke.md)

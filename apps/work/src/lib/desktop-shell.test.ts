@@ -364,14 +364,16 @@ describe("Tauri attachment handlers", () => {
     );
 
     expect(source).toMatch(
-      /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(tauriInvoke\)\s*:\s*null/,
+      /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(nativeInvoke\)\s*:\s*null/,
     );
+    expect(source).toMatch(/const nativeInvoke = hostInvoke \?\? tauriInvoke;/);
+    expect(source).toMatch(/const nativeListen = hostListen \?\? tauriListen;/);
     expect(source).toMatch(/let self = \$state\(hostSelf\)/);
     expect(source).toMatch(
       /const \[hydratedSelf\] = await Promise\.all\(\[\s*hydrateDesktopSelf\(hostSelf, adapter\)/,
     );
     expect(source).toMatch(/self = hydratedSelf/);
-    expect(source).toMatch(/await tauriInvoke\("get_auth_session"\)/);
+    expect(source).toMatch(/await nativeInvoke\("get_auth_session"\)/);
     expect(source).toContain("{tenantAccountId}");
     expect(source).toContain("{tenantGeneration}");
     expect(source).toMatch(

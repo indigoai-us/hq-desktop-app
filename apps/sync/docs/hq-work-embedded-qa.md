@@ -43,7 +43,7 @@ native hop):
 
 `createSyncPlatformAdapter` is `kind: "desktop"`, so DesktopApp uses
 `putAttachmentObject` rather than the web `/api/chat-attachment-upload`
-proxy. `HqWorkDesktopShell` must pass both hops.
+proxy. `HqWorkWorkShell` must pass both hops.
 
 ## Parity checklist
 
@@ -74,7 +74,7 @@ that in this story.
 ## Related
 
 - Adapter: [`sync-adapter.ts`](../../../packages/platform/src/tauri/sync-adapter.ts)
-- Shell: [`HqWorkDesktopShell.svelte`](../src/desktop-alt/HqWorkDesktopShell.svelte)
+- Shell: [`HqWorkWorkShell.svelte`](../src/desktop-alt/HqWorkWorkShell.svelte)
 - Native hop: [`vault-s3-put.ts`](../src/desktop-alt/vault-s3-put.ts),
   [`vault_s3.rs`](../src-tauri/src/commands/vault_s3.rs)
 - Rollout: [hq-work-embedded-rollout.md](./hq-work-embedded-rollout.md)

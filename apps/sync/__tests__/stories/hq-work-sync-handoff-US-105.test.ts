@@ -42,7 +42,7 @@ import {
   type SyncInvokeFn,
 } from '@hq/platform';
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import {
   getVaultObject,
   putVaultObject,
@@ -554,11 +554,16 @@ describe('US-105 embedded feature-parity QA', () => {
   });
 
   describe('attachment native hop (CORS-safe PUT/GET)', () => {
-    it('wires putAttachmentObject and getAttachmentObject on the embedded shell', () => {
-      const shell = readRepo('src/desktop-alt/HqWorkDesktopShell.svelte');
-      expect(shell).toContain('putAttachmentObject={putVaultObject}');
-      expect(shell).toContain('getAttachmentObject={getVaultObject}');
-      expect(shell).toContain("from './vault-s3-put'");
+    it('wires putAttachmentObject and getAttachmentObject through the shared shell native hop', () => {
+      const shell = readMono('apps', 'work', 'src', 'lib', 'WorkShell.svelte');
+      const nativeHop = readMono('apps', 'work', 'src', 'lib', 'desktop-shell.ts');
+      expect(shell).toMatch(
+        /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(nativeInvoke\)\s*:\s*null/,
+      );
+      expect(shell).toContain('putAttachmentObject={attachmentHandlers?.putAttachmentObject}');
+      expect(shell).toContain('getAttachmentObject={attachmentHandlers?.getAttachmentObject}');
+      expect(nativeHop).toContain('invoke("vault_s3_put", {');
+      expect(nativeHop).toContain('invoke("vault_s3_get", {');
     });
 
     it('TS hop invokes vault_s3_put with content-type headers and file bytes', async () => {
@@ -640,7 +645,7 @@ describe('US-105 embedded feature-parity QA', () => {
     it('⌘, opens settings and the Light appearance pill applies', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn: mockInvoke() },
       });

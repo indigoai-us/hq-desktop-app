@@ -47,14 +47,14 @@ const app = bootDesktopAltWindow({
   // every legacy user for a bundle they never mount. Kick off as soon as
   // getHandoff() is truthy — no other awaits precede this import.
   mountHqWork: async () => {
-    const { default: HqWorkDesktopShell } = await import(
-      './HqWorkDesktopShell.svelte'
+    const { default: HqWorkWorkShell } = await import(
+      './HqWorkWorkShell.svelte'
     );
     mount(GlobalErrorBoundary, {
       target,
-      props: { component: HqWorkDesktopShell, windowLabel },
+      props: { component: HqWorkWorkShell, windowLabel },
     });
-    // Overlay stays until HqWorkDesktopShell identity-settles and paints.
+    // Overlay stays until HqWorkWorkShell identity-settles and paints.
   },
 }).catch((error) => {
   // Never leave the user behind a shimmer over a broken window.

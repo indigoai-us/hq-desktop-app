@@ -155,10 +155,12 @@ async function nativeHostIdentity(
 export async function createNativeWorkShellCapabilities(options: {
   invoke: NativeInvokeFn;
   getVaultObject?: VaultObjectGetter;
+  hostIdentity?: NativeWorkShellCapabilities['hostIdentity'];
+  onUnauthorized?: () => void;
 }): Promise<NativeWorkShellCapabilities> {
-  const onUnauthorized = () => {
+  const onUnauthorized = options.onUnauthorized ?? (() => {
     void options.invoke<void>('sign_out').catch(() => undefined);
-  };
+  });
   const fetch = createNativeHqProFetch(options.invoke, onUnauthorized);
   return {
     runtimeKind: 'desktop',
@@ -168,6 +170,6 @@ export async function createNativeWorkShellCapabilities(options: {
       fetch,
       options.getVaultObject ?? getVaultObject,
     ),
-    hostIdentity: await nativeHostIdentity(options.invoke),
+    hostIdentity: options.hostIdentity ?? await nativeHostIdentity(options.invoke),
   };
 }

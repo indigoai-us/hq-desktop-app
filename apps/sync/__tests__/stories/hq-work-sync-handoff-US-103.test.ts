@@ -46,7 +46,7 @@ import {
   applyDesktopAltRoute,
   createHqWorkSidebarApi,
 } from '../../src/desktop-alt/hq-work-host';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import {
   hqWorkHandoffEnabled,
   type HqWorkInvoker,
@@ -329,7 +329,7 @@ describe('US-103 embedded desktop window', () => {
         }
         return inner(cmd, args);
       };
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn },
       });
@@ -355,7 +355,7 @@ describe('US-103 embedded desktop window', () => {
         },
         mountHqWork: () => {
           calls.push('hq-work');
-          component = mount(HqWorkDesktopShell, {
+          component = mount(HqWorkWorkShell, {
             target: host,
             props: { invokeFn },
           });
@@ -403,7 +403,7 @@ describe('US-103 embedded desktop window', () => {
     it('⌘, opens the embedded settings surface', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn: mockInvoke() },
       });
@@ -427,7 +427,7 @@ describe('US-103 embedded desktop window', () => {
         calls.push(command);
         return baseInvoke(command, args);
       };
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn },
       });
@@ -463,7 +463,7 @@ describe('US-103 embedded desktop window', () => {
         }
         return baseInvoke(command, args);
       };
-      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
       await flush(24);
       window.dispatchEvent(
         new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
@@ -532,7 +532,7 @@ describe('US-103 embedded desktop window', () => {
 
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, { target: host, props: { invokeFn } });
+      component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
       await flush(36);
       window.dispatchEvent(
         new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {

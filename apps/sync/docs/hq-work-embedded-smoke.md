@@ -111,7 +111,7 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
      content-hashed asset name embedded in the binary
      (`strings -a <binary> | grep -o 'desktopAlt-[A-Za-z0-9_-]*\.js'`).
 
-  Do **not** try to `strings` the binary for `HqWorkDesktopShell` or
+  Do **not** try to `strings` the binary for `HqWorkWorkShell` or
   `createSyncPlatformAdapter` as earlier drafts of this file suggested. Tauri
   compresses embedded frontend assets, so component names never appear as
   plain text and the check returns 0 hits for a perfectly good bundle. Only
@@ -420,7 +420,7 @@ runnable. Fixed in `74098c15`:
   a `host-owned` unavailable result — Sync owns the tray, widget, and banners.
 - US-101's story test resolved `@hq/{ui,core}/package.json`, a subpath neither
   package exports.
-- US-103's `HqWorkDesktopShell` tore down its `desktop:navigate` listener
+- US-103's `HqWorkWorkShell` tore down its `desktop:navigate` listener
   without `safeUnlisten`, which the repo's cross-cutting listener test requires.
 
 A new `hq-work-adapter-contract-parity` test derives the required member list
