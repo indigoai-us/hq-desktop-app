@@ -757,6 +757,7 @@ pub async fn open_desktop_alt_window_inner(
     builder = crate::util::external_links::deny_webview_new_windows(builder, &app);
 
     let _window = builder.build().map_err(|e| e.to_string())?;
+    crate::recovery::note_desktop_window_created(&app);
 
     // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a
     // `PageLoadEvent::Finished` for the first load. That event can be dropped

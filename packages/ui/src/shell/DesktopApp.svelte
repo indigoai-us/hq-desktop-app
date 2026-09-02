@@ -380,6 +380,8 @@
      * conversation pane on a skeleton.
      */
     bootTimeoutMs?: number;
+    /** First successful conversation/empty paint — host reports `shell_ready`. */
+    onShellReady?: () => void;
   }
 
   let {
@@ -427,6 +429,7 @@
     putAttachmentObject,
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    onShellReady,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -2640,6 +2643,7 @@
           onsignout={onsignout}
           onrows={(rows) => (railRows = rows)}
           {bootTimeoutMs}
+          {onShellReady}
         />
         {/key}
       {/if}

@@ -306,6 +306,16 @@ describe("release workflow channel contract", () => {
     expect(releaseDocs).toContain("git tag -a vX.Y.Z <rollback-commit>");
   });
 
+  it("documents the latest.json rollback feed and the mark-bad operator command", () => {
+    expect(releaseDocs).toContain('"rollback": true');
+    expect(releaseDocs).toContain('"bad_versions": ["0.10.178"]');
+    expect(releaseDocs).toContain("min_supported");
+    expect(releaseDocs).toContain("node scripts/release-mark-bad.mjs 0.10.178 --to 0.10.177");
+    expect(releaseDocs).toContain("gh release upload v0.10.177 latest.json --clobber");
+    expect(clientClassifier).toContain("pub struct UpdateFeedPolicy");
+    expect(clientClassifier).toContain("pub fn should_offer_update");
+  });
+
   it("classifies stable separately from beta and alpha", () => {
     const validate = jobBody("validate");
 
