@@ -282,8 +282,6 @@
               ...(self.displayName ? { name: self.displayName } : {}),
             }
           : null,
-        hostTenantAccountId: authAccountId,
-        hostTenantGeneration: authGeneration,
       });
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
@@ -620,6 +618,8 @@
         onUnauthorized={capabilities.onUnauthorized}
         loadFilePreview={capabilities.loadFilePreview}
         hostIdentity={capabilities.hostIdentity}
+        hostTenantAccountId={authAccountId}
+        hostTenantGeneration={authGeneration}
         invoke={invokeFn}
         {listen}
         {wakes}
