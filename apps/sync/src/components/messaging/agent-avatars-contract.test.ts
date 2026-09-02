@@ -23,6 +23,10 @@ const channelConversation = readFileSync(
   join(uiRoot, 'chat/messaging/ChannelConversation.svelte'),
   'utf8',
 );
+const replyPanel = readFileSync(
+  join(uiRoot, 'chat/messaging/ReplyPanel.svelte'),
+  'utf8',
+);
 
 let host: HTMLElement;
 let component: Record<string, unknown> | null = null;
@@ -51,6 +55,13 @@ describe('sync messaging agent-avatar contract', () => {
     expect(desktopApp).toContain('agentUid={selectedRow.personUid}');
     expect(channelConversation).toContain('agentUid={msg.fromPersonUid}');
     expect(channelConversation).toContain('kind="agent"');
+    expect(channelConversation).toContain(
+      'authorAvatarUrl(msg.fromPersonUid, avatarByUid)',
+    );
+    expect(replyPanel).toContain(
+      'authorAvatarUrl(root.fromPersonUid, avatarByUid)',
+    );
+    expect(desktopApp).toContain('authorAvatarUrl(');
     expect(chatSidebar).toContain('rowAvatar(row, avatarByUid)');
     expect(chatSidebar).toContain('data-testid="chat-dm-avatar"');
   });

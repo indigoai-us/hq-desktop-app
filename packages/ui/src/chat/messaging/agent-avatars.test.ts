@@ -3,7 +3,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { agentAvatarAssets, agentAvatarFor } from "./agent-avatars";
+import {
+  agentAvatarAssets,
+  agentAvatarFor,
+  authorAvatarUrl,
+} from "./agent-avatars";
 
 const src = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "agent-avatars.ts"),
@@ -45,6 +49,19 @@ describe("agent-avatars", () => {
 
   it("returns null when the bundled set is empty", () => {
     expect(agentAvatarFor("agt_parker", [])).toBeNull();
+  });
+
+  it("returns a roster photo for any uid and null otherwise", () => {
+    expect(authorAvatarUrl("prs_ada", { prs_ada: "https://cdn/ada.jpg" })).toBe(
+      "https://cdn/ada.jpg",
+    );
+    expect(authorAvatarUrl(" agt_x ", { agt_x: " https://cdn/x.jpg " })).toBe(
+      "https://cdn/x.jpg",
+    );
+    expect(authorAvatarUrl("prs_ada", {})).toBeNull();
+    expect(authorAvatarUrl("prs_ada", null)).toBeNull();
+    expect(authorAvatarUrl("", { prs_ada: "https://cdn/ada.jpg" })).toBeNull();
+    expect(authorAvatarUrl(null, { prs_ada: "https://cdn/ada.jpg" })).toBeNull();
   });
 
   it("does not guard import.meta.glob behind typeof", () => {

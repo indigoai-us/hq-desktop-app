@@ -162,4 +162,42 @@ describe("ChatSidebar DM avatars", () => {
     expect(human?.querySelector("img")).toBeNull();
     expect(human?.textContent?.trim()).toBe("AL");
   });
+
+  it("renders a roster photo on a human DM row", async () => {
+    const api = stubApi({
+      listContacts: async () => ({
+        contacts: [
+          {
+            personUid: "prs_h",
+            displayName: "Ada Lovelace",
+            lastActivityAt: now(),
+            lastDmAt: now(),
+          },
+        ],
+      }),
+    });
+
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api,
+        seedDirectory: [seedRow],
+        avatarByUid: { prs_h: PHOTO_URL },
+        self: { uid: "prs_stefan" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="dm:prs_h"]'),
+      ).toBeTruthy();
+    });
+    await tick();
+
+    const human = host.querySelector(
+      '[data-conversation-id="dm:prs_h"] [data-testid="chat-dm-avatar"]',
+    );
+    expect(human?.getAttribute("data-avatar")).toBe("photo");
+    expect(human?.querySelector("img")?.getAttribute("src")).toBe(PHOTO_URL);
+  });
 });

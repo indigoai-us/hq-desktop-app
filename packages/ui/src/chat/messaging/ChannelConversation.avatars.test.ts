@@ -77,4 +77,38 @@ describe("ChannelConversation message avatars", () => {
 
     expect(root.querySelector(".agent-glyph")).toBeNull();
   });
+
+  it("renders a roster photo for a human author", async () => {
+    const root = mountWith({
+      messages: [messages[2]],
+      avatarByUid: { prs_h: "https://cdn.test/ada.jpg" },
+    });
+    await tick();
+    const avatar = root.querySelector(".dm-msg-avatar");
+    expect(avatar?.querySelector("img.avatar-img")?.getAttribute("src")).toBe(
+      "https://cdn.test/ada.jpg",
+    );
+    expect(avatar?.querySelector(".monogram")).toBeNull();
+  });
+
+  it("renders the signed-in user's own photo on their messages", async () => {
+    const root = mountWith({
+      messages: [
+        {
+          eventId: "evt_self",
+          direction: "out",
+          fromPersonUid: "prs_me",
+          fromDisplayName: "Corey",
+          body: "mine",
+          createdAt: "2026-08-28T01:17:00.000Z",
+        },
+      ],
+      selfPersonUid: "prs_me",
+      avatarByUid: { prs_me: "https://cdn.test/me.jpg" },
+    });
+    await tick();
+    expect(
+      root.querySelector(".dm-msg-avatar img.avatar-img")?.getAttribute("src"),
+    ).toBe("https://cdn.test/me.jpg");
+  });
 });

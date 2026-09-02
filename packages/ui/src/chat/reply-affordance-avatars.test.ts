@@ -68,6 +68,33 @@ describe("thread-reply affordance avatars", () => {
     );
   });
 
+  it("renders a roster photo in the reply stack when one is known", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        messages: [root],
+        avatarByUid: { prs_ada: "https://cdn.test/ada.jpg" },
+        replyPreviewByRoot: {
+          [root.eventId]: {
+            author: "Ada",
+            at: "2026-08-17T02:00:00.000Z",
+            authors: [
+              { personUid: "prs_ada", displayName: "Ada Lovelace" },
+              { personUid: "agt_izzy", displayName: "Izzy", agent: true },
+            ],
+          },
+        },
+      },
+    });
+    await tick();
+    const stack = host.querySelector('[data-testid="reply-authors"]');
+    expect(
+      stack?.querySelector("img.avatar-img")?.getAttribute("src"),
+    ).toBe("https://cdn.test/ada.jpg");
+  });
+
   it("caps the avatar stack at 3 authors", async () => {
     mountWithPreview({
       author: "E",

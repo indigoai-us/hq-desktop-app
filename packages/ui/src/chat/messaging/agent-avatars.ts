@@ -7,10 +7,26 @@
  * dropping more `agent-NN.png` files in widens the pool without code changes.
  *
  * Resolution order (applied inside IdentityMark):
- *   1. assigned photo (`avatarUrl` from the roster's avatarByUid map)
- *   2. generated avatar (`agentAvatarFor(agentUid)`)
- *   3. existing ✦ agent-glyph fallback
+ *   1. assigned photo (`authorAvatarUrl` / `avatarByUid` from roster,
+ *      contacts, or the signed-in profile)
+ *   2. generated avatar (`agentAvatarFor(agentUid)`) — agents only
+ *   3. initials (humans) / ✦ glyph (agents)
  */
+
+/**
+ * Presigned photo for a message author (human or agent), when the host map
+ * has one. Call this from the template with `avatarByUid` so rows re-render
+ * when the roster/contacts/self profile land after first paint.
+ */
+export function authorAvatarUrl(
+  uid: string | null | undefined,
+  avatarByUid?: Record<string, string> | null,
+): string | null {
+  const id = (uid ?? "").trim();
+  if (!id) return null;
+  const photo = avatarByUid?.[id]?.trim();
+  return photo || null;
+}
 
 // `import.meta.glob` is a Vite compile-time construct. It is typed by
 // vite/client where those types are loaded (apps/sync); packages/ui's own

@@ -161,6 +161,33 @@ describe("DesktopApp DM header avatar", () => {
     expect(header.querySelector(".monogram")?.textContent).toBe("DA");
   });
 
+  it("renders a roster photo in a human DM header", async () => {
+    const HUMAN_PHOTO = "https://cdn.test/dana.jpg";
+    const sidebarApi = createFixtureChatSidebarApi();
+    await mountApp(createFx(), createChatWakeBus(), HUMAN_ROW, {
+      sidebarApi: {
+        ...sidebarApi,
+        listContacts: async () => ({
+          contacts: [
+            {
+              personUid: "prs_someone",
+              displayName: "Dana",
+              avatarUrl: HUMAN_PHOTO,
+              lastActivityAt: now(),
+              lastDmAt: now(),
+            },
+          ],
+        }),
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        headerAvatar().querySelector("img.avatar-img")?.getAttribute("src"),
+      ).toBe(HUMAN_PHOTO);
+    });
+  });
+
   it("prefers a roster photo when the agent appears on a loaded channel", async () => {
     // fixtures.ts has no listChannelMembers; the PlatformAdapter test double
     // is the seam that returns roster rows with avatarUrl. Open a chn_*
