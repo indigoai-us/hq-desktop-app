@@ -8,10 +8,8 @@ import '../styles/design-system.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';
-import { getHqWorkHandoff } from '../lib/hq-work';
 import { bootDesktopAltWindow } from './boot';
 import { dismissBootLoader } from './boot-loader';
-import DesktopApp from './DesktopApp.svelte';
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
@@ -33,19 +31,6 @@ if (!target) {
 
 // No top-level await: vite `target: safari13` cannot transpile TLA in this entry.
 const app = bootDesktopAltWindow({
-  getHandoff: () => getHqWorkHandoff(),
-  mountLegacy: () => {
-    mount(GlobalErrorBoundary, {
-      target,
-      props: { component: DesktopApp, windowLabel },
-    });
-    // Legacy paints synchronously; drop the HTML overlay immediately.
-    dismissBootLoader();
-  },
-  // Dynamic import: the embedded shell pulls the entire @hq/ui DesktopApp
-  // graph, and the flag is default-off. Loading it statically would charge
-  // every legacy user for a bundle they never mount. Kick off as soon as
-  // getHandoff() is truthy — no other awaits precede this import.
   mountHqWork: async () => {
     const { default: HqWorkDesktopShell } = await import(
       './HqWorkDesktopShell.svelte'
@@ -54,7 +39,6 @@ const app = bootDesktopAltWindow({
       target,
       props: { component: HqWorkDesktopShell, windowLabel },
     });
-    // Overlay stays until HqWorkDesktopShell identity-settles and paints.
   },
 }).catch((error) => {
   // Never leave the user behind a shimmer over a broken window.

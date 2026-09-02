@@ -21,8 +21,10 @@ use crate::commands::process::{
     run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessError,
     ProcessEvent,
 };
-#[cfg(target_os = "windows")]
-use crate::commands::session_end_observer::SessionEndObserverHandle;
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_session_end_reading,
+    current_windows_terminator_attribution, SessionEndReading,
+};
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use hq_desktop_core::sync_outcome::{runner_assertion_for_class, RUNNER_PHASE_PRE_PROTOCOL};
@@ -1852,105 +1854,14 @@ fn watcher_exit_capture_context(
     }
 }
 
-/// One read of the session-end observer: the attribution capture policy
-/// consumes, plus the readiness that explains it. Both are fixed-vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionEndReading {
-    attribution: WindowsTerminatorAttribution,
-    readiness: &'static str,
-}
-
-#[cfg(target_os = "windows")]
-fn read_session_end_attribution<R: tauri::Runtime>(app: &AppHandle<R>) -> SessionEndReading {
-    match app.try_state::<SessionEndObserverHandle>() {
-        Some(observer) => SessionEndReading {
-            attribution: observer.tracker().attribution_now(),
-            readiness: observer.tracker().readiness().class_name(),
-        },
-        None => SessionEndReading {
-            attribution: WindowsTerminatorAttribution::ObserverUnavailable,
-            readiness: "unavailable",
-        },
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return None;
-    }
-    // Install the re-read probe from the same handle that produces the reading
-    // below, so a deferral created downstream can ask this same observer again
-    // once its grace has elapsed. Idempotent, and deliberately sited here: this
-    // is the one function that both owns an `AppHandle` and runs before any
-    // deferral can exist, so the probe can never be missing when one is.
-    install_session_end_attribution_probe(app);
-    Some(read_session_end_attribution(app).attribution)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_windows_terminator_attribution<R: tauri::Runtime>(
-    _app: &AppHandle<R>,
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> Option<WindowsTerminatorAttribution> {
-    None
-}
-
-/// Read the durable session-end latch at the exit boundary, but ONLY on the
-/// `DBG_TERMINATE_PROCESS`/no-signal shape — the one exit that may consult it, so
-/// a genuine fault on any other code can never be suppressed by a coincident
-/// session end. The latch is a process-global, so this needs no `AppHandle`.
-#[cfg(target_os = "windows")]
-fn current_session_end_latch_reading_for_exit(
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> SessionEndLatchReading {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
-        return SessionEndLatchReading::Unavailable;
-    }
-    crate::commands::session_end_latch::current_session_end_latch_reading()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_session_end_latch_reading_for_exit(
-    _code: Option<i32>,
-    _signal: Option<i32>,
-) -> SessionEndLatchReading {
-    SessionEndLatchReading::Unavailable
-}
-
-/// Re-read the observer after a grace, from wherever the deferral resolves.
-///
-/// The exit callback owns an `AppHandle`; the bounded task that resolves the
-/// deferral does not, and threading one through every watcher-exit signature
-/// would put a Tauri handle in the pure decision path. A process-global probe
-/// keeps that path handle-free while still asking the real observer.
-type SessionEndAttributionProbe = Box<dyn Fn() -> Option<SessionEndReading> + Send + Sync>;
-
-static SESSION_END_ATTRIBUTION_PROBE: OnceLock<SessionEndAttributionProbe> = OnceLock::new();
-
-#[cfg(target_os = "windows")]
-fn install_session_end_attribution_probe<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if SESSION_END_ATTRIBUTION_PROBE.get().is_some() {
-        return;
-    }
-    let app = app.clone();
-    let _ = SESSION_END_ATTRIBUTION_PROBE
-        .set(Box::new(move || Some(read_session_end_attribution(&app))));
-}
-
-/// The reading a deferral resolves against. `None` means no observer could be
-/// consulted at all, which fails closed: the held-back event is sent.
-fn current_session_end_reading() -> Option<SessionEndReading> {
-    SESSION_END_ATTRIBUTION_PROBE
-        .get()
-        .and_then(|probe| probe())
-}
+// The Windows session-end attribution readers (`current_windows_terminator_
+// attribution`, `current_session_end_latch_reading_for_exit`, the observer read,
+// the deferral re-read probe, and `current_session_end_reading`) moved to
+// `crate::commands::session_end_attribution` so BOTH child-exit capture seams —
+// this daemon/watcher route and the manual `Sync Now` runner-exit seam in
+// `commands::sync` — call the one shared source (HQ-DESKTOP-5X). Bodies and cfg
+// gates are unchanged; see that module. They are `use`d in at the top of this
+// file, so every existing call site here resolves without change.
 
 /// A watcher-exit capture held back while the session-end decision is re-read.
 ///
@@ -6793,7 +6704,7 @@ mod tests {
         assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
         assert_eq!(
             recorded_tag(held, "watcher_fault_read"),
-            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
+            "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
         assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
         assert_eq!(
@@ -6917,7 +6828,7 @@ mod tests {
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
-                ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+                ("watcher_fault_read", "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
             ],
             &[],
             WatcherFaultDeferredRead {

@@ -1187,9 +1187,13 @@ pub fn read_watcher_fault(
     let mut max_seen: u32 = 0;
     // The best (most specific) non-binding diagnosis from any sweep that DID parse
     // records but could not bind them — kept so that if our in-window record never
-    // publishes, the verdict is the honest "records existed, none were ours"
-    // rather than a blank one. Never terminal on its own: WER can publish our
-    // record AFTER an unrelated one, so a rejection must not end the poll early.
+    // publishes, the verdict is the honest one rather than blank. A near-miss or a
+    // code-mismatch says "records existed, none were ours"; an all-stale sweep
+    // (every parsed record predates this generation) is itself `DeadlineExpired`
+    // — "WER never published OUR record" — carrying the separate `stale` count, so
+    // a stale-only read is NOT mislabelled as a near-miss. Never terminal on its
+    // own: WER can publish our record AFTER an unrelated one, so a rejection must
+    // not end the poll early.
     let mut last_rejection: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome> = None;
     loop {
         sweeps = sweeps.saturating_add(1);
@@ -1235,8 +1239,12 @@ pub fn read_watcher_fault(
         if std::time::Instant::now() >= deadline {
             let ms_to_verdict = elapsed_ms(start);
             // Records existed across the read but none ever bound: report the
-            // concrete rejection reason (out-of-window vs code-mismatch), with the
-            // reader-measured counters folded onto the pure per-reason counts.
+            // concrete reason retained across sweeps — a near-miss
+            // (`rejected_out_of_window`), a code-mismatch, or, when every parsed
+            // record was stale, `deadline_expired` — with the reader-measured
+            // counters folded onto the pure per-reason counts. An all-stale read
+            // therefore reaches the deadline as `deadline_expired`, never pre-empted
+            // by a near-miss that was not there.
             if let Some(rejection) = last_rejection {
                 let mut counters = rejection.counters;
                 counters.records_seen = max_seen;

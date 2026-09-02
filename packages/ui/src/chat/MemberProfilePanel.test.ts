@@ -86,6 +86,46 @@ describe("MemberProfilePanel", () => {
     ).toBe("Founder, building HQ");
   });
 
+  it("shows the avatar picker only when the member is editable", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: {
+        member: row({ personUid: "agt_scout", displayName: "Scout" }),
+        editable: true,
+        packs: [
+          {
+            id: "generated-marks",
+            name: "Generated marks",
+            version: "1.0.0",
+            author: "HQ",
+            baseUrl: "builtin:generated-marks",
+            items: [
+              { id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] },
+            ],
+          },
+        ],
+      },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-picker"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-picker"]')).not.toBeNull();
+  });
+
+  it("hides the picker for read-only profiles", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: { member: row({ personUid: "agt_scout", displayName: "Scout" }) },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-picker"]'),
+    ).toBeNull();
+  });
+
   it("uses the member's own avatarUrl when no explicit photo is passed", () => {
     host = document.createElement("div");
     document.body.appendChild(host);

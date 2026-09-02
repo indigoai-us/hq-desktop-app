@@ -16,6 +16,7 @@ import {
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
+import { isSetupChannel } from "./setup-channel";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -171,6 +172,12 @@ export const CONVERSATION_CACHE_KEY = "hq.chat.conversation-cache";
 export const DM_DOTS_STORAGE_KEY = "hq.chat.dm-dots";
 export const RECENT_DMS_STORAGE_KEY = "hq.chat.recent-dms";
 export const SHOW_FILTER_STORAGE_KEY = "hq.chat.show-filter";
+/**
+ * Set once the user unpins the synthetic #setup channel. The default rail pins
+ * #setup for a fresh profile; this flag keeps it unpinned across restarts
+ * until the user pins it again.
+ */
+export const SETUP_PIN_DISMISSED_STORAGE_KEY = "hq.chat.setup-pin-dismissed";
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
 
@@ -183,7 +190,7 @@ export function parseActivityMs(
   return Number.isFinite(t) ? t : 0;
 }
 
-function startOfLocalDay(ms: number): number {
+export function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -253,6 +260,8 @@ export interface DmContactInput {
   email?: string | null;
   displayName?: string | null;
   companyUid?: string | null;
+  /** Presigned avatar URL when hq-pro included it on the contacts roster. */
+  avatarUrl?: string | null;
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
@@ -1162,6 +1171,28 @@ export function pickAutoOpenConversation(
   return best;
 }
 
+/**
+ * Conversation to open once first-paint fetches have settled (or timed out).
+ * Real rows still win. If the rail is only the synthetic #setup channel,
+ * open that rather than leaving the conversation pane on an infinite skeleton.
+ */
+export function pickSettledBootConversation(
+  rows: readonly ConversationRow[],
+  selectedId?: string | null,
+): ConversationRow | null {
+  if ((selectedId ?? "").trim()) return null;
+  const live = pickAutoOpenConversation(
+    rows.filter((row) => !isSetupChannel(row.channelId)),
+    selectedId,
+  );
+  if (live) return live;
+  for (const row of rows) {
+    if (row.browseOnly) continue;
+    if (isSetupChannel(row.channelId)) return row;
+  }
+  return null;
+}
+
 /** Cap the authoritative directory dump before it hits sidebar state. */
 export const DIRECTORY_SEED_LIMIT = 24;
 
@@ -1303,6 +1334,30 @@ export function saveShowFilter(
   if (!storage) return;
   try {
     storage.setItem(SHOW_FILTER_STORAGE_KEY, filter);
+  } catch {
+    // Quota / private mode — best-effort.
+  }
+}
+
+export function loadSetupPinDismissed(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(SETUP_PIN_DISMISSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSetupPinDismissed(
+  storage: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  dismissed: boolean,
+): void {
+  if (!storage) return;
+  try {
+    if (dismissed) storage.setItem(SETUP_PIN_DISMISSED_STORAGE_KEY, "1");
+    else storage.removeItem(SETUP_PIN_DISMISSED_STORAGE_KEY);
   } catch {
     // Quota / private mode — best-effort.
   }

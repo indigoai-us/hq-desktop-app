@@ -1,0 +1,333 @@
+{
+  "id": "hq-agent-mascots",
+  "name": "HQ agent mascots",
+  "version": "1.0.0",
+  "author": "Lizzy",
+  "baseUrl": "https://hq-agent-mascots.indigo-hq.com",
+  "items": [
+    {
+      "id": "v1-dot",
+      "name": "Dot \u00b7 retro cel",
+      "src": "mascots/v1/dot.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "dot",
+        "rabbit",
+        "generalist",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-iris",
+      "name": "Iris \u00b7 retro cel",
+      "src": "mascots/v1/iris.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "iris",
+        "frog",
+        "review",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-pip",
+      "name": "Pip \u00b7 retro cel",
+      "src": "mascots/v1/pip.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "pip",
+        "bird",
+        "messaging",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-mesh",
+      "name": "Mesh \u00b7 retro cel",
+      "src": "mascots/v1/mesh.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "mesh",
+        "cube",
+        "orchestration",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-vault",
+      "name": "Vault \u00b7 retro cel",
+      "src": "mascots/v1/vault.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "vault",
+        "tortoise",
+        "secrets",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-beacon",
+      "name": "Beacon \u00b7 retro cel",
+      "src": "mascots/v1/beacon.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "beacon",
+        "firefly",
+        "deploys",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-owl",
+      "name": "Owl \u00b7 retro cel",
+      "src": "mascots/v1/owl.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "owl",
+        "owl",
+        "research",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-bear",
+      "name": "Bear \u00b7 retro cel",
+      "src": "mascots/v1/bear.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "bear",
+        "bear",
+        "ops",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-penguin",
+      "name": "Penguin \u00b7 retro cel",
+      "src": "mascots/v1/penguin.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "penguin",
+        "penguin",
+        "infrastructure",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-ghost",
+      "name": "Ghost \u00b7 retro cel",
+      "src": "mascots/v1/ghost.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "ghost",
+        "ghost",
+        "scheduled",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-sprout",
+      "name": "Sprout \u00b7 retro cel",
+      "src": "mascots/v1/sprout.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "sprout",
+        "seedling",
+        "onboarding",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v1-fox",
+      "name": "Fox \u00b7 retro cel",
+      "src": "mascots/v1/fox.png",
+      "tags": [
+        "v1",
+        "retro",
+        "cel",
+        "fox",
+        "fox",
+        "growth",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-dot",
+      "name": "Dot \u00b7 simplified",
+      "src": "mascots/v2/dot.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "dot",
+        "rabbit",
+        "generalist",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-iris",
+      "name": "Iris \u00b7 simplified",
+      "src": "mascots/v2/iris.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "iris",
+        "frog",
+        "review",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-pip",
+      "name": "Pip \u00b7 simplified",
+      "src": "mascots/v2/pip.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "pip",
+        "bird",
+        "messaging",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-mesh",
+      "name": "Mesh \u00b7 simplified",
+      "src": "mascots/v2/mesh.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "mesh",
+        "cube",
+        "orchestration",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-vault",
+      "name": "Vault \u00b7 simplified",
+      "src": "mascots/v2/vault.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "vault",
+        "tortoise",
+        "secrets",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-beacon",
+      "name": "Beacon \u00b7 simplified",
+      "src": "mascots/v2/beacon.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "beacon",
+        "firefly",
+        "deploys",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-owl",
+      "name": "Owl \u00b7 simplified",
+      "src": "mascots/v2/owl.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "owl",
+        "owl",
+        "research",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-bear",
+      "name": "Bear \u00b7 simplified",
+      "src": "mascots/v2/bear.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "bear",
+        "bear",
+        "ops",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-penguin",
+      "name": "Penguin \u00b7 simplified",
+      "src": "mascots/v2/penguin.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "penguin",
+        "penguin",
+        "infrastructure",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-ghost",
+      "name": "Ghost \u00b7 simplified",
+      "src": "mascots/v2/ghost.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "ghost",
+        "ghost",
+        "scheduled",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-sprout",
+      "name": "Sprout \u00b7 simplified",
+      "src": "mascots/v2/sprout.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "sprout",
+        "seedling",
+        "onboarding",
+        "mascot"
+      ]
+    },
+    {
+      "id": "v2-fox",
+      "name": "Fox \u00b7 simplified",
+      "src": "mascots/v2/fox.png",
+      "tags": [
+        "v2",
+        "simplified",
+        "fox",
+        "fox",
+        "growth",
+        "mascot"
+      ]
+    }
+  ]
+}

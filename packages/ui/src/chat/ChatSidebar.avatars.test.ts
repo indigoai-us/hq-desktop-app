@@ -57,6 +57,42 @@ afterEach(async () => {
   window.localStorage?.clear?.();
 });
 
+describe("ChatSidebar contact avatar map + roster wake", () => {
+  it("emits contact avatar URLs and refetches contacts when rosterWakeSeq is raised", async () => {
+    const listContacts = vi.fn(async () => ({
+      contacts: [
+        {
+          personUid: "agt_photo",
+          displayName: "Photo Agent",
+          avatarUrl: PHOTO_URL,
+          lastActivityAt: now(),
+          lastDmAt: now(),
+        },
+      ],
+    }));
+    const maps: Array<Record<string, string>> = [];
+
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ listContacts }),
+        seedDirectory: [seedRow],
+        rosterWakeSeq: 1,
+        onavatarmap: (map: Record<string, string>) => maps.push({ ...map }),
+        self: { uid: "prs_stefan" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(maps.some((map) => map.agt_photo === PHOTO_URL)).toBe(true);
+    });
+    // Mount already refreshes contacts; rosterWakeSeq > 0 fires a second read.
+    await vi.waitFor(() => {
+      expect(listContacts.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+});
+
 describe("ChatSidebar DM avatars", () => {
   it("renders photo, generated, and initials avatars on DM rows", async () => {
     const api = stubApi({

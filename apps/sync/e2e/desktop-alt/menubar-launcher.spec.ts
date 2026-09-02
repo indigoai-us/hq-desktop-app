@@ -2,12 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — Menubar opens desktop view (US-005 launcher surface).
+ * US-006 — Menubar opens the desktop workspace.
  *
  * Source-contract coverage for the menubar-click → desktop window path:
- *  1. tray_helper "show" command marshals to toggle_desktop_window on main.
- *  2. toggle_desktop_window opens via open_desktop_alt_window_inner, with a
- *     popover fallback when the GA gate rejects (signed-out).
+ *  1. tray_helper "show" command marshals to activate_primary_surface.
+ *  2. activate_primary_surface opens desktop-alt (onboarding still uses main).
  *  3. Popover no longer carries the desktop-alt toggle chrome.
  */
 
@@ -16,21 +15,18 @@ describe('US-006: menubar launcher opens desktop view', () => {
   const tray = readRepoFile('src-tauri/src/tray.rs');
   const popover = readRepoFile('src/components/Popover.svelte');
 
-  it('menu-bar click "show" routes to the compact popover on the main thread', () => {
+  it('menu-bar click "show" routes to the desktop workspace on the main thread', () => {
     expect(trayHelper).toContain('if let Some(rest) = cmd.strip_prefix("show")');
-    expect(trayHelper).toContain(
-      'app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main))',
-    );
+    expect(trayHelper).toContain('activate_primary_surface');
   });
 
-  it('toggle_desktop_window opens desktop-alt and falls back to popover when signed-out', () => {
-    expect(tray).toContain('pub fn toggle_desktop_window(app: &AppHandle)');
+  it('activate_primary_surface opens desktop-alt except during onboarding', () => {
+    expect(tray).toContain('pub fn activate_primary_surface(app: &AppHandle)');
+    expect(tray).toContain('pub fn show_desktop_window(app: &AppHandle)');
     expect(tray).toContain(
       'crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)',
     );
-    // GA gate rejects signed-out users → classic popover + SignInPrompt.
-    expect(tray).toContain('GA gate rejects signed-out users');
-    expect(tray).toContain('show_popover_window(&app_main)');
+    expect(tray).toContain('onboarding_window_requires_blur_suppression');
   });
 
   it('popover no longer carries the desktop-alt toggle chrome', () => {

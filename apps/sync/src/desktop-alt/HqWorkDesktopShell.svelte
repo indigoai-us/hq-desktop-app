@@ -11,9 +11,14 @@
   import { flushSync, onMount, tick } from 'svelte';
   import {
     DesktopApp,
+    applyAvailableUpdate,
     createChatWakeBus,
     createLiveNotificationsApi,
     dispatchEmbeddedNavigation,
+    markDownloaded,
+    markInstallStarted,
+    reportDownloadProgress,
+    reportInstallFailed,
     settingsProfileFromSelf,
     toSelfIdentity,
     workspacesFromMembershipRows,
@@ -31,16 +36,22 @@
     createHqWorkSidebarApi,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
-  import { openApprovedExternalUrl } from './external-open';
+  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
   import { dismissBootLoader } from './boot-loader';
+  import SignInPrompt from '../components/SignInPrompt.svelte';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
+    /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
+    bootTimeoutMs?: number;
   }
 
-  let { invokeFn = tauriInvoke as SyncInvokeFn }: Props = $props();
+  let {
+    invokeFn = tauriInvoke as SyncInvokeFn,
+    bootTimeoutMs,
+  }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
     invoke: (cmd, args) => invokeFn(cmd, args),
@@ -77,7 +88,6 @@
   let workspaceError = $state<string | null>(null);
   let signOutError = $state<string | null>(null);
   let signingOut = $state(false);
-  let reauthError = $state<string | null>(null);
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
@@ -166,7 +176,6 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
-    reauthError = null;
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -234,7 +243,6 @@
     identityError = null;
     workspaceError = null;
     signOutError = null;
-    reauthError = null;
     // Do not render stale tenant/account data while a new auth probe runs.
     self = null;
     companies = null;
@@ -334,13 +342,9 @@
     }
   }
 
-  async function beginReauth(): Promise<void> {
-    reauthError = null;
-    try {
-      await invokeFn('begin_reauth');
-    } catch (error) {
-      reauthError = readableError(error, 'Couldn’t start sign-in. Please try again.');
-    }
+  function handleWorkspaceSignInSuccess(): void {
+    void hydrateSession();
+    void invokeFn('open_desktop_alt_window');
   }
 
   // Sync owns MQTT credentials and turns wake-only publishes into reconciled,
@@ -501,10 +505,41 @@
       'hq-cli-update:cleared',
     ];
     const unlistenUpdatePromises = updateEvents.map((eventName) =>
-      listen(eventName, () => {
-        if (!cancelled) updateWakeSeq += 1;
+      listen(eventName, (event) => {
+        if (cancelled) return;
+        if (eventName === 'update:available') {
+          const version =
+            event.payload &&
+            typeof event.payload === 'object' &&
+            'version' in event.payload &&
+            typeof (event.payload as { version?: unknown }).version === 'string'
+              ? (event.payload as { version: string }).version
+              : null;
+          applyAvailableUpdate(version);
+        } else if (eventName === 'update:cleared') {
+          applyAvailableUpdate(null);
+        }
+        updateWakeSeq += 1;
       }).catch(() => () => {}),
     );
+    const unlistenProgressPromise = listen('update:progress', (event) => {
+      if (!cancelled) reportDownloadProgress(event.payload);
+    }).catch(() => () => {});
+    const unlistenInstallStartedPromise = listen<{ version?: string }>(
+      'update:install-started',
+      (event) => {
+        if (!cancelled) markInstallStarted(event.payload?.version ?? null);
+      },
+    ).catch(() => () => {});
+    const unlistenDownloadedPromise = listen<{ version?: string }>(
+      'update:downloaded',
+      (event) => {
+        if (!cancelled) markDownloaded(event.payload?.version ?? null);
+      },
+    ).catch(() => () => {});
+    const unlistenInstallFailedPromise = listen('update:install-failed', (event) => {
+      if (!cancelled) reportInstallFailed(event.payload);
+    }).catch(() => () => {});
 
     const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
       if (cancelled) return;
@@ -539,6 +574,10 @@
       for (const unlistenPromise of unlistenUpdatePromises) {
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       }
+      void unlistenProgressPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenInstallStartedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenDownloadedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenInstallFailedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -563,9 +602,14 @@
           ? 'Sign in again to continue using HQ Work.'
           : 'This device no longer has an active HQ Work session.'}
       </p>
-      <button type="button" onclick={() => void beginReauth()}>Sign in</button>
+      <div class="workspace-signin">
+        <SignInPrompt
+          reauth={signedOutReason === 'expired' || signedOutReason === 'invalid'}
+          bringMainToFront={false}
+          onsuccess={handleWorkspaceSignInSuccess}
+        />
+      </div>
       <button type="button" class="secondary" onclick={() => void hydrateSession()}>Retry</button>
-      {#if reauthError}<p class="lifecycle-error" role="alert">{reauthError}</p>{/if}
     </section>
   {:else if lifecycle === 'recovery'}
     <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
@@ -613,8 +657,9 @@
       getAttachmentObject={getVaultObject}
       onsignout={signOut}
       onOpenConsole={openApprovedExternalUrl}
-      onopenurl={openApprovedExternalUrl}
+      onopenurl={openBrowserUrl}
       onactivethreadchange={setActiveReplyThread}
+      bootTimeoutMs={bootTimeoutMs}
       onembeddednavigationready={() => {
         detachNavigation?.();
         const detach = navigation.attach((target) => {
@@ -667,7 +712,7 @@
     margin: 0;
   }
 
-  .lifecycle-state button,
+  .lifecycle-state > button,
   .workspace-warning button {
     width: fit-content;
     padding: 7px 10px;
@@ -679,7 +724,16 @@
   }
 
   .lifecycle-state .secondary { background: transparent; }
-  .lifecycle-error { color: #fca5a5; }
+
+  .workspace-signin {
+    width: min(100%, 420px);
+  }
+
+  .workspace-signin :global(.sign-in-container) {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
 
   .workspace-warning {
     position: absolute;

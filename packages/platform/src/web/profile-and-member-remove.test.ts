@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { WebPlatformAdapter } from "./index.js";
+import { DELETE_CHANNEL_UNSUPPORTED_MESSAGE } from "../adapter.js";
 
 interface RecordedCall {
   method: string;
@@ -8,7 +9,7 @@ interface RecordedCall {
   body: unknown;
 }
 
-function makeAdapter(responseBody: unknown = { ok: true }) {
+function makeAdapter(responseBody: unknown = { ok: true }, status = 200) {
   const calls: RecordedCall[] = [];
   const fetchMock: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -23,7 +24,7 @@ function makeAdapter(responseBody: unknown = { ok: true }) {
       }
     }
     calls.push({ method, path, body });
-    return new Response(JSON.stringify(responseBody), { status: 200 });
+    return new Response(JSON.stringify(responseBody), { status });
   };
   return {
     adapter: new WebPlatformAdapter({
@@ -44,6 +45,49 @@ describe("WebPlatformAdapter member removal", () => {
       path: "/v1/notify/channels/chn_1/members/prs%20bob",
       body: undefined,
     });
+  });
+});
+
+describe("WebPlatformAdapter channel delete", () => {
+  it("DELETEs the channel path with an encoded channelId", async () => {
+    const { adapter, calls } = makeAdapter({ deleted: "chn 1" });
+    const res = await adapter.messaging.deleteChannel("chn 1");
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: "DELETE",
+      path: "/v1/notify/channels/chn%201",
+      body: undefined,
+    });
+  });
+
+  it("maps API Gateway's generic 404 to an honest unsupported message", async () => {
+    const { adapter } = makeAdapter({ message: "Not Found" }, 404);
+    const res = await adapter.messaging.deleteChannel("chn_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("http-404");
+      expect(res.message).toBe(DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+    }
+  });
+
+  it("keeps the server's coded 404 and a code-less 404 with an error string", async () => {
+    const coded = makeAdapter(
+      { error: "Channel not found", code: "CHANNEL_NOT_FOUND" },
+      404,
+    );
+    const codedRes = await coded.adapter.messaging.deleteChannel("chn_1");
+    expect(codedRes.ok).toBe(false);
+    if (!codedRes.ok) {
+      expect(codedRes.code).toBe("CHANNEL_NOT_FOUND");
+      expect(codedRes.message).toBe("Channel not found");
+    }
+    const bare = makeAdapter({ error: "Channel was already removed" }, 404);
+    const bareRes = await bare.adapter.messaging.deleteChannel("chn_1");
+    expect(bareRes.ok).toBe(false);
+    if (!bareRes.ok) {
+      expect(bareRes.code).toBe("http-404");
+      expect(bareRes.message).toBe("Channel was already removed");
+    }
   });
 });
 
@@ -81,6 +125,23 @@ describe("WebPlatformAdapter profile", () => {
         description: "Founder",
         avatarBase64: "QUJD",
       },
+    });
+  });
+
+  it("PATCHes /v1/agents/{uid}/profile", async () => {
+    const { adapter, calls } = makeAdapter({
+      uid: "agt_scout",
+      profile: { avatarBase64: "QUJD" },
+      slackUpdated: false,
+    });
+    const res = await adapter.identity.updateAgentProfile("agt_scout", {
+      avatarBase64: "QUJD",
+    });
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: "PATCH",
+      path: "/v1/agents/agt_scout/profile",
+      body: { avatarBase64: "QUJD" },
     });
   });
 });

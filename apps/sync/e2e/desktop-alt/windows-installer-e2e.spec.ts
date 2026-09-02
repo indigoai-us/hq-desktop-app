@@ -7,6 +7,7 @@ const repoUrl = (rel: string) =>
   fileURLToPath(new URL(`../../../../${rel}`, import.meta.url));
 
 const workflow = readFileSync(repoUrl('.github/workflows/windows-check.yml'), 'utf8');
+const releaseWorkflow = readFileSync(repoUrl('.github/workflows/release.yml'), 'utf8');
 const installerHarness = readFileSync(
   appUrl('scripts/windows-installer-e2e.ps1'),
   'utf8',
@@ -52,10 +53,61 @@ describe('Windows production installer E2E', () => {
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
   });
 
+  it('packs the CI installers with a fast compressor and ships the slow one', () => {
+    // Tauri's NSIS default is LZMA, which spent ~120s of every installer job
+    // squeezing a throwaway fixture -- roughly a sixth of the job. zlib is
+    // deflate: seconds instead of minutes, for an installer that exists only
+    // to be installed, upgraded, and uninstalled on the same runner. What
+    // ships to users keeps LZMA, because there the download size is the thing
+    // that matters and the compression happens once.
+    expect(ciOverlay.bundle?.windows?.nsis?.compression).toBe('zlib');
+    expect(windowsConf.bundle?.windows?.nsis?.compression).toBeUndefined();
+
+    // The whole scheme rests on release.yml never picking up this overlay --
+    // if it did, every user would download a much larger installer and nothing
+    // would fail to tell us.
+    expect(releaseWorkflow).not.toContain('tauri.windows.ci.conf.json');
+    expect(releaseWorkflow).toContain(
+      '--config src-tauri/tauri.windows.conf.json',
+    );
+  });
+
+  it('overrides only the compression key so the base NSIS settings survive', () => {
+    // `--config` files are merged with RFC 7386 (a deep merge), so naming
+    // `bundle.windows.nsis` here does not replace the base block. That is easy
+    // to believe and expensive to be wrong about: installerHooks is what stops
+    // NSIS dying on locked files, and installMode is what keeps HQ a per-user
+    // install. Adding a second key to the CI overlay is fine -- this test
+    // exists so it happens deliberately.
+    expect(Object.keys(ciOverlay.bundle.windows.nsis)).toEqual(['compression']);
+    expect(windowsConf.bundle?.windows?.nsis?.installerHooks).toBe(
+      './windows/installer-hooks.nsh',
+    );
+    expect(windowsConf.bundle?.windows?.nsis?.installMode).toBe('currentUser');
+  });
+
   it('tests the upgraded x64 application and always uninstalls it', () => {
     expect(workflow).toContain('-Action install');
     expect(workflow).toContain('Install PR bridge NSIS package');
-    expect(workflow).toContain('bundle\\nsis');
+    // The two installers are built in parallel jobs and travel to the E2E job
+    // as artifacts, so the gate no longer reads them out of bundle\nsis in
+    // place. What still has to hold is that NSIS output -- not the MSI -- is
+    // what gets installed, and that each build publishes exactly the
+    // version-suffixed setup.exe the E2E job then looks for.
+    expect(workflow).toContain(
+      'release/bundle/nsis/*_${{ steps.versions.outputs.bridge }}_x64-setup.exe',
+    );
+    expect(workflow).toContain(
+      'release/bundle/nsis/*_${{ steps.versions.outputs.target }}_x64-setup.exe',
+    );
+    expect(workflow).toContain('name: windows-installer-bridge');
+    expect(workflow).toContain('name: windows-installer-target');
+    expect(workflow).toContain(
+      '-Filter "*_$($env:BRIDGE_VERSION)_x64-setup.exe"',
+    );
+    expect(workflow).toContain(
+      '-Filter "*_$($env:TARGET_VERSION)_x64-setup.exe"',
+    );
     expect(workflow).toContain('-Action upgrade');
     expect(workflow).toContain(
       'HQ_SYNC_DESKTOP_ALT_APP: ${{ steps.upgrade.outputs.app }}',
@@ -71,7 +123,17 @@ describe('Windows production installer E2E', () => {
   });
 
   it('upgrades a running PR build only after its same-version helper observes parent exit', () => {
-    expect(workflow).toContain('Prepare bridge and target versions');
+    expect(workflow).toContain('Derive synthetic bridge and target versions');
+    // Both builds derive the pair from one script, and the E2E job consumes the
+    // bridge build's outputs rather than recomputing them -- a third derivation
+    // could silently disagree and hunt for an installer nobody built.
+    expect(workflow).toContain('scripts/windows-e2e-versions.mjs');
+    expect(workflow).toContain(
+      'BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}',
+    );
+    expect(workflow).toContain(
+      'TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}',
+    );
     expect(workflow).toContain('Install PR bridge NSIS package');
     expect(workflow).toContain(
       'Roll back NSIS-installed bridge after an installer failure',
@@ -158,7 +220,8 @@ describe('Windows production installer E2E', () => {
     expect(versionGate).toContain('crate::updater::install_stable_update(app).await');
     expect(versionGate).not.toContain('download_and_install');
     expect(main).toContain('windows_update::run_helper_if_requested()');
-    expect(windowsUpdate).toContain('.download(|_, _| {}, || {})');
+    expect(windowsUpdate).toContain('.download(');
+    expect(windowsUpdate).toContain('emit_update_download_progress');
     expect(windowsUpdate).toContain('quiesce_for_update(PROCESS_EXIT_TIMEOUT)');
     expect(windowsUpdate).toContain('app.exit(0)');
     expect(windowsUpdate).toContain('.args(["/P", "/R", "/UPDATE"])');

@@ -37,7 +37,7 @@ import {
   readShallowCache,
   writeShallowCache,
 } from "./browser-cache.js";
-import { hqProFetch } from "./hq-pro-client.js";
+import { hqProFetch, type HqProFetch } from "./hq-pro-client.js";
 import {
   applyHonestDirectoryActivity,
   mergeLiveContacts,
@@ -70,6 +70,10 @@ export interface HydratedRail {
   contacts: DmContactInput[];
 }
 
+export interface LiveRailDeps {
+  fetch?: HqProFetch;
+}
+
 let workFeedCache: {
   key: string;
   at: number;
@@ -88,7 +92,10 @@ function isPagedDirectoryCursor(cursor: string | undefined): cursor is string {
   );
 }
 
-async function loadWorkFeed(personUid: string): Promise<WorkFeedItem[]> {
+async function loadWorkFeed(
+  personUid: string,
+  fetchImpl: HqProFetch = hqProFetch,
+): Promise<WorkFeedItem[]> {
   const now = Date.now();
   if (
     workFeedCache?.key === personUid &&
@@ -97,7 +104,7 @@ async function loadWorkFeed(personUid: string): Promise<WorkFeedItem[]> {
     return workFeedCache.items;
   }
   try {
-    const res = await hqProFetch("/v1/work-mesh/work");
+    const res = await fetchImpl("/v1/work-mesh/work");
     if (!res.ok) {
       return workFeedCache?.key === personUid ? workFeedCache.items : [];
     }
@@ -168,6 +175,7 @@ export function hydrateLiveRail(
   adapter: PlatformAdapter,
   previousDirectory: ChannelDirectoryRow[] = [],
   personUid = "",
+  deps: LiveRailDeps = {},
 ): Promise<HydratedRail> {
   if (railHydrate?.key === personUid) return railHydrate.promise;
   const hydrate = (async () => {
@@ -181,7 +189,7 @@ export function hydrateLiveRail(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        loadWorkFeed(personUid),
+        loadWorkFeed(personUid, deps.fetch ?? hqProFetch),
         loadInboxBundle(adapter),
       ]);
       const contactsBase = contactsResult.ok
@@ -268,6 +276,7 @@ export function createChatSidebarApi(
   adapter: PlatformAdapter,
   previousDirectory: ChannelDirectoryRow[] = [],
   personUid = "",
+  deps: LiveRailDeps = {},
 ): ChatSidebarApi {
   return {
     fetchChannelDirectory: async (cursor) => {
@@ -283,6 +292,7 @@ export function createChatSidebarApi(
         adapter,
         previousDirectory,
         personUid,
+        deps,
       );
       return normalizeDirectoryFeed({
         snapshot: true,
@@ -296,6 +306,7 @@ export function createChatSidebarApi(
         adapter,
         previousDirectory,
         personUid,
+        deps,
       );
       return { contacts: rail.contacts };
     },
@@ -305,7 +316,7 @@ export function createChatSidebarApi(
       ),
     }),
     listChannels: async (args) => {
-      const items = await loadWorkFeed(personUid);
+      const items = await loadWorkFeed(personUid, deps.fetch ?? hqProFetch);
       return {
         channels: workItemsAsChannels(items, args.companyUid),
       } as ChannelsResponse;

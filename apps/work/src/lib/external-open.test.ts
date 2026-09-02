@@ -40,7 +40,7 @@ import {
   openWorkExternalUrl,
   WORK_EXTERNAL_LINK_REFUSAL_MESSAGE,
 } from "./external-open.js";
-import Page from "../routes/+page.svelte";
+import Page from "./WorkShell.svelte";
 
 const arbitraryHttpsUrls = [
   "https://preview.example/hq-desktop",

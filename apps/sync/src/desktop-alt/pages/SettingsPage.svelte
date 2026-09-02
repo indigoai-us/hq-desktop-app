@@ -6,7 +6,7 @@
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import { formatHqFolderMeta, type SettingsTab } from '../route';
-  import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
+  import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { permissionState, loadMeetingPermissions } from '../../lib/permissionState.svelte';
@@ -797,7 +797,7 @@
   }
 
   async function auditTelemetryPreferenceChanged(enabled: boolean) {
-    await emitDesktopTelemetry({
+    await emitDesktopOperationalTelemetry({
       eventName: 'telemetry_preference_changed',
       properties: { enabled, surface: 'desktop-settings' },
     });
@@ -861,13 +861,9 @@
     if (telemetryBusy) return;
     telemetryBusy = true;
     try {
-      // Finding #6: a withdrawal must HALT emission immediately — so we must not
-      // emit ANY telemetry event for a withdrawal. The old code deliberately
-      // emitted `telemetry_preference_changed(false)` BEFORE the withdrawal
-      // write, while the server still reported "enabled", which produced one
-      // more telemetry event AFTER the user had asked to stop. That event is now
-      // removed entirely; only an opt-IN records the change (after the server
-      // confirms it).
+      // This receipt describes a completed consent transaction, not skill use.
+      // Record it only after the server confirms either answer; its operational
+      // delivery does not depend on the skill-telemetry preference.
       // Persist the offline cache too, so an immediately-following offline read
       // shows the just-chosen value.
       if (!(await saveSettings({ telemetryEnabled: next }))) return;
@@ -876,7 +872,7 @@
         surface: 'settings',
         consentVersion: TELEMETRY_CONSENT_VERSION,
       });
-      if (next && result.uploaded) {
+      if (result.uploaded) {
         await auditTelemetryPreferenceChanged(next);
       }
       // Re-read the server so provenance (updatedAt/version) reflects the write

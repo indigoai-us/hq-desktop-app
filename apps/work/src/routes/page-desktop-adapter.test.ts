@@ -5,9 +5,22 @@ import { createSyncPlatformAdapter } from "@hq/platform";
 import { describe, expect, it } from "vitest";
 
 describe("HQ Work desktop platform adapter", () => {
+  it("does not use SvelteKit app-local aliases in the exported shell", () => {
+    const page = readFileSync(
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
+      "utf8",
+    );
+    const appLocalSpecifiers = page.match(/\$(?:lib|app)\/[^\s"'`]+/g) ?? [];
+
+    expect(
+      appLocalSpecifiers,
+      `WorkShell.svelte contains forbidden app-local import: ${appLocalSpecifiers[0] ?? "none"}`,
+    ).toEqual([]);
+  });
+
   it("constructs the shared Sync adapter and maps Board reads to the host command", async () => {
     const page = readFileSync(
-      fileURLToPath(new URL("./+page.svelte", import.meta.url)),
+      fileURLToPath(new URL("../lib/WorkShell.svelte", import.meta.url)),
       "utf8",
     );
 
@@ -22,6 +35,8 @@ describe("HQ Work desktop platform adapter", () => {
         onUnauthorized: redirectToSigninWithCallback,
       })`,
     );
+    expect(page).toContain("const workFetch: HqProFetch = hqProFetch;");
+    expect(page).toContain("loadWorkThreads(roster, workFetch)");
 
     const commands: string[] = [];
     const adapter = createSyncPlatformAdapter({

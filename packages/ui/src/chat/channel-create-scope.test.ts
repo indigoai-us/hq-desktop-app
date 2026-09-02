@@ -136,6 +136,54 @@ describe("companiesForChannelCreate", () => {
   });
 });
 
+describe("companiesForChannelCreate · membership evidence", () => {
+  // Ported from create-flow's retired `creatableCompanies`: the two fixes of
+  // the "In: <personal vault> → not a member" bug now share this one list.
+  it("drops a company whose membership is present but not active", () => {
+    expect(
+      companiesForChannelCreate([
+        workspace({ slug: "indigo", displayName: "Indigo", cloudUid: "cmp_indigo" }),
+        workspace({
+          slug: "stefan-johnson",
+          displayName: "Stefan Johnson",
+          cloudUid: "cmp_sj",
+          membershipStatus: "revoked",
+        }),
+      ]).map((c) => c.companyUid),
+    ).toEqual(["cmp_indigo"]);
+  });
+
+  it("drops broken and cloud-less rows", () => {
+    expect(companiesForChannelCreate([workspace({ state: "broken" })])).toEqual(
+      [],
+    );
+    expect(companiesForChannelCreate([workspace({ cloudUid: null })])).toEqual(
+      [],
+    );
+  });
+
+  it("FAILS OPEN when membership is unknown", () => {
+    expect(
+      companiesForChannelCreate([workspace({ membershipStatus: null })]),
+    ).toEqual([{ companyUid: "cmp_acme", label: "Acme" }]);
+  });
+
+  it("is case/space tolerant on membership status", () => {
+    expect(
+      companiesForChannelCreate([workspace({ membershipStatus: " Active " })]),
+    ).toHaveLength(1);
+  });
+
+  it("falls back to slug when there is no display name, and dedupes by uid", () => {
+    expect(
+      companiesForChannelCreate([
+        workspace({ displayName: "  " }),
+        workspace({}),
+      ]),
+    ).toEqual([{ companyUid: "cmp_acme", label: "acme" }]);
+  });
+});
+
 describe("defaultChannelCompanyUid", () => {
   it("defaults to the active company", () => {
     expect(

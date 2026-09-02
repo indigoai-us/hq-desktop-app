@@ -25,7 +25,7 @@
   import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
   import BrandLogoSlot from '../lib/BrandLogoSlot.svelte';
   import type { CachedBrand } from '../lib/brand';
-  import HqWorkHandoffCard from './HqWorkHandoffCard.svelte';
+
 
   interface Config {
     configured: boolean;
@@ -76,9 +76,6 @@
     oninstallupdate?: () => void | Promise<void>;
     onretrynotificationaction?: () => void | Promise<void>;
     bindStatsRefresh?: (fn: () => void) => void;
-    /** US-003: compact overlay instead of opening desktop-alt. */
-    showHqWorkHandoff?: boolean;
-    hqWorkHandoffFirstShow?: boolean;
   }
 
   interface SyncStatus {
@@ -127,8 +124,6 @@
     oninstallupdate,
     onretrynotificationaction,
     bindStatsRefresh,
-    showHqWorkHandoff = false,
-    hqWorkHandoffFirstShow = true,
   }: Props = $props();
 
   let popoverEl: HTMLElement | null = $state(null);
@@ -457,9 +452,6 @@
   data-testid="popover-root"
 >
   <div class="mbpop-content" bind:this={popoverContentEl}>
-  {#if showHqWorkHandoff}
-    <HqWorkHandoffCard firstShow={hqWorkHandoffFirstShow} />
-  {:else}
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
     {#if brand?.brandingEnabled}
@@ -788,7 +780,6 @@
     </section>
     </div>
   </div>
-  {/if}
   </div>
 </div>
 

@@ -28,7 +28,7 @@ describe('onboarding step telemetry', () => {
     emitted = [];
   });
 
-  it('buffers transitions and flushes their original timestamps only after opt-in', async () => {
+  it('emits setup transitions immediately, before a consent choice exists', async () => {
     const telemetry = createOnboardingStepTelemetry({
       storage,
       newSessionId: () => '11111111-1111-4111-8111-111111111111',
@@ -45,9 +45,7 @@ describe('onboarding step telemetry', () => {
       occurredAt: '2026-08-31T10:01:00.000Z',
     });
 
-    expect(emitted).toEqual([]);
-    telemetry.bindAccount('account-a');
-    await telemetry.acceptConsent();
+    await Promise.resolve();
 
     expect(emitted).toMatchObject([
       {
@@ -62,7 +60,7 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
-  it('discards every buffered transition on decline and emits no decline event', async () => {
+  it('continues to emit operational setup after a person declines skill telemetry', async () => {
     const telemetry = createOnboardingStepTelemetry({
       storage,
       emit: async (event) => {
@@ -72,15 +70,20 @@ describe('onboarding step telemetry', () => {
     telemetry.record({
       properties: { step: 'setup', action: 'entered', flow: 'first_install' },
     });
+    // The consent preference is owned by skill telemetry; it never alters this
+    // operational trace.
+    telemetry.record({
+      properties: { step: 'setup', action: 'failed', outcome: 'stage_command_failed' },
+    });
+    await Promise.resolve();
 
-    telemetry.discard();
-    telemetry.bindAccount('account-a');
-    await telemetry.acceptConsent();
-
-    expect(emitted).toEqual([]);
+    expect(emitted).toMatchObject([
+      { properties: { step: 'setup', action: 'entered' } },
+      { properties: { step: 'setup', action: 'failed' } },
+    ]);
   });
 
-  it('keeps the install session and pending resume event across wizard remounts', async () => {
+  it('keeps the install session across wizard remounts without retaining an event buffer', async () => {
     const first = createOnboardingStepTelemetry({
       storage,
       newSessionId: () => '22222222-2222-4222-8222-222222222222',
@@ -92,7 +95,6 @@ describe('onboarding step telemetry', () => {
       properties: { step: 'directory', action: 'entered', flow: 'resume' },
       occurredAt: '2026-08-31T10:00:00.000Z',
     });
-    first.bindAccount('account-a');
     const resumed = createOnboardingStepTelemetry({
       storage,
       newSessionId: () => 'should-not-be-used',
@@ -102,59 +104,107 @@ describe('onboarding step telemetry', () => {
     });
 
     expect(resumed.sessionId).toBe(first.sessionId);
-    resumed.bindAccount('account-a');
-    await resumed.acceptConsent();
+    await Promise.resolve();
     expect(emitted[0]?.sessionId).toBe(first.sessionId);
     expect(emitted[0]?.properties.action).toBe('entered');
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain(first.sessionId);
   });
 
-  it('retains unsent events after a delivery failure and retries them later', async () => {
-    let fail = true;
+  it('buffers a pre-auth operational event and flushes it after authentication', async () => {
+    let authenticated = false;
     const telemetry = createOnboardingStepTelemetry({
       storage,
+      newSessionId: () => '44444444-4444-4444-8444-444444444444',
       emit: async (event) => {
-        if (fail) throw new Error('offline');
+        if (!authenticated) throw new Error('no token');
         emitted.push(event);
       },
     });
     telemetry.record({
       properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
     });
-    telemetry.bindAccount('account-a');
+    await Promise.resolve();
 
-    await expect(telemetry.acceptConsent()).rejects.toThrow('offline');
     expect(emitted).toEqual([]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('welcome-signin');
+    await expect(telemetry.flush()).rejects.toThrow('no token');
 
-    fail = false;
-    await telemetry.acceptConsent();
-    expect(emitted).toHaveLength(1);
+    authenticated = true;
+    await telemetry.flush();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '44444444-4444-4444-8444-444444444444',
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).not.toContain('welcome-signin');
   });
 
-  it('drops an existing account buffer when a different account signs in', async () => {
-    const first = createOnboardingStepTelemetry({
+  it('does not associate operational setup events with an account', async () => {
+    const telemetry = createOnboardingStepTelemetry({
       storage,
       newSessionId: () => '33333333-3333-4333-8333-333333333333',
       emit: async (event) => {
         emitted.push(event);
       },
     });
-    first.record({
+    telemetry.record({
       properties: { step: 'welcome-signin', action: 'started', flow: 'first_install' },
     });
-    first.bindAccount('account-a');
+    await Promise.resolve();
 
-    const second = createOnboardingStepTelemetry({
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '33333333-3333-4333-8333-333333333333',
+        properties: { step: 'welcome-signin', action: 'started' },
+      },
+    ]);
+  });
+
+  it('migrates the compatible v2 session and pending records before creating v3', async () => {
+    storage.setItem(
+      __INTERNALS__.LEGACY_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        sessionId: '55555555-5555-4555-8555-555555555555',
+        firstLaunchRecorded: true,
+        pending: [
+          {
+            sessionId: '55555555-5555-4555-8555-555555555555',
+            occurredAt: '2026-08-31T10:00:00.000Z',
+            properties: {
+              step: 'welcome-signin',
+              action: 'entered',
+              surface: 'desktop_installer',
+              platform: 'macos',
+            },
+          },
+        ],
+      }),
+    );
+    const telemetry = createOnboardingStepTelemetry({
       storage,
-      newSessionId: () => '44444444-4444-4444-8444-444444444444',
+      newSessionId: () => 'should-not-be-used',
       emit: async (event) => {
         emitted.push(event);
       },
     });
-    second.bindAccount('account-b');
-    await second.acceptConsent();
 
-    expect(second.sessionId).toBe('44444444-4444-4444-8444-444444444444');
-    expect(emitted).toEqual([]);
+    expect(telemetry.sessionId).toBe('55555555-5555-4555-8555-555555555555');
+    expect(storage.getItem(__INTERNALS__.LEGACY_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+
+    await telemetry.flush();
+    telemetry.recordFirstLaunch();
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '55555555-5555-4555-8555-555555555555',
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(emitted).toHaveLength(1);
   });
 });

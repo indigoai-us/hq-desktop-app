@@ -7,7 +7,8 @@ describe('desktop-alt company work actions are functional', () => {
   const companyPage = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
   const storyPanel = readRepoFile('src/desktop-alt/v4/StoryPanel.svelte');
   const companyBoardStore = readRepoFile('src/desktop-alt/lib/company-board.svelte.ts');
-  const messages = readRepoFile('src/components/messaging/MessagesShell.svelte');
+  const chatApi = readRepoFile('../../packages/ui/src/chat/chat-api.ts');
+  const chatSidebar = readRepoFile('../../packages/ui/src/chat/ChatSidebar.svelte');
   const deployments = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
   const secrets = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
   const agentWorkflow = readRepoFile('src/desktop-alt/lib/agent-workflow.ts');
@@ -62,18 +63,10 @@ describe('desktop-alt company work actions are functional', () => {
   it('treats null local bridge payloads as empty data', () => {
     expect(companyBoardStore).toContain('function shapeBoard(raw: CompanyBoard | null | undefined)');
     expect(companyBoardStore).toContain('raw?.inbox ?? []');
-    expect(messages).toContain("invoke<ChannelsResponse | null>('list_channels')");
-    // Null still normalizes to an empty snapshot (then realtime mutations that
-    // landed during the request are replayed instead of being erased). The
-    // empty-or-unioned list is deduped by channelId first so a duplicate rail
-    // row cannot sneak in before merge.
-    expect(messages).toContain('const mutationRevision = channelMutationRevision');
-    expect(messages).toContain('    dedupeChannelsById,');
-    expect(messages).toContain("from '../../lib/channels'");
-    expect(messages).toContain(
-      'channels = mergeChannelMutations(dedupeChannelsById(resp?.channels ?? []), mutationRevision);',
-    );
-    expect(messages).toContain('if (mutation.revision > afterRevision)');
+    // Conversation rail lives in @hq/ui. Null listChannels payloads still
+    // collapse to an empty collected list instead of throwing.
+    expect(chatApi).toContain('}): Promise<ChannelsResponse | null>');
+    expect(chatSidebar).toContain('for (const c of resp?.channels ?? []) collected.push(c);');
   });
 
   it('wires Deployments find and deploy workflow controls', () => {

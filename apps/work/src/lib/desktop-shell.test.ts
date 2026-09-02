@@ -359,7 +359,7 @@ describe("Tauri attachment handlers", () => {
 
   it("wires reactive desktop identity and native attachment handlers only for the desktop shell", async () => {
     const source = await readFile(
-      new URL("../routes/+page.svelte", import.meta.url),
+      new URL("./WorkShell.svelte", import.meta.url),
       "utf8",
     );
 
@@ -381,7 +381,7 @@ describe("Tauri attachment handlers", () => {
       /\$effect\(\(\) => \{\s*seedConversationCacheFromRail\(shallow, conversationCacheStorage\);\s*\}\)/,
     );
     expect(source).toMatch(
-      /const sidebarApi = \$derived\(\s*createChatSidebarApi\(adapter, shallow\.directory, personUid\),\s*\)/,
+      /const sidebarApi = \$derived\(\s*createChatSidebarApi\(adapter, shallow\.directory, personUid, \{\s*fetch: workFetch,\s*\}\),\s*\)/,
     );
     expect(source).toMatch(
       /putAttachmentObject=\{attachmentHandlers\?\.putAttachmentObject\}/,

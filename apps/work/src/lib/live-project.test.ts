@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ChannelFileItemModel } from "@hq/ui";
+import type { ChannelFileItemModel, ConversationRow } from "@hq/ui";
 import { hqProFetch } from "./hq-pro-client.js";
 import {
   loadWebVaultFilePreview,
+  loadLiveProjectMeta,
   metaFromProjectView,
   parseChannelMembers,
 } from "./live-project.js";
@@ -20,6 +21,73 @@ const previewFile: ChannelFileItemModel = {
   caption: "PROJECT",
   iconKind: "markdown",
 };
+
+const projectChannelRow = {
+  id: "ch:chn_project",
+  kind: "channel",
+  title: "Project channel",
+  companyUid: "cmp_work",
+  channelId: "chn_project",
+} as ConversationRow;
+
+function json(value: unknown): Response {
+  return new Response(JSON.stringify(value), { status: 200 });
+}
+
+describe("live project hq-pro transport", () => {
+  beforeEach(() => {
+    vi.mocked(hqProFetch).mockReset();
+  });
+
+  it("routes project metadata through an injected hq-pro transport", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        members: [
+          {
+            personUid: "prs_injected",
+            displayName: "Injected member",
+            role: "member",
+          },
+        ],
+      }),
+    );
+
+    const result = await loadLiveProjectMeta(projectChannelRow, "Work", {
+      fetch: fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/notify/channels/chn_project/members",
+    );
+    expect(result.meta?.status?.members).toEqual([
+      expect.objectContaining({ personUid: "prs_injected" }),
+    ]);
+    expect(hqProFetch).not.toHaveBeenCalled();
+  });
+
+  it("defaults project metadata requests to the browser hq-pro transport", async () => {
+    vi.mocked(hqProFetch).mockResolvedValue(
+      json({
+        members: [
+          {
+            personUid: "prs_browser",
+            displayName: "Browser member",
+            role: "member",
+          },
+        ],
+      }),
+    );
+
+    const result = await loadLiveProjectMeta(projectChannelRow, "Work");
+
+    expect(hqProFetch).toHaveBeenCalledWith(
+      "/v1/notify/channels/chn_project/members",
+    );
+    expect(result.meta?.status?.members).toEqual([
+      expect.objectContaining({ personUid: "prs_browser" }),
+    ]);
+  });
+});
 
 describe("work vault file-preview seam", () => {
   const fetchMock = vi.fn<typeof fetch>();
@@ -78,6 +146,32 @@ describe("work vault file-preview seam", () => {
       loadWebVaultFilePreview(previewFile, "cmp_work"),
     ).resolves.toMatchObject({ kind: "unavailable", state: "denied" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("routes Vault presigning through an injected hq-pro transport", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({ results: [{ url: "https://vault.test/injected.md" }] }),
+    );
+    fetchMock.mockResolvedValue(
+      new Response("# Injected brief", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      }),
+    );
+
+    await expect(
+      loadWebVaultFilePreview(previewFile, "cmp_work", { fetch: fetchImpl }),
+    ).resolves.toEqual({ kind: "text", text: "# Injected brief" });
+    expect(fetchImpl).toHaveBeenCalledWith("/v1/files/presign", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        company: "cmp_work",
+        op: "get",
+        key: "projects/demo/brief.md",
+      }),
+    });
+    expect(hqProFetch).not.toHaveBeenCalled();
   });
 });
 

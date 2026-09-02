@@ -49,7 +49,7 @@ import type {
   Workspace,
 } from "@hq/ui";
 import { hqProFetch } from "$lib/hq-pro-client.js";
-import Page from "./+page.svelte";
+import Page from "../lib/WorkShell.svelte";
 
 type AuthStatus =
   | "active"
