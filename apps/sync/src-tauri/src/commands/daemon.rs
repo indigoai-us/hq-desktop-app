@@ -57,6 +57,7 @@ use hq_desktop_core::sync_outcome::{
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_termination_fingerprint_token,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class,
     windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
     DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
     TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
@@ -3240,15 +3241,25 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
-    } else if windows_termination.is_some() {
-        let exit_description = describe_exit(code, signal);
+    } else if code.is_some() && signal.is_some() {
+        // Malformed both-present exit. `describe_exit` prefers `code` and would
+        // silently drop the signal, so keep the raw rendering that preserves both
+        // values here — mirroring the `invalid:exit:{code}+signal:{signal}`
+        // isolation the fingerprint token already applies to this one shape.
         format!(
-            "auto-sync watcher exited unexpectedly ({exit_description}), \
+            "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     } else {
+        // Every remaining shape — a signal-only termination (e.g. macOS SIGHUP),
+        // a Windows status, or a plain exit code — routes through the renderer
+        // that already names it (HQ-DESKTOP-5Y). This subsumes the old
+        // Windows-status arm, which called `describe_exit` for the identical
+        // string, and replaces the raw `(code=.. signal=..)` Debug fallback that
+        // left a SIGHUP reported as `code=None signal=Some(1)`.
+        let exit_description = describe_exit(code, signal);
         format!(
-            "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
+            "auto-sync watcher exited unexpectedly ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     };
@@ -3307,6 +3318,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Name the terminating signal's disposition as a fixed, closed-vocabulary
+    // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
+    // Sentry without parsing the message text. Always present (`none` for a
+    // signal-free exit); content-safe by construction and re-validated at the
+    // telemetry egress. The bare signal integer rides an extra below.
+    tags.push((
+        "watcher_exit_signal_class",
+        watcher_exit_signal_class(signal).to_string(),
+    ));
     // Symmetric with the manual route: attach the libuv syscall + errno wherever
     // runner_fatal_class is attached. Both are fixed/integer; absent when the
     // fatal class is not a libuv fatal syscall.
@@ -3459,6 +3479,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    // Carry the bare terminating signal integer alongside its content-safe class
+    // tag, so a signal-only watcher exit is filterable both by disposition and by
+    // exact signal number. Absent for a signal-free exit; a bare integer, so it is
+    // type-safe at the egress by construction.
+    if let Some(signal) = signal {
+        extras.push((
+            "watcher_exit_signal",
+            sentry::protocol::Value::Number(signal.into()),
+        ));
+    }
     // The integer source line for an assertion abort, kept consistent with the
     // source/signature computed above (present only when an assertion parsed).
     if let Some(line) = runner_assert_line {
@@ -5868,6 +5898,146 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn sighup_watcher_exit_is_named_and_classified() {
+        // HQ-DESKTOP-5Y: a macOS SIGHUP (code=None, signal=Some(1)) with none of
+        // the self-teardown discriminators set is captured — but must now be named
+        // 'killed by SIGHUP' and carry a queryable signal class + integer, not the
+        // raw Debug tuple 'code=None signal=Some(1)' the issue observed.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(1),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.captures.len(), 1);
+        let capture = &effects.captures[0];
+        assert!(
+            capture.message.contains("killed by SIGHUP"),
+            "message did not name SIGHUP: {}",
+            capture.message
+        );
+        assert!(
+            !capture.message.contains("signal=Some(1)"),
+            "message still leaked the raw Debug tuple: {}",
+            capture.message
+        );
+        assert_eq!(recorded_tag(capture, "watcher_exit_signal_class"), "hangup");
+        assert_eq!(recorded_number_extra(capture, "watcher_exit_signal"), 1);
+        assert!(
+            capture.fingerprint.iter().any(|part| part == "signal:1"),
+            "fingerprint no longer contains signal:1: {:?}",
+            capture.fingerprint
+        );
+    }
+
+    #[test]
+    fn sighup_capture_and_lifecycle_behaviour_is_unchanged() {
+        // Reporting-only scope: naming the signal must not change capture policy,
+        // lifecycle category, or crash-streak accounting for (None, Some(1)).
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(1),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        // One capture, the same 'running -> backoff (crash)' lifecycle this issue
+        // carried, and no exec-not-runnable streak extra — that tier belongs to the
+        // 126/127 exec layer, whose shared streak SIGHUP must never consume.
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)]
+        );
+        assert!(
+            effects.captures[0]
+                .extras
+                .iter()
+                .all(|(name, _)| name != "exec_not_runnable_streak"),
+            "SIGHUP must not touch the exec-not-runnable streak"
+        );
+    }
+
+    #[test]
+    fn malformed_dual_status_keeps_the_raw_rendering() {
+        // describe_exit prefers `code` and would drop the signal, so the malformed
+        // both-present shape must keep the raw rendering that preserves both values.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(3),
+            Some(9),
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.captures.len(), 1);
+        let message = &effects.captures[0].message;
+        assert!(
+            message.contains("code=Some(3)") && message.contains("signal=Some(9)"),
+            "malformed both-present exit dropped a value: {message}"
+        );
+    }
+
+    #[test]
+    fn signal_class_tag_is_emitted_for_every_captured_shape() {
+        // The class tag is present and correct on every captured watcher exit: a
+        // SIGKILL is `fault`, a plain exit 221 is `none` — so it can never be absent
+        // or wrong on a captured termination.
+        let host = current_termination_host();
+        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")] {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                None,
+                host,
+                &WatcherExitCaptureContext::default(),
+            );
+            assert_eq!(effects.captures.len(), 1, "code={code:?} signal={signal:?}");
+            assert_eq!(
+                recorded_tag(&effects.captures[0], "watcher_exit_signal_class"),
+                expected_class,
+                "code={code:?} signal={signal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_exit_signal_class_matches_is_fault_signal() {
+        // The classifier's `fault` arm and daemon.rs is_fault_signal must name the
+        // same signal set, or a future signal could be alerted by one path and
+        // silently reclassified by the other.
+        for sig in 1..=31 {
+            assert_eq!(
+                is_fault_signal(Some(sig)),
+                watcher_exit_signal_class(Some(sig)) == "fault",
+                "fault-set drift at signal {sig}"
+            );
+        }
+        assert!(!is_fault_signal(None));
+        assert_eq!(watcher_exit_signal_class(None), "none");
     }
 
     #[cfg(unix)]
