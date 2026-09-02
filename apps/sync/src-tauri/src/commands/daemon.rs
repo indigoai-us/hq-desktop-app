@@ -6491,9 +6491,9 @@ mod tests {
             unknown_capture.fingerprint,
             vec!["sync", "auto-sync-watcher-termination", "exit:221", "none", "none", "none"]
         );
-        assert!(unknown_capture
-            .message
-            .contains("code=Some(221) signal=None"));
+        // Post-fix: the plain exit code is named by describe_exit rather than
+        // dumped as a raw Debug tuple. Grouping is unchanged (fingerprint above).
+        assert!(unknown_capture.message.contains("with code 221"));
         assert!(unknown_capture
             .extras
             .iter()
@@ -6553,9 +6553,9 @@ mod tests {
             posix_134_capture.fingerprint,
             vec!["sync", "auto-sync-watcher-termination", "exit:134", "none", "none", "none"]
         );
-        assert!(posix_134_capture
-            .message
-            .contains("code=Some(134) signal=None"));
+        // Post-fix: named by describe_exit (a bare exit 134 is only a Node abort
+        // on Windows; on POSIX it stays a plain exit code). Grouping unchanged.
+        assert!(posix_134_capture.message.contains("with code 134"));
         assert!(posix_134_capture
             .extras
             .iter()
