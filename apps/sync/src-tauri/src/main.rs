@@ -687,6 +687,7 @@ fn main() {
             commands::hq_context::hq_vault_files,
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
+            commands::session_share_channel::session_share_to_channel,
             // Open / Share / Deploy on files a session produced.
             commands::session_artifacts::session_artifact_stat,
             commands::session_artifacts::session_artifact_open,
