@@ -17,6 +17,7 @@
     clearChannelUnread,
     type Channel,
     humanizeChannelName,
+    removeChannel,
     upsertChannel,
     applyChannelMessageWake,
     shouldBumpChannelUnread,
@@ -1039,6 +1040,17 @@
       track(
         wakes.on("channel:updated", (payload) => {
           channels = upsertChannel(channels, payload);
+          scheduleDirectoryReconcile();
+        }),
+      );
+
+      // A deleted channel leaves the rail at once (the deleting client emits
+      // this optimistically; the server's directory-feed change follows). The
+      // shell owns selection — if this was the open row, it clears it itself.
+      track(
+        wakes.on("channel:removed", ({ channelId }) => {
+          channels = removeChannel(channels, channelId);
+          directoryReconciler.forget(channelId);
           scheduleDirectoryReconcile();
         }),
       );

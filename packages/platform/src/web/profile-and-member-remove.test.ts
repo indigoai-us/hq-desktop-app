@@ -47,6 +47,19 @@ describe("WebPlatformAdapter member removal", () => {
   });
 });
 
+describe("WebPlatformAdapter channel delete", () => {
+  it("DELETEs the channel path with an encoded channelId", async () => {
+    const { adapter, calls } = makeAdapter({ deleted: "chn 1" });
+    const res = await adapter.messaging.deleteChannel("chn 1");
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: "DELETE",
+      path: "/v1/notify/channels/chn%201",
+      body: undefined,
+    });
+  });
+});
+
 describe("WebPlatformAdapter profile", () => {
   it("GETs /v1/profile", async () => {
     const { adapter, calls } = makeAdapter({

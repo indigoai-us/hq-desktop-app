@@ -43,6 +43,7 @@
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
@@ -826,6 +827,22 @@
   // ── Member profile panel + remove-member (Slack-style right panel) ──────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
   let removingMemberUid = $state<string | null>(null);
+  /**
+   * Owner-only "Delete channel" (members popover → trash). The shell owns the
+   * confirm + the call: the popover closes on outside mousedown and would eat
+   * a dialog it rendered itself.
+   */
+  let deleteChannelConfirmOpen = $state(false);
+  let deletingChannel = $state(false);
+  /** Last channel-level action failure — rendered under the header, never console-only. */
+  let channelActionError = $state<string | null>(null);
+
+  // A new selection starts clean — a stale delete error must not follow the
+  // user into the next conversation.
+  $effect(() => {
+    void selectedRow?.id;
+    channelActionError = null;
+  });
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
@@ -914,6 +931,43 @@
       }
     } finally {
       removingMemberUid = null;
+    }
+  }
+
+  async function deleteSelectedChannel(): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    deleteChannelConfirmOpen = false;
+    if (!row || !channelId.startsWith("chn_") || deletingChannel) return;
+    deletingChannel = true;
+    channelActionError = null;
+    try {
+      const res = await adapter.messaging.deleteChannel(channelId);
+      if (!res.ok) {
+        channelActionError =
+          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        return;
+      }
+      // Optimistic: drop the rail row now. The server fans out a directory
+      // feed change so every other member's rail follows.
+      wakes?.emit?.("channel:removed", { channelId });
+      timelineCache.delete(row.id);
+      // Clear the selection the way changeTenantCompany does so the pane
+      // falls back to its empty state instead of a dead conversation.
+      membersOpen = false;
+      projectAboutOpen = false;
+      selectedRow = null;
+      liveTimeline = [];
+      liveTimelineId = null;
+      timelineHydrating = false;
+      openReplyRootId = null;
+      openProfileMember = null;
+      attachTray = null;
+      replyPreviewByRoot = {};
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      deletingChannel = false;
     }
   }
 
@@ -2257,6 +2311,16 @@
     </div>
   {/if}
 
+  <ConfirmDialog
+    open={deleteChannelConfirmOpen && selectedRow != null}
+    title={`Delete #${selectedRow?.title ?? "channel"}?`}
+    message="This permanently deletes the channel and its messages for everyone in it. This can't be undone."
+    confirmLabel="Delete channel"
+    danger
+    oncancel={() => (deleteChannelConfirmOpen = false)}
+    onconfirm={() => void deleteSelectedChannel()}
+  />
+
   {#if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
@@ -2576,12 +2640,26 @@
                       }}
                       onremovemember={(row) => void removeMember(row)}
                       removingUid={removingMemberUid}
+                      ondeletechannel={() => {
+                        membersOpen = false;
+                        deleteChannelConfirmOpen = true;
+                      }}
+                      deleting={deletingChannel}
                     />
                   {/if}
                 </div>
               {/if}
             </div>
           </header>
+          {#if channelActionError}
+            <div
+              class="channel-action-error"
+              data-testid="channel-action-error"
+              role="alert"
+            >
+              {channelActionError}
+            </div>
+          {/if}
           {#if projectAboutOpen && isProjectChannel}
             <ProjectAboutDialog
               title={selectedRow.title}
@@ -2867,6 +2945,17 @@
 
   /* Channel header — ported from the real ChannelView: title left, tabs +
      member pill grouped right in `.channel-header-trailing`. */
+  .channel-action-error {
+    margin: 0 16px 6px;
+    padding: 6px 10px;
+    border: 1px solid
+      color-mix(in srgb, var(--warn-ink, #d9584a) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn-ink, #d9584a) 12%, transparent);
+    color: var(--t1);
+    font: 400 12px/1.4 var(--font-ui);
+  }
+
   .channel-header {
     position: relative;
     z-index: 20;

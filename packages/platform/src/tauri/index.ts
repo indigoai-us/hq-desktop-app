@@ -7,6 +7,7 @@
  */
 
 import {
+  DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -176,6 +177,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "DELETE",
         `/v1/notify/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(personUid)}`,
       ),
+    deleteChannel: async (channelId) => {
+      const res = await this.hqProJson<Json>(
+        "DELETE",
+        `/v1/notify/channels/${encodeURIComponent(channelId)}`,
+      );
+      // A coded 404 (CHANNEL_NOT_FOUND) keeps its server error; the bare
+      // API-Gateway "Not Found" (no code) means the route does not exist yet.
+      if (!res.ok && res.code === "http-404") {
+        return failure("http-404", DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+      }
+      return res;
+    },
     // Scoped reads go through the existing company-scoped command rather than
     // a new IPC surface: list_company_members is GET /v1/notify/contacts
     // ?companyUid=… and is already registered + capability-listed.

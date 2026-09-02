@@ -340,6 +340,8 @@ export interface ChatWakeEvents {
   };
   /** A channel row changed shape. */
   "channel:updated": Channel;
+  /** A channel was deleted (by this client, optimistically, or by its owner) — drop the row. */
+  "channel:removed": { channelId: string };
   /** Unread rollup changed — reconcile the directory. */
   "channel:unread-changed": void;
   /** Per-pair DM unreads from the inbox rollup. */

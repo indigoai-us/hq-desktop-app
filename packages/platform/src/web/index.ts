@@ -449,6 +449,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.channelMembers(channelId), { toPersonUid }),
     removeChannelMember: (channelId, personUid) =>
       this.request("DELETE", WEB_PATHS.channelMember(channelId, personUid)),
+    deleteChannel: (channelId) =>
+      this.request("DELETE", WEB_PATHS.channel(channelId)),
     listContacts: (opts) => {
       const companyUid = opts?.companyUid?.trim();
       // Company-scoped slice of the same surface — never widen to the global

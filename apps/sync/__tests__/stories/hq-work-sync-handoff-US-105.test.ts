@@ -359,6 +359,30 @@ describe('US-105 embedded feature-parity QA', () => {
       ]);
     });
 
+    it('deleteChannel maps onto the delete_channel Sync command', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd, args) => {
+        if (cmd === 'delete_channel') return { deleted: args?.channelId };
+        throw new Error(`unexpected command: ${cmd}`);
+      });
+      const value = expectOk(await adapter.messaging.deleteChannel('chn_1'));
+      expect(value).toEqual({ deleted: 'chn_1' });
+      expect(calls).toEqual([
+        { cmd: 'delete_channel', args: { channelId: 'chn_1' } },
+      ]);
+    });
+
+    it('deleteChannel surfaces the Rust error string, never a swallowed failure', async () => {
+      const { adapter } = makeAdapter(async () => {
+        throw new Error("This server doesn't support deleting channels yet.");
+      });
+      const res = await adapter.messaging.deleteChannel('chn_1');
+      expect(res.ok).toBe(false);
+      if (res.ok) throw new Error('unreachable');
+      expect(res.message).toBe(
+        "This server doesn't support deleting channels yet.",
+      );
+    });
+
     it('reply threads fetch and send map fetch_thread / send_thread_reply', async () => {
       const { adapter, calls } = makeAdapter();
       expectOk(

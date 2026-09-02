@@ -394,6 +394,9 @@ export function createSyncPlatformAdapter(
       // Owner-only server-side (403 otherwise); Sync already exposes the command.
       removeChannelMember: (channelId, personUid) =>
         call('remove_channel_member', { channelId, personUid }),
+      // Owner-only server-side; Rust maps the pre-rollout API-Gateway 404 to
+      // an honest "server doesn't support deleting channels yet" string.
+      deleteChannel: (channelId) => call('delete_channel', { channelId }),
       // A companyUid scopes the roster to one tenant via the already-registered
       // list_company_members command (GET /v1/notify/contacts?companyUid=…).
       listContacts: async (opts) => {
