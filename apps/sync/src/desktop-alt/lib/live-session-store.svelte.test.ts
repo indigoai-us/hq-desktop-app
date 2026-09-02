@@ -24,6 +24,7 @@ import {
   AGENT_SESSION_PHASE,
   liveSessionStore,
   resetLiveSessionStore,
+  resetProbeCaches,
   type SessionSummary,
 } from './live-session-store.svelte';
 
@@ -625,5 +626,44 @@ describe('liveSessionStore.lastUsage', () => {
     });
     await liveSessionStore.open(SESSION);
     expect(liveSessionStore.lastUsage?.label).toBe('2 in · 17 out · $0.68');
+  });
+});
+
+describe('probe memoization (preflight + catalog)', () => {
+  beforeEach(() => {
+    resetLiveSessionStore();
+    resetProbeCaches();
+    invoke.mockReset();
+  });
+
+  it('runs the preflight probe once per window, not once per page mount', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'agent_session_preflight') {
+        return { hqRoot: '/hq', hooksReady: true, hooksError: null, claudeAvailable: true,
+          claudeLoggedIn: true, codexAvailable: false, companies: [] };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+    await liveSessionStore.preflight();
+    await liveSessionStore.preflight();
+    const calls = invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_preflight');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('spawns the catalog probe once for the process lifetime, and retries only after a failure', async () => {
+    let attempts = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== 'agent_session_slash_commands') throw new Error(`unexpected ${cmd}`);
+      attempts += 1;
+      if (attempts === 1) throw new Error('probe failed');
+      return { commands: [], models: [] };
+    });
+    await expect(liveSessionStore.slashCommands('claude')).rejects.toThrow('probe failed');
+    await liveSessionStore.slashCommands('claude');
+    await liveSessionStore.slashCommands('claude');
+    expect(attempts).toBe(2);
+    resetProbeCaches();
+    await liveSessionStore.slashCommands('claude');
+    expect(attempts).toBe(3);
   });
 });

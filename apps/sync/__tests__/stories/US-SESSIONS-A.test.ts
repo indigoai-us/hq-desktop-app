@@ -257,3 +257,18 @@ describe('US-SESSIONS-A — the event contract is fully handled', () => {
     }
   });
 });
+
+describe('follow-ups stay in the live session', () => {
+  it('forks a new session only when the user changed a pill, never by comparing values', () => {
+    const page = readFileSync(
+      new URL('../../src/desktop-alt/pages/SessionsPage.svelte', import.meta.url),
+      'utf8',
+    );
+    // The live summary reports the CLI's resolved model id while the pill holds
+    // the catalog value; comparing them forked the chat on every follow-up.
+    expect(page).toContain('const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);');
+    expect(page).not.toMatch(/summary\.model \?\? null\) !== model/);
+    expect(page).toContain('function markPillsDirty(changed: boolean)');
+    expect(page).toContain('pillsDirty = false;');
+  });
+});

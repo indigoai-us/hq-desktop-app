@@ -541,14 +541,50 @@ async function end(): Promise<void> {
   await refreshList();
 }
 
+/**
+ * Preflight and the catalog probe are expensive on the Rust side — the
+ * preflight runs login-shell CLI probes with multi-second timeouts, and the
+ * catalog probe spawns a real `claude` process that runs every HQ SessionStart
+ * hook. The page remounts on every session navigation (it is keyed by session
+ * id), so without memoization each first send paid for both again. Cache at
+ * module scope: preflight for a short window, the catalog for the process
+ * lifetime (the CLI's command list does not change while the app runs).
+ */
+const PREFLIGHT_TTL_MS = 60_000;
+let preflightCache: { at: number; promise: Promise<Preflight> } | null = null;
+let catalogCache: Map<SessionTool, Promise<CommandCatalog>> = new Map();
+
 /** Can this machine run an in-app session, and what is missing if not? */
 async function preflight(): Promise<Preflight> {
-  return invoke<Preflight>('agent_session_preflight');
+  const now = Date.now();
+  if (preflightCache && now - preflightCache.at < PREFLIGHT_TTL_MS) {
+    return preflightCache.promise;
+  }
+  const promise = invoke<Preflight>('agent_session_preflight');
+  preflightCache = { at: now, promise };
+  // A failed probe must not poison the cache for the next attempt.
+  promise.catch(() => {
+    if (preflightCache?.promise === promise) preflightCache = null;
+  });
+  return promise;
 }
 
 /** The CLI's slash-command catalog + model list. */
 async function slashCommands(tool: SessionTool = 'claude'): Promise<CommandCatalog> {
-  return invoke<CommandCatalog>('agent_session_slash_commands', { tool });
+  const cached = catalogCache.get(tool);
+  if (cached) return cached;
+  const promise = invoke<CommandCatalog>('agent_session_slash_commands', { tool });
+  catalogCache.set(tool, promise);
+  promise.catch(() => {
+    if (catalogCache.get(tool) === promise) catalogCache.delete(tool);
+  });
+  return promise;
+}
+
+/** Test seam: forget memoized probes. */
+export function resetProbeCaches(): void {
+  preflightCache = null;
+  catalogCache = new Map();
 }
 
 /**

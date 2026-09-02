@@ -156,25 +156,31 @@
    * session the user merely opened — a warning about something they did not do.
    */
   let pillsBoundTo = $state<string | null>(null);
+  /**
+   * Set only when the user CHANGES a pill while a session is live. Comparing
+   * pill values against the live summary is not a substitute: the summary
+   * reports the model the CLI actually resolved (e.g. "claude-opus-4-8") while
+   * the pill holds the catalog value ("default"), so a value comparison reads
+   * every follow-up as "a different session" and forks the chat on each send.
+   */
+  let pillsDirty = $state(false);
   $effect(() => {
     const live = summary;
     if (!live || pillsBoundTo === live.sessionId) return;
     pillsBoundTo = live.sessionId;
+    pillsDirty = false;
     companySeeded = true;
     modelSeeded = true;
     company = live.company ?? null;
-    model = live.model ?? null;
+    // The model pill keeps the user's catalog choice; the strip title shows
+    // the model the session actually resolved.
   });
   const commands = $derived(
     mergeSlashCommands(probeCommands, liveSessionStore.startedCommands),
   );
 
   /** The pills describe a different session than the live one — say so. */
-  const newSessionPending = $derived(
-    Boolean(sessionId) &&
-      summary !== null &&
-      ((summary.company ?? null) !== company || (summary.model ?? null) !== model),
-  );
+  const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);
 
   const companyLabel = $derived(
     preflight?.companies.find((option) => option.slug === company)?.displayName ??
@@ -324,18 +330,27 @@
     }
   }
 
+  /** A pill changed by the user while a session is live forks the next send. */
+  function markPillsDirty(changed: boolean) {
+    if (changed && sessionId) pillsDirty = true;
+  }
+
   function chooseCompany(slug: string | null) {
+    markPillsDirty(slug !== company);
     company = slug;
     remember(LAST_COMPANY_KEY, slug);
   }
 
   function chooseModel(value: string | null) {
+    markPillsDirty(value !== model);
     model = value;
     remember(LAST_MODEL_KEY, value);
   }
 
   function chooseEffort(value: string | null) {
-    effort = EFFORT_OPTIONS.some((option) => option.value === value) ? value : null;
+    const next = EFFORT_OPTIONS.some((option) => option.value === value) ? value : null;
+    markPillsDirty(next !== effort);
+    effort = next;
     remember(LAST_EFFORT_KEY, effort);
   }
 </script>
@@ -411,7 +426,10 @@
       oncompany={chooseCompany}
       onmodel={chooseModel}
       oneffort={chooseEffort}
-      onpermission={(mode) => (permissionMode = mode)}
+      onpermission={(mode) => {
+        markPillsDirty(mode !== permissionMode);
+        permissionMode = mode;
+      }}
     />
   </div>
 </div>
