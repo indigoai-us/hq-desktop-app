@@ -24,7 +24,6 @@
     identitiesFromContacts,
     mentionTargetsFromContacts,
     toSelfIdentity,
-    normalizeThreads,
     normalizeDm,
     contactHasConversation,
     reactionMapFromMessages,
@@ -55,6 +54,7 @@
   } from "$lib/browser-cache";
   import { openWorkExternalUrl } from "$lib/external-open";
   import { startWebMeshForAdapter } from "$lib/mesh-runtime";
+  import { loadWorkThreads } from "$lib/work-thread-loader";
   import { projectIdFromDirectoryRow } from "$lib/live-sidebar";
   import {
     loadLiveProjectMeta,
@@ -69,6 +69,7 @@
     hqProApiUrl,
     hqProFetch,
     redirectToSigninWithCallback,
+    type HqProFetch,
   } from "$lib/hq-pro-client";
   import { displayVersion } from "$lib/version";
   import {
@@ -106,6 +107,7 @@
         fetch: hqProFetch,
         onUnauthorized: redirectToSigninWithCallback,
       });
+  const workFetch: HqProFetch = hqProFetch;
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(tauriInvoke) : null;
   const notificationsApi = createNotificationsApi(adapter);
@@ -142,7 +144,9 @@
     seedConversationCacheFromRail(shallow, conversationCacheStorage);
   });
   const sidebarApi = $derived(
-    createChatSidebarApi(adapter, shallow.directory, personUid),
+    createChatSidebarApi(adapter, shallow.directory, personUid, {
+      fetch: workFetch,
+    }),
   );
   function refreshableSidebarApi(api: ChatSidebarApi): ChatSidebarApi {
     return {
@@ -174,6 +178,7 @@
       return loadLiveProjectMeta(
         { ...row, projectId: projectId || row.projectId },
         companyLabelFor(row.companyUid),
+        { fetch: workFetch },
       );
     },
     canLoad: (row) => {
@@ -226,38 +231,6 @@
     return generation === tenantGeneration && hydration === tenantHydration;
   }
 
-  async function refreshWorkThreads(
-    roster: Workspace[],
-  ): Promise<WorkMeshThread[]> {
-    const uids = [
-      ...new Set(
-        roster
-          .map((row) => row.cloudUid?.trim())
-          .filter((uid): uid is string => Boolean(uid)),
-      ),
-    ];
-    if (uids.length === 0) {
-      return [];
-    }
-    const collected: WorkMeshThread[] = [];
-    await Promise.all(
-      uids.flatMap((uid) =>
-        ["in-progress", "claimed", "blocked"].map(async (status) => {
-          try {
-            const res = await hqProFetch(
-              `/v1/work-mesh/threads?companyUid=${encodeURIComponent(uid)}&status=${encodeURIComponent(status)}&limit=50`,
-            );
-            if (!res.ok) return;
-            collected.push(...normalizeThreads(await res.json(), uid));
-          } catch {
-            /* absent-safe */
-          }
-        }),
-      ),
-    );
-    return collected;
-  }
-
   async function bootstrapTenant(expectedGeneration: number): Promise<void> {
     const hydration = ++tenantHydration;
     const [hydratedSelf] = await Promise.all([
@@ -280,7 +253,7 @@
       return;
     }
 
-    const threads = await refreshWorkThreads(roster);
+    const threads = await loadWorkThreads(roster, workFetch);
     if (!ownsTenant(expectedGeneration, hydration)) return;
     workThreads = threads;
   }
@@ -461,7 +434,7 @@
     },
   );
   const loadFilePreview = (item: ChannelFileItemModel) =>
-    loadWebVaultFilePreview(item, selectedCompanyUid);
+    loadWebVaultFilePreview(item, selectedCompanyUid, { fetch: workFetch });
   const channelStatusByRow = $derived(
     (row: ConversationRow): ChannelStatusModel | null => {
       const live = ensureProjectMeta(row);

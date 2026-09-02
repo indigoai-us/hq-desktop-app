@@ -381,7 +381,7 @@ describe("Tauri attachment handlers", () => {
       /\$effect\(\(\) => \{\s*seedConversationCacheFromRail\(shallow, conversationCacheStorage\);\s*\}\)/,
     );
     expect(source).toMatch(
-      /const sidebarApi = \$derived\(\s*createChatSidebarApi\(adapter, shallow\.directory, personUid\),\s*\)/,
+      /const sidebarApi = \$derived\(\s*createChatSidebarApi\(adapter, shallow\.directory, personUid, \{\s*fetch: workFetch,\s*\}\),\s*\)/,
     );
     expect(source).toMatch(
       /putAttachmentObject=\{attachmentHandlers\?\.putAttachmentObject\}/,
