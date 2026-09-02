@@ -91,6 +91,18 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     );
   });
 
+  it('keeps compact sync status and omits the always-busy progress bar', () => {
+    const p = normalize(popover);
+    expect(p).toContain('data-testid="popover-status-row"');
+    expect(p).toContain('{statusTitle}');
+    expect(p).toContain('{lastSyncLabel}');
+    expect(p).toContain('data-testid="popover-sync-sublabel"');
+    expect(p).toContain('{liveWorkspaceLine}');
+    expect(popover).not.toContain('mbp-progress-track');
+    expect(popover).not.toContain('barPct');
+    expect(popover).not.toContain('role="progressbar"');
+  });
+
   it('keeps the full desktop one explicit text action away', () => {
     const p = normalize(popover);
 

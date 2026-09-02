@@ -683,15 +683,13 @@ pub async fn poll_unattributed_once(app: AppHandle) {
         dedupe_new(&mut guard, &candidates)
     };
     for meeting_id in new_ids {
-        let title = parsed
-            .bots
-            .iter()
-            .find(|bot| bot.bot_id == meeting_id)
-            .and_then(|bot| bot.meeting_title.clone());
+        let bot = parsed.bots.iter().find(|bot| bot.bot_id == meeting_id);
         if let Err(e) = crate::commands::banner::show_unattributed_meeting_banner(
             app.clone(),
             meeting_id,
-            title,
+            bot.and_then(|row| row.meeting_title.clone()),
+            bot.and_then(|row| row.scheduled_start_time.clone()),
+            bot.and_then(|row| row.calendar_event_id.clone()),
         )
         .await
         {

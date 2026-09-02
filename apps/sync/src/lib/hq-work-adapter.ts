@@ -571,6 +571,22 @@ export function createSyncPlatformAdapter(
       },
       ackDmInbox: (eventIds) =>
         hqProJson('POST', WEB_PATHS.dmInboxAck, { eventIds }),
+      fetchDmThreads: (opts) => {
+        const rec = asRecord(opts) ?? {};
+        const limit =
+          typeof rec.limit === 'number'
+            ? rec.limit
+            : typeof rec.limit === 'string' && /^\d+$/.test(rec.limit)
+              ? Number(rec.limit)
+              : undefined;
+        return hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.dmThreads, {
+            limit,
+            cursor: typeof rec.cursor === 'string' ? rec.cursor : undefined,
+          }),
+        );
+      },
       fetchSharedWithMe: (opts) => {
         const rec = asRecord(opts) ?? {};
         return hqProJson(

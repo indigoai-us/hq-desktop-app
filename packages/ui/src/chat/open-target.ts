@@ -45,6 +45,8 @@ export interface ConversationDeepLink {
   channelId: string | null;
   personUid: string | null;
   replyRootEventId: string | null;
+  /** Optional peer label when the opener already knows it (never a raw uid). */
+  displayName?: string | null;
 }
 
 let pendingChannelId: string | null = null;
@@ -216,7 +218,7 @@ export function conversationRowForDeepLink(
     return {
       id: `dm:${link.personUid}`,
       kind: "dm",
-      title: link.personUid,
+      title: link.displayName?.trim() || "Direct message",
       companyUid: null,
       unreadDot: false,
       lastActivityAt: 0,

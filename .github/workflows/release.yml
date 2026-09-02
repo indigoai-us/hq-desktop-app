@@ -364,9 +364,23 @@ jobs:
           cargo --version
           cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
 
+      # Target dir defaults to `<workspace>/target`. The old
+      # `apps/sync/src-tauri -> apps/sync/src-tauri/target` form resolved the
+      # path after `->` relative to the workspace, so the action looked for
+      # `apps/sync/src-tauri/apps/sync/src-tauri/target` and cached only the
+      # ~150 MB cargo registry. `shared-key` replaces the job-id component so
+      # cache-warm.yml on main populates this exact key and tag runs restore
+      # it from the default branch (a cache saved by tag vA is never readable
+      # by tag vB). Safety: rust-cache stores only registry sources and
+      # dependency artifacts, prunes the workspace crate's own artifacts, and
+      # cargo fingerprints every artifact against the locked Cargo.lock/rustc,
+      # so a stale entry is rebuilt, never linked into a signed bundle.
+      # Signing, notarization and updater signing still run on freshly linked
+      # binaries.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "apps/sync/src-tauri -> apps/sync/src-tauri/target"
+          workspaces: apps/sync/src-tauri
+          shared-key: release-macos-universal
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -749,10 +763,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Target dir defaults to `<workspace>/target`. The old
+      # `apps/sync/src-tauri -> apps/sync/src-tauri/target` form resolved the
+      # path after `->` relative to the workspace, so the action looked for
+      # `apps/sync/src-tauri/apps/sync/src-tauri/target` and cached only the
+      # ~150 MB cargo registry. `shared-key` replaces the job-id component so
+      # cache-warm.yml on main populates this exact key and tag runs restore
+      # it from the default branch (a cache saved by tag vA is never readable
+      # by tag vB). Safety: rust-cache stores only registry sources and
+      # dependency artifacts, prunes the workspace crate's own artifacts, and
+      # cargo fingerprints every artifact against the locked Cargo.lock/rustc,
+      # so a stale entry is rebuilt, never linked into a signed bundle.
+      # Signing, notarization and updater signing still run on freshly linked
+      # binaries.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "apps/sync/src-tauri -> apps/sync/src-tauri/target"
-          key: ${{ matrix.target }}
+          workspaces: apps/sync/src-tauri
+          shared-key: release-${{ matrix.target }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

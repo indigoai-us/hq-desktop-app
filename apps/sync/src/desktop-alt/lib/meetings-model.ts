@@ -278,6 +278,21 @@ export function botForEvent(
   });
 }
 
+/**
+ * True when a Meetings agenda row is the target of a notification deep-link.
+ * Unattributed banners carry the Recall bot id; agenda rows key off the
+ * calendar event id — match either, plus the bot's own calendarEventId.
+ */
+export function meetingMatchesFocusId(
+  focusedId: string | null | undefined,
+  event: MeetingEvent,
+  bot: ScheduledBot | undefined,
+): boolean {
+  const id = focusedId?.trim();
+  if (!id) return false;
+  return event.id === id || bot?.botId === id || bot?.calendarEventId === id;
+}
+
 /** Prefix for locally-seeded 409 recovery rows — never a real Recall bot id. */
 export const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
 

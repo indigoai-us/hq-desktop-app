@@ -1,6 +1,6 @@
 /**
  * Decide the denominator the popover uses for sync progress — the "of M"
- * in "N of M" and the divisor for the progress-bar fill.
+ * in "N of M transferred".
  *
  * There are two candidate sources, and they mean different things:
  *
@@ -41,6 +41,6 @@ export function effectiveTotalFiles(i: EffectiveTotalFilesInputs): number {
   // Once the plan is in, the transfer count is the truth — even at 0, which
   // is the "nothing to sync" signal the up-to-date caption depends on.
   // Pre-plan (or legacy runners with no plan), fall back to the pre-walk so
-  // the bar still has a denominator instead of dividing by zero.
+  // the caption still has a denominator instead of dividing by zero.
   return i.planReceived ? i.syncPlanTotalFiles : i.syncTotalFiles;
 }

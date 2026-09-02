@@ -533,6 +533,13 @@ export interface NotificationsApi {
   runAction(id: string, action: string, actionRef?: string | null): AdapterPromise<Json>;
   /** v1 DM inbox (GET /v1/notify/inbox) — source for live DM rows. */
   fetchDmInbox(opts?: Json): AdapterPromise<Json>;
+  /**
+   * v1 DM conversation listing (GET /v1/notify/dm-threads) — every peer the
+   * caller has exchanged DMs with, newest activity first, both directions.
+   * Optional: hosts may omit it, and older servers answer 404; callers fall
+   * back to the inbound-only inbox in both cases.
+   */
+  fetchDmThreads?(opts?: Json): AdapterPromise<Json>;
   ackDmInbox(eventIds: string[]): AdapterPromise<void>;
   /** v1 share inbox (GET /v1/files/shared-with-me). */
   fetchSharedWithMe(opts?: Json): AdapterPromise<Json>;
