@@ -31,6 +31,7 @@ vi.mock("@hq/ui", async (importOriginal) => {
 vi.mock("$lib/tauri-invoke.js", () => ({ tauriInvoke: nativeInvoke }));
 vi.mock("$lib/tauri-listen.js", () => ({ tauriListen }));
 vi.mock("$lib/hq-pro-client.js", () => ({
+  configureHqProApiUrl: vi.fn(),
   hqProFetch: vi.fn(),
   hqProApiUrl: vi.fn(() => "https://hq-pro.test"),
   redirectToSigninWithCallback: vi.fn(),
