@@ -36,10 +36,10 @@ export interface MarketplaceListing {
   /** ISO-8601 publish timestamp. */
   createdAt: string;
   /**
-   * Optional server-provided cover-art URL (forward-compat). Absent today — the
-   * UI falls back to bundled-by-slug art (see `lib/pack-covers.ts`). When the
-   * backend starts serving a per-listing cover, it takes precedence over the
-   * bundled map with no client change.
+   * Presigned cover-art GET URL from hq-pro, when the listing has a stored
+   * cover. The card renderer allowlists the marketplace assets host (see
+   * `lib/pack-covers.ts`); anything else falls back to bundled-by-slug art or
+   * the gradient placeholder.
    */
   coverImageUrl?: string | null;
   /**

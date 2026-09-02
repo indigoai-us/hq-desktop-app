@@ -39,6 +39,13 @@ describe('desktop-alt CSP allows local attachment bytes', () => {
   });
 
   it('still blocks remote images (tracking-pixel contract)', () => {
-    expect(conf.app.security.csp).not.toMatch(/img-src[^;]*https?:/i);
+    const csp = conf.app.security.csp;
+    // Marketplace covers are the only remote img-src; wildcards stay forbidden.
+    expect(csp).toContain(
+      'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
+    );
+    expect(csp).not.toMatch(/img-src[^;]*\*/i);
+    expect(csp).not.toMatch(/img-src[^;]*https:\s/i);
+    expect(csp).not.toMatch(/img-src[^;]*https:\/\/\*/i);
   });
 });

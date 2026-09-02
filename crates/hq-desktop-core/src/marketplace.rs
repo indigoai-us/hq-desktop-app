@@ -1614,7 +1614,8 @@ mod tests {
         let body = r#"{"listings":[
             {"id":"lst_1","type":"skill","name":"Impeccable","slug":"impeccable",
              "version":"1.2.0","author":"corey","summary":"Improve a UI",
-             "contributes":"1 skill","createdAt":"2026-06-01T00:00:00Z"},
+             "contributes":"1 skill","createdAt":"2026-06-01T00:00:00Z",
+             "coverImageUrl":"https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/listings/lst_1/cover.jpg"},
             {"id":"lst_2","type":"worker","name":"Architect","slug":"architect",
              "version":"0.1.0","author":"jane","createdAt":"2026-06-02T00:00:00Z"}
         ]}"#;
@@ -1629,12 +1630,19 @@ mod tests {
         assert_eq!(first.version, "1.2.0");
         assert_eq!(first.summary.as_deref(), Some("Improve a UI"));
         assert_eq!(first.contributes.as_deref(), Some("1 skill"));
+        assert_eq!(
+            first.cover_image_url.as_deref(),
+            Some(
+                "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/listings/lst_1/cover.jpg"
+            )
+        );
 
         // Optional fields absent → None, still parses.
         let second = &listings[1];
         assert_eq!(second.author, "jane");
         assert!(second.summary.is_none());
         assert!(second.contributes.is_none());
+        assert!(second.cover_image_url.is_none());
     }
 
     #[test]
