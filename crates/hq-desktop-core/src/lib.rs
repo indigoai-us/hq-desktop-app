@@ -50,6 +50,7 @@ pub mod runner_error_shape;
 pub mod runner_target;
 pub mod runtime_diagnosis;
 pub mod scope_gate;
+pub mod session_share;
 pub mod sessions;
 pub mod settings;
 pub mod share_notify;

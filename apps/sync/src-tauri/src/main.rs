@@ -682,6 +682,7 @@ fn main() {
             // fan-out that runs after a mentioned message is sent.
             commands::session_mentions::session_mention_candidates,
             commands::session_mentions::session_mention_notify,
+            commands::agent_session::agent_session_cli_session_id,
             commands::agent_session_launch::agent_session_open_in_app,
             // HQ-native context for the Sessions composer (read-only).
             commands::hq_context::hq_skill_catalog,
@@ -691,6 +692,7 @@ fn main() {
             commands::hq_context::hq_vault_files,
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
+            commands::session_share_channel::session_share_to_channel,
             // Open / Share / Deploy on files a session produced.
             commands::session_artifacts::session_artifact_stat,
             commands::session_artifacts::session_artifact_open,

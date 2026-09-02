@@ -56,6 +56,7 @@
     type LoadedAttachment,
   } from '../../components/sessions/context-attachments';
   import type { UserTurnMeta } from '../../components/sessions/transcript-adapter';
+  import ShareToChannelDialog from '../../components/sessions/ShareToChannelDialog.svelte';
   import {
     deployCommandFor,
     tauriArtifactActions,
@@ -98,9 +99,11 @@
     sessionId?: string;
     /** Navigate to `sessions:<id>` (the page never touches the router itself). */
     onopensession?: (sessionId: string) => void;
+    /** Open a channel by id after a share — the shell's own route mechanism. */
+    onopenchannel?: (channelId: string) => void;
   }
 
-  let { sessionId, onopensession }: Props = $props();
+  let { sessionId, onopensession, onopenchannel }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
@@ -486,6 +489,49 @@
     checkpointDismissedAt = transcript.checkpointPrompts;
   }
 
+  /**
+   * The strip's "⋯" menu. "Open in …" and "End session" act at once (both
+   * are local to this machine); "Share to channel…" only OPENS the dialog —
+   * creating, inviting and posting wait for that dialog's own confirm.
+   */
+  let shareOpen = $state(false);
+  let menuResult = $state('');
+  let menuResultTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flashMenuResult(text: string) {
+    menuResult = text;
+    if (menuResultTimer !== null) clearTimeout(menuResultTimer);
+    menuResultTimer = setTimeout(() => {
+      menuResult = '';
+      menuResultTimer = null;
+    }, 6000);
+  }
+
+  async function handleOpenInApp() {
+    if (!sessionId) return;
+    actionError = '';
+    try {
+      const outcome = await liveSessionStore.openInApp();
+      flashMenuResult(outcome.opened === 'desktop' ? 'Opened in desktop app' : 'Opened in Terminal');
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function handleEndSession() {
+    if (!sessionId) return;
+    actionError = '';
+    try {
+      await liveSessionStore.end();
+    } catch (err) {
+      actionError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  onDestroy(() => {
+    if (menuResultTimer !== null) clearTimeout(menuResultTimer);
+  });
+
   let pageEl = $state<HTMLDivElement | null>(null);
 
   /**
@@ -789,6 +835,12 @@
       onopensession?.('');
     }}
     onhandoff={() => void handleHandoff()}
+    tool={summary?.tool ?? tool}
+    menuEnabled={Boolean(sessionId) && !ended}
+    {menuResult}
+    onopeninapp={() => void handleOpenInApp()}
+    onshare={() => (shareOpen = true)}
+    onend={() => void handleEndSession()}
   />
 
   {#if drawerOpen}
@@ -797,6 +849,18 @@
       onselect={(id) => onopensession?.(id)}
       onresume={handleResume}
       onclose={() => (drawerOpen = false)}
+    />
+  {/if}
+
+  {#if shareOpen && sessionId}
+    <ShareToChannelDialog
+      {sessionId}
+      company={summary?.company ?? company}
+      onclose={() => (shareOpen = false)}
+      onopenchannel={(channelId) => {
+        shareOpen = false;
+        onopenchannel?.(channelId);
+      }}
     />
   {/if}
 
