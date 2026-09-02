@@ -69,9 +69,12 @@ repository is public, so standard GitHub-hosted runners are free, and
 `macos-14`, `windows-latest` and `ubuntu-latest` are all standard. The 10x
 macOS / 2x Windows minute multipliers apply to billable minutes on private
 repositories and have never applied here. Publication ordering is not the
-reason either: `publish` and `sync-version` already carry serializing
-`concurrency` groups, so two releases finishing out of order sort themselves
-out without the hook's help.
+reason either: the `Revalidate stable publication order` step in `publish`
+re-checks, inside the global publication lock and immediately before the only
+public-state mutation, that the tag being published is not older than what is
+already latest. That step — not this hook, and not the `concurrency` group,
+which serializes execution without choosing an order — is what stops an older
+release from replacing a newer one.
 
 What is left — update churn, and leaving a gap in which a release can actually
 be looked at — justifies a short window rather than a long one, which is why
@@ -101,7 +104,7 @@ ten-minute-old tag.
 The marker is kept **per destination**, so pushing a tag to a personal fork or
 a local mirror does not spend the cooldown that protects `origin`. The tag-date
 signal is deliberately not scoped that way: a release tag created minutes ago
-means a billed build is probably already running, and the hook cannot tell a
+means a release build is probably already running, and the hook cannot tell a
 harmless bare mirror from a fork that would build it, so it errs toward
 blocking.
 

@@ -12,9 +12,12 @@
 # public, so standard GitHub-hosted runners are free, and macos-14 /
 # windows-latest / ubuntu-latest are all standard. The 10x and 2x minute
 # multipliers apply to billable minutes on private repositories; they have
-# never applied here. Nor is it for publication races — `publish` and
-# `sync-version` already carry serializing `concurrency` groups, so releases
-# that finish out of order sort themselves out without help from this hook.
+# never applied here. Nor is it for publication ordering — `publish` re-checks
+# that inside the global publication lock, immediately before the only
+# public-state mutation, in its `Revalidate stable publication order` step. The
+# `concurrency` groups serialize execution but do not choose an order; the
+# revalidation is what stops an older release replacing a newer one, and this
+# hook is not involved either way.
 #
 # What is left is release hygiene, and it is enough to keep a window: a stable
 # release prompts users to update, so a burst of tags churns them for builds
@@ -204,8 +207,8 @@ if [ -n "$last" ]; then
   fi
 fi
 
-# Allowed. Record before the push rather than after: the cost being paced is the
-# workflow trigger, and a failed push costs nothing, so a slightly conservative
-# window is the right failure direction.
+# Allowed. Record before the push rather than after: what is being paced is the
+# workflow trigger, and a failed push triggers nothing, so a slightly
+# conservative window is the right failure direction.
 record_push
 exit 0
