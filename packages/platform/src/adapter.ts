@@ -670,6 +670,74 @@ export interface AgencyApi {
   sendMessage(team: string, message: Json): AdapterPromise<void>;
 }
 
+/**
+ * Fleet-agent control plane (hq-pro `/v1/agents`, `/v1/telemetry/company`,
+ * `/v1/fleet/.../owners`). Person JWTs: owner/admin for status, jobs, profile
+ * mutations, stop/start/deprovision. `listMobileRoster` is member-safe.
+ * Resume-job and run-now are machine-JWT only and are intentionally omitted.
+ */
+export interface AgentProfilePatch {
+  displayName?: string;
+  description?: string;
+}
+
+export const AGENT_PATHS = {
+  status: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/status`,
+  jobs: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/jobs`,
+  pauseJob: (agentUid: string, jobId: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
+  profile: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  stop: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
+  start: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/start`,
+  deprovision: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}`,
+  mobileRoster: (companyUid?: string | null) => {
+    const uid = (companyUid ?? "").trim();
+    return uid
+      ? `/v1/agents/mobile-roster?companyUid=${encodeURIComponent(uid)}`
+      : "/v1/agents/mobile-roster";
+  },
+  owners: (companyUid: string, agentUid: string) =>
+    `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
+  companyTelemetry: (companyUid: string, from: string, to: string) =>
+    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+} as const;
+
+export interface AgentsApi {
+  /** GET /v1/agents/{uid}/status — owner/admin. */
+  getStatus(agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/agents/mobile-roster — member-safe directory. */
+  listMobileRoster(companyUid?: string | null): AdapterPromise<Json>;
+  /** GET /v1/agents/{uid}/jobs — owner/admin operator list. */
+  listJobs(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
+  pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /** PATCH /v1/agents/{uid}/profile — owner/admin. */
+  updateProfile(
+    agentUid: string,
+    patch: AgentProfilePatch,
+  ): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/stop — pause the box. */
+  stop(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/start — resume a stopped box. */
+  start(agentUid: string): AdapterPromise<Json>;
+  /** DELETE /v1/agents/{uid} — reverse deprovision / remove. */
+  deprovision(agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
+  listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */
+  getCompanyTelemetry(
+    companyUid: string,
+    from: string,
+    to: string,
+  ): AdapterPromise<Json>;
+}
+
 export interface FeedbackApi {
   submitBugReport(title: string, body: string): AdapterPromise<Json>;
 }
@@ -819,6 +887,7 @@ export interface PlatformAdapter {
   readonly library: LibraryApi;
   readonly files: FilesApi;
   readonly agency: AgencyApi;
+  readonly agents: AgentsApi;
   readonly feedback: FeedbackApi;
   readonly sync: SyncApi;
   readonly shell: ShellApi;

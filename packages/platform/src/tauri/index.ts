@@ -7,6 +7,7 @@
  */
 
 import {
+  AGENT_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -113,7 +114,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
    * sync fetch_reply_thread / send_reply command.
    */
   private async hqProJson<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -345,6 +346,25 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     decideModerationListing: (id, decision) =>
       this.call("decide_moderation_listing", { id, decision }),
     installPack: (listing) => this.call("install_pack", { listing }),
+  };
+
+  readonly agents: PlatformAdapter["agents"] = {
+    getStatus: (agentUid) => this.hqProJson("GET", AGENT_PATHS.status(agentUid)),
+    listMobileRoster: (companyUid) =>
+      this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),
+    listJobs: (agentUid) => this.hqProJson("GET", AGENT_PATHS.jobs(agentUid)),
+    pauseJob: (agentUid, jobId) =>
+      this.hqProJson("POST", AGENT_PATHS.pauseJob(agentUid, jobId)),
+    updateProfile: (agentUid, patch) =>
+      this.hqProJson("PATCH", AGENT_PATHS.profile(agentUid), patch),
+    stop: (agentUid) => this.hqProJson("POST", AGENT_PATHS.stop(agentUid)),
+    start: (agentUid) => this.hqProJson("POST", AGENT_PATHS.start(agentUid)),
+    deprovision: (agentUid) =>
+      this.hqProJson("DELETE", AGENT_PATHS.deprovision(agentUid)),
+    listOwners: (companyUid, agentUid) =>
+      this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
+    getCompanyTelemetry: (companyUid, from, to) =>
+      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
   };
 
   readonly company: PlatformAdapter["company"] = {

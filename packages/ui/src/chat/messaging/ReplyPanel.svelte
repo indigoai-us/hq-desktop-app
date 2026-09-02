@@ -172,9 +172,9 @@
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
   let reactPickerFor = $state<string | null>(null);
 
-  /** Open the author's profile panel (humans only — agents have no profile). */
+  /** Open the author's profile or agent pane. */
   function openAuthorProfile(msg: ConversationMessageWire | null): void {
-    if (!msg || !onopenprofile || isAgent(msg)) return;
+    if (!msg || !onopenprofile) return;
     const personUid = (msg.fromPersonUid ?? "").trim();
     if (!personUid) return;
     onopenprofile({ personUid, displayName: messageAuthor(msg) });
@@ -779,7 +779,7 @@
       </span>
       <div class="reply-col">
         <div class="reply-meta">
-          {#if onopenprofile && !isAgent(root) && (root.fromPersonUid ?? "").trim()}
+          {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
             <button
               type="button"
               class="reply-root-author reply-author-btn"
@@ -923,7 +923,7 @@
             </span>
             <div class="reply-col">
               <div class="reply-meta">
-                {#if onopenprofile && !isAgent(msg) && (msg.fromPersonUid ?? "").trim()}
+                {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
                   <button
                     type="button"
                     class="reply-author reply-author-btn"

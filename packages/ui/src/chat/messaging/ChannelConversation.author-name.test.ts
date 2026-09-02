@@ -50,4 +50,30 @@ describe("ChannelConversation author name", () => {
     const meta = root.querySelector(".dm-msg-author");
     expect(meta?.textContent?.trim()).toBe("Yousuf Kalim");
   });
+
+  it("opens a profile for agent authors when onopenprofile is set", async () => {
+    const opened: Array<{ personUid: string }> = [];
+    mountWith({
+      messages: [
+        {
+          eventId: "evt_agt",
+          direction: "in",
+          fromPersonUid: "agt_izzy",
+          fromDisplayName: "Izzy",
+          body: "On it",
+          createdAt: "2026-08-28T01:14:00.000Z",
+        },
+      ],
+      onopenprofile: (author: { personUid: string }) => {
+        opened.push(author);
+      },
+    });
+    await tick();
+    const btn = host.querySelector(
+      '[data-testid="conversation-author-open"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    btn!.click();
+    expect(opened[0]?.personUid).toBe("agt_izzy");
+  });
 });

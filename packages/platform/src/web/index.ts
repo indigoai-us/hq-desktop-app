@@ -8,6 +8,7 @@
  */
 
 import {
+  AGENT_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -144,6 +145,17 @@ export const WEB_PATHS = {
     `/v1/skills/${encodeURIComponent(companyUid)}/me`,
   filesList: "/v1/files/list",
   filesPresign: "/v1/files/presign",
+
+  agentStatus: AGENT_PATHS.status,
+  agentJobs: AGENT_PATHS.jobs,
+  agentPauseJob: AGENT_PATHS.pauseJob,
+  agentProfile: AGENT_PATHS.profile,
+  agentStop: AGENT_PATHS.stop,
+  agentStart: AGENT_PATHS.start,
+  agentDeprovision: AGENT_PATHS.deprovision,
+  agentMobileRoster: AGENT_PATHS.mobileRoster,
+  agentOwners: AGENT_PATHS.owners,
+  agentCompanyTelemetry: AGENT_PATHS.companyTelemetry,
 } as const;
 
 export interface WebPlatformAdapterConfig {
@@ -372,7 +384,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   // -- HTTP plumbing --------------------------------------------------------
 
   private async request<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -672,6 +684,25 @@ export class WebPlatformAdapter implements PlatformAdapter {
     decideModerationListing: (id, decision) =>
       this.post(WEB_PATHS.moderationListing(id), { decision }),
     installPack: async () => DESKTOP_ONLY,
+  };
+
+  readonly agents: PlatformAdapter["agents"] = {
+    getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
+    listMobileRoster: (companyUid) =>
+      this.get(WEB_PATHS.agentMobileRoster(companyUid)),
+    listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
+    pauseJob: (agentUid, jobId) =>
+      this.post(WEB_PATHS.agentPauseJob(agentUid, jobId)),
+    updateProfile: (agentUid, patch) =>
+      this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
+    stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
+    start: (agentUid) => this.post(WEB_PATHS.agentStart(agentUid)),
+    deprovision: (agentUid) =>
+      this.request("DELETE", WEB_PATHS.agentDeprovision(agentUid)),
+    listOwners: (companyUid, agentUid) =>
+      this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
+    getCompanyTelemetry: (companyUid, from, to) =>
+      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
   };
 
   readonly company: PlatformAdapter["company"] = {
