@@ -5,6 +5,7 @@
 // step mounts against.
 
 export { default as ActivityRow } from './ActivityRow.svelte';
+export { default as ArtifactRow } from './ArtifactRow.svelte';
 export { default as AgentBadge } from './AgentBadge.svelte';
 export { default as Avatar } from './Avatar.svelte';
 export { default as DayDivider } from './DayDivider.svelte';
@@ -81,6 +82,7 @@ export {
   TOOL_CATEGORIES,
   describeToolInput,
   foldSessionEvents,
+  toolArtifactPaths,
   toolCategory,
   toolGroupSummary,
 } from './transcript-adapter';
@@ -89,12 +91,20 @@ export type {
   ChatBlock,
   FoldOptions,
   PendingCard,
+  ToolArtifact,
   ToolCallSummary,
   ToolCategory,
   TranscriptState,
   UsageSummary,
   UserTurn,
 } from './transcript-adapter';
+
+export {
+  SHARE_VAULT_ONLY_HINT,
+  deployCommandFor,
+  tauriArtifactActions,
+} from './session-artifacts';
+export type { ArtifactActions, ArtifactShare, ArtifactStat } from './session-artifacts';
 
 export {
   EFFORT_OPTIONS,

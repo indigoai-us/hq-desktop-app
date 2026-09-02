@@ -24,6 +24,7 @@
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
   import ToolGroupRow from './ToolGroupRow.svelte';
+  import type { ArtifactActions } from './session-artifacts';
   import type { ChatBlock } from './transcript-adapter';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import './sessions-tokens.css';
@@ -42,6 +43,8 @@
      * reads as a dead chat. Empty when text is streaming or a card is waiting.
      */
     status?: '' | 'starting' | 'thinking' | 'tools';
+    /** Open / Share / Deploy on files a turn produced; absent → listed only. */
+    artifactActions?: ArtifactActions | null;
     onallowonce?: (requestId: string) => void;
     onallowsession?: (requestId: string) => void;
     ondenypermission?: (requestId: string, message: string) => void;
@@ -57,6 +60,7 @@
     emptyHint = '',
     busyRequestId = null,
     status = '',
+    artifactActions = null,
     onallowonce,
     onallowsession,
     ondenypermission,
@@ -182,7 +186,13 @@
         {:else if block.type === 'thinking'}
           <p class="thinking" data-testid="session-thinking" title={block.text}>Thinking…</p>
         {:else if block.type === 'toolGroup'}
-          <ToolGroupRow summary={block.summary} calls={block.calls} running={block.running} />
+          <ToolGroupRow
+            summary={block.summary}
+            calls={block.calls}
+            running={block.running}
+            artifacts={block.artifacts}
+            {artifactActions}
+          />
         {:else if block.type === 'permissionCard'}
           <PermissionCard
             requestId={block.requestId}

@@ -362,6 +362,7 @@ mod tests {
             phase,
             company: None,
             model: None,
+            requested_model: None,
             effort: None,
             permission_mode: PermissionMode::Prompt,
             cwd: "/tmp".to_string(),

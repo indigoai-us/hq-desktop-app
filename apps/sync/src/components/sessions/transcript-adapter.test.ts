@@ -6,6 +6,7 @@ import {
   SESSION_SELF_UID,
   describeToolInput,
   foldSessionEvents,
+  toolArtifactPaths,
   toolCategory,
   toolGroupSummary,
   type ChatBlock,
@@ -619,5 +620,152 @@ describe('usage without a dollar cost (Codex)', () => {
     const state = foldSessionEvents(events);
     expect(state.lastUsage?.label).toBe('10 in · 5 out');
     expect(state.blocks.some((b) => b.type === 'assistantProse')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifacts — the files a turn produced
+// ---------------------------------------------------------------------------
+
+describe('toolArtifactPaths', () => {
+  it("reads Claude's file tools by their file_path", () => {
+    expect(toolArtifactPaths('Write', { file_path: '/hq/out/report.md', content: '#' })).toEqual([
+      '/hq/out/report.md',
+    ]);
+    expect(toolArtifactPaths('Edit', { file_path: '/hq/a.ts', old_string: 'a' })).toEqual([
+      '/hq/a.ts',
+    ]);
+    expect(toolArtifactPaths('MultiEdit', { file_path: '/hq/b.ts', edits: [] })).toEqual([
+      '/hq/b.ts',
+    ]);
+    expect(toolArtifactPaths('NotebookEdit', { notebook_path: '/hq/n.ipynb' })).toEqual([
+      '/hq/n.ipynb',
+    ]);
+  });
+
+  it("reads Codex fileChange items by their changes[].path, skipping deletes", () => {
+    expect(toolArtifactPaths('Write', { changes: [{ path: '/hq/new.md', kind: 'add' }] })).toEqual([
+      '/hq/new.md',
+    ]);
+    expect(
+      toolArtifactPaths('ApplyPatch', {
+        changes: [
+          { path: '/hq/a.rs', kind: 'update' },
+          { path: '/hq/gone.rs', kind: 'delete' },
+          { path: '/hq/b.rs', kind: 'add' },
+          { path: '/hq/a.rs', kind: 'update' },
+        ],
+      }),
+    ).toEqual(['/hq/a.rs', '/hq/b.rs']);
+  });
+
+  it('ignores tools that are not file tools, even when their input names a path', () => {
+    expect(toolArtifactPaths('Read', { file_path: '/hq/a.md' })).toEqual([]);
+    expect(toolArtifactPaths('Bash', { command: 'echo hi > /hq/out.txt' })).toEqual([]);
+    expect(toolArtifactPaths('Glob', { pattern: '**/*.md', path: '/hq' })).toEqual([]);
+  });
+
+  it('ignores relative and malformed paths', () => {
+    expect(toolArtifactPaths('Write', { file_path: 'relative/out.md' })).toEqual([]);
+    expect(toolArtifactPaths('Write', { file_path: 42 })).toEqual([]);
+    expect(toolArtifactPaths('Write', 'a string')).toEqual([]);
+    expect(toolArtifactPaths('Write', null)).toEqual([]);
+    expect(toolArtifactPaths('ApplyPatch', { changes: [null, 'x', { kind: 'add' }] })).toEqual([]);
+  });
+
+  it('accepts Windows drive-letter paths', () => {
+    expect(toolArtifactPaths('Write', { file_path: 'C:\\hq\\out.md' })).toEqual(['C:\\hq\\out.md']);
+  });
+});
+
+describe('foldSessionEvents · artifacts', () => {
+  const write = (id: string, path: string): SessionEvent => ({
+    kind: 'toolCall',
+    id,
+    name: 'Write',
+    input: { file_path: path, content: '' },
+  });
+  const done = (id: string, isError = false): SessionEvent => ({
+    kind: 'toolResult',
+    id,
+    isError,
+    content: isError ? 'nope' : 'ok',
+  });
+
+  it('lists each produced file once, by path, on the tool group', () => {
+    const events: SessionEvent[] = [
+      started,
+      write('w1', '/hq/companies/indigo/report.md'),
+      done('w1'),
+      { kind: 'toolCall', id: 'e1', name: 'Edit', input: { file_path: '/hq/companies/indigo/report.md' } },
+      done('e1'),
+      write('w2', '/hq/workspace/site/index.html'),
+      done('w2'),
+      { kind: 'toolCall', id: 'r1', name: 'Read', input: { file_path: '/hq/README.md' } },
+      done('r1'),
+    ];
+    const [group] = groups(foldSessionEvents(events).blocks);
+    expect(group?.artifacts).toEqual([
+      { path: '/hq/companies/indigo/report.md', name: 'report.md', kind: 'file' },
+      { path: '/hq/workspace/site/index.html', name: 'index.html', kind: 'file' },
+    ]);
+    expect(group?.calls.map((c) => c.artifactPath)).toEqual([
+      '/hq/companies/indigo/report.md',
+      '/hq/companies/indigo/report.md',
+      '/hq/workspace/site/index.html',
+      undefined,
+    ]);
+  });
+
+  it('counts a Codex multi-file patch in full', () => {
+    const events: SessionEvent[] = [
+      started,
+      {
+        kind: 'toolCall',
+        id: 'p1',
+        name: 'ApplyPatch',
+        input: { changes: [{ path: '/hq/a.md', kind: 'add' }, { path: '/hq/b.md', kind: 'update' }] },
+      },
+      done('p1'),
+    ];
+    const [group] = groups(foldSessionEvents(events).blocks);
+    expect(group?.artifacts.map((a) => a.path)).toEqual(['/hq/a.md', '/hq/b.md']);
+    expect(group?.calls[0]?.artifactPath).toBe('/hq/a.md');
+  });
+
+  it('drops a file whose write failed or has not finished', () => {
+    const events: SessionEvent[] = [
+      started,
+      write('w1', '/hq/failed.md'),
+      done('w1', true),
+      write('w2', '/hq/pending.md'),
+    ];
+    const [group] = groups(foldSessionEvents(events).blocks);
+    expect(group?.artifacts).toEqual([]);
+    expect(group?.running).toBe(true);
+  });
+
+  it('keeps artifacts with the group they were produced in', () => {
+    const events: SessionEvent[] = [
+      started,
+      write('w1', '/hq/first.md'),
+      done('w1'),
+      { kind: 'assistantMessage', text: 'One down.' },
+      write('w2', '/hq/second.md'),
+      done('w2'),
+    ];
+    const [a, b] = groups(foldSessionEvents(events).blocks);
+    expect(a?.artifacts.map((x) => x.name)).toEqual(['first.md']);
+    expect(b?.artifacts.map((x) => x.name)).toEqual(['second.md']);
+  });
+
+  it('gives a group with no file tools an empty list, never undefined', () => {
+    const events: SessionEvent[] = [
+      started,
+      { kind: 'toolCall', id: 'b1', name: 'Bash', input: { command: 'ls' } },
+      done('b1'),
+    ];
+    const [group] = groups(foldSessionEvents(events).blocks);
+    expect(group?.artifacts).toEqual([]);
   });
 });

@@ -28,6 +28,10 @@
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
   import SessionsStrip from '../../components/sessions/SessionsStrip.svelte';
   import { mergeSlashCommands } from '../../components/sessions/slash-commands';
+  import {
+    deployCommandFor,
+    tauriArtifactActions,
+  } from '../../components/sessions/session-artifacts';
   import type { SessionCommand } from '../../components/sessions/session-events';
   import {
     EFFORT_OPTIONS,
@@ -379,6 +383,12 @@
    * otherwise it joins the conversation already on screen, carrying whatever
    * the model and effort pills now say.
    */
+  /**
+   * Open / Share / Deploy on files a turn produced. Deploy is a user turn —
+   * `/deploy <path>` — so the deploy skill does the work and prints the link.
+   */
+  const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
+
   async function handleSend(text: string, images: ComposerImage[]) {
     if (sendDisabled) return;
     actionError = '';
@@ -520,6 +530,7 @@
     loading={Boolean(sessionId) && liveSessionStore.loading}
     {emptyHint}
     {busyRequestId}
+    {artifactActions}
     onallowonce={(requestId) =>
       void decide(requestId, () =>
         liveSessionStore.respondPermission(requestId, { kind: 'allowOnce' }),

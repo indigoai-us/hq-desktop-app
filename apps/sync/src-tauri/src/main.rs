@@ -678,6 +678,10 @@ fn main() {
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
             commands::agent_session::agent_session_slash_commands,
+            // Open / Share / Deploy on files a session produced.
+            commands::session_artifacts::session_artifact_stat,
+            commands::session_artifacts::session_artifact_open,
+            commands::session_artifacts::session_artifact_share,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,

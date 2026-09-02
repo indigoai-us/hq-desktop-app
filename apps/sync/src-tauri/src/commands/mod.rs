@@ -58,6 +58,7 @@ pub mod provision;
 pub mod realtime_mutation;
 pub mod recall_sdk;
 pub mod run_cli_provision;
+pub mod session_artifacts;
 pub mod session_end_latch;
 pub mod session_end_observer;
 pub mod sessions;
