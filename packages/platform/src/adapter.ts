@@ -464,6 +464,14 @@ export function normalizeReplyThreadValue(value: unknown): ReplyThreadValue {
   };
 }
 
+/**
+ * Shown when `deleteChannel` hits a server that predates the delete route
+ * (API Gateway's generic `{"message":"Not Found"}`, no `code`). Mirrors the
+ * string the Sync Rust command returns so every adapter reads the same.
+ */
+export const DELETE_CHANNEL_UNSUPPORTED_MESSAGE =
+  "This server doesn't support deleting channels yet.";
+
 export interface MessagingApi {
   listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
@@ -482,6 +490,20 @@ export interface MessagingApi {
     channelId: string,
     personUid: string,
   ): AdapterPromise<Json>;
+  /**
+   * DELETE /v1/notify/channels/{channelId} — delete a channel outright.
+   * Owner-only (server-enforced). Contract:
+   *   200 `{ deleted: "<channelId>" }`
+   *   403 `{ error, code: "CHANNEL_NOT_OWNER" }`
+   *   404 `{ error, code: "CHANNEL_NOT_FOUND" }`
+   *   409 `{ error, code: "CHANNEL_GROUP_NOT_DELETABLE" }` (group DMs)
+   * A server that predates the route answers API Gateway's generic 404
+   * `{"message":"Not Found"}` (no `code`) — adapters surface that as
+   * "This server doesn't support deleting channels yet." rather than a bare
+   * "Not Found". After a delete the server fans out a directory-feed change;
+   * the deleting client drops the row itself (optimistic `channel:removed`).
+   */
+  deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
   markChannelRead(id: string): AdapterPromise<void>;
@@ -541,6 +563,20 @@ export interface MessagingApi {
       }>;
     },
   ): AdapterPromise<Json>;
+  /**
+   * POST /v1/notify/dm (desktop `send_dm_to_email`) — address a DM by email
+   * OR person uid, never both. Returns `{ state: "delivered" }` when the pair
+   * is already connected and `{ state: "connectionRequested" }` when the
+   * server parked an approval request instead.
+   *
+   * OPTIONAL: the web adapter does not implement it, and the UI hides every
+   * email-invite affordance when it is absent.
+   */
+  sendDmToEmail?(args: {
+    toEmail?: string;
+    toPersonUid?: string;
+    body: string;
+  }): AdapterPromise<Json>;
   fetchReplyThread(args: {
     scope: "dm" | "channel";
     rootEventId: string;

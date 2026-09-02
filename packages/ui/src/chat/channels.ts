@@ -371,6 +371,14 @@ export function upsertChannel(
   return copy;
 }
 
+/** Drop a channel from a list by channelId. Returns the SAME array when the id
+ * is absent (no-op → no re-render churn), otherwise a new array preserving order. */
+export function removeChannel(list: Channel[], channelId: string): Channel[] {
+  const id = channelId.trim();
+  if (!id || !list.some((c) => c.channelId === id)) return list;
+  return list.filter((c) => c.channelId !== id);
+}
+
 /** True when an incoming channel/thread wake should increment the rail badge. */
 export function shouldBumpChannelUnread(args: {
   selectedId?: string | null;

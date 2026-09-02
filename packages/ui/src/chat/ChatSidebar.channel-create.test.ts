@@ -1,5 +1,13 @@
 // @vitest-environment happy-dom
 
+/**
+ * New-channel "In" scope, driven through the unified create modal (the
+ * sidebar "+" → search-first CreateModal). Originally written against the old
+ * "New channel" modal (#597); every test keeps its intent — default In is the
+ * active company, the personal vault is never a company scope, membership
+ * blocks submit inline, and a failed create only re-enables retry when nothing
+ * by that name landed.
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
@@ -130,19 +138,40 @@ async function mountSidebar(
   await tick();
 }
 
-async function openNewChannelModal(): Promise<void> {
+/** Clear the modal's 110 ms query debounce. */
+async function settleQuery(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await tick();
+}
+
+/**
+ * "+" → type the new channel's name → "Create channel #…" row. The unified
+ * modal has no separate "New channel" entry: the name IS the way in.
+ */
+async function openNewChannelModal(name = "HQ Desktop Bugs"): Promise<void> {
   (
     host.querySelector(
       '[data-testid="chat-new-message"]',
     ) as HTMLButtonElement | null
   )?.click();
   await tick();
-  (
-    document.querySelector(
-      '[data-testid="chat-plus-new-channel"]',
-    ) as HTMLButtonElement | null
-  )?.click();
+  const query = document.querySelector(
+    '[data-testid="chat-create-query"]',
+  ) as HTMLInputElement;
+  expect(query).toBeTruthy();
+  query.value = name;
+  query.dispatchEvent(new Event("input", { bubbles: true }));
+  await settleQuery();
+  const createRow = document.querySelector(
+    '[data-testid="chat-create-channel-row"]',
+  ) as HTMLButtonElement | null;
+  expect(createRow).toBeTruthy();
+  createRow?.click();
   await tick();
+  expect(
+    (document.querySelector('[data-testid="chat-channel-name"]') as HTMLInputElement)
+      .value,
+  ).toBe(name);
 }
 
 async function addParticipant(query: string): Promise<void> {
@@ -165,9 +194,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   document
-    .querySelectorAll(
-      '[data-testid="chat-new-channel-modal"], [data-testid="chat-plus-new-channel"]',
-    )
+    .querySelectorAll('[data-testid="chat-create-modal"]')
     .forEach((node) => node.remove());
   window.localStorage?.clear?.();
 });
@@ -229,16 +256,9 @@ describe("ChatSidebar new-channel scope", () => {
         host.querySelector('[data-conversation-id="dm:prs_stefan"]'),
       ).toBeTruthy();
     });
-    await openNewChannelModal();
+    await openNewChannelModal("HQ Desktop Bugs");
     await addParticipant("Stefan Johnson");
     await addParticipant("Caitlin");
-
-    const name = document.querySelector(
-      '[data-testid="chat-channel-name"]',
-    ) as HTMLInputElement;
-    name.value = "HQ Desktop Bugs";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await tick();
 
     const create = document.querySelector(
       '[data-testid="chat-channel-create"]',
@@ -266,23 +286,17 @@ describe("ChatSidebar new-channel scope", () => {
         listChannels: async () => ({ channels: [] }),
       }),
     });
-    await openNewChannelModal();
-
-    const name = document.querySelector(
-      '[data-testid="chat-channel-name"]',
-    ) as HTMLInputElement;
-    name.value = "HQ Desktop Bugs";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await tick();
+    await openNewChannelModal("HQ Desktop Bugs");
 
     const create = document.querySelector(
       '[data-testid="chat-channel-create"]',
     ) as HTMLButtonElement;
     create.click();
     await vi.waitFor(() => {
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-        "you can try again",
-      );
+      expect(
+        document.querySelector('[data-testid="chat-channel-error"]')
+          ?.textContent,
+      ).toContain("you can try again");
     });
     expect(createChannel).toHaveBeenCalledTimes(1);
     expect(create.disabled).toBe(false);
@@ -290,7 +304,12 @@ describe("ChatSidebar new-channel scope", () => {
   });
 
   it("keeps retry disabled when a channel with that name now exists", async () => {
+    // The create "fails" but commits server-side: the channel is absent before
+    // the call and listed right after it. (Listing it up front would make the
+    // modal's own collision check hoist the existing channel instead.)
+    let landed = false;
     const createChannel = vi.fn(async () => {
+      landed = true;
       throw new Error(
         "[invoke] You are not an active member of this company.",
       );
@@ -300,34 +319,30 @@ describe("ChatSidebar new-channel scope", () => {
       api: stubApi({
         createChannel,
         listChannels: async () => ({
-          channels: [
-            {
-              channelId: "chn_bugs",
-              name: "HQ Desktop Bugs",
-              scope: "company",
-              companyUid: "cmp_indigo",
-            },
-          ],
+          channels: landed
+            ? [
+                {
+                  channelId: "chn_bugs",
+                  name: "HQ Desktop Bugs",
+                  scope: "company",
+                  companyUid: "cmp_indigo",
+                },
+              ]
+            : [],
         }),
       }),
     });
-    await openNewChannelModal();
-
-    const name = document.querySelector(
-      '[data-testid="chat-channel-name"]',
-    ) as HTMLInputElement;
-    name.value = "HQ Desktop Bugs";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await tick();
+    await openNewChannelModal("HQ Desktop Bugs");
 
     const create = document.querySelector(
       '[data-testid="chat-channel-create"]',
     ) as HTMLButtonElement;
     create.click();
     await vi.waitFor(() => {
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-        "retry is disabled",
-      );
+      expect(
+        document.querySelector('[data-testid="chat-channel-error"]')
+          ?.textContent,
+      ).toContain("retry is disabled");
     });
     expect(create.disabled).toBe(true);
     expect(create.textContent).toContain("Creation unconfirmed");

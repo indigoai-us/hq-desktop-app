@@ -16,6 +16,8 @@
   import {
     clearChannelUnread,
     type Channel,
+    humanizeChannelName,
+    removeChannel,
     upsertChannel,
     applyChannelMessageWake,
     shouldBumpChannelUnread,
@@ -26,6 +28,7 @@
     withSetupPin,
   } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
+  import { companiesForChannelCreate } from "./channel-create-scope.js";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
@@ -97,26 +100,13 @@
     type SortMode,
   } from "./sidebar-model";
   import {
-    channelCreateCandidate,
     filterSwitcher,
     switcherInitials,
     switcherRowsFromConversations,
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
-  import {
-    channelCreateValidationMessage,
-    channelExistsWithName,
-    companiesForChannelCreate,
-    companyUidsByPerson,
-    defaultChannelCompanyUid,
-    directoryRowsFromFeed,
-    formatChannelCreateFailure,
-    pickChannelCompanyUid,
-    personalScopeAllowed,
-    unavailableChannelScopes,
-    unconfirmedCreateMessage,
-    type ChannelCreateMember,
-  } from "./channel-create-scope";
+  import CreateModal from "./CreateModal.svelte";
+  import { focusOnMount, portal } from "./portal.js";
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -288,54 +278,13 @@
   let messageSearchLoading = $state(false);
   let messageSearchError = $state<string | null>(null);
   let messageSearchSeq = 0;
-  /** "New message" compose modal (?view=v2). */
-  let newMessageOpen = $state(false);
-  let newMessageQuery = $state("");
-  let composeBody = $state("");
-  let composeRecipient = $state<SwitcherRow | null>(null);
-  let composeSending = $state(false);
-  let composeError = $state<string | null>(null);
-  /** Changes whenever a compose instance is opened or dismissed. A completion
-   *  from an earlier instance must never mutate the draft now on screen. */
-  let composeGeneration = 0;
-  /** "+" header menu + "New channel" modal (name, scope, participants). */
-  let plusMenuOpen = $state(false);
-  let plusMenuEl = $state<HTMLDivElement | null>(null);
-  let newChannelOpen = $state(false);
-  let channelName = $state("");
-  /** "" = personal scope; otherwise the companyUid. */
-  let channelCompanyUid = $state("");
-  let channelQuery = $state("");
-  let channelParticipants = $state<ChannelCreateMember[]>([]);
-  let channelCreating = $state(false);
-  let channelError = $state<string | null>(null);
-  /** Compose body carried into the create-channel flow — sent as the new
-   *  channel's first message right after creation. */
-  let pendingChannelFirstMessage = $state("");
-  interface ChannelInvitee {
-    personUid: string;
-    label: string;
-  }
   /**
-   * The durable result of the create call. Keeping it before the first invite
-   * means an invite retry always resumes this channel, never creates another.
+   * The unified create modal (search-first: DM ↔ channel is inferred from what
+   * the user types). Replaces the old "+" dropdown and BOTH the new-message and
+   * new-channel modals.
    */
-  interface CreatedChannel {
-    channelId: string;
-    name: string;
-    scope: "personal" | "company";
-    companyUid: string | null;
-    completedInvitees: ChannelInvitee[];
-    pendingInvitees: ChannelInvitee[];
-    /** The notify API has no idempotency key for posts. Once its response is
-     *  lost, another POST could duplicate the first message. */
-    firstMessageDelivery: "ready" | "unconfirmed";
-  }
-  let createdChannel = $state<CreatedChannel | null>(null);
-  /** A create request may have committed before a dropped response. The named
-   *  channel endpoint has no idempotency contract, so do not offer a duplicate
-   *  create as a misleading retry. */
-  let channelCreationUnconfirmed = $state(false);
+  let createOpen = $state(false);
+  let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
   let searchQuery = $state("");
@@ -350,7 +299,6 @@
    * to the raw values, so typing/cursor/IME are unaffected.
    */
   let searchQueryDebounced = $state("");
-  let newMessageQueryDebounced = $state("");
   let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
@@ -370,16 +318,15 @@
     activeId = selectedId;
   });
 
-  // Debounce the search/compose/history queries (~110ms). Collapses fast
-  // keystroke bursts into a single roster scan. One effect: any keystroke
-  // reschedules; the others are idempotent no-ops when unchanged.
+  // Debounce the search/history queries (~110ms). Collapses fast keystroke
+  // bursts into a single roster scan. One effect: any keystroke reschedules;
+  // the other is an idempotent no-op when unchanged. (The create modal owns its
+  // own 110ms debounce.)
   $effect(() => {
     const s = searchQuery;
-    const n = newMessageQuery;
     const h = historyQuery;
     const timer = setTimeout(() => {
       searchQueryDebounced = s;
-      newMessageQueryDebounced = n;
       historyQueryDebounced = h;
     }, 110);
     return () => clearTimeout(timer);
@@ -392,6 +339,15 @@
         companyUid: w.cloudUid as string,
         label: w.displayName?.trim() || w.slug,
       })),
+  );
+
+  /**
+   * Create targets. `scopeCompanies` above is the BROWSE list and keeps
+   * companies the user can only look at; creating in one of those is rejected
+   * by the server, so the create modal gets the narrower list.
+   */
+  const createScopeCompanies = $derived(
+    companiesForChannelCreate(companies, accountLabel),
   );
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
@@ -496,46 +452,6 @@
     Math.max(0, filteredRows.length - railRows.length),
   );
   const people = $derived(distinctDmPeople(allRows));
-  const canCreateChannel = $derived(typeof api.createChannel === "function");
-  const channelCreateCompanies = $derived(
-    companiesForChannelCreate(companies, accountLabel),
-  );
-  const memberCompanies = $derived(
-    companyUidsByPerson(allRows, contactsWithUnreads),
-  );
-  const channelCreatePeople = $derived(
-    people.map((person) => ({
-      ...person,
-      companyUids: memberCompanies.get(person.personUid) ?? [],
-    })),
-  );
-  const channelPeopleResults = $derived.by(() => {
-    const q = channelQuery.trim().toLowerCase();
-    const picked = new Set(channelParticipants.map((p) => p.personUid));
-    return channelCreatePeople
-      .filter((p) => !picked.has(p.personUid))
-      .filter((p) => !q || p.label.toLowerCase().includes(q))
-      .slice(0, 8);
-  });
-  const channelPersonalAllowed = $derived(
-    personalScopeAllowed(channelParticipants, self?.uid),
-  );
-  const channelScopeUnavailable = $derived(
-    unavailableChannelScopes(
-      channelCreateCompanies,
-      channelParticipants,
-      self?.uid,
-    ),
-  );
-  const channelCreateBlock = $derived(
-    channelCreateValidationMessage({
-      activeScope: scope,
-      companies: channelCreateCompanies,
-      members: channelParticipants,
-      companyUid: channelCompanyUid,
-      selfUid: self?.uid,
-    }),
-  );
   const liveSwitcherRows = $derived(
     switcherRowsFromConversations([...directoryRows, ...browseRows], (uid) => {
       if (!uid) return "";
@@ -547,24 +463,6 @@
   );
   const switcherResults = $derived(
     filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
-  );
-  // Compose ("new message") never targets the synthetic #setup support row:
-  // it is pinned first in the rail, so with an empty/debounced query it would
-  // be the default first suggestion and a fast type-then-send would misroute
-  // the draft to channelId "setup" instead of the intended conversation.
-  const composeRows = $derived(
-    liveSwitcherRows.filter(
-      (row) => row.kind !== "channel" || !isSetupChannel(row.id),
-    ),
-  );
-  const composeResults = $derived(
-    filterSwitcher(composeRows, newMessageQueryDebounced).slice(0, 200),
-  );
-  /** "Create channel #name" offer when the typed channel doesn't exist. */
-  const composeCreateName = $derived(
-    canCreateChannel
-      ? channelCreateCandidate(liveSwitcherRows, newMessageQueryDebounced)
-      : null,
   );
   const historyRows = $derived(
     searchHistory(filteredRows, historyQueryDebounced),
@@ -585,47 +483,6 @@
       .slice(0, 2)
       .toUpperCase(),
   );
-
-  /**
-   * Portal a node up to the app shell so the centered overlays escape the
-   * sidebar's containing block (`.chat-sidebar` sets backdrop-filter +
-   * overflow:hidden, which would otherwise trap `position: fixed`). The
-   * `.desktop-shell` root has no transform/filter (so `fixed` resolves to the
-   * viewport) and carries the `.chat-shell` design tokens (--t1/--hover/…), so
-   * the portaled overlay keeps its colors. Scoped styles still apply — Svelte
-   * tags the authored node wherever it lives in the DOM.
-   */
-  function portal(node: HTMLElement) {
-    if (typeof document === "undefined") return {};
-    const host =
-      document.querySelector<HTMLElement>(".desktop-shell") ?? document.body;
-    host.appendChild(node);
-    return {
-      destroy() {
-        node.remove();
-      },
-    };
-  }
-
-  /**
-   * Focus a node as soon as it mounts. The native `autofocus` attribute only
-   * fires reliably on the initial document load, not for elements added later
-   * (e.g. an overlay opened by a click), so the search palette would open
-   * unfocused and swallow the user's first keystrokes. rAF waits for the
-   * portal to attach before focusing.
-   */
-  function focusOnMount(node: HTMLElement) {
-    if (typeof requestAnimationFrame === "undefined") {
-      node.focus();
-      return {};
-    }
-    const id = requestAnimationFrame(() => node.focus());
-    return {
-      destroy() {
-        cancelAnimationFrame(id);
-      },
-    };
-  }
 
   /**
    * Portal a dropdown menu to the app shell AND anchor it (fixed-positioned) to
@@ -719,7 +576,7 @@
     filterOpen = false;
     scopeMenuOpen = false;
     footerMenuOpen = false;
-    if (newMessageOpen) closeNewMessage();
+    createOpen = false;
     searchOpen = false;
   }
 
@@ -735,317 +592,40 @@
     filterOpen = next;
   }
 
-  function openNewMessage(): void {
+  function openCreate(): void {
     closeAllOverlays();
-    composeGeneration += 1;
-    newMessageOpen = true;
-    newMessageQuery = "";
-    composeBody = "";
-    composeRecipient = null;
-    composeSending = false;
-    composeError = null;
+    createOpen = true;
   }
 
-  function syncChannelScope(): void {
-    channelCompanyUid = pickChannelCompanyUid({
-      activeScope: scope,
-      companies: channelCreateCompanies,
-      members: channelParticipants,
-      currentUid: channelCompanyUid,
-      selfUid: self?.uid,
+  /** Close the create modal; optionally open the channel it just created. */
+  function closeCreate(
+    openChannelId?: string,
+    hint?: { title: string; companyUid: string | null },
+  ): void {
+    createOpen = false;
+    plusBtnEl?.focus();
+    if (!openChannelId) return;
+    // A just-created channel is opened before the directory feed lists it, so
+    // the shell would stub a row titled with the raw id. Hand it the name so
+    // the header is right on first paint, not only after the user clicks away
+    // and back. Prefer the modal's own hint: our `channels` copy can be
+    // overwritten by a directory refresh between create and close.
+    const known = channels.find((c) => c.channelId === openChannelId);
+    const title = hint?.title?.trim() || (known ? known.name : "");
+    requestChannelOpen(openChannelId, {
+      title: title ? humanizeChannelName(title) : null,
+      companyUid: hint?.companyUid ?? known?.companyUid ?? null,
     });
   }
 
-  function openNewChannel(): void {
-    closeAllOverlays();
-    newChannelOpen = true;
-    channelName = "";
-    channelQuery = "";
-    channelParticipants = [];
-    channelError = null;
-    pendingChannelFirstMessage = "";
-    createdChannel = null;
-    channelCreationUnconfirmed = false;
-    channelCompanyUid = defaultChannelCompanyUid({
-      activeScope: scope,
-      companies: channelCreateCompanies,
-      members: [],
-      selfUid: self?.uid,
-    });
-  }
-
-  function closeNewChannel(): void {
-    newChannelOpen = false;
-    channelQuery = "";
-    channelError = null;
-    pendingChannelFirstMessage = "";
-    createdChannel = null;
-    channelCreationUnconfirmed = false;
-  }
-
-  /**
-   * Compose typed a channel that doesn't exist — hand off to the create-channel
-   * modal with the name pre-filled and the drafted body carried along, so
-   * create → first message → open is one continuous flow.
-   */
-  function startCreateChannelFromCompose(name = composeCreateName): void {
-    if (!name) return;
-    const body = composeBody;
-    closeNewMessage();
-    openNewChannel();
-    channelName = name;
-    pendingChannelFirstMessage = body;
-  }
-
-  function addChannelParticipant(p: ChannelCreateMember): void {
-    channelParticipants = [
-      ...channelParticipants,
-      {
-        personUid: p.personUid,
-        label: p.label,
-        companyUids: p.companyUids ?? [],
-      },
-    ];
-    channelQuery = "";
-    syncChannelScope();
-  }
-
-  function removeChannelParticipant(uid: string): void {
-    channelParticipants = channelParticipants.filter(
-      (p) => p.personUid !== uid,
-    );
-    syncChannelScope();
-  }
-
-  function upsertCreatedChannel(
-    created: CreatedChannel,
-    hasFirstMessage: boolean,
-  ): Channel {
-    const optimistic: Channel = {
-      channelId: created.channelId,
-      name: created.name,
-      scope: created.scope,
-      companyUid: created.companyUid,
-      membership: "joined",
-      unread: 0,
-      lastMessageAt: hasFirstMessage ? new Date().toISOString() : null,
-    };
-    channels = upsertChannel(channels, optimistic);
-    return optimistic;
-  }
-
-  function createErrorDetail(err: unknown, fallback: string): string {
-    return formatChannelCreateFailure(err) || fallback;
-  }
-
-  async function createdChannelAlreadyExists(name: string): Promise<boolean> {
-    if (channelExistsWithName(name, channels)) return true;
-    const uids = channelCompanyUid
-      ? [channelCompanyUid]
-      : channelCreateCompanies.map((company) => company.companyUid);
-    for (const uid of uids) {
-      try {
-        const resp = await api.listChannels({
-          companyUid: uid,
-          includeCompanyProjects: false,
-        });
-        if (channelExistsWithName(name, resp?.channels ?? [])) return true;
-      } catch {
-        // Lookup is best-effort; a failed list must not block a safe retry.
-      }
+  /** Optimistic rail insert for a just-created channel: paint now, reconcile,
+   *  re-assert if the directory snapshot lagged (idempotent when it did not). */
+  async function onChannelCreated(channel: Channel): Promise<void> {
+    channels = upsertChannel(channels, channel);
+    await refreshLists();
+    if (!channels.some((c) => c.channelId === channel.channelId)) {
+      channels = upsertChannel(channels, channel);
     }
-    try {
-      const feed = await api.fetchChannelDirectory(null);
-      if (channelExistsWithName(name, directoryRowsFromFeed(feed))) return true;
-    } catch {
-      // Same: directory lookup failure is not proof the create committed.
-    }
-    return false;
-  }
-
-  async function submitCreateChannel(): Promise<void> {
-    const name = channelName.trim();
-    const create = api.createChannel;
-    if (
-      !name ||
-      (!create && !createdChannel) ||
-      channelCreating ||
-      channelCreationUnconfirmed ||
-      createdChannel?.firstMessageDelivery === "unconfirmed"
-    ) {
-      return;
-    }
-    if (!createdChannel) {
-      const blocked = channelCreateValidationMessage({
-        activeScope: scope,
-        companies: channelCreateCompanies,
-        members: channelParticipants,
-        companyUid: channelCompanyUid,
-        selfUid: self?.uid,
-      });
-      if (blocked) {
-        channelError = blocked;
-        return;
-      }
-    }
-    channelCreating = true;
-    channelError = null;
-    try {
-      let created = createdChannel;
-      if (!created) {
-        const scope = channelCompanyUid ? "company" : "personal";
-        const { channelId } = await create!({
-          name,
-          scope,
-          ...(channelCompanyUid ? { companyUid: channelCompanyUid } : {}),
-        });
-        created = {
-          channelId,
-          name,
-          scope,
-          companyUid: channelCompanyUid || null,
-          completedInvitees: [],
-          pendingInvitees: channelParticipants.map((participant) => ({
-            ...participant,
-          })),
-          firstMessageDelivery: "ready",
-        };
-        // Persist the returned id BEFORE invoking invite N. From this moment,
-        // every retry is pinned to this already-created channel.
-        createdChannel = created;
-        upsertCreatedChannel(created, false);
-      }
-
-      if (created.pendingInvitees.length > 0) {
-        if (!api.addChannelMember) {
-          throw new Error(
-            "This host cannot add the remaining channel participants",
-          );
-        }
-        for (const invitee of created.pendingInvitees) {
-          await api.addChannelMember(created.channelId, invitee.personUid);
-          created = {
-            ...created,
-            completedInvitees: [...created.completedInvitees, invitee],
-            pendingInvitees: created.pendingInvitees.filter(
-              (candidate) => candidate.personUid !== invitee.personUid,
-            ),
-          };
-          createdChannel = created;
-        }
-      }
-
-      // A composed draft is part of this action: do not close or navigate until
-      // the host acknowledges one send. The current notify contract does not
-      // accept an idempotency key, so a rejected response is ambiguous: it may
-      // have committed. Keep the draft but never POST it a second time.
-      const firstMessage = pendingChannelFirstMessage;
-      if (firstMessage.trim()) {
-        try {
-          await api.sendChannelMessage({
-            channelId: created.channelId,
-            body: firstMessage,
-          });
-        } catch (err) {
-          created = { ...created, firstMessageDelivery: "unconfirmed" };
-          createdChannel = created;
-          upsertCreatedChannel(created, false);
-          const detail = createErrorDetail(err, "Could not confirm the first message");
-          channelError = `Channel created, but delivery of the first message could not be confirmed: ${detail}. Your draft is preserved, but retry is disabled to prevent a duplicate message. Open the channel to verify delivery.`;
-          return;
-        }
-      }
-      // Optimistic rail insert so the new channel is visible immediately —
-      // the directory reconcile below confirms it from the server.
-      const optimistic = upsertCreatedChannel(created, Boolean(firstMessage.trim()));
-      closeNewChannel();
-      await refreshLists();
-      // A lagging directory snapshot may not include the just-created channel
-      // yet and would have replaced the list — re-assert it so the rail never
-      // loses the new channel (idempotent when the server already returned it).
-      if (!channels.some((c) => c.channelId === created.channelId)) {
-        channels = upsertChannel(channels, optimistic);
-      }
-      requestChannelOpen(created.channelId);
-    } catch (err) {
-      const detail = createErrorDetail(err, "Could not create the channel");
-      if (createdChannel) {
-        const pending = createdChannel.pendingInvitees;
-        channelError = pending.length
-          ? `Channel created, but ${pending.length} invitation${pending.length === 1 ? " is" : "s are"} incomplete (${pending.map((invitee) => invitee.label).join(", ")}): ${detail}. Retry to resume the same channel.`
-          : detail;
-      } else {
-        const exists = await createdChannelAlreadyExists(name);
-        channelCreationUnconfirmed = exists;
-        channelError = unconfirmedCreateMessage({ detail, name, exists });
-      }
-    } finally {
-      channelCreating = false;
-    }
-  }
-
-  function closeNewMessage(): void {
-    composeGeneration += 1;
-    newMessageOpen = false;
-    newMessageQuery = "";
-    composeBody = "";
-    composeRecipient = null;
-    composeSending = false;
-    composeError = null;
-  }
-
-  /** Send the draft to a selected conversation before changing the UI state. */
-  async function submitCompose(): Promise<void> {
-    if (composeSending) return;
-    const generation = composeGeneration;
-    const picked =
-      composeRecipient ??
-      filterSwitcher(composeRows, newMessageQuery)[0] ??
-      null;
-    if (picked) {
-      const body = composeBody;
-      if (body.trim()) {
-        composeSending = true;
-        composeError = null;
-        try {
-          if (picked.kind === "dm") {
-            await api.sendDm({ toPersonUid: picked.id, body });
-          } else {
-            await api.sendChannelMessage({ channelId: picked.id, body });
-          }
-        } catch (err) {
-          if (generation !== composeGeneration || !newMessageOpen) return;
-          const detail =
-            err instanceof Error && err.message.trim()
-              ? err.message.trim()
-              : "Could not send the message";
-          composeError = `${detail}. Your draft is still here; retry sending it.`;
-          return;
-        } finally {
-          if (generation === composeGeneration && newMessageOpen) {
-            composeSending = false;
-          }
-        }
-      }
-      if (generation !== composeGeneration || !newMessageOpen) return;
-      jumpToSwitcherRow(picked);
-      closeNewMessage();
-      return;
-    }
-    // Recompute from the RAW query (not the debounced mirror) so a fast
-    // type-then-send still lands in the create flow.
-    const createName = canCreateChannel
-      ? channelCreateCandidate(liveSwitcherRows, newMessageQuery)
-      : null;
-    if (createName) {
-      startCreateChannelFromCompose(createName);
-      return;
-    }
-    if (composeBody.trim()) {
-      composeError = "Choose a recipient before sending. Your draft is still here.";
-      return;
-    }
-    closeNewMessage();
   }
 
   function openSearch(): void {
@@ -1073,17 +653,6 @@
     searchOpen = false;
     searchQuery = "";
     jumpToSwitcherRow(row);
-  }
-
-  function pickComposeRecipient(row: SwitcherRow): void {
-    composeRecipient = row;
-    newMessageQuery = row.name;
-  }
-
-  /** A typed edit is a new recipient intent; never retain a prior selection. */
-  function updateComposeRecipientQuery(value: string): void {
-    newMessageQuery = value;
-    composeRecipient = null;
   }
 
   function openFooterMenu(): void {
@@ -1122,10 +691,10 @@
   }
 
   $effect(() => {
-    if (searchOpen || newMessageOpen || newChannelOpen) return;
+    if (searchOpen || historyOpen || createOpen) return;
     document
       .querySelectorAll(
-        "[data-testid='chat-search-overlay'], [data-testid='chat-new-message-modal'], [data-testid='chat-new-channel-modal']",
+        "[data-testid='chat-search-overlay'], [data-testid='chat-create-modal']",
       )
       .forEach((node) => node.remove());
   });
@@ -1134,9 +703,7 @@
     if (
       !scopeMenuOpen &&
       !filterOpen &&
-      !plusMenuOpen &&
       !footerMenuOpen &&
-      !newMessageOpen &&
       !searchOpen &&
       !contextMenu
     )
@@ -1152,9 +719,6 @@
       }
       if (filterOpen && filterWrapEl && !filterWrapEl.contains(event.target)) {
         filterOpen = false;
-      }
-      if (plusMenuOpen && plusMenuEl && !plusMenuEl.contains(event.target)) {
-        plusMenuOpen = false;
       }
       if (footerMenuOpen) {
         const menu = document.querySelector('[data-testid="chat-user-menu"]');
@@ -1176,11 +740,8 @@
         event.preventDefault();
         return;
       }
-      if (newMessageOpen) {
-        closeNewMessage();
-        event.preventDefault();
-        return;
-      }
+      // No `createOpen` branch on purpose — CreateModal owns its own Escape
+      // (and backdrop) dismissal; two handlers would double-fire.
       if (scopeMenuOpen || filterOpen || footerMenuOpen) {
         scopeMenuOpen = false;
         filterOpen = false;
@@ -1238,7 +799,7 @@
   let companyProjectsSeq = 0;
   $effect(() => {
     const wantAllCompanies =
-      showFilter === "company-projects" || searchOpen || newMessageOpen;
+      showFilter === "company-projects" || searchOpen || createOpen;
     const scoped = scope !== "all" && scope !== "personal" ? [scope] : [];
     const uids = wantAllCompanies
       ? ownerCompanyUids.length > 0
@@ -1575,6 +1136,17 @@
         }),
       );
 
+      // A deleted channel leaves the rail at once (the deleting client emits
+      // this optimistically; the server's directory-feed change follows). The
+      // shell owns selection — if this was the open row, it clears it itself.
+      track(
+        wakes.on("channel:removed", ({ channelId }) => {
+          channels = removeChannel(channels, channelId);
+          directoryReconciler.forget(channelId);
+          scheduleDirectoryReconcile();
+        }),
+      );
+
       track(
         wakes.on("channel:unread-changed", () => {
           scheduleDirectoryReconcile();
@@ -1906,70 +1478,26 @@
     </div>
 
     <div class="chat-header-actions">
-      <div class="chat-plus-wrap" bind:this={plusMenuEl}>
-        <button
-          type="button"
-          class="chat-icon-btn"
-          data-testid="chat-new-message"
-          aria-label="New message or channel"
-          title="New message or channel"
-          aria-haspopup="menu"
-          aria-expanded={plusMenuOpen}
-          onclick={() => {
-            if (!canCreateChannel) {
-              openNewMessage();
-              return;
-            }
-            plusMenuOpen = !plusMenuOpen;
-          }}
-        >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M8 3v10M3 8h10"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-            />
-          </svg>
-        </button>
-        {#if plusMenuOpen}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="chat-popover chat-plus-menu"
-            role="menu"
-            tabindex="-1"
-            aria-label="New message or channel"
-            use:menuPortal={{ anchor: plusMenuEl, placement: "bottom-start" }}
-            onmousedown={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              class="chat-popover-row"
-              role="menuitem"
-              data-testid="chat-plus-new-message"
-              onclick={() => {
-                plusMenuOpen = false;
-                openNewMessage();
-              }}
-            >
-              New message
-            </button>
-            <button
-              type="button"
-              class="chat-popover-row"
-              role="menuitem"
-              data-testid="chat-plus-new-channel"
-              onclick={() => {
-                plusMenuOpen = false;
-                openNewChannel();
-              }}
-            >
-              New channel
-            </button>
-          </div>
-        {/if}
-      </div>
-      <!-- wrap-end -->
+      <button
+        type="button"
+        class="chat-icon-btn"
+        bind:this={plusBtnEl}
+        data-testid="chat-new-message"
+        aria-label="New message or channel"
+        title="New message or channel"
+        aria-haspopup="dialog"
+        aria-expanded={createOpen}
+        onclick={openCreate}
+      >
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M8 3v10M3 8h10"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linecap="round"
+          />
+        </svg>
+      </button>
       <button
         type="button"
         class="chat-icon-btn"
@@ -2599,362 +2127,23 @@
     </div>
   {/if}
 
-  {#if newMessageOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="chat-overlay center"
-      data-testid="chat-new-message-modal"
-      use:portal
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeNewMessage();
+  {#if createOpen}
+    <CreateModal
+      {api}
+      rows={[...directoryRows, ...browseRows]}
+      {contacts}
+      {scopeCompanies}
+      createCompanies={createScopeCompanies}
+      activeScope={scope}
+      {self}
+      onclose={closeCreate}
+      onpick={(row) => {
+        createOpen = false;
+        plusBtnEl?.focus();
+        void openRow(row);
       }}
-      onkeydown={(e) => {
-        if (e.key === "Escape") closeNewMessage();
-      }}
-    >
-      <div
-        class="chat-compose"
-        role="dialog"
-        aria-label="New message"
-        tabindex="-1"
-      >
-        <div class="chat-compose-head">
-          <span class="chat-compose-title">New message</span>
-          <button
-            type="button"
-            class="chat-compose-close"
-            aria-label="Close"
-            onclick={closeNewMessage}
-          >
-            ×
-          </button>
-        </div>
-
-        <div class="chat-compose-to">
-          <span class="chat-compose-to-label">To</span>
-          <input
-            class="chat-compose-to-input"
-            type="text"
-            data-testid="chat-compose-to"
-            placeholder="Type a name or channel…"
-            value={newMessageQuery}
-            aria-label="Recipient"
-            oninput={(event) =>
-              updateComposeRecipientQuery(event.currentTarget.value)}
-          />
-        </div>
-
-        <div class="chat-compose-suggestions" role="list">
-          {#each composeResults as row (row.id)}
-            <button
-              type="button"
-              class="chat-switcher-row"
-              role="listitem"
-              data-testid="chat-compose-suggestion"
-              onclick={() => pickComposeRecipient(row)}
-            >
-              {#if row.kind === "channel"}
-                <span class="chat-switcher-hash" aria-hidden="true">#</span>
-              {:else}
-                <span class="chat-switcher-avatar" aria-hidden="true"
-                  >{switcherInitials(row.name)}</span
-                >
-              {/if}
-              <span class="chat-switcher-copy">
-                <span class="chat-switcher-name">{row.name}</span>
-                {#if row.secondary}
-                  <span
-                    class="chat-switcher-secondary"
-                    data-testid="chat-compose-suggestion-secondary"
-                    >{row.secondary}</span
-                  >
-                {/if}
-              </span>
-              <span class="chat-switcher-company">{row.company}</span>
-            </button>
-          {:else}
-            {#if !composeCreateName}
-              <div class="chat-empty">
-                {newMessageQuery.trim() ? "No matches" : "No conversations"}
-              </div>
-            {/if}
-          {/each}
-          {#if composeCreateName}
-            <button
-              type="button"
-              class="chat-switcher-row chat-compose-create"
-              role="listitem"
-              data-testid="chat-compose-create-channel"
-              onclick={() => startCreateChannelFromCompose()}
-            >
-              <span class="chat-switcher-hash" aria-hidden="true">+</span>
-              <span class="chat-switcher-name">
-                Create channel #{composeCreateName}
-              </span>
-            </button>
-          {/if}
-        </div>
-
-        <textarea
-          class="chat-compose-body"
-          data-testid="chat-compose-body"
-          placeholder="Write your message…"
-          bind:value={composeBody}
-          aria-label="Message"
-          onkeydown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-              event.preventDefault();
-              void submitCompose();
-            }
-          }}
-        ></textarea>
-
-        {#if composeError}
-          <div class="chat-channel-error" role="alert">{composeError}</div>
-        {/if}
-
-        <div class="chat-compose-footer">
-          <div class="chat-compose-tools">
-            <button
-              type="button"
-              class="chat-icon-btn"
-              aria-label="Attach file"
-            >
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path
-                  d="M9.5 4.5 5.3 8.7a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a2.7 2.7 0 0 0-3.8-3.8L3.7 7.6a3.8 3.8 0 0 0 5.4 5.4l3.4-3.4"
-                  stroke="currentColor"
-                  stroke-width="1.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-            <button type="button" class="chat-icon-btn" aria-label="Add emoji">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle
-                  cx="8"
-                  cy="8"
-                  r="5.5"
-                  stroke="currentColor"
-                  stroke-width="1.2"
-                />
-                <circle cx="6" cy="7" r="0.8" fill="currentColor" />
-                <circle cx="10" cy="7" r="0.8" fill="currentColor" />
-                <path
-                  d="M5.6 9.8a3 3 0 0 0 4.8 0"
-                  stroke="currentColor"
-                  stroke-width="1.2"
-                  stroke-linecap="round"
-                />
-              </svg>
-            </button>
-          </div>
-          <div class="chat-compose-send">
-            <span class="chat-compose-hint" aria-hidden="true">⌘↵ TO SEND</span>
-            <button
-              type="button"
-              class="chat-compose-send-btn"
-              data-testid="chat-compose-send"
-              aria-label="Send message"
-              disabled={composeSending}
-              aria-busy={composeSending}
-              onclick={() => void submitCompose()}
-            >
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path
-                  d="M2.5 8h9M8 4l4 4-4 4"
-                  stroke="currentColor"
-                  stroke-width="1.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if newChannelOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="chat-overlay center"
-      data-testid="chat-new-channel-modal"
-      use:portal
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeNewChannel();
-      }}
-      onkeydown={(e) => {
-        if (e.key === "Escape") closeNewChannel();
-      }}
-    >
-      <div
-        class="chat-compose"
-        role="dialog"
-        aria-label="New channel"
-        tabindex="-1"
-      >
-        <div class="chat-compose-head">
-          <span class="chat-compose-title">New channel</span>
-          <button
-            type="button"
-            class="chat-compose-close"
-            aria-label="Close"
-            onclick={closeNewChannel}
-          >
-            ×
-          </button>
-        </div>
-
-        <div class="chat-compose-to">
-          <span class="chat-compose-to-label">Name</span>
-          <input
-            class="chat-compose-to-input"
-            type="text"
-            use:focusOnMount
-            data-testid="chat-channel-name"
-            placeholder="e.g. launch-week"
-            bind:value={channelName}
-            aria-label="Channel name"
-            disabled={createdChannel !== null}
-          />
-        </div>
-
-        <div class="chat-compose-to">
-          <span class="chat-compose-to-label">In</span>
-          <select
-            class="chat-channel-scope"
-            data-testid="chat-channel-scope"
-            bind:value={channelCompanyUid}
-            aria-label="Channel workspace"
-            disabled={createdChannel !== null}
-          >
-            {#each channelCreateCompanies as company (company.companyUid)}
-              {@const blocked = channelScopeUnavailable.find(
-                (row) => row.company.companyUid === company.companyUid,
-              )}
-              <option value={company.companyUid} disabled={Boolean(blocked)}>
-                {blocked
-                  ? `${company.label} — ${blocked.reason}`
-                  : company.label}
-              </option>
-            {/each}
-            {#if channelPersonalAllowed}
-              <option value="">Personal</option>
-            {/if}
-          </select>
-        </div>
-        {#if channelScopeUnavailable.length > 0}
-          <p
-            class="chat-channel-scope-hint"
-            data-testid="chat-channel-scope-unavailable"
-          >
-            {channelScopeUnavailable[0].reason}
-          </p>
-        {/if}
-
-        <div class="chat-compose-to">
-          <span class="chat-compose-to-label">With</span>
-          <div class="chat-channel-with">
-            {#each channelParticipants as p (p.personUid)}
-              <span class="chat-channel-chip">
-                {p.label}
-                <button
-                  type="button"
-                  class="chat-channel-chip-remove"
-                  aria-label={`Remove ${p.label}`}
-                  onclick={() => removeChannelParticipant(p.personUid)}
-                  disabled={createdChannel !== null}
-                >
-                  ×
-                </button>
-              </span>
-            {/each}
-            <input
-              class="chat-compose-to-input chat-channel-with-input"
-              type="text"
-              data-testid="chat-channel-participants"
-              placeholder={channelParticipants.length === 0
-                ? "Add people…"
-                : ""}
-              bind:value={channelQuery}
-              aria-label="Add participants"
-              disabled={createdChannel !== null}
-            />
-          </div>
-        </div>
-
-        {#if channelQuery.trim() && channelPeopleResults.length > 0}
-          <div class="chat-compose-suggestions" role="list">
-            {#each channelPeopleResults as p (p.personUid)}
-              <button
-                type="button"
-                class="chat-switcher-row"
-                role="listitem"
-                data-testid="chat-channel-suggestion"
-                onclick={() => addChannelParticipant(p)}
-              >
-                <span class="chat-switcher-avatar" aria-hidden="true"
-                  >{switcherInitials(p.label)}</span
-                >
-                <span class="chat-switcher-name">{p.label}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-
-        {#if channelError}
-          <div class="chat-channel-error" role="alert">{channelError}</div>
-        {:else if channelCreateBlock}
-          <div
-            class="chat-channel-error"
-            role="alert"
-            data-testid="chat-channel-validation"
-          >
-            {channelCreateBlock}
-          </div>
-        {/if}
-
-        {#if createdChannel && pendingChannelFirstMessage.trim()}
-          <div class="chat-channel-first-message-draft" data-testid="chat-channel-first-message-draft">
-            {pendingChannelFirstMessage}
-          </div>
-        {/if}
-
-        <div class="chat-compose-footer">
-          <div class="chat-compose-send">
-            <button
-              type="button"
-              class="chat-compose-send-btn chat-channel-create"
-              data-testid="chat-channel-create"
-              disabled={
-                channelCreating ||
-                !channelName.trim() ||
-                channelCreationUnconfirmed ||
-                createdChannel?.firstMessageDelivery === "unconfirmed" ||
-                (!createdChannel && Boolean(channelCreateBlock))
-              }
-              aria-busy={channelCreating}
-              onclick={() => void submitCreateChannel()}
-            >
-              {channelCreating
-                ? createdChannel
-                  ? "Sending…"
-                  : "Creating…"
-                : channelCreationUnconfirmed
-                  ? "Creation unconfirmed"
-                  : createdChannel?.firstMessageDelivery === "unconfirmed"
-                    ? "Delivery unconfirmed"
-                    : createdChannel
-                      ? "Retry invitations"
-                      : "Create channel"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+      oncreated={onChannelCreated}
+    />
   {/if}
 </aside>
 
@@ -4037,93 +3226,7 @@
     font-weight: 500;
   }
 
-  /* ===== Centered overlays: search switcher + compose (?view=v2) ===== */
-  .chat-plus-wrap {
-    position: relative;
-    display: inline-flex;
-  }
-
-  .chat-plus-menu {
-    /* Portaled to .desktop-shell via use:menuPortal like the other chat popovers. */
-    z-index: 70;
-    min-width: 160px;
-  }
-
-  .chat-channel-scope {
-    flex: 1 1 auto;
-    appearance: none;
-    -webkit-appearance: none;
-    padding: 6px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .chat-channel-scope-hint {
-    margin: 0;
-    padding: 0 16px;
-    color: var(--t2);
-    font-size: 12px;
-    line-height: 1.35;
-  }
-
-  .chat-channel-with {
-    flex: 1 1 auto;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .chat-channel-with-input {
-    flex: 1 1 120px;
-    min-width: 120px;
-  }
-
-  .chat-channel-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .chat-channel-chip-remove {
-    appearance: none;
-    border: 0;
-    padding: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .chat-channel-error {
-    /* Soft status — never alarm red. */
-    padding: 6px 16px 0;
-    color: var(--t2);
-    font-size: 12px;
-  }
-
-  .chat-channel-create {
-    width: auto;
-    height: 30px;
-    padding: 0 14px;
-    font: 500 12px/1 var(--font-ui);
-    white-space: nowrap;
-  }
-
-  .chat-channel-create:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-
+  /* ===== Top-anchored overlays: search switcher + history (?view=v2) ===== */
   .chat-overlay {
     position: fixed;
     inset: 0;
@@ -4140,10 +3243,6 @@
   .chat-overlay.top {
     align-items: flex-start;
     padding-top: 88px;
-  }
-
-  .chat-overlay.center {
-    align-items: center;
   }
 
   .chat-switcher {
@@ -4225,16 +3324,6 @@
     background: var(--hover);
   }
 
-  /* "Create channel #name" affordance — reads as an action, not a match. */
-  .chat-compose-create {
-    color: var(--t2);
-    font-weight: 500;
-  }
-
-  .chat-compose-create .chat-switcher-name {
-    color: inherit;
-  }
-
   .chat-switcher-hash {
     display: inline-grid;
     place-items: center;
@@ -4263,29 +3352,6 @@
     white-space: nowrap;
   }
 
-  .chat-switcher-copy {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .chat-switcher-copy .chat-switcher-name {
-    flex: 0 1 auto;
-  }
-
-  .chat-switcher-secondary {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-  }
-
   .chat-switcher-company {
     flex: 0 0 auto;
     color: var(--t3);
@@ -4293,179 +3359,13 @@
     font-weight: 400;
   }
 
-  /* ===== Compose "New message" modal (?view=v2) ===== */
-  .chat-compose {
-    display: flex;
-    flex-direction: column;
-    width: min(520px, 100%);
-    max-height: min(78vh, 620px);
-    overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
-  }
-
-  .chat-compose-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .chat-compose-title {
-    color: var(--t1);
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  .chat-compose-close {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border: none;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--t2);
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .chat-compose-close:hover {
-    background: var(--hover);
-    color: var(--t1);
-  }
-
-  .chat-compose-to {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .chat-compose-to-label {
-    color: var(--t3);
-    font-size: 13px;
-    font-weight: 500;
-  }
-
-  .chat-compose-to-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    border: none;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    font-size: 14px;
-  }
-
-  .chat-compose-to-input:focus {
-    outline: none;
-  }
-
-  .chat-compose-to-input::placeholder {
-    color: var(--t3);
-  }
-
-  .chat-compose-suggestions {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    max-height: 190px;
-    overflow-y: auto;
-    padding: 6px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .chat-compose-body {
-    box-sizing: border-box;
-    width: 100%;
-    min-height: 96px;
-    padding: 14px 16px;
-    border: none;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    font-size: 14px;
-    line-height: 1.4;
-    resize: none;
-  }
-
-  .chat-compose-body:focus {
-    outline: none;
-  }
-
-  .chat-compose-body::placeholder {
-    color: var(--t3);
-  }
-
-  .chat-compose-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 14px;
-    border-top: 1px solid var(--v4-hairline);
-  }
-
-  .chat-compose-tools {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-
-  .chat-compose-send {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .chat-compose-hint {
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .chat-compose-send-btn {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 30px;
-    border: none;
-    border-radius: 9px;
-    background: var(--v4-control-bg);
-    color: var(--t1);
-    cursor: pointer;
-    transition:
-      background 0.12s,
-      color 0.12s;
-  }
-
-  .chat-compose-send-btn:hover {
-    background: var(--hover);
-  }
-
-  .chat-compose-send-btn svg {
-    width: 15px;
-    height: 15px;
-  }
-
   :global(:root[data-force-theme="dark"]) .chat-switcher,
-  :global(:root[data-force-theme="dark"]) .chat-compose,
-  :global(.dark) .chat-switcher,
-  :global(.dark) .chat-compose {
+  :global(.dark) .chat-switcher {
     background: var(--v4-surface-solid, #303030);
   }
 
   @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .chat-switcher,
-    :global(:root:not([data-force-theme="light"])) .chat-compose {
+    :global(:root:not([data-force-theme="light"])) .chat-switcher {
       background: var(--v4-surface-solid, #303030);
     }
   }

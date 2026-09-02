@@ -649,7 +649,21 @@ jobs:
             exit 1
           fi
           xcrun stapler staple "$APP_PATH"
-          xcrun stapler validate "$APP_PATH"
+          # Apple's ticket lookup can lag the staple by a few seconds; a first-try
+          # validate then fails with "CloudKit query … failed" / Error 65 even
+          # though notarization was Accepted and the staple succeeded (v0.10.176).
+          # Retry with backoff before declaring the release broken.
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun stapler validate "$APP_PATH"; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::stapler validate still failing after $attempt attempts"
+              exit 65
+            fi
+            echo "stapler validate attempt $attempt failed; retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
 
       - name: Regenerate updater archive and signature
         env:

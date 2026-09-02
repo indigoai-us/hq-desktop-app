@@ -49,6 +49,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         createdAt: null,
         replyRootEventId: null,
         automatic: false,
+        title: null,
+        companyUid: null,
       });
       expect(takePendingConversation()).toBeNull();
     });
@@ -61,6 +63,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         createdAt: null,
         replyRootEventId: 'evt_root',
         automatic: false,
+        title: null,
+        companyUid: null,
       });
       expect(takePendingConversation()).toBeNull();
     });

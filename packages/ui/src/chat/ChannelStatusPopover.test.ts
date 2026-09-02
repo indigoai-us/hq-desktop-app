@@ -480,3 +480,141 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     expect(selfRow?.textContent).toContain("Marcus Chen");
   });
 });
+
+describe("ChannelStatusPopover — delete channel (owner-only trash)", () => {
+  function ownerModel(): ChannelStatusModel {
+    const m = model();
+    m.members = [
+      {
+        personUid: "prs_me",
+        displayName: "Ada Lovelace",
+        role: "owner",
+        email: null,
+        avatarUrl: null,
+        description: null,
+        statusIcon: "idle",
+      },
+      {
+        personUid: "prs_other",
+        displayName: "Marcus Chen",
+        role: "member",
+        email: null,
+        avatarUrl: null,
+        description: null,
+        statusIcon: "idle",
+      },
+    ];
+    return m;
+  }
+
+  it("renders the trash control for the owner when a callback is provided", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModel(),
+        self: { uid: "prs_me" },
+        ondeletechannel: () => {},
+      },
+    });
+    await tick();
+    const btn = host.querySelector<HTMLButtonElement>(
+      '[data-testid="status-channel-delete"]',
+    );
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("aria-label")).toBe("Delete channel");
+    expect(btn!.getAttribute("title")).toBe("Delete channel");
+    expect(btn!.disabled).toBe(false);
+    expect(btn!.querySelector("svg")).not.toBeNull();
+    // The footer sits after the roster sections, never inside a member row.
+    expect(btn!.closest('[data-testid="status-member"]')).toBeNull();
+    const footer = host.querySelector('[data-testid="status-channel-actions"]');
+    const members = host.querySelector('section[aria-label="Members"]');
+    expect(
+      members!.compareDocumentPosition(footer!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("hides the trash control when no callback is provided (even for the owner)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: { model: ownerModel(), self: { uid: "prs_me" } },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="status-channel-delete"]'),
+    ).toBeNull();
+  });
+
+  it("hides the trash control for a non-owner", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModel(),
+        self: { uid: "prs_other" },
+        ondeletechannel: () => {},
+      },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="status-channel-delete"]'),
+    ).toBeNull();
+  });
+
+  it("invokes ondeletechannel on click without confirming itself", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    let calls = 0;
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModel(),
+        self: { uid: "prs_me" },
+        ondeletechannel: () => {
+          calls += 1;
+        },
+      },
+    });
+    await tick();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="status-channel-delete"]')!
+      .click();
+    await tick();
+    expect(calls).toBe(1);
+    // No dialog of its own — the shell owns the confirm.
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeNull();
+  });
+
+  it("disables the trash control and shows an ellipsis while deleting", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    let calls = 0;
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModel(),
+        self: { uid: "prs_me" },
+        ondeletechannel: () => {
+          calls += 1;
+        },
+        deleting: true,
+      },
+    });
+    await tick();
+    const btn = host.querySelector<HTMLButtonElement>(
+      '[data-testid="status-channel-delete"]',
+    )!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent?.trim()).toBe("…");
+    expect(btn.querySelector("svg")).toBeNull();
+    btn.click();
+    await tick();
+    expect(calls).toBe(0);
+  });
+});

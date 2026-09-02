@@ -797,6 +797,7 @@ fn main() {
             commands::messages::send_channel_message,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
+            commands::messages::delete_channel,
             commands::messages::mark_channel_read,
             tray_helper::set_tray_message_badge,
             commands::messages::toggle_reaction,

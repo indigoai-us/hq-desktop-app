@@ -193,6 +193,12 @@ export interface ChannelDirectoryReconciler {
   invalidate(): void;
   status(): ChannelDirectoryReconcileStatus;
   snapshot(): ChannelDirectoryRow[];
+  /**
+   * Drop one row from the local cache (optimistic delete). Without this the
+   * next reconcile would re-apply the cached row until the server's delta
+   * lists it in `removedChannelIds`; that delta remains authoritative.
+   */
+  forget(channelId: string): void;
 }
 
 const noopStorage: DirectoryCursorStorage = {
@@ -366,6 +372,9 @@ export function createChannelDirectoryReconciler(
     },
     status: () => currentStatus,
     snapshot: () => sortDirectoryRows([...byId.values()]),
+    forget(channelId) {
+      byId.delete(channelId);
+    },
   };
 }
 
