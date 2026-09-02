@@ -163,7 +163,16 @@ pub fn parse_frame(line: &str) -> Option<Frame> {
     if trimmed.is_empty() {
         return None;
     }
-    let value: Value = serde_json::from_str(trimmed).ok()?;
+    Some(frame_from_value(serde_json::from_str(trimmed).ok()?))
+}
+
+/// [`parse_frame`] for a value that is already parsed.
+///
+/// The runner's transport hands it a `serde_json::Value` (the stdio child
+/// parses each line to bound and observe it), and re-serializing that back to a
+/// string just to parse it again would double the cost of every frame — on a
+/// transcript where a single tool result can be megabytes.
+pub fn frame_from_value(value: Value) -> Frame {
     let parent = |v: &Value| opt_string_at(v, "parent_tool_use_id");
     let frame = match value.get("type").and_then(Value::as_str).unwrap_or("") {
         "system" => Frame::System {
@@ -226,7 +235,7 @@ pub fn parse_frame(line: &str) -> Option<Frame> {
         },
         _ => Frame::Other(value),
     };
-    Some(frame)
+    frame
 }
 
 /// A stdin user turn. Steering = another such line mid-run.

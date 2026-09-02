@@ -163,8 +163,11 @@ pub struct StdioChild {
     handle: String,
     /// The child process (kept alive to prevent a zombie).
     child: Child,
-    /// Write end of the child's stdin pipe.
-    stdin: ChildStdin,
+    /// Write end of the child's stdin pipe. `None` once [`StdioChild::close_stdin`]
+    /// has signalled end-of-input — a `stream-json` CLI treats EOF on stdin as
+    /// "no more turns are coming" and exits cleanly, flushing its transcript,
+    /// which a kill would not.
+    stdin: Option<ChildStdin>,
     /// Framed reader over the child's stdout pipe (line-oriented, bounded by
     /// [`MAX_LINE_SIZE`]).
     reader: FramedRead<ChildStdout, LinesCodec>,
@@ -310,7 +313,7 @@ impl StdioChild {
         Ok(Self {
             handle,
             child,
-            stdin,
+            stdin: Some(stdin),
             reader: FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_SIZE)),
             next_id: 0,
             pid,
@@ -446,6 +449,50 @@ impl StdioChild {
 
     // ── transport ───────────────────────────────────────────────────────────
 
+    /// Signal end-of-input by closing the child's stdin, and let it exit on its
+    /// own terms.
+    ///
+    /// This is the graceful counterpart to [`StdioChild::shutdown`]: a
+    /// `stream-json` CLI reads turns from stdin until EOF, then finishes its
+    /// current work, writes its final frames, flushes its transcript, and
+    /// exits. `shutdown` SIGKILLs the process group instead, which is the right
+    /// answer for a wedged child and the wrong one for a session the user just
+    /// closed. Idempotent; every later write fails with
+    /// [`StdioError::Protocol`] rather than panicking on a missing pipe.
+    pub async fn close_stdin(&mut self) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let _ = stdin.shutdown().await;
+        }
+    }
+
+    /// Wait up to `budget` for the child to exit on its own and report how it
+    /// did, releasing the host registry entry when it is genuinely gone.
+    ///
+    /// Pairs with [`StdioChild::close_stdin`] (and with a clean stdout EOF):
+    /// the driver has already seen the child stop talking and wants the exit
+    /// code for the transcript, not a kill. `None` means the child outlived the
+    /// budget or was unwaitable — the caller should fall back to
+    /// [`StdioChild::shutdown`], which is the guaranteed path.
+    pub async fn wait_for_exit(
+        &mut self,
+        budget: Duration,
+    ) -> Option<std::process::ExitStatus> {
+        match tokio::time::timeout(budget, self.child.wait()).await {
+            Ok(Ok(status)) => {
+                self.release_to_host();
+                Some(status)
+            }
+            Ok(Err(e)) => {
+                logfile::log(
+                    "STDIO_EXIT",
+                    &format!("handle={} wait failed: {e}", self.handle),
+                );
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
     /// Write one NDJSON line to the child's stdin, bounded by [`WRITE_TIMEOUT`].
     pub async fn write_ndjson(&mut self, value: &serde_json::Value) -> Result<(), StdioError> {
         self.write_ndjson_by(value, None).await
@@ -482,10 +529,16 @@ impl StdioChild {
         // genuinely stopped draining its stdin. Only the duration differs, and
         // that is what `budget` carries.
 
+        let Some(stdin) = self.stdin.as_mut() else {
+            return Err(StdioError::Protocol(
+                "child stdin is closed — the session is ending".into(),
+            ));
+        };
+
         tokio::time::timeout_at(deadline, async {
-            self.stdin.write_all(line.as_bytes()).await?;
-            self.stdin.write_all(b"\n").await?;
-            self.stdin.flush().await?;
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            stdin.flush().await?;
             Ok::<(), std::io::Error>(())
         })
         .await
@@ -1049,6 +1102,64 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         false
+    }
+
+    // ── graceful end-of-input ───────────────────────────────────────────────
+
+    /// The graceful close path: EOF on stdin ends the child, `wait_for_exit`
+    /// reports how, and a write after the close is refused rather than
+    /// panicking on a taken pipe.
+    #[tokio::test]
+    async fn close_stdin_ends_the_child_cleanly_and_refuses_later_writes() {
+        // Reads until EOF, then exits 7 — proof the exit came from OUR stdin
+        // close and not from a kill (a SIGKILL has no exit code).
+        let mut child = spawn_script("while IFS= read -r _line; do :; done; exit 7").await;
+
+        child.close_stdin().await;
+
+        // stdout reaches clean EOF, not an error.
+        assert_eq!(
+            child
+                .next_frame(idle(), hard())
+                .await
+                .expect("clean stream"),
+            None,
+            "closing stdin ends the stream at EOF"
+        );
+
+        let status = child
+            .wait_for_exit(Duration::from_secs(5))
+            .await
+            .expect("child exited within the budget");
+        assert_eq!(status.code(), Some(7), "the child chose its own exit code");
+
+        let err = child
+            .write_ndjson(&serde_json::json!({"type": "user"}))
+            .await
+            .expect_err("stdin is gone");
+        assert!(
+            matches!(&err, StdioError::Protocol(msg) if msg.contains("stdin is closed")),
+            "unexpected error: {err:?}"
+        );
+
+        // Idempotent: a second close is a no-op, not a panic.
+        child.close_stdin().await;
+    }
+
+    /// `wait_for_exit` is bounded: a child that ignores EOF and keeps running
+    /// must not wedge the caller, and the caller can still fall back to the
+    /// guaranteed kill path.
+    #[tokio::test]
+    async fn wait_for_exit_gives_up_on_a_child_that_outlives_its_budget() {
+        let mut child = spawn_script("sleep 30").await;
+        assert!(
+            child
+                .wait_for_exit(Duration::from_millis(200))
+                .await
+                .is_none(),
+            "a still-running child must not be reported as exited"
+        );
+        assert!(child.shutdown_with_reap(REAP_TIMEOUT).await, "kill path still works");
     }
 
     // ── pure-logic tests (no process) ───────────────────────────────────────
