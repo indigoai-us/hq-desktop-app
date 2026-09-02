@@ -140,6 +140,14 @@ jobs:
           # cache-on-failure:false, so those runs discard valid dependency
           # artifacts and the next run starts cold again.
           cache-on-failure: true
+          # rust-cache prunes workspace-member artifacts by default, so
+          # hq-desktop-core, hq-telemetry, hq-platform and the app crate all
+          # recompile on every run even on an exact dependency-cache hit. Of 14
+          # recent Windows-gated PRs, 10 touched nothing under crates/ and 7
+          # touched no Rust source at all: those runs pay a full workspace
+          # compile for artifacts that did not change. Keeping them costs cache
+          # size (see the budget note in cache-warm.yml).
+          cache-workspace-crates: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
@@ -539,6 +547,22 @@ jobs:
           # cache-on-failure:false, so those runs discard valid dependency
           # artifacts and the next run starts cold again.
           cache-on-failure: true
+          # THE dominant cost in this job. It compiles the app crate TWICE in
+          # release profile -- once at the bridge version, once at the target
+          # version -- because the upgrade proof needs two genuinely different
+          # binaries (windows-installer-e2e.ps1 asserts a changed SHA256 and a
+          # PE ProductVersion matching the target). Measured on run 33573467320
+          # with a warm dependency cache: 9m07s for the bridge build (4
+          # workspace crates) and 7m05s for the target build (hq-sync-menubar
+          # alone), i.e. 16 of that job's 24 minutes.
+          #
+          # Neither build can be eliminated -- but neither has to be REPEATED.
+          # Both versions are deterministic functions of package.json (base+1
+          # and base+2), so with workspace artifacts retained the target dir
+          # already holds both compiled variants and a PR that changes no Rust
+          # source recompiles neither. rust-cache's default prune is what forces
+          # the rebuild every run.
+          cache-workspace-crates: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile

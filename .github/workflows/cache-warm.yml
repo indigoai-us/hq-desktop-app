@@ -263,6 +263,10 @@ jobs:
             apps/sync/src-tauri
           shared-key: windows-check-debug
           cache-on-failure: true
+          # Mirrors windows-check.yml's check job. Without this the warm cache
+          # carries dependencies only and every PR still recompiles all four
+          # workspace crates.
+          cache-workspace-crates: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
@@ -320,6 +324,10 @@ jobs:
             apps/sync/src-tauri
           shared-key: windows-installer-release
           cache-on-failure: true
+          # Mirrors windows-check.yml's installer job. Retaining workspace
+          # artifacts is what lets the two version-stamped compiles below
+          # survive into the PR runs that need them.
+          cache-workspace-crates: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
@@ -330,5 +338,49 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
-      - name: Compile release dependencies (x86_64-pc-windows-msvc)
-        run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.windows.ci.conf.json --features e2e-automation
+      # windows-check.yml's installer job never builds the version in
+      # package.json: "Prepare bridge and target versions" stamps base+1 (the
+      # bridge it installs) and later base+2 (the upgrade target), then compiles
+      # the app crate once at each. CARGO_PKG_VERSION is a compile-time input,
+      # so artifacts built at the base version are a fingerprint miss for both.
+      # Warming the base version alone therefore leaves the single most
+      # expensive part of that job -- 16 of its 24 minutes -- uncached.
+      #
+      # This mirrors that stamping exactly. Order matters: end on the bridge
+      # version so the saved target dir's most recent state matches the PR
+      # job's first build.
+      - name: Prepare bridge and target versions
+        id: versions
+        shell: pwsh
+        run: |
+          $baseVersion = node -p "require('./package.json').version"
+          $parts = $baseVersion.Split('.')
+          if ($parts.Count -ne 3) {
+            throw "Expected stable X.Y.Z base version, got $baseVersion"
+          }
+          "bridge=$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "target=$($parts[0]).$($parts[1]).$([int]$parts[2] + 2)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Compile release dependencies at the upgrade target version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.target }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp target version ${{ steps.versions.outputs.target }}"
+          }
+          pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.windows.ci.conf.json --features e2e-automation
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile at target version"
+          }
+
+      - name: Compile release dependencies at the bridge version
+        shell: pwsh
+        run: |
+          pnpm -C ../.. version:app --set-version "${{ steps.versions.outputs.bridge }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to stamp bridge version ${{ steps.versions.outputs.bridge }}"
+          }
+          pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.windows.ci.conf.json --features e2e-automation
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile at bridge version"
+          }

@@ -27,11 +27,13 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let ciWorkflow = "";
 let windowsCheckWorkflow = "";
+let cacheWarmWorkflow = "";
 
 beforeAll(async () => {
-  [ciWorkflow, windowsCheckWorkflow] = await Promise.all([
+  [ciWorkflow, windowsCheckWorkflow, cacheWarmWorkflow] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/cache-warm.yml"), "utf8"),
   ]);
 });
 
@@ -114,6 +116,51 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
       );
     });
   }
+
+  for (const job of windowsJobs) {
+    it(`${job} retains workspace-crate artifacts in its cache`, () => {
+      // rust-cache prunes workspace members by default, so an exact
+      // dependency-cache hit still recompiles hq-desktop-core, hq-telemetry,
+      // hq-platform and the app crate every run. Measured on run 33573467320
+      // with a warm dependency cache, that prune cost the installer job 16 of
+      // its 24 minutes; 10 of 14 recent Windows-gated PRs touched nothing
+      // under crates/ and 7 touched no Rust source at all.
+      expect(jobBody(windowsCheckWorkflow, job)).toContain(
+        "cache-workspace-crates: true",
+      );
+    });
+  }
+
+  it("warms the same workspace artifacts the PR jobs restore", () => {
+    // A warm cache built with the default prune carries dependencies only, so
+    // the PR jobs would recompile the workspace regardless of the setting
+    // above. Both sides have to agree or the warm run is wasted.
+    for (const job of ["windows-check-debug", "windows-installer-release"]) {
+      expect(jobBody(cacheWarmWorkflow, job)).toContain(
+        "cache-workspace-crates: true",
+      );
+    }
+  });
+
+  it("warms the app crate at the versions the installer job actually builds", () => {
+    // windows-check.yml never builds the version in package.json: it stamps
+    // base+1 (the bridge it installs) and base+2 (the upgrade target), then
+    // compiles the app crate once at each. CARGO_PKG_VERSION is a compile-time
+    // input, so artifacts warmed at the base version are a fingerprint miss
+    // for both and the two release compiles run cold on every PR.
+    const warm = jobBody(cacheWarmWorkflow, "windows-installer-release");
+    const installer = jobBody(windowsCheckWorkflow, "windows-installer-e2e");
+
+    // Both derive the pair the same way, from package.json.
+    for (const body of [warm, installer]) {
+      expect(body).toContain("$([int]$parts[2] + 1)");
+      expect(body).toContain("$([int]$parts[2] + 2)");
+    }
+
+    // And the warm job compiles at both, not just at the base version.
+    expect(warm).toContain("steps.versions.outputs.bridge");
+    expect(warm).toContain("steps.versions.outputs.target");
+  });
 
   it("gives the check and installer jobs disjoint cache keys", () => {
     // The check job builds the debug profile; the installer job builds
