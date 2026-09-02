@@ -431,7 +431,12 @@
 /// input spec string and `missingFromTree` reuses a populated range-satisfying
 /// entry without a manifest fetch. Raising the floor changes the cache key, so
 /// existing desktops cannot keep serving a cached 6.16.0 or 6.16.1 runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.2";
+///
+/// `~6.16.2` -> `~6.16.3`: floor the runner at the session-log capture fixes.
+/// Although 6.16.3 satisfies `~6.16.2`, npm caches `_npx` entries by the
+/// requested spec, so moving the floor rather than merely permitting 6.16.3
+/// prevents existing desktops from continuing to serve the cached older runtime.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.3";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -499,7 +504,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.2");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.3");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
