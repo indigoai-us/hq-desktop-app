@@ -202,13 +202,13 @@ describe("member-driven scope filtering", () => {
   });
 
   it("keeps personal only for the owner and their agents", () => {
+    const owner: ChannelCreateMember = {
+      personUid: "prs_corey",
+      label: "Corey",
+      companyUids: [],
+    };
     expect(personalScopeAllowed([agent], "prs_corey")).toBe(true);
-    expect(
-      personalScopeAllowed(
-        [{ personUid: "prs_corey", label: "Corey", companyUids: [] }],
-        "prs_corey",
-      ),
-    ).toBe(true);
+    expect(personalScopeAllowed([owner], "prs_corey")).toBe(true);
     expect(personalScopeAllowed([stefan, yousuf, shawon], "prs_corey")).toBe(
       false,
     );
