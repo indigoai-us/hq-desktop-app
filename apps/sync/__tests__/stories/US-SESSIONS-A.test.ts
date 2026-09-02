@@ -367,6 +367,81 @@ describe('follow-ups stay in the live session', () => {
   });
 });
 
+describe('the model pill belongs to one tool at a time', () => {
+  const MODELS = read('src/components/sessions/session-models.ts');
+
+  it('remembers model and effort per tool, migrating the shared key once', () => {
+    expect(MODELS).toContain("return `${LAST_MODEL_KEY}.${tool}`;");
+    expect(MODELS).toContain("return `${LAST_EFFORT_KEY}.${tool}`;");
+    expect(MODELS).toContain('export function readRememberedModel');
+    expect(MODELS).toContain('export function readRememberedEffort');
+    expect(PAGE).toContain('readRememberedModel(initialTool)');
+    expect(PAGE).toContain('readRememberedEffort(initialTool)');
+    // The page no longer reads or writes the shared keys directly.
+    expect(PAGE).not.toContain('readRemembered(LAST_MODEL_KEY)');
+    expect(PAGE).not.toContain('remember(LAST_MODEL_KEY');
+    expect(PAGE).not.toContain('remember(LAST_EFFORT_KEY');
+  });
+
+  it('moves model and effort WITH the tool pill, before any send', () => {
+    const chooser = PAGE.slice(PAGE.indexOf('function chooseTool'));
+    const body = chooser.slice(0, chooser.indexOf('\n  }'));
+    expect(body).toContain('model = readRememberedModel(next);');
+    expect(body).toContain('effort = readRememberedEffort(next);');
+    expect(body).toContain('ensureModelValid();');
+    // A tool switch is still a fork for the NEXT send only — never by itself.
+    expect(body).toContain('markPillsDirty(next !== tool);');
+    expect(body).not.toContain('startAndSend');
+    expect(body).not.toContain('onopensession');
+  });
+
+  it('validates the model on the send path, not only in an effect', () => {
+    expect(MODELS).toContain('export function validateModel');
+    expect(MODELS).toContain('export function plausibleModelForTool');
+    const spec = PAGE.slice(PAGE.indexOf('function specFrom'));
+    expect(spec.slice(0, spec.indexOf('\n  }'))).toContain('ensureModelValid();');
+    const overrides = PAGE.slice(PAGE.indexOf('const pendingOverrides'));
+    expect(overrides.slice(0, overrides.indexOf('\n  });'))).toContain('validateModel(');
+    expect(PAGE).toContain('Model reset to ${name} for ${toolLabel}');
+    expect(COMPOSER).toContain('session-model-reset-note');
+  });
+
+  it('clamps the effort pill to the current tool’s ladder', () => {
+    expect(MODELS).toContain('export const CODEX_EFFORT_OPTIONS');
+    expect(MODELS).toContain('export function effortOptionsFor');
+    expect(MODELS).toContain('export function clampEffort');
+    expect(PAGE).toContain('effortOptionsFor(tool, catalogReady ? models : null)');
+    expect(COMPOSER).toContain('{#each effortOptions as option');
+  });
+
+  it('renders model_not_found once, with the recovery inline', () => {
+    expect(ADAPTER).toContain("export const MODEL_NOT_FOUND_CODE = 'model_not_found';");
+    expect(ADAPTER).toContain('export function isModelNotFoundText');
+    expect(ADAPTER).toContain("action: 'chooseModel'");
+    expect(TRANSCRIPT).toContain('session-choose-model');
+    expect(TRANSCRIPT).toContain('onchoosemodel');
+    expect(PAGE).toContain('onchoosemodel={() => composer?.openModelMenu()}');
+    expect(COMPOSER).toContain('export function openModelMenu()');
+
+    // Executed: the three copies the owner saw fold to one line.
+    const narration = "There's an issue with the selected model (gpt-5.6-sol) (model_not_found)";
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hi', imageCount: 0 },
+      { kind: 'assistantMessage', text: narration },
+      { kind: 'error', message: "The selected model isn't available.", code: 'model_not_found' },
+      { kind: 'turnDone', status: 'error', error: narration },
+    ]);
+    expect(blocks.map((block) => block.type)).toEqual(['userBubble', 'error']);
+  });
+
+  it('titles the strip from the announced model, never the pill', () => {
+    // The registry seeds `summary.model` from the spec until `started` lands.
+    expect(PAGE).toContain('liveSessionStore.startedModel');
+    expect(PAGE).toContain('plausibleModelForTool(announced, live.tool)');
+    expect(PAGE).not.toContain('const resolvedModel = $derived(summary?.model ?? null);');
+  });
+});
+
 describe('the status tail is honest about a slow first turn', () => {
   it('a handshake announcement never retires a session that is already working', () => {
     const registry = readFileSync(

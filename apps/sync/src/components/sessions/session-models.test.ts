@@ -2,24 +2,40 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CLAUDE_EFFORT_OPTIONS,
+  CODEX_EFFORT_OPTIONS,
   EFFORT_OPTIONS,
+  FALLBACK_CODEX_MODELS,
   FALLBACK_MODELS,
+  LAST_EFFORT_KEY,
   LAST_MODEL_KEY,
   LAST_TOOL_KEY,
   TOOL_OPTIONS,
+  clampEffort,
   defaultModelHint,
+  effortOptionsFor,
+  fallbackModelsFor,
   firstSentence,
   friendlyModelName,
+  isFallbackCatalog,
+  lastEffortKey,
+  lastModelKey,
   modelMenuRows,
   modelPillLabel,
   modelRowLabel,
   pickModel,
+  plausibleModelForTool,
   readRemembered,
+  readRememberedEffort,
+  readRememberedModel,
   readRememberedTool,
   readSessionModels,
   remember,
+  rememberEffort,
+  rememberModel,
   selectableModels,
   shortenModelLabel,
+  validateModel,
 } from './session-models';
 
 /** The exact shape the CLI handshake sends, verified against the real probe. */
@@ -428,5 +444,214 @@ describe('the pill and the strip name a Codex model the way the menu does', () =
   it('still says something honest for a model the catalog has never heard of', () => {
     expect(modelPillLabel(models, 'gpt-9-experimental', null, 'codex')).toBe('GPT 9');
     expect(modelPillLabel([], null, 'gpt-5.6-codex', 'codex')).toBe('GPT 5.6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bug: one model memory shared by two CLIs
+// ---------------------------------------------------------------------------
+
+describe('the model is remembered per tool', () => {
+  it('keys each CLI’s memory under its own name', () => {
+    expect(lastModelKey('claude')).toBe('hq.sessions.lastModel.claude');
+    expect(lastModelKey('codex')).toBe('hq.sessions.lastModel.codex');
+    expect(lastEffortKey('claude')).toBe('hq.sessions.lastEffort.claude');
+    expect(lastEffortKey('codex')).toBe('hq.sessions.lastEffort.codex');
+  });
+
+  it('never hands one CLI the other’s choice', () => {
+    // The owner's screenshot: a Codex session's `gpt-5.6-sol` was read back
+    // for the next Claude session and rejected on every turn.
+    rememberModel('codex', 'gpt-5.6-sol');
+    expect(readRememberedModel('codex')).toBe('gpt-5.6-sol');
+    expect(readRememberedModel('claude')).toBeNull();
+
+    rememberModel('claude', 'claude-fable-5-1[1m]');
+    expect(readRememberedModel('claude')).toBe('claude-fable-5-1[1m]');
+    expect(readRememberedModel('codex')).toBe('gpt-5.6-sol');
+  });
+
+  it('forgets a tool’s choice without touching the other tool’s', () => {
+    rememberModel('codex', 'gpt-5.6-sol');
+    rememberModel('claude', 'sonnet');
+    rememberModel('claude', null);
+    expect(readRememberedModel('claude')).toBeNull();
+    expect(readRememberedModel('codex')).toBe('gpt-5.6-sol');
+  });
+
+  it('migrates the pre-per-tool key into the CURRENT tool, once', () => {
+    remember(LAST_MODEL_KEY, 'gpt-5.6-sol');
+    // The tool that is current when the legacy value is first read inherits it…
+    expect(readRememberedModel('codex')).toBe('gpt-5.6-sol');
+    expect(readRemembered(lastModelKey('codex'))).toBe('gpt-5.6-sol');
+    // …the legacy key is gone…
+    expect(readRemembered(LAST_MODEL_KEY)).toBeNull();
+    // …so the other tool does NOT inherit it too.
+    expect(readRememberedModel('claude')).toBeNull();
+  });
+
+  it('prefers a tool’s own memory over a legacy value', () => {
+    remember(LAST_MODEL_KEY, 'gpt-5.6-sol');
+    rememberModel('claude', 'sonnet');
+    expect(readRememberedModel('claude')).toBe('sonnet');
+    // The legacy value is still waiting for whichever tool reads it first.
+    expect(readRemembered(LAST_MODEL_KEY)).toBe('gpt-5.6-sol');
+  });
+
+  it('remembers effort per tool, with the same migration', () => {
+    remember(LAST_EFFORT_KEY, 'xhigh');
+    expect(readRememberedEffort('codex')).toBe('xhigh');
+    expect(readRemembered(LAST_EFFORT_KEY)).toBeNull();
+    expect(readRememberedEffort('claude')).toBeNull();
+    rememberEffort('claude', 'max');
+    expect(readRememberedEffort('claude')).toBe('max');
+    expect(readRememberedEffort('codex')).toBe('xhigh');
+  });
+});
+
+describe('plausibleModelForTool — the pre-catalog check', () => {
+  it.each([
+    'default',
+    'opus',
+    'sonnet',
+    'haiku',
+    'fable',
+    'opus[1m]',
+    'claude-fable-5-1[1m]',
+    'claude-opus-4-8',
+    'us.anthropic.claude-opus-4-8',
+  ])('lets Claude carry %s', (id) => {
+    expect(plausibleModelForTool(id, 'claude')).toBe(true);
+  });
+
+  it.each(['gpt-5.6-sol', 'gpt-5.6-codex-mini', 'o3', 'o4-mini'])('lets Codex carry %s', (id) => {
+    expect(plausibleModelForTool(id, 'codex')).toBe(true);
+  });
+
+  it('never lets Claude carry a Codex id, nor Codex a Claude one', () => {
+    expect(plausibleModelForTool('gpt-5.6-sol', 'claude')).toBe(false);
+    expect(plausibleModelForTool('o3', 'claude')).toBe(false);
+    expect(plausibleModelForTool('opus', 'codex')).toBe(false);
+    expect(plausibleModelForTool('claude-fable-5-1[1m]', 'codex')).toBe(false);
+  });
+
+  it('treats Default (no model) as always fine, and an empty id as never', () => {
+    expect(plausibleModelForTool(null, 'claude')).toBe(true);
+    expect(plausibleModelForTool(null, 'codex')).toBe(true);
+    expect(plausibleModelForTool('', 'claude')).toBe(false);
+    expect(plausibleModelForTool('   ', 'codex')).toBe(false);
+  });
+});
+
+describe('validateModel — a spec never carries a model its CLI lacks', () => {
+  const claude = readSessionModels(REAL_CATALOG);
+  const codex = readSessionModels(CODEX_CATALOG, 'codex');
+
+  it('keeps a model the loaded catalog offers', () => {
+    expect(validateModel('claude-fable-5-1[1m]', 'claude', claude)).toEqual({
+      model: 'claude-fable-5-1[1m]',
+      reset: false,
+    });
+    expect(validateModel('gpt-5.6-sol', 'codex', codex)).toEqual({
+      model: 'gpt-5.6-sol',
+      reset: false,
+    });
+  });
+
+  it('resets a model the loaded catalog does not offer — the owner’s bug', () => {
+    expect(validateModel('gpt-5.6-sol', 'claude', claude)).toEqual({ model: null, reset: true });
+    expect(validateModel('claude-fable-5-1[1m]', 'codex', codex)).toEqual({
+      model: null,
+      reset: true,
+    });
+  });
+
+  it('with the catalog loaded, even a real alias must be a row', () => {
+    // `opus` is a CLI alias but not a row of this catalog (`opus[1m]` is).
+    expect(validateModel('opus', 'claude', claude).reset).toBe(true);
+  });
+
+  it('without a catalog, trusts only the CLI’s own aliases', () => {
+    expect(validateModel('opus', 'claude', null)).toEqual({ model: 'opus', reset: false });
+    expect(validateModel('claude-opus-4-8', 'claude', null).reset).toBe(false);
+    expect(validateModel('gpt-5.6-sol', 'claude', null)).toEqual({ model: null, reset: true });
+    expect(validateModel('gpt-5.6-sol', 'codex', null).reset).toBe(false);
+    expect(validateModel('opus', 'codex', null).reset).toBe(true);
+  });
+
+  it('treats an empty catalog like no catalog', () => {
+    expect(validateModel('opus', 'claude', []).reset).toBe(false);
+  });
+
+  it('never resets Default', () => {
+    expect(validateModel(null, 'claude', claude)).toEqual({ model: null, reset: false });
+    expect(validateModel(null, 'codex', null)).toEqual({ model: null, reset: false });
+  });
+});
+
+describe('the fallback catalog is per tool, and is not a catalog', () => {
+  it('offers Codex only Default — no Claude aliases', () => {
+    expect(FALLBACK_CODEX_MODELS.map((m) => m.value)).toEqual([null]);
+    expect(readSessionModels([], 'codex')).toEqual(FALLBACK_CODEX_MODELS);
+    expect(readSessionModels([], 'claude')).toEqual(FALLBACK_MODELS);
+    expect(fallbackModelsFor('codex')).toEqual(FALLBACK_CODEX_MODELS);
+  });
+
+  it('recognises its own fallback so nothing is validated against it', () => {
+    expect(isFallbackCatalog(readSessionModels([], 'claude'), 'claude')).toBe(true);
+    expect(isFallbackCatalog(readSessionModels([], 'codex'), 'codex')).toBe(true);
+    expect(isFallbackCatalog(readSessionModels(REAL_CATALOG), 'claude')).toBe(false);
+    expect(isFallbackCatalog(readSessionModels(CODEX_CATALOG, 'codex'), 'codex')).toBe(false);
+  });
+});
+
+describe('the effort ladder is per tool', () => {
+  it('leaves EFFORT_OPTIONS as Claude’s ladder', () => {
+    expect(CLAUDE_EFFORT_OPTIONS).toBe(EFFORT_OPTIONS);
+    expect(effortOptionsFor('claude')).toEqual(EFFORT_OPTIONS);
+  });
+
+  it('offers Codex its own rungs — xhigh and ultra, never max', () => {
+    const values = CODEX_EFFORT_OPTIONS.map((option) => option.value);
+    expect(values).toEqual([null, 'low', 'medium', 'high', 'xhigh', 'ultra']);
+    expect(effortOptionsFor('codex')).toEqual(CODEX_EFFORT_OPTIONS);
+    expect(CODEX_EFFORT_OPTIONS.find((option) => option.value === 'xhigh')?.label).toBe(
+      'Extra high',
+    );
+  });
+
+  it('reads the ladder off the catalog when the rows declare one', () => {
+    // Codex: `supportedReasoningEfforts: [{ reasoningEffort }]` on the row.
+    const codex = readSessionModels(CODEX_CATALOG, 'codex');
+    expect(codex[0]?.efforts).toEqual(['low', 'medium', 'high']);
+    expect(effortOptionsFor('codex', codex).map((option) => option.value)).toEqual([
+      null,
+      'low',
+      'medium',
+      'high',
+    ]);
+    // Claude: `supportedEffortLevels: ["low", …]` on the Default row.
+    const claude = readSessionModels([
+      { value: 'default', displayName: 'Default', supportedEffortLevels: ['low', 'medium', 'high', 'max'] },
+    ]);
+    expect(effortOptionsFor('claude', claude).map((option) => option.value)).toEqual([
+      null,
+      'low',
+      'medium',
+      'high',
+      'max',
+    ]);
+  });
+
+  it('falls back to the static ladder when no row says anything', () => {
+    expect(effortOptionsFor('claude', readSessionModels(REAL_CATALOG))).toEqual(EFFORT_OPTIONS);
+  });
+
+  it('clamps an effort the current ladder lacks to Auto', () => {
+    expect(clampEffort('xhigh', effortOptionsFor('claude'))).toBeNull();
+    expect(clampEffort('max', effortOptionsFor('codex'))).toBeNull();
+    expect(clampEffort('high', effortOptionsFor('codex'))).toBe('high');
+    expect(clampEffort('max', effortOptionsFor('claude'))).toBe('max');
+    expect(clampEffort(null, effortOptionsFor('codex'))).toBeNull();
   });
 });

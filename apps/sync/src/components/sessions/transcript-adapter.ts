@@ -260,8 +260,53 @@ export type ChatBlock =
       resolution: CardResolution | null;
       at: number | null;
     }
-  | { type: 'error'; id: string; text: string; tone: 'error' | 'warn'; at: number | null }
+  | {
+      type: 'error';
+      id: string;
+      text: string;
+      tone: 'error' | 'warn';
+      /** The CLI's own error code, when the event carried one. */
+      code?: string;
+      /**
+       * A recovery the line can offer inline. `chooseModel` is the
+       * `model_not_found` case: the pill holds a model this CLI does not have,
+       * and the fix is one click away rather than a sentence away.
+       */
+      action?: 'chooseModel';
+      at: number | null;
+    }
   | { type: 'divider'; id: string; label: string; at: number | null };
+
+// ---------------------------------------------------------------------------
+// model_not_found — one line, not three
+// ---------------------------------------------------------------------------
+
+/** The Claude CLI's code for a model it cannot run. */
+export const MODEL_NOT_FOUND_CODE = 'model_not_found';
+
+/** The one line the transcript says about it. */
+export const MODEL_NOT_FOUND_TEXT = "The selected model isn't available.";
+
+/**
+ * The CLI ALSO narrates a `model_not_found` as assistant prose — "There's an
+ * issue with the selected model (gpt-5.6-sol)… model_not_found" — and then
+ * ends the turn with the same sentence as its error. Rendered literally that
+ * is the same failure three times. This is how the prose is recognised so it
+ * can fold into the one error line instead.
+ */
+export function isModelNotFoundText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /issue with the selected model/i.test(text) || /\bmodel_not_found\b/i.test(text);
+}
+
+/** Two error sentences are the same news when they differ only in dressing. */
+function normalizeErrorText(text: string): string {
+  return text
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[.!\s]+$/g, '')
+    .toLowerCase();
+}
 
 /** A decision the session is blocked on until the operator answers. */
 export type PendingCard =
@@ -538,6 +583,82 @@ export function foldSessionEvents(
   let lastDay = '';
   let nextTurn = 0;
 
+  /**
+   * The error sentences already on screen for the CURRENT turn, normalized.
+   * A `turnDone` that repeats an `error` event's message, or an `error` event
+   * that repeats the prose, adds nothing and is not a second line.
+   */
+  let turnErrors = new Set<string>();
+  /** The turn's one `model_not_found` line, once it exists. */
+  let turnModelError: Extract<ChatBlock, { type: 'error' }> | null = null;
+
+  /** A user turn starts a new turn: its errors are its own. */
+  function resetTurnErrors(): void {
+    turnErrors = new Set<string>();
+    turnModelError = null;
+  }
+
+  /**
+   * The one `model_not_found` line for this turn. The first sighting — the
+   * prose, the `error` event, or the `turnDone`, whichever the wire delivers
+   * first — creates it; every later sighting in the same turn folds into it.
+   */
+  function modelNotFoundLine(index: number, at: number | null): void {
+    if (turnModelError) return;
+    const block: Extract<ChatBlock, { type: 'error' }> = {
+      type: 'error',
+      id: `error-${index}`,
+      tone: 'error',
+      text: MODEL_NOT_FOUND_TEXT,
+      code: MODEL_NOT_FOUND_CODE,
+      action: 'chooseModel',
+      at,
+    };
+    turnModelError = block;
+    turnErrors.add(normalizeErrorText(MODEL_NOT_FOUND_TEXT));
+    push(block);
+  }
+
+  /**
+   * An error sentence for this turn, unless the same sentence is already on
+   * screen. Returns whether a line was added.
+   */
+  function errorLine(
+    index: number,
+    at: number | null,
+    message: string,
+    tone: 'error' | 'warn',
+    code?: string,
+  ): boolean {
+    const key = normalizeErrorText(message);
+    if (key.length > 0 && turnErrors.has(key)) return false;
+    turnErrors.add(key);
+    // The rendered line carries the code; a later `turnDone` repeats only the
+    // sentence, so the sentence is what is remembered.
+    const text = code ? `${message} (${code})` : message;
+    push(
+      code === undefined
+        ? { type: 'error', id: `${tone === 'warn' ? 'rate' : 'error'}-${index}`, tone, text, at }
+        : { type: 'error', id: `error-${index}`, tone, text, code, at },
+    );
+    return true;
+  }
+
+  /**
+   * Prose that is really the CLI narrating a `model_not_found`: never a
+   * paragraph. Whatever of it already streamed is withdrawn, and the turn's
+   * one error line stands in its place. Returns true when the text was absorbed.
+   */
+  function absorbModelError(text: string, index: number, at: number | null): boolean {
+    if (!isModelNotFoundText(text)) return false;
+    if (openProse) {
+      retired.add(openProse.id);
+      openProse = null;
+    }
+    modelNotFoundLine(index, at);
+    return true;
+  }
+
   /** Emit a day divider when a real-dated block crosses a UTC date boundary. */
   function markDay(at: number | null): void {
     if (at === null) return;
@@ -641,6 +762,7 @@ export function foldSessionEvents(
       closeProse();
       closeGroup();
       retireThought();
+      resetTurnErrors();
       noteUserTurn(turn.text);
       push(userBlock(turn.id, turn.text, turn, turn.at));
     }
@@ -664,6 +786,7 @@ export function foldSessionEvents(
         closeProse();
         closeGroup();
         retireThought();
+        resetTurnErrors();
         noteUserTurn(event.text);
         push(userBlock(`ev-${index}`, event.text, turnMeta[event.text] ?? {}, at));
         break;
@@ -688,9 +811,14 @@ export function foldSessionEvents(
         }
         retireThought();
         closeGroup();
+        // A turn that already failed on its model has nothing to say: the
+        // CLI's narration of that failure is the error line, not a paragraph.
+        if (turnModelError) break;
         if (openProse) {
           openProse.text += event.text;
+          absorbModelError(openProse.text, index, at);
         } else {
+          if (absorbModelError(event.text, index, at)) break;
           const prose: Extract<ChatBlock, { type: 'assistantProse' }> = {
             type: 'assistantProse',
             id: `say-${index}`,
@@ -711,6 +839,8 @@ export function foldSessionEvents(
         }
         retireThought();
         closeGroup();
+        if (turnModelError) break;
+        if (absorbModelError(event.text, index, at)) break;
         if (openProse) {
           // The finalized text is authoritative — the deltas were a preview of
           // exactly this string, so it replaces rather than appends.
@@ -859,15 +989,14 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
-        push({
-          type: 'error',
-          id: `rate-${index}`,
-          tone: 'warn',
-          text: event.resetsAt
+        errorLine(
+          index,
+          at,
+          event.resetsAt
             ? `Rate limited: ${event.message} (resets ${event.resetsAt})`
             : `Rate limited: ${event.message}`,
-          at,
-        });
+          'warn',
+        );
         break;
       }
 
@@ -897,17 +1026,26 @@ export function foldSessionEvents(
             push({ type: 'divider', id: `handoff-${index}`, label: 'Session handed off', at });
           }
         }
-        if (event.status !== 'success') {
-          push({
-            type: 'error',
-            id: `turn-${index}`,
-            tone: event.status === 'interrupted' ? 'warn' : 'error',
-            text:
-              event.status === 'interrupted'
-                ? 'Stopped.'
-                : `Turn failed${event.error ? `: ${event.error}` : ''}.`,
-            at,
-          });
+        if (event.status === 'interrupted') {
+          push({ type: 'error', id: `turn-${index}`, tone: 'warn', text: 'Stopped.', at });
+        } else if (event.status !== 'success') {
+          // The turn's failure was already said: an `error` event with the
+          // same sentence, or the one `model_not_found` line. "Turn failed: …"
+          // repeating it is the third copy the owner saw.
+          const already =
+            (event.error !== undefined && turnErrors.has(normalizeErrorText(event.error))) ||
+            (turnModelError !== null && isModelNotFoundText(event.error));
+          if (event.error && isModelNotFoundText(event.error)) {
+            modelNotFoundLine(index, at);
+          } else if (!already) {
+            push({
+              type: 'error',
+              id: `turn-${index}`,
+              tone: 'error',
+              text: `Turn failed${event.error ? `: ${event.error}` : ''}.`,
+              at,
+            });
+          }
         }
         break;
       }
@@ -916,13 +1054,11 @@ export function foldSessionEvents(
         retireThought();
         closeProse();
         closeGroup();
-        push({
-          type: 'error',
-          id: `error-${index}`,
-          tone: 'error',
-          text: event.code ? `${event.message} (${event.code})` : event.message,
-          at,
-        });
+        if (event.code === MODEL_NOT_FOUND_CODE || isModelNotFoundText(event.message)) {
+          modelNotFoundLine(index, at);
+          break;
+        }
+        errorLine(index, at, event.message, 'error', event.code);
         break;
       }
 

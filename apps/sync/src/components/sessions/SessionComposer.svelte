@@ -85,7 +85,12 @@
   } from './slash-commands';
   import type { ProjectEntry } from './startwork';
   import type { SessionCommand } from './session-events';
-  import type { ComposerImage, SessionModel, SessionToolId } from './session-models';
+  import type {
+    ComposerImage,
+    EffortOption,
+    SessionModel,
+    SessionToolId,
+  } from './session-models';
   import {
     EFFORT_OPTIONS,
     TOOL_OPTIONS,
@@ -142,6 +147,12 @@
     /** The model the live session actually resolved, from `started`. */
     resolvedModel?: string | null;
     effort?: string | null;
+    /**
+     * The effort ladder the CURRENT tool takes. Codex reasons at `xhigh` and
+     * `ultra`, Claude at `max`; the page clamps `effort` to whichever ladder
+     * is showing, so the pill never names a rung its CLI would reject.
+     */
+    effortOptions?: EffortOption[];
     permissionMode?: 'prompt' | 'bypassAll';
     tool?: SessionToolId;
     /** Preflight says the Codex CLI is on this machine. */
@@ -155,6 +166,11 @@
      * than on the next turn. Codex takes both per turn and never sets this.
      */
     overridesDeferred?: boolean;
+    /**
+     * The page dropped a model the current tool cannot run ("Model reset to
+     * Default for Claude"). One footer line, cleared on the next pick.
+     */
+    modelNote?: string;
 
     /** Footer: the HQ folder's basename. The whole footer. */
     hqFolder?: string;
@@ -207,11 +223,13 @@
     model = null,
     resolvedModel = null,
     effort = null,
+    effortOptions = EFFORT_OPTIONS,
     permissionMode = 'prompt',
     tool = 'claude',
     codexAvailable = false,
     newSessionPending = false,
     overridesDeferred = false,
+    modelNote = '',
     hqFolder = '',
     mentionCandidates = [],
     mentionStatus = null,
@@ -296,7 +314,7 @@
 
   const modelLabel = $derived(modelPillLabel(models, model, resolvedModel, tool));
   const effortLabel = $derived(
-    EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'Auto',
+    effortOptions.find((option) => option.value === effort)?.label ?? 'Auto',
   );
   const companyName = $derived(
     companies.find((option) => option.slug === company)?.displayName ?? company ?? 'Company',
@@ -384,6 +402,15 @@
 
   function closeMenus() {
     openMenu = null;
+  }
+
+  /**
+   * Open the model menu from outside — the transcript's `model_not_found`
+   * line offers "Choose a model", and the fix should be the menu itself, not
+   * a hunt for the pill.
+   */
+  export function openModelMenu(): void {
+    openMenu = 'model';
   }
 
   function onWindowKeydown(event: KeyboardEvent) {
@@ -997,7 +1024,7 @@
           </button>
           {#if openMenu === 'effort'}
             <div class="menu menu-right" role="menu" data-testid="session-menu-effort">
-              {#each EFFORT_OPTIONS as option (option.value ?? '@auto')}
+              {#each effortOptions as option (option.value ?? '@auto')}
                 <button
                   type="button"
                   role="menuitemradio"
@@ -1072,6 +1099,9 @@
       <span class="foot-note" data-testid="session-composer-steer-hint">
         Sending now steers the turn in progress
       </span>
+    {/if}
+    {#if modelNote}
+      <span class="foot-note" role="status" data-testid="session-model-reset-note">{modelNote}</span>
     {/if}
     {#if attachError}
       <span class="foot-note error" data-testid="session-attach-error">{attachError}</span>

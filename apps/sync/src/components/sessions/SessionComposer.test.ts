@@ -16,7 +16,7 @@ vi.mock('svelte', async () => {
 
 import { flushSync, mount, unmount } from 'svelte';
 import SessionComposer from './SessionComposer.svelte';
-import { readSessionModels } from './session-models';
+import { CODEX_EFFORT_OPTIONS, readSessionModels } from './session-models';
 
 /** The exact shape the CLI handshake sends. */
 const CATALOG = readSessionModels([
@@ -408,5 +408,46 @@ describe('@mentions — the picker, the chips, the promise', () => {
     render({ mentionStatus: { text: "Couldn't DM Atlas (Network error)", error: true } });
     expect(must('session-mention-status').getAttribute('role')).toBe('alert');
     expect(must('session-mention-status').className).toContain('error');
+  });
+});
+
+describe('the effort menu follows the tool', () => {
+  it('offers Codex its own ladder when told to', () => {
+    render({ tool: 'codex', codexAvailable: true, effortOptions: CODEX_EFFORT_OPTIONS });
+    click(must('session-pill-effort'));
+    const labels = [...must('session-menu-effort').querySelectorAll('.menu-label')].map(
+      (row) => row.textContent?.trim(),
+    );
+    expect(labels).toEqual(['Auto', 'Low', 'Medium', 'High', 'Extra high', 'Ultra']);
+  });
+
+  it('names the pill from the ladder it was given', () => {
+    render({ tool: 'codex', effort: 'xhigh', effortOptions: CODEX_EFFORT_OPTIONS });
+    expect(must('session-pill-effort').textContent).toContain('Extra high');
+  });
+});
+
+describe('the model-reset note', () => {
+  it('shows the page’s one-line note in the footer', () => {
+    render({ modelNote: 'Model reset to Default for Claude' });
+    expect(must('session-model-reset-note').textContent?.trim()).toBe(
+      'Model reset to Default for Claude',
+    );
+  });
+
+  it('renders nothing when there is no note', () => {
+    render();
+    expect(at('session-model-reset-note')).toBeNull();
+  });
+});
+
+describe('openModelMenu — the transcript’s "Choose a model" lands here', () => {
+  it('opens the model menu from outside', () => {
+    render();
+    expect(at('session-menu-model')).toBeNull();
+    (component as unknown as { openModelMenu: () => void }).openModelMenu();
+    flushSync();
+    expect(at('session-menu-model')).not.toBeNull();
+    expect(must('session-pill-model').getAttribute('aria-expanded')).toBe('true');
   });
 });
