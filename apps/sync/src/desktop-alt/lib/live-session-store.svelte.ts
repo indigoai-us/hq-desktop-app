@@ -55,7 +55,17 @@ import {
   type TranscriptState,
   type UsageSummary,
   type UserTurn,
+  type UserTurnMeta,
 } from '../../components/sessions/transcript-adapter';
+import type { SkillCatalog } from '../../components/sessions/slash-commands';
+import type { ProjectEntry } from '../../components/sessions/startwork';
+import type {
+  ContextLoaders,
+  MeetingEntry,
+  ReferenceText,
+  SignalEntry,
+  VaultEntry,
+} from '../../components/sessions/context-attachments';
 import type {
   ShareToChannelRequest,
   ShareToChannelResult,
@@ -278,6 +288,13 @@ let revision = $state(0);
  */
 let userTurnsById: Record<string, UserTurn[]> = {};
 /**
+ * What each sent turn MEANT (hidden orientation turn, its label, its context
+ * tags), keyed by session then by text. Outlives the mirror on purpose: the
+ * backend's `userMessage` replaces the mirrored bubble, and without this the
+ * `/startwork` divider would turn back into a raw bubble the moment it did.
+ */
+let turnMetaById: Record<string, Record<string, UserTurnMeta>> = {};
+/**
  * The optimistic bubble for a send that is starting its own session — it has
  * nowhere to live until the backend mints an id.
  */
@@ -428,16 +445,23 @@ function teardownListeners(): void {
 // The operator's own turns
 // ---------------------------------------------------------------------------
 
-function newTurn(text: string, atIndex: number): UserTurn {
+function newTurn(text: string, atIndex: number, meta: UserTurnMeta = {}): UserTurn {
   turnSeq += 1;
-  return { id: `t${turnSeq}`, text, atIndex, at: Date.now() };
+  return { id: `t${turnSeq}`, text, atIndex, at: Date.now(), ...meta };
+}
+
+/** Keep a turn's meaning past the mirror, so the backend echo renders alike. */
+function keepTurnMeta(sessionId: string, text: string, meta: UserTurnMeta): void {
+  if (!meta.hidden && !meta.label && !(meta.attachments && meta.attachments.length > 0)) return;
+  turnMetaById[sessionId] = { ...(turnMetaById[sessionId] ?? {}), [text]: meta };
 }
 
 /** Mirror a sent turn onto a session, at the event index it was sent from. */
-function recordTurn(sessionId: string, text: string): void {
+function recordTurn(sessionId: string, text: string, meta: UserTurnMeta = {}): void {
   const entry = entries[sessionId];
-  const turn = newTurn(text, entry ? entry.events.length : 0);
+  const turn = newTurn(text, entry ? entry.events.length : 0, meta);
   userTurnsById[sessionId] = [...(userTurnsById[sessionId] ?? []), turn];
+  keepTurnMeta(sessionId, text, meta);
   foldCache = null;
   revision += 1;
 }
@@ -520,8 +544,9 @@ async function startAndSend(
   spec: SessionSpec,
   text: string,
   images: ImageAttachment[] = [],
+  meta: UserTurnMeta = {},
 ): Promise<string> {
-  const optimistic = newTurn(text, 0);
+  const optimistic = newTurn(text, 0, meta);
   draftTurns = [optimistic];
   foldCache = null;
   revision += 1;
@@ -532,6 +557,7 @@ async function startAndSend(
       ...(userTurnsById[sessionId] ?? []),
       { ...optimistic, atIndex: entry ? entry.events.length : 0 },
     ];
+    keepTurnMeta(sessionId, text, meta);
     draftTurns = [];
     foldCache = null;
     revision += 1;
@@ -557,10 +583,11 @@ async function send(
   text: string,
   images: ImageAttachment[] = [],
   overrides: TurnOverrides | null = null,
+  meta: UserTurnMeta = {},
 ): Promise<void> {
   const sessionId = activeId;
   if (!sessionId) return;
-  recordTurn(sessionId, text);
+  recordTurn(sessionId, text, meta);
   await invoke('agent_session_send', { sessionId, text, images, overrides });
   if (overrides) await refreshList();
 }
@@ -736,10 +763,75 @@ async function slashCommands(tool: SessionTool = 'claude'): Promise<CommandCatal
   return promise;
 }
 
+// ---------------------------------------------------------------------------
+// HQ-native context — the composer's slash picker, project submenu and `+` menu
+// ---------------------------------------------------------------------------
+//
+// Thin `invoke` wrappers over `commands/hq_context.rs`, so the page keeps its
+// "no raw invoke" contract. The skill catalog is the expensive one (it walks
+// every `.claude/skills` dir and the worker registry) and is asked for on
+// every `/`, so it is cached per company for the process lifetime; the rest
+// are cheap directory reads asked for on a click.
+
+let skillCatalogCache: Map<string, Promise<SkillCatalog>> = new Map();
+
+/** Workers + skills the picker can offer, scoped to `company` when set. */
+function hqSkillCatalog(company: string | null): Promise<SkillCatalog> {
+  const key = company ?? '';
+  const cached = skillCatalogCache.get(key);
+  if (cached) return cached;
+  const promise = invoke<SkillCatalog>('hq_skill_catalog', { company });
+  skillCatalogCache.set(key, promise);
+  promise.catch(() => {
+    if (skillCatalogCache.get(key) === promise) skillCatalogCache.delete(key);
+  });
+  return promise;
+}
+
+/** A company's projects, newest `prd.json` first. */
+function hqCompanyProjects(company: string): Promise<ProjectEntry[]> {
+  return invoke<ProjectEntry[]>('hq_company_projects', { company });
+}
+
+function hqRecentMeetings(company: string, limit = 50): Promise<MeetingEntry[]> {
+  return invoke<MeetingEntry[]>('hq_recent_meetings', { company, limit });
+}
+
+function hqSignals(company: string, kind: string | null = null, limit = 50): Promise<SignalEntry[]> {
+  return invoke<SignalEntry[]>('hq_signals', { company, kind, limit });
+}
+
+function hqVaultFiles(
+  company: string,
+  prefix: string | null = null,
+  query: string | null = null,
+  limit = 200,
+): Promise<VaultEntry[]> {
+  return invoke<VaultEntry[]>('hq_vault_files', {
+    company,
+    prefix: prefix || null,
+    query: query || null,
+    limit,
+  });
+}
+
+function hqReferenceText(path: string, maxChars = 6000): Promise<ReferenceText> {
+  return invoke<ReferenceText>('hq_reference_text', { path, maxChars });
+}
+
+/** The loader set the composer's `+` menu takes. */
+const contextLoaders: ContextLoaders = {
+  meetings: (company) => hqRecentMeetings(company),
+  signals: (company) => hqSignals(company),
+  vaultFiles: (company, prefix, query) => hqVaultFiles(company, prefix, query),
+  referenceText: (path, maxChars) => hqReferenceText(path, maxChars),
+};
+
 /** Test seam: forget memoized probes. */
 export function resetProbeCaches(): void {
   preflightCache = null;
   catalogCache = new Map();
+  skillCatalogCache = new Map();
 }
 
 /**
@@ -756,6 +848,7 @@ export function resetLiveSessionStore(): void {
   revision = 0;
   foldCache = null;
   userTurnsById = {};
+  turnMetaById = {};
   draftTurns = [];
   turnSeq = 0;
 }
@@ -792,6 +885,7 @@ function transcriptOf(entry: SessionEntry | null): TranscriptState {
     receivedAt: entry.receivedAt,
     userTurns: userTurnsById[entry.sessionId] ?? [],
     resolutions: entry.resolutions,
+    turnMeta: turnMetaById[entry.sessionId],
   });
   foldCache = { id: entry.sessionId, revision: rev, value };
   return value;
@@ -896,4 +990,11 @@ export const liveSessionStore = {
   shareToChannel,
   preflight,
   slashCommands,
+  hqSkillCatalog,
+  hqCompanyProjects,
+  hqRecentMeetings,
+  hqSignals,
+  hqVaultFiles,
+  hqReferenceText,
+  contextLoaders,
 };

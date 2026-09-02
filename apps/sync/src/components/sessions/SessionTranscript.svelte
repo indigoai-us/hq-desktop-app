@@ -26,6 +26,7 @@
   import ToolGroupRow from './ToolGroupRow.svelte';
   import type { ArtifactActions } from './session-artifacts';
   import type { ChatBlock } from './transcript-adapter';
+  import { attachmentLabel } from './context-attachments';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import './sessions-tokens.css';
 
@@ -171,7 +172,24 @@
       {#each blocks as block (block.id)}
         {#if block.type === 'userBubble'}
           <div class="user-row">
-            <div class="user-bubble" data-testid="session-user-bubble">{block.text}</div>
+            <div class="user-column">
+              <div class="user-bubble" data-testid="session-user-bubble">{block.text}</div>
+              {#if block.attachments.length > 0}
+                <!-- The context block itself never renders; only what rode along. -->
+                <div class="user-attachments" data-testid="session-user-attachments">
+                  {#each block.attachments as attachment (attachment.path)}
+                    <span
+                      class="user-attachment"
+                      data-testid="session-user-attachment"
+                      data-kind={attachment.kind}
+                      title={attachment.path}
+                    >
+                      Attached: {attachmentLabel(attachment)}
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           </div>
         {:else if block.type === 'assistantProse'}
           <div
@@ -319,8 +337,33 @@
     justify-content: flex-end;
   }
 
-  .user-bubble {
+  .user-column {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
     max-width: 70%;
+  }
+
+  .user-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .user-attachment {
+    padding: 1px 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  .user-bubble {
+    max-width: 100%;
     padding: 8px 12px;
     border-radius: 14px;
     background: var(--v4-control-faint, var(--v4-raised));

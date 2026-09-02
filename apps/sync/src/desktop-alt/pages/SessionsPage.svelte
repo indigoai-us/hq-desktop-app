@@ -12,8 +12,12 @@
    * First send, in order:
    *   1. the bubble is mirrored in the store and painted immediately,
    *   2. `agent_session_start` mints a session id,
-   *   3. `agent_session_send` delivers the text,
-   *   4. `onopensession(id)` moves the route.
+   *   3. `agent_session_send` delivers `/startwork {company|project}` as a
+   *      HIDDEN orientation turn (a system divider, not a bubble) — unless the
+   *      company menu's toggle is off or the text already IS a `/startwork`,
+   *   4. `agent_session_send` delivers the user's text (plus any context
+   *      blocks, appended after the words),
+   *   5. `onopensession(id)` moves the route.
    * The route change remounts this component under a new `{#key}`, which
    * replays the session from seq 0 — and the mirrored bubble survives because
    * the store keeps it OUTSIDE the per-session entry that `close()` drops.
@@ -34,8 +38,25 @@
     type Mention,
     type MentionCandidate,
   } from '../../components/sessions/mentions';
+  import {
+    mergeSlashCommands,
+    type SkillCatalog,
+  } from '../../components/sessions/slash-commands';
+  import {
+    planFirstSend,
+    readLastProject,
+    readStartworkEnabled,
+    rememberLastProject,
+    rememberStartworkEnabled,
+    type ProjectEntry,
+  } from '../../components/sessions/startwork';
+  import {
+    composeWithContext,
+    hqRelativePath,
+    type LoadedAttachment,
+  } from '../../components/sessions/context-attachments';
+  import type { UserTurnMeta } from '../../components/sessions/transcript-adapter';
   import ShareToChannelDialog from '../../components/sessions/ShareToChannelDialog.svelte';
-  import { mergeSlashCommands } from '../../components/sessions/slash-commands';
   import {
     deployCommandFor,
     tauriArtifactActions,
@@ -116,6 +137,23 @@
   let tool = $state<SessionToolId>(readRememberedTool());
   let companySeeded = $state(false);
   let modelSeeded = $state(false);
+
+  // --- company / project start-work -----------------------------------------
+  /** The company pill's second level: a project NAME, or null for company mode. */
+  let project = $state<string | null>(null);
+  let projects = $state<ProjectEntry[]>([]);
+  let projectsLoading = $state(false);
+  let projectsError = $state('');
+  /** The company the project list (and the remembered pick) belongs to. */
+  let projectsCompany = $state<string | null | undefined>(undefined);
+  /** "Run /startwork on first message" — default on, remembered. */
+  let startworkEnabled = $state(readStartworkEnabled());
+
+  // --- the `/` picker's HQ catalog --------------------------------------------
+  let catalog = $state<SkillCatalog | null>(null);
+  let catalogLoading = $state(false);
+  let skillCatalogError = $state('');
+  let catalogCompany = $state<string | null | undefined>(undefined);
 
   // Open / close the routed session. Runs on mount and whenever the route's id
   // changes; the previous session's buffer is dropped so a long transcript does
@@ -217,6 +255,60 @@
       })
       .catch((err: unknown) => {
         console.warn('sessions: mention candidates unavailable', err);
+      });
+  });
+
+  /**
+   * The project list follows the company pill, and so does the remembered
+   * project: `hq.sessions.lastProject.<slug>` is restored the moment the
+   * company lands, so a returning operator does not re-pick it. A failed load
+   * costs the submenu, never the session.
+   */
+  $effect(() => {
+    const wanted = company;
+    if (projectsCompany === wanted) return;
+    projectsCompany = wanted;
+    projects = [];
+    projectsError = '';
+    project = readLastProject(wanted);
+    if (!wanted) return;
+    projectsLoading = true;
+    void liveSessionStore
+      .hqCompanyProjects(wanted)
+      .then((rows) => {
+        if (projectsCompany !== wanted) return;
+        projects = rows;
+        // A remembered project that no longer exists falls back to "No project".
+        if (project && !rows.some((row) => row.name === project)) project = null;
+      })
+      .catch((err: unknown) => {
+        if (projectsCompany !== wanted) return;
+        projectsError = err instanceof Error ? err.message : String(err);
+      })
+      .finally(() => {
+        if (projectsCompany === wanted) projectsLoading = false;
+      });
+  });
+
+  /** The HQ skill catalog, once per company (the store caches it). */
+  $effect(() => {
+    const wanted = company;
+    if (catalogCompany === wanted) return;
+    catalogCompany = wanted;
+    skillCatalogError = '';
+    catalogLoading = true;
+    void liveSessionStore
+      .hqSkillCatalog(wanted)
+      .then((result) => {
+        if (catalogCompany === wanted) catalog = result;
+      })
+      .catch((err: unknown) => {
+        if (catalogCompany !== wanted) return;
+        catalog = null;
+        skillCatalogError = err instanceof Error ? err.message : String(err);
+      })
+      .finally(() => {
+        if (catalogCompany === wanted) catalogLoading = false;
       });
   });
 
@@ -538,21 +630,45 @@
    */
   const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
 
+  /** What the mirrored bubble says rode along — the tags, never the block. */
+  function contextTurnMeta(context: LoadedAttachment[]): UserTurnMeta {
+    if (context.length === 0) return {};
+    const root = preflight?.hqRoot ?? '';
+    return {
+      attachments: context.map(({ kind, title, path }) => ({
+        kind,
+        title,
+        path: hqRelativePath(path, root),
+      })),
+    };
+  }
+
   /**
    * The one send path. With no live session (or with a company pill that
    * describes a different one) the message STARTS the session it belongs to;
    * otherwise it joins the conversation already on screen, carrying whatever
    * the model and effort pills now say.
+   *
+   * Context chips ride the wire as `<hq-context>` blocks AFTER the words; the
+   * mirrored turn carries only their tags. A first send is preceded by the
+   * hidden `/startwork` orientation turn when the toggle allows it.
    */
-  async function handleSend(text: string, images: ComposerImage[], mentions: Mention[] = []) {
+  async function handleSend(
+    text: string,
+    images: ComposerImage[],
+    mentions: Mention[] = [],
+    context: LoadedAttachment[] = [],
+  ) {
     if (sendDisabled) return;
     actionError = '';
     mentionStatus = null;
     const attachments = images.map(({ mediaType, base64 }) => ({ mediaType, base64 }));
+    const wire = composeWithContext(text, context, preflight?.hqRoot ?? '');
+    const meta = contextTurnMeta(context);
 
     if (sessionId && !newSessionPending) {
       try {
-        await liveSessionStore.send(text, attachments, pendingOverrides);
+        await liveSessionStore.send(wire, attachments, pendingOverrides, meta);
       } catch (err) {
         actionError = err instanceof Error ? err.message : String(err);
         return;
@@ -564,7 +680,19 @@
     starting = true;
     let started: string | null = null;
     try {
-      started = await liveSessionStore.startAndSend(specFrom(), text, attachments);
+      // Two sends when orienting: the hidden `/startwork` turn starts the
+      // session, then the user's own words follow it on the same session.
+      const plan = planFirstSend(text, { company, project }, startworkEnabled);
+      const orientation = plan.length > 1 ? plan[0]! : null;
+      if (orientation) {
+        started = await liveSessionStore.startAndSend(specFrom(), orientation.text, [], {
+          hidden: true,
+          label: orientation.label,
+        });
+        await liveSessionStore.send(wire, attachments, null, meta);
+      } else {
+        started = await liveSessionStore.startAndSend(specFrom(), wire, attachments, meta);
+      }
       openedId = started;
       onopensession?.(started);
     } catch (err) {
@@ -646,6 +774,17 @@
     markPillsDirty(slug !== company);
     company = slug;
     remember(LAST_COMPANY_KEY, slug);
+  }
+
+  /** The project only shapes the first send's orientation — it never forks. */
+  function chooseProject(name: string | null) {
+    project = name;
+    rememberLastProject(company, name);
+  }
+
+  function toggleStartwork(enabled: boolean) {
+    startworkEnabled = enabled;
+    rememberStartworkEnabled(enabled);
   }
 
   function chooseModel(value: string | null) {
@@ -787,6 +926,15 @@
       disabled={sendDisabled}
       companies={preflight?.companies ?? []}
       {company}
+      {project}
+      {projects}
+      {projectsLoading}
+      {projectsError}
+      {startworkEnabled}
+      {catalog}
+      {catalogLoading}
+      catalogError={skillCatalogError}
+      context={liveSessionStore.contextLoaders}
       {models}
       {model}
       {resolvedModel}
@@ -798,9 +946,11 @@
       {hqFolder}
       {mentionCandidates}
       {mentionStatus}
-      onsend={(text, images, mentions) => void handleSend(text, images, mentions)}
+      onsend={(text, images, mentions, context) => void handleSend(text, images, mentions, context)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}
+      onproject={chooseProject}
+      onstartworktoggle={toggleStartwork}
       onmodel={chooseModel}
       oneffort={chooseEffort}
       ontool={chooseTool}

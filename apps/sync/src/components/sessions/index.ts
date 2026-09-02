@@ -6,6 +6,7 @@
 
 export { default as ActivityRow } from './ActivityRow.svelte';
 export { default as ArtifactRow } from './ArtifactRow.svelte';
+export { default as ContextAttachMenu } from './ContextAttachMenu.svelte';
 export { default as AgentBadge } from './AgentBadge.svelte';
 export { default as Avatar } from './Avatar.svelte';
 export { default as DayDivider } from './DayDivider.svelte';
@@ -14,9 +15,11 @@ export { default as MessageRow } from './MessageRow.svelte';
 export { default as MessageTimeline } from './MessageTimeline.svelte';
 export { default as PermissionCard } from './PermissionCard.svelte';
 export { default as PoliciesChip } from './PoliciesChip.svelte';
+export { default as ProjectPicker } from './ProjectPicker.svelte';
 export { default as QuestionCard } from './QuestionCard.svelte';
 export { default as SessionComposer } from './SessionComposer.svelte';
 export { default as SessionsStrip } from './SessionsStrip.svelte';
+export { default as SlashPicker } from './SlashPicker.svelte';
 export { default as ToolGroupRow } from './ToolGroupRow.svelte';
 export { default as SessionTranscript } from './SessionTranscript.svelte';
 export { default as Skeleton } from './Skeleton.svelte';
@@ -101,6 +104,7 @@ export type {
   TranscriptState,
   UsageSummary,
   UserTurn,
+  UserTurnMeta,
 } from './transcript-adapter';
 
 export {
@@ -125,12 +129,88 @@ export {
 export type { ComposerImage, EffortOption, SessionModel } from './session-models';
 
 export {
+  PICKER_PAGE,
+  RECENT_SLASH_KEY,
+  RECENT_SLASH_LIMIT,
+  applyPickerRow,
   applySlashCommand,
+  cliRows,
+  filterRows,
   filterSlashCommands,
+  groupByScope,
   mergeSlashCommands,
+  pushRecentSlash,
+  readRecentSlash,
+  recentRows,
+  rememberRecentSlash,
+  rowMatches,
+  scopeLabel,
+  scopeRank,
+  skillRows,
   slashQueryFor,
+  tagUnion,
+  workerRows,
+  workerSkillRows,
 } from './slash-commands';
-export type { SlashQuery } from './slash-commands';
+export type {
+  PickerGroup,
+  PickerRow,
+  RecentSlash,
+  SkillCatalog,
+  SkillEntry,
+  SlashQuery,
+  WorkerEntry,
+  WorkerSkill,
+} from './slash-commands';
+
+export {
+  LAST_PROJECT_KEY_PREFIX,
+  STARTWORK_COMMAND,
+  STARTWORK_ENABLED_KEY,
+  isStartworkTurn,
+  lastProjectKey,
+  planFirstSend,
+  readLastProject,
+  readStartworkEnabled,
+  rememberLastProject,
+  rememberStartworkEnabled,
+  startworkCommand,
+  startworkLabel,
+  startworkLabelFromText,
+  storyProgress,
+} from './startwork';
+export type { PlannedTurn, ProjectEntry, StartworkTarget } from './startwork';
+
+export {
+  ATTACHMENT_CHARS,
+  MAX_ATTACHMENTS,
+  MAX_CONTEXT_CHARS,
+  addAttachment,
+  attachmentFromMeeting,
+  attachmentFromPath,
+  attachmentFromSignal,
+  attachmentFromVault,
+  attachmentLabel,
+  composeWithContext,
+  contextChars,
+  contextSizeLabel,
+  exceedsContextBudget,
+  formatContextBlock,
+  hqRelativePath,
+  removeAttachment,
+  splitContextBlocks,
+} from './context-attachments';
+export type {
+  ContextAttachment,
+  ContextLoaders,
+  ContextSource,
+  LoadedAttachment,
+  MeetingEntry,
+  ReferenceText,
+  SignalEntry,
+  TurnAttachment,
+  VaultEntry,
+} from './context-attachments';
 
 export {
   EXCERPT_CAP,
