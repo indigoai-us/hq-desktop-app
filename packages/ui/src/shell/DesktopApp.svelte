@@ -442,6 +442,9 @@
   const resolvedSettingsProfile = $derived(
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
   );
+  const hasWindowControls = $derived(
+    adapter?.capabilities?.hasWindowControls ?? false,
+  );
 
   /**
    * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
@@ -2533,6 +2536,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="desktop-shell chat-shell"
+  class:has-window-controls={hasWindowControls}
   data-testid="desktop-shell"
   onclick={onShellLinkEvent}
   onauxclick={onShellLinkEvent}
@@ -3193,6 +3197,9 @@
     min-height: 0;
     padding: 0;
     overflow: hidden;
+    /* In-pane destinations (Meetings, Notifications) are not under the
+       overlay traffic lights — don't inherit the window-chrome gutter. */
+    --titlebar-leading-inset: 16px;
   }
 
   .conversation-boot-error {

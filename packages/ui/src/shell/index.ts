@@ -1,5 +1,6 @@
 /** V2 windowed desktop shell (design source: hq-sync desktop-alt). */
 export { default as DesktopApp } from "./DesktopApp.svelte";
+export { default as PageHeader } from "./PageHeader.svelte";
 export * from "./embedded-navigation.js";
 export {
   FIXTURE_COMPANIES,
