@@ -787,6 +787,7 @@ describe('company / project start-work — the first send orients the session', 
   const STARTWORK = read('src/components/sessions/startwork.ts');
   const PICKER = read('src/components/sessions/ProjectPicker.svelte');
   const HQ_CONTEXT_RS = read('src-tauri/src/commands/hq_context.rs');
+  const PROJECTS_RS = read('../../crates/hq-desktop-core/src/hq_context/projects.rs');
 
   it('the company pill has a Project second level with "No project" first and done/total counts', () => {
     expect(COMPOSER).toContain("import ProjectPicker from './ProjectPicker.svelte'");
@@ -801,10 +802,62 @@ describe('company / project start-work — the first send orients the session', 
     expect(COMPOSER).toContain("oncompany?.(option.slug);\n                        companyPane = 'projects';");
   });
 
+  it('the project picker is searchable, recency-sorted, and filterable by person and status', () => {
+    expect(PICKER).toContain('data-testid="session-project-search"');
+    expect(PICKER).toContain('data-testid="session-project-status-active"');
+    expect(PICKER).toContain('data-testid="session-project-status-all"');
+    expect(PICKER).toContain('data-testid="session-project-person"');
+    expect(PICKER).toContain('data-testid="session-project-avatar"');
+    expect(PICKER).toContain('data-testid="session-project-updated"');
+    expect(PICKER).toContain('data-testid="session-project-progress"');
+    expect(PICKER).toContain('filterProjects(projects, { query, owner, status })');
+    expect(STARTWORK).toContain('export function sortProjectsByActivity(');
+    expect(STARTWORK).toContain('export function ownerChips(');
+    // The row never repeats its description as a tooltip; the one-line clip
+    // carries a title only when it actually cut the text.
+    expect(PICKER).not.toContain('title={project.description}');
+    expect(PICKER).toContain('use:clipTitle={project.description}');
+    expect(PICKER).toContain('if (node.scrollWidth > node.clientWidth) node.title = value;');
+    // "Mine" comes from the signed-in email, read through the store.
+    expect(PAGE).toContain('liveSessionStore.hqSelf()');
+    expect(STORE).toContain("invoke<{ authenticated?: boolean; email?: string | null }>('get_auth_state')");
+    expect(COMPOSER).toContain('{viewer}');
+    // The Rust row carries what the filters need.
+    expect(PROJECTS_RS).toContain('pub owner: Option<String>,');
+    expect(PROJECTS_RS).toContain('pub last_activity_at: Option<String>,');
+    expect(PROJECTS_RS).toContain('pub status: ProjectStatus,');
+    expect(PROJECTS_RS).toContain('pub const MAX_PROJECTS: usize = 200;');
+    expect(STARTWORK).toContain("export type ProjectStatus = 'active' | 'done' | 'archived';");
+  });
+
   it('remembers the last project per company under hq.sessions.lastProject.<slug>', () => {
     expect(STARTWORK).toContain("export const LAST_PROJECT_KEY_PREFIX = 'hq.sessions.lastProject.';");
     expect(PAGE).toContain('project = readLastProject(wanted);');
     expect(PAGE).toContain('rememberLastProject(company, name);');
+  });
+
+  it('a new session clears the project (and the draft) but keeps the company', () => {
+    // The strip's "+" resets in place — the route may not change.
+    expect(STRIP).toContain('data-testid="sessions-new"');
+    expect(PAGE).toContain('onnew={startFreshDraft}');
+    const fn = PAGE.slice(PAGE.indexOf('function startFreshDraft()'));
+    const body = fn.slice(0, fn.indexOf('\n  }\n'));
+    expect(body).toContain('project = null;');
+    expect(body).toContain('forgetLastProject(company);');
+    expect(body).toContain('composer?.reset();');
+    expect(body).toContain("onopensession?.('');");
+    expect(body).not.toContain('company =');
+    // The id-less `sessions` route is the new-session route: a mount without
+    // an id forgets the remembered project before the effect reads it.
+    expect(PAGE).toContain('if (!sessionId) forgetLastProject(company);');
+    expect(STARTWORK).toContain('export function forgetLastProject(company: string | null): void {');
+    // The composer's reset empties text, images and every chip row.
+    expect(COMPOSER).toContain('export function reset(): void {');
+    const reset = COMPOSER.slice(COMPOSER.indexOf('export function reset(): void {'));
+    const resetBody = reset.slice(0, reset.indexOf('\n  }\n'));
+    for (const line of ["draft = '';", 'attached = [];', 'mentions = [];', 'contextChips = [];', 'commandToken = null;']) {
+      expect(resetBody).toContain(line);
+    }
   });
 
   it('the page loads projects and the skill catalog through the store, never a raw invoke', () => {
@@ -879,14 +932,23 @@ describe('the `/` discovery picker replaces the flat list', () => {
     expect(PICKER).toContain('export function handleKey(event: KeyboardEvent): boolean');
   });
 
-  it('groups Recent, Workers, Skills (by scope, company first) and CLI, with a tag row and a cap', () => {
+  it('groups Recent, Workers, Skills (by scope, company first) and Commands, with a scope/tag row and a cap', () => {
     expect(PICKER).toContain('data-testid={`session-slash-tab-${entry.id}`}');
     for (const tab of ['recent', 'workers', 'skills', 'cli']) {
       expect(PICKER).toContain(`{ id: '${tab}', label:`);
     }
+    expect(PICKER).toContain("{ id: 'cli', label: 'Commands' }");
     expect(PICKER).toContain('data-testid="session-slash-tags"');
+    // The filter row shows on the overview as well as the Skills tab, and a
+    // chip picked from the overview lands on Skills.
+    expect(PICKER).toContain("const filtersVisible = $derived(!drilled && (tab === 'all' || tab === 'skills') && allSkills.length > 0);");
+    expect(PICKER).toContain('data-testid="session-slash-scope"');
+    expect(PICKER).toContain('data-testid="session-slash-tag"');
+    expect(PICKER).toContain("if (tab === 'all' && scope) tab = 'skills';");
+    expect(SLASH).toContain("{ id: 'company', label: 'Company' },");
+    expect(SLASH).toContain("{ id: 'package', label: 'Packages' },");
     expect(PICKER).toContain('data-testid="session-slash-more"');
-    expect(SLASH).toContain('export const PICKER_PAGE = 60;');
+    expect(SLASH).toContain('export const PICKER_PAGE = 8;');
     expect(SLASH).toContain('export const RECENT_SLASH_LIMIT = 8;');
     expect(SLASH).toContain("export const RECENT_SLASH_KEY = 'hq.sessions.recentSlash';");
     // Company (selected first) → Personal → Core → Packages.
@@ -895,9 +957,25 @@ describe('the `/` discovery picker replaces the flat list', () => {
     expect(SLASH).toContain("if (scope === 'core') return 3;");
   });
 
-  it('a worker drills into its skills and a skill inserts /run {worker} {skill}', () => {
+  it('a worker drills into its skills under a back link, and a skill inserts /run {worker} {skill}', () => {
     expect(PICKER).toContain("drilled = catalog?.workers.find((worker) => worker.id === row.workerId) ?? null;");
+    expect(PICKER).toContain('data-testid="session-slash-back"');
     expect(SLASH).toContain('insert: `${skill.invoke || `/run ${worker.id} ${skill.name}`} `,');
+  });
+
+  it('every row wears a kind pill, and a pick leaves the same pill as a chip above the draft', () => {
+    expect(SLASH).toContain("export type PickerKind = 'worker' | 'worker-skill' | 'skill' | 'cli';");
+    expect(PICKER).toContain('data-testid="session-slash-kind"');
+    expect(PICKER).toContain('class={`kind kind-${kind}`}');
+    for (const kind of ['worker', 'worker-skill', 'skill', 'cli']) {
+      expect(PICKER).toContain(`.kind-${kind} {`);
+    }
+    expect(COMPOSER).toContain('data-testid="session-command-chip"');
+    expect(COMPOSER).toContain('data-testid="session-command-remove"');
+    expect(COMPOSER).toContain('commandToken = { insert: row.insert, kind, label: chipLabel(row.insert, kind) };');
+    // The chip is a label; the send is the draft verbatim.
+    expect(COMPOSER).toContain('onsend?.(text, attached, chips, attachments);');
+    expect(COMPOSER).toContain("commandToken && draft.trimStart().startsWith(commandToken.insert.trimEnd())");
   });
 
   it('CLI commands are what the CLI announced minus what HQ already names', () => {

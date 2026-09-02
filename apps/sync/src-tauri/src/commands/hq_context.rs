@@ -33,7 +33,8 @@ pub fn hq_skill_catalog(company: Option<String>) -> Result<SkillCatalog, String>
     Ok(build_skill_catalog_cached(&hq_root, company.as_deref()))
 }
 
-/// A company's projects, newest `prd.json` first, capped at 50.
+/// A company's projects, most recent activity (`prd.json` or journal) first,
+/// archived ones included and flagged, capped at 200.
 #[tauri::command]
 pub fn hq_company_projects(company: String) -> Result<Vec<ProjectEntry>, String> {
     let hq_root = resolve_hq_folder_path()?;

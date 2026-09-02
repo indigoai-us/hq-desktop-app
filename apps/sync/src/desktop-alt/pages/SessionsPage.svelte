@@ -43,12 +43,14 @@
     type SkillCatalog,
   } from '../../components/sessions/slash-commands';
   import {
+    forgetLastProject,
     planFirstSend,
     readLastProject,
     readStartworkEnabled,
     rememberLastProject,
     rememberStartworkEnabled,
     type ProjectEntry,
+    type ProjectViewer,
   } from '../../components/sessions/startwork';
   import {
     composeWithContext,
@@ -150,6 +152,11 @@
   // each of which failed with `model_not_found`.
   const initialTool = readRememberedTool();
   let company = $state<string | null>(readRemembered(LAST_COMPANY_KEY));
+  // The `sessions` route without an id IS the new-session route, and a new
+  // session starts on "No project": forget the remembered project for the
+  // remembered company before the project effect below reads it back. The
+  // company itself stays — only the project resets.
+  if (!sessionId) forgetLastProject(company);
   let tool = $state<SessionToolId>(initialTool);
   let model = $state<string | null>(readRememberedModel(initialTool));
   let effort = $state<string | null>(readRememberedEffort(initialTool));
@@ -166,6 +173,11 @@
   let projectsError = $state('');
   /** The company the project list (and the remembered pick) belongs to. */
   let projectsCompany = $state<string | null | undefined>(undefined);
+  /** Who is signed in — the project picker's "Mine" chip. Null until known. */
+  let viewer = $state<ProjectViewer | null>(null);
+  void liveSessionStore.hqSelf().then((who) => {
+    viewer = who;
+  });
   /** "Run /startwork on first message" — default on, remembered. */
   let startworkEnabled = $state(readStartworkEnabled());
 
@@ -623,7 +635,7 @@
 
   let pageEl = $state<HTMLDivElement | null>(null);
   /** The composer, so the transcript's "Choose a model" can open its menu. */
-  let composer = $state<{ openModelMenu: () => void } | null>(null);
+  let composer = $state<{ openModelMenu: () => void; reset: () => void } | null>(null);
 
   /**
    * ⌘⇧H hands off. The listener lives on the window only while this page is
@@ -903,6 +915,22 @@
     rememberLastProject(company, name);
   }
 
+  /**
+   * The strip's "+": a fresh draft in the same company — the project pill
+   * back to "No project" (and its remembered value dropped, so the remount
+   * the route change causes reads null too), the composer emptied of text,
+   * images and chips. When the page is already on the new-session route the
+   * route does not change and nothing remounts, so the reset is done here
+   * rather than left to the mount.
+   */
+  function startFreshDraft() {
+    drawerOpen = false;
+    project = null;
+    forgetLastProject(company);
+    composer?.reset();
+    onopensession?.('');
+  }
+
   function toggleStartwork(enabled: boolean) {
     startworkEnabled = enabled;
     rememberStartworkEnabled(enabled);
@@ -962,10 +990,7 @@
     policies={sessionId ? transcript.policies : null}
     handoff={handoffState}
     ontoggledrawer={() => (drawerOpen = !drawerOpen)}
-    onnew={() => {
-      drawerOpen = false;
-      onopensession?.('');
-    }}
+    onnew={startFreshDraft}
     onhandoff={() => void handleHandoff()}
     tool={summary?.tool ?? tool}
     menuEnabled={Boolean(sessionId) && !ended}
@@ -1064,6 +1089,7 @@
       {projects}
       {projectsLoading}
       {projectsError}
+      {viewer}
       {startworkEnabled}
       {catalog}
       {catalogLoading}

@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   applySlashCommand,
+  chipLabel,
   filterSlashCommands,
+  kindLabel,
   mergeSlashCommands,
+  PICKER_PAGE,
+  recentRows,
+  rowKind,
+  SCOPE_FILTERS,
+  scopeFilterMatches,
   slashQueryFor,
 } from './slash-commands';
 import type { SessionCommand } from './session-events';
@@ -111,7 +118,6 @@ import {
   groupByScope,
   pushRecentSlash,
   readRecentSlash,
-  recentRows,
   rememberRecentSlash,
   scopeLabel,
   scopeRank,
@@ -245,12 +251,71 @@ describe('recent picks', () => {
     expect(recentRows(recent)[0]).toMatchObject({ group: 'recent', insert: '/s5 ', name: '/s5' });
   });
 
-  it('round-trips through storage and shrugs off garbage', () => {
-    rememberRecentSlash([{ name: '/handoff', description: 'End', insert: '/handoff ' }]);
-    expect(readRecentSlash()).toEqual([{ name: '/handoff', description: 'End', insert: '/handoff ' }]);
+  it('round-trips through storage, infers a kind for older picks, and shrugs off garbage', () => {
+    rememberRecentSlash([{ name: '/handoff', description: 'End', insert: '/handoff ', kind: 'skill' }]);
+    expect(readRecentSlash()).toEqual([
+      { name: '/handoff', description: 'End', insert: '/handoff ', kind: 'skill' },
+    ]);
     store.set('hq.sessions.recentSlash', '{not json');
     expect(readRecentSlash()).toEqual([]);
-    store.set('hq.sessions.recentSlash', JSON.stringify([{ nope: 1 }, { name: '/x', insert: '/x ' }]));
-    expect(readRecentSlash()).toEqual([{ name: '/x', description: '', insert: '/x ' }]);
+    // Picks remembered before the kind pill existed: a `/run w s` is a worker
+    // skill, anything else a skill; an unknown kind is treated the same way.
+    store.set(
+      'hq.sessions.recentSlash',
+      JSON.stringify([
+        { nope: 1 },
+        { name: '/x', insert: '/x ' },
+        { name: '/run design mockup', insert: '/run design mockup ' },
+        { name: '/y', insert: '/y ', kind: 'bogus' },
+      ]),
+    );
+    expect(readRecentSlash()).toEqual([
+      { name: '/x', description: '', insert: '/x ', kind: 'skill' },
+      { name: '/run design mockup', description: '', insert: '/run design mockup ', kind: 'worker-skill' },
+      { name: '/y', description: '', insert: '/y ', kind: 'skill' },
+    ]);
+  });
+});
+
+describe('kind pills and the command chip', () => {
+  it('names every row kind, and recent rows carry theirs', () => {
+    expect(rowKind({ group: 'workers', insert: '', workerId: 'design' })).toBe('worker');
+    expect(rowKind({ group: 'workers', insert: '/run design mockup ', workerId: 'design' })).toBe('worker-skill');
+    expect(rowKind({ group: 'skills', insert: '/handoff ' })).toBe('skill');
+    expect(rowKind({ group: 'cli', insert: '/model ' })).toBe('cli');
+    expect(rowKind({ group: 'recent', insert: '/model ', kind: 'cli' })).toBe('cli');
+    expect(rowKind({ group: 'recent', insert: '/run a b ' })).toBe('worker-skill');
+    expect(rowKind({ group: 'recent', insert: '/handoff ' })).toBe('skill');
+    expect(recentRows([{ name: '/model', description: '', insert: '/model ', kind: 'cli' }])[0]?.kind).toBe('cli');
+  });
+
+  it('labels kinds in plain words', () => {
+    expect(kindLabel('worker')).toBe('worker');
+    expect(kindLabel('worker-skill')).toBe('worker skill');
+    expect(kindLabel('skill')).toBe('skill');
+    expect(kindLabel('cli')).toBe('command');
+  });
+
+  it('the chip names a worker skill as `worker · skill` and anything else by its command', () => {
+    expect(chipLabel('/run design mockup ', 'worker-skill')).toBe('design · mockup');
+    expect(chipLabel('/handoff ', 'skill')).toBe('/handoff');
+    expect(chipLabel('/model ', 'cli')).toBe('/model');
+    // A malformed worker-skill insert falls back to the literal token.
+    expect(chipLabel('/run design ', 'worker-skill')).toBe('/run design');
+  });
+
+  it('scope chips: Company means any company scope; the rest match exactly', () => {
+    expect(SCOPE_FILTERS.map((entry) => entry.id)).toEqual(['company', 'personal', 'core', 'package']);
+    expect(scopeFilterMatches({ scope: 'company:indigo' }, 'company')).toBe(true);
+    expect(scopeFilterMatches({ scope: 'company:ridge' }, 'company')).toBe(true);
+    expect(scopeFilterMatches({ scope: 'core' }, 'company')).toBe(false);
+    expect(scopeFilterMatches({ scope: 'personal' }, 'personal')).toBe(true);
+    expect(scopeFilterMatches({ scope: 'package' }, 'package')).toBe(true);
+    expect(scopeFilterMatches({ scope: undefined }, 'core')).toBe(true);
+    expect(scopeFilterMatches({ scope: 'core' }, null)).toBe(true);
+  });
+
+  it('caps each group at eight rows before "more…"', () => {
+    expect(PICKER_PAGE).toBe(8);
   });
 });

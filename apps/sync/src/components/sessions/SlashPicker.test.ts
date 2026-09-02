@@ -2,8 +2,9 @@
 /**
  * The `/` discovery picker, mounted for real — through the composer, because
  * the composer's draft is the picker's search and its textarea is the
- * keyboard. Grouping, filtering, the worker → skill drill-down and the exact
- * text a pick inserts are DOM facts here, not source strings.
+ * keyboard. Grouping, the scope/tag filter row, the kind pills, the worker →
+ * skill drill-down, and the chip a pick leaves above the draft are DOM facts
+ * here, not source strings — and so is the exact text a send carries.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +16,7 @@ vi.mock('svelte', async () => {
 import { flushSync, mount, unmount } from 'svelte';
 import SessionComposer from './SessionComposer.svelte';
 import SlashPicker from './SlashPicker.svelte';
-import type { SkillCatalog } from './slash-commands';
+import { PICKER_PAGE, type SkillCatalog } from './slash-commands';
 
 const CATALOG: SkillCatalog = {
   workers: [
@@ -59,6 +60,8 @@ const click = (element: HTMLElement) => {
   flushSync();
 };
 const names = () => all('session-slash-item').map((row) => row.querySelector('.name')?.textContent?.trim());
+const kinds = () => all('session-slash-item').map((row) => row.getAttribute('data-kind'));
+const text = (testid: string) => all(testid).map((node) => node.textContent?.trim());
 
 function renderComposer(props: Record<string, unknown> = {}) {
   component = mount(SessionComposer, {
@@ -121,6 +124,20 @@ describe('opening', () => {
     expect(at('session-slash-menu')).toBeNull();
   });
 
+  it('has a segmented header — All · Recent · Workers · Skills · Commands — with All on by default', () => {
+    renderComposer();
+    type('/');
+    const tabs = [...must('session-slash-tabs').querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['All', 'Recent', 'Workers', 'Skills', 'Commands']);
+    expect(tabs.map((tab) => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false', 'false', 'false']);
+    // The overview labels its sections.
+    expect([...host.querySelectorAll('.section-label')].map((node) => node.textContent?.trim())).toEqual([
+      'Workers',
+      'Skills',
+      'Commands',
+    ]);
+  });
+
   it('shows skills company-first and CLI commands minus what HQ already names', () => {
     renderComposer();
     type('/');
@@ -137,6 +154,33 @@ describe('opening', () => {
     expect(names().filter((name) => name === '/handoff')).toHaveLength(1);
   });
 
+  it('every row wears a kind pill, and the scope rides as a muted tag', () => {
+    renderComposer();
+    type('/');
+    expect(kinds()).toEqual(['worker', 'skill', 'skill', 'skill', 'skill', 'cli', 'cli']);
+    expect(text('session-slash-kind')).toEqual([
+      'worker',
+      'skill',
+      'skill',
+      'skill',
+      'skill',
+      'command',
+      'command',
+    ]);
+    const scopes = all('session-slash-item').map((row) => row.querySelector('.scope')?.textContent?.trim() ?? null);
+    expect(scopes).toEqual([null, 'indigo', 'Personal', 'Core', 'Packages', null, null]);
+  });
+
+  it('the search box holds the query and takes the caret', async () => {
+    renderComposer();
+    type('/ha');
+    const search = must('session-slash-search') as HTMLInputElement;
+    expect(search.value).toBe('ha');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(search);
+  });
+
   it('shows a loading note before the catalog lands and the error line when it fails', () => {
     renderComposer({ catalog: null, catalogLoading: true });
     type('/');
@@ -148,6 +192,8 @@ describe('opening', () => {
     expect(must('session-slash-error').textContent).toContain('registry unreadable');
     // The CLI rows still show.
     expect(names()).toEqual(['/compact', '/model', '/handoff']);
+    // No skills → no filter row to offer.
+    expect(at('session-slash-tags')).toBeNull();
   });
 });
 
@@ -176,30 +222,124 @@ describe('filtering', () => {
     expect(names()).toEqual(['/model']);
   });
 
+  it('the scope/tag filter row is visible on the overview, and a chip lands on Skills', () => {
+    renderComposer();
+    type('/');
+    expect(at('session-slash-tags')).not.toBeNull();
+    expect(text('session-slash-scope')).toEqual(['indigo', 'Personal', 'Core', 'Packages']);
+    expect(text('session-slash-tag')).toEqual(['google', 'knowledge', 'people', 'session']);
+    click(all('session-slash-scope')[2]!); // Core
+    expect(must('session-slash-tab-skills').getAttribute('aria-selected')).toBe('true');
+    expect(names()).toEqual(['/handoff']);
+    expect(all('session-slash-scope')[2]?.getAttribute('aria-pressed')).toBe('true');
+    // The tag row follows the scope.
+    expect(text('session-slash-tag')).toEqual(['session']);
+    // A second press clears the scope.
+    click(all('session-slash-scope')[2]!);
+    expect(names()).toEqual(['/indigo:capture', '/personal:dm', '/handoff', '/gws-gmail']);
+  });
+
   it('the Skills tab groups by scope with a tag row that narrows', () => {
     renderComposer();
     type('/');
     click(must('session-slash-tab-skills'));
     const labels = [...host.querySelectorAll('.section-label')].map((node) => node.textContent?.trim());
     expect(labels).toEqual(['indigo', 'Personal', 'Core', 'Packages']);
-    const tags = all('session-slash-tag').map((tag) => tag.textContent?.trim());
-    expect(tags).toEqual(['google', 'knowledge', 'people', 'session']);
+    expect(text('session-slash-tag')).toEqual(['google', 'knowledge', 'people', 'session']);
     click(all('session-slash-tag')[3]!);
     expect(names()).toEqual(['/handoff']);
+    // Company chip on top of the tag: nothing in indigo is tagged `session`.
+    click(all('session-slash-scope')[0]!);
+    expect(names()).toEqual([]);
+    expect(at('session-slash-empty')).not.toBeNull();
   });
 });
 
 describe('workers drill down', () => {
-  it('picking a worker lists its skills; picking a skill inserts /run {worker} {skill}', () => {
+  it('picking a worker lists its skills under a back link; picking a skill inserts /run {worker} {skill}', () => {
     renderComposer();
     type('/');
     click(must('session-slash-tab-workers'));
     expect(names()).toEqual(['Designer']);
     click(all('session-slash-item')[0]!);
-    expect(names()).toEqual(['← Workers', '/run designer mockup', '/run designer critique']);
-    click(all('session-slash-item')[2]!);
+    expect(must('session-slash-drill').textContent).toContain('Designer');
+    expect(must('session-slash-drill').textContent).toContain('Design work');
+    expect(names()).toEqual(['/run designer mockup', '/run designer critique']);
+    expect(kinds()).toEqual(['worker-skill', 'worker-skill']);
+    // The filter row is not a skills filter here.
+    expect(at('session-slash-tags')).toBeNull();
+    // Back returns to the worker list.
+    click(must('session-slash-back'));
+    expect(at('session-slash-drill')).toBeNull();
+    expect(names()).toEqual(['Designer']);
+    click(all('session-slash-item')[0]!);
+    click(all('session-slash-item')[1]!);
     expect((must('session-composer-input') as HTMLTextAreaElement).value).toBe('/run designer critique ');
     expect(at('session-slash-menu')).toBeNull();
+  });
+
+  it('Escape inside a worker goes back, not out', () => {
+    renderComposer();
+    const input = type('/');
+    key(input, 'Enter'); // Designer is first → drill in
+    expect(at('session-slash-drill')).not.toBeNull();
+    key(input, 'Escape');
+    expect(at('session-slash-drill')).toBeNull();
+    expect(at('session-slash-menu')).not.toBeNull();
+    key(input, 'Escape');
+    expect(at('session-slash-menu')).toBeNull();
+  });
+});
+
+describe('the command chip a pick leaves above the draft', () => {
+  it('a worker skill becomes a `worker · skill` chip and the send carries the exact command', () => {
+    const onsend = vi.fn();
+    renderComposer({ onsend });
+    type('/');
+    click(all('session-slash-item')[0]!); // Designer
+    click(all('session-slash-item')[0]!); // mockup
+    const chip = must('session-command-chip');
+    expect(chip.getAttribute('data-kind')).toBe('worker-skill');
+    expect(chip.querySelector('.command-chip-kind')?.textContent?.trim()).toBe('worker skill');
+    expect(chip.querySelector('.command-chip-name')?.textContent?.trim()).toBe('designer · mockup');
+    const input = type('/run designer mockup the login screen');
+    // Still the same token at the front: the chip stays.
+    expect(at('session-command-chip')).not.toBeNull();
+    key(input, 'Enter');
+    expect(onsend).toHaveBeenCalledTimes(1);
+    expect(onsend.mock.calls[0]?.[0]).toBe('/run designer mockup the login screen');
+    // Sent → chip gone with the draft.
+    expect(at('session-command-chip')).toBeNull();
+    expect(input.value).toBe('');
+  });
+
+  it('a skill and a CLI command get their own kinds, and editing the token away drops the chip', () => {
+    renderComposer();
+    let input = type('/hand');
+    key(input, 'Enter');
+    expect(must('session-command-chip').getAttribute('data-kind')).toBe('skill');
+    expect(must('session-command-chip').querySelector('.command-chip-name')?.textContent?.trim()).toBe('/handoff');
+    type('/hando');
+    expect(at('session-command-chip')).toBeNull();
+    // It does not come back once the text matches again by accident.
+    type('/handoff ');
+    expect(at('session-command-chip')).toBeNull();
+
+    input = type('/mo');
+    key(input, 'Tab');
+    expect(input.value).toBe('/model ');
+    expect(must('session-command-chip').getAttribute('data-kind')).toBe('cli');
+    expect(must('session-command-chip').querySelector('.command-chip-kind')?.textContent?.trim()).toBe('command');
+  });
+
+  it('the chip\'s × removes the command from the draft and keeps what followed', () => {
+    renderComposer();
+    const input = type('/hand');
+    key(input, 'Enter');
+    type('/handoff and then stop');
+    click(must('session-command-remove'));
+    expect(at('session-command-chip')).toBeNull();
+    expect(input.value).toBe('and then stop');
   });
 });
 
@@ -212,6 +352,8 @@ describe('keyboard', () => {
     key(input, 'ArrowDown');
     key(input, 'ArrowDown');
     expect(all('session-slash-item')[2]?.getAttribute('aria-selected')).toBe('true');
+    // The highlighted row is the only one wearing the ↵ hint.
+    expect(all('session-slash-item').filter((row) => row.querySelector('.enter'))).toHaveLength(1);
     key(input, 'ArrowUp');
     expect(all('session-slash-item')[1]?.getAttribute('aria-selected')).toBe('true');
     key(input, 'Enter');
@@ -230,7 +372,7 @@ describe('keyboard', () => {
     expect(input.value).toBe('/model ');
   });
 
-  it('a pick lands in Recent, most recent first', () => {
+  it('a pick lands in Recent, most recent first, with its kind', () => {
     renderComposer();
     let input = type('/mo');
     key(input, 'Enter');
@@ -239,17 +381,18 @@ describe('keyboard', () => {
     type('/');
     const recent = all('session-slash-section').find((section) => section.getAttribute('data-group') === 'recent');
     expect(recent).toBeDefined();
-    const recentNames = [...recent!.querySelectorAll('.name')].map((node) => node.textContent?.trim());
-    expect(recentNames).toEqual(['/indigo:capture', '/model']);
-    expect(globalThis.localStorage.getItem('hq.sessions.recentSlash')).toContain('/indigo:capture ');
+    const rows = [...recent!.querySelectorAll<HTMLElement>('[data-testid="session-slash-item"]')];
+    expect(rows.map((row) => row.querySelector('.name')?.textContent?.trim())).toEqual(['/indigo:capture', '/model']);
+    expect(rows.map((row) => row.getAttribute('data-kind'))).toEqual(['skill', 'cli']);
+    expect(globalThis.localStorage.getItem('hq.sessions.recentSlash')).toContain('"kind":"cli"');
   });
 });
 
-describe('the picker alone caps each group at 60 rows with a "more…" affordance', () => {
-  it('renders 60 then expands', () => {
+describe(`the picker alone caps each group at ${PICKER_PAGE} rows with a "more…" affordance`, () => {
+  it('renders eight then expands', () => {
     const big: SkillCatalog = {
       workers: [],
-      skills: Array.from({ length: 75 }, (_, i) => ({
+      skills: Array.from({ length: 20 }, (_, i) => ({
         name: `s${i}`,
         description: '',
         scope: 'core',
@@ -262,10 +405,11 @@ describe('the picker alone caps each group at 60 rows with a "more…" affordanc
       props: { query: '', catalog: big, cliCommands: [], company: null, recent: [] },
     }) as Record<string, unknown>;
     flushSync();
-    expect(all('session-slash-item')).toHaveLength(60);
-    expect(must('session-slash-more').textContent).toContain('15 more');
+    expect(PICKER_PAGE).toBe(8);
+    expect(all('session-slash-item')).toHaveLength(8);
+    expect(must('session-slash-more').textContent).toContain('12 more');
     click(must('session-slash-more'));
-    expect(all('session-slash-item')).toHaveLength(75);
+    expect(all('session-slash-item')).toHaveLength(20);
     expect(at('session-slash-more')).toBeNull();
   });
 });
