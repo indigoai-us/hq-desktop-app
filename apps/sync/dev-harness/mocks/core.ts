@@ -2,6 +2,7 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
+import { resolveHarnessPersona, type ShellPersona } from '../personas';
 import { emit } from './event';
 
 const settings = {
@@ -27,6 +28,11 @@ const settings = {
   widgetEnabled: true,
   widgetDisplay: null as string | null,
 };
+
+function harnessPersona(): ShellPersona | null {
+  if (typeof window === 'undefined') return null;
+  return resolveHarnessPersona(window.location.search);
+}
 
 function harnessScenario(): string | null {
   const params = new URLSearchParams(window.location.search);
@@ -536,20 +542,45 @@ const handlers: Record<string, Handler> = {
   // Mirrors the native pending-route handoff consumed once on mount.
   desktop_alt_consume_pending_route: () =>
     new URLSearchParams(window.location.search).get('route'),
-  get_auth_state: () => ({
-    authenticated: true,
-    accountId: 'cognito-sub-ada',
-    email: 'ada@getindigo.ai',
-    displayName: 'Ada Lovelace',
-  }),
-  whoami: () => ({
-    personUid: 'prs_ada',
-    email: 'ada@getindigo.ai',
-    displayName: 'Ada Lovelace',
-  }),
+  get_auth_state: () => {
+    const persona = harnessPersona();
+    if (persona) {
+      return {
+        authenticated: true,
+        accountId: persona.accountId,
+        email: persona.whoami.email,
+        displayName: persona.whoami.displayName,
+      };
+    }
+    return {
+      authenticated: true,
+      accountId: 'cognito-sub-ada',
+      email: 'ada@getindigo.ai',
+      displayName: 'Ada Lovelace',
+    };
+  },
+  whoami: () => {
+    const persona = harnessPersona();
+    if (persona) return persona.whoami;
+    return {
+      personUid: 'prs_ada',
+      email: 'ada@getindigo.ai',
+      displayName: 'Ada Lovelace',
+    };
+  },
+  is_indigo_user: () => harnessPersona()?.isIndigo ?? true,
+  get_auth_session: () => {
+    const persona = harnessPersona();
+    return {
+      accountId: persona?.accountId ?? 'cognito-sub-ada',
+      generation: 1,
+      status: 'active',
+      reason: null,
+    };
+  },
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
-    workspaces: HARNESS_WORKSPACES,
+    workspaces: harnessPersona()?.workspaces ?? HARNESS_WORKSPACES,
     cloudReachable: true,
     error: null,
     hqFolderPath: '/Users/corey/Documents/HQ',
@@ -1188,56 +1219,65 @@ This final paragraph verifies spacing after a thematic break.
   // pending requests so the Messages window renders populated in the harness.
   // -------------------------------------------------------------------------
   get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
-  list_contacts: () => ({
-    contacts: [
-      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },
-      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
-      { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
-      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
-    ],
-  }),
-  list_channels: () => ({
-    channels: [
-      {
-        channelId: 'ch_release',
-        name: '',
-        scope: 'group',
-        visibility: 'private',
-        membership: 'joined',
-        unread: 2,
-        memberCount: 3,
-        lastActivityAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-        members: [
-          { personUid: 'prs_jacob', displayName: 'Jacob Patel' },
-          { personUid: 'prs_alan', displayName: 'Alan Turing' },
-        ],
-      },
-      {
-        channelId: 'ch_core',
-        name: 'hq-core',
-        scope: 'company',
-        companyUid: 'cmp_indigo',
-        companyName: 'Indigo',
-        visibility: 'company',
-        membership: 'joined',
-        unread: 4,
-        memberCount: 18,
-        lastActivityAt: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
-      },
-      {
-        channelId: 'ch_exec',
-        name: 'corey-exec',
-        scope: 'company',
-        companyUid: 'cmp_indigo',
-        companyName: 'Indigo',
-        visibility: 'private',
-        membership: 'joined',
-        unread: 0,
-        memberCount: 5,
-        lastActivityAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
-      },
-    ],
-  }),
+  list_contacts: () => {
+    const persona = harnessPersona();
+    if (persona) return { contacts: persona.contacts };
+    return {
+      contacts: [
+        { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },
+        { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
+        { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
+        { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
+      ],
+    };
+  },
+  list_channels: () => {
+    const persona = harnessPersona();
+    if (persona) return { channels: persona.channels };
+    return {
+      channels: [
+        {
+          channelId: 'ch_release',
+          name: '',
+          scope: 'group',
+          visibility: 'private',
+          membership: 'joined',
+          unread: 2,
+          memberCount: 3,
+          lastActivityAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+          members: [
+            { personUid: 'prs_jacob', displayName: 'Jacob Patel' },
+            { personUid: 'prs_alan', displayName: 'Alan Turing' },
+          ],
+        },
+        {
+          channelId: 'ch_core',
+          name: 'hq-core',
+          scope: 'company',
+          companyUid: 'cmp_indigo',
+          companyName: 'Indigo',
+          visibility: 'company',
+          membership: 'joined',
+          unread: 4,
+          memberCount: 18,
+          lastActivityAt: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
+        },
+        {
+          channelId: 'ch_exec',
+          name: 'corey-exec',
+          scope: 'company',
+          companyUid: 'cmp_indigo',
+          companyName: 'Indigo',
+          visibility: 'private',
+          membership: 'joined',
+          unread: 0,
+          memberCount: 5,
+          lastActivityAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
+        },
+      ],
+    };
+  },
+  shell_ready: () => null,
   fetch_channel: (args) => {
     const channelId = String(args?.channelId ?? 'ch_core');
     const names = channelId === 'ch_release'
