@@ -122,6 +122,58 @@ export function isImageFile(file: File): boolean {
   return attachmentKindForContentType(contentTypeForFile(file)) === "image";
 }
 
+/** Clipboard/screenshot names that would collide if pasted more than once. */
+const GENERIC_PASTE_NAME = /^(image)(\.[a-z0-9]+)?$/i;
+
+/**
+ * Files from a paste or drop. Prefer `files`; some WebKit pastes only
+ * populate `items` with `kind === "file"`.
+ */
+export function filesFromDataTransfer(
+  data:
+    | {
+        files?: FileList | File[] | null;
+        items?: DataTransferItemList | DataTransferItem[] | null;
+      }
+    | null
+    | undefined,
+): File[] {
+  if (!data) return [];
+  const listed = data.files ? Array.from(data.files) : [];
+  if (listed.length > 0) return listed;
+  const items = data.items ? Array.from(data.items) : [];
+  const files: File[] = [];
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile?.();
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+/**
+ * Pasted screenshots arrive as clipboard files all named `image.png` (or
+ * `image.jpg`). Give each a unique name so (name, size) dedupe and vault
+ * paths stay distinct.
+ */
+export function namePastedImageFile(
+  file: File,
+  sequence: number,
+  now = new Date(),
+): File {
+  const originalName = file.name.trim() || "image.png";
+  if (!isImageFile(file) || !GENERIC_PASTE_NAME.test(originalName)) {
+    return file;
+  }
+  const type = contentTypeForFile(file);
+  const ext =
+    type.split("/")[1]?.replace("jpeg", "jpg") ||
+    file.name.split(".").pop()?.toLowerCase() ||
+    "png";
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return new File([file], `pasted-${stamp}-${sequence}.${ext}`, { type });
+}
+
 export function validateChatAttachment(
   file: File,
   maxBytes = MAX_CHAT_ATTACHMENT_BYTES,
