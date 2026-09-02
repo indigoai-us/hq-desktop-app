@@ -6,6 +6,9 @@ import { readRepoFile } from './harness';
 
 const ui = (rel: string) => readRepoFile(join('../../packages/ui', rel));
 
+const MARKETPLACE_COVER_ORIGIN =
+  'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com';
+
 describe('avatar pack picker source contract', () => {
   const mascotsJson = ui('src/avatars/packs/hq-agent-mascots.json');
   const snapshots = ui('src/avatars/snapshots.ts');
@@ -60,16 +63,18 @@ describe('avatar pack picker source contract', () => {
     expect(picker).toContain('cspSafeAvatarSrc');
     expect(picker).toContain('avatar-pack-item-fallback');
     expect(picker).toContain('onerror');
-    expect(csp.app.security.csp).toContain("img-src 'self'");
-    expect(csp.app.security.csp).toContain('blob:');
+    const imageSources = csp.app.security.csp
+      .match(/(?:^|;)\s*img-src\s+([^;]+)/i)?.[1]
+      ?.trim()
+      .split(/\s+/);
+
+    expect(imageSources).toContain("'self'");
+    expect(imageSources).toContain('blob:');
     // Pack tiles never load over http(s) (`cspSafeAvatarSrc` returns null).
     // Marketplace listing covers are the only remote img-src — one origin,
     // no scheme wildcard. Same contract as tauri-conf.spec.ts.
-    expect(csp.app.security.csp).toContain(
-      'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com',
-    );
-    expect(csp.app.security.csp).not.toMatch(/img-src[^;]*\*/i);
-    expect(csp.app.security.csp).not.toMatch(/img-src[^;]*https:\s/i);
-    expect(csp.app.security.csp).not.toMatch(/img-src[^;]*https:\/\/\*/i);
+    expect(imageSources?.filter((source) => /^https?:/i.test(source))).toEqual([
+      MARKETPLACE_COVER_ORIGIN,
+    ]);
   });
 });
