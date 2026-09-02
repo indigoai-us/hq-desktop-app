@@ -41,6 +41,7 @@
     surfaceNativeNotificationRetry,
     type NativeNotificationRecovery,
   } from './lib/nativeNotificationRecovery';
+  import { executeSessionNotificationAction } from './lib/sessionNotificationAction';
   import {
     applyBrandToDocument,
     cacheLogoAssets,
@@ -1169,6 +1170,12 @@
         await invoke('show_main_window');
         return;
       }
+    } else if (kind === 'session') {
+      // An agent session parked on the human — land on that session's page.
+      await executeSessionNotificationAction(action, data, (command, args) =>
+        invoke(command, args),
+      );
+      return;
     } else if (kind === 'meeting') {
       const windowId = typeof data?.windowId === 'string' ? data.windowId : '';
       const meetingId = typeof data?.meetingId === 'string' ? data.meetingId : '';

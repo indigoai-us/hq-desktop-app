@@ -127,6 +127,7 @@ impl SessionEventSink for AppSink {
                 "to": change.to,
             }),
         );
+        super::notify::on_phase(&self.0, session_id, change);
     }
 
     fn emit_needs_you(&self, session_id: &str, needs: &NeedsYou) {
@@ -139,6 +140,7 @@ impl SessionEventSink for AppSink {
                 "summary": needs.summary,
             }),
         );
+        super::notify::on_needs_you(&self.0, session_id, needs);
     }
 }
 
