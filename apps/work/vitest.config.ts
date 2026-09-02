@@ -8,6 +8,9 @@ export default defineConfig({
   // dropped-companies banner) without the full SvelteKit runtime.
   plugins: [svelte()],
   resolve: {
+    // Component interaction tests mount packages/ui under happy-dom. Prefer
+    // Svelte's client entry so `mount()` is available in that environment.
+    conditions: ["browser"],
     alias: {
       // SvelteKit virtual modules / aliases for plain-vitest runs.
       "$env/dynamic/private": fileURLToPath(
