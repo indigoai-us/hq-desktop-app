@@ -18,16 +18,32 @@ export function getInstallSessionId(): string {
   return installSessionId;
 }
 
-/** Test-only: clear the memoized install session between cases. */
+// Stable, privacy-preserving device id (a hashed MAC from the Rust side) used to
+// spot the same machine installing again. Best-effort: only a successful,
+// non-empty id is memoized — a failure/empty result is retried on the next ping.
+let deviceIdCache: string | undefined;
+async function getDeviceId(): Promise<string | undefined> {
+  if (deviceIdCache) return deviceIdCache;
+  const id = await invoke<string>("device_fingerprint").catch(() => "");
+  if (typeof id === "string" && id) {
+    deviceIdCache = id;
+    return id;
+  }
+  return undefined;
+}
+
+/** Test-only: clear the memoized install session and device id between cases. */
 export function __resetTelemetryCachesForTests(): void {
   installSessionId = null;
+  deviceIdCache = undefined;
 }
 
 /**
  * Fire-and-forget ping for one installer step (welcome → install → signin →
  * setup → done). Anonymous by `installSessionId`; attaches `personUid` once the
- * user has signed in. Errors are swallowed — a telemetry failure must never
- * block the wizard. Installation telemetry is independent of skill consent.
+ * user has signed in and a best-effort hashed device id. Errors are swallowed —
+ * a telemetry failure must never block the wizard. Installation telemetry is
+ * independent of skill consent.
  */
 export async function pingStep(opts: {
   step: string;
@@ -35,6 +51,7 @@ export async function pingStep(opts: {
   version?: string;
 }): Promise<void> {
   try {
+    const deviceId = await getDeviceId();
     await fetch(STEP_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
@@ -42,6 +59,7 @@ export async function pingStep(opts: {
         installSessionId: getInstallSessionId(),
         step: opts.step,
         ...(opts.personUid ? { personUid: opts.personUid } : {}),
+        ...(deviceId ? { deviceId } : {}),
         version: opts.version ?? "unknown",
         ts: Date.now(),
       }),

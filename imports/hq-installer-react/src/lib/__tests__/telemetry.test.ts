@@ -186,7 +186,7 @@ describe("pingStep", () => {
     __resetTelemetryCachesForTests();
   });
 
-  it("POSTs the step with a stable session id and personUid, never a device fingerprint", async () => {
+  it("POSTs the step with a stable session id, personUid, and hashed device fingerprint", async () => {
     vi.useRealTimers();
     (invoke as ReturnType<typeof vi.fn>).mockResolvedValue("hashed-mac-abc");
     globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
@@ -200,17 +200,17 @@ describe("pingStep", () => {
     expect(body).toMatchObject({
       step: "signin",
       personUid: "prs_ada",
+      deviceId: "hashed-mac-abc",
       version: "9.9.9",
       installSessionId: getInstallSessionId(),
     });
-    expect("deviceId" in body).toBe(false);
-    expect(invoke).not.toHaveBeenCalledWith("device_fingerprint");
+    expect(invoke).toHaveBeenCalledWith("device_fingerprint");
     // The session id is stable across pings within a process.
     expect(typeof body.installSessionId).toBe("string");
     expect(body.installSessionId.length).toBeGreaterThan(0);
   });
 
-  it("omits personUid gracefully when unavailable", async () => {
+  it("omits deviceId gracefully when the fingerprint is unavailable", async () => {
     vi.useRealTimers();
     (invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("no command"));
     globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
@@ -220,6 +220,8 @@ describe("pingStep", () => {
     const [, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect("personUid" in body).toBe(false);
+    expect("deviceId" in body).toBe(false);
+    expect(invoke).toHaveBeenCalledWith("device_fingerprint");
     expect(body.step).toBe("welcome");
   });
 
