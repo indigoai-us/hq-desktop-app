@@ -261,7 +261,7 @@ describe('send and stop', () => {
     expect(onsend).not.toHaveBeenCalled();
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     flushSync();
-    expect(onsend).toHaveBeenCalledWith('hello', []);
+    expect(onsend).toHaveBeenCalledWith('hello', [], []);
   });
 
   it('becomes a spinning stop while the agent works', () => {
@@ -269,5 +269,141 @@ describe('send and stop', () => {
     expect(at('session-composer-send')).toBeNull();
     const stop = must('session-composer-stop');
     expect(stop.querySelector('.spinner')).not.toBeNull();
+  });
+});
+
+describe('@mentions — the picker, the chips, the promise', () => {
+  const CANDIDATES = [
+    { uid: 'prs_corey', displayName: 'Corey Epstein', kind: 'human', email: 'corey@example.com' },
+    { uid: 'prs_alex', displayName: 'Alex Smith', kind: 'human', email: 'alex@example.com' },
+    { uid: 'agt_atlas', displayName: 'Atlas', kind: 'agent' },
+  ];
+
+  function type(text: string) {
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = text;
+    input.setSelectionRange?.(text.length, text.length);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    return input;
+  }
+
+  const key = (input: HTMLElement, k: string, init: KeyboardEventInit = {}) => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...init }));
+    flushSync();
+  };
+
+  it('opens on a bare @ and lists people before agents with a kind tag', () => {
+    render({ mentionCandidates: CANDIDATES });
+    expect(at('session-mention-menu')).toBeNull();
+    type('@');
+    const rows = [...must('session-mention-menu').querySelectorAll('[data-testid="session-mention-item"]')];
+    expect(rows.map((row) => row.querySelector('.name')?.textContent?.trim())).toEqual([
+      'Corey Epstein',
+      'Alex Smith',
+      'Atlas',
+    ]);
+    expect(rows.map((row) => row.getAttribute('data-kind'))).toEqual(['human', 'human', 'agent']);
+    expect(rows[2]?.querySelector('.kind')?.textContent?.trim()).toBe('agent');
+    expect(rows[0]?.querySelector('.avatar')?.textContent?.trim()).toBe('CE');
+    // The slash menu does not fight for the slot.
+    expect(at('session-slash-menu')).toBeNull();
+  });
+
+  it('filters as you type and never opens mid-word', () => {
+    render({ mentionCandidates: CANDIDATES });
+    type('ping @at');
+    const rows = [...must('session-mention-menu').querySelectorAll('.name')].map((n) => n.textContent?.trim());
+    expect(rows).toEqual(['Atlas']);
+    type('mail corey@ex');
+    expect(at('session-mention-menu')).toBeNull();
+    type('hello');
+    expect(at('session-mention-menu')).toBeNull();
+  });
+
+  it('anchors the picker in the composer, above the box', () => {
+    render({ mentionCandidates: CANDIDATES });
+    type('@');
+    const menu = must('session-mention-menu');
+    expect(menu.closest('[data-testid="session-composer"]')).not.toBeNull();
+    expect(menu.compareDocumentPosition(must('session-composer-input')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Enter picks the highlighted row: @Name lands in the draft and a chip promises the DM', () => {
+    const onsend = vi.fn();
+    render({ mentionCandidates: CANDIDATES, onsend });
+    const input = type('@co');
+    key(input, 'Enter');
+    expect(onsend).not.toHaveBeenCalled();
+    expect(input.value).toBe('@Corey Epstein ');
+    expect(at('session-mention-menu')).toBeNull();
+    const chips = must('session-mention-chips');
+    expect(chips.textContent).toContain('Will DM');
+    expect(chips.textContent).toContain('Corey Epstein');
+    expect(chips.querySelectorAll('[data-testid="session-mention-chip"]')).toHaveLength(1);
+  });
+
+  it('Down/Up move the highlight and Tab picks it', () => {
+    render({ mentionCandidates: CANDIDATES });
+    const input = type('@');
+    key(input, 'ArrowDown');
+    key(input, 'ArrowDown');
+    const rows = must('session-mention-menu').querySelectorAll('[data-testid="session-mention-item"]');
+    expect(rows[2]?.getAttribute('aria-selected')).toBe('true');
+    key(input, 'ArrowUp');
+    expect(rows[1]?.getAttribute('aria-selected')).toBe('true');
+    key(input, 'Tab');
+    expect(input.value).toBe('@Alex Smith ');
+  });
+
+  it('Escape closes the picker without inserting anything', () => {
+    render({ mentionCandidates: CANDIDATES });
+    const input = type('@co');
+    expect(at('session-mention-menu')).not.toBeNull();
+    key(input, 'Escape');
+    expect(at('session-mention-menu')).toBeNull();
+    expect(input.value).toBe('@co');
+    expect(at('session-mention-chips')).toBeNull();
+  });
+
+  it('sends the chips with the text, and nothing once the chip is removed', () => {
+    const onsend = vi.fn();
+    render({ mentionCandidates: CANDIDATES, onsend });
+    let input = type('@co');
+    key(input, 'Enter');
+    input = type('@Corey Epstein can you look?');
+    key(input, 'Enter');
+    expect(onsend).toHaveBeenCalledWith('@Corey Epstein can you look?', [], [
+      { uid: 'prs_corey', displayName: 'Corey Epstein' },
+    ]);
+    expect(at('session-mention-chips')).toBeNull();
+
+    input = type('@co');
+    key(input, 'Enter');
+    click(must('session-mention-remove'));
+    expect(at('session-mention-chips')).toBeNull();
+    input = type('@Corey Epstein again');
+    key(input, 'Enter');
+    expect(onsend).toHaveBeenLastCalledWith('@Corey Epstein again', [], []);
+  });
+
+  it('drops the chip when the @Name is deleted from the draft', () => {
+    render({ mentionCandidates: CANDIDATES });
+    let input = type('@co');
+    key(input, 'Enter');
+    expect(at('session-mention-chips')).not.toBeNull();
+    input = type('never mind');
+    expect(at('session-mention-chips')).toBeNull();
+  });
+
+  it('reports the DM outcome in the footer, as an alert when it failed', () => {
+    render({ mentionStatus: { text: "DM'd Corey Epstein", error: false } });
+    expect(must('session-mention-status').textContent?.trim()).toBe("DM'd Corey Epstein");
+    expect(must('session-mention-status').getAttribute('role')).toBeNull();
+    if (component) unmount(component);
+    component = null;
+    render({ mentionStatus: { text: "Couldn't DM Atlas (Network error)", error: true } });
+    expect(must('session-mention-status').getAttribute('role')).toBe('alert');
+    expect(must('session-mention-status').className).toContain('error');
   });
 });

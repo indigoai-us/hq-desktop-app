@@ -27,6 +27,13 @@
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
   import SessionsStrip from '../../components/sessions/SessionsStrip.svelte';
+  import {
+    deliveryStatusLine,
+    loadMentionCandidates,
+    notifyMentions,
+    type Mention,
+    type MentionCandidate,
+  } from '../../components/sessions/mentions';
   import { mergeSlashCommands } from '../../components/sessions/slash-commands';
   import {
     deployCommandFor,
@@ -89,6 +96,14 @@
   /** The catalog probe's own complaint, e.g. Codex not being wired up yet. */
   let catalogError = $state('');
   let openedId = $state<string | null>(null);
+
+  // --- @mentions ------------------------------------------------------------
+  /** Who the composer's `@` can offer: the company pill's people + agents. */
+  let mentionCandidates = $state<MentionCandidate[]>([]);
+  /** The company the candidate list belongs to. */
+  let mentionCompany = $state<string | null>(null);
+  /** What the composer footer says about the last mention DMs. */
+  let mentionStatus = $state<{ text: string; error: boolean } | null>(null);
 
   // --- the composer's pills, remembered across restarts --------------------
   let company = $state<string | null>(readRemembered(LAST_COMPANY_KEY));
@@ -181,6 +196,25 @@
     if (models.length === 0) return;
     modelSeeded = true;
     model = pickModel(models, model)?.value ?? null;
+  });
+
+  /**
+   * The mention directory follows the company pill. A failed load costs the
+   * picker, never the session — the composer simply has nobody to offer.
+   */
+  $effect(() => {
+    const wanted = company;
+    if (mentionCompany === wanted) return;
+    mentionCompany = wanted;
+    mentionCandidates = [];
+    if (!wanted) return;
+    void loadMentionCandidates(wanted)
+      .then((candidates) => {
+        if (mentionCompany === wanted) mentionCandidates = candidates;
+      })
+      .catch((err: unknown) => {
+        console.warn('sessions: mention candidates unavailable', err);
+      });
   });
 
   const transcript = $derived(liveSessionStore.transcript);
@@ -453,20 +487,21 @@
   );
 
   /**
-   * The one send path. With no live session (or with a company pill that
-   * describes a different one) the message STARTS the session it belongs to;
-   * otherwise it joins the conversation already on screen, carrying whatever
-   * the model and effort pills now say.
-   */
-  /**
    * Open / Share / Deploy on files a turn produced. Deploy is a user turn —
    * `/deploy <path>` — so the deploy skill does the work and prints the link.
    */
   const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
 
-  async function handleSend(text: string, images: ComposerImage[]) {
+  /**
+   * The one send path. With no live session (or with a company pill that
+   * describes a different one) the message STARTS the session it belongs to;
+   * otherwise it joins the conversation already on screen, carrying whatever
+   * the model and effort pills now say.
+   */
+  async function handleSend(text: string, images: ComposerImage[], mentions: Mention[] = []) {
     if (sendDisabled) return;
     actionError = '';
+    mentionStatus = null;
     const attachments = images.map(({ mediaType, base64 }) => ({ mediaType, base64 }));
 
     if (sessionId && !newSessionPending) {
@@ -474,19 +509,47 @@
         await liveSessionStore.send(text, attachments, pendingOverrides);
       } catch (err) {
         actionError = err instanceof Error ? err.message : String(err);
+        return;
       }
+      await onmentionsend(sessionId, text, mentions);
       return;
     }
 
     starting = true;
+    let started: string | null = null;
     try {
-      const started = await liveSessionStore.startAndSend(specFrom(), text, attachments);
+      started = await liveSessionStore.startAndSend(specFrom(), text, attachments);
       openedId = started;
       onopensession?.(started);
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
     } finally {
       starting = false;
+    }
+    if (started) await onmentionsend(started, text, mentions);
+  }
+
+  /**
+   * The outward half of a mentioned send, run ONLY after the session accepted
+   * the message: every recipient whose chip was still showing gets an HQ DM
+   * with the text plus the session context line. A failed DM is reported in
+   * the composer footer, per recipient; the session message already went.
+   */
+  async function onmentionsend(forSessionId: string, text: string, mentions: Mention[]) {
+    if (mentions.length === 0 || !company) return;
+    try {
+      const deliveries = await notifyMentions({
+        company,
+        sessionId: forSessionId,
+        recipients: mentions.map((mention) => mention.uid),
+        text,
+        tool: summary?.tool ?? tool,
+      });
+      mentionStatus = deliveryStatusLine(deliveries, mentions);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const names = mentions.map((mention) => mention.displayName).join(', ');
+      mentionStatus = { text: `Couldn't DM ${names}: ${reason}`, error: true };
     }
   }
 
@@ -669,7 +732,9 @@
       codexAvailable={preflight?.codexAvailable ?? false}
       {newSessionPending}
       {hqFolder}
-      onsend={(text, images) => void handleSend(text, images)}
+      {mentionCandidates}
+      {mentionStatus}
+      onsend={(text, images, mentions) => void handleSend(text, images, mentions)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}
       onmodel={chooseModel}

@@ -63,6 +63,7 @@ pub mod run_cli_provision;
 pub mod session_artifacts;
 pub mod session_end_latch;
 pub mod session_end_observer;
+pub mod session_mentions;
 pub mod sessions;
 pub mod settings;
 pub mod share_notify;
