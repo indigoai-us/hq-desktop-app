@@ -2,7 +2,7 @@
 /**
  * Cheap PR gate: the desktop shell must leave the loading skeleton for every
  * release-gate persona, including the non-Indigo empty inbox that v0.10.178
- * froze on. Mounts HqWorkDesktopShell against the shared harness personas.
+ * froze on. Mounts HqWorkWorkShell against the shared harness personas.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,7 +27,7 @@ vi.mock('@tauri-apps/api/app', () => ({
 }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import {
   PERSONA_IDS,
   PERSONAS,
@@ -51,7 +51,7 @@ async function mountPersona(id: PersonaId) {
   const { invokeFn, calls, persona } = createPersonaInvoke(id);
   host = document.createElement('div');
   document.body.appendChild(host);
-  component = mount(HqWorkDesktopShell, {
+  component = mount(HqWorkWorkShell, {
     target: host,
     props: { invokeFn, bootTimeoutMs: 40 },
   });

@@ -2758,7 +2758,9 @@
                         data-testid="channel-header-avatar"
                       >
                         <IdentityMark
-                          kind="agent"
+                          kind={isAgentUid(selectedRow.personUid ?? "")
+                            ? "agent"
+                            : "person"}
                           label={headerTitle}
                           agentUid={selectedRow.personUid}
                           avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
@@ -2774,8 +2776,11 @@
                       data-testid="channel-header-avatar"
                     >
                       <IdentityMark
-                        kind="person"
+                        kind={isAgentUid(selectedRow.personUid ?? "")
+                          ? "agent"
+                          : "person"}
                         label={headerTitle}
+                        agentUid={selectedRow.personUid}
                         avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
                           null}
                         size="small"
