@@ -1040,6 +1040,7 @@ This final paragraph verifies spacing after a thematic break.
   },
   get_autostart_enabled: () => true,
   set_autostart_enabled: () => null,
+  take_launch_agent_repoint_notice: () => null,
   meetings_feature_enabled: () => true,
   meetings_list_upcoming: () => meetingFixtures(),
   meetings_list_memberships: () => [
