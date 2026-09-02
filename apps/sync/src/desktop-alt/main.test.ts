@@ -9,7 +9,7 @@ const main = readFileSync(
 );
 
 describe("desktop-alt embedded Work bundle boundary", () => {
-  it("keeps the default-off Work shell behind mountHqWork's dynamic import", () => {
+  it("keeps the workspace shell code-split behind mountHqWork", () => {
     const mountHqWork = main.match(
       /mountHqWork:\s*async\s*\(\)\s*=>\s*\{([\s\S]*?)\n  \},\n\}\)/,
     );
@@ -18,17 +18,18 @@ describe("desktop-alt embedded Work bundle boundary", () => {
 
     expect(
       main,
-      "Regression: HqWorkWorkShell must not be statically imported at module top level, or flag-off users download the embedded Work bundle.",
+      "Regression: HqWorkWorkShell must not be statically imported at module top level.",
     ).not.toMatch(
       /^\s*import(?:\s+[^"']+?\s+from)?\s*["']\.\/HqWorkWorkShell\.svelte["'];?\s*$/m,
     );
     expect(
       dynamicImports,
-      "Regression: HqWorkWorkShell must remain a single dynamic import so flag-off users do not download the embedded Work bundle.",
+      "Regression: HqWorkWorkShell must remain a single dynamic import.",
     ).toHaveLength(1);
     expect(
       mountHqWork?.[1],
-      "Regression: the Work shell dynamic import must be reached only from mountHqWork after the flag resolves truthy.",
-    ).toContain("import(\n      './HqWorkWorkShell.svelte'\n    )");
+      "Regression: the workspace shell dynamic import must be reached from mountHqWork.",
+    ).toContain("import('./HqWorkWorkShell.svelte')");
+    expect(main).not.toMatch(/getHqWorkHandoff|mountLegacy|getHandoff|DesktopApp/);
   });
 });

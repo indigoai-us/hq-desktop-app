@@ -664,3 +664,173 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     expect(telemetrySource).toContain('RUNNER_ERROR_SITE_TOKENS');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Windows session-end terminator axis (HQ-DESKTOP-5X) — manual seam parity
+// ---------------------------------------------------------------------------
+//
+// A manual `Sync Now` runner torn down by the Windows session manager exited
+// 0x40010004 (DBG_TERMINATE_PROCESS) with windows_exit_class=session_terminate,
+// yet the manual seam read NEITHER Windows attribution channel, so the alert had
+// no windows_terminator and no session_end_latch at all — while the identical
+// shape on the watcher route (HQ-DESKTOP-5J) names windows_terminator=
+// unattributed_no_signal. This lane gives the manual seam the SAME two shared
+// readers so a manual runner is nameable exactly as the watcher route is.
+
+describe('manual runner-exit attribution — Windows session-end terminator axis (HQ-DESKTOP-5X)', () => {
+  const attributionSource = readRepoFile('src-tauri/src/commands/session_end_attribution.rs');
+
+  it('extracts the two readers into a shared module BOTH seams call', () => {
+    // The readers were private to the daemon/watcher route; they now live in one
+    // shared module, unchanged bodies + cfg gates, so both seams read one source.
+    expect(attributionSource).toContain(
+      'pub(crate) fn current_windows_terminator_attribution<R: tauri::Runtime>(',
+    );
+    expect(attributionSource).toContain(
+      'pub(crate) fn current_session_end_latch_reading_for_exit(',
+    );
+    // The deferral re-read probe (the deferral LIFECYCLE) stays with the readers.
+    expect(attributionSource).toContain('SESSION_END_ATTRIBUTION_PROBE');
+    expect(attributionSource).toContain('pub(crate) fn current_session_end_reading(');
+    // The watcher route still calls the shared readers from the same module.
+    expect(daemonSource).toContain('use crate::commands::session_end_attribution::');
+    expect(daemonSource).toContain('current_windows_terminator_attribution(&app, code, signal)');
+    expect(daemonSource).toContain('current_session_end_latch_reading_for_exit(code, signal)');
+  });
+
+  it('the manual seam reads BOTH shared channels and creates NO deferral', () => {
+    // The manual capture seam imports and calls the SAME two readers, self-gated to
+    // the DBG_TERMINATE_PROCESS/no-signal shape, right after building the context.
+    expect(syncSource).toContain('use crate::commands::session_end_attribution::');
+    expect(syncSource).toContain(
+      'exit_context.windows_terminator =\n                            current_windows_terminator_attribution(&app_bg, code, signal);',
+    );
+    expect(syncSource).toContain(
+      'exit_context.session_end_latch =\n                            current_session_end_latch_reading_for_exit(code, signal);',
+    );
+    // ATTRIBUTION ONLY: the manual seam is a pure reader. It never re-reads the
+    // deferral probe (that is the watcher route's deferral-resolution path), so the
+    // watcher route stays the sole owner of the deferral lifecycle.
+    expect(syncSource).not.toContain('current_session_end_reading');
+  });
+
+  it('the manual capture builder emits the terminator tag + latch extra, gated to the shape', () => {
+    const telemetryContext = sliceBetween(
+      syncSource,
+      'fn runner_exit_telemetry_context(',
+      'fn capture_runner_exit_error(',
+      'runner_exit_telemetry_context',
+    );
+    // windows_terminator is a TAG, from the same fixed vocabulary the watcher route
+    // emits, pushed only when the reader returned Some (the session-terminate shape).
+    expect(telemetryContext).toContain('if let Some(attribution) = context.windows_terminator {');
+    expect(telemetryContext).toContain(
+      'tags.push(("windows_terminator", attribution.class_name().to_string()));',
+    );
+    // session_end_latch is an EXTRA (parity with the watcher route's deferred
+    // payload), gated on the same shape so it appears exactly when the terminator does.
+    expect(telemetryContext).toContain('if context.windows_terminator.is_some() {');
+    expect(telemetryContext).toContain('"session_end_latch"');
+    expect(telemetryContext).toContain('context.session_end_latch.class_name()');
+  });
+});
+
+interface ManualEnvelope {
+  message: string;
+  fingerprint: string[];
+  tags: Record<string, string>;
+  extras: Record<string, string>;
+}
+
+const MANUAL_CONTENT_SAFE = /^[a-z0-9_./]+$/;
+
+/**
+ * Model the reported HQ-DESKTOP-5X manual session-terminate envelope under each
+ * policy. The ONLY difference is the two ADDED attribution axes; the fingerprint,
+ * message and every pre-existing tag are byte-identical.
+ */
+function manualSessionTerminateEnvelope(policy: 'pre-fix' | 'post-fix'): ManualEnvelope {
+  const env: ManualEnvelope = {
+    message: 'manual sync runner exited unexpectedly',
+    fingerprint: ['sync', 'runner-termination', 'exit:0x40010004', 'none', 'none', 'none'],
+    tags: {
+      sync_route: 'manual',
+      runner_phase: 'push',
+      windows_exit_class: 'session_terminate',
+      windows_exit_status: '0x40010004',
+      sync_termination_reason: 'uncancelled',
+      runner_fatal_class: 'none',
+    },
+    extras: {},
+  };
+  if (policy === 'post-fix') {
+    // Named exactly as the watcher route's shipped HQ-DESKTOP-5J shape.
+    env.tags.windows_terminator = 'unattributed_no_signal';
+    env.extras.session_end_latch = 'absent';
+  }
+  return env;
+}
+
+/** A non-session-terminate manual exit-1 — the readers self-gate away from it. */
+function manualOtherExitEnvelope(policy: 'pre-fix' | 'post-fix'): ManualEnvelope {
+  const env: ManualEnvelope = {
+    message: 'manual sync runner exited unexpectedly',
+    fingerprint: ['sync', 'runner-termination', 'exit:1', 'none', 'none', 'none'],
+    tags: {
+      sync_route: 'manual',
+      runner_phase: 'push',
+      sync_termination_reason: 'uncancelled',
+      runner_fatal_class: 'none',
+    },
+    extras: {},
+  };
+  // Even post-fix, a non-DBG_TERMINATE_PROCESS exit gets NEITHER axis: the shared
+  // readers return None / Unavailable off the one shape they consult. `policy` is
+  // intentionally inert here — that inertness is exactly the property under test.
+  void policy;
+  return env;
+}
+
+describe('manual runner-exit attribution — session-terminate envelope (both directions)', () => {
+  it('pre-fix reproduces the observed HQ-DESKTOP-5X 0.10.169 envelope verbatim', () => {
+    const env = manualSessionTerminateEnvelope('pre-fix');
+    expect(env.tags.sync_route).toBe('manual');
+    expect(env.tags.runner_phase).toBe('push');
+    expect(env.tags.windows_exit_class).toBe('session_terminate');
+    expect(env.tags.sync_termination_reason).toBe('uncancelled');
+    // The exact honesty gap: NO terminator and NO latch axis at all.
+    expect(env.tags.windows_terminator).toBeUndefined();
+    expect(env.extras.session_end_latch).toBeUndefined();
+  });
+
+  it('post-fix carries windows_terminator + session_end_latch, matching the watcher HQ-DESKTOP-5J shape', () => {
+    const env = manualSessionTerminateEnvelope('post-fix');
+    expect(env.tags.windows_terminator).toBe('unattributed_no_signal');
+    expect(env.extras.session_end_latch).toBe('absent');
+  });
+
+  it('emits NEITHER axis on any other exit shape, both directions', () => {
+    for (const policy of ['pre-fix', 'post-fix'] as const) {
+      const env = manualOtherExitEnvelope(policy);
+      expect(env.tags.windows_terminator).toBeUndefined();
+      expect(env.extras.session_end_latch).toBeUndefined();
+    }
+  });
+
+  it('grouping continuity: the fingerprint and every pre-existing field are byte-identical', () => {
+    const pre = manualSessionTerminateEnvelope('pre-fix');
+    const post = manualSessionTerminateEnvelope('post-fix');
+    expect(post.message).toBe(pre.message);
+    expect(post.fingerprint).toEqual(pre.fingerprint);
+    for (const key of Object.keys(pre.tags)) {
+      expect(post.tags[key]).toBe(pre.tags[key]);
+    }
+  });
+
+  it('the added attribution axes are content-safe fixed vocabulary', () => {
+    const env = manualSessionTerminateEnvelope('post-fix');
+    for (const value of [env.tags.windows_terminator, env.extras.session_end_latch]) {
+      expect(value).toMatch(MANUAL_CONTENT_SAFE);
+    }
+  });
+});

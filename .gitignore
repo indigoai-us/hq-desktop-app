@@ -10,3 +10,6 @@ target/
 .env.local
 .env.*.local
 apps/sync/.dmgbuild-venv/
+
+# node_modules symlinks (the trailing-slash rule above only matches directories)
+**/node_modules

@@ -908,7 +908,7 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe(true);
   });
 
-  it('keeps automatic Inbox hydration and a replacement compose draft intact across a delayed send', async () => {
+  it('keeps automatic Inbox hydration and an in-flight create draft intact across a delayed send', async () => {
     let releaseDirectory: ((value: unknown) => void) | undefined;
     const directoryResponse = new Promise<unknown>((resolve) => {
       releaseDirectory = resolve;
@@ -917,7 +917,14 @@ describe('embedded Work navigation and lifecycle', () => {
     const sendChannelResponse = new Promise<unknown>((resolve) => {
       releaseSend = resolve;
     });
-    await mountShell({ pendingRoute: 'inbox', directoryResponse, sendChannelResponse });
+    await mountShell({
+      pendingRoute: 'inbox',
+      directoryResponse,
+      sendChannelResponse,
+      nativeResults: {
+        create_channel: { channelId: 'chn_created', name: 'release', scope: 'company' },
+      },
+    });
 
     releaseDirectory?.({
       channels: [{ channelId: 'chn_engineering', id: 'chn_engineering', name: 'engineering' }],
@@ -930,43 +937,45 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
 
+    // The "+" opens the unified create modal directly. Create a channel whose
+    // first message is answered late by the host.
     (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
     await flush();
-    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+    setInput('chat-create-query', '#release');
+    await new Promise((resolve) => setTimeout(resolve, 150));
     await flush();
-    setInput('chat-compose-to', 'engineering');
-    setInput('chat-compose-body', 'old delayed draft');
+    (document.querySelector('[data-testid="chat-create-channel-row"]') as HTMLButtonElement).click();
     await flush();
-    (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+    setInput('chat-channel-first-message', 'old delayed draft');
     await flush();
-    (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
-    await flush();
-
-    // Start a newer compose instance while the old host send is still in
-    // flight. Its completion must not close or clear this replacement draft.
-    (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
-    await flush();
-    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
-    await flush();
-    (document.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
-    await flush();
-    setInput('chat-compose-to', 'engineering');
-    setInput('chat-compose-body', 'new replacement draft');
-    await flush();
-
-    releaseSend?.({ eventId: 'evt_old' });
+    (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
     await flush(64);
 
+    // While the host send is in flight the modal cannot be torn down, so a
+    // late completion can never close or clear a draft other than its own —
+    // and opening it did not move the shell off Inbox.
     expect(
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
-    expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
-    expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe(
-      'engineering',
-    );
-    expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe(
-      'new replacement draft',
-    );
+    const close = document.querySelector(
+      '[data-testid="chat-create-modal"] [aria-label="Close"]',
+    ) as HTMLButtonElement;
+    expect(close.disabled).toBe(true);
+    close.click();
+    await flush();
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(
+      (document.querySelector('[data-testid="chat-channel-first-message"]') as HTMLTextAreaElement).value,
+    ).toBe('old delayed draft');
+
+    releaseSend?.({ eventId: 'evt_old' });
+    await flush(64);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flush(64);
+
+    // The delayed send landed in the channel it was drafted for, exactly once,
+    // and only then did the modal close.
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
   it('rehydrates the compact embedded shell from the native OAuth completion event', async () => {
@@ -1098,6 +1107,9 @@ describe('embedded Work navigation and lifecycle', () => {
     await mountShell({ signedIn: false });
     expect(host.querySelector('[data-testid="hq-work-signed-out"]')).toBeTruthy();
     expect(host.textContent).toContain('Your session expired');
+    expect(host.querySelector('.sign-in-card')).toBeTruthy();
+    expect(host.textContent).toContain('Continue with Google');
+    expect(host.textContent).toContain('Continue with Microsoft');
 
     await unmount(component!);
     component = null;

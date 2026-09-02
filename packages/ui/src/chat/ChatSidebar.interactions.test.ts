@@ -283,6 +283,72 @@ describe("ChatSidebar auto-opens a conversation (US-016)", () => {
   });
 });
 
+describe("ChatSidebar channel:removed wake", () => {
+  it("drops the channel row from the rail and leaves other rows alone", async () => {
+    const wakes = createChatWakeBus();
+    const other: ChannelDirectoryRow = {
+      ...seedRow,
+      channelId: "chn_other",
+      name: "other",
+    };
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_1",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: [seedRow, other],
+          }),
+        }),
+        seedDirectory: [seedRow, other],
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_proj"]'),
+      ).toBeTruthy();
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_other"]'),
+      ).toBeTruthy();
+    });
+
+    wakes.emit("channel:removed", { channelId: "chn_proj" });
+    await tick();
+
+    expect(host.querySelector('[data-conversation-id="ch:chn_proj"]')).toBeNull();
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_other"]'),
+    ).toBeTruthy();
+  });
+
+  it("ignores a channel:removed wake for an unknown channel", async () => {
+    const wakes = createChatWakeBus();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [seedRow],
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_proj"]'),
+      ).toBeTruthy();
+    });
+    wakes.emit("channel:removed", { channelId: "chn_nope" });
+    await tick();
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_proj"]'),
+    ).toBeTruthy();
+  });
+});
+
 describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
   it("shows a numeric badge after channel:new-message when another row is selected", async () => {
     const wakes = createChatWakeBus();

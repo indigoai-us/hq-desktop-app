@@ -3,7 +3,7 @@
  * US-103 — Mount embedded @hq/ui DesktopApp behind hq_work_handoff.
  *
  * Tray "Open desktop view" always opens the desktop-alt window. The webview
- * boot is the flag branch: flag on → HQ Work shell, flag off → legacy.
+ * always mounts the @hq/ui HQ Work shell.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -198,6 +198,21 @@ function messagingInvoke(
             },
           ],
         };
+      case 'list_company_members':
+        return {
+          contacts: [
+            {
+              personUid: 'prs_bob',
+              displayName: 'Bob',
+              email: 'bob@example.test',
+            },
+            {
+              personUid: 'prs_eve',
+              displayName: 'Eve',
+              email: 'eve@example.test',
+            },
+          ],
+        };
       case 'list_dm_requests':
         return { requests: [] };
       case 'create_channel':
@@ -235,11 +250,52 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
   });
 }
 
-async function openNewMessage(): Promise<void> {
+/** The sidebar "+" opens the unified create modal directly (no dropdown). */
+async function openCreateModal(): Promise<void> {
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
   await flush();
-  (host.querySelector('[data-testid="chat-plus-new-message"]') as HTMLButtonElement).click();
+}
+
+/** Clear the create modal's 110 ms query debounce. */
+async function settleQuery(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 150));
   await flush();
+}
+
+function click(selector: string): void {
+  const node = document.querySelector(selector) as HTMLButtonElement | null;
+  if (!node) throw new Error(`missing ${selector}`);
+  node.click();
+}
+
+/** Enter the create step for `name` from the find step. */
+async function enterCreateStep(name: string): Promise<void> {
+  setInput('chat-create-query', name);
+  await settleQuery();
+  click('[data-testid="chat-create-channel-row"]');
+  await flush();
+}
+
+/** Pick `name` from the member picker's suggestions. */
+async function addMember(name: string): Promise<void> {
+  setInput('chat-channel-participants', name);
+  await flush();
+  click('[data-testid="chat-channel-suggestion"]');
+  await flush();
+}
+
+/** Click Create and let the sequential member / first-message loop drain. */
+async function submitCreate(): Promise<void> {
+  click('[data-testid="chat-channel-create"]');
+  await flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flush();
+}
+
+function summaryRows(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[data-testid="chat-create-summary-row"]'),
+  );
 }
 
 function setInput(testId: string, value: string): void {
@@ -276,14 +332,14 @@ afterEach(async () => {
 
 describe('US-103 embedded desktop window', () => {
   describe('flag branch (tray desktop-view → window boot)', () => {
-    it('hq_work_handoff still defaults false', () => {
-      expect(hqWorkHandoffEnabled(undefined)).toBe(false);
-      expect(hqWorkHandoffEnabled(null)).toBe(false);
-      expect(hqWorkHandoffEnabled(false)).toBe(false);
+    it('hq_work_handoff is always on, including a retired false key', () => {
+      expect(hqWorkHandoffEnabled(undefined)).toBe(true);
+      expect(hqWorkHandoffEnabled(null)).toBe(true);
+      expect(hqWorkHandoffEnabled(false)).toBe(true);
       expect(hqWorkHandoffEnabled(true)).toBe(true);
     });
 
-    it('Given flag off, when the tray desktop-view action runs, then legacy desktop-alt mounts', async () => {
+    it('Given a retired false flag, when the tray desktop-view action runs, then hq-work mounts', async () => {
       const calls: string[] = [];
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => false,
@@ -294,9 +350,9 @@ describe('US-103 embedded desktop window', () => {
           calls.push('hq-work');
         },
       });
-      expect(shell).toBe('legacy');
-      expect(await resolveDesktopAltShell(async () => false)).toBe('legacy');
-      expect(calls).toEqual(['legacy']);
+      expect(shell).toBe('hq-work');
+      expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
+      expect(calls).toEqual(['hq-work']);
     });
 
     it('shows a branded loading mark until identity settles', async () => {
@@ -354,31 +410,31 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
     });
 
-    it('flag-read failure falls back to the legacy desktop-alt shell', async () => {
+    it('flag-read failure still mounts the hq-work shell', async () => {
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => {
           throw new Error('menubar missing');
         },
-        mountLegacy: () => undefined,
-        mountHqWork: () => {
-          throw new Error('must not mount HQ Work when the flag cannot be read');
+        mountLegacy: () => {
+          throw new Error('must not mount legacy');
         },
+        mountHqWork: () => undefined,
       });
-      expect(shell).toBe('legacy');
+      expect(shell).toBe('hq-work');
     });
 
-    it('finding-6: flag-off boot does not probe install or mount the HQ Work shell', async () => {
+    it('finding-6: boot does not probe HQ Work install', async () => {
       const invokeFn = vi.fn(async (command: string) => {
-        throw new Error(`flag-off boot must not invoke ${command}`);
+        throw new Error(`boot must not invoke ${command}`);
       }) as HqWorkInvoker;
       const shell = await bootDesktopAltWindow({
         getHandoff: async () => false,
-        mountLegacy: () => undefined,
-        mountHqWork: () => {
-          throw new Error('must not mount HQ Work when flag is off');
+        mountLegacy: () => {
+          throw new Error('must not mount legacy');
         },
+        mountHqWork: () => undefined,
       });
-      expect(shell).toBe('legacy');
+      expect(shell).toBe('hq-work');
       expect(invokeFn).not.toHaveBeenCalled();
     });
   });
@@ -673,77 +729,126 @@ describe('US-103 embedded desktop window', () => {
   });
 
   describe('F-04 embedded messaging semantics', () => {
-    it('sends a selected existing channel body exactly once before closing the compose modal', async () => {
+    // The old "New message" compose modal (To + body + Send) is gone. The "+"
+    // opens ONE search-first create modal: an existing channel or person is
+    // OPENED (never messaged from the modal), and an unmatched name creates a
+    // channel whose optional "What's this for?" body is its first message.
+    // Every guarantee below is the old F-04 guarantee restated for that flow.
+
+    it('opens a picked existing channel exactly once and closes the create modal', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'existing');
-      setInput('chat-compose-body', 'ship this once');
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+      await openCreateModal();
+      setInput('chat-create-query', 'existing');
+      await settleQuery();
+      // The rail auto-opens its first row on mount; only count the pick.
+      const before = calls.length;
+      click('[data-testid="chat-create-result"]');
       await flush();
 
+      expect(calls.slice(before).filter((call) => call.cmd === 'mark_channel_read')).toEqual([
+        { cmd: 'mark_channel_read', args: { channelId: 'chn_existing' } },
+      ]);
+      // Nothing is composed for an existing conversation — opening it is the action.
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([]);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+    });
+
+    it('opens a picked existing DM exactly once and closes the create modal', async () => {
+      const calls: MessagingCall[] = [];
+      mountMessagingSidebar(messagingInvoke(calls));
+      await flush();
+      await openCreateModal();
+      setInput('chat-create-query', 'Bob');
+      await settleQuery();
+      const bob = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="chat-create-result"]'),
+      ).find((node) => node.textContent?.includes('Bob'));
+      expect(bob?.textContent).toContain('bob@example.test');
+      bob?.click();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
+        { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
+      ]);
+      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([]);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+    });
+
+    it('never acts on a stale result after the visible query changes', async () => {
+      const calls: MessagingCall[] = [];
+      mountMessagingSidebar(messagingInvoke(calls));
+      await flush();
+      await openCreateModal();
+      setInput('chat-create-query', 'existing');
+      await settleQuery();
+      expect(document.querySelector('[data-testid="chat-create-result"]')?.textContent).toContain(
+        'existing',
+      );
+
+      // Retyping replaces the result list; Enter activates what is VISIBLE.
+      setInput('chat-create-query', 'Bob');
+      await settleQuery();
+      const before = calls.length;
+      const input = document.querySelector('[data-testid="chat-create-query"]') as HTMLInputElement;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await flush();
+
+      const after = calls.slice(before);
+      expect(after.filter((call) => call.cmd === 'mark_channel_read')).toEqual([]);
+      expect(after.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
+        { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
+      ]);
+    });
+
+    it('refuses to dismiss while a create is in flight, then opens the channel once it lands', async () => {
+      const calls: MessagingCall[] = [];
+      const pending = deferred<{ eventId: string }>();
+      mountMessagingSidebar(
+        messagingInvoke(calls, {
+          send_channel_message: () => pending.promise,
+        }),
+      );
+      await flush();
+      await openCreateModal();
+      await enterCreateStep('#release');
+      setInput('chat-channel-first-message', 'in-flight draft');
+      await flush();
+      click('[data-testid="chat-channel-create"]');
+      await flush();
+
+      // A completion from a torn-down instance used to close/clear a NEWER
+      // draft. There is no newer instance now: × and the backdrop are inert
+      // until the host answers, so the outcome always lands where it started.
+      const close = document.querySelector(
+        '[data-testid="chat-create-modal"] [aria-label="Close"]',
+      ) as HTMLButtonElement;
+      expect(close.disabled).toBe(true);
+      close.click();
+      await flush();
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+      expect(
+        (document.querySelector('[data-testid="chat-channel-first-message"]') as HTMLTextAreaElement)
+          .value,
+      ).toBe('in-flight draft');
+
+      pending.resolve({ eventId: 'evt_sent' });
+      await flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([
         {
           cmd: 'send_channel_message',
-          args: { channelId: 'chn_existing', body: 'ship this once' },
+          args: { channelId: 'chn_created', body: 'in-flight draft' },
         },
       ]);
-      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeNull();
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
-    it('sends a selected existing DM body exactly once before closing the compose modal', async () => {
-      const calls: MessagingCall[] = [];
-      mountMessagingSidebar(messagingInvoke(calls));
-      await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'Bob');
-      setInput('chat-compose-body', 'hello Bob');
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
-      await flush();
-
-      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([
-        {
-          cmd: 'send_dm',
-          args: { toPersonUid: 'prs_bob', body: 'hello Bob' },
-        },
-      ]);
-      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeNull();
-    });
-
-    it('does not send to a stale recipient after the visible To input changes', async () => {
-      const calls: MessagingCall[] = [];
-      mountMessagingSidebar(messagingInvoke(calls));
-      await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'existing');
-      setInput('chat-compose-body', 'send to Bob instead');
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-
-      setInput('chat-compose-to', 'Bob');
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
-      await flush();
-
-      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([]);
-      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([
-        {
-          cmd: 'send_dm',
-          args: { toPersonUid: 'prs_bob', body: 'send to Bob instead' },
-        },
-      ]);
-    });
-
-    it('keeps a reopened compose draft after an obsolete send succeeds', async () => {
+    it('reports a late first-message failure on the summary instead of losing it', async () => {
       const calls: MessagingCall[] = [];
       const pending = deferred<{ eventId: string }>();
       mountMessagingSidebar(
@@ -752,65 +857,27 @@ describe('US-103 embedded desktop window', () => {
         }),
       );
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'existing');
-      setInput('chat-compose-body', 'old draft');
+      await openCreateModal();
+      await enterCreateStep('#release');
+      setInput('chat-channel-first-message', 'old draft');
       await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
-      await flush();
-
-      (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
-      await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'Bob');
-      setInput('chat-compose-body', 'new draft');
-      await flush();
-
-      pending.resolve({ eventId: 'evt_old' });
-      await flush();
-
-      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
-      expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe('Bob');
-      expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe('new draft');
-    });
-
-    it('keeps a reopened compose draft free of errors from an obsolete failed send', async () => {
-      const calls: MessagingCall[] = [];
-      const pending = deferred<{ eventId: string }>();
-      mountMessagingSidebar(
-        messagingInvoke(calls, {
-          send_channel_message: () => pending.promise,
-        }),
-      );
-      await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'existing');
-      setInput('chat-compose-body', 'old draft');
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
-      await flush();
-
-      (document.querySelector('[data-testid="chat-new-message-modal"] [aria-label="Close"]') as HTMLButtonElement).click();
-      await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'Bob');
-      setInput('chat-compose-body', 'new draft');
+      click('[data-testid="chat-channel-create"]');
       await flush();
 
       pending.reject(new Error('old send failed'));
       await flush();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flush();
 
-      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
-      expect((document.querySelector('[data-testid="chat-compose-to"]') as HTMLInputElement).value).toBe('Bob');
-      expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe('new draft');
-      expect(document.querySelector('[role="alert"]')?.textContent ?? '').not.toContain('old send failed');
+      const summary = document.querySelector('[data-testid="chat-create-summary"]');
+      expect(summary).toBeTruthy();
+      expect(summary?.textContent).toContain("didn't send");
+      expect(summary?.textContent).toContain('old draft');
+      // The raw host error is not surfaced until the user retries and it fails again.
+      expect(document.querySelector('[data-testid="chat-create-summary-error"]')).toBeNull();
     });
 
-    it('retains a failed existing-message draft and shows a retryable error', async () => {
+    it('retains a failed first-message draft and offers a retry that reports its own failure', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(
         messagingInvoke(calls, {
@@ -820,36 +887,42 @@ describe('US-103 embedded desktop window', () => {
         }),
       );
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', 'existing');
-      setInput('chat-compose-body', 'do not lose me');
+      await openCreateModal();
+      await enterCreateStep('#release');
+      setInput('chat-channel-first-message', 'do not lose me');
       await flush();
-      (document.querySelector('[data-testid="chat-compose-suggestion"]') as HTMLButtonElement).click();
+      await submitCreate();
+
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="chat-create-summary"]')?.textContent).toContain(
+        'do not lose me',
+      );
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toHaveLength(1);
+
+      click('[data-testid="chat-create-summary-action"]');
       await flush();
-      (document.querySelector('[data-testid="chat-compose-send"]') as HTMLButtonElement).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await flush();
 
-      expect(document.querySelector('[data-testid="chat-new-message-modal"]')).toBeTruthy();
-      expect((document.querySelector('[data-testid="chat-compose-body"]') as HTMLTextAreaElement).value).toBe('do not lose me');
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain('network unavailable');
-      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toHaveLength(1);
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toHaveLength(2);
+      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
+      expect(
+        document.querySelector('[data-testid="chat-create-summary-error"]')?.textContent,
+      ).toContain('network unavailable');
+      expect(document.querySelector('[data-testid="chat-create-summary"]')?.textContent).toContain(
+        'do not lose me',
+      );
     });
 
     it('sends a composed first message after channel creation and does not drop it', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', '#release');
-      setInput('chat-compose-body', 'announce release');
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await openCreateModal();
+      await enterCreateStep('#release');
+      setInput('chat-channel-first-message', 'announce release');
       await flush();
-      (document.querySelector('[data-testid="chat-compose-create-channel"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
-      await flush();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await flush();
+      await submitCreate();
 
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([
@@ -858,9 +931,10 @@ describe('US-103 embedded desktop window', () => {
           args: { channelId: 'chn_created', body: 'announce release' },
         },
       ]);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
-    it('does not duplicate the first message when the server accepted it but its response was lost', async () => {
+    it('never re-creates the channel when the first message fails; only an explicit retry re-sends', async () => {
       const calls: MessagingCall[] = [];
       let sendAttempts = 0;
       mountMessagingSidebar(
@@ -868,37 +942,39 @@ describe('US-103 embedded desktop window', () => {
           send_channel_message: () => {
             sendAttempts += 1;
             // Model a write that reached the server followed by a dropped
-            // response: a client retry would create a second message.
+            // response. The client must not silently POST again.
             throw new Error('response lost after accepted write');
           },
         }),
       );
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', '#release');
-      setInput('chat-compose-body', 'keep this first post');
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await openCreateModal();
+      await enterCreateStep('#release');
+      setInput('chat-channel-first-message', 'keep this first post');
       await flush();
-      (document.querySelector('[data-testid="chat-compose-create-channel"]') as HTMLButtonElement).click();
-      await flush();
-      (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
+      await submitCreate();
+
+      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
+      expect(sendAttempts).toBe(1);
+      // The channel exists and is accounted for; the draft is still on screen.
+      const summary = document.querySelector('[data-testid="chat-create-summary"]');
+      expect(summary?.textContent).toContain('#release is ready');
+      expect(summary?.textContent).toContain('keep this first post');
+      expect(host.textContent).toContain('release');
+
+      // A second send is a deliberate user action, never automatic — and it
+      // resumes THIS channel rather than creating another.
+      click('[data-testid="chat-create-summary-action"]');
       await flush();
       await new Promise((resolve) => setTimeout(resolve, 0));
       await flush();
-
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
-      expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeTruthy();
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain('delivery of the first message could not be confirmed');
-      expect(document.body.textContent).toContain('keep this first post');
-      expect(sendAttempts).toBe(1);
+      expect(sendAttempts).toBe(2);
+      expect(document.querySelector('[data-testid="chat-create-summary"]')).toBeTruthy();
 
-      const retry = document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement;
-      expect(retry.disabled).toBe(true);
-      retry.click();
+      click('[data-testid="chat-create-summary-done"]');
       await flush();
-      expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
-      expect(sendAttempts).toBe(1);
-      expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
     it('persists the created channel before invite N and retries only incomplete invitations', async () => {
@@ -931,39 +1007,28 @@ describe('US-103 embedded desktop window', () => {
         }),
       );
       await flush();
-      await openNewMessage();
-      setInput('chat-compose-to', '#release');
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      await flush();
-      (document.querySelector('[data-testid="chat-compose-create-channel"]') as HTMLButtonElement).click();
-      await flush();
+      await openCreateModal();
+      await enterCreateStep('#release');
+      await addMember('Bob');
+      await addMember('Eve');
+      expect(document.querySelectorAll('[data-testid="chat-channel-chip"]')).toHaveLength(2);
 
-      setInput('chat-channel-participants', 'Bob');
-      await flush();
-      (document.querySelector('[data-testid="chat-channel-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-      setInput('chat-channel-participants', 'Eve');
-      await flush();
-      (document.querySelector('[data-testid="chat-channel-suggestion"]') as HTMLButtonElement).click();
-      await flush();
-
-      (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
-      await flush();
-
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await flush();
+      await submitCreate();
 
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
+      // One rejection does not abort the loop, and the created id is pinned
+      // before the first invite so every retry resumes the same channel.
       expect(calls.filter((call) => call.cmd === 'invite_to_channel')).toEqual([
         { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_bob'] } },
         { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_eve'] } },
       ]);
       expect(eveAttempts).toBe(1);
-      expect(document.querySelector('[role="alert"]')?.textContent ?? '').toContain('Retry to resume the same channel');
+      const rows = summaryRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].textContent).toContain('Eve');
 
-      (document.querySelector('[data-testid="chat-channel-create"]') as HTMLButtonElement).click();
+      click('[data-testid="chat-create-summary-action"]');
       await flush();
-
       await new Promise((resolve) => setTimeout(resolve, 0));
       await flush();
 
@@ -974,7 +1039,11 @@ describe('US-103 embedded desktop window', () => {
         { cmd: 'invite_to_channel', args: { channelId: 'chn_created', personUids: ['prs_eve'] } },
       ]);
       expect(eveAttempts).toBe(2);
-      expect(document.querySelector('[data-testid="chat-new-channel-modal"]')).toBeNull();
+      expect(summaryRows()[0].textContent).toContain('Added.');
+
+      click('[data-testid="chat-create-summary-done"]');
+      await flush();
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
     it('renders the native Sync search result envelope exactly once', async () => {

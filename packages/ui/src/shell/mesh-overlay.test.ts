@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MeshShellOverlay } from "@hq/core";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import {
@@ -479,6 +479,69 @@ describe("createHybridSidebarApi", () => {
     const api = createHybridSidebarApi(live, () => seeded);
     const feed = await api.fetchChannelDirectory(null);
     expect(feed.rows?.[0]?.channelId).toBe("cache-1");
+  });
+});
+
+describe("createHybridSidebarApi optional live capabilities", () => {
+  function liveApi(extra: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
+    return {
+      fetchChannelDirectory: async () => ({
+        contractVersion: 2,
+        snapshot: true,
+        cursor: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        cursorExpiresAt: "2026-09-01T00:00:00.000Z",
+        rows: [],
+      }),
+      listContacts: async () => ({ contacts: [] }),
+      listDmRequests: async () => ({ requests: [] }),
+      listChannels: async () => ({ channels: [] }),
+      markDmThreadRead: async () => {},
+      markChannelRead: async () => {},
+      sendChannelMessage: async () => {},
+      sendDm: async () => {},
+      searchMessages: async () => ({ results: [] }),
+      ...extra,
+    };
+  }
+
+  it("forwards listCompanyMembers and sendDmToEmail from live", async () => {
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_kai" }],
+    }));
+    const sendDmToEmail = vi.fn(async () => ({ state: "delivered" as const }));
+    const api = createHybridSidebarApi(
+      liveApi({ listCompanyMembers, sendDmToEmail }),
+      () => overlay,
+    );
+    expect(await api.listCompanyMembers?.("cmp_indigo")).toEqual({
+      contacts: [{ personUid: "prs_kai" }],
+    });
+    expect(listCompanyMembers).toHaveBeenCalledWith("cmp_indigo");
+    await api.sendDmToEmail?.({ toEmail: "kai@acme.test", body: "hi" });
+    expect(sendDmToEmail).toHaveBeenCalledWith({
+      toEmail: "kai@acme.test",
+      body: "hi",
+    });
+  });
+
+  it("leaves both undefined when live lacks them, and prefers persist for sendDmToEmail", async () => {
+    const bare = createHybridSidebarApi(liveApi(), () => overlay);
+    expect(bare.listCompanyMembers).toBeUndefined();
+    expect(bare.sendDmToEmail).toBeUndefined();
+
+    const liveSend = vi.fn(async () => ({ state: "delivered" as const }));
+    const persistSend = vi.fn(async () => ({
+      state: "connectionRequested" as const,
+    }));
+    const api = createHybridSidebarApi(
+      liveApi({ sendDmToEmail: liveSend }),
+      () => overlay,
+      undefined,
+      { sendDmToEmail: persistSend },
+    );
+    await api.sendDmToEmail?.({ toEmail: "kai@acme.test", body: "hi" });
+    expect(persistSend).toHaveBeenCalledTimes(1);
+    expect(liveSend).not.toHaveBeenCalled();
   });
 });
 

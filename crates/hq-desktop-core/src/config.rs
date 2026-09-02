@@ -261,8 +261,10 @@ pub struct MenubarPrefs {
     /// the app already owns a taskbar presence there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock_icon: Option<bool>,
-    /// HQ Work desktop-view handoff. Absent → false so existing installs
-    /// keep desktop-alt until ~/.hq/menubar.json is flipped (no rebuild).
+    /// Retired. The desktop workspace is the only UI. Kept on the typed
+    /// struct so an upgraded `menubar.json` still deserializes; writers
+    /// must not persist it (`skip_serializing_if = None` plus an explicit
+    /// strip in `merge_prefs_over_existing`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
 }

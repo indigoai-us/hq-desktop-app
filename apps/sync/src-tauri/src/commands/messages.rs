@@ -489,6 +489,7 @@ pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String>
 //   `send_channel_message`  — POST   /v1/notify/channels/{id}/messages
 //   `list_channel_members`  — GET    /v1/notify/channels/{id}/members
 //   `remove_channel_member` — DELETE /v1/notify/channels/{id}/members/{uid}
+//   `delete_channel`        — DELETE /v1/notify/channels/{id} (owner only)
 //   `mark_channel_read`     — POST   /v1/notify/channels/{id}/read
 
 /// Tauri command: list every channel the caller can see (personal + company,
@@ -940,6 +941,103 @@ pub async fn remove_channel_member(
     Ok(out)
 }
 
+/// Success body of `DELETE /v1/notify/channels/{id}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteChannelResponse {
+    pub deleted: String,
+}
+
+/// The message shown when the live server predates the delete route. API
+/// Gateway answers an unrouted path with its generic `{"message":"Not Found"}`
+/// body — no `code`, no `error` — which must not surface to the user as a bare
+/// "Not Found".
+pub const DELETE_CHANNEL_UNSUPPORTED_MSG: &str =
+    "This server doesn't support deleting channels yet.";
+
+/// Map a non-2xx `DELETE /v1/notify/channels/{id}` response to the string the
+/// UI shows. Pure so the shape mapping is unit-testable without a network.
+///
+/// Contract (hq-pro):
+///   403 `{ error, code: "CHANNEL_NOT_OWNER" }`
+///   404 `{ error, code: "CHANNEL_NOT_FOUND" }`
+///   409 `{ error, code: "CHANNEL_GROUP_NOT_DELETABLE" }`
+/// Pre-rollout: API Gateway's generic 404 `{"message":"Not Found"}` (no code).
+pub fn delete_channel_error_message(status: u16, body: Option<&serde_json::Value>) -> String {
+    if let Some(msg) = body
+        .and_then(|v| v.get("error"))
+        .and_then(|e| e.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return msg.to_string();
+    }
+    let has_code = body
+        .and_then(|v| v.get("code"))
+        .and_then(|c| c.as_str())
+        .map(|c| !c.trim().is_empty())
+        .unwrap_or(false);
+    let gateway_not_found = body
+        .and_then(|v| v.get("message"))
+        .and_then(|m| m.as_str())
+        .map(|m| m.trim().eq_ignore_ascii_case("not found"))
+        .unwrap_or(false);
+    if status == 404 && !has_code && gateway_not_found {
+        return DELETE_CHANNEL_UNSUPPORTED_MSG.to_string();
+    }
+    // A coded body without an `error` string (handled above) still gets the
+    // status fallback; a 5xx is transient, so tell the user to retry.
+    if status >= 500 {
+        return format!("Delete failed (status {status}). Try again.");
+    }
+    format!("Delete failed (status {status})")
+}
+
+/// Tauri command: delete a channel (owner action). `DELETE
+/// /v1/notify/channels/{id}`. The server fans out a directory-feed change so
+/// other members' rails drop the row; the deleting client drops it itself
+/// (optimistic `channel:removed` wake) as soon as this resolves.
+#[tauri::command]
+pub async fn delete_channel(channel_id: String) -> Result<DeleteChannelResponse, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_DELETE").await?;
+    let url = format!("{base}/v1/notify/channels/{}", esc_seg(id));
+    let resp = build_client()
+        .delete(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            log(
+                LOG_TAG,
+                &format!("MESSAGES_CHANNEL_DELETE_NETWORK_FAIL {e}"),
+            );
+            format!("Network error: {e}")
+        })?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.json::<serde_json::Value>().await.ok();
+        let msg = delete_channel_error_message(status.as_u16(), body.as_ref());
+        log(
+            LOG_TAG,
+            &format!("MESSAGES_CHANNEL_DELETE_ERROR status={status} msg={msg:?}"),
+        );
+        return Err(msg);
+    }
+    // `{ deleted: "<channelId>" }` — tolerate an empty/odd 2xx body by echoing
+    // the id we asked to delete.
+    let out = resp
+        .json::<DeleteChannelResponse>()
+        .await
+        .unwrap_or(DeleteChannelResponse {
+            deleted: id.to_string(),
+        });
+    log(LOG_TAG, &format!("MESSAGES_CHANNEL_DELETE_OK id={id}"));
+    Ok(out)
+}
+
 /// Tauri command: mark a channel read (zeroes its server-side unread). `POST
 /// /v1/notify/channels/{id}/read`. Called when the user opens a channel; the
 /// local unread is cleared in the UI immediately and reconciled here.
@@ -1133,5 +1231,101 @@ mod tests {
         mark_messages_viewed_inner(&handle);
 
         assert_eq!(dm_notify::current_unread_dms(&handle), 0);
+    }
+
+    #[test]
+    fn delete_channel_error_prefers_server_error_string() {
+        let body = serde_json::json!({
+            "error": "Only the channel owner can delete it",
+            "code": "CHANNEL_NOT_OWNER"
+        });
+        assert_eq!(
+            delete_channel_error_message(403, Some(&body)),
+            "Only the channel owner can delete it"
+        );
+        let gone = serde_json::json!({ "error": "Channel not found", "code": "CHANNEL_NOT_FOUND" });
+        assert_eq!(
+            delete_channel_error_message(404, Some(&gone)),
+            "Channel not found"
+        );
+        let group = serde_json::json!({
+            "error": "Group DMs cannot be deleted",
+            "code": "CHANNEL_GROUP_NOT_DELETABLE"
+        });
+        assert_eq!(
+            delete_channel_error_message(409, Some(&group)),
+            "Group DMs cannot be deleted"
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_maps_gateway_not_found_to_unsupported() {
+        // API Gateway's generic body for an unrouted path — no `code` field.
+        let body = serde_json::json!({ "message": "Not Found" });
+        assert_eq!(
+            delete_channel_error_message(404, Some(&body)),
+            DELETE_CHANNEL_UNSUPPORTED_MSG
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_does_not_treat_coded_404_as_unsupported() {
+        // A real hq-pro 404 carries a code even if it also had a message.
+        let body = serde_json::json!({ "message": "Not Found", "code": "CHANNEL_NOT_FOUND" });
+        assert_ne!(
+            delete_channel_error_message(404, Some(&body)),
+            DELETE_CHANNEL_UNSUPPORTED_MSG
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_keeps_409_group_dm_refusal() {
+        let body = serde_json::json!({
+            "error": "Group DMs cannot be deleted",
+            "code": "CHANNEL_GROUP_NOT_DELETABLE"
+        });
+        assert_eq!(
+            delete_channel_error_message(409, Some(&body)),
+            "Group DMs cannot be deleted"
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_passes_through_coded_503_retryable_text() {
+        let body = serde_json::json!({
+            "error": "Channel delete did not finish. Try again.",
+            "code": "CHANNEL_DELETE_INCOMPLETE"
+        });
+        assert_eq!(
+            delete_channel_error_message(503, Some(&body)),
+            "Channel delete did not finish. Try again."
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_body_less_5xx_asks_to_retry() {
+        assert_eq!(
+            delete_channel_error_message(503, None),
+            "Delete failed (status 503). Try again."
+        );
+        // A coded 5xx with no `error` string still gets the retry hint.
+        let coded_only = serde_json::json!({ "code": "CHANNEL_DELETE_INCOMPLETE" });
+        assert_eq!(
+            delete_channel_error_message(503, Some(&coded_only)),
+            "Delete failed (status 503). Try again."
+        );
+    }
+
+    #[test]
+    fn delete_channel_error_falls_back_to_status() {
+        assert_eq!(
+            delete_channel_error_message(500, None),
+            "Delete failed (status 500). Try again."
+        );
+        let unrelated = serde_json::json!({ "message": "Forbidden" });
+        assert_eq!(
+            delete_channel_error_message(403, Some(&unrelated)),
+            "Delete failed (status 403)"
+        );
     }
 }

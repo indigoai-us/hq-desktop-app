@@ -15,8 +15,14 @@ import { agentAvatarAssets } from '@hq/ui';
 import IdentityMark from './IdentityMark.svelte';
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const messagesShell = readFileSync(join(dir, 'MessagesShell.svelte'), 'utf8');
+const uiRoot = join(dir, '../../../../../packages/ui/src');
 const conversation = readFileSync(join(dir, 'Conversation.svelte'), 'utf8');
+const chatSidebar = readFileSync(join(uiRoot, 'chat/ChatSidebar.svelte'), 'utf8');
+const desktopApp = readFileSync(join(uiRoot, 'shell/DesktopApp.svelte'), 'utf8');
+const channelConversation = readFileSync(
+  join(uiRoot, 'chat/messaging/ChannelConversation.svelte'),
+  'utf8',
+);
 
 let host: HTMLElement;
 let component: Record<string, unknown> | null = null;
@@ -33,15 +39,20 @@ afterEach(async () => {
 });
 
 describe('sync messaging agent-avatar contract', () => {
-  it('passes agent kind + agentUid into IdentityMark on DM rows and messages', () => {
-    expect(messagesShell).toContain(
-      "kind={isAgentUid(c.personUid) ? 'agent' : 'person'}",
-    );
-    expect(messagesShell).toContain('agentUid=');
+  it('passes agent kind + agentUid into IdentityMark on surviving DM surfaces', () => {
+    // MessagesShell is gone; pin Conversation plus the desktop workspace surfaces.
     expect(conversation).toContain(
       "kind={isAgentUid(msg.fromPersonUid) ? 'agent' : 'person'}",
     );
-    expect(conversation).toContain('agentUid=');
+    expect(conversation).toContain('agentUid={msg.fromPersonUid}');
+    expect(desktopApp).toContain(
+      'kind={isAgentUid(selectedRow.personUid ?? "")',
+    );
+    expect(desktopApp).toContain('agentUid={selectedRow.personUid}');
+    expect(channelConversation).toContain('agentUid={msg.fromPersonUid}');
+    expect(channelConversation).toContain('kind="agent"');
+    expect(chatSidebar).toContain('rowAvatar(row, avatarByUid)');
+    expect(chatSidebar).toContain('data-testid="chat-dm-avatar"');
   });
 
   it('renders a generated avatar for an agent IdentityMark', () => {

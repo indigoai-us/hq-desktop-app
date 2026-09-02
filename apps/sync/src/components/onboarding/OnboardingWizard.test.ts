@@ -452,7 +452,7 @@ describe('onboarding launch handoff', () => {
 });
 
 describe('onboarding connector telemetry', () => {
-  it('records each auto-skip terminal outcome once', async () => {
+  it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -472,13 +472,31 @@ describe('onboarding connector telemetry', () => {
 
     await flush();
 
-    const stored = JSON.parse(
-      localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{"pending":[]}',
-    ) as { pending: Array<{ properties: { step: string; action: string } }> };
+    const connectorActions = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      )
+      .map(([, args]) => (args as { properties: { action: string } }).properties.action);
+    expect(connectorActions).toEqual(['entered', 'skipped']);
+
+    await flushUntil(() => {
+      const pending = JSON.parse(
+        localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
+      ) as { pending?: Array<{ properties: { step: string } }> };
+      return !(pending.pending ?? []).some(
+        (event) => event.properties.step === 'connector-import',
+      );
+    });
+
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      pending?: Array<{ properties: { step: string; action: string } }>;
+    };
     expect(
-      stored.pending
+      (stored.pending ?? [])
         .filter((event) => event.properties.step === 'connector-import')
         .map((event) => event.properties.action),
-    ).toEqual(['entered', 'skipped']);
+    ).toEqual([]);
   });
 });

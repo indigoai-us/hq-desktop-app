@@ -298,9 +298,9 @@ afterEach(async () => {
 
 describe('US-105 embedded feature-parity QA', () => {
   it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(false);
-    expect(hqWorkHandoffEnabled(null)).toBe(false);
-    expect(hqWorkHandoffEnabled(false)).toBe(false);
+    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
+    expect(hqWorkHandoffEnabled(null)).toBe(true);
+    expect(hqWorkHandoffEnabled(false)).toBe(true);
     expect(hqWorkHandoffEnabled(true)).toBe(true);
   });
 
@@ -354,6 +354,30 @@ describe('US-105 embedded feature-parity QA', () => {
         'fetch_reactions',
         'toggle_reaction',
       ]);
+    });
+
+    it('deleteChannel maps onto the delete_channel Sync command', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd, args) => {
+        if (cmd === 'delete_channel') return { deleted: args?.channelId };
+        throw new Error(`unexpected command: ${cmd}`);
+      });
+      const value = expectOk(await adapter.messaging.deleteChannel('chn_1'));
+      expect(value).toEqual({ deleted: 'chn_1' });
+      expect(calls).toEqual([
+        { cmd: 'delete_channel', args: { channelId: 'chn_1' } },
+      ]);
+    });
+
+    it('deleteChannel surfaces the Rust error string, never a swallowed failure', async () => {
+      const { adapter } = makeAdapter(async () => {
+        throw new Error("This server doesn't support deleting channels yet.");
+      });
+      const res = await adapter.messaging.deleteChannel('chn_1');
+      expect(res.ok).toBe(false);
+      if (res.ok) throw new Error('unreachable');
+      expect(res.message).toBe(
+        "This server doesn't support deleting channels yet.",
+      );
     });
 
     it('reply threads fetch and send map fetch_thread / send_thread_reply', async () => {
@@ -538,6 +562,68 @@ describe('US-105 embedded feature-parity QA', () => {
           projectId: null,
         },
       });
+    });
+
+    // The cross-company confirmation (D7) has no other source: the unscoped
+    // `list_contacts` feed carries no companyUid at all, so without this seam
+    // the modal can never tell an outsider from a teammate.
+    it('listCompanyMembers maps list_company_members and unwraps its envelope', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? { contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }] }
+          : null,
+      );
+      const api = createHqWorkSidebarApi(adapter);
+      expect(await api.listCompanyMembers?.('cmp_indigo')).toEqual({
+        contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }],
+      });
+      expect(calls[0]).toEqual({
+        cmd: 'list_company_members',
+        args: { companyUid: 'cmp_indigo' },
+      });
+    });
+
+    // Regression: the roster went through `adapter.company.listMembers`, which
+    // takes a company SLUG. Handed a companyUid it fetched the wrong thing on
+    // the Tauri/web adapters and silently disabled the cross-company confirm.
+    it('listCompanyMembers goes through the uid-scoped contacts feed, not company.listMembers', async () => {
+      const listContacts = vi.fn(async () => ({
+        ok: true as const,
+        value: { contacts: [{ personUid: 'prs_kai' }] },
+      }));
+      const listMembers = vi.fn(async () => ({
+        ok: true as const,
+        value: [{ personUid: 'prs_wrong' }],
+      }));
+      const fake = {
+        messaging: { listContacts },
+        company: { listMembers },
+      } as unknown as Parameters<typeof createHqWorkSidebarApi>[0];
+      expect(
+        await createHqWorkSidebarApi(fake).listCompanyMembers?.('cmp_indigo'),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+      expect(listContacts).toHaveBeenCalledWith({ companyUid: 'cmp_indigo' });
+      expect(listMembers).not.toHaveBeenCalled();
+    });
+
+    it('listCompanyMembers accepts a bare array and degrades to empty', async () => {
+      const bare = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? [{ personUid: 'prs_kai' }]
+          : null,
+      );
+      expect(
+        await createHqWorkSidebarApi(bare.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+
+      const junk = makeAdapter(async () => 'nope');
+      expect(
+        await createHqWorkSidebarApi(junk.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [] });
     });
 
     it('readLocalSnapshot stays not-yet-mapped (DesktopApp does not call it)', async () => {

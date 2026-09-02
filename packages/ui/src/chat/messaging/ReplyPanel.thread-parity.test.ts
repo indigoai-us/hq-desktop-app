@@ -91,6 +91,30 @@ describe("ReplyPanel thread parity", () => {
     });
   });
 
+  it("renders thread replies with the shared msg-body class and collapsed first-paragraph margin", async () => {
+    const h = mountPanel();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const replyRow = h.querySelector(
+      '[data-testid="reply-panel-message"]',
+    ) as HTMLElement | null;
+    expect(replyRow).not.toBeNull();
+    const body = replyRow!.querySelector(".reply-md") as HTMLElement | null;
+    expect(body).not.toBeNull();
+    expect(body!.classList.contains("msg-body")).toBe(true);
+
+    const paragraph = body!.querySelector("p") as HTMLElement | null;
+    expect(paragraph).not.toBeNull();
+    expect(getComputedStyle(paragraph!).marginTop).toBe("0px");
+
+    const rootBody = h.querySelector(
+      '[data-testid="reply-panel-root"] .reply-md',
+    ) as HTMLElement | null;
+    expect(rootBody?.classList.contains("msg-body")).toBe(true);
+  });
+
   it("does not render a reaction bar for a message with no reactions", async () => {
     const h = mountPanel();
     await tick();

@@ -118,11 +118,14 @@
     if (mode === 'onboarding' && typeof invoke === 'function') {
       await invoke('mark_first_run_complete');
     }
-    await restorePopoverSize();
-    // Hand off from the centered installer card to the compact popover anchored
-    // next to the menu-bar tray icon.
+    // Hand off from the centered installer card to the desktop workspace.
     if (typeof invoke === 'function') {
-      await invoke('show_main_window_at_tray');
+      try {
+        await invoke('open_desktop_alt_window');
+      } catch {
+        await restorePopoverSize();
+        await invoke('show_main_window_at_tray').catch(() => {});
+      }
     }
     await onfinish?.();
   }

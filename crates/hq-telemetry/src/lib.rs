@@ -312,12 +312,14 @@ fn is_watcher_fault_binary_token_set(value: &str) -> bool {
         && value.split(',').all(is_watcher_fault_binary_token)
 }
 
-/// The bounded read-counters rollup (`seen:N,parsed:N,rej_win:N,rej_code:N,
-/// sweeps:N,ms:N`), mirrored from `hq_desktop_core::watcher_fault::
+/// The bounded read-counters rollup (`seen:N,parsed:N,stale:N,rej_win:N,
+/// rej_code:N,sweeps:N,ms:N`), mirrored from `hq_desktop_core::watcher_fault::
 /// WatcherFaultReadCounters::tag_value`. Fixed tokens, bare-integer counts; the
 /// independent egress check that rejects any path, symbol, or raw record byte.
+/// The ordered key set MUST match the producer's `tag_value` exactly, or a
+/// recurrence's counters tag degrades to `[Filtered]` on the wire.
 fn is_watcher_fault_read_counters(value: &str) -> bool {
-    const KEYS: &[&str] = &["seen", "parsed", "rej_win", "rej_code", "sweeps", "ms"];
+    const KEYS: &[&str] = &["seen", "parsed", "stale", "rej_win", "rej_code", "sweeps", "ms"];
     !value.is_empty()
         && value.len() <= 128
         && value.split(',').enumerate().all(|(index, entry)| {
@@ -948,6 +950,192 @@ fn scrub_error_marker() -> Context {
     Context::Other(marker)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync child-exit culprit projection (HQ-DESKTOP-5W / HQ-DESKTOP-5X)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every sync child-exit alert is a `sentry::capture_message`, which carries no
+// exception and no stacktrace, so Sentry derives an EMPTY culprit — the issue
+// reads "cannot name a culprit" even though the event already carries the
+// fixed-vocabulary tags (sync_route, windows_exit_class/status, runner_fatal_class,
+// the WER binary candidate) that name the failing seam. This is the ONE site that
+// projects a bounded, content-safe culprit from those tags.
+//
+// Content safety is absolute: `Event.culprit` is NOT a tag, so
+// `scrub_runner_diagnostic_fields` does not cover it. The builder therefore
+// re-validates EVERY component in-place against the same allow-list predicates
+// the egress scrubber uses, so a producer bug that shipped a path, a company
+// slug, a machine name, or a raw process name into a tag can never reach the
+// culprit — it is refused here and the offending axis is simply omitted.
+
+/// The Windows exit-class vocabulary (`WindowsTermination::class_name`). Local
+/// mirror so the culprit builder stays independent of the producer crate.
+fn is_windows_exit_class_token(value: &str) -> bool {
+    matches!(
+        value,
+        "console_control" | "session_terminate" | "indeterminate_status" | "fault" | "ordinary"
+    )
+}
+
+/// The canonical `0x`-prefixed eight-uppercase-hex-digit Windows status rendering
+/// (`windows_exit_status_hex`). Anything else — a raw or malformed value — is
+/// refused, so no path or free text can ride the status into the culprit.
+fn is_windows_exit_status_hex(value: &str) -> bool {
+    value.len() == 10
+        && value.starts_with("0x")
+        && value[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
+/// The `RunnerFatalClass::as_str` vocabulary. Local mirror; a value outside it is
+/// never rendered into the culprit.
+fn is_runner_fatal_class_token(value: &str) -> bool {
+    matches!(
+        value,
+        "libuv_assert"
+            | "libuv_fatal_syscall"
+            | "node_check_abort"
+            | "node_fatal"
+            | "heap_oom"
+            | "rust_panic"
+            | "exec_permission_denied"
+            | "exec_not_found"
+            | "node_too_old"
+            | "disk_full"
+            | "npm_install_relay"
+            | "none"
+    )
+}
+
+/// A named faulting binary token, EXCLUDING the two non-name sentinels
+/// (`unavailable` = no observation; `other` = an unrecognised image). Only a real
+/// allow-listed name may ever be projected onto the culprit.
+fn watcher_fault_named_binary(value: &str) -> Option<&str> {
+    match value {
+        "unavailable" | "other" => None,
+        other if is_watcher_fault_binary_token(other) => Some(other),
+        _ => None,
+    }
+}
+
+/// Render the content-safe exit-shape phrase from the re-validated Windows exit
+/// axes, falling back to a genuine runner fatal class. `None` when nothing names
+/// the shape, so absence is never rendered as evidence.
+fn sync_child_exit_detail(
+    exit_class: Option<&str>,
+    exit_status: Option<&str>,
+    fatal_class: Option<&str>,
+) -> Option<String> {
+    let fatal_phrase = || match fatal_class {
+        Some(value) if is_runner_fatal_class_token(value) && value != "none" => {
+            Some(value.replace('_', " "))
+        }
+        _ => None,
+    };
+    let class = match exit_class {
+        Some(value) if is_windows_exit_class_token(value) => value,
+        // No (valid) Windows exit class — name a real runner fatal class instead.
+        _ => return fatal_phrase(),
+    };
+    let status = match exit_status {
+        Some(value) if is_windows_exit_status_hex(value) => Some(value),
+        _ => None,
+    };
+    Some(match class {
+        "fault" => match status {
+            Some(status) => format!("windows fault {status}"),
+            None => "windows fault".to_string(),
+        },
+        "session_terminate" => "windows session terminate".to_string(),
+        "console_control" => "windows console control".to_string(),
+        "indeterminate_status" => "windows indeterminate status".to_string(),
+        // An ordinary exit is not a Windows-signalled shape — prefer a real fatal
+        // class if one names the cause.
+        _ => return fatal_phrase(),
+    })
+}
+
+/// Derive a bounded, content-safe `Event.culprit` for a sync child-exit capture
+/// from the fixed-vocabulary tags already on the event. Returns `None` for any
+/// event that is not a sync child-exit capture (no valid `sync_route`), so every
+/// other event is left untouched.
+///
+/// The result is assembled ONLY from re-validated allow-list tokens and the
+/// canonical hex status — never argv, stderr, a path, a symbol, a company slug, a
+/// machine name, or a raw process name. When no axis names a binary the culprit
+/// names the seam and the exit shape only; it never invents an image, and a
+/// job-tree candidate is named only when its OWN provenance says it was observed
+/// in the tree (a CANDIDATE, never promoted to a fault attribution).
+fn derive_sync_child_exit_culprit(event: &Event<'static>) -> Option<String> {
+    let tag = |key: &str| event.tags.get(key).map(String::as_str);
+
+    // Gate: a sync child-exit capture is identified by a valid `sync_route` AND
+    // the presence of `runner_fatal_class`. BOTH exit seams (watcher and manual)
+    // always set `runner_fatal_class`, while a non-exit capture that ALSO carries
+    // `sync_route=watcher` — the supervisor memory-preempt, whose child exit is
+    // deliberately suppressed — does not, so requiring it keeps a proactive/non-exit
+    // event from being named. Anything else returns None and is left untouched.
+    let seam = match tag("sync_route") {
+        Some("watcher") => "watcher",
+        Some("manual") => "runner",
+        _ => return None,
+    };
+    if tag("runner_fatal_class").is_none() {
+        return None;
+    }
+
+    // The manual runner route names the phase it died in; only a real work phase.
+    let mut prefix = format!("sync/{seam}");
+    if let Some(phase) = tag("runner_phase") {
+        if seam == "runner" && matches!(phase, "scan" | "push" | "pull") {
+            prefix.push(' ');
+            prefix.push_str(phase);
+        }
+    }
+
+    // A named binary. When WER BOUND a record (pid_matched / window_only), the
+    // culprit is that record's faulting image, named ONLY if it is an allow-listed
+    // binary — a bound-but-unnamed (`other`) image stays UNNAMED and is never
+    // replaced by a tree candidate, which would falsely claim a different process
+    // faulted than the one the bound record proves. Only when the provenance is
+    // NON-binding does the job-tree culprit CANDIDATE (its own provenance says
+    // tree-observed) supply a name — a weaker signal is never promoted to an
+    // attribution.
+    let binary = if matches!(
+        tag("watcher_fault_provenance"),
+        Some("pid_matched" | "window_only")
+    ) {
+        tag("watcher_fault_faulting_image").and_then(watcher_fault_named_binary)
+    } else {
+        match tag("watcher_fault_job_culprit_candidate").and_then(watcher_fault_named_binary) {
+            Some(candidate)
+                if tag("watcher_fault_job_image_provenance") == Some("job_tree_observed") =>
+            {
+                Some(candidate)
+            }
+            _ => None,
+        }
+    };
+
+    let detail = sync_child_exit_detail(
+        tag("windows_exit_class"),
+        tag("windows_exit_status"),
+        tag("runner_fatal_class"),
+    );
+
+    let mut culprit = match (binary, detail) {
+        (Some(binary), Some(detail)) => format!("{prefix}: {binary} ({detail})"),
+        (Some(binary), None) => format!("{prefix}: {binary}"),
+        (None, Some(detail)) => format!("{prefix}: {detail}"),
+        (None, None) => prefix,
+    };
+    // Defensive cap; every component is short fixed vocabulary + hex, so a real
+    // culprit is well under this — the cap only bounds a pathological producer.
+    culprit.truncate(180);
+    Some(culprit)
+}
+
 pub fn before_send(event: Event<'static>) -> Option<Event<'static>> {
     before_send_with_native_context(
         event,
@@ -1025,6 +1213,17 @@ fn before_send_with_native_context(
             } else {
                 scrub_sensitive_in_value(v);
             }
+        }
+    }
+
+    // Name the culprit for a sync child-exit capture. Runs AFTER the tag scrub, so
+    // it reads already-scrubbed values and re-validates every component itself —
+    // a `[Filtered]` or off-vocabulary tag can never reach the culprit. Only set
+    // when the event has no culprit already, so an event that names its own is
+    // left untouched.
+    if event.culprit.as_deref().map_or(true, str::is_empty) {
+        if let Some(culprit) = derive_sync_child_exit_culprit(&event) {
+            event.culprit = Some(culprit);
         }
     }
 
@@ -1646,9 +1845,11 @@ mod tests {
         );
 
         // The resolved read-counters rollup survives, including the all-zero form.
+        // The `stale:N` key (HQ-DESKTOP-5W) is now part of the ordered set.
         for value in [
-            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0",
-            "seen:3,parsed:2,rej_win:2,rej_code:0,sweeps:5,ms:8123",
+            "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0",
+            "seen:4,parsed:3,stale:1,rej_win:2,rej_code:0,sweeps:5,ms:8123",
+            "seen:12,parsed:12,stale:12,rej_win:0,rej_code:0,sweeps:57,ms:60668",
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field("watcher_fault_read", value),
@@ -1656,6 +1857,26 @@ mod tests {
                 "read-counters rollup {value:?} must survive egress"
             );
         }
+        // The producer's own rendering (with the new `stale` counter populated)
+        // must pass the independent egress guard — the pin that fails CI, not
+        // production, if the tag_value key set and this guard ever drift apart.
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "watcher_fault_read",
+                &hq_desktop_core::watcher_fault::WatcherFaultReadCounters {
+                    records_seen: 12,
+                    records_parsed: 12,
+                    rejected_stale: 12,
+                    rejected_out_of_window: 0,
+                    rejected_code_mismatch: 0,
+                    sweeps: 57,
+                    ms_to_verdict: 60_668,
+                }
+                .tag_value()
+            ),
+            Some(true),
+            "the production-rendered watcher_fault_read counters tag must survive egress"
+        );
         // The job-image descriptor: allow-listed set, candidate, and its own
         // tree-observation provenance token (never a fault-attribution token).
         for binary in WatcherFaultBinary::ALL {
@@ -1701,8 +1922,17 @@ mod tests {
             ("runner_unmatched_stderr_shapes", "ndjson_record:6,/Users/Ada:1"),
             ("runner_unmatched_stderr_shapes", "not_a_shape:1"),
             ("watcher_fault_read", "seen:0,parsed:0"), // truncated rollup
-            ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0xff"),
-            ("watcher_fault_read", "parsed:0,seen:0,rej_win:0,rej_code:0,sweeps:0,ms:0"), // reordered
+            // The pre-fix six-key format no longer validates — the `stale` key is
+            // required, so an old client's counters tag fails closed (never ships).
+            ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"),
+            (
+                "watcher_fault_read",
+                "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0xff",
+            ),
+            (
+                "watcher_fault_read",
+                "parsed:0,seen:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0",
+            ), // reordered
             ("watcher_fault_job_images", r"node_exe,C:\Users\Ada\x.exe"),
             ("watcher_fault_job_culprit_candidate", "cmd"),
             ("watcher_fault_job_image_provenance", "pid_matched"),
@@ -1982,6 +2212,240 @@ mod tests {
         assert_eq!(
             result.extra["watcher_fault_exception_code"],
             Value::String("[Filtered]".to_string())
+        );
+    }
+
+    #[test]
+    fn before_send_names_the_culprit_for_a_watcher_route_windows_fault() {
+        // The exact HQ-DESKTOP-5W tag set: sync_route=watcher, a 0xC0000409 fault,
+        // WER rejected-out-of-window (so the faulting image is `unavailable`), and a
+        // node_exe job-tree culprit CANDIDATE. Base ships an empty culprit; the seam
+        // + candidate + fault are now named from the tags already on the event.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("windows_fault_symbol", "STATUS_STACK_BUFFER_OVERRUN"),
+            ("watcher_fault_provenance", "rejected_out_of_window"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "none"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        assert!(event.culprit.is_none(), "the capture ships without a culprit");
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+    }
+
+    #[test]
+    fn before_send_names_the_culprit_for_a_manual_route_session_terminate() {
+        // The exact HQ-DESKTOP-5X tag set: sync_route=manual, runner_phase=push, a
+        // 0x40010004 session-terminate, no nameable binary. Named seam + phase + shape.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "push"),
+            ("windows_exit_class", "session_terminate"),
+            ("windows_exit_status", "0x40010004"),
+            ("sync_termination_reason", "uncancelled"),
+            ("runner_fatal_class", "none"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/runner push: windows session terminate")
+        );
+    }
+
+    #[test]
+    fn before_send_binds_a_named_image_only_on_a_bound_provenance() {
+        // A WER-BOUND faulting image names the culprit directly.
+        let mut bound = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("runner_fatal_class", "none"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_faulting_image", "node_exe"),
+        ] {
+            bound.tags.insert(key.to_string(), value.to_string());
+        }
+        assert_eq!(
+            before_send(bound).unwrap().culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+
+        // The SAME faulting image on a NON-bound provenance is never promoted to an
+        // attribution — the seam + shape stand alone, absence never named. (No
+        // job-tree candidate is present, so the non-bound fallback names nothing.)
+        let mut unbound = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("runner_fatal_class", "none"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "rejected_out_of_window"),
+            ("watcher_fault_faulting_image", "node_exe"),
+        ] {
+            unbound.tags.insert(key.to_string(), value.to_string());
+        }
+        assert_eq!(
+            before_send(unbound).unwrap().culprit.as_deref(),
+            Some("sync/watcher: windows fault 0xC0000409")
+        );
+    }
+
+    #[test]
+    fn before_send_culprit_never_names_a_tree_candidate_over_a_bound_unnamed_image() {
+        // WER BOUND a record by PID/window, but its faulting image is not an
+        // allow-listed name (`other`). The culprit must NOT substitute a job-tree
+        // candidate (node_exe) — that would falsely claim Node faulted when the
+        // bound record proves the faulting image was something else. The image
+        // stays unnamed; only the seam + shape are named.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("runner_fatal_class", "none"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_faulting_image", "other"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let culprit = before_send(event).unwrap().culprit.expect("seam is named");
+        assert_eq!(culprit, "sync/watcher: windows fault 0xC0000409");
+        assert!(!culprit.contains("node_exe"), "a bound-but-unnamed image was replaced by a candidate");
+    }
+
+    #[test]
+    fn before_send_culprit_requires_the_child_exit_discriminator() {
+        // The supervisor memory-preempt capture carries sync_route=watcher but is
+        // NOT a child exit (its child exit is deliberately suppressed) and sets no
+        // runner_fatal_class. It must NOT be named — sync_route alone is not proof
+        // of a child-exit capture.
+        let mut preempt = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("rss_scope", "tree"),
+            ("runner_heap_ceiling_source", "declared_default"),
+        ] {
+            preempt.tags.insert(key.to_string(), value.to_string());
+        }
+        assert!(
+            before_send(preempt).unwrap().culprit.is_none(),
+            "a non-exit capture with sync_route but no runner_fatal_class must not be named"
+        );
+    }
+
+    #[test]
+    fn before_send_leaves_non_sync_and_pre_named_events_untouched() {
+        // No sync_route → not a sync child-exit capture → no culprit projected.
+        let mut unrelated = Event::default();
+        unrelated
+            .tags
+            .insert("runner_error_http".into(), "http_500:1".into());
+        assert!(before_send(unrelated).unwrap().culprit.is_none());
+
+        // An event that already names its own culprit is never overwritten.
+        let mut preset = Event::default();
+        preset.tags.insert("sync_route".into(), "watcher".into());
+        preset.tags.insert("windows_exit_class".into(), "fault".into());
+        preset.culprit = Some("existing::culprit".into());
+        assert_eq!(
+            before_send(preset).unwrap().culprit.as_deref(),
+            Some("existing::culprit")
+        );
+    }
+
+    #[test]
+    fn before_send_culprit_refuses_poisoned_allow_listed_axes() {
+        // A producer bug that shipped a path, a company slug, or a machine name into
+        // the WER binary tags must NEVER reach the culprit. Those tags ARE scrubbed
+        // to [Filtered] first, and the builder ALSO re-validates — defence in depth.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("runner_fatal_class", "none"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_faulting_image", r"C:\Users\Ada\node.exe"),
+            ("watcher_fault_job_culprit_candidate", "DESKTOP-53H1N93"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let culprit = before_send(event).unwrap().culprit.expect("seam is still named");
+        assert_eq!(culprit, "sync/watcher: windows fault 0xC0000409");
+        for poison in [r"C:\Users\Ada", "DESKTOP-53H1N93"] {
+            assert!(
+                !culprit.contains(poison),
+                "poisoned value {poison:?} leaked into culprit {culprit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn before_send_culprit_refuses_poisoned_pass_through_axes() {
+        // windows_exit_class / windows_exit_status / runner_fatal_class are NOT in
+        // the tag scrubber's allow-list (they pass through untouched), so ONLY the
+        // culprit builder's own re-validation stands between a poisoned producer
+        // value and the culprit. A junk status is dropped (bare "windows fault"); a
+        // junk fatal class with no windows class yields no detail at all.
+        let mut junk_status = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("runner_fatal_class", "none"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0x/etc/passwd"),
+        ] {
+            junk_status.tags.insert(key.to_string(), value.to_string());
+        }
+        assert_eq!(
+            before_send(junk_status).unwrap().culprit.as_deref(),
+            Some("sync/watcher: windows fault")
+        );
+
+        let mut junk_fatal = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "push"),
+            ("runner_fatal_class", "/var/secret/thing"),
+        ] {
+            junk_fatal.tags.insert(key.to_string(), value.to_string());
+        }
+        let culprit = before_send(junk_fatal).unwrap().culprit.expect("seam is named");
+        assert_eq!(culprit, "sync/runner push");
+        assert!(!culprit.contains("secret"));
+    }
+
+    #[test]
+    fn before_send_culprit_names_a_runner_fatal_class_when_no_windows_shape() {
+        // A non-Windows manual crash (no windows_exit_class) names the runner fatal
+        // class, rendered from the fixed vocabulary with underscores spaced out.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "pull"),
+            ("runner_fatal_class", "heap_oom"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        assert_eq!(
+            before_send(event).unwrap().culprit.as_deref(),
+            Some("sync/runner pull: heap oom")
         );
     }
 

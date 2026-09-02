@@ -14,7 +14,6 @@ vi.mock('svelte', async () => {
 });
 
 import { flushSync, mount, unmount } from 'svelte';
-import CreateChannel from './CreateChannel.svelte';
 import RecipientPicker from './RecipientPicker.svelte';
 
 interface Deferred<T> {
@@ -181,102 +180,5 @@ describe('RecipientPicker discovery recovery', () => {
       );
     });
     expect(host.querySelector('.suggestion-primary')?.textContent).toBe('Maya');
-  });
-});
-
-describe('CreateChannel scope discovery recovery', () => {
-  it('does not present membership failure as Personal-only and keeps retry/create pending states explicit', async () => {
-    const retryMemberships = deferred<
-      Array<{
-        companyUid: string;
-        companyName: string;
-        role: string;
-        status: string;
-      }>
-    >();
-    const createChannel = deferred<Record<string, unknown>>();
-    const oncreated = vi.fn();
-    let membershipAttempts = 0;
-
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'meetings_list_memberships') {
-        membershipAttempts += 1;
-        return membershipAttempts <= 2
-          ? Promise.reject(new Error('memberships offline'))
-          : retryMemberships.promise;
-      }
-      if (command === 'list_contacts') return Promise.resolve({ contacts: [] });
-      if (command === 'create_channel') return createChannel.promise;
-      throw new Error(`Unexpected command: ${command}`);
-    });
-
-    component = mount(CreateChannel, {
-      target: host,
-      props: {
-        onclose: vi.fn(),
-        oncreated,
-      },
-    });
-    flushSync();
-
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelector('#channel-scope-status')?.textContent).toContain(
-        'Company scopes couldn’t be loaded.',
-      );
-    });
-
-    expect(host.querySelector('.scope-select')).toBeNull();
-    expect(host.textContent).not.toContain(
-      'A personal channel — only people you invite can see it.',
-    );
-
-    typeInto(host.querySelector<HTMLInputElement>('.name-input')!, 'launch');
-    expect(host.querySelector<HTMLButtonElement>('.btn-send')?.disabled).toBe(true);
-
-    host.querySelector<HTMLButtonElement>('.scope-retry')!.click();
-    flushSync();
-
-    expect(host.querySelector('.scope-control')?.getAttribute('aria-busy')).toBe('true');
-    expect(host.querySelector('#channel-scope-status')?.textContent).toContain(
-      'Loading available scopes…',
-    );
-
-    retryMemberships.resolve([
-      {
-        companyUid: 'cmp_indigo',
-        companyName: 'Indigo',
-        role: 'member',
-        status: 'active',
-      },
-    ]);
-
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelectorAll('.scope-select option')).toHaveLength(2);
-    });
-
-    const scope = host.querySelector<HTMLSelectElement>('.scope-select')!;
-    expect([...scope.options].map((option) => option.textContent)).toEqual([
-      'Personal',
-      'Indigo',
-    ]);
-
-    const createButton = host.querySelector<HTMLButtonElement>('.btn-send')!;
-    expect(createButton.disabled).toBe(false);
-    createButton.click();
-    flushSync();
-
-    expect(createButton.getAttribute('aria-busy')).toBe('true');
-    expect(createButton.textContent?.trim()).toBe('Creating…');
-    expect(invokeMock).toHaveBeenCalledWith('create_channel', {
-      name: 'launch',
-      scope: 'personal',
-      companyUid: null,
-      invite: [],
-    });
-
-    createChannel.resolve({ channelUid: 'channel-launch' });
-    await vi.waitFor(() => expect(oncreated).toHaveBeenCalledTimes(1));
   });
 });

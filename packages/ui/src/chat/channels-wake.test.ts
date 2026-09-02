@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyChannelMessageWake,
   mergeDirectoryUnread,
+  removeChannel,
   shouldBumpChannelUnread,
   type Channel,
 } from "./channels.js";
@@ -110,5 +111,31 @@ describe("mergeDirectoryUnread", () => {
         prevActivityAt: "2026-08-22T11:00:00.000Z",
       }),
     ).toBe(0);
+  });
+});
+
+describe("removeChannel", () => {
+  it("drops the matching row and keeps the rest in order", () => {
+    const a = ch({ channelId: "chn_a", name: "a" });
+    const b = ch({ channelId: "chn_b", name: "b" });
+    const c = ch({ channelId: "chn_c", name: "c" });
+    const next = removeChannel([a, b, c], "chn_b");
+    expect(next).toEqual([a, c]);
+    expect(next[0]).toBe(a);
+    expect(next[1]).toBe(c);
+  });
+
+  it("returns the same array when the id is unknown or blank", () => {
+    const list = [ch({ channelId: "chn_a" })];
+    expect(removeChannel(list, "chn_zzz")).toBe(list);
+    expect(removeChannel(list, "")).toBe(list);
+    expect(removeChannel(list, "   ")).toBe(list);
+  });
+
+  it("trims the id before matching", () => {
+    const list = [ch({ channelId: "chn_a" }), ch({ channelId: "chn_b" })];
+    expect(removeChannel(list, " chn_a ").map((c) => c.channelId)).toEqual([
+      "chn_b",
+    ]);
   });
 });

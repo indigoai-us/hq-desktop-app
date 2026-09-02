@@ -57,6 +57,20 @@ export function isPersonalWorkspace(
   return Boolean(owner && name && owner === name);
 }
 
+/**
+ * Workspaces the caller can actually CREATE a channel in.
+ *
+ * The sidebar's scope list is a BROWSE list — it deliberately includes
+ * companies you can only look at (a stale manifest entry, a revoked
+ * membership, a `broken` cloud_uid mismatch). Offering those as create
+ * targets produced the "In: <some company> → You're not an active member of
+ * that workspace" dead end.
+ *
+ * Fails OPEN on unknown membership: `membershipStatus` is cloud-enriched, so a
+ * transient outage or an older cache leaves it null for companies the user is
+ * genuinely in. We exclude only on positive evidence — a membership that is
+ * present and not active, or a `broken` state.
+ */
 export function companiesForChannelCreate(
   workspaces: ReadonlyArray<Workspace> | null | undefined,
   ownerLabel?: string | null,
@@ -65,6 +79,7 @@ export function companiesForChannelCreate(
   const seen = new Set<string>();
   for (const workspace of workspaces ?? []) {
     if (isPersonalWorkspace(workspace, ownerLabel)) continue;
+    if (workspace.state === "broken") continue;
     const companyUid = trimmed(workspace.cloudUid);
     if (!companyUid || seen.has(companyUid)) continue;
     const status = trimmed(workspace.membershipStatus).toLowerCase() || "active";
