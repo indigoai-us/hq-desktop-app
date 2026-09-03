@@ -64,6 +64,11 @@ export const WEB_PATHS = {
   /** PATCH agent profile (displayName / title / description / avatarBase64). */
   agentProfile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  avatarPacks: "/v1/avatar-packs",
+  avatarPack: (packId: string) =>
+    `/v1/avatar-packs/${encodeURIComponent(packId)}`,
+  agentAvatar: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
@@ -463,6 +468,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     updateProfile: (input) => this.request("PUT", WEB_PATHS.profile, input),
     updateAgentProfile: (agentUid, input) =>
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), input),
+    listAvatarPacks: () => this.get(WEB_PATHS.avatarPacks),
+    getAvatarPack: (packId) => this.get(WEB_PATHS.avatarPack(packId)),
+    selectAgentAvatar: (agentUid, input) =>
+      this.post(WEB_PATHS.agentAvatar(agentUid), input),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {

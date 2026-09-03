@@ -55,7 +55,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
-  import { loadRegisteredPacks } from "../avatars/load-pack.js";
+  import { loadAvatarGallery } from "../avatars/gallery.js";
   import {
     avatarsFromContactPayload,
     composeAvatarByUid,
@@ -1050,6 +1050,12 @@
     });
   }
 
+  async function loadAvatarPacks(): Promise<AvatarPack[]> {
+    const loaded = await loadAvatarGallery(adapter.identity);
+    loadedAvatarPacks = loaded.packs;
+    return loaded.packs;
+  }
+
   async function refreshAvatarsAfterSave(): Promise<void> {
     const ids = Object.keys(channelRosterById);
     await Promise.all(ids.map((id) => loadChannelRoster(id)));
@@ -1077,7 +1083,7 @@
     try {
       const packs =
         loadedAvatarPacks ??
-        (await loadRegisteredPacks()).map((row) => row.pack);
+        (await loadAvatarGallery(adapter.identity)).packs;
       loadedAvatarPacks = packs;
       const saved = await saveAgentAvatar(uid, selection, {
         packs,
@@ -1086,6 +1092,8 @@
           avatarBase64FromFile(new Blob([bytes as BlobPart])),
         updateAgentProfile: (agentUid, input) =>
           adapter.identity.updateAgentProfile(agentUid, input),
+        selectAgentAvatar: (agentUid, input) =>
+          adapter.identity.selectAgentAvatar(agentUid, input),
       });
       avatarOverridesByUid = {
         ...avatarOverridesByUid,
@@ -3119,6 +3127,7 @@
                     {isAdmin}
                     {adapter}
                     packs={loadedAvatarPacks}
+                    loadPacks={loadAvatarPacks}
                     avatarSaving={agentAvatarSaving}
                     avatarSaveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}
@@ -3138,6 +3147,7 @@
                     avatarUrl={profilePanelAvatarUrl}
                     editable={canEditOpenAgent}
                     packs={loadedAvatarPacks}
+                    loadPacks={loadAvatarPacks}
                     saving={agentAvatarSaving}
                     saveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}

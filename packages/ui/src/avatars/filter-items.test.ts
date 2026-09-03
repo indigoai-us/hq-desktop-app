@@ -8,7 +8,6 @@ import {
 } from "./filter-items.js";
 import { generatedMarksPack } from "./generated-marks.js";
 import { cspSafeAvatarSrc } from "./parse-pack.js";
-import { HQ_AGENT_MASCOTS_SNAPSHOT } from "./snapshots.js";
 import type { AvatarPack } from "./types.js";
 
 const generated: AvatarPack = {
@@ -71,11 +70,11 @@ describe("picker filtering and selection", () => {
     );
   });
 
-  it("flattens bundled snapshot tiles to CSP-safe srcs", () => {
+  it("flattens generated-mark tiles to CSP-safe srcs", () => {
     const rows = flattenVisible(
-      filterPacks([generatedMarksPack(), HQ_AGENT_MASCOTS_SNAPSHOT], ""),
+      filterPacks([generatedMarksPack(["/assets/agent-01.png", "/assets/agent-02.png"])], ""),
     );
-    expect(rows.length).toBeGreaterThan(12);
+    expect(rows.length).toBe(2);
     for (const row of rows) {
       expect(cspSafeAvatarSrc(row.src), row.key).toBe(row.src);
       expect(row.src).not.toMatch(/^https?:/i);

@@ -59,7 +59,7 @@
   } from "../meetings/meetings-store.svelte";
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
-  import AvatarPackSettings from "../avatars/AvatarPackSettings.svelte";
+
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -1044,7 +1044,7 @@
         <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
-    <AvatarPackSettings {storage} />
+
   {:else if section === "appearance"}
     <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
     <div class="set-row">
