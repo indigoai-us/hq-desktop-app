@@ -5283,7 +5283,39 @@ fn dep_status_satisfies(dep: &DepDef, status: &DepStatus) -> bool {
     if !dep.optional && status.version.is_none() {
         return false;
     }
-    true
+    // qmd must be the pinned version: an old/foreign copy found off-PATH
+    // (e.g. a ghost pnpm global) is not "installed" — re-provision into the
+    // managed prefix. hq must live in HQ's managed toolchain: foreign copies
+    // are exactly what the CLI updater collided with (2026-08-20 incident:
+    // ghost pnpm install + uncoordinated updaters reinstalling 8×/hour).
+    // Both surfaced by the install matrix `pnpm-global-ghost` profile.
+    match dep.id {
+        "qmd" => qmd_version_matches_pin(status.version.as_deref()),
+        "hq-cli" => status
+            .path
+            .as_deref()
+            .map(is_managed_toolchain_path)
+            .unwrap_or(false),
+        _ => true,
+    }
+}
+
+/// `qmd 2.5.3 (abc123)` → matches when the second token equals the pin.
+pub fn qmd_version_matches_pin(version: Option<&str>) -> bool {
+    version
+        .and_then(|v| v.split_whitespace().nth(1))
+        .map(|v| v.trim_start_matches('v') == MANAGED_QMD_VERSION)
+        .unwrap_or(false)
+}
+
+/// True when `path` is inside HQ's managed toolchain (any platform layout).
+pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    #[cfg(not(windows))]
+    let root = managed_toolchain_dir_in(&home);
+    #[cfg(windows)]
+    let root = managed_toolchain_dir();
+    path.starts_with(&root)
 }
 
 fn dep_is_satisfied(dep: &DepDef) -> bool {
@@ -5353,6 +5385,14 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
             }
             result_by_id.insert(result.id, result);
         }
+    }
+
+    // The shell PATH block used to be written only as a side effect of an
+    // npm-global install, so a run where every dep was "already present"
+    // (adopted from elsewhere) left the user's shell without the toolchain.
+    #[cfg(not(windows))]
+    if let Some(home) = dirs::home_dir() {
+        ensure_shell_path_configured(&home, &app);
     }
 
     for result in blocked_required_results(deps, &result_by_id, &ok_set) {
@@ -7208,5 +7248,34 @@ mod npm_bin_cleanup_tests {
         std::os::unix::fs::symlink(&target, bin.join("qmd")).unwrap();
         assert!(!clear_unusable_npm_bin(prefix, "qmd"));
         assert!(bin.join("qmd").exists());
+    }
+}
+
+#[cfg(test)]
+mod foreign_copy_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn qmd_pin_match() {
+        assert!(qmd_version_matches_pin(Some(&format!("qmd {MANAGED_QMD_VERSION} (facd35e)"))));
+        assert!(!qmd_version_matches_pin(Some("qmd 1.0.7-ghost")));
+        assert!(!qmd_version_matches_pin(Some("qmd 2.8.3 (abc)")));
+        assert!(!qmd_version_matches_pin(None));
+    }
+
+    #[test]
+    fn foreign_qmd_and_hq_are_not_satisfied() {
+        let qmd = dependency_defs().iter().find(|d| d.id == "qmd").unwrap();
+        let ghost = DepStatus { installed: true, version: Some("qmd 1.0.7-ghost".into()), path: Some(PathBuf::from("/Users/x/Library/pnpm/qmd")) };
+        assert!(!dep_status_satisfies(qmd, &ghost));
+        let hq = dependency_defs().iter().find(|d| d.id == "hq-cli").unwrap();
+        let foreign = DepStatus { installed: true, version: Some("5.0.0".into()), path: Some(PathBuf::from("/Users/x/Library/pnpm/hq")) };
+        assert!(!dep_status_satisfies(hq, &foreign));
+        #[cfg(not(windows))]
+        {
+            let managed = dirs::home_dir().unwrap().join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq");
+            let ok = DepStatus { installed: true, version: Some("5.107.1".into()), path: Some(managed) };
+            assert!(dep_status_satisfies(hq, &ok));
+        }
     }
 }
