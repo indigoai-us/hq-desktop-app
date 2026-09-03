@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-alt-capability",
-  "description": "Capability set for the expanded desktop window. App-registered commands remain behind their native feature, path, membership, and tenant checks. Projects reads through get_local_projects and persists status through set_local_project_status and set_local_story_passes; native wrappers authorize the canonical company scope before reads or writes. Files and Knowledge accept HQ-relative paths only: native commands canonicalize them, reject cross-company resolution, refresh live membership, cap preview bytes, and retain absolute paths inside Rust for preview, reveal, and file-scoped Claude dispatch. Wildcard asset-protocol access and renderer Image.fromPath are intentionally unavailable. The embedded HQ Work chat shell (DesktopApp) also invokes the shared channel commands enumerated in messages.json — list_channels, fetch_channel, create_channel, create_group_dm, join_channel, invite_to_channel, send_channel_message, list_channel_members, remove_channel_member, delete_channel (DELETE /v1/notify/channels/{id}, owner-only, confirmed in the UI before the call), and mark_channel_read — all authorized by core:default; keep that list in step with main.rs.",
+  "description": "Capability set for the expanded desktop window. App-registered commands remain behind their native feature, path, membership, and tenant checks. Projects reads through get_local_projects and persists status through set_local_project_status and set_local_story_passes; native wrappers authorize the canonical company scope before reads or writes. Files and Knowledge accept HQ-relative paths only: native commands canonicalize them, reject cross-company resolution, refresh live membership, cap preview bytes, and retain absolute paths inside Rust for preview, reveal, and file-scoped Claude dispatch. Wildcard asset-protocol access and renderer Image.fromPath are intentionally unavailable. The embedded HQ Work chat shell (DesktopApp) also invokes the shared channel commands enumerated in messages.json — list_channels, fetch_channel, create_channel, create_group_dm, join_channel, invite_to_channel, send_channel_message, run_card_action (POST /v1/notify/channels/{id}/cards/{cardId}/actions), take_pending_setup_target (hq-desktop://setup checkout deep-link cold-start drain), list_channel_members, remove_channel_member, delete_channel (DELETE /v1/notify/channels/{id}, owner-only, confirmed in the UI before the call), and mark_channel_read — all authorized by core:default; keep that list in step with main.rs. The hq-desktop:// scheme is registered via tauri-plugin-deep-link (macOS Info.plist + Windows protocol).",
   "windows": ["desktop-alt"],
   "permissions": [
     "core:default",
@@ -12,6 +12,7 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
-    "shell:allow-open"
+    "shell:allow-open",
+    "deep-link:default"
   ]
 }

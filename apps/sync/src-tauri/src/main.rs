@@ -5,6 +5,7 @@ use tauri::Manager;
 
 mod boot_watchdog;
 mod commands;
+mod deep_link;
 mod events;
 #[cfg(target_os = "macos")]
 mod glass;
@@ -344,6 +345,12 @@ fn main() {
                 commands::hq_work::spawn_open_hqwork_deep_link(app, url);
                 return;
             }
+            // US-009: hq-desktop://setup?checkout=done&company=… — focus
+            // Messages on #setup rather than the compact popover.
+            if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&argv) {
+                crate::deep_link::spawn_open_hq_desktop_url(app, url);
+                return;
+            }
 
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
@@ -363,6 +370,7 @@ fn main() {
 
             surface_existing_instance(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
@@ -449,6 +457,7 @@ fn main() {
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
+        .manage(crate::deep_link::PendingSetupTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::banner::PendingBannerActions::default())
         .manage(commands::banner::BannerActionRouterReadiness::default())
@@ -797,6 +806,8 @@ fn main() {
             commands::messages::join_channel,
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,
+            commands::messages::run_card_action,
+            crate::deep_link::take_pending_setup_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::delete_channel,
@@ -898,6 +909,36 @@ fn main() {
             let startup_args: Vec<String> = std::env::args().collect();
             if let Some(url) = commands::hq_work::hqwork_url_from_argv(&startup_args) {
                 commands::hq_work::spawn_open_hqwork_deep_link(app.handle(), url);
+            }
+            if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&startup_args) {
+                crate::deep_link::spawn_open_hq_desktop_url(app.handle(), url);
+            }
+
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    if let Err(error) = app.deep_link().register("hq-desktop") {
+                        util::logfile::log(
+                            "deep-link",
+                            &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
+                        );
+                    }
+                }
+                let handle = app.handle().clone();
+                let _ = app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        crate::deep_link::spawn_open_hq_desktop_url(&handle, url.to_string());
+                    }
+                });
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        crate::deep_link::spawn_open_hq_desktop_url(
+                            app.handle(),
+                            url.to_string(),
+                        );
+                    }
+                }
             }
 
             // One-shot migration of any legacy `/deploy`-skill stub at

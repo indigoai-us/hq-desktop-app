@@ -63,6 +63,11 @@ function conversationApi(messages: ConversationMessageWire[]): ConversationApi {
       replyCount: 0,
     }),
     sendReply: async () => {},
+    runCardAction: async () => ({
+      cardId: "",
+      actionId: "",
+      state: "pending",
+    }),
   };
 }
 

@@ -66,6 +66,8 @@ export const WEB_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
+  cardAction: (channelId: string, cardId: string) =>
+    `/v1/notify/channels/${encodeURIComponent(channelId)}/cards/${encodeURIComponent(cardId)}/actions`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
   replyThreads: "/v1/notify/threads",
   /** POST body `{ toPersonUid, body }` — hq-pro has no POST /v1/notify/dm/{uid}. */
@@ -548,6 +550,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
         ...(extras?.attachments && extras.attachments.length > 0
           ? { attachments: extras.attachments }
           : {}),
+      }),
+    runCardAction: (args) =>
+      this.post(WEB_PATHS.cardAction(args.channelId, args.cardId), {
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `card-${Date.now()}`),
       }),
     fetchDmThread: ({ withPersonUid, limit, since }) => {
       const params = new URLSearchParams({ withPersonUid });

@@ -119,6 +119,14 @@ function makeAdapter(handler?: SyncInvokeFn) {
         return { ok: true };
       case 'send_channel_message':
         return null;
+      case 'run_card_action':
+        return {
+          cardId: 'card_1',
+          actionId: 'submit',
+          eventId: 'evt_1',
+          state: 'pending',
+          replayed: false,
+        };
       case 'send_dm':
         return null;
       case 'fetch_notifications':
@@ -593,6 +601,31 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(calls[0]).toEqual({
       cmd: 'send_channel_message',
       args: { channelId: 'chn_1', body: 'hi' },
+    });
+  });
+
+  it('runCardAction uses run_card_action with a client idempotencyKey', async () => {
+    const { adapter, calls } = makeAdapter();
+    expect(
+      (
+        await adapter.messaging.runCardAction({
+          channelId: 'setup',
+          cardId: 'card_1',
+          actionId: 'submit',
+          values: { name: 'Acme' },
+          idempotencyKey: 'idem-1',
+        })
+      ).ok,
+    ).toBe(true);
+    expect(calls[0]).toEqual({
+      cmd: 'run_card_action',
+      args: {
+        channelId: 'setup',
+        cardId: 'card_1',
+        actionId: 'submit',
+        values: { name: 'Acme' },
+        idempotencyKey: 'idem-1',
+      },
     });
   });
 

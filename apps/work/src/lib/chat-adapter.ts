@@ -457,6 +457,19 @@ export function createConversationApi(
         await call<unknown>(adapter.messaging.fetchReplyThread(args)),
       ),
     sendReply: (args) => call<void>(adapter.messaging.sendReply(args)),
+    runCardAction: async (args) => {
+      const raw = await call<Record<string, unknown>>(
+        adapter.messaging.runCardAction(args),
+      );
+      return {
+        cardId: typeof raw.cardId === "string" ? raw.cardId : args.cardId,
+        actionId: typeof raw.actionId === "string" ? raw.actionId : args.actionId,
+        eventId: typeof raw.eventId === "string" ? raw.eventId : undefined,
+        state: typeof raw.state === "string" ? raw.state : "",
+        fields: raw.fields,
+        replayed: raw.replayed === true,
+      };
+    },
   };
 }
 

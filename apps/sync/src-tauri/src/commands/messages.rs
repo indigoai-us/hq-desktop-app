@@ -39,6 +39,8 @@
 //!   `MESSAGES_CONTACTS_*` / `MESSAGES_MEMBERS_*` / `MESSAGES_UNREAD_*` —
 //!   per-command fetch results, mirroring the `DM_NOTIFY_*` code shape.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -487,6 +489,7 @@ pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String>
 //   `join_channel`          — POST   /v1/notify/channels/{id}/members (self)
 //   `invite_to_channel`     — POST   /v1/notify/channels/{id}/members (others)
 //   `send_channel_message`  — POST   /v1/notify/channels/{id}/messages
+//   `run_card_action`       — POST   /v1/notify/channels/{id}/cards/{cardId}/actions
 //   `list_channel_members`  — GET    /v1/notify/channels/{id}/members
 //   `remove_channel_member` — DELETE /v1/notify/channels/{id}/members/{uid}
 //   `delete_channel`        — DELETE /v1/notify/channels/{id} (owner only)
@@ -853,6 +856,158 @@ pub async fn send_channel_message(channel_id: String, body: String) -> Result<()
     let _: serde_json::Value = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_SEND").await?;
     log(LOG_TAG, &format!("MESSAGES_CHANNEL_SEND_OK id={id}"));
     Ok(())
+}
+
+/// Response from POST `/v1/notify/channels/{id}/cards/{cardId}/actions`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardActionResult {
+    #[serde(default)]
+    pub card_id: String,
+    #[serde(default)]
+    pub action_id: String,
+    #[serde(default)]
+    pub event_id: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub fields: serde_json::Value,
+    #[serde(default)]
+    pub replayed: bool,
+}
+
+fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardActionResult {
+    CardActionResult {
+        card_id: body
+            .get("cardId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        action_id: body
+            .get("actionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        event_id: body
+            .get("eventId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        state: body
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        fields: body
+            .get("fields")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+        replayed: replayed
+            || body
+                .get("replayed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+    }
+}
+
+fn card_action_error_message(status: u16, body: &serde_json::Value) -> String {
+    body.get("error")
+        .and_then(|v| v.as_str())
+        .or_else(|| body.get("reason").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Request failed (status {status})"))
+}
+
+/// POST the lifecycle-card action route. 2xx and 409 (idempotent replay) are
+/// success; 403 surfaces the permission reason. Tested against a mock server.
+pub async fn post_card_action(
+    base: &str,
+    token: &str,
+    channel_id: &str,
+    card_id: &str,
+    action_id: &str,
+    values: &HashMap<String, String>,
+    idempotency_key: &str,
+) -> Result<CardActionResult, String> {
+    let url = format!(
+        "{}/v1/notify/channels/{}/cards/{}/actions",
+        base.trim_end_matches('/'),
+        esc_seg(channel_id),
+        esc_seg(card_id)
+    );
+    let payload = serde_json::json!({
+        "actionId": action_id,
+        "values": values,
+        "idempotencyKey": idempotency_key,
+    });
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("MESSAGES_CARD_ACTION_NETWORK_FAIL {e}"));
+            format!("Network error: {e}")
+        })?;
+    let status = resp.status();
+    let body = resp
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if status.is_success() {
+        return Ok(card_action_from_body(&body, false));
+    }
+    // Idempotent replay: some servers return 409 with the first result.
+    if status.as_u16() == 409 {
+        log(
+            LOG_TAG,
+            &format!("MESSAGES_CARD_ACTION_REPLAY id={channel_id} card={card_id}"),
+        );
+        return Ok(card_action_from_body(&body, true));
+    }
+    let msg = card_action_error_message(status.as_u16(), &body);
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CARD_ACTION_ERROR status={status} msg={msg}"),
+    );
+    Err(msg)
+}
+
+/// Tauri command: submit a lifecycle-card action.
+/// `POST /v1/notify/channels/{id}/cards/{cardId}/actions` with a
+/// client-generated idempotencyKey (generated here when the caller omits one).
+#[tauri::command]
+pub async fn run_card_action(
+    channel_id: String,
+    card_id: String,
+    action_id: String,
+    values: Option<HashMap<String, String>>,
+    idempotency_key: Option<String>,
+) -> Result<CardActionResult, String> {
+    let id = channel_id.trim();
+    let card = card_id.trim();
+    let action = action_id.trim();
+    if id.is_empty() || card.is_empty() || action.is_empty() {
+        return Err("channelId, cardId, and actionId must not be empty".to_string());
+    }
+    let key = idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let map = values.unwrap_or_default();
+    let (base, token) = auth_and_base("MESSAGES_CARD_ACTION").await?;
+    let out = post_card_action(&base, &token, id, card, action, &map, &key).await?;
+    log(
+        LOG_TAG,
+        &format!(
+            "MESSAGES_CARD_ACTION_OK id={id} card={card} action={action} replayed={}",
+            out.replayed
+        ),
+    );
+    Ok(out)
 }
 
 /// Tauri command: list a channel's members. `GET
@@ -1326,6 +1481,119 @@ mod tests {
         assert_eq!(
             delete_channel_error_message(403, Some(&unrelated)),
             "Delete failed (status 403)"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_card_action_posts_idempotency_key_on_success() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/card_create/actions"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cardId": "card_create",
+                "actionId": "submit",
+                "eventId": "evt_1",
+                "state": "pending",
+                "fields": [{ "id": "name", "value": "Acme" }],
+                "replayed": false
+            })))
+            .mount(&server)
+            .await;
+
+        let mut values = HashMap::new();
+        values.insert("name".into(), "Acme".into());
+        let out = post_card_action(
+            &server.uri(),
+            "test-token",
+            "chn_1",
+            "card_create",
+            "submit",
+            &values,
+            "idem-fresh",
+        )
+        .await
+        .expect("success");
+        assert_eq!(out.card_id, "card_create");
+        assert_eq!(out.action_id, "submit");
+        assert_eq!(out.state, "pending");
+        assert!(!out.replayed);
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["actionId"], "submit");
+        assert_eq!(body["idempotencyKey"], "idem-fresh");
+        assert_eq!(body["values"]["name"], "Acme");
+    }
+
+    #[tokio::test]
+    async fn run_card_action_treats_409_as_idempotent_replay() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/card_create/actions"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "cardId": "card_create",
+                "actionId": "submit",
+                "eventId": "evt_1",
+                "state": "pending",
+                "fields": [{ "id": "name", "value": "Acme" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let out = post_card_action(
+            &server.uri(),
+            "test-token",
+            "chn_1",
+            "card_create",
+            "submit",
+            &HashMap::new(),
+            "idem-replay",
+        )
+        .await
+        .expect("409 replay is success");
+        assert!(out.replayed);
+        assert_eq!(out.state, "pending");
+        assert_eq!(out.event_id, "evt_1");
+    }
+
+    #[tokio::test]
+    async fn run_card_action_surfaces_403_permission_reason() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/card_agent/actions"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "error": "Viewer cannot act on this card",
+                "code": "LIFECYCLE_CARD_FORBIDDEN",
+                "reason": "cannot_act"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = post_card_action(
+            &server.uri(),
+            "test-token",
+            "chn_1",
+            "card_agent",
+            "submit",
+            &HashMap::new(),
+            "idem-denied",
+        )
+        .await
+        .expect_err("403 is an error");
+        assert!(
+            err.contains("Viewer cannot act on this card"),
+            "got: {err}"
         );
     }
 }

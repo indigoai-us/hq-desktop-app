@@ -522,6 +522,17 @@ export interface MessagingApi {
   }): AdapterPromise<Json>;
   /** GET /v1/notify/channels/{id}/members — owner/creator + invitees. */
   listChannelMembers(channelId: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/notify/channels/{id}/cards/{cardId}/actions — desktop
+   * `run_card_action`. Client-generated idempotencyKey; 409 replay is success.
+   */
+  runCardAction(args: {
+    channelId: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): AdapterPromise<Json>;
   sendChannelMessage(
     channelId: string,
     body: string,

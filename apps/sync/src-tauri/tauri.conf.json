@@ -47,6 +47,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["hq-desktop"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcwMkQxODIxNkJBQjk3MEEKUldRS2w2dHJJUmd0Y05UNWNUTWNjZEFJVGE1aHB3dUpDdHlUc1pPNnZBVnVnNkQrZmp4bVVHdFUK",
       "endpoints": [

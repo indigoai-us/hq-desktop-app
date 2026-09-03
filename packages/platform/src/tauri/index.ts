@@ -268,6 +268,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         mentions: extras?.mentions ?? null,
         attachments: extras?.attachments ?? null,
       }),
+    runCardAction: (args) =>
+      this.call("run_card_action", {
+        channelId: args.channelId,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
+      }),
     fetchDmThread: ({ withPersonUid, limit, since }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,

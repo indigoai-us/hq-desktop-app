@@ -460,6 +460,14 @@ export function createSyncPlatformAdapter(
         }
         return call('send_channel_message', { channelId, body });
       },
+      runCardAction: (args) =>
+        call('run_card_action', {
+          channelId: args.channelId,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
       fetchDmThread: ({ withPersonUid, limit, since }) => {
         if (since) {
           return hqProJson(

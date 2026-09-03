@@ -27,6 +27,11 @@ function conversationApi(): ConversationApi {
     sendDm: async () => {},
     fetchReplyThread: async () => emptyThread,
     sendReply: async () => {},
+    runCardAction: async () => ({
+      cardId: "",
+      actionId: "",
+      state: "pending",
+    }),
   };
 }
 

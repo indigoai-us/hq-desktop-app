@@ -28,7 +28,12 @@
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel } from "../chat/setup-channel.js";
+  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import {
+    patchLifecycleCardState,
+    submitLifecycleCardAction,
+    type CardActionIdempotencyStore,
+  } from "../chat/card-action.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -1436,7 +1441,49 @@
     sendReply: async (args) => {
       unwrapAdapter(await adapter.messaging.sendReply(args));
     },
+    runCardAction: async (args) => {
+      const raw = unwrapAdapter(
+        await adapter.messaging.runCardAction(args),
+      ) as Record<string, unknown> | undefined;
+      return {
+        cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+        actionId: typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+        eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+        state: typeof raw?.state === "string" ? raw.state : "",
+        fields: raw?.fields,
+        replayed: raw?.replayed === true,
+      };
+    },
   });
+
+  const cardActionKeys: CardActionIdempotencyStore = new Map();
+
+  function applyCardActionFailure(cardId: string, message: string): void {
+    const row = selectedRow;
+    if (!row) return;
+    const current =
+      liveTimelineId === row.id
+        ? liveTimeline
+        : (messagesByRow?.(row) ?? liveTimeline);
+    commitTimeline(
+      row,
+      patchLifecycleCardState(current, cardId, {
+        state: "blocked",
+        reason: message,
+      }),
+    );
+  }
+
+  async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    oncardaction?.(event);
+    if (typeof adapter.messaging.runCardAction !== "function") return;
+    await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: conversationApi.runCardAction,
+      onFailure: applyCardActionFailure,
+    });
+  }
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
@@ -1831,11 +1878,16 @@
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
       return;
     }
-    if (timelineHasEvent(liveTimeline, wake.eventId)) return;
+    // In-place lifecycle-card updates reuse the same eventId. Skip the
+    // already-seen short-circuit and drop `since` so the rewritten envelope
+    // is in the page.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
     const res = await adapter.messaging.fetchChannel({
       channelId: row.channelId,
       limit: 20,
-      since: sinceForChannelWake(liveTimeline, wake.createdAt),
+      since: already
+        ? undefined
+        : sinceForChannelWake(liveTimeline, wake.createdAt),
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
@@ -2378,6 +2430,19 @@
         settingsSection = null;
         meetingFocusRequest = null;
         return;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        meetingFocusRequest = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, {
+          companyUid: target.companyUid,
+        });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        return;
+      }
       case "inbox":
         view = "notifications";
         settingsSection = null;
@@ -3081,7 +3146,7 @@
                   placeholder={composerPlaceholder}
                   {onopenurl}
                   channelId={selectedRow.channelId}
-                  {oncardaction}
+                  oncardaction={handleCardAction}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
