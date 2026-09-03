@@ -123,6 +123,13 @@
   let hqFolder = $state<string | null>(null);
   let customHqRoot = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  // The sync daemon is a separate process that is often still starting when
+  // this component mounts, so a single onMount read can permanently freeze
+  // the panel on a stale "stopped / never synced" snapshot. The component is
+  // also never remounted when the user switches settings sections, so we
+  // re-poll for as long as the sync section is the active one (see the
+  // $effect below) instead of reading once at mount.
+  const LIVE_SYNC_POLL_MS = 5000;
   let dockVisibilityChanged = false;
   let desktopWidgetChanged = false;
   let dockWriteSeq = 0;
@@ -658,6 +665,13 @@
     if (res.ok) notifPermission = String(res.value);
   }
 
+  async function refreshLiveSync(): Promise<void> {
+    if (!adapter?.isAvailable("canSync")) return;
+    const next = await readLiveSyncStatus(adapter);
+    liveSync = next;
+    if (next.hqFolderPath && !customHqRoot) hqFolder = next.hqFolderPath;
+  }
+
   function updateOrchAdapter() {
     const updates = adapter!.updates;
     return orchestrationAdapterFrom({
@@ -975,15 +989,22 @@
     if (updateWakeSeq > 0) void refreshVersions();
   });
 
+  $effect(() => {
+    // The sync panel's `liveSync` snapshot can only go stale here: this
+    // component is never remounted when the user switches settings
+    // sections, so onMount alone cannot catch either (a) the daemon
+    // finishing startup after mount, or (b) the user leaving and
+    // returning to "sync" later in the same session. Poll only while the
+    // section is actually visible, and stop the moment it isn't.
+    if (section !== "sync" || !canSync) return;
+    void refreshLiveSync();
+    const handle = setInterval(() => void refreshLiveSync(), LIVE_SYNC_POLL_MS);
+    return () => clearInterval(handle);
+  });
+
   onMount(() => {
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
-    if (adapter?.isAvailable("canSync")) {
-      void readLiveSyncStatus(adapter).then((next) => {
-        liveSync = next;
-        if (next.hqFolderPath && !customHqRoot) hqFolder = next.hqFolderPath;
-      });
-    }
     if (!adapter) return;
     void refreshNotifPermission();
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
@@ -991,6 +1012,7 @@
       void refreshNotifPermission();
       void refreshNativeSettings();
       void refreshVersions();
+      if (section === "sync") void refreshLiveSync();
     };
     window.addEventListener("focus", onFocus);
     void adapter.meetings.listAccounts().then((res) => {
