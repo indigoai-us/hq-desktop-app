@@ -3431,13 +3431,22 @@
   }
 
   .chat-stage :global(.conversation) {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 0;
     min-height: 0;
   }
 
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
     min-width: 320px;
+  }
+
+  /* Open thread pane takes half the conversation area — a 50/50 split
+     between the main channel column and the thread panel. Profile panels
+     keep their narrower fixed column (see .reply-column below). */
+  .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
+    :global(.conversation) {
+    flex: 1 1 0;
+    min-width: 360px;
   }
 
   .reply-column {
@@ -3456,6 +3465,16 @@
     border-left: 1px solid var(--line);
     background: var(--v4-ground, #161618);
     transition: width 150ms ease;
+  }
+
+  /* Thread pane (not the profile panel): open at half the conversation
+     width. flex: 1 1 0 pairs with the sibling .conversation (also
+     flex: 1 1 0) for a 50/50 split; the min-width keeps the composer usable
+     on narrow windows. The border-left above keeps the hairline divider. */
+  .reply-column:not(.profile-column):not(.overlay) {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 360px;
   }
 
   @media (prefers-reduced-motion: reduce) {
