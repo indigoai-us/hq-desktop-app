@@ -54,6 +54,7 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
@@ -765,6 +766,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="reply-md msg-body"
+              class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
               onclick={(e) => {
                 if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
@@ -912,6 +914,7 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="reply-md msg-body"
+                  class:msg-body-jumbo={isJumboEmojiBody(replyRich.text)}
                   onclick={(e) => {
                     if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);

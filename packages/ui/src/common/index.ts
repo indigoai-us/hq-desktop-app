@@ -5,6 +5,7 @@
  */
 
 export * from "./markdown";
+export * from "./emojiShortcodes";
 export * from "./external-links";
 export { default as LinkContextMenu } from "./LinkContextMenu.svelte";
 export * from "./latest-request";
