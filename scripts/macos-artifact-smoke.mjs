@@ -15,20 +15,76 @@
  * Secret: HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO
  */
 
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const SMOKE_TOKEN_SECRET = "HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO";
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEEP_LINK = "hqwork://open?channel=setup";
+export const SMOKE_TEMP_PREFIX = "hq-release-smoke-";
+export const CHILD_STOP_WAIT_MS = 1_000;
+export const LATEST_JSON_FETCH_TIMEOUT_MS = 30_000;
 
 export function smokeError(message) {
   return new Error(`macos-artifact-smoke: ${message}`);
+}
+
+function defaultWarn(message) {
+  console.warn(message);
+}
+
+export function isSmokeTempDir(dir) {
+  if (typeof dir !== "string" || !dir.trim()) return false;
+  const resolved = resolve(dir);
+  if (resolved === "/" || /^[A-Za-z]:\\?$/.test(resolved)) return false;
+  return resolved.split(/[\\/]/).some((part) => part.startsWith(SMOKE_TEMP_PREFIX));
+}
+
+/**
+ * Recursively delete the isolated smoke HOME. npm (and the Recall sidecar)
+ * populate `$HOME/.npm/_cacache` while the app runs; a non-recursive rmdir
+ * or an uncaught `fs.rm` ENOTEMPTY then fails the GitHub step and can mask
+ * the real smoke result. Never throws — cleanup failure is a warning.
+ */
+export function removeSmokeHome(dir, options = {}) {
+  const {
+    rmSyncImpl = rmSync,
+    spawnSyncImpl = spawnSync,
+    warn = defaultWarn,
+  } = options;
+
+  if (!isSmokeTempDir(dir)) {
+    if (dir) {
+      warn(
+        `::warning::macos-artifact-smoke: refused to remove unexpected path ${String(dir)}`,
+      );
+    }
+    return { ok: true, skipped: true };
+  }
+
+  try {
+    rmSyncImpl(dir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (error) {
+    const fallback = spawnSyncImpl("/bin/rm", ["-rf", "--", dir], {
+      encoding: "utf8",
+    });
+    if (!fallback?.error && fallback?.status === 0) {
+      return { ok: true, usedFallback: true };
+    }
+    const detail =
+      error?.message ||
+      fallback?.stderr ||
+      fallback?.error?.message ||
+      "directory still exists";
+    warn(`::warning::macos-artifact-smoke: failed to remove temp dir ${dir}: ${detail}`);
+    return { ok: false, error };
+  }
 }
 
 export function requireNonIndigoRefreshToken(env = process.env) {
@@ -197,8 +253,17 @@ export async function writeSmokeHome({ home, refreshToken }) {
   return { hqDir, logPath };
 }
 
+function bundleExecutableName(appPath) {
+  const plistPath = join(appPath, "Contents", "Info.plist");
+  if (!existsSync(plistPath)) return "hq-sync-menubar";
+  const xml = readFileSync(plistPath, "utf8");
+  const match = /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/.exec(xml);
+  const name = match?.[1]?.trim();
+  return name || "hq-sync-menubar";
+}
+
 function resolveBinary(appPath) {
-  const binary = join(appPath, "Contents", "MacOS", "hq-sync-menubar");
+  const binary = join(appPath, "Contents", "MacOS", bundleExecutableName(appPath));
   if (!existsSync(binary)) {
     throw smokeError(`app binary is missing at ${binary}`);
   }
@@ -220,6 +285,8 @@ export async function launchAndWait({
     env: {
       ...process.env,
       HOME: home,
+      TMPDIR: home,
+      NPM_CONFIG_CACHE: join(home, ".npm"),
       HQ_DESKTOP_WATCHDOG_SECS: "25",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -228,11 +295,15 @@ export async function launchAndWait({
 
   let stdout = "";
   let stderr = "";
+  let spawnError;
   child.stdout?.on?.("data", (chunk) => {
     stdout += String(chunk);
   });
   child.stderr?.on?.("data", (chunk) => {
     stderr += String(chunk);
+  });
+  child.on?.("error", (error) => {
+    spawnError = error;
   });
 
   const deadline = now() + timeoutMs;
@@ -240,6 +311,9 @@ export async function launchAndWait({
   let log = parseBootLog("");
   try {
     while (now() < deadline) {
+      if (spawnError) {
+        throw smokeError(`failed to launch app: ${spawnError.message}`);
+      }
       const fileLog = await readLog(logPath);
       log = parseBootLog(`${fileLog}\n${stdout}\n${stderr}`);
       if (log.shellReady || log.recoveryOpened || log.watchdogTimeout) {
@@ -248,45 +322,61 @@ export async function launchAndWait({
       }
       await sleep(200);
     }
+    if (spawnError) {
+      throw smokeError(`failed to launch app: ${spawnError.message}`);
+    }
     if (timedOut) {
       const fileLog = await readLog(logPath);
       log = parseBootLog(`${fileLog}\n${stdout}\n${stderr}`);
     }
     return { log, timedOut, stdout, stderr };
   } finally {
-    await stopChild(child);
+    await stopChild(child, { sleep });
   }
 }
 
-async function stopChild(child) {
-  if (!child || child.killed) return;
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    /* already gone */
-  }
-  if (child.killed) return;
-  const pid = child.pid;
-  if (pid) {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      /* no process group */
+async function stopChild(child, { sleep = delay, waitMs = CHILD_STOP_WAIT_MS } = {}) {
+  if (!child) return;
+
+  let exited = child.exitCode != null || child.signalCode != null;
+  const exitedPromise = new Promise((resolveWait) => {
+    if (exited) {
+      resolveWait();
+      return;
     }
-  }
-  await delay(500);
-  if (child.killed) return;
-  try {
-    child.kill("SIGKILL");
-  } catch {
-    /* already gone */
-  }
-  if (pid) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* no process group */
+    const finish = () => {
+      exited = true;
+      resolveWait();
+    };
+    if (typeof child.once === "function") {
+      child.once("exit", finish);
+      child.once("close", finish);
+    } else {
+      resolveWait();
     }
+  });
+
+  const send = (signal) => {
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+    const pid = child.pid;
+    if (pid) {
+      try {
+        process.kill(-pid, signal);
+      } catch {
+        /* no process group */
+      }
+    }
+  };
+
+  send("SIGTERM");
+  await Promise.race([exitedPromise, sleep(waitMs)]);
+  if (!exited) {
+    send("SIGKILL");
+    await Promise.race([exitedPromise, sleep(waitMs)]);
   }
 }
 
@@ -301,6 +391,8 @@ export async function runArtifactSmoke({
   now,
   sleep,
   mkdtempImpl = mkdtemp,
+  removeHomeImpl = removeSmokeHome,
+  warn = defaultWarn,
 }) {
   const refreshToken = requireNonIndigoRefreshToken(env);
   const version = normalizeVersion(expectedVersion);
@@ -321,7 +413,7 @@ export async function runArtifactSmoke({
     return { ok: true, version: bundleVersion, launched: false };
   }
 
-  const home = await mkdtempImpl(join(tmpdir(), "hq-release-smoke-"));
+  const home = await mkdtempImpl(join(tmpdir(), SMOKE_TEMP_PREFIX));
   try {
     const { logPath } = await writeSmokeHome({ home, refreshToken });
     const { log, timedOut } = await launchAndWait({
@@ -341,7 +433,15 @@ export async function runArtifactSmoke({
       timedOut,
     });
   } finally {
-    await rm(home, { recursive: true, force: true });
+    try {
+      removeHomeImpl(home);
+    } catch (error) {
+      warn(
+        `::warning::macos-artifact-smoke: failed to remove temp dir ${home}: ${
+          error?.message ?? error
+        }`,
+      );
+    }
   }
 }
 
@@ -359,7 +459,7 @@ export async function loadLatestJson(
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const response = await fetchImpl(raw, {
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.timeout(LATEST_JSON_FETCH_TIMEOUT_MS),
           headers: { "user-agent": "hq-desktop-macos-artifact-smoke" },
         });
         if (!response.ok) {
@@ -375,7 +475,11 @@ export async function loadLatestJson(
     }
     throw lastError;
   }
-  return JSON.parse(await readFile(raw, "utf8"));
+  try {
+    return JSON.parse(await readFile(raw, "utf8"));
+  } catch (error) {
+    throw smokeError(`failed to read latest.json from ${raw}: ${error.message}`);
+  }
 }
 
 function parseArgs(argv) {
@@ -445,6 +549,8 @@ export async function runCli(argv = process.argv.slice(2), options = {}) {
     now: options.now,
     sleep: options.sleep,
     mkdtempImpl: options.mkdtempImpl,
+    removeHomeImpl: options.removeHomeImpl,
+    warn: options.warn,
   });
   process.stdout.write(`${JSON.stringify({ ...result, launched: launch })}\n`);
   return result;
