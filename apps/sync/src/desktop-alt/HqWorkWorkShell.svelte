@@ -38,6 +38,7 @@
     createHqWorkPackagesEvents,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
+  import { startDesktopMeshPresence } from './mesh-presence';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -375,6 +376,17 @@
       closed = true;
       void subscribed.then((unsubscribe) => unsubscribe());
     };
+  });
+
+  // Presence lane (US-014): MeshClient over native hq-pro fetch → chat bus.
+  $effect(() => {
+    const fetchImpl = capabilities?.fetch;
+    if (lifecycle !== 'ready' || !fetchImpl || !self?.uid) return;
+    const handle = startDesktopMeshPresence({
+      wakes,
+      fetchImpl,
+    });
+    return () => handle.stop();
   });
 
   function setActiveReplyThread(

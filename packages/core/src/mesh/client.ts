@@ -5,6 +5,11 @@
  * wake-to-REST-reconcile pattern: every MQTT message is a wake only; durable
  * state always comes from REST re-fetch (see reconcile.ts).
  *
+ * Presence exception (US-014): `hq/{companyUid}/presence/#` payloads are
+ * applied to an in-memory PresenceStore and never wake REST. On reconnect the
+ * store is rebuilt from GET /v1/work-mesh/live before subscribe; live wakes on
+ * `thread-directory` coalesce one live-read refresh per company.
+ *
  * Hardening (mirrors hq-console's notifications-mqtt):
  * - mqtt.js `timerVariant: 'native'` pinned (worker-timers breaks in webviews).
  * - `connect()` wrapped in try/catch — Safari can throw synchronously.
@@ -35,7 +40,17 @@ import {
 } from "./credentials.js";
 import { presignIotWssUrl, type SigV4Crypto } from "./presign.js";
 import {
+  PresenceStore,
+  isPresenceTopic,
+  presenceFilterForCompany,
+  type LiveParticipantPresence,
+  type PresenceChange,
+} from "./presence-store.js";
+import {
   WakeReconciler,
+  liveReadPath,
+  parseLiveWake,
+  parseThreadDirectoryTopic,
   routeForTopic,
   type ReconcileFetcher,
   type ReconcileResult,
@@ -58,11 +73,17 @@ export interface MeshClientEvents {
    * A wake arrived on `topic`. `payloadText` is advisory-only (routing hint,
    * e.g. `{type:"channel",channelId,eventId,createdAt}`) — never applied as
    * durable state. Channel/thread payloads skip the topic-level REST route
-   * (the shared DM topic must not refetch the inbox).
+   * (the shared DM topic must not refetch the inbox). Presence topics do not
+   * emit `wake` — they emit `presence` instead.
    */
   wake: (topic: string, payloadText?: string) => void;
   /** Durable state re-fetched from REST after a wake/reconnect. */
   reconciled: (result: ReconcileResult) => void;
+  /**
+   * Presence store changed (MQTT retained/live payload or live-read rebuild).
+   * Never accompanies a WakeReconciler fetch.
+   */
+  presence: (change: PresenceChange) => void;
   /**
    * Socket is live again (or the window is visible after a gap). Hosts run
    * cursor catch-up — directory delta, inbox `since`, open-timeline `since`.
@@ -74,6 +95,14 @@ export interface MeshClientEvents {
   connectionState: (state: ConnectionState) => void;
   error: (err: unknown) => void;
 }
+
+/**
+ * Fetch GET /v1/work-mesh/live for one company. Injected so tests stay offline.
+ * Must return the participants array (presence fields) used to rebuild the store.
+ */
+export type LiveReadFetcher = (
+  companyUid: string,
+) => Promise<{ participants: LiveParticipantPresence[] }>;
 
 /** Structural view of the mqtt.js client the MeshClient needs. */
 export interface MeshMqttClientLike {
@@ -100,6 +129,13 @@ export interface MeshClientOptions {
   credentialProvider: CredentialProvider;
   /** REST re-fetch seam (hq-pro /v1/work-mesh/*, /v1/notify/*). */
   fetcher: ReconcileFetcher;
+  /**
+   * Company-wide live read for presence-store rebuild / live-wake refresh.
+   * Defaults to `fetcher` against {@link liveReadPath} when omitted.
+   */
+  liveFetcher?: LiveReadFetcher;
+  /** Optional shared presence store (tests / host wiring). */
+  presenceStore?: PresenceStore;
   mqttConnect?: MqttConnectFn;
   timers?: TimerHost;
   sigv4Crypto?: SigV4Crypto;
@@ -145,6 +181,15 @@ function dedupeRoutes(routes: WakeRoute[]): WakeRoute[] {
   return out;
 }
 
+/**
+ * Company-scoped filters for one entitled companyUid (AC1: count 1 → 2).
+ * Always derived from companyUid (never from contract-1 `presenceTopic`, which
+ * names the old exact topic and is still dropped in credentials normalization).
+ */
+export function companyTopicsForUid(companyUid: string): string[] {
+  return [`hq/${companyUid}/thread/#`, presenceFilterForCompany(companyUid)];
+}
+
 export function topicsForBundle(bundle: MeshCredentialBundle): string[] {
   const p = bundle.personUid;
   const topics = [
@@ -157,9 +202,123 @@ export function topicsForBundle(bundle: MeshCredentialBundle): string[] {
     `hq/${p}/work-session/#`,
   ];
   for (const companyUid of bundle.companyTopics) {
-    topics.push(`hq/${companyUid}/thread/#`);
+    // AC1: thread/# + presence/# (1 → 2 per company).
+    topics.push(...companyTopicsForUid(companyUid));
+    // AC3: exact directory topic so `{kind:"live"}` wakes reach the client.
+    // Not counted in the AC1 pair — it is the existing directory-wake lane.
+    topics.push(`hq/${companyUid}/thread-directory`);
   }
   return topics;
+}
+
+/**
+ * Coalesced GET /v1/work-mesh/live per company — one in-flight fetch, one
+ * trailing retry when wakes arrive during the flight (mirrors WakeReconciler).
+ */
+export class LiveReadCoalescer {
+  private readonly entries = new Map<
+    string,
+    { running: boolean; pending: boolean }
+  >();
+
+  constructor(
+    private readonly fetchLive: LiveReadFetcher,
+    private readonly onParticipants: (
+      companyUid: string,
+      participants: LiveParticipantPresence[],
+    ) => void,
+    private readonly onError: (companyUid: string, err: unknown) => void = () => {},
+  ) {}
+
+  refresh(companyUid: string): void {
+    const uid = companyUid.trim();
+    if (!uid) return;
+    let entry = this.entries.get(uid);
+    if (!entry) {
+      entry = { running: false, pending: false };
+      this.entries.set(uid, entry);
+    }
+    if (entry.running) {
+      entry.pending = true;
+      return;
+    }
+    entry.running = true;
+    void this.run(uid, entry);
+  }
+
+  /** Refresh every company (reconnect rebuild); awaits all fetches. */
+  async refreshAll(companyUids: readonly string[]): Promise<void> {
+    await Promise.all(
+      companyUids.map(async (uid) => {
+        const companyUid = uid.trim();
+        if (!companyUid) return;
+        try {
+          const { participants } = await this.fetchLive(companyUid);
+          this.onParticipants(companyUid, participants);
+        } catch (err) {
+          this.onError(companyUid, err);
+        }
+      }),
+    );
+  }
+
+  private async run(
+    companyUid: string,
+    entry: { running: boolean; pending: boolean },
+  ): Promise<void> {
+    for (;;) {
+      entry.pending = false;
+      try {
+        const { participants } = await this.fetchLive(companyUid);
+        this.onParticipants(companyUid, participants);
+      } catch (err) {
+        this.onError(companyUid, err);
+      }
+      if (!entry.pending) break;
+    }
+    entry.running = false;
+  }
+}
+
+function participantsFromLiveState(state: unknown): LiveParticipantPresence[] {
+  const rec =
+    state && typeof state === "object" && !Array.isArray(state)
+      ? (state as Record<string, unknown>)
+      : null;
+  const rows = Array.isArray(rec?.participants)
+    ? rec.participants
+    : Array.isArray(state)
+      ? state
+      : [];
+  const out: LiveParticipantPresence[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const r = row as Record<string, unknown>;
+    const actorUid = typeof r.actorUid === "string" ? r.actorUid.trim() : "";
+    if (!actorUid) continue;
+    out.push({
+      actorUid,
+      ...(typeof r.actorType === "string" ? { actorType: r.actorType } : {}),
+      ...(typeof r.presence === "string" ? { presence: r.presence } : {}),
+      ...(typeof r.lastSeenAt === "string" ? { lastSeenAt: r.lastSeenAt } : {}),
+    });
+  }
+  return out;
+}
+
+export function createLiveReadFetcherFromReconcile(
+  fetcher: ReconcileFetcher,
+): LiveReadFetcher {
+  return async (companyUid) => {
+    const { state } = await fetcher(
+      {
+        resource: `live:${companyUid}`,
+        path: liveReadPath(companyUid),
+      },
+      undefined,
+    );
+    return { participants: participantsFromLiveState(state) };
+  };
 }
 
 /**
@@ -190,12 +349,18 @@ export class MeshClient {
   private reconnectHandle: unknown = null;
   private stopped = false;
   private generation = 0;
+  /**
+   * When false, MQTT presence payloads are ignored so reconnect rebuild from
+   * GET /v1/work-mesh/live finishes before retained/live messages apply.
+   */
+  private presenceAcceptMqtt = false;
 
   private readonly listeners: {
     [K in keyof MeshClientEvents]: Set<MeshClientEvents[K]>;
   } = {
     wake: new Set(),
     reconciled: new Set(),
+    presence: new Set(),
     catchup: new Set(),
     droppedCompanies: new Set(),
     connectionState: new Set(),
@@ -204,6 +369,9 @@ export class MeshClient {
 
   private readonly reconciler: WakeReconciler;
   private readonly renewal: CredentialRenewalManager;
+  private readonly presenceStore: PresenceStore;
+  private readonly liveCoalescer: LiveReadCoalescer;
+  private readonly liveFetcher: LiveReadFetcher;
   private readonly mqttConnect: MqttConnectFn;
   private readonly timers: TimerHost;
   private readonly sigv4Crypto: SigV4Crypto | undefined;
@@ -240,6 +408,21 @@ export class MeshClient {
     this.baseBackoffMs = options.baseBackoffMs ?? 1_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 60_000;
 
+    this.presenceStore = options.presenceStore ?? new PresenceStore();
+    this.liveFetcher =
+      options.liveFetcher ?? createLiveReadFetcherFromReconcile(options.fetcher);
+    this.liveCoalescer = new LiveReadCoalescer(
+      this.liveFetcher,
+      (companyUid, participants) => {
+        const changes = this.presenceStore.replaceCompany(
+          companyUid,
+          participants,
+        );
+        for (const change of changes) this.emit("presence", change);
+      },
+      (_companyUid, err) => this.emit("error", err),
+    );
+
     this.reconciler = new WakeReconciler(
       options.fetcher,
       (result) => this.emit("reconciled", result),
@@ -251,6 +434,11 @@ export class MeshClient {
       (err) => this.emit("error", err),
       this.timers,
     );
+  }
+
+  /** In-memory presence store (MQTT exception + live-read rebuild). */
+  getPresenceStore(): PresenceStore {
+    return this.presenceStore;
   }
 
   on<K extends keyof MeshClientEvents>(
@@ -395,51 +583,14 @@ export class MeshClient {
       client.on("connect", () => {
         if (this.stopped || generation !== this.generation) return;
         this.attempt = 0;
-        const topics = topicsForBundle(bundle);
-        // Subscription establishment is part of becoming connected: a
-        // subscribe failure (transport error or per-topic qos-128 rejection)
-        // forces a full reconnect cycle rather than sitting "connected" deaf.
-        // AWS IoT closes the socket if one Subscribe packet lists more than
-        // IOT_SUBSCRIBE_BATCH_SIZE topics — batch, then mark connected.
-        this.subscribeAll(client, topics, generation, (err) => {
-          if (this.stopped || generation !== this.generation) return;
-          if (err) {
-            this.emit("error", err);
-            this.scheduleReconnect();
-            return;
-          }
-          this.setState("connected");
-          // Reconnect catch-up: wakes may have been missed while offline.
-          const routes = [
-            `hq/${bundle.personUid}/dm`,
-            `hq/${bundle.personUid}/work`,
-            `hq/${bundle.personUid}/notifications`,
-          ]
-            .map((t) => routeForTopic(t))
-            .filter((r): r is WakeRoute => r !== null)
-            .concat(this.reconciler.knownRoutes());
-          this.reconciler.reconcileAll(dedupeRoutes(routes));
-          this.emit("catchup", "connect");
-        });
+        // Rebuild presence from REST before subscribe so retained MQTT
+        // payloads apply on top of a fresh live snapshot (never the reverse).
+        this.presenceAcceptMqtt = false;
+        void this.rebuildPresenceThenSubscribe(client, bundle, generation);
       });
       client.on("message", (topic: string, payload?: unknown) => {
         if (this.stopped || generation !== this.generation) return;
-        const payloadText = mqttPayloadToText(payload);
-        this.emit("wake", topic, payloadText);
-        // type:channel / inbound type:dm / type:thread share hq/{uid}/dm.
-        // Skip topic REST: GET /v1/notify/dm is the send path (404). The
-        // host fetches GET /v1/notify/inbox on dm:new-message. type:thread
-        // is ids-only: the host emits reply:new from the wake and the open
-        // panel re-fetches GET /v1/notify/threads. Reconciling here would
-        // emit reply:new a second time and bump closed-panel "N replies"
-        // twice. Untyped dm-topic wakes GET inbox.
-        if (
-          !channelWakeFromPayload(payloadText) &&
-          !parseDmDeliveredWake(payloadText) &&
-          !parseReplyThreadWake(payloadText)
-        ) {
-          this.reconciler.wake(topic, payload);
-        }
+        this.handleMessage(topic, payload);
       });
       client.on("error", (err: Error) => {
         if (this.stopped || generation !== this.generation) return;
@@ -452,6 +603,91 @@ export class MeshClient {
     } catch (err) {
       this.emit("error", err);
       this.scheduleReconnect();
+    }
+  }
+
+  private async rebuildPresenceThenSubscribe(
+    client: MeshMqttClientLike,
+    bundle: MeshCredentialBundle,
+    generation: number,
+  ): Promise<void> {
+    try {
+      await this.liveCoalescer.refreshAll(bundle.companyTopics);
+    } catch (err) {
+      this.emit("error", err);
+    }
+    if (this.stopped || generation !== this.generation) return;
+    // Accept MQTT presence only after the live rebuild so reconnect never
+    // applies stale retained payloads on top of an empty/partial store first.
+    this.presenceAcceptMqtt = true;
+    const topics = topicsForBundle(bundle);
+    // Subscription establishment is part of becoming connected: a
+    // subscribe failure (transport error or per-topic qos-128 rejection)
+    // forces a full reconnect cycle rather than sitting "connected" deaf.
+    // AWS IoT closes the socket if one Subscribe packet lists more than
+    // IOT_SUBSCRIBE_BATCH_SIZE topics — batch, then mark connected.
+    // Retained presence messages seed the store as they arrive post-subscribe.
+    this.subscribeAll(client, topics, generation, (err) => {
+      if (this.stopped || generation !== this.generation) return;
+      if (err) {
+        this.emit("error", err);
+        this.scheduleReconnect();
+        return;
+      }
+      this.setState("connected");
+      // Reconnect catch-up: wakes may have been missed while offline.
+      const routes = [
+        `hq/${bundle.personUid}/dm`,
+        `hq/${bundle.personUid}/work`,
+        `hq/${bundle.personUid}/notifications`,
+      ]
+        .map((t) => routeForTopic(t))
+        .filter((r): r is WakeRoute => r !== null)
+        .concat(this.reconciler.knownRoutes());
+      this.reconciler.reconcileAll(dedupeRoutes(routes));
+      this.emit("catchup", "connect");
+    });
+  }
+
+  /**
+   * Route one MQTT message. Presence never reaches WakeReconciler. Live wakes
+   * on thread-directory coalesce a live-read refresh. Everything else keeps
+   * the wake-only contract.
+   */
+  private handleMessage(topic: string, payload?: unknown): void {
+    // Presence lane — apply to store, never REST reconcile.
+    if (isPresenceTopic(topic)) {
+      if (!this.presenceAcceptMqtt) return;
+      const change = this.presenceStore.applyMqtt(topic, payload);
+      if (change) this.emit("presence", change);
+      return;
+    }
+
+    const dir = parseThreadDirectoryTopic(topic);
+    const live = dir ? parseLiveWake(payload) : null;
+    if (dir && live) {
+      // Ids-only live wake → coalesced GET /v1/work-mesh/live (not WakeReconciler).
+      this.liveCoalescer.refresh(live.companyUid || dir.companyUid);
+      const payloadText = mqttPayloadToText(payload);
+      this.emit("wake", topic, payloadText);
+      return;
+    }
+
+    const payloadText = mqttPayloadToText(payload);
+    this.emit("wake", topic, payloadText);
+    // type:channel / inbound type:dm / type:thread share hq/{uid}/dm.
+    // Skip topic REST: GET /v1/notify/dm is the send path (404). The
+    // host fetches GET /v1/notify/inbox on dm:new-message. type:thread
+    // is ids-only: the host emits reply:new from the wake and the open
+    // panel re-fetches GET /v1/notify/threads. Reconciling here would
+    // emit reply:new a second time and bump closed-panel "N replies"
+    // twice. Untyped dm-topic wakes GET inbox.
+    if (
+      !channelWakeFromPayload(payloadText) &&
+      !parseDmDeliveredWake(payloadText) &&
+      !parseReplyThreadWake(payloadText)
+    ) {
+      this.reconciler.wake(topic, payload);
     }
   }
 

@@ -391,6 +391,15 @@ export interface ChatWakeEvents {
   /** Run cursor catch-up (directory delta + open timeline `since`). */
   "mesh:catchup": { reason: "connect" | "focus" };
   /**
+   * Presence store changed (MQTT retained/live or live-read rebuild).
+   * Ids + status only — never prompts or credentials.
+   */
+  "presence:changed": {
+    companyUid: string;
+    actorUid: string;
+    status: "online" | "offline";
+  };
+  /**
    * A reply landed (hq-pro `type:"thread"`). Ids only — never a body.
    * Not named `thread:` (that collides with work-mesh).
    */

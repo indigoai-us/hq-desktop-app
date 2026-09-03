@@ -70,6 +70,12 @@ export {
   submitAnswer,
   type AgencyApi,
 } from "./chat/agency-store.svelte.js";
+export {
+  bindPresenceStore,
+  presenceEntry,
+  presenceSnapshot,
+  presenceStatus,
+} from "./chat/presence-store.svelte.js";
 
 // Work-mesh Board + project/thread views (US-008, ported from desktop-alt)
 export { default as BoardView } from "./board/BoardView.svelte";
