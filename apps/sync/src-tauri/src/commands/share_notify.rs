@@ -42,8 +42,6 @@
 //!   `SHARE_NOTIFY_POLL_NETWORK_FAIL`  — reqwest transport error
 //!   `SHARE_NOTIFY_POLL_ERROR`         — 4xx/5xx other than auth, or parse fail
 
-use std::sync::OnceLock;
-
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
@@ -280,42 +278,7 @@ async fn do_poll(app: &AppHandle) {
 
                     #[cfg(target_os = "macos")]
                     {
-                        // Lazily register the bundle identifier with mac-notification-sys
-                        // on the first send per process. Without this, the library calls
-                        // `get_bundle_identifier_or_default("use_default")` internally,
-                        // which triggers a macOS "Choose Application" picker because
-                        // Launch Services can't resolve the literal "use_default" to an
-                        // installed app. Mirrors the fix in commands/meetings.rs.
-                        //
-                        // `set_application` itself is guarded by an internal Once, so
-                        // calling it on every send would be safe — wrapping in our own
-                        // OnceLock keeps the log line at one-per-process.
-                        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-                        NOTIFICATION_APP_INIT.get_or_init(|| {
-                            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-                            match mac_notification_sys::set_application(BUNDLE_ID) {
-                                Ok(()) => log(
-                                    LOG_TAG,
-                                    &format!("SHARE_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}"),
-                                ),
-                                Err(e) => log(
-                                    LOG_TAG,
-                                    &format!(
-                                        "SHARE_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"
-                                    ),
-                                ),
-                            }
-                        });
-
                         // Fire one macOS notification per share event (US-005).
-                        //
-                        // We use mac-notification-sys directly (NOT tauri-plugin-
-                        // notification) so we can attach a `DropdownActions` button
-                        // labelled "Actions" with two options ("Copy prompt", "Open
-                        // details") that reveal on hover. The spawned thread blocks
-                        // on `wait_for_click(true).send()` until the user interacts
-                        // (or macOS auto-dismisses) and emits a Tauri event for the
-                        // frontend listener to handle.
                         //
                         // Custom-banner path: when `customBanner` is enabled, route
                         // each share through the in-app banner (event-driven, no
@@ -341,117 +304,37 @@ async fn do_poll(app: &AppHandle) {
                                 }
                             }
                         } else {
+                            // Native fallback (customBanner: false). Deliver
+                            // through `un_notify::deliver_message`, which fires a
+                            // real macOS banner via `UNUserNotificationCenter`
+                            // when notification permission is granted and falls
+                            // back to `osascript display notification` otherwise.
+                            //
+                            // This replaces the old `mac_notification_sys`
+                            // (NSUserNotification) send, which produced NO banner
+                            // on modern macOS: the process becomes a UN "modern
+                            // client" at launch (the UN delegate + permission
+                            // probe both touch UN), after which usernoted
+                            // permanently denies every legacy NSUserNotification
+                            // deliver from this process. That silent denial was
+                            // the root cause of "native share notifications don't
+                            // appear".
+                            //
+                            // Trade-off (same one meetings already made): the
+                            // banner loses its inline "Actions" dropdown (Copy
+                            // prompt / Open details). Clicking the banner body
+                            // opens the desktop-alt window (routed by `kind` in
+                            // the UN delegate); the richer per-action surface
+                            // remains available in the in-app custom banner,
+                            // which is the default for everyone.
                             for evt in &fresh {
                                 let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                                 let title = notification_title(&evt.issuer_display_name);
-                                let app_for_thread = app.clone();
-                                let event_clone = evt.clone();
 
                                 std::thread::spawn(move || {
-                                    let mut notification =
-                                        mac_notification_sys::Notification::default();
-                                    // The dropdown title appears as the visible button
-                                    // label; the slice elements are the dropdown items.
-                                    // Order = display order.
-                                    notification
-                                        .title(&title)
-                                        .message(&body_text)
-                                        // Body-click = primary action (open Claude Code
-                                        // with the templated prompt prefilled, see the
-                                        // Body-click = primary action: open Claude
-                                        // Code with the templated prompt prefilled
-                                        // (see "claude" branch in App.svelte).
-                                        // Dropdown surfaces two explicit alternatives:
-                                        //   * Copy prompt   — clipboard only (no app
-                                        //     open) for users who already have a
-                                        //     session running or want to paste
-                                        //     elsewhere.
-                                        //   * Open details  — ShareDetail window with
-                                        //     full path list + Open in HQ Console.
-                                        // Copy is intentionally redundant w/ body-
-                                        // click for the LLM-session case; explicit
-                                        // discoverability beats minimalism here
-                                        // (user direction 2026-05-26).
-                                        .main_button(
-                                            mac_notification_sys::MainButton::DropdownActions(
-                                                "Actions",
-                                                &["Copy prompt", "Open details"],
-                                            ),
-                                        );
-
-                                    // CPU cap (Option 1): only the holder of the single
-                                    // blocking-send slot may use `wait_for_click(true)`
-                                    // (which busy-spins until the user acts — see
-                                    // BlockingNotifyGuard docs). Any concurrent send
-                                    // falls back to fire-and-forget so we never
-                                    // accumulate spinning threads. The guard is dropped
-                                    // the instant the blocking send returns.
-                                    let response = match BlockingNotifyGuard::try_acquire() {
-                                        Some(guard) => {
-                                            let r = notification.wait_for_click(true).send();
-                                            drop(guard);
-                                            r
-                                        }
-                                        None => notification.send(),
-                                    };
-
-                                    match response {
-                                        Ok(resp) => {
-                                            // Body-click → "claude": opens Claude
-                                            // Code (`claude://code/new?q=…&folder=…`)
-                                            // with the templated prompt pre-filled
-                                            // and cwd at the user's HQ folder. The
-                                            // recipient lands in an LLM session
-                                            // ready to act on the shared files
-                                            // without a paste step.
-                                            //
-                                            // Dropdown "Open details" → open the
-                                            // ShareDetail window for a UI surface
-                                            // (path list + Copy prompt fallback +
-                                            // Open in HQ Console link).
-                                            //
-                                            // The frontend listener in App.svelte
-                                            // owns the URL build + Tauri-command
-                                            // dispatch.
-                                            let action: Option<&'static str> = match resp {
-                                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                                            if name.eq_ignore_ascii_case("copy prompt") =>
-                                        {
-                                            Some("copy")
-                                        }
-                                        mac_notification_sys::NotificationResponse::ActionButton(name)
-                                            if name.eq_ignore_ascii_case("open details") =>
-                                        {
-                                            Some("open")
-                                        }
-                                        mac_notification_sys::NotificationResponse::Click => Some("claude"),
-                                        // CloseButton / Reply / None — no actionable signal.
-                                        _ => None,
-                                    };
-
-                                            if let Some(action) = action {
-                                                let payload = NotificationShareActionEvent {
-                                                    action: action.to_string(),
-                                                    event_id: event_clone.event_id.clone(),
-                                                    event: event_clone,
-                                                };
-                                                if let Err(e) = app_for_thread
-                                                    .emit(EVENT_NOTIFICATION_SHARE_ACTION, &payload)
-                                                {
-                                                    log(
-                                                LOG_TAG,
-                                                &format!(
-                                                    "SHARE_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
-                                                ),
-                                            );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => log(
-                                            LOG_TAG,
-                                            &format!("SHARE_NOTIFY_SEND_FAILED err={e}"),
-                                        ),
-                                    }
+                                    crate::commands::un_notify::deliver_message(
+                                        &title, &body_text, "share",
+                                    );
                                 });
                             }
                         } // end else — native firing path
