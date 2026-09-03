@@ -21,9 +21,8 @@ const fn default_widget_enabled() -> bool {
 /// `available_channels`; resolution-for-the-updater lives in
 /// `updater::read_stored_release_channel` + `effective_channel` so this
 /// boundary stays a pure pass-through. Persisting the resolved value
-/// here would lock indigo users into "beta" the first time they touch
-/// any unrelated toggle, defeating the "no preference" state the
-/// effective_channel gate is designed to honor (Codex P1 review on #120).
+/// here would lock users into a channel the first time they touch any
+/// unrelated toggle, defeating the "no preference → Stable" default.
 #[tauri::command]
 pub async fn get_settings() -> Result<MenubarPrefs, String> {
     let path = paths::menubar_json_path()?;

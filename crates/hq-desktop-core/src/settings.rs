@@ -239,7 +239,7 @@ mod tests {
         );
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
-        // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
+        // `util::release_channel::tests::non_indigo_beta_pref_is_honored`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
