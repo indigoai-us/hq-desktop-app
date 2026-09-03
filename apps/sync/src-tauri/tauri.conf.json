@@ -14,7 +14,7 @@
     "windows": [
       {
         "title": "HQ",
-        "width": 296,
+        "width": 288,
         "height": 360,
         "resizable": false,
         "visible": false,
