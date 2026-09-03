@@ -149,6 +149,82 @@ describe("every job declares a job-level timeout", () => {
   }
 });
 
+describe("PR checks run on every base", () => {
+  // Two separate ways a stacked PR ended up permanently unmergeable, both
+  // caused by the `on: pull_request` block and both hit in production:
+  //
+  //   1. ci.yml carried `branches: [main]`, so a PR opened against a non-main
+  //      base matched no trigger. No run means no check RUN at all, and GitHub
+  //      renders a required context that has never reported as "Expected --
+  //      waiting for status to be reported" forever. The PR reads as blocked on
+  //      a check that will never arrive.
+  //   2. Retargeting such a PR onto main fires `pull_request.edited` and
+  //      nothing else. `edited` was not in `types:`, so the retarget started no
+  //      run either, and the only way to unstick the PR was to push a commit.
+  //
+  // Both are shape properties of a five-line YAML block that nothing else
+  // would fail on, so they are pinned here.
+  for (const [label, get] of [
+    ["ci", () => ciWorkflow],
+    ["windows-check", () => windowsCheckWorkflow],
+  ] as const) {
+    const pullRequestTrigger = (workflow: string): string => {
+      const match = /\n  pull_request:\n((?: {4}.*\n|\n)*)/.exec(
+        preamble(workflow),
+      );
+
+      if (!match) {
+        throw new Error("workflow declares no pull_request trigger");
+      }
+
+      return match[1];
+    };
+
+    it(`${label} restricts pull_request to no base branch`, () => {
+      // A `branches:` filter is the bug, not a tightening of it: a stacked PR
+      // whose base is another feature branch is exactly the case that must
+      // still run.
+      expect(pullRequestTrigger(get())).not.toMatch(/^ {4}branches:/m);
+    });
+
+    it(`${label} runs on the events a base retarget produces`, () => {
+      const types = /^ {4}types: \[(.+)\]$/m
+        .exec(pullRequestTrigger(get()))?.[1]
+        .split(",")
+        .map((type) => type.trim());
+
+      expect(types).toBeDefined();
+      // `edited` covers the retarget; the other four are the pre-existing set
+      // and dropping any of them would stop a normal push or ready-for-review
+      // from reporting.
+      for (const type of [
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+        "edited",
+      ]) {
+        expect(types).toContain(type);
+      }
+    });
+
+    it(`${label} does not skip jobs on a non-base edit`, () => {
+      // Tempting, because `edited` also fires on title/body edits -- and
+      // wrong. GitHub reports a job skipped by a job-level `if:` as Success
+      // (the same trap the windows-check header documents for path filters),
+      // so gating on `github.event.changes.base` would let someone turn a red
+      // required check green by fixing a typo in the PR title. The redundant
+      // runs are the cheaper mistake, and this asserts nobody "optimises" it
+      // back.
+      const workflow = get();
+
+      for (const name of jobNames(workflow)) {
+        expect(jobConfig(workflow, name)).not.toContain("github.event.changes");
+      }
+    });
+  }
+});
+
 describe("superseded runs are cancelled", () => {
   // A pull_request-triggered workflow with no concurrency group keeps running
   // after the branch moves on. Measured over 30 days, 153 of 689 windows-check

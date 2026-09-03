@@ -7,7 +7,14 @@
 # PHASE3.md is complete; it becomes a required check once green.
 #
 # Triggers on PRs (not push to main) so main is not shown red while the fold is
-# in progress; also manually dispatchable.
+# in progress; also manually dispatchable. There is deliberately no `branches:`
+# filter, so a stacked PR opened against a non-main base runs this gate too --
+# see the trigger-contract comment in ci.yml. `edited` is in `types:` because a
+# base retarget fires only that event. A title/body edit therefore also starts
+# this workflow; that is accepted rather than gated on
+# `github.event.changes.base`, because a job skipped by an `if:` reports Success
+# and would turn a red required check green on a title typo (same trap as the
+# path-filter note above).
 #
 # The relevant-paths list is NOT a `paths:` trigger filter. Both jobs here are
 # REQUIRED status checks, and GitHub leaves a required context of a
@@ -24,7 +31,7 @@ name: Windows check (Phase 3)
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 # A pull_request workflow with no concurrency group keeps burning Windows
 # minutes (2x) on commits the branch has already moved past. Measured over 30

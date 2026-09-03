@@ -14,6 +14,30 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## PR checks and stacked PRs
+
+`ci.yml` and `windows-check.yml` run on **every** pull request base, not just
+`main`, and both list `edited` in their `pull_request` `types:`. If you are
+stacking PRs (feature branch on feature branch), you do not need to retarget
+onto `main` to get CI, and retargeting a stacked PR later starts a fresh run on
+its own instead of needing a throwaway commit to unstick it.
+
+Two things this protects against, both previously hit:
+
+- A `branches: [main]` filter meant a PR against a non-main base matched no
+  trigger. Its required contexts then never reported at all, which GitHub shows
+  as "waiting for status to be reported" forever rather than as "not run" — the
+  PR looks blocked with nothing to click.
+- Changing a PR's base fires only `pull_request.edited`, so without that type in
+  the list a retarget still started nothing.
+
+`edited` also fires on title and body edits, and those redundant runs are
+accepted deliberately. Gating the jobs on `github.event.changes.base` would be
+cheaper but unsound: a job skipped by a job-level `if:` reports **Success** to
+the branch protection rules, so editing the title of a PR with a red suite would
+overwrite every required check with green. `scripts/ci-cost-contract.test.ts`
+pins all of the above.
+
 ## macOS bundle identity (do not rename)
 
 The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in

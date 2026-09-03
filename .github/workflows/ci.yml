@@ -23,10 +23,27 @@ name: CI
 #     the app carries ~110 pre-existing clippy warnings, incl. several
 #     await-holding-lock sites).
 
+# Trigger contract (pinned by scripts/ci-cost-contract.test.ts -- read that
+# file's "PR checks run on every base" block before changing any of this):
+#
+#   - NO `branches:` filter on pull_request. A stacked PR opened against a
+#     non-main base used to match nothing here, so CI never started and every
+#     required context stayed ABSENT -- which GitHub renders as a permanently
+#     blocked PR rather than as "no runs". A stacked PR's checks are still
+#     meaningful, so they run on every base.
+#   - `edited` is in `types:` because retargeting a PR's base fires ONLY
+#     `edited`. Without it, moving a stacked PR onto main still started no run
+#     and the only way to unstick the PR was to push a throwaway commit.
+#     `edited` also fires on title/body edits, and those extra runs are
+#     ACCEPTED rather than gated away. Skipping the jobs on a non-base edit
+#     (`github.event.action != 'edited' || github.event.changes.base != null`)
+#     looks cheaper but is unsound here: GitHub reports a job skipped by a
+#     job-level `if:` as Success, so editing the title of a PR whose suite is
+#     RED would overwrite every required context with green and let it merge.
+#     A handful of redundant runs is the cheaper mistake.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
   workflow_dispatch:
