@@ -135,11 +135,14 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 }
 
 interface ReleasePolicyCase {
+  advanceMainAfterReleaseBranch?: boolean;
   branch: string;
   expectedCode: number;
   expectedOutput: string;
   name: string;
   prerelease: boolean;
+  releaseBranch?: string;
+  tagAtForkPoint?: boolean;
 }
 
 async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
@@ -162,7 +165,30 @@ async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
   await git(source, "remote", "add", "origin", origin);
   await git(source, "push", "--quiet", "origin", "main");
 
-  if (testCase.branch !== "main") {
+  let tagPushed = false;
+  if (testCase.tagAtForkPoint) {
+    await git(source, "tag", "-a", tag, "-m", tag);
+    await git(source, "push", "--quiet", "origin", `refs/tags/${tag}`);
+    tagPushed = true;
+  }
+
+  if (testCase.releaseBranch) {
+    await git(source, "switch", "--quiet", "-c", testCase.releaseBranch);
+    await writeFile(join(source, "release.txt"), `${testCase.releaseBranch}\n`);
+    await git(source, "add", "release.txt");
+    await git(source, "commit", "--quiet", "-m", testCase.releaseBranch);
+    await git(source, "push", "--quiet", "origin", `HEAD:refs/heads/${testCase.releaseBranch}`);
+    await git(source, "switch", "--quiet", "main");
+
+    if (testCase.advanceMainAfterReleaseBranch) {
+      await writeFile(join(source, "release.txt"), "main after release branch\n");
+      await git(source, "add", "release.txt");
+      await git(source, "commit", "--quiet", "-m", "main after release branch");
+      await git(source, "push", "--quiet", "origin", "main");
+    }
+  }
+
+  if (testCase.branch !== "main" && testCase.branch !== testCase.releaseBranch) {
     await git(source, "switch", "--quiet", "-c", testCase.branch);
     await writeFile(join(source, "release.txt"), `${testCase.branch}\n`);
     await git(source, "add", "release.txt");
@@ -170,8 +196,10 @@ async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
     await git(source, "push", "--quiet", "origin", `HEAD:refs/heads/${testCase.branch}`);
   }
 
-  await git(source, "tag", "-a", tag, "-m", tag);
-  await git(source, "push", "--quiet", "origin", `refs/tags/${tag}`);
+  if (!tagPushed) {
+    await git(source, "tag", "-a", tag, "-m", tag);
+    await git(source, "push", "--quiet", "origin", `refs/tags/${tag}`);
+  }
 
   // This deliberately has only the tag ref before the extracted workflow
   // script runs, matching a fresh checkout of a pushed tag. Its own fetch
@@ -288,9 +316,16 @@ describe("release workflow channel contract", () => {
     // The branch rule splits by channel, keyed off the classified prerelease
     // flag: stable must ship from main; alpha/beta need release/* containment.
     expect(validate).toContain('if [ "$PRERELEASE" = "true" ]; then');
+    expect(validate).toContain('if [ "$ON_MAIN" = "true" ]; then');
     expect(validate).toMatch(/for-each-ref\s+\\\n\s+--format=.*\n\s+--contains=/);
     expect(validate).toContain(
       "Stable release tag $TAG is not contained in origin/main",
+    );
+    expect(validate).toContain(
+      "alpha and beta prereleases must not be cut from main",
+    );
+    expect(validate).toContain(
+      "promote this commit as a stable vX.Y.Z release instead",
     );
     expect(validate).toContain(
       "alpha and beta releases may only be cut from a release/* branch",
@@ -307,7 +342,7 @@ describe("release workflow channel contract", () => {
   describe("release branch policy behaviour", () => {
     const cases: ReleasePolicyCase[] = [
       {
-        name: "accepts a prerelease tag contained in origin/release/0.11",
+        name: "accepts a prerelease tag that exists only on origin/release/0.11 after the fork",
         branch: "release/0.11",
         prerelease: true,
         expectedCode: 0,
@@ -331,12 +366,25 @@ describe("release workflow channel contract", () => {
           "alpha and beta releases may only be cut from a release/* branch",
       },
       {
-        name: "rejects a prerelease tag already contained in origin/main",
+        name: "rejects a prerelease tag on main when origin/release/1.0 descends from it",
         branch: "main",
         prerelease: true,
         expectedCode: 1,
         expectedOutput:
-          "alpha and beta releases may only be cut from a release/* branch",
+          "alpha and beta prereleases must not be cut from main",
+        releaseBranch: "release/1.0",
+        tagAtForkPoint: true,
+      },
+      {
+        name: "rejects a prerelease tag at the main and release/1.0 fork point",
+        branch: "main",
+        prerelease: true,
+        expectedCode: 1,
+        expectedOutput:
+          "alpha and beta prereleases must not be cut from main",
+        advanceMainAfterReleaseBranch: true,
+        releaseBranch: "release/1.0",
+        tagAtForkPoint: true,
       },
       {
         name: "accepts a stable tag contained in origin/main",

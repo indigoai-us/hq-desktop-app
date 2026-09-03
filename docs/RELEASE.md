@@ -155,11 +155,11 @@ Where you tag depends on the channel:
 - **Stable** (`vX.Y.Z`) must be cut from `main` — its commit has to be merged
   before you tag it.
 - **beta / alpha** (`-beta.N` / `-alpha.N`) are testing builds and may **only**
-  be cut from a `release/*` branch. Their tag commit must be contained in at
-  least one `release/*` branch; creating those branches is restricted to the
-  Release Managers team. A prerelease tag that is not contained in a
-  `release/*` branch is rejected. Prerelease releases never stamp their version
-  back to `main`.
+  be cut from a `release/*` branch. Their tag commit must be off `main` and
+  contained in at least one `release/*` branch; creating those branches is
+  restricted to the Release Managers team. A prerelease tag that is on `main`
+  or not contained in a `release/*` branch is rejected. Prerelease releases
+  never stamp their version back to `main`.
 
 There is no version bump to make first and no release pull request. The tag is
 the single source of truth for the version: the `validate` job stamps
@@ -182,11 +182,11 @@ Two consequences worth knowing:
   never run the sync at all, so they never touch `main`.
 
 For a **stable** release the workflow requires the tag commit to be contained in
-`main`; a **prerelease** requires its tag commit to be contained in at least one
-`release/*` branch. This branch check runs only when a tag is first pushed, so a
-`workflow_dispatch` retry of an existing tag is never re-gated. Never move a
-pushed tag after a failed release; fix the release path and cut a fresh SemVer
-tag.
+`main`; a **prerelease** requires its tag commit to be off `main` and contained
+in at least one `release/*` branch. This branch check runs only when a tag is
+first pushed, so a `workflow_dispatch` retry of an existing tag is never
+re-gated. Never move a pushed tag after a failed release; fix the release path
+and cut a fresh SemVer tag.
 
 ## Desktop shell guard
 

@@ -147,6 +147,10 @@ jobs:
           fi
 
           if [ "$PRERELEASE" = "true" ]; then
+            if [ "$ON_MAIN" = "true" ]; then
+              echo "::error::$CHANNEL prerelease tag $TAG is contained in origin/main. alpha and beta prereleases must not be cut from main; promote this commit as a stable vX.Y.Z release instead."
+              exit 1
+            fi
             RELEASE_BRANCHES="$(git -C "$GITHUB_WORKSPACE" for-each-ref \
               --format='%(refname:short)' \
               --contains="${TAG}^{commit}" \
