@@ -279,6 +279,8 @@ export async function launchAndWait({
   readLog = (path) => readFile(path, "utf8").catch(() => ""),
   now = () => Date.now(),
   sleep = delay,
+  killGroup,
+  warn = defaultWarn,
 }) {
   const binary = resolveBinary(appPath);
   const child = spawnImpl(binary, [DEEP_LINK], {
@@ -331,30 +333,59 @@ export async function launchAndWait({
     }
     return { log, timedOut, stdout, stderr };
   } finally {
-    await stopChild(child, { sleep });
+    const stopped = await stopChild(
+      child,
+      killGroup ? { sleep, killGroup } : { sleep },
+    );
+    // Teardown is advisory (a temp sandbox is not a product signal), so an
+    // unreaped tree must not degrade to silence: say so out loud.
+    if (!stopped.exited) {
+      warn(
+        `::warning::macos-artifact-smoke: smoke app (pid ${
+          child?.pid ?? "unknown"
+        }) did not confirm exit after SIGKILL; its process tree may not be fully reaped and may still be writing into the sandbox HOME`,
+      );
+    }
   }
 }
 
-async function stopChild(child, { sleep = delay, waitMs = CHILD_STOP_WAIT_MS } = {}) {
-  if (!child) return;
+/**
+ * Reap the smoke app AND every descendant it spawned. The app is started
+ * `detached: true`, so it leads its own process group; signalling only the
+ * direct child leaves orphans (the sync runner via npx) writing into the
+ * sandbox HOME while teardown walks it — which is how releases started dying
+ * with `ENOTEMPTY ... .npm/_cacache/index-v5`.
+ */
+export async function stopChild(
+  child,
+  {
+    sleep = delay,
+    waitMs = CHILD_STOP_WAIT_MS,
+    killGroup = (pid, signal) => process.kill(-pid, signal),
+  } = {},
+) {
+  if (!child) return { exited: true, escalated: false };
 
-  let exited = child.exitCode != null || child.signalCode != null;
+  let exited = false;
+  let settle = () => {};
   const exitedPromise = new Promise((resolveWait) => {
-    if (exited) {
-      resolveWait();
-      return;
-    }
-    const finish = () => {
-      exited = true;
-      resolveWait();
-    };
-    if (typeof child.once === "function") {
-      child.once("exit", finish);
-      child.once("close", finish);
-    } else {
-      resolveWait();
-    }
+    settle = resolveWait;
   });
+  const finish = () => {
+    exited = true;
+    settle();
+  };
+  // Subscribe BEFORE checking the exit state, then re-check. Checking first
+  // leaves a TOCTOU gap: an exit that lands between the check and the
+  // subscribe has already fired, so the listener never runs and `exited`
+  // stays false through both grace waits.
+  if (typeof child.once === "function") {
+    child.once("exit", finish);
+    child.once("close", finish);
+  } else {
+    finish();
+  }
+  if (child.exitCode != null || child.signalCode != null) finish();
 
   const send = (signal) => {
     try {
@@ -365,18 +396,28 @@ async function stopChild(child, { sleep = delay, waitMs = CHILD_STOP_WAIT_MS } =
     const pid = child.pid;
     if (pid) {
       try {
-        process.kill(-pid, signal);
+        killGroup(pid, signal);
       } catch {
-        /* no process group */
+        /* no process group, or an empty one (ESRCH) — both are fine */
       }
     }
   };
 
-  send("SIGTERM");
-  await Promise.race([exitedPromise, sleep(waitMs)]);
-  if (!exited) {
-    send("SIGKILL");
+  try {
+    send("SIGTERM");
     await Promise.race([exitedPromise, sleep(waitMs)]);
+    const exitedOnTerm = exited;
+    // The leader exiting is NOT proof the tree is reaped: this only observes
+    // the direct ChildProcess handle. Descendants that ignore SIGTERM, or that
+    // outlive the leader while flushing cacache, keep writing into the sandbox
+    // HOME. Always best-effort SIGKILL the group after the SIGTERM grace.
+    send("SIGKILL");
+    if (exitedOnTerm) return { exited: true, escalated: false };
+    await Promise.race([exitedPromise, sleep(waitMs)]);
+    return { exited, escalated: true };
+  } finally {
+    child.off?.("exit", finish);
+    child.off?.("close", finish);
   }
 }
 
@@ -425,6 +466,7 @@ export async function runArtifactSmoke({
       readLog,
       now,
       sleep,
+      warn,
     });
     return evaluateSmokeResult({
       log,
