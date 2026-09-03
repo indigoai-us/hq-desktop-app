@@ -57,6 +57,8 @@
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import TeamTab from "../chat/tabs/TeamTab.svelte";
   import IntegrationsTab from "../chat/tabs/IntegrationsTab.svelte";
+  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
+  import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     parseCompanyTab,
     type CompanyChannelTabId,
@@ -528,6 +530,7 @@
   let companyTab = $state<CompanyChannelTabId>("chat");
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
+  let companyWallpaper = $state("aurora");
   let openReplyRootId = $state<string | null>(null);
   let attachTray = $state<{
     selectedId: string;
@@ -747,6 +750,7 @@
     agentSurface = "chat";
     companyTab = "chat";
     companyTabData = null;
+    companyWallpaper = "aurora";
   });
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
@@ -1557,31 +1561,40 @@
     tabId: CompanyChannelTabId,
   ): Promise<void> {
     const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (!uid || tabId === "chat") {
+    if (!uid) {
       companyTabData = null;
       return;
     }
     const getTab = conversationApi.getCompanyTab;
+    const fetchId = tabId === "chat" ? "settings" : tabId;
     if (!getTab) {
-      companyTabData = {
-        tab: tabId,
-        companyUid: uid,
-        viewer: { canAct: false },
-        sections: [{ id: tabId, title: tabId, rows: [] }],
-      };
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
       return;
     }
     companyTabLoading = true;
     try {
-      const raw = await getTab(uid, tabId);
-      companyTabData = parseCompanyTab(raw);
+      const raw = await getTab(uid, fetchId);
+      const parsed = parseCompanyTab(raw);
+      if (parsed?.appearance?.wallpaper) {
+        companyWallpaper = parsed.appearance.wallpaper;
+      }
+      companyTabData = tabId === "chat" ? companyTabData : parsed;
     } catch {
-      companyTabData = {
-        tab: tabId,
-        companyUid: uid,
-        viewer: { canAct: false },
-        sections: [{ id: tabId, title: tabId, rows: [] }],
-      };
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
     } finally {
       companyTabLoading = false;
     }
@@ -3329,6 +3342,16 @@
                 }}
                 onaction={handleTeamAction}
               />
+            {:else if companyTab === "settings"}
+              <SettingsTab
+                data={companyTabData ?? {
+                  tab: "settings",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
             {:else}
               <div
                 class="company-tab-placeholder"
@@ -3385,6 +3408,9 @@
                     {onopenurl}
                   />
                 {/snippet}
+                {#snippet companyHeader()}
+                  <CompanyHero title={headerTitle} wallpaper={companyWallpaper} />
+                {/snippet}
                 <ChannelConversation
                   messages={timeline}
                   reactions={rowReactions}
@@ -3412,7 +3438,9 @@
                   loading={timelineHydrating && timeline.length === 0}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
-                    : undefined}
+                    : isCompanyChannel
+                      ? companyHeader
+                      : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}

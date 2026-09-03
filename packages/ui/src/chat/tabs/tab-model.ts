@@ -34,6 +34,7 @@ export interface CompanyTabModel {
   companyUid: string;
   viewer: { canAct: boolean; role?: string };
   sections: CompanyTabSectionModel[];
+  appearance?: { name?: string; wallpaper?: string };
 }
 
 export interface CompanyTabActionEvent extends LifecycleCardActionEvent {
@@ -50,7 +51,7 @@ export function needsInlineConfirm(
   actionId: string,
   values: Record<string, string>,
 ): boolean {
-  if (actionId === "remove") return true;
+  if (actionId === "remove" || actionId === "delete") return true;
   if (actionId !== "set_role") return false;
   const current = row.fields.find((field) => field.id === "role")?.value;
   const next = values.role ?? current;
@@ -85,6 +86,10 @@ export function parseCompanyTab(raw: unknown): CompanyTabModel | null {
     }
     sections.push({ id: sec.id, title: sec.title, rows });
   }
+  const appearanceRaw =
+    row.appearance && typeof row.appearance === "object" && !Array.isArray(row.appearance)
+      ? (row.appearance as Record<string, unknown>)
+      : null;
   return {
     tab: row.tab,
     companyUid: row.companyUid,
@@ -93,6 +98,16 @@ export function parseCompanyTab(raw: unknown): CompanyTabModel | null {
       role: typeof viewerRaw.role === "string" ? viewerRaw.role : undefined,
     },
     sections,
+    appearance: appearanceRaw
+      ? {
+          name:
+            typeof appearanceRaw.name === "string" ? appearanceRaw.name : undefined,
+          wallpaper:
+            typeof appearanceRaw.wallpaper === "string"
+              ? appearanceRaw.wallpaper
+              : undefined,
+        }
+      : undefined,
   };
 }
 
