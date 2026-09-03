@@ -48,6 +48,7 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
@@ -1074,6 +1075,7 @@
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="dm-bubble-body selectable-text msg-body"
+                      class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
                       onclick={(e) => {
                         if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);

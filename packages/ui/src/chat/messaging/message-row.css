@@ -28,3 +28,17 @@
 .msg-body p {
   margin: var(--msg-body-p-margin);
 }
+
+/* Jumbo emoji-only bubbles (Slack parity). A body that is nothing but a few
+ * emoji reads as a gesture, not prose, so it renders large. Size only — colour,
+ * spacing, and every other body rule are unchanged, and mixed text+emoji
+ * bodies never get this class (see isJumboEmojiBody). */
+.msg-body.msg-body-jumbo,
+.dm-bubble-body.msg-body-jumbo {
+  font-size: var(--msg-jumbo-emoji-size, 30px);
+  line-height: 1.2;
+}
+
+.msg-body.msg-body-jumbo p {
+  margin: 0;
+}
