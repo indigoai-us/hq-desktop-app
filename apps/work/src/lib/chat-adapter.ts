@@ -470,6 +470,26 @@ export function createConversationApi(
         replayed: raw.replayed === true,
       };
     },
+    getCompanyTab: adapter.messaging.getCompanyTab
+      ? async (companyUid, tab) =>
+          call(adapter.messaging.getCompanyTab!(companyUid, tab))
+      : undefined,
+    runCompanyTabAction: adapter.messaging.runCompanyTabAction
+      ? async (args) => {
+          const raw = await call<Record<string, unknown>>(
+            adapter.messaging.runCompanyTabAction!(args),
+          );
+          return {
+            cardId: typeof raw.cardId === "string" ? raw.cardId : args.cardId,
+            actionId:
+              typeof raw.actionId === "string" ? raw.actionId : args.actionId,
+            eventId: typeof raw.eventId === "string" ? raw.eventId : undefined,
+            state: typeof raw.state === "string" ? raw.state : "",
+            fields: raw.fields,
+            replayed: raw.replayed === true,
+          };
+        }
+      : undefined,
   };
 }
 

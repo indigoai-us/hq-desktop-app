@@ -276,6 +276,17 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         values: args.values,
         idempotencyKey: args.idempotencyKey ?? null,
       }),
+    getCompanyTab: (companyUid, tab) =>
+      this.call("get_company_tab", { companyUid, tab }),
+    runCompanyTabAction: (args) =>
+      this.call("run_company_tab_action", {
+        companyUid: args.companyUid,
+        tab: args.tab,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
+      }),
     fetchDmThread: ({ withPersonUid, limit, since }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,

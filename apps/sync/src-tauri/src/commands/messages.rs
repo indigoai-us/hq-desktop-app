@@ -874,6 +874,10 @@ pub struct CardActionResult {
     pub fields: serde_json::Value,
     #[serde(default)]
     pub replayed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigate_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_card_id: Option<String>,
 }
 
 fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardActionResult {
@@ -907,6 +911,14 @@ fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardAction
                 .get("replayed")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+        navigate_to: body
+            .get("navigateTo")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        focus_card_id: body
+            .get("focusCardId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -1030,6 +1042,81 @@ pub async fn run_card_action(
         }
     }
     Ok(out)
+}
+
+/// GET `/v1/companies/{uid}/tabs/{tab}` (US-015).
+#[tauri::command]
+pub async fn get_company_tab(
+    company_uid: String,
+    tab: String,
+) -> Result<serde_json::Value, String> {
+    let uid = company_uid.trim();
+    let tab_id = tab.trim();
+    if uid.is_empty() || tab_id.is_empty() {
+        return Err("companyUid and tab must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_COMPANY_TAB").await?;
+    let url = format!(
+        "{}/v1/companies/{}/tabs/{}",
+        base.trim_end_matches('/'),
+        esc_seg(uid),
+        esc_seg(tab_id)
+    );
+    get_json(&url, &token, "MESSAGES_COMPANY_TAB").await
+}
+
+/// POST `/v1/companies/{uid}/tabs/{tab}/actions` (US-015).
+#[tauri::command]
+pub async fn run_company_tab_action(
+    company_uid: String,
+    tab: String,
+    card_id: String,
+    action_id: String,
+    values: Option<HashMap<String, String>>,
+    idempotency_key: Option<String>,
+) -> Result<CardActionResult, String> {
+    let uid = company_uid.trim();
+    let tab_id = tab.trim();
+    let card = card_id.trim();
+    let action = action_id.trim();
+    if uid.is_empty() || tab_id.is_empty() || card.is_empty() || action.is_empty() {
+        return Err("companyUid, tab, cardId, and actionId must not be empty".to_string());
+    }
+    let key = idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (base, token) = auth_and_base("MESSAGES_COMPANY_TAB_ACTION").await?;
+    let url = format!(
+        "{}/v1/companies/{}/tabs/{}/actions",
+        base.trim_end_matches('/'),
+        esc_seg(uid),
+        esc_seg(tab_id)
+    );
+    let payload = serde_json::json!({
+        "cardId": card,
+        "actionId": action,
+        "values": values.unwrap_or_default(),
+        "idempotencyKey": key,
+    });
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+    let status = resp.status();
+    let body = resp
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if status.is_success() || status.as_u16() == 409 {
+        return Ok(card_action_from_body(&body, status.as_u16() == 409));
+    }
+    Err(card_action_error_message(status.as_u16(), &body))
 }
 
 /// Tauri command: list a channel's members. `GET

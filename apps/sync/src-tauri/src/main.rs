@@ -807,6 +807,8 @@ fn main() {
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,
             commands::messages::run_card_action,
+            commands::messages::get_company_tab,
+            commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,

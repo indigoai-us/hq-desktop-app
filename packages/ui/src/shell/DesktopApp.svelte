@@ -54,6 +54,14 @@
   } from "../chat/messaging/ReplyPanel.svelte";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
+  import CompanyTabs from "../chat/CompanyTabs.svelte";
+  import TeamTab from "../chat/tabs/TeamTab.svelte";
+  import {
+    parseCompanyTab,
+    type CompanyChannelTabId,
+    type CompanyTabActionEvent,
+    type CompanyTabModel,
+  } from "../chat/tabs/tab-model.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
@@ -516,6 +524,9 @@
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
+  let companyTab = $state<CompanyChannelTabId>("chat");
+  let companyTabData = $state<CompanyTabModel | null>(null);
+  let companyTabLoading = $state(false);
   let openReplyRootId = $state<string | null>(null);
   let attachTray = $state<{
     selectedId: string;
@@ -704,6 +715,12 @@
         selectedRow.kind === "channel" &&
         provisioning.state !== null),
   );
+  const isCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow?.channelScope ?? "channel") === "company" &&
+      !isSetupChannel(selectedRow.channelId) &&
+      !isAgentChannel,
+  );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
@@ -727,6 +744,8 @@
   $effect(() => {
     selectedRow?.id;
     agentSurface = "chat";
+    companyTab = "chat";
+    companyTabData = null;
   });
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
@@ -1489,6 +1508,30 @@
         replayed: raw?.replayed === true,
       };
     },
+    getCompanyTab: adapter.messaging.getCompanyTab
+      ? async (companyUid, tabId) =>
+          unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
+      : undefined,
+    runCompanyTabAction: adapter.messaging.runCompanyTabAction
+      ? async (args) => {
+          const raw = unwrapAdapter(
+            await adapter.messaging.runCompanyTabAction!(args),
+          ) as Record<string, unknown> | undefined;
+          return {
+            cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+            actionId:
+              typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+            eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+            state: typeof raw?.state === "string" ? raw.state : "",
+            fields: raw?.fields,
+            replayed: raw?.replayed === true,
+            navigateTo:
+              raw?.navigateTo === "chat" ? "chat" : undefined,
+            focusCardId:
+              typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+          };
+        }
+      : undefined,
   });
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
@@ -1507,6 +1550,70 @@
         reason: message,
       }),
     );
+  }
+
+  async function loadCompanyTabSurface(
+    tabId: CompanyChannelTabId,
+  ): Promise<void> {
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (!uid || tabId === "chat") {
+      companyTabData = null;
+      return;
+    }
+    const getTab = conversationApi.getCompanyTab;
+    if (!getTab) {
+      companyTabData = {
+        tab: tabId,
+        companyUid: uid,
+        viewer: { canAct: false },
+        sections: [{ id: tabId, title: tabId, rows: [] }],
+      };
+      return;
+    }
+    companyTabLoading = true;
+    try {
+      const raw = await getTab(uid, tabId);
+      companyTabData = parseCompanyTab(raw);
+    } catch {
+      companyTabData = {
+        tab: tabId,
+        companyUid: uid,
+        viewer: { canAct: false },
+        sections: [{ id: tabId, title: tabId, rows: [] }],
+      };
+    } finally {
+      companyTabLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!isCompanyChannel) return;
+    const tabId = companyTab;
+    void loadCompanyTabSurface(tabId);
+  });
+
+  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
+    const run = conversationApi.runCompanyTabAction;
+    if (!run) return;
+    const result = await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: (args) =>
+        run({
+          companyUid: event.companyUid,
+          tab: event.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      onFailure: () => {},
+    });
+    if (result?.navigateTo === "chat") {
+      companyTab = "chat";
+      return;
+    }
+    await loadCompanyTabSurface(companyTab);
   }
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
@@ -2988,6 +3095,11 @@
                     </button>
                   {/each}
                 </nav>
+              {:else if isCompanyChannel}
+                <CompanyTabs
+                  active={companyTab}
+                  onselect={(id) => (companyTab = id)}
+                />
               {:else if isProjectChannel}
                 <nav
                   class="project-tabs"
@@ -3195,6 +3307,31 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => (agentSurface = "chat")}
             />
+          {:else if isCompanyChannel && companyTab !== "chat"}
+            {#if companyTab === "team"}
+              <TeamTab
+                data={companyTabData ?? {
+                  tab: "team",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else}
+              <div
+                class="company-tab-placeholder"
+                data-testid={`company-tab-panel-${companyTab}`}
+              >
+                {#if companyTabLoading}
+                  Loading…
+                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
+                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
+                {:else}
+                  {companyTab[0]!.toUpperCase() + companyTab.slice(1)}
+                {/if}
+              </div>
+            {/if}
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -3731,6 +3868,15 @@
   .edit-profile-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
+  }
+
+  .company-tab-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .project-tabs {

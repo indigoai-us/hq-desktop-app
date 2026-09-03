@@ -41,6 +41,7 @@ export const LIFECYCLE_CARD_KINDS = [
   "create_agent",
   "status",
   "companies_summary",
+  "tab_row",
 ] as const;
 export type LifecycleCardKind = (typeof LIFECYCLE_CARD_KINDS)[number];
 
@@ -81,6 +82,7 @@ const DEFAULT_LIFECYCLE_TITLES: Record<LifecycleCardKind, string> = {
   create_agent: "Create an agent",
   status: "Status",
   companies_summary: "Your companies",
+  tab_row: "Row",
 };
 
 /** Wire shape for a channel file attachment (camelCase). */

@@ -533,6 +533,17 @@ export interface MessagingApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): AdapterPromise<Json>;
+  /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
+  getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
+  /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
+  runCompanyTabAction?(args: {
+    companyUid: string;
+    tab: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): AdapterPromise<Json>;
   sendChannelMessage(
     channelId: string,
     body: string,

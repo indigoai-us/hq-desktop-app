@@ -468,6 +468,17 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
+      getCompanyTab: (companyUid, tab) =>
+        call('get_company_tab', { companyUid, tab }),
+      runCompanyTabAction: (args) =>
+        call('run_company_tab_action', {
+          companyUid: args.companyUid,
+          tab: args.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
       fetchDmThread: ({ withPersonUid, limit, since }) => {
         if (since) {
           return hqProJson(

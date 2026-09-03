@@ -122,6 +122,7 @@ describe("parseSystemEvent — lifecycle_card", () => {
       "create_agent",
       "status",
       "companies_summary",
+      "tab_row",
     ] as const) {
       const parsed = parseLifecycleCard({
         ...envelope,

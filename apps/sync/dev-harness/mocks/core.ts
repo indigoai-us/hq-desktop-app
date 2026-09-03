@@ -1307,6 +1307,18 @@ This final paragraph verifies spacing after a thematic break.
     state: 'pending',
     replayed: false,
   }),
+  get_company_tab: () => ({
+    tab: 'team',
+    companyUid: 'cmp_indigo',
+    viewer: { canAct: true, role: 'owner' },
+    sections: [],
+  }),
+  run_company_tab_action: () => ({
+    cardId: 'team:invite',
+    actionId: 'invite',
+    state: 'done',
+    replayed: false,
+  }),
   take_pending_setup_target: () => null,
   list_company_members: () => ({
     members: [

@@ -99,5 +99,16 @@ export function createConversationApi(
     },
     runCardAction: async (args) =>
       asCardAction(unwrap(await adapter.messaging.runCardAction(args)), args),
+    getCompanyTab: adapter.messaging.getCompanyTab
+      ? async (companyUid, tab) =>
+          unwrap(await adapter.messaging.getCompanyTab!(companyUid, tab))
+      : undefined,
+    runCompanyTabAction: adapter.messaging.runCompanyTabAction
+      ? async (args) =>
+          asCardAction(
+            unwrap(await adapter.messaging.runCompanyTabAction!(args)),
+            args,
+          )
+      : undefined,
   };
 }

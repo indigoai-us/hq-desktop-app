@@ -68,6 +68,10 @@ export const WEB_PATHS = {
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   cardAction: (channelId: string, cardId: string) =>
     `/v1/notify/channels/${encodeURIComponent(channelId)}/cards/${encodeURIComponent(cardId)}/actions`,
+  companyTab: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}`,
+  companyTabAction: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}/actions`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
   replyThreads: "/v1/notify/threads",
   /** POST body `{ toPersonUid, body }` — hq-pro has no POST /v1/notify/dm/{uid}. */
@@ -560,6 +564,19 @@ export class WebPlatformAdapter implements PlatformAdapter {
           (typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
             : `card-${Date.now()}`),
+      }),
+    getCompanyTab: (companyUid, tab) =>
+      this.get(WEB_PATHS.companyTab(companyUid, tab)),
+    runCompanyTabAction: (args) =>
+      this.post(WEB_PATHS.companyTabAction(args.companyUid, args.tab), {
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `tab-${Date.now()}`),
       }),
     fetchDmThread: ({ withPersonUid, limit, since }) => {
       const params = new URLSearchParams({ withPersonUid });
