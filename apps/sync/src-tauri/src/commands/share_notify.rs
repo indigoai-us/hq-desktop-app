@@ -327,7 +327,29 @@ async fn do_poll(app: &AppHandle) {
                             // the UN delegate); the richer per-action surface
                             // remains available in the in-app custom banner,
                             // which is the default for everyone.
-                            for evt in &fresh {
+                            // Native-banner gate (Settings → Notifications):
+                            // master switch, the per-event Shares toggle, and
+                            // the "only when unfocused" rule, read fresh from
+                            // menubar.json so a toggle takes effect on the next
+                            // share without a restart. When suppressed we skip
+                            // only the OS banner; the tray badge + `share:new-
+                            // events` emit after this branch still run.
+                            let app_focused = crate::commands::notifications::app_is_focused(app);
+                            let native_allowed =
+                                hq_desktop_core::native_notify::should_native_notify(
+                                    "share",
+                                    app_focused,
+                                );
+                            if !native_allowed {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "SHARE_NOTIFY_NATIVE_SUPPRESSED {} event(s) (settings gate, focused={app_focused})",
+                                        fresh.len()
+                                    ),
+                                );
+                            }
+                            for evt in fresh.iter().filter(|_| native_allowed) {
                                 let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                                 let title = notification_title(&evt.issuer_display_name);
 

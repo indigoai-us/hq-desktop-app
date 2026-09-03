@@ -1,4 +1,14 @@
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+
+/// True when any HQ window currently has OS keyboard focus. Used by the native
+/// notification gate's "only when the app is not focused" rule so an OS banner
+/// is suppressed while the user is already looking at HQ. Cheap best-effort
+/// read — a window whose focus state can't be queried counts as unfocused.
+pub fn app_is_focused(app: &AppHandle) -> bool {
+    app.webview_windows()
+        .values()
+        .any(|w| w.is_focused().unwrap_or(false))
+}
 
 /// Read the current OS notification authorization without prompting.
 /// Returns `"granted" | "denied" | "prompt" | "unknown"`.

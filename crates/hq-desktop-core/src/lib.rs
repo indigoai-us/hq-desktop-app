@@ -38,6 +38,7 @@ pub mod meeting_ledger;
 pub mod meetings;
 pub mod message_search;
 pub mod messages;
+pub mod native_notify;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
