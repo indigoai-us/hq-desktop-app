@@ -4865,6 +4865,18 @@ const DEP_DEFS: &[DepDef] = &[
     },
 ];
 
+/// Public, UI-agnostic view of the dependency registry — `(id, binary, optional)`.
+///
+/// Used by the headless install mode (`commands::headless_install`) so an
+/// unattended VM run can probe every registry entry after `install_deps`
+/// without the private `DepDef` type leaking out of this module.
+pub fn dependency_registry() -> Vec<(&'static str, &'static str, bool)> {
+    dependency_defs()
+        .iter()
+        .map(|d| (d.id, d.binary, d.optional))
+        .collect()
+}
+
 fn dependency_defs() -> &'static [DepDef] {
     DEP_DEFS
 }
