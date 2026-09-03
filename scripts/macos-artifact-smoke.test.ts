@@ -12,6 +12,7 @@ import {
   SMOKE_TOKEN_SECRET,
   evaluateSmokeResult,
   isSmokeTempDir,
+  launchAndWait,
   parseBootLog,
   readBundleVersion,
   removeSmokeHome,
@@ -19,6 +20,7 @@ import {
   runArtifactSmoke,
   runCli,
   smokeError,
+  stopChild,
   tagLatestJsonUrl,
   verifyPublishedLatestJson,
   writeSmokeHome,
@@ -348,6 +350,114 @@ describe("launch smoke", () => {
         warn: () => {},
       }),
     ).rejects.toThrow(/shell_ready did not fire/);
+  });
+});
+
+// Far above /proc/sys/kernel/pid_max, so a `process.kill(-pid, ...)` that
+// escapes an injected killGroup can only ever raise ESRCH.
+const UNREACHABLE_PID = 2_147_483_646;
+
+type FakeChild = EventEmitter & {
+  pid: number;
+  exitCode: number | null;
+  signalCode: string | null;
+  kill: (signal?: string) => boolean;
+  stdout?: EventEmitter;
+  stderr?: EventEmitter;
+};
+
+function fakeChild(pid = UNREACHABLE_PID): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => true;
+  return child;
+}
+
+describe("stopChild reaps the whole process tree", () => {
+  it("still SIGKILLs the group when the leader exits on SIGTERM", async () => {
+    // The leader exiting is not proof the tree is reaped: the npx/_cacache
+    // writers that broke four releases outlive it and keep writing into the
+    // sandbox HOME while teardown walks it.
+    const child = fakeChild();
+    const groupSignals: Array<[number, string]> = [];
+
+    const stopped = await stopChild(child, {
+      waitMs: 5,
+      sleep: async () => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      },
+      killGroup: (pid: number, signal: string) => {
+        groupSignals.push([pid, signal]);
+      },
+    });
+
+    expect(stopped).toEqual({ exited: true, escalated: false });
+    expect(groupSignals).toEqual([
+      [UNREACHABLE_PID, "SIGTERM"],
+      [UNREACHABLE_PID, "SIGKILL"],
+    ]);
+  });
+
+  it("observes an exit that races the subscribe instead of waiting it out", async () => {
+    // Checking the exit state before subscribing leaves a TOCTOU gap: the
+    // event fires in between, reaches no listener, and never arrives again.
+    const child = fakeChild();
+    let observations = 0;
+    Object.defineProperty(child, "exitCode", {
+      get() {
+        observations += 1;
+        if (observations === 1) {
+          // The process exits in the gap right after this observation.
+          child.emit("exit", 0, null);
+          return null;
+        }
+        return 0;
+      },
+    });
+
+    let sleeps = 0;
+    const stopped = await stopChild(child, {
+      waitMs: 10,
+      sleep: async () => {
+        sleeps += 1;
+      },
+      killGroup: () => {},
+    });
+
+    expect(stopped).toEqual({ exited: true, escalated: false });
+    expect(sleeps).toBe(1);
+  });
+
+  it("warns out loud when the tree never confirms exit after escalation", async () => {
+    const app = await fakeApp("0.10.179");
+    const child = fakeChild();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const warnings: string[] = [];
+
+    const result = await launchAndWait({
+      appPath: app,
+      home: join(tmpdir(), "hq-release-smoke-warn"),
+      logPath: join(tmpdir(), "hq-release-smoke-warn", "hq-sync.log"),
+      timeoutMs: 1_000,
+      spawnImpl: (() => child) as unknown as typeof import("node:child_process").spawn,
+      readLog: async () => "",
+      sleep: async () => {
+        child.stderr?.emit("data", Buffer.from("[boot] shell_ready from UI\n"));
+      },
+      killGroup: () => {},
+      warn: (message: string) => warnings.push(String(message)),
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(
+      new RegExp(`^::warning::macos-artifact-smoke: smoke app \\(pid ${UNREACHABLE_PID}\\)`),
+    );
+    expect(warnings[0]).toMatch(/did not confirm exit after SIGKILL/);
   });
 });
 
