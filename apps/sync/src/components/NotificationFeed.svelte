@@ -6,6 +6,7 @@
     buildNotificationGroups,
     type DayGroup,
     type Item,
+    type Row,
   } from '../lib/notificationGroups';
   import {
     loadNotificationTimeline,
@@ -34,6 +35,10 @@
     /** Hide day-group headers (the popover's flat NOTIFICATIONS list). The
      *  desktop page keeps them for the day-grouped timeline. */
     showDayLabels?: boolean;
+    /** Group rows into calm "Conversations" / "Activity" sections (the tray
+     *  popover redesign, mirroring the desktop Messages panel) instead of the
+     *  flat day-ordered list. Takes precedence over day labels when set. */
+    sectioned?: boolean;
     /** Suppress the "No notifications yet" empty state. The popover sets this
      *  when it is rendering its own system-notice rows above the feed, so an
      *  empty data feed doesn't read as "nothing here" while a sync-paused /
@@ -51,6 +56,7 @@
     onunreadchange,
     onitemschange,
     showDayLabels = true,
+    sectioned = false,
     hideEmptyState = false,
     density = 'compact',
     includeUpdates = true,
@@ -175,6 +181,18 @@
   });
   const renderedRowCount = $derived(
     groups.reduce((total, group) => total + group.rows.length, 0),
+  );
+  /** Section partitioning for the tray popover redesign. DMs (single + repeated
+   *  clusters) read as Conversations; shares, new-file rolls, and updates read
+   *  as Activity — the same split the desktop Messages panel uses. */
+  function rowIsConversation(row: Row): boolean {
+    if (row.type === 'single') return row.item.kind === 'dm';
+    return row.clusterKind === 'repeated-message';
+  }
+  const pagedRows = $derived(groups.flatMap((group) => group.rows));
+  const conversationRows = $derived(pagedRows.filter(rowIsConversation));
+  const activityRows = $derived(
+    pagedRows.filter((row) => !rowIsConversation(row)),
   );
   const remainingCount = $derived(
     Math.max(0, totalVisibleRows - renderedRowCount),
@@ -391,6 +409,37 @@
         <p>No notifications yet</p>
       </div>
     {/if}
+  {:else if sectioned}
+    {#if conversationRows.length > 0}
+      <section class="notif-section" aria-labelledby="notif-conversations-label">
+        <div class="notif-section-label" id="notif-conversations-label">Conversations</div>
+        <div class="notif-section-rows">
+          {#each conversationRows as row (row.type === 'cluster' ? row.key : row.item.id)}
+            {@render notifRow(row)}
+          {/each}
+        </div>
+      </section>
+    {/if}
+    {#if activityRows.length > 0}
+      <section class="notif-section" aria-labelledby="notif-activity-label">
+        <div class="notif-section-label" id="notif-activity-label">Activity</div>
+        <div class="notif-section-rows">
+          {#each activityRows as row (row.type === 'cluster' ? row.key : row.item.id)}
+            {@render notifRow(row)}
+          {/each}
+        </div>
+      </section>
+    {/if}
+    {#if remainingCount > 0}
+      <button
+        class="notif-show-more"
+        type="button"
+        data-testid="notification-show-more"
+        onclick={showMore}
+      >
+        Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more
+      </button>
+    {/if}
   {:else}
     {#each groups as group (group.key)}
       <div class="notif-day">
@@ -399,6 +448,23 @@
         {/if}
         <div class="notif-day-rows">
           {#each group.rows as row (row.type === 'cluster' ? row.key : row.item.id)}
+            {@render notifRow(row)}
+          {/each}
+        </div>
+      </div>
+    {/each}
+    {#if remainingCount > 0}
+      <button
+        class="notif-show-more"
+        type="button"
+        data-testid="notification-show-more"
+        onclick={showMore}
+      >
+        Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more
+      </button>
+    {/if}
+  {/if}
+  {#snippet notifRow(row: Row)}
             {#if row.type === 'single'}
               {@const it = row.item}
               {#if it.kind === 'dm' && it.dm}
@@ -493,21 +559,7 @@
                 onopen={latest?.dm ? () => openDm(latest) : undefined}
               />
             {/if}
-          {/each}
-        </div>
-      </div>
-    {/each}
-    {#if remainingCount > 0}
-      <button
-        class="notif-show-more"
-        type="button"
-        data-testid="notification-show-more"
-        onclick={showMore}
-      >
-        Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more
-      </button>
-    {/if}
-  {/if}
+  {/snippet}
 </div>
 
 <style>
@@ -642,6 +694,30 @@
     text-align: center;
     max-width: 28ch;
     line-height: 1.4;
+  }
+
+  /* Sectioned popover redesign — calm uppercase section labels + hairline
+     dividers matching the desktop Messages panel (.hl-section-label). */
+  .notif-section {
+    padding: 0;
+  }
+  .notif-section + .notif-section {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 0.5px solid var(--popover-divider, var(--popover-border));
+  }
+  .notif-section-label {
+    padding: 6px 2px 3px;
+    color: var(--popover-text-muted);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .notif-section-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
 
   .notif-day {
