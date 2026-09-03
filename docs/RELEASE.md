@@ -334,20 +334,49 @@ member with conversations. The macOS release job now launches the signed
 run. The secret is **fail-closed**: if it is missing, the release job fails
 and nothing is published. There is no `continue-on-error`.
 
-Provision it like this:
+The dedicated identity (provisioned 2026-09-03, no browser):
 
-1. Create (or reuse) a Cognito user in the HQ prod pool who is **not** an
-   Indigo member. The account must have an empty conversation directory —
-   only the synthetic `#setup` channel. A personal-scope-only user also
-   works. Do **not** use an `@getindigo.ai` employee account.
-2. Sign in to HQ once on a throwaway machine / profile so
-   `~/.hq/cognito-tokens.json` is written.
-3. Copy the `refreshToken` field (never commit it, never paste it into a
-   ticket). Store it as the repository Actions secret
-   `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`.
-4. Confirm the user still has an empty inbox before each release train;
-   if it accumulates conversations, the smoke no longer represents the
-   v0.10.178 failure mode.
+| Field | Value |
+| --- | --- |
+| Email | `release-smoke+non-indigo@hqforwork.com` |
+| Cognito pool | `vault-users-hq-prod` (us-east-1, account `804849608251`) |
+| App client | `7acei2c8v870enheptb1j5foln` (desktop `COGNITO_CLIENT_ID`) |
+| Auth flow | `USER_PASSWORD_AUTH` via `initiate-auth`. `ADMIN_USER_PASSWORD_AUTH` is **not** enabled on this client — do not flip it on as a drive-by client update. |
+| API | `https://hqapi.hq.computer` |
+| Company | **Release Smoke Co** (`release-smoke-co`, `cmp_01M1JD586GZ76W7JQHNPB124EQ`) — owner, not Indigo |
+| Person | `prs_01M1JD567NMK52BB6HRKEE40HX` |
+| Inbox | server directory is only the built-in virtual `#setup` channel |
+| GitHub secret | `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO` on `indigoai-us/hq-desktop-app` |
+| Vault (Indigo) | `RELEASE_SMOKE_NON_INDIGO_EMAIL`, `RELEASE_SMOKE_NON_INDIGO_PASSWORD` |
+
+Refresh tokens from this client last **30 days**. Re-mint before expiry, or as soon as the macOS release job fails closed on a Cognito `NotAuthorizedException`. Do **not** chat in other channels on this account; extra conversations would stop the smoke from representing the v0.10.178 empty-inbox failure.
+
+Re-mint (never prints the token; pipes Cognito stdout into `gh secret set`):
+
+```bash
+hq secrets exec --company indigo --only \
+  AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID,AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY,AWS_INDIGO_ALT_AWS_DEFAULT_REGION,RELEASE_SMOKE_NON_INDIGO_EMAIL,RELEASE_SMOKE_NON_INDIGO_PASSWORD,INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN \
+  -- sh -c '
+    set -euo pipefail
+    export AWS_ACCESS_KEY_ID="$AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID"
+    export AWS_SECRET_ACCESS_KEY="$AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY"
+    unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE AWS_PAGER
+    export AWS_DEFAULT_REGION="${AWS_INDIGO_ALT_AWS_DEFAULT_REGION:-us-east-1}"
+    export AWS_REGION="$AWS_DEFAULT_REGION"
+    export GH_TOKEN="$INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN"
+    aws cognito-idp initiate-auth \
+      --region "$AWS_REGION" \
+      --client-id 7acei2c8v870enheptb1j5foln \
+      --auth-flow USER_PASSWORD_AUTH \
+      --auth-parameters "USERNAME=${RELEASE_SMOKE_NON_INDIGO_EMAIL},PASSWORD=${RELEASE_SMOKE_NON_INDIGO_PASSWORD}" \
+      --query AuthenticationResult.RefreshToken \
+      --output text \
+    | gh secret set HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO \
+        -R indigoai-us/hq-desktop-app --app actions
+  '
+```
+
+If the password itself needs rotating, `admin-set-user-password --permanent` against `vault-users-hq-prod`, then `hq secrets set RELEASE_SMOKE_NON_INDIGO_PASSWORD --company indigo --from-stdin`, then re-mint. Confirm `GET https://hqapi.hq.computer/v1/notify/channels` still returns only `setup` before the next release train.
 
 The smoke script is `scripts/macos-artifact-smoke.mjs`. It writes an isolated
 `HOME` with that refresh token, launches `HQ.app` with
