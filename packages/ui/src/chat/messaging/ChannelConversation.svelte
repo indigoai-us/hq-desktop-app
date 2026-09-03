@@ -20,7 +20,8 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -116,6 +117,8 @@
     ) => void;
     /** Releases host-created object URLs when an attachment consumer closes. */
     onreleaseurl?: (url: string) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
     /**
@@ -190,6 +193,7 @@
     mentionCandidates = [],
     onreply,
     onopenattachment,
+    onopenartifact,
     onreleaseurl,
     vaultCompanyUid = null,
     replyPreviewByRoot = {},
@@ -1101,17 +1105,19 @@
                     <RichMessageContent content={rich.rich} />
                   {/if}
                   {#if msg.details?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="details"
                       text={msg.details}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   {#if msg.prompt?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="prompt"
                       text={msg.prompt}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   <MessageAttachments

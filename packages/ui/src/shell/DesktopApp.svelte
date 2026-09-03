@@ -39,6 +39,8 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
+  import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import NotificationsView from "../inbox/NotificationsView.svelte";
@@ -538,6 +540,9 @@
   let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
   let openReplyRootId = $state<string | null>(null);
+  /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
+   *  closing it falls back to whatever pane was open underneath. */
+  let openArtifactView = $state<ChatArtifact | null>(null);
   let attachTray = $state<{
     selectedId: string;
     items: FileAttachmentModel[];
@@ -1079,6 +1084,7 @@
   function openMemberProfile(row: StatusPersonRow): void {
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
+    openArtifactView = null;
     if (isAgentUid(row.personUid)) {
       openProfileMember = null;
       openAgentMember = row;
@@ -1503,8 +1509,20 @@
     if (id) {
       openProfileMember = null;
       openAgentMember = null;
+      openArtifactView = null;
       openReplyRootId = id;
     }
+  }
+
+  /** Artifact mode for the side pane. The thread underneath is left intact so
+   *  closing the artifact returns to it. */
+  function openArtifact(artifact: ChatArtifact): void {
+    openArtifactView = artifact;
+    if (tab !== "chat") tab = "chat";
+  }
+
+  function closeArtifact(): void {
+    openArtifactView = null;
   }
 
   function closeReply(): void {
@@ -1602,7 +1620,10 @@
   );
 
   $effect(() => {
-    if (activeTab !== "chat") openReplyRootId = null;
+    if (activeTab !== "chat") {
+      openReplyRootId = null;
+      openArtifactView = null;
+    }
   });
 
   $effect(() => {
@@ -1613,6 +1634,7 @@
       if (rowId !== lastReplyRowId) {
         lastReplyRowId = rowId;
         openReplyRootId = null;
+        openArtifactView = null;
       }
       if (!rowId || !pending) return;
       if (boundTo && boundTo !== rowId) return;
@@ -3168,6 +3190,7 @@
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
+                  onopenartifact={openArtifact}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                   attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
@@ -3184,7 +3207,20 @@
                   draftStorage={tenantStorage}
                 />
               {/key}
-              {#if openAgentMember}
+              {#if openArtifactView}
+                <div
+                  class="reply-column"
+                  class:overlay={narrowViewport}
+                  data-testid="artifact-column"
+                  data-pane-mode="artifact"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <ArtifactPanel
+                    artifact={openArtifactView}
+                    onclose={closeArtifact}
+                  />
+                </div>
+              {:else if openAgentMember}
                 <div
                   class="reply-column profile-column"
                   class:overlay={narrowViewport}
@@ -3252,6 +3288,7 @@
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
+                    onopenartifact={openArtifact}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                     attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
