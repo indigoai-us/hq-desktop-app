@@ -235,6 +235,7 @@ describe("browser mesh target gate", () => {
       stop: vi.fn(),
       presenceStore: {} as never,
       presenceSnapshot: () => new Map(),
+      liveReadStore: {} as never,
     };
     const start = vi.fn(() => mesh);
     const opts = { wakes, fetchImpl: vi.fn() as unknown as typeof fetch };

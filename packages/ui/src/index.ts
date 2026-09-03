@@ -76,6 +76,12 @@ export {
   presenceSnapshot,
   presenceStatus,
 } from "./chat/presence-store.svelte.js";
+export {
+  bindLiveReadStore,
+  liveInputsForCompanyProject,
+  liveReadFor,
+  liveReadSnapshot,
+} from "./chat/live-read-store.svelte.js";
 
 // Work-mesh Board + project/thread views (US-008, ported from desktop-alt)
 export { default as BoardView } from "./board/BoardView.svelte";

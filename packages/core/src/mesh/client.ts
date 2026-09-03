@@ -56,6 +56,10 @@ import {
   type ReconcileResult,
   type WakeRoute,
 } from "./reconcile.js";
+import {
+  LiveReadStore,
+  type LiveReadResponse,
+} from "../work-mesh/live-store.js";
 
 export type ConnectionState =
   | "idle"
@@ -84,6 +88,8 @@ export interface MeshClientEvents {
    * Never accompanies a WakeReconciler fetch.
    */
   presence: (change: PresenceChange) => void;
+  /** Full live-read response replaced for a company (US-015). */
+  live: (companyUid: string, response: LiveReadResponse) => void;
   /**
    * Socket is live again (or the window is visible after a gap). Hosts run
    * cursor catch-up — directory delta, inbox `since`, open-timeline `since`.
@@ -98,11 +104,13 @@ export interface MeshClientEvents {
 
 /**
  * Fetch GET /v1/work-mesh/live for one company. Injected so tests stay offline.
- * Must return the participants array (presence fields) used to rebuild the store.
+ * Returns presence participants plus the raw body so the live-read store can
+ * keep session projections for popovers / Board (US-015).
  */
-export type LiveReadFetcher = (
-  companyUid: string,
-) => Promise<{ participants: LiveParticipantPresence[] }>;
+export type LiveReadFetcher = (companyUid: string) => Promise<{
+  participants: LiveParticipantPresence[];
+  raw?: unknown;
+}>;
 
 /** Structural view of the mqtt.js client the MeshClient needs. */
 export interface MeshMqttClientLike {
@@ -136,6 +144,8 @@ export interface MeshClientOptions {
   liveFetcher?: LiveReadFetcher;
   /** Optional shared presence store (tests / host wiring). */
   presenceStore?: PresenceStore;
+  /** Optional shared live-read store (tests / host wiring). */
+  liveReadStore?: LiveReadStore;
   mqttConnect?: MqttConnectFn;
   timers?: TimerHost;
   sigv4Crypto?: SigV4Crypto;
@@ -223,9 +233,9 @@ export class LiveReadCoalescer {
 
   constructor(
     private readonly fetchLive: LiveReadFetcher,
-    private readonly onParticipants: (
+    private readonly onLive: (
       companyUid: string,
-      participants: LiveParticipantPresence[],
+      result: { participants: LiveParticipantPresence[]; raw?: unknown },
     ) => void,
     private readonly onError: (companyUid: string, err: unknown) => void = () => {},
   ) {}
@@ -253,8 +263,8 @@ export class LiveReadCoalescer {
         const companyUid = uid.trim();
         if (!companyUid) return;
         try {
-          const { participants } = await this.fetchLive(companyUid);
-          this.onParticipants(companyUid, participants);
+          const result = await this.fetchLive(companyUid);
+          this.onLive(companyUid, result);
         } catch (err) {
           this.onError(companyUid, err);
         }
@@ -269,8 +279,8 @@ export class LiveReadCoalescer {
     for (;;) {
       entry.pending = false;
       try {
-        const { participants } = await this.fetchLive(companyUid);
-        this.onParticipants(companyUid, participants);
+        const result = await this.fetchLive(companyUid);
+        this.onLive(companyUid, result);
       } catch (err) {
         this.onError(companyUid, err);
       }
@@ -317,7 +327,10 @@ export function createLiveReadFetcherFromReconcile(
       },
       undefined,
     );
-    return { participants: participantsFromLiveState(state) };
+    return {
+      participants: participantsFromLiveState(state),
+      raw: state,
+    };
   };
 }
 
@@ -361,6 +374,7 @@ export class MeshClient {
     wake: new Set(),
     reconciled: new Set(),
     presence: new Set(),
+    live: new Set(),
     catchup: new Set(),
     droppedCompanies: new Set(),
     connectionState: new Set(),
@@ -370,6 +384,7 @@ export class MeshClient {
   private readonly reconciler: WakeReconciler;
   private readonly renewal: CredentialRenewalManager;
   private readonly presenceStore: PresenceStore;
+  private readonly liveReadStore: LiveReadStore;
   private readonly liveCoalescer: LiveReadCoalescer;
   private readonly liveFetcher: LiveReadFetcher;
   private readonly mqttConnect: MqttConnectFn;
@@ -409,16 +424,24 @@ export class MeshClient {
     this.maxBackoffMs = options.maxBackoffMs ?? 60_000;
 
     this.presenceStore = options.presenceStore ?? new PresenceStore();
+    this.liveReadStore = options.liveReadStore ?? new LiveReadStore();
     this.liveFetcher =
       options.liveFetcher ?? createLiveReadFetcherFromReconcile(options.fetcher);
     this.liveCoalescer = new LiveReadCoalescer(
       this.liveFetcher,
-      (companyUid, participants) => {
+      (companyUid, result) => {
         const changes = this.presenceStore.replaceCompany(
           companyUid,
-          participants,
+          result.participants,
         );
         for (const change of changes) this.emit("presence", change);
+        if (result.raw !== undefined) {
+          const parsed = this.liveReadStore.replaceFromRaw(
+            companyUid,
+            result.raw,
+          );
+          if (parsed) this.emit("live", companyUid, parsed);
+        }
       },
       (_companyUid, err) => this.emit("error", err),
     );
@@ -439,6 +462,11 @@ export class MeshClient {
   /** In-memory presence store (MQTT exception + live-read rebuild). */
   getPresenceStore(): PresenceStore {
     return this.presenceStore;
+  }
+
+  /** In-memory live-read cache (sessions + participants per company). */
+  getLiveReadStore(): LiveReadStore {
+    return this.liveReadStore;
   }
 
   on<K extends keyof MeshClientEvents>(

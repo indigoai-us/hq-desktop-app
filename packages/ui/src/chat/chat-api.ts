@@ -400,6 +400,11 @@ export interface ChatWakeEvents {
     status: "online" | "offline";
   };
   /**
+   * Company-wide live read refreshed (`{kind:"live"}` wake). Ids only —
+   * hosts re-read the LiveReadStore; never invent presence from timestamps.
+   */
+  "live:wake": { companyUid: string };
+  /**
    * A reply landed (hq-pro `type:"thread"`). Ids only — never a body.
    * Not named `thread:` (that collides with work-mesh).
    */

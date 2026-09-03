@@ -25,6 +25,7 @@
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
@@ -104,10 +105,12 @@
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
   import type { SyncState } from "../common/sync-model.js";
-  import type {
-    ChannelStatusModel,
-    StatusPersonRow,
+  import {
+    buildChannelStatusModel,
+    type ChannelStatusModel,
+    type StatusPersonRow,
   } from "../chat/channel-status-model.js";
+  import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
   import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
@@ -1088,6 +1091,8 @@
       description: null,
       role: "agent",
       statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow?.companyUid ?? "", uid) === "online",
     });
   }
 
@@ -1176,6 +1181,8 @@
       description: null,
       role: "agent",
       statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow.companyUid ?? "", uid) === "online",
     });
   }
 
@@ -1200,6 +1207,8 @@
         match?.description?.trim() || (mine ? selfDescription : null),
       role: match?.role?.trim() || null,
       statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow?.companyUid ?? "", uid) === "online",
     });
   }
 
@@ -1378,10 +1387,49 @@
     };
   });
 
+  /** Sidebar presence dot: only when a project channel has a known online actor. */
+  function rowHasProjectPresence(row: ConversationRow): boolean {
+    if (row.kind !== "channel") return false;
+    const isProject =
+      (row.channelScope ?? "").trim() === "project" ||
+      Boolean((row.projectId ?? "").trim());
+    if (!isProject) return false;
+    const companyUid = (row.companyUid ?? "").trim();
+    if (!companyUid) return false;
+    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row);
+    const live = liveInputsForCompanyProject(companyUid, projectId);
+    // Prefer live-read actors on this project; fall back to channel roster.
+    const fromLive = live.liveSessions
+      .map((s) => s.actorUid)
+      .filter(Boolean);
+    if (fromLive.length > 0) {
+      return fromLive.some(
+        (uid) => presenceStatus(companyUid, uid) === "online",
+      );
+    }
+    const channelId = row.channelId?.trim() ?? "";
+    const roster = channelRosterById[channelId] ?? [];
+    const actorUids =
+      roster.length > 0
+        ? roster.map((m) => m.personUid)
+        : (row.members ?? []).map((m) => m.personUid);
+    if (actorUids.length === 0) {
+      // Company-wide online on any presence entry for transparent companies is
+      // not enough — without project actors we stay dark (fail closed).
+      return false;
+    }
+    return actorUids.some(
+      (uid) => presenceStatus(companyUid, uid) === "online",
+    );
+  }
+
   const channelStatus = $derived.by((): ChannelStatusModel | null => {
     if (!selectedRow) return null;
     const channelId = selectedRow.channelId?.trim() ?? "";
     const roster = channelRosterById[channelId] ?? [];
+    const companyUid = (selectedRow.companyUid ?? "").trim();
+    const projectId = (selectedRow.projectId ?? "").trim() || projectIdForRow(selectedRow);
+    const live = liveInputsForCompanyProject(companyUid, projectId);
     const base =
       channelStatusByRow?.(selectedRow) ??
       liveTabs?.status ??
@@ -1389,14 +1437,84 @@
         ? rosterStatusForRow(
             selectedRow,
             roster,
-            selectedRow.companyUid
-              ? companyDisplayName(selectedRow.companyUid, companyNames)
+            companyUid
+              ? companyDisplayName(companyUid, companyNames)
               : null,
           )
         : null);
-    if (!base) return null;
-    if (roster.length === 0) return base;
-    return applyChannelRoster(base, roster, identities);
+    // Prefer rebuilding from live read + presence when we have sessions.
+    const fromLive =
+      live.liveSessions.length > 0 || live.presence.length > 0
+        ? buildChannelStatusModel({
+            project: {
+              id: projectId || channelId || selectedRow.id,
+              title: selectedRow.title,
+              company: companyUid || undefined,
+              storiesTotal: base?.stories.total,
+              storiesComplete: base?.stories.complete,
+              description: base?.project.description ?? null,
+            },
+            prd: base
+              ? {
+                  branchName: base.project.branch,
+                  repoPath: base.project.repo,
+                  repos: base.project.repos,
+                  previewUrl: base.project.previewUrl ?? undefined,
+                }
+              : null,
+            members:
+              roster.length > 0
+                ? roster
+                : [
+                    ...((base?.members ?? []).map((m) => ({
+                      personUid: m.personUid,
+                      displayName: m.displayName,
+                      email: m.email ?? undefined,
+                      role: m.role ?? undefined,
+                      avatarUrl: m.avatarUrl ?? undefined,
+                      description: m.description ?? undefined,
+                    })) ?? []),
+                    ...((base?.agents ?? []).map((a) => ({
+                      personUid: a.personUid,
+                      displayName: a.displayName,
+                      email: a.email ?? undefined,
+                      role: a.role ?? undefined,
+                      avatarUrl: a.avatarUrl ?? undefined,
+                      description: a.description ?? undefined,
+                      isAgent: true,
+                    })) ?? []),
+                  ],
+            liveSessions: live.liveSessions,
+            presence: live.presence,
+            companyLabel: base?.companyLabel ?? null,
+          })
+        : null;
+    const merged = fromLive ?? base;
+    if (!merged) return null;
+    const withRoster =
+      roster.length === 0
+        ? merged
+        : applyChannelRoster(merged, roster, identities);
+    // Presence store is the only online source (US-015) — re-apply after roster
+    // rebuild so timestamps/sessions never invent connection state.
+    const withPresence = (uid: string): boolean =>
+      Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
+    return {
+      ...withRoster,
+      activeSessions:
+        fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
+      liveAgents: fromLive?.liveAgents?.length
+        ? fromLive.liveAgents
+        : withRoster.liveAgents,
+      members: withRoster.members.map((m) => ({
+        ...m,
+        online: withPresence(m.personUid),
+      })),
+      agents: withRoster.agents.map((a) => ({
+        ...a,
+        online: withPresence(a.personUid),
+      })),
+    };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
   const memberPillCount = $derived(
@@ -2752,6 +2870,7 @@
           onrows={(rows) => (railRows = rows)}
           {bootTimeoutMs}
           {onShellReady}
+          projectHasPresence={rowHasProjectPresence}
         />
         {/key}
       {/if}
@@ -2826,6 +2945,10 @@
                             avatarByUid,
                           )}
                           size="small"
+                          online={presenceStatus(
+                            selectedRow.companyUid ?? "",
+                            selectedRow.personUid ?? "",
+                          ) === "online"}
                         />
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
@@ -2844,6 +2967,10 @@
                           avatarByUid,
                         )}
                         size="small"
+                        online={presenceStatus(
+                          selectedRow.companyUid ?? "",
+                          selectedRow.personUid ?? "",
+                        ) === "online"}
                       />
                     </span>
                     <h2 data-testid="channel-name">{headerTitle}</h2>
@@ -3144,6 +3271,7 @@
                   onopenattachment={openAttachmentTray}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  companyUid={selectedRow.companyUid}
                   attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}

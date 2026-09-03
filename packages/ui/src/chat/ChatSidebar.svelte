@@ -191,6 +191,11 @@
      * Not called while loading, and not called on an error-only rail.
      */
     onShellReady?: () => void;
+    /**
+     * Host-owned presence for project channels (US-015). True when someone
+     * in that project is online via the presence store — never from timestamps.
+     */
+    projectHasPresence?: (row: ConversationRow) => boolean;
   }
 
   let {
@@ -218,6 +223,7 @@
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    projectHasPresence = () => false,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -2312,6 +2318,11 @@
   })}
   {@const hasBadge =
     (row.unreadCount != null && row.unreadCount > 0) || row.unreadDot}
+  {@const showProjectPresence =
+    row.kind === "channel" &&
+    ((row.channelScope ?? "").trim() === "project" ||
+      Boolean((row.projectId ?? "").trim())) &&
+    projectHasPresence(row)}
   <div role="listitem" class="chat-li">
     <button
       type="button"
@@ -2326,7 +2337,16 @@
       oncontextmenu={(e) => openContextMenu(row, e)}
     >
       {#if row.kind === "channel"}
-        <span class="chat-glyph" aria-hidden="true">#</span>
+        <span class="chat-glyph-wrap" aria-hidden="true">
+          <span class="chat-glyph">#</span>
+          {#if showProjectPresence}
+            <span
+              class="chat-presence-dot"
+              data-testid="chat-presence-dot"
+              aria-label="Someone online"
+            ></span>
+          {/if}
+        </span>
       {:else if row.kind === "group"}
         <span
           class="chat-avatar group"
@@ -2871,6 +2891,16 @@
     line-height: 0;
   }
 
+  .chat-glyph-wrap {
+    position: relative;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .chat-glyph {
     flex: 0 0 16px;
     width: 16px;
@@ -2878,6 +2908,17 @@
     font-size: 16px;
     font-weight: 400;
     text-align: center;
+  }
+
+  .chat-presence-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -1px;
+    width: 6px;
+    height: 6px;
+    border: 1.5px solid var(--v4-ground, var(--panel-bg, #151515));
+    border-radius: 50%;
+    background: var(--v4-ok, #42d77d);
   }
 
   .chat-avatar {

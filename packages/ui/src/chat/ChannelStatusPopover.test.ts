@@ -38,6 +38,7 @@ function model(
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
       {
         personUid: "prs_other",
@@ -47,6 +48,7 @@ function model(
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
     ],
     agents: [],
@@ -282,6 +284,7 @@ describe("ChannelStatusPopover — prototype agent card", () => {
               avatarUrl: null,
               description: null,
               statusIcon: "running",
+              online: false,
             },
           ],
         },
@@ -347,6 +350,7 @@ describe("ChannelStatusPopover — prototype agent card", () => {
               avatarUrl: null,
               description: null,
               statusIcon: "idle",
+              online: false,
             },
             {
               personUid: "prs_me",
@@ -356,6 +360,7 @@ describe("ChannelStatusPopover — prototype agent card", () => {
               avatarUrl: null,
               description: null,
               statusIcon: "idle",
+              online: false,
             },
           ],
         },
@@ -371,6 +376,112 @@ describe("ChannelStatusPopover — prototype agent card", () => {
   });
 });
 
+describe("ChannelStatusPopover — presence + live sessions (US-015)", () => {
+  it("renders mixed online/offline actors and active session cards", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: {
+          ...model(),
+          members: [
+            {
+              personUid: "prs_corey",
+              displayName: "Corey",
+              role: "owner",
+              email: null,
+              avatarUrl: null,
+              description: null,
+              statusIcon: "idle",
+              online: true,
+            },
+            {
+              personUid: "prs_stefan",
+              displayName: "Stefan",
+              role: "member",
+              email: null,
+              avatarUrl: null,
+              description: null,
+              statusIcon: "idle",
+              online: false,
+            },
+          ],
+          agents: [
+            {
+              personUid: "agt_ralph",
+              displayName: "Ralph",
+              role: "agent",
+              email: null,
+              avatarUrl: null,
+              description: null,
+              statusIcon: "running",
+              online: true,
+            },
+          ],
+          activeSessions: [
+            {
+              id: "sess_corey",
+              principal: "Corey",
+              principalKind: "human",
+              context: "US-015",
+              percent: null,
+              lastActivityLabel: "last activity just now",
+              blockedReason: null,
+              harness: "claude-code",
+              taskId: "US-015",
+              turnCount: 12,
+              online: true,
+            },
+            {
+              id: "sess_ralph",
+              principal: "Ralph",
+              principalKind: "agent",
+              context: "US-015",
+              percent: null,
+              lastActivityLabel: "last activity 1m ago",
+              blockedReason: null,
+              harness: "agent-box",
+              taskId: "US-015",
+              turnCount: 7,
+              online: true,
+            },
+          ],
+        },
+      },
+    });
+    await tick();
+
+    const sessions = host.querySelectorAll(
+      '[data-testid="status-active-session"]',
+    );
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]?.textContent).toContain("Corey");
+    expect(sessions[0]?.textContent).toContain("US-015");
+    expect(sessions[1]?.textContent).toContain("Ralph");
+    const dots = host.querySelectorAll('[data-testid="status-presence-dot"]');
+    // 2 online members/agents + 2 online sessions (offline Stefan has none)
+    expect(dots.length).toBeGreaterThanOrEqual(3);
+    expect(host.textContent).toContain("Stefan");
+  });
+
+  it("empty state shows no session rows and no presence dots", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: { model: model() },
+    });
+    await tick();
+    expect(
+      host.querySelectorAll('[data-testid="status-active-session"]'),
+    ).toHaveLength(0);
+    expect(
+      host.querySelectorAll('[data-testid="status-presence-dot"]'),
+    ).toHaveLength(0);
+  });
+});
+
 describe("ChannelStatusPopover — email, profile-open, and remove", () => {
   function ownerModel(): ChannelStatusModel {
     const m = model();
@@ -383,6 +494,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
       {
         personUid: "prs_other",
@@ -392,6 +504,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
     ];
     return m;
@@ -430,6 +543,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
               avatarUrl: null,
               description: null,
               statusIcon: "running",
+              online: false,
             },
           ],
         },
@@ -530,6 +644,7 @@ describe("ChannelStatusPopover — delete channel (owner-only trash)", () => {
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
       {
         personUid: "prs_other",
@@ -539,6 +654,7 @@ describe("ChannelStatusPopover — delete channel (owner-only trash)", () => {
         avatarUrl: null,
         description: null,
         statusIcon: "idle",
+        online: false,
       },
     ];
     return m;

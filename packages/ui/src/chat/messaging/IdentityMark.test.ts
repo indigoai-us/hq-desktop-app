@@ -151,4 +151,24 @@ describe("IdentityMark avatar", () => {
     expect(host.querySelector("img.avatar-img")).toBeNull();
     expect(host.querySelector(".monogram")?.textContent).toBe("AL");
   });
+
+  it("renders a presence span when online=true", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "person", label: "Ada", online: true },
+    });
+    expect(host.querySelector(".presence")).not.toBeNull();
+  });
+
+  it("omits the presence span when online is false", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "person", label: "Ada", online: false },
+    });
+    expect(host.querySelector(".presence")).toBeNull();
+  });
 });

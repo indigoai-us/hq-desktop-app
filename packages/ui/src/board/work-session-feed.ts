@@ -1,5 +1,5 @@
 /**
- * Work-session feed (US-008 AC3).
+ * Work-session feed (US-008 AC3 / US-015).
  *
  * Work-session records degrade to polling until wake support (US-009) lands
  * on the backend, then switch to wake-driven — feature-detected at runtime,
@@ -8,12 +8,17 @@
  * - `wakeSupported` (a capability probe the host may pass) true at start →
  *   never polls; refreshes only on `wake()`.
  * - Otherwise polls every `pollMs`. The FIRST observed work-session wake
- *   (a `work:*` reconcile, or a retained work-session topic replayed on
- *   subscribe) proves the backend publishes work-session wakes: the poll
- *   timer is stopped and the feed becomes wake-driven for its lifetime.
+ *   (a `work:*` reconcile, a retained work-session topic, or a live kind
+ *   wake) proves the backend publishes wakes: the poll timer is stopped and
+ *   the feed becomes wake-driven for its lifetime.
+ *
+ * Callers should invoke `wake()` for both work-session and live wakes.
+ * Use {@link shouldTreatAsWorkSessionWake} / {@link isLiveWakeKind} to decide.
  *
  * Platform-pure: timers injectable, refresh is a seam.
  */
+
+import { isWorkSessionTopic } from "./board-reconcile";
 
 export interface FeedTimerHost {
   setInterval(fn: () => void, ms: number): unknown;
@@ -34,9 +39,27 @@ export interface WorkSessionFeedOptions {
 export interface WorkSessionFeed {
   readonly mode: WorkSessionFeedMode;
   start(): void;
-  /** A work-session wake arrived — refresh now and go wake-driven. */
+  /** A work-session or live wake arrived — refresh now and go wake-driven. */
   wake(): void;
   stop(): void;
+}
+
+/** True for wake payload kinds that should drive the work-session feed. */
+export function isLiveWakeKind(kind: string): boolean {
+  const k = kind.trim().toLowerCase();
+  return k === "live" || k === "work-session";
+}
+
+/**
+ * True when a topic or kind should flip/refresh the work-session feed:
+ * exact `hq/{uid}/work-session/...` topics, or kind `"live"`.
+ */
+export function shouldTreatAsWorkSessionWake(topicOrKind: string): boolean {
+  const raw = topicOrKind.trim();
+  if (!raw) return false;
+  if (raw.toLowerCase() === "live") return true;
+  if (isLiveWakeKind(raw)) return true;
+  return isWorkSessionTopic(raw);
 }
 
 const realTimers: FeedTimerHost = {

@@ -12,6 +12,7 @@
  */
 
 import {
+  LiveReadStore,
   MeshClient,
   PresenceStore,
   createWebCredentialProvider,
@@ -19,6 +20,7 @@ import {
 } from "@hq/core";
 import type { PlatformAdapter } from "@hq/platform";
 import {
+  bindLiveReadStore,
   bindPresenceStore,
   createChatWakeBus,
   routeMeshReconcile,
@@ -62,13 +64,16 @@ export function startWebMesh(opts: {
   onNotifications?: () => void;
   fetchImpl?: typeof fetch;
   presenceStore?: PresenceStore;
+  liveReadStore?: LiveReadStore;
 }): {
   stop: () => void;
   presenceStore: PresenceStore;
   presenceSnapshot: () => PresenceSnapshot;
+  liveReadStore: LiveReadStore;
 } {
   const fetchImpl = opts.fetchImpl ?? hqProFetch;
   const presenceStore = opts.presenceStore ?? new PresenceStore();
+  const liveReadStore = opts.liveReadStore ?? new LiveReadStore();
   const client = new MeshClient({
     credentialProvider: createWebCredentialProvider({
       url: "/v1/realtime/credentials",
@@ -76,9 +81,11 @@ export function startWebMesh(opts: {
     }),
     fetcher: createHqReconcileFetcher(fetchImpl),
     presenceStore,
+    liveReadStore,
   });
   const unwirePresence = wirePresenceStoreToChatBus(presenceStore, opts.wakes);
   const unbindRunes = bindPresenceStore(presenceStore);
+  const unbindLive = bindLiveReadStore(liveReadStore);
   client.on("wake", (topic, payloadText) => {
     console.info("[hq-web-mesh]", {
       event: "wake",
@@ -94,6 +101,10 @@ export function startWebMesh(opts: {
       actorUid: change.actorUid,
       status: change.status,
     });
+  });
+  client.on("live", (companyUid) => {
+    console.info("[hq-web-mesh]", { event: "live", companyUid });
+    opts.wakes.emit("live:wake", { companyUid });
   });
   client.on("catchup", (reason) => {
     console.info("[hq-web-mesh]", { event: "catchup", reason });
@@ -118,10 +129,12 @@ export function startWebMesh(opts: {
     stop: () => {
       unwirePresence();
       unbindRunes();
+      unbindLive();
       client.stop();
     },
     presenceStore,
     presenceSnapshot: () => presenceStore.snapshot(),
+    liveReadStore,
   };
 }
 

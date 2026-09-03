@@ -8,12 +8,14 @@
  */
 
 import {
+  LiveReadStore,
   MeshClient,
   PresenceStore,
   createWebCredentialProvider,
   type PresenceSnapshot,
 } from '@hq/core';
 import {
+  bindLiveReadStore,
   bindPresenceStore,
   createChatWakeBus,
   wirePresenceStoreToChatBus,
@@ -27,6 +29,7 @@ export interface StartDesktopMeshPresenceOptions {
   /** Native hq-pro fetch (Tauri command). */
   fetchImpl: FetchLike;
   presenceStore?: PresenceStore;
+  liveReadStore?: LiveReadStore;
   /**
    * Credential vend path. Defaults to POST /v1/realtime/credentials via the
    * injected native fetch (contract 2 unchanged; presence filter is derived
@@ -39,6 +42,7 @@ export interface DesktopMeshPresenceHandle {
   stop: () => void;
   presenceStore: PresenceStore;
   presenceSnapshot: () => PresenceSnapshot;
+  liveReadStore: LiveReadStore;
   client: MeshClient;
 }
 
@@ -50,6 +54,7 @@ export function startDesktopMeshPresence(
   opts: StartDesktopMeshPresenceOptions,
 ): DesktopMeshPresenceHandle {
   const presenceStore = opts.presenceStore ?? new PresenceStore();
+  const liveReadStore = opts.liveReadStore ?? new LiveReadStore();
   const fetchImpl = opts.fetchImpl;
   const client = new MeshClient({
     credentialProvider: createWebCredentialProvider({
@@ -75,14 +80,19 @@ export function startDesktopMeshPresence(
       };
     },
     presenceStore,
+    liveReadStore,
   });
 
   const unwire = wirePresenceStoreToChatBus(presenceStore, opts.wakes);
   const unbind = bindPresenceStore(presenceStore);
+  const unbindLive = bindLiveReadStore(liveReadStore);
 
   client.on('presence', (change) => {
     // Bus already notified via wirePresenceStoreToChatBus; keep a log seam.
     void change;
+  });
+  client.on('live', (companyUid) => {
+    opts.wakes.emit('live:wake', { companyUid });
   });
 
   void client.start().catch(() => {
@@ -93,10 +103,12 @@ export function startDesktopMeshPresence(
     stop: () => {
       unwire();
       unbind();
+      unbindLive();
       client.stop();
     },
     presenceStore,
     presenceSnapshot: () => presenceStore.snapshot(),
+    liveReadStore,
     client,
   };
 }

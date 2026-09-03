@@ -323,6 +323,48 @@
     {/if}
   </section>
 
+  {#if model.activeSessions.length > 0}
+    <section aria-label="Active sessions">
+      <div class="p-sec">SESSIONS</div>
+      {#each model.activeSessions as s (s.id)}
+        <div
+          class="p-item static session-row"
+          data-testid="status-active-session"
+        >
+          <span
+            class="m-ava"
+            class:ai={s.principalKind === "agent"}
+            aria-hidden="true"
+          >
+            {initialOf(s.principal)}
+            {#if s.online}
+              <span
+                class="presence-dot"
+                data-testid="status-presence-dot"
+                aria-label="Online"
+              ></span>
+            {/if}
+          </span>
+          <span class="m-id">
+            <span class="m-name">{s.principal}</span>
+            {#if s.taskId || s.context || s.harness || s.turnCount != null}
+              <span class="m-email">
+                {[
+                  s.taskId ?? s.context,
+                  s.harness,
+                  s.turnCount != null ? `${s.turnCount} turns` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            {/if}
+            <span class="m-email">{s.lastActivityLabel}</span>
+          </span>
+        </div>
+      {/each}
+    </section>
+  {/if}
+
   <section aria-label="Members">
     <div class="p-sec">MEMBERS</div>
     {#each memberRows as m (m.personUid)}
@@ -334,9 +376,16 @@
           title={`Open ${m.displayName}'s profile`}
           onclick={() => onopenprofile?.(m)}
         >
-          <span class="m-ava" aria-hidden="true"
-            >{initialOf(m.displayName)}</span
-          >
+          <span class="m-ava" aria-hidden="true">
+            {initialOf(m.displayName)}
+            {#if m.online}
+              <span
+                class="presence-dot"
+                data-testid="status-presence-dot"
+                aria-label="Online"
+              ></span>
+            {/if}
+          </span>
           <span class="m-id">
             <span class="m-name">{m.displayName}</span>
             {#if m.email}
@@ -398,6 +447,13 @@
                     d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
                   ></path>
                 </svg>
+                {#if a.online}
+                  <span
+                    class="presence-dot"
+                    data-testid="status-presence-dot"
+                    aria-label="Online"
+                  ></span>
+                {/if}
               </span>
               <span class="m-id">
                 <span class="m-name">{a.displayName}</span>
@@ -417,6 +473,13 @@
                   d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
                 ></path>
               </svg>
+              {#if a.online}
+                <span
+                  class="presence-dot"
+                  data-testid="status-presence-dot"
+                  aria-label="Online"
+                ></span>
+              {/if}
             </span>
             <span class="m-name">{a.displayName}</span>
           {/if}
@@ -689,6 +752,7 @@
   }
 
   .m-ava {
+    position: relative;
     display: flex;
     flex: 0 0 auto;
     align-items: center;
@@ -700,6 +764,21 @@
     color: var(--t1);
     font-size: 9px;
     font-weight: 600;
+  }
+
+  .presence-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 6px;
+    height: 6px;
+    border: 1.5px solid var(--panel-bg, var(--v4-ground, #151515));
+    border-radius: 50%;
+    background: var(--v4-ok, #42d77d);
+  }
+
+  .session-row {
+    align-items: flex-start;
   }
 
   :global([data-force-theme="light"]) .m-ava {
