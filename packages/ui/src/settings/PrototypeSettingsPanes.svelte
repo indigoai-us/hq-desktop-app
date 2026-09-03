@@ -1,8 +1,9 @@
 <script lang="ts">
   import { type AdapterResult } from "./update-orchestration";
-  import { appRowStatusLabel } from "./update-presentation";
   import {
     appRowActions,
+    appRowIdleHint,
+    appRowStatusLabel,
   } from "./update-presentation";
   import {
     checkDesktopUpdates,
@@ -189,6 +190,7 @@
       installPhase: updateStore.installPhase,
     }),
   );
+  const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
   // that release_channel.rs `effective_channel` already resolves.
@@ -1366,6 +1368,11 @@
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.
+          </div>
+        {/if}
+        {#if appIdleHint}
+          <div class="sd" data-testid="settings-app-idle-hint">
+            {appIdleHint}
           </div>
         {/if}
       </div>

@@ -122,7 +122,12 @@ export {
   markDownloaded,
   markInstallStarted,
   reportInstallFailed,
+  reportIdleWait,
   applyAvailableUpdate,
+  applyRecommendBanner,
+  dismissRecommendBanner,
+  clearRecommendBanner,
+  installRecommendedUpdate,
 } from "./settings/update-store.svelte.js";
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).

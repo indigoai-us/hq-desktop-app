@@ -20,8 +20,13 @@ export {
   markDownloaded,
   markInstallStarted,
   reportInstallFailed,
+  reportIdleWait,
   setAutoUpdateEnabled,
   applyAvailableUpdate,
+  applyRecommendBanner,
+  dismissRecommendBanner,
+  clearRecommendBanner,
+  installRecommendedUpdate,
   orchestrationAdapterFrom,
 } from "./update-store.svelte.js";
 export * from "./appearance-seam";
