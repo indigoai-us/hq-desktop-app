@@ -2865,18 +2865,7 @@ async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &prefix,
-            "@anthropic-ai/claude-code",
-        ],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@anthropic-ai/claude-code", "claude").await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2904,6 +2893,53 @@ pub fn clear_unusable_npm_bin(prefix: &std::path::Path, bin: &str) -> bool {
         let _ = std::fs::remove_file(&path);
     }
     unusable
+}
+
+/// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
+/// first, then retrying with the public registry forced if that fails.
+///
+/// A `~/.npmrc` pointing at a corporate mirror that does not carry HQ's
+/// packages (or is unreachable off-VPN) made qmd/hq installs die with npm's
+/// generic "you are behind a proxy" text (Sentry HQ-DESKTOP-5Q; install
+/// matrix `corporate-npmrc` profile). Windows already forces the public
+/// registry for hq-cli; macOS now tries the user's registry, then falls back
+/// and says so, so the failure is attributed and usually recovered.
+#[cfg(not(windows))]
+async fn npm_install_global_managed(
+    app: &AppHandle,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    tag: &str,
+) -> Result<String, String> {
+    match run_streaming(app, npm, &["install", "-g", "--prefix", prefix, spec]).await {
+        Ok(out) => Ok(out),
+        Err(first) => {
+            emit_preflight_line(
+                app,
+                &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
+            );
+            run_streaming(
+                app,
+                npm,
+                &[
+                    "install",
+                    "-g",
+                    "--prefix",
+                    prefix,
+                    "--registry=https://registry.npmjs.org/",
+                    "--@indigoai-us:registry=https://registry.npmjs.org/",
+                    "--@tobilu:registry=https://registry.npmjs.org/",
+                    "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    spec,
+                ],
+            )
+            .await
+            .map_err(|second| {
+                format!("{first}\n[{tag}] retry with the public registry also failed: {second}")
+            })
+        }
+    }
 }
 
 /// Pinned qmd version. MUST match `core/scripts/setup.sh` (`QMD_VERSION`),
@@ -2934,12 +2970,7 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "--prefix", &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}")],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"), "qmd").await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2982,12 +3013,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "--prefix", &prefix, "@indigoai-us/hq-cli"],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@indigoai-us/hq-cli", "hq").await
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
