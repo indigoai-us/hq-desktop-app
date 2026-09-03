@@ -1472,9 +1472,33 @@ pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
 /// testing so assertions don't depend on the home directory.
 #[cfg(not(windows))]
 pub fn shell_path_block() -> String {
+    // Every managed bin dir a user-facing tool lands in — node, the npm
+    // global prefix (qmd, hq, claude), the portable dugite git, and
+    // ~/.local/bin (yq's direct-binary fallback). The git dir MUST come
+    // before /usr/bin: on a Mac without Xcode CLT, /usr/bin/git is a stub
+    // that pops the "install developer tools" dialog. The install matrix
+    // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
+    // `yq: command not found` and the stub git after a reported-OK install.
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git/bin:$HOME/.local/bin:$PATH\"\n"
     )
+}
+
+/// Profile files the PATH block must land in for this shell.
+///
+/// zsh reads `.zshrc` only for INTERACTIVE shells; login-but-non-interactive
+/// shells (`zsh -lc`, launchd, hooks, subprocesses spawned by `hq`) read
+/// `.zprofile` instead. Writing only `.zshrc` made the toolchain vanish for
+/// every non-terminal caller — the matrix `path.non-interactive-shell`
+/// check. Exposed for testing.
+#[cfg(not(windows))]
+pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
+    let primary = shell_profile_path_in(home);
+    let mut paths = vec![primary.clone()];
+    if primary.file_name().and_then(|n| n.to_str()) == Some(".zshrc") {
+        paths.push(home.join(".zprofile"));
+    }
+    paths
 }
 
 /// Ensure the managed toolchain bin directories are present in the user's
@@ -1489,42 +1513,40 @@ pub fn shell_path_block() -> String {
 /// non-fatal and logged via `emit_preflight_line`.
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
-    let profile_path = shell_profile_path_in(home);
-
-    if is_shell_path_configured(&profile_path) {
-        return;
-    }
-
     let block = shell_path_block();
-
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&profile_path)
-    {
-        Ok(mut f) => {
-            use std::io::Write;
-            if let Err(e) = f.write_all(block.as_bytes()) {
+    for profile_path in shell_profile_paths_in(home) {
+        if is_shell_path_configured(&profile_path) {
+            continue;
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&profile_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                if let Err(e) = f.write_all(block.as_bytes()) {
+                    emit_preflight_line(
+                        app,
+                        &format!("[path] failed to write to {}: {e}", profile_path.display()),
+                    );
+                } else {
+                    emit_preflight_line(
+                        app,
+                        &format!(
+                            "[path] added HQ toolchain to {} — restart your terminal or run: source {}",
+                            profile_path.display(),
+                            profile_path.display()
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
                 emit_preflight_line(
                     app,
-                    &format!("[path] failed to write to {}: {e}", profile_path.display()),
-                );
-            } else {
-                emit_preflight_line(
-                    app,
-                    &format!(
-                        "[path] added HQ toolchain to {} — restart your terminal or run: source {}",
-                        profile_path.display(),
-                        profile_path.display()
-                    ),
+                    &format!("[path] failed to open {}: {e}", profile_path.display()),
                 );
             }
-        }
-        Err(e) => {
-            emit_preflight_line(
-                app,
-                &format!("[path] failed to open {}: {e}", profile_path.display()),
-            );
         }
     }
 }
@@ -6805,5 +6827,36 @@ mod toolchain_swap_e2e_tests {
             !staged.exists(),
             "the staged tree must be cleaned up, not stranded"
         );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod shell_path_block_tests {
+    use super::*;
+
+    #[test]
+    fn path_block_covers_git_and_local_bin_before_system_dirs() {
+        let block = shell_path_block();
+        let export = block.lines().find(|l| l.starts_with("export PATH=")).expect("export line");
+        let idx = |needle: &str| export.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        assert!(idx("toolchain/node/bin") < idx("toolchain/npm-global/bin"));
+        assert!(idx("toolchain/npm-global/bin") < idx("toolchain/git/bin"));
+        assert!(idx("toolchain/git/bin") < idx("$HOME/.local/bin"));
+        assert!(idx("$HOME/.local/bin") < idx(":$PATH"));
+        assert!(block.contains(SHELL_PATH_MARKER));
+    }
+
+    #[test]
+    fn zsh_gets_zshrc_and_zprofile() {
+        let home = std::path::Path::new("/Users/x");
+        let primary = shell_profile_path_in(home);
+        let all = shell_profile_paths_in(home);
+        assert_eq!(all[0], primary);
+        if primary.ends_with(".zshrc") {
+            assert_eq!(all.len(), 2);
+            assert!(all[1].ends_with(".zprofile"));
+        } else {
+            assert_eq!(all.len(), 1);
+        }
     }
 }
