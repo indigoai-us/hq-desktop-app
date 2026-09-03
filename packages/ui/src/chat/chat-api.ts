@@ -121,6 +121,13 @@ export interface ConversationMessageWire {
   messageKind?: string | null;
   /** Versioned system-event envelope (run_complete card, deploy/pr lines, …). */
   systemEvent?: unknown;
+  /**
+   * Versioned rich-content envelope (stat tiles, tables, charts). ADDITIVE and
+   * absent-safe: parsed via `parseRichContent`; `body` remains the required
+   * plain-text fallback for old clients and notifications. See
+   * chat/messaging/richMessageContent.ts.
+   */
+  richContent?: unknown;
   /** Cached emoji aggregates — shown before the live GET settles. */
   reactions?: Array<{
     emoji: string;

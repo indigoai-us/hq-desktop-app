@@ -49,6 +49,8 @@
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import RichMessageContent from "./RichMessageContent.svelte";
+  import { richContentForMessage } from "./richMessageContent";
   import {
     handleLinkActivate,
     type LinkMenuAnchor,
@@ -1013,6 +1015,7 @@
               time={formatTime(msg.createdAt)}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
+            {@const rich = richContentForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -1067,7 +1070,7 @@
                   </div>
                 {/if}
                 <div class="dm-bubble">
-                  {#if msg.body?.trim()}
+                  {#if rich.text.trim()}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="dm-bubble-body selectable-text msg-body"
@@ -1082,17 +1085,20 @@
                         }
                       }}
                     >
-                      {#if isHeavyMessageBody(msg.body ?? "")}
+                      {#if isHeavyMessageBody(rich.text)}
                         <pre class="dm-plain">{clipMessageBodyForDisplay(
-                            msg.body ?? "",
+                            rich.text,
                           )}</pre>
                       {:else}
                         {@html applyMentionMarkup(
-                          renderMessageBodyMarkdown(msg.body ?? ""),
+                          renderMessageBodyMarkdown(rich.text),
                           storedMentions(msg),
                         )}
                       {/if}
                     </div>
+                  {/if}
+                  {#if rich.rich}
+                    <RichMessageContent content={rich.rich} />
                   {/if}
                   {#if msg.details?.trim()}
                     <PromptAttachment
