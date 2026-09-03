@@ -56,12 +56,19 @@ For each registered pack URL the shell:
 The first remote pack is Lizzy's mascot catalog at
 `https://hq-agent-mascots.indigo-hq.com/`. Display name **Animals**. Snapshot
 catalog: `packages/ui/src/avatars/packs/hq-agent-mascots.json`. Snapshot
-images: `packages/ui/src/avatars/packs/hq-agent-mascots/mascots/{v1,v2}/*.png`
-(24 files). The live site does not ship `pack.json`; the host is access-gated
+images: `packages/ui/src/avatars/packs/hq-agent-mascots/mascots/{v1,v2}/*.jpg`
+(24 files, 512px JPEG). Catalog `src` values stay on the live pack's `.png`
+paths; the snapshot resolver maps them onto the compressed files. Uncompressed
+PNGs are forbidden here: Vite embeds the snapshot in the JS dist, and Tauri
+then packs that dist into **each** slice of the macOS universal binary
+(v0.10.181: 24 PNGs added ~13 MB and failed the 120 MB binary budget).
+
+The live site does not ship `pack.json`; the host is access-gated
 and would 302 an `<img>` load. The bundled files are the working catalog.
 
 A built-in pack, **Generated marks** (author line **Default**), is always
-loaded from the bundled `agent-NN.png` set. Item `src` values are the Vite
+loaded from the bundled `agent-NN.jpg` set (512px JPEG; also embedded once
+per architecture in the universal binary). Item `src` values are the Vite
 asset URLs from `import.meta.glob` — they must not be joined onto the
 `builtin:generated-marks` base, or the tiles render as empty boxes. It is not
 a URL and cannot be removed.
