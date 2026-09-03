@@ -2850,6 +2850,9 @@ pub async fn install_jq(app: AppHandle) -> Result<String, String> {
 #[cfg(not(windows))]
 async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
     let prefix = npm_global_prefix_arg(&app, "claude")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "claude") {
+        emit_preflight_line(&app, "[claude] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -2880,6 +2883,29 @@ async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
 // install_qmd
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Remove a bin entry under the managed npm-global prefix that npm did not
+/// create (a plain file instead of npm's symlink into lib/node_modules, or a
+/// dangling symlink). npm refuses with EEXIST to overwrite such a file, so a
+/// stale stub left by a broken earlier install blocked every re-install
+/// (install matrix `stale-toolchain`, 2026-09-03). Returns true if removed.
+/// Pure over the given prefix; exposed for testing.
+#[cfg(not(windows))]
+pub fn clear_unusable_npm_bin(prefix: &std::path::Path, bin: &str) -> bool {
+    let path = prefix.join("bin").join(bin);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return false;
+    };
+    let unusable = if meta.file_type().is_symlink() {
+        std::fs::metadata(&path).is_err() // dangling
+    } else {
+        true // a real file: npm never writes those here
+    };
+    if unusable {
+        let _ = std::fs::remove_file(&path);
+    }
+    unusable
+}
+
 /// Pinned qmd version. MUST match `core/scripts/setup.sh` (`QMD_VERSION`),
 /// `core/scripts/install-deps.allow`, and the `@tobilu/qmd` dependency in
 /// hq-cli's package.json. Installing `latest` here produced a live three-way
@@ -2893,6 +2919,9 @@ pub const MANAGED_QMD_VERSION: &str = "2.5.3";
 #[cfg(not(windows))]
 async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     let prefix = npm_global_prefix_arg(&app, "qmd")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "qmd") {
+        emit_preflight_line(&app, "[qmd] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -2938,6 +2967,9 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
         }
     };
     let prefix = npm_global_prefix_arg(&app, "hq")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+        emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -7150,5 +7182,31 @@ mod dep_health_tests {
         let gh = dependency_defs().iter().find(|d| d.id == "gh").unwrap();
         let opt_no_version = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/gh")) };
         assert!(dep_status_satisfies(gh, &opt_no_version));
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod npm_bin_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn removes_plain_file_and_dangling_link_keeps_valid_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path();
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert!(!clear_unusable_npm_bin(prefix, "qmd"));
+        std::fs::write(bin.join("qmd"), "#!/bin/sh\nexit 97\n").unwrap();
+        assert!(clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(!bin.join("qmd").exists());
+        std::os::unix::fs::symlink(prefix.join("lib/node_modules/missing/bin/qmd.js"), bin.join("qmd")).unwrap();
+        assert!(clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(std::fs::symlink_metadata(bin.join("qmd")).is_err());
+        let target = prefix.join("lib/node_modules/@tobilu/qmd/bin/qmd.js");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, bin.join("qmd")).unwrap();
+        assert!(!clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(bin.join("qmd").exists());
     }
 }
