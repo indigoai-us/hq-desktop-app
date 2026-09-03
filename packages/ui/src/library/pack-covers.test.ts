@@ -151,6 +151,13 @@ describe("marketplaceAvatarSrc — creator photo allowlist", () => {
     expect(marketplaceAvatarSrc(hosted)).toBe(hosted);
   });
 
+  it("accepts agent profile photos and avatar-pack thumbs on the marketplace assets host", () => {
+    const agent = `https://${MARKETPLACE_COVER_HOST}/agents/agt_x/hash.png?X-Amz-Signature=mock`;
+    const pack = `https://${MARKETPLACE_COVER_HOST}/avatar-packs/animals/thumbs/v2-dot.png?X-Amz-Signature=mock`;
+    expect(marketplaceAvatarSrc(agent)).toBe(agent);
+    expect(marketplaceAvatarSrc(pack)).toBe(pack);
+  });
+
   it("rejects an arbitrary remote avatar host", () => {
     expect(
       marketplaceAvatarSrc("https://cdn.example.com/avatar.png"),

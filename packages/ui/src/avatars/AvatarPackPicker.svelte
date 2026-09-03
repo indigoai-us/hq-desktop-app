@@ -3,7 +3,8 @@
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
    */
-  import { cspSafeAvatarSrc, resolvePackItemSrc } from "./parse-pack.js";
+  import { resolvePackItemSrc } from "./parse-pack.js";
+  import { paintableAvatarSrc } from "./csp-image-src.js";
   import {
     filterPacks,
     flattenVisible,
@@ -11,7 +12,6 @@
     moveIndex,
     type FlatPickerRow,
   } from "./filter-items.js";
-  import { loadRegisteredPacks, type PackFetch } from "./load-pack.js";
   import type { AvatarPack, AvatarSelection } from "./types.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -21,7 +21,6 @@
     currentSrc?: string | null;
     packs?: AvatarPack[] | null;
     loadPacks?: () => Promise<AvatarPack[]>;
-    fetchImpl?: PackFetch;
     saving?: boolean;
     error?: string | null;
     onsave?: (selection: AvatarSelection) => void | Promise<void>;
@@ -32,7 +31,6 @@
     currentSrc = null,
     packs = null,
     loadPacks,
-    fetchImpl,
     saving = false,
     error = null,
     onsave,
@@ -71,8 +69,7 @@
     const run =
       loadPacks ??
       (async () => {
-        const rows = await loadRegisteredPacks({ fetch: fetchImpl });
-        return rows.map((row) => row.pack);
+        throw new Error("Could not load avatar packs.");
       });
     void run()
       .then((next) => {
@@ -143,8 +140,8 @@
     const raw =
       selection.kind === "generated"
         ? currentSrc
-        : (selectedRow?.src ?? currentSrc);
-    return cspSafeAvatarSrc(raw);
+        : (selectedRow?.item.fullUrl ?? selectedRow?.src ?? currentSrc);
+    return paintableAvatarSrc(raw);
   });
 </script>
 
@@ -178,11 +175,17 @@
   {/if}
 
   {#if loading}
-    <p class="note">Loading packs…</p>
+    <div class="skeleton" data-testid="avatar-pack-skeleton" aria-busy="true">
+      {#each [0, 1, 2, 3, 4, 5, 6, 7] as n (n)}
+        <span class="skel"></span>
+      {/each}
+    </div>
   {:else if loadError}
-    <p class="note" role="alert">{loadError}</p>
+    <p class="note" role="alert" data-testid="avatar-pack-load-error">{loadError}</p>
+  {:else if loaded.length === 0}
+    <p class="note" data-testid="avatar-pack-empty">No avatar packs yet.</p>
   {:else if rows.length === 0}
-    <p class="note">No avatars match.</p>
+    <p class="note" data-testid="avatar-pack-no-match">No avatars match.</p>
   {:else}
     <div
       class="packs"
@@ -199,7 +202,7 @@
           <div class="grid">
             {#each group.items as item (item.id)}
               {@const src = resolvePackItemSrc(group.pack, item)}
-              {@const tileSrc = cspSafeAvatarSrc(src)}
+              {@const tileSrc = paintableAvatarSrc(src)}
               {@const key = `${group.pack.id}:${item.id}`}
               {@const selected =
                 selection.kind === "item" &&
@@ -232,6 +235,7 @@
                   <img
                     src={tileSrc}
                     alt=""
+                    loading="lazy"
                     class:is-broken={broken.has(key)}
                     onerror={() => markBroken(key)}
                   />
@@ -422,5 +426,28 @@
   .sw.focus:not(.on),
   .sw:hover:not(.on) {
     border-color: color-mix(in srgb, var(--t1) 16%, transparent);
+  }
+
+  .skeleton {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .skel {
+    aspect-ratio: 1;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--t1) 8%, transparent);
+    animation: pack-skel 1.1s ease-in-out infinite;
+  }
+
+  @keyframes pack-skel {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 </style>

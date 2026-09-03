@@ -23,6 +23,7 @@
     /** Owner/admin of this agent: show the pack picker. */
     editable?: boolean;
     packs?: AvatarPack[] | null;
+    loadPacks?: () => Promise<AvatarPack[]>;
     saving?: boolean;
     saveError?: string | null;
     onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
@@ -35,6 +36,7 @@
     avatarUrl = null,
     editable = false,
     packs = null,
+    loadPacks,
     saving = false,
     saveError = null,
     onsaveavatar,
@@ -115,6 +117,7 @@
             agentUid={member.personUid}
             currentSrc={photo}
             {packs}
+            {loadPacks}
             {saving}
             error={saveError}
             onsave={onsaveavatar}

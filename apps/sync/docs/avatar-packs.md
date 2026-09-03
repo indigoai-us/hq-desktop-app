@@ -1,108 +1,88 @@
 # Avatar packs
 
-Agent avatars in the desktop shell come from **packs**: versioned catalogs of
-images the picker can browse. There will be many packs. A pack is a static
-host that serves `pack.json` plus the images it names.
+Agent avatars in the desktop shell come from **packs**. Generated marks stay
+bundled in the app. Catalog packs (Animals, and any later publisher packs)
+live on hq-pro and are fetched on demand.
 
-## Manifest (`pack.json`)
+## Server gallery
 
-```json
-{
-  "id": "hq-agent-mascots",
-  "name": "Animals",
-  "version": "1.0.0",
-  "author": "Lizzy",
-  "baseUrl": "https://hq-agent-mascots.indigo-hq.com",
-  "items": [
-    {
-      "id": "v2-dot",
-      "name": "Dot · simplified",
-      "src": "mascots/v2/dot.png",
-      "tags": ["v2", "simplified", "rabbit", "generalist", "mascot"]
-    }
-  ]
-}
+hq-pro stores pack images in the same private marketplace-assets bucket used
+for profile avatars (`avatar-packs/{id}/…`). The desktop picker talks to:
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/v1/avatar-packs` | List packs: id, name, author `{handle, displayName, avatarUrl?}`, version, count, thumbnailUrl |
+| GET | `/v1/avatar-packs/{id}` | Items: id, name, tags, thumbUrl (~128px, presigned), fullUrl (presigned) |
+| POST | `/v1/agents/{uid}/avatar` | `{ packId, itemId }` — server copies the pack image onto the agent's `avatarKey` |
+
+All three are JWT-authenticated. The packaged CSP allowlists the production
+marketplace-assets host, so presigned thumbs paint in `<img>` tags. Responses
+include `expiresAt`; the shell caches the list + details in memory and
+`localStorage` until then.
+
+## Built-in Default pack
+
+**Generated marks** (credit line **Default**) still load from the bundled
+`packages/ui/src/assets/agent-avatars/agent-NN.jpg` set (512px JPEG). Those
+files are small and stay client-side. Item `src` values are Vite asset URLs
+from `import.meta.glob` — they must not be joined onto the
+`builtin:generated-marks` base. Choosing "Use generated mark" still PATCHes
+`/v1/agents/{uid}/profile` with `avatarBase64`.
+
+## Animals
+
+Lizzy's mascot catalog is the first remote pack. Display name **Animals**.
+Publish it from hq-pro:
+
+```bash
+HQ_API_BASE=https://<api> HQ_ACCESS_TOKEN=<jwt> \
+  npx tsx scripts/publish-avatar-pack.ts scripts/avatar-packs/animals
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `id` | yes | Stable slug. Used as the selection key with `items[].id`. |
-| `name` | yes | Pack heading in the picker. |
-| `version` | yes | Opaque string. Displayed; not compared. |
-| `author` | yes | Credit line. |
-| `baseUrl` | yes | Origin the pack was loaded from. Relative `src` values resolve against it. |
-| `items[].id` | yes | Unique within the pack. |
-| `items[].name` | yes | Searchable label. |
-| `items[].src` | yes | Relative path or absolute `http(s)` URL. |
-| `items[].tags` | no | Searchable keywords. Missing / non-array becomes `[]`. |
-
-Unknown fields are ignored. Duplicate item ids, empty required strings, or a
-non-`http(s)` absolute `src` fail validation and the pack is skipped.
+The folder is `pack.json` plus the image files it names. HQ staff or a
+verified marketplace creator may publish. Follow-up POSTs add more items to
+the same pack id.
 
 ## Loading
 
-For each registered pack URL the shell:
+On picker open the shell:
 
-1. Fetches `${baseUrl}/pack.json` with credentialed `fetch` (so HQ-gated
-   hosts that already issued an `hq-access` cookie work).
-2. Validates the body.
-3. On network / parse / validation failure, uses a bundled snapshot when one
-   exists for that `baseUrl`.
-4. Rewrites each item `src` onto a bundled snapshot file when the relative
-   path is one we ship. The packaged CSP is `img-src 'self' data: asset: blob:`
-   — it deliberately does **not** allow `https:`, so a live host URL would
-   paint as an empty tile even when the fetch succeeds.
+1. Shows a skeleton grid.
+2. Calls `GET /v1/avatar-packs`, then `GET /v1/avatar-packs/{id}` for each pack,
+   through the authenticated adapter (web, Tauri, Sync).
+3. Reuses the cached payload while `expiresAt` is in the future.
+4. Lazy-loads tile images (`loading="lazy"`). A tile whose image fails to
+   decode shows a two-letter mark instead of an empty square.
 
-The first remote pack is Lizzy's mascot catalog at
-`https://hq-agent-mascots.indigo-hq.com/`. Display name **Animals**. Snapshot
-catalog: `packages/ui/src/avatars/packs/hq-agent-mascots.json`. Snapshot
-images: `packages/ui/src/avatars/packs/hq-agent-mascots/mascots/{v1,v2}/*.jpg`
-(24 files, 512px JPEG). Catalog `src` values stay on the live pack's `.png`
-paths; the snapshot resolver maps them onto the compressed files. Uncompressed
-PNGs are forbidden here: Vite embeds the snapshot in the JS dist, and Tauri
-then packs that dist into **each** slice of the macOS universal binary
-(v0.10.181: 24 PNGs added ~13 MB and failed the 120 MB binary budget).
-
-The live site does not ship `pack.json`; the host is access-gated
-and would 302 an `<img>` load. The bundled files are the working catalog.
-
-A built-in pack, **Generated marks** (author line **Default**), is always
-loaded from the bundled `agent-NN.jpg` set (512px JPEG; also embedded once
-per architecture in the universal binary). Item `src` values are the Vite
-asset URLs from `import.meta.glob` — they must not be joined onto the
-`builtin:generated-marks` base, or the tiles render as empty boxes. It is not
-a URL and cannot be removed.
-
-The picker never puts an `http(s)` URL in `<img src>`. A tile whose image
-fails to decode shows a two-letter mark instead of an empty square.
-
-## Adding a pack
-
-Settings → General → Avatar packs. Paste the pack's base URL (the directory
-that serves `pack.json`) and add it. Remove the URL to drop the pack. The
-next picker open reloads the registry.
-
-Default registry:
-
-- `builtin:generated-marks` (always present, not listed as removable;
-  picker heading "Generated marks", credit "Default · 1.0.0")
-- `https://hq-agent-mascots.indigo-hq.com` (picker heading "Animals",
-  credit "Lizzy · 1.0.0")
+Empty catalog and fetch errors have their own copy. Search still filters by
+name, id, and tags.
 
 ## Saving a choice
 
-The picker uploads the chosen image through `PATCH /v1/agents/{uid}/profile`
-as `avatarBase64` (JPEG/PNG, ≤192KB). hq-pro does not accept an external URL
-for the avatar; the bytes are the source of truth. After a successful save
-the shell refreshes channel rosters and the contacts list so the rail, thread,
-and DM header pick up the new photo.
+- **Generated mark** — download the bundled JPEG, PATCH profile `avatarBase64`.
+- **Pack item** — `POST /v1/agents/{uid}/avatar` `{ packId, itemId }`. hq-pro
+  copies the stored pack object onto `agents/{uid}/{hash}.{ext}` (the same
+  field the upload path writes) and returns `avatarUrl`.
+
+After a successful save the shell refreshes channel rosters and the contacts
+list so the rail, thread, and DM header pick up the new photo.
 
 Only company owners/admins see the picker. Everyone else gets the read-only
 profile.
 
+## Migration from bundled snapshots
+
+The desktop app no longer ships mascot images under
+`packages/ui/src/avatars/packs/`. A source-contract test fails the build if
+binary images return there (that is how v0.10.181 blew the 120 MB macOS
+universal binary budget: Vite embeds globbed snapshots in the JS dist, and
+Tauri packs that dist into **each** architecture slice). The pack-URL
+registry setting is gone; packs come from hq-pro, not pasted hosts.
+
+Generated marks stay bundled and remain under a size gate so they cannot
+quietly grow the binary the same way.
+
 ## hq-pro companion
 
-Agent photos already ride `entity.metadata.agentConfig.profile` and are
-presigned onto `GET /v1/channels/{id}/members` as `avatarUrl`. A companion
-hq-pro change adds `avatarUrl` on `GET /v1/notify/contacts` so agent DMs that
-never shared a channel still show the assigned photo.
+Agent photos ride `entity.metadata.agentConfig.profile.avatarKey` and are
+presigned onto channel members and contacts as `avatarUrl`.

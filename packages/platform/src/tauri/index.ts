@@ -196,6 +196,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
         input,
       ),
+    listAvatarPacks: () => this.hqProJson("GET", "/v1/avatar-packs"),
+    getAvatarPack: (packId) =>
+      this.hqProJson(
+        "GET",
+        `/v1/avatar-packs/${encodeURIComponent(packId)}`,
+      ),
+    selectAgentAvatar: (agentUid, input) =>
+      this.hqProJson(
+        "POST",
+        `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {

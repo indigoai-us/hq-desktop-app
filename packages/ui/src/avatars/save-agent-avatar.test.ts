@@ -36,33 +36,38 @@ const packs: AvatarPack[] = [
 ];
 
 describe("saveAgentAvatar", () => {
-  it("downloads the pack image and PATCHes avatarBase64", async () => {
-    const updateAgentProfile = vi.fn(async (uid: string, input: { avatarBase64: string }) => {
+  it("selects a remote pack item through the adapter and skips the upload path", async () => {
+    const updateAgentProfile = vi.fn();
+    const selectAgentAvatar = vi.fn(async (uid: string, input: { packId: string; itemId: string }) => {
       expect(uid).toBe("agt_scout");
-      expect(input.avatarBase64).toBe("YmFzZTY0");
-      return { ok: true as const, value: { uid, slackUpdated: false } };
-    });
-    const fetchBytes = vi.fn(async (url: string) => {
-      expect(url).toBe(
-        "/src/avatars/packs/hq-agent-mascots/mascots/v2/dot.png",
-      );
-      return new Uint8Array([1, 2, 3]);
+      expect(input).toEqual({ packId: "hq-agent-mascots", itemId: "v2-dot" });
+      return {
+        ok: true as const,
+        value: {
+          uid,
+          avatarUrl: "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/agents/agt_scout/hash.png",
+          slackUpdated: false,
+        },
+      };
     });
     const result = await saveAgentAvatar(
       "agt_scout",
       { kind: "item", packId: "hq-agent-mascots", itemId: "v2-dot" },
       {
         packs,
-        fetchBytes,
-        prepareAvatar: async (bytes) => {
-          expect(Array.from(bytes)).toEqual([1, 2, 3]);
-          return { base64: "YmFzZTY0", previewDataUrl: "data:image/jpeg;base64,YmFzZTY0" };
+        fetchBytes: async () => {
+          throw new Error("should not fetch pack bytes");
+        },
+        prepareAvatar: async () => {
+          throw new Error("should not prepare pack bytes");
         },
         updateAgentProfile,
+        selectAgentAvatar,
       },
     );
-    expect(updateAgentProfile).toHaveBeenCalledTimes(1);
-    expect(result.previewDataUrl).toContain("data:image/jpeg");
+    expect(updateAgentProfile).not.toHaveBeenCalled();
+    expect(selectAgentAvatar).toHaveBeenCalledTimes(1);
+    expect(result.previewDataUrl).toContain("/agents/agt_scout/");
   });
 
   it("uploads the generated mark for the Use generated mark path", async () => {
@@ -101,6 +106,10 @@ describe("saveAgentAvatar", () => {
             previewDataUrl: "data:image/jpeg;base64,x",
           }),
           updateAgentProfile: async () => ({
+            ok: false,
+            message: "should not PATCH",
+          }),
+          selectAgentAvatar: async () => ({
             ok: false,
             message: "not authorized",
           }),

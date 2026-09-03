@@ -172,4 +172,19 @@ describe("TauriPlatformAdapter profile", () => {
       },
     });
   });
+
+  it("loads avatar packs and selects through hq_pro_fetch", async () => {
+    const { adapter, calls } = makeAdapter({ packs: [] });
+    await adapter.identity.listAvatarPacks();
+    await adapter.identity.selectAgentAvatar("agt_scout", {
+      packId: "animals",
+      itemId: "v2-dot",
+    });
+    expect(
+      calls.map((row) => `${String(row.args?.method)} ${String(row.args?.url)}`),
+    ).toEqual([
+      "GET /v1/avatar-packs",
+      "POST /v1/agents/agt_scout/avatar",
+    ]);
+  });
 });

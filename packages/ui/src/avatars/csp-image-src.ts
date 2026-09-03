@@ -59,7 +59,10 @@ export function marketplaceAvatarSrc(
   return marketplaceHttpsSrc(
     raw,
     (pathname) =>
-      pathname.startsWith("/members/") || pathname.startsWith("/creators/"),
+      pathname.startsWith("/members/") ||
+      pathname.startsWith("/creators/") ||
+      pathname.startsWith("/agents/") ||
+      pathname.startsWith("/avatar-packs/"),
   );
 }
 

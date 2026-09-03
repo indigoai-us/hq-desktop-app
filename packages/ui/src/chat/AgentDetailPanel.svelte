@@ -40,6 +40,7 @@
     isAdmin?: boolean | null;
     adapter: Pick<PlatformAdapter, "agents"> | { agents: AgentsApi };
     packs?: AvatarPack[] | null;
+    loadPacks?: () => Promise<AvatarPack[]>;
     avatarSaving?: boolean;
     avatarSaveError?: string | null;
     onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
@@ -57,6 +58,7 @@
     isAdmin = null,
     adapter,
     packs = null,
+    loadPacks,
     avatarSaving = false,
     avatarSaveError = null,
     onsaveavatar,
@@ -569,6 +571,7 @@
           displayName={header.displayName}
           avatarUrl={header.avatarUrl}
           {packs}
+          {loadPacks}
           saving={avatarSaving}
           error={avatarSaveError}
           onsave={onsaveavatar}
