@@ -2746,7 +2746,25 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
         // touch UN), after which usernoted permanently denies every legacy
         // NSUserNotification deliver from this process. That silent denial was
         // the root cause of "native DM notifications don't appear".
-        for dm in &fresh {
+        // Native-banner gate (Settings → Notifications). The master switch,
+        // the per-event DM toggle, and the "only when unfocused" rule all live
+        // in menubar.json and are read fresh here so a toggle takes effect on
+        // the next DM without a restart. When suppressed we skip only the OS
+        // banner — the DMs are still ACKed and emitted to the in-app
+        // NotificationFeed panel below, so nothing is lost.
+        let app_focused = crate::commands::notifications::app_is_focused(app);
+        let native_allowed =
+            hq_desktop_core::native_notify::should_native_notify("dm", app_focused);
+        if !native_allowed {
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_NATIVE_SUPPRESSED {} DM(s) (settings gate, focused={app_focused})",
+                    fresh.len()
+                ),
+            );
+        }
+        for dm in fresh.iter().filter(|_| native_allowed) {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
             let title_for_log = title.clone();

@@ -872,6 +872,14 @@ pub async fn meetings_notify_detected(
             }
         });
 
+        // Native-banner gate (Settings → Notifications): master switch, the
+        // per-event Meetings toggle, and the "only when unfocused" rule, read
+        // fresh from menubar.json so a toggle takes effect on the next
+        // detection without a restart. When suppressed we skip only the OS
+        // banner — the tray badge bump below (which surfaces the detection in
+        // the in-app UI) still runs, so the meeting is never lost.
+        let meeting_app_focused = crate::commands::notifications::app_is_focused(&app);
+        if hq_desktop_core::native_notify::should_native_notify("meeting", meeting_app_focused) {
         let window_id_for_thread = payload.window_id.clone().unwrap_or_default();
         let platform_for_thread = platform_lc.clone();
         let title_for_thread = build_notification_title(&platform_lc);
@@ -1029,6 +1037,14 @@ pub async fn meetings_notify_detected(
                 }
             }
         });
+        } else {
+            crate::util::logfile::log(
+                "meetings",
+                &format!(
+                    "meeting native banner suppressed (settings gate, focused={meeting_app_focused})"
+                ),
+            );
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
