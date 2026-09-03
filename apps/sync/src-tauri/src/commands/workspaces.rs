@@ -1270,6 +1270,7 @@ mod tests {
             status: "active".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             deleted: false,
+            cloud_activated_at: None,
         }
     }
 
@@ -1283,6 +1284,7 @@ mod tests {
             status: "active".into(),
             created_at: "2026-02-01T00:00:00Z".into(),
             deleted: false,
+            cloud_activated_at: None,
         }
     }
 

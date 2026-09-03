@@ -1007,6 +1007,28 @@ pub async fn run_card_action(
             out.replayed
         ),
     );
+    if card == "activate_cloud" {
+        if let Ok(hq) = crate::commands::workspaces::resolve_hq_folder_path() {
+            let vault = crate::commands::vault_client::VaultClient::new(&base, &token);
+            match crate::commands::provision_reconcile::reconcile_server_activated_companies(
+                &hq, &vault, &base,
+            )
+            .await
+            {
+                Ok(rows) => log(
+                    LOG_TAG,
+                    &format!(
+                        "MESSAGES_ACTIVATE_RECONCILE_OK n={}",
+                        rows.len()
+                    ),
+                ),
+                Err(e) => log(
+                    LOG_TAG,
+                    &format!("MESSAGES_ACTIVATE_RECONCILE_ERR {e}"),
+                ),
+            }
+        }
+    }
     Ok(out)
 }
 
