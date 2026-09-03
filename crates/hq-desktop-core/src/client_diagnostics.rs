@@ -127,10 +127,13 @@ fn parse_command_state(wire: &str) -> Option<ClientHealthCommandState> {
 }
 
 /// Parse the body of `GET /v1/client-health/commands` (`{"commands": [...]}`).
-/// Trusted server response: unknown EXTRA fields on each entry are ignored;
-/// an unrecognized `kind`/`state` fails closed (the caller skips that one
-/// command rather than crashing the whole poll — a future server-side repair
-/// kind must not break an older desktop's diagnostics poller).
+/// Trusted server response: unknown EXTRA fields on each entry are ignored.
+/// An unrecognized `kind`/`state` on one entry skips JUST that entry (a
+/// future server-side repair kind, or command state, must not break an
+/// older desktop's diagnostics poller for every OTHER command in the same
+/// batch) — a malformed entry (missing/wrong-typed required field) still
+/// fails the whole batch, since there is no well-formed partial command to
+/// fall back to.
 pub fn parse_desired_commands(
     value: &Value,
 ) -> Result<Vec<ClientHealthDesiredCommand>, DesiredCommandsParseError> {
@@ -149,16 +152,24 @@ pub fn parse_desired_commands(
             .and_then(Value::as_str)
             .ok_or(DesiredCommandsParseError::InvalidField)?
             .to_string();
-        let kind = obj
+        let kind_wire = obj
             .get("kind")
             .and_then(Value::as_str)
-            .ok_or(DesiredCommandsParseError::InvalidField)
-            .and_then(|s| parse_repair_kind(s).ok_or(DesiredCommandsParseError::UnknownKind))?;
-        let state = obj
+            .ok_or(DesiredCommandsParseError::InvalidField)?;
+        let kind = match parse_repair_kind(kind_wire) {
+            Some(kind) => kind,
+            // Unknown kind: skip only this one command, not the whole poll.
+            None => continue,
+        };
+        let state_wire = obj
             .get("state")
             .and_then(Value::as_str)
-            .ok_or(DesiredCommandsParseError::InvalidField)
-            .and_then(|s| parse_command_state(s).ok_or(DesiredCommandsParseError::UnknownState))?;
+            .ok_or(DesiredCommandsParseError::InvalidField)?;
+        let state = match parse_command_state(state_wire) {
+            Some(state) => state,
+            // Unknown state: skip only this one command, not the whole poll.
+            None => continue,
+        };
         let revision = obj
             .get("revision")
             .and_then(Value::as_u64)
@@ -366,39 +377,60 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kind_fails_closed_without_rejecting_the_whole_response() {
+    fn unknown_kind_is_skipped_without_rejecting_the_whole_response() {
+        // A future server-side repair kind this desktop doesn't know about
+        // must not break the poll for every OTHER command in the same
+        // batch — only the unrecognized entry is skipped.
         let body = json!({
-            "commands": [{
-                "commandId": "cmd-01f7ee3b2c9d",
-                "kind": "RUN_SHELL",
-                "state": "queued",
-                "revision": 0,
-                "createdAt": "2026-09-03T17:00:00.000Z",
-                "expiresAt": "2026-09-03T18:00:00.000Z"
-            }]
+            "commands": [
+                {
+                    "commandId": "cmd-unknown-kind",
+                    "kind": "RUN_SHELL",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                },
+                {
+                    "commandId": "cmd-01f7ee3b2c9d",
+                    "kind": "CHECK_NOW",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                }
+            ]
         });
-        assert_eq!(
-            parse_desired_commands(&body),
-            Err(DesiredCommandsParseError::UnknownKind)
-        );
+        let parsed = parse_desired_commands(&body).expect("parses despite one unknown kind");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].command_id, "cmd-01f7ee3b2c9d");
     }
 
     #[test]
-    fn unknown_state_fails_closed() {
+    fn unknown_state_is_skipped_without_rejecting_the_whole_response() {
         let body = json!({
-            "commands": [{
-                "commandId": "cmd-01f7ee3b2c9d",
-                "kind": "CHECK_NOW",
-                "state": "somehow_cancelled",
-                "revision": 0,
-                "createdAt": "2026-09-03T17:00:00.000Z",
-                "expiresAt": "2026-09-03T18:00:00.000Z"
-            }]
+            "commands": [
+                {
+                    "commandId": "cmd-unknown-state",
+                    "kind": "CHECK_NOW",
+                    "state": "somehow_cancelled",
+                    "revision": 0,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                },
+                {
+                    "commandId": "cmd-01f7ee3b2c9d",
+                    "kind": "CHECK_NOW",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                }
+            ]
         });
-        assert_eq!(
-            parse_desired_commands(&body),
-            Err(DesiredCommandsParseError::UnknownState)
-        );
+        let parsed = parse_desired_commands(&body).expect("parses despite one unknown state");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].command_id, "cmd-01f7ee3b2c9d");
     }
 
     // ── Idempotency / execution ledger (AC #4, e2eTest #1, #4) ──────────────

@@ -171,11 +171,24 @@ struct ReceiptResponse {
     revision: Option<u64>,
 }
 
+/// Outcome of one `POST /commands/receipt` attempt. 409 (illegal transition /
+/// stale revision) is surfaced as its OWN variant rather than folded into
+/// `Err` — the audit row was not changed server-side (matching the store's
+/// own conditional-write discipline), so the caller's correct response is to
+/// re-fetch the command's actual server state and resume from there, never
+/// to abort the chain or mark the command locally complete. Any other
+/// non-2xx (or a network-level failure) is a transport failure the caller
+/// must retry on the NEXT poll, leaving the command `in_flight`.
+enum ReceiptOutcome {
+    Applied(Option<u64>),
+    Conflict,
+}
+
 async fn post_receipt(
     api_url: &str,
     jwt: &str,
     receipt: &ClientHealthCommandReceipt,
-) -> Result<Option<u64>, String> {
+) -> Result<ReceiptOutcome, String> {
     let url = format!(
         "{}{}",
         api_url.trim_end_matches('/'),
@@ -189,16 +202,15 @@ async fn post_receipt(
         .await
         .map_err(|e| format!("network: {e}"))?;
     let status = resp.status();
+    if status.as_u16() == 409 {
+        return Ok(ReceiptOutcome::Conflict);
+    }
     if !status.is_success() {
-        // 409 (illegal transition / stale revision) is a legitimate,
-        // non-retryable outcome — the audit row was not changed server-side,
-        // matching the store's own conditional-write discipline. Any other
-        // non-2xx is a transport-classified failure the caller may retry.
         let body = resp.text().await.unwrap_or_default();
         return Err(format!("status={} body={}", status.as_u16(), body));
     }
     let parsed: ReceiptResponse = resp.json().await.map_err(|e| format!("parse: {e}"))?;
-    Ok(parsed.revision)
+    Ok(ReceiptOutcome::Applied(parsed.revision))
 }
 
 fn now_iso() -> String {
@@ -414,44 +426,189 @@ async fn run_all_probes() -> Vec<ClientHealthCheckResult> {
     ]
 }
 
-// ─── One command execution (acknowledged -> running -> terminal) ────────────
+// ─── One command execution (resumes from the command's ACTUAL server state) ─
 
+/// Result of attempting to drive one desired command to completion this
+/// poll. Whether the local ledger may mark the command `complete` hinges
+/// entirely on this — never on "the POST chain didn't return an `Err`."
+enum ExecutionOutcome {
+    /// A genuinely accepted terminal receipt was posted (succeeded/failed),
+    /// OR the server confirmed (via a fresh GET) that the command is already
+    /// in a terminal state / no longer in the active desired-state list.
+    /// Safe to mark complete locally.
+    Done,
+    /// A transport failure occurred somewhere in the chain, or the command
+    /// could not be resynced after repeated 409s. The command MUST stay
+    /// `in_flight` and out of `completed_ids` so the NEXT poll retries it —
+    /// resuming from whatever the server now reports, not from the start.
+    Retry,
+}
+
+/// One step of the lifecycle chain, resumed from `command.state` as reported
+/// by the most recent desired-state GET (never assumed to be `queued`).
+enum StepOutcome {
+    Done,
+    Retry,
+    /// A receipt attempt hit 409 — the caller must re-fetch this command's
+    /// current server state and resume from there.
+    Conflict,
+}
+
+/// A 409 loop must terminate — this bounds how many times one poll will
+/// re-fetch-and-resume before giving up and deferring to the next poll.
+const MAX_RESYNC_ATTEMPTS: u32 = 3;
+
+/// Drive `command` through whatever portion of the
+/// `acknowledged -> running -> terminal` chain its ACTUAL server-reported
+/// `state` still requires (backend legal transitions:
+/// `queued->acknowledged`, `acknowledged->running|failed`,
+/// `running->succeeded|failed`, `client-health-command-store.ts`):
+///
+/// * `queued` — run the full `acknowledged -> running -> terminal` chain.
+/// * `acknowledged` — resume starting at `running`.
+/// * `running` — submit only the terminal receipt.
+/// * `succeeded` / `failed` / `expired` — already terminal server-side;
+///   nothing to submit.
+///
+/// This is also the restart-resume path: after a crash, the NEXT poll's GET
+/// returns the command's true current state, and this function starts from
+/// there rather than blindly replaying `acknowledged` again (which would be
+/// an illegal transition once the server is already past it).
 async fn execute_check_now(
     api_url: &str,
     jwt: &str,
     installation_id: &str,
     command: &ClientHealthDesiredCommand,
-) -> Result<(), String> {
+) -> ExecutionOutcome {
+    let mut current = command.clone();
+    let mut resync_attempts = 0u32;
+    loop {
+        match execute_from_current_state(api_url, jwt, installation_id, &current).await {
+            StepOutcome::Done => return ExecutionOutcome::Done,
+            StepOutcome::Retry => return ExecutionOutcome::Retry,
+            StepOutcome::Conflict => {
+                resync_attempts += 1;
+                if resync_attempts > MAX_RESYNC_ATTEMPTS {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "command {} exceeded {MAX_RESYNC_ATTEMPTS} resync attempts after repeated 409s; deferring to next poll",
+                            command.command_id
+                        ),
+                    );
+                    return ExecutionOutcome::Retry;
+                }
+                match fetch_desired_commands(api_url, jwt, installation_id).await {
+                    Ok(commands) => {
+                        match commands.into_iter().find(|c| c.command_id == current.command_id) {
+                            Some(refreshed) => current = refreshed,
+                            None => {
+                                // No longer in the active desired-state list —
+                                // the server considers it superseded/expired.
+                                // Safe to stop locally without a further
+                                // attempt.
+                                return ExecutionOutcome::Done;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log(
+                            LOG_TAG,
+                            &format!("command {} resync fetch failed: {e}", command.command_id),
+                        );
+                        return ExecutionOutcome::Retry;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn execute_from_current_state(
+    api_url: &str,
+    jwt: &str,
+    installation_id: &str,
+    command: &ClientHealthDesiredCommand,
+) -> StepOutcome {
+    if matches!(
+        command.state,
+        ClientHealthCommandState::Succeeded
+            | ClientHealthCommandState::Failed
+            | ClientHealthCommandState::Expired
+    ) {
+        // Already terminal server-side (e.g. another client raced us, or it
+        // expired) — nothing left to submit.
+        return StepOutcome::Done;
+    }
+
     let mut revision = command.revision;
 
-    // acknowledged
-    revision += 1;
-    let ack = build_receipt(
-        installation_id,
-        &command.command_id,
-        revision,
-        ClientHealthCommandState::Acknowledged,
-        None,
-        None,
-    );
-    if let Some(server_rev) = post_receipt(api_url, jwt, &ack).await? {
-        revision = server_rev;
+    if command.state == ClientHealthCommandState::Queued {
+        revision += 1;
+        let ack = build_receipt(
+            installation_id,
+            &command.command_id,
+            revision,
+            ClientHealthCommandState::Acknowledged,
+            None,
+            None,
+        );
+        match post_receipt(api_url, jwt, &ack).await {
+            Ok(ReceiptOutcome::Applied(server_rev)) => {
+                if let Some(r) = server_rev {
+                    revision = r;
+                }
+            }
+            Ok(ReceiptOutcome::Conflict) => return StepOutcome::Conflict,
+            Err(e) => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "command {} acknowledged receipt transport failure: {e}",
+                        command.command_id
+                    ),
+                );
+                return StepOutcome::Retry;
+            }
+        }
     }
 
-    // running
-    revision += 1;
-    let running = build_receipt(
-        installation_id,
-        &command.command_id,
-        revision,
-        ClientHealthCommandState::Running,
-        None,
-        None,
-    );
-    if let Some(server_rev) = post_receipt(api_url, jwt, &running).await? {
-        revision = server_rev;
+    if matches!(
+        command.state,
+        ClientHealthCommandState::Queued | ClientHealthCommandState::Acknowledged
+    ) {
+        revision += 1;
+        let running = build_receipt(
+            installation_id,
+            &command.command_id,
+            revision,
+            ClientHealthCommandState::Running,
+            None,
+            None,
+        );
+        match post_receipt(api_url, jwt, &running).await {
+            Ok(ReceiptOutcome::Applied(server_rev)) => {
+                if let Some(r) = server_rev {
+                    revision = r;
+                }
+            }
+            Ok(ReceiptOutcome::Conflict) => return StepOutcome::Conflict,
+            Err(e) => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "command {} running receipt transport failure: {e}",
+                        command.command_id
+                    ),
+                );
+                return StepOutcome::Retry;
+            }
+        }
     }
 
+    // Every reachable path here (queued, acknowledged, running) still needs
+    // the terminal receipt submitted.
+    //
     // Probes never mutate sync/updater/auth state and never propagate a
     // panic — every failure funnels into a closed check result (AC #5).
     let checks = run_all_probes().await;
@@ -474,8 +631,20 @@ async fn execute_check_now(
         Some(checks),
         overall_reason,
     );
-    post_receipt(api_url, jwt, &terminal).await?;
-    Ok(())
+    match post_receipt(api_url, jwt, &terminal).await {
+        Ok(ReceiptOutcome::Applied(_)) => StepOutcome::Done,
+        Ok(ReceiptOutcome::Conflict) => StepOutcome::Conflict,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "command {} terminal receipt transport failure: {e}",
+                    command.command_id
+                ),
+            );
+            StepOutcome::Retry
+        }
+    }
 }
 
 // ─── One poll cycle ───────────────────────────────────────────────────────────
@@ -513,17 +682,27 @@ async fn poll_once_inner() -> Result<(), String> {
             continue;
         }
         with_state(|state| state.begin(&command.command_id))?;
-        let result = execute_check_now(&api_url, &access_token, &installation_id, &command).await;
-        // Mark complete regardless of transport outcome on the terminal
-        // receipt: a failed POST leaves the server row non-terminal, so the
-        // NEXT poll will see it again in the desired-state list and retry —
-        // the local ledger only needs to prevent a same-cycle double-run.
-        with_state(|state| state.complete(&command.command_id))?;
-        if let Err(e) = result {
-            log(
-                LOG_TAG,
-                &format!("command {} execution error: {e}", command.command_id),
-            );
+        // Only a genuinely accepted terminal receipt (or a confirmed
+        // superseded/expired server state) marks the command locally
+        // complete. A transport failure anywhere in the chain (including on
+        // the terminal POST) leaves the command `in_flight` and OUT of
+        // `completed_ids`, so the NEXT poll sees it again in the
+        // desired-state list, reads its ACTUAL server-reported state, and
+        // resumes from there — never re-executes from scratch, and never
+        // permanently drops it.
+        match execute_check_now(&api_url, &access_token, &installation_id, &command).await {
+            ExecutionOutcome::Done => {
+                with_state(|state| state.complete(&command.command_id))?;
+            }
+            ExecutionOutcome::Retry => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "command {} did not reach a terminal outcome this poll; will retry next poll",
+                        command.command_id
+                    ),
+                );
+            }
         }
     }
     Ok(())
@@ -817,6 +996,376 @@ mod tests {
         assert!(
             requests.iter().all(|r| r.url.path() != "/v1/client-health/commands/receipt"),
             "must not resubmit a receipt for a locally-completed command"
+        );
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    // ── Idempotency/lifecycle regressions (BLOCKING-1/2/3) ───────────────────
+
+    /// BLOCKING-1: a transient transport failure on ANY receipt in the chain
+    /// (here, the `running` POST) must leave the command retryable — NOT in
+    /// `completed_ids`, still `in_flight` — so the very next poll resumes
+    /// and (once the transient failure clears) reaches a terminal receipt.
+    /// Before the fix, `poll_once_inner` unconditionally called
+    /// `state.complete()` after `execute_check_now` regardless of its
+    /// result, which would have marked this command complete on the FIRST
+    /// poll despite no terminal receipt ever being accepted.
+    #[tokio::test]
+    async fn transient_receipt_failure_stays_retryable_and_next_poll_completes_it() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "commands": [{
+                    "commandId": "cmd-transient",
+                    "kind": "CHECK_NOW",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let running_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = running_attempts.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                if body["state"] == "running" {
+                    let attempt = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt == 0 {
+                        // First attempt at the `running` receipt: simulate a
+                        // transient transport failure (e.g. a network blip).
+                        return ResponseTemplate::new(500).set_body_string("boom");
+                    }
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"machineId":"inst-transient-4f9d2c1a8b7e"}"#,
+        )
+        .unwrap();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // First poll: acknowledged succeeds, running transport-fails, so the
+        // chain stops there — no terminal receipt is ever posted this poll.
+        poll_once_inner().await.expect("poll succeeds even though a receipt failed");
+
+        let completed_after_first_poll =
+            with_state(|s| s.is_completed("cmd-transient")).unwrap();
+        assert!(
+            !completed_after_first_poll,
+            "a transient transport failure must NOT mark the command locally complete"
+        );
+        let in_flight = with_state(|s| s.in_flight_command_id.clone()).unwrap();
+        assert_eq!(
+            in_flight.as_deref(),
+            Some("cmd-transient"),
+            "the command must remain in_flight for the next poll to retry"
+        );
+
+        // Second poll: the transient failure has cleared — the command
+        // reaches a terminal receipt and is marked complete.
+        poll_once_inner().await.expect("second poll succeeds");
+        let completed_after_second_poll =
+            with_state(|s| s.is_completed("cmd-transient")).unwrap();
+        assert!(
+            completed_after_second_poll,
+            "once a terminal receipt is genuinely accepted, the command must be marked complete"
+        );
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// BLOCKING-2: restart-resume must branch on the command's ACTUAL
+    /// server-reported state from the desired-state GET, not blindly replay
+    /// `acknowledged -> running -> terminal` from scratch. Simulates: the
+    /// app posted `acknowledged` before a crash, then restarted; the GET
+    /// now reports `state: "acknowledged"`. Resumed execution must start at
+    /// `running`, never re-post `acknowledged` (which the backend would
+    /// reject as an illegal transition, `queued->acknowledged` /
+    /// `acknowledged->running|failed` / `running->succeeded|failed`).
+    #[tokio::test]
+    async fn restart_resume_from_acknowledged_state_starts_at_running_not_from_scratch() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "commands": [{
+                    "commandId": "cmd-resume-acked",
+                    "kind": "CHECK_NOW",
+                    "state": "acknowledged",
+                    "revision": 1,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"machineId":"inst-resume-acked-0001"}"#,
+        )
+        .unwrap();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // Simulate the pre-crash state: begin() was called, no completion yet.
+        with_state(|s| s.begin("cmd-resume-acked")).unwrap();
+
+        poll_once_inner().await.expect("resumed poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let receipts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/commands/receipt")
+            .collect();
+        let states: Vec<String> = receipts
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["state"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            states.len(),
+            2,
+            "resume from `acknowledged` must submit exactly [running, terminal], got {states:?}"
+        );
+        assert_eq!(
+            states[0], "running",
+            "resume from `acknowledged` must start at `running`, never re-post `acknowledged`"
+        );
+        assert!(
+            states[1] == "succeeded" || states[1] == "failed",
+            "the second receipt must be a terminal state, got {states:?}"
+        );
+
+        let completed = with_state(|s| s.is_completed("cmd-resume-acked")).unwrap();
+        assert!(completed);
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// BLOCKING-2 (running leg): resume from a `running` server state must
+    /// submit ONLY the terminal receipt — the probes reran, and the running
+    /// receipt was already accepted before the crash.
+    #[tokio::test]
+    async fn restart_resume_from_running_state_submits_only_the_terminal_receipt() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "commands": [{
+                    "commandId": "cmd-resume-running",
+                    "kind": "CHECK_NOW",
+                    "state": "running",
+                    "revision": 2,
+                    "createdAt": "2026-09-03T17:00:00.000Z",
+                    "expiresAt": "2026-09-03T18:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"machineId":"inst-resume-running-0001"}"#,
+        )
+        .unwrap();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        with_state(|s| s.begin("cmd-resume-running")).unwrap();
+
+        poll_once_inner().await.expect("resumed poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let receipts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/commands/receipt")
+            .collect();
+        assert_eq!(
+            receipts.len(),
+            1,
+            "resume from `running` must submit exactly one (terminal) receipt"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&receipts[0].body).unwrap();
+        let state = body["state"].as_str().unwrap();
+        assert!(
+            state == "succeeded" || state == "failed",
+            "the sole receipt submitted on resume-from-running must be terminal, got {state}"
+        );
+
+        let completed = with_state(|s| s.is_completed("cmd-resume-running")).unwrap();
+        assert!(completed);
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// BLOCKING-3: a 409 on a receipt POST (illegal transition / stale
+    /// revision — the server row already moved on) must trigger a
+    /// re-fetch-and-resume from the server's ACTUAL current state, never an
+    /// aborted chain nor a local `complete()`. Simulates a race: this
+    /// client's `acknowledged` receipt is rejected with 409 because another
+    /// actor already advanced the command to `running` server-side; the
+    /// re-fetch must observe that and submit only the terminal receipt from
+    /// there, reaching a genuine terminal outcome without ever re-sending
+    /// `acknowledged` again or giving up.
+    #[tokio::test]
+    async fn conflict_409_triggers_resync_and_resume_instead_of_local_completion() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        let get_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let get_counter = get_calls.clone();
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let call = get_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if call == 0 {
+                    ResponseTemplate::new(200).set_body_json(&json!({
+                        "commands": [{
+                            "commandId": "cmd-409-race",
+                            "kind": "CHECK_NOW",
+                            "state": "queued",
+                            "revision": 0,
+                            "createdAt": "2026-09-03T17:00:00.000Z",
+                            "expiresAt": "2026-09-03T18:00:00.000Z"
+                        }]
+                    }))
+                } else {
+                    // Re-sync fetch: the server says another actor already
+                    // advanced this command to `running` at a higher revision.
+                    ResponseTemplate::new(200).set_body_json(&json!({
+                        "commands": [{
+                            "commandId": "cmd-409-race",
+                            "kind": "CHECK_NOW",
+                            "state": "running",
+                            "revision": 2,
+                            "createdAt": "2026-09-03T17:00:00.000Z",
+                            "expiresAt": "2026-09-03T18:00:00.000Z"
+                        }]
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                if body["state"] == "acknowledged" {
+                    return ResponseTemplate::new(409).set_body_string("RECEIPT_REJECTED");
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"machineId":"inst-409-race-0001"}"#,
+        )
+        .unwrap();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        poll_once_inner().await.expect("poll succeeds despite a 409 mid-chain");
+
+        let requests = server.received_requests().await.unwrap();
+        let receipts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/commands/receipt")
+            .collect();
+        let states: Vec<String> = receipts
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["state"].as_str().unwrap().to_string()
+            })
+            .collect();
+        // Exactly one rejected `acknowledged` attempt, then a terminal
+        // receipt from the resynced `running` state — no re-sent
+        // `acknowledged`, no `running` receipt (already past that phase).
+        assert_eq!(states.len(), 2, "expected [acknowledged(409), terminal], got {states:?}");
+        assert_eq!(states[0], "acknowledged");
+        assert!(states[1] == "succeeded" || states[1] == "failed");
+
+        assert!(
+            get_calls.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "a 409 must trigger a re-fetch of the desired-state GET"
+        );
+
+        let completed = with_state(|s| s.is_completed("cmd-409-race")).unwrap();
+        assert!(
+            completed,
+            "after resync-and-resume reaches a genuine terminal receipt, the command must be marked complete"
         );
 
         std::env::remove_var("HQ_TEST_HOME");
