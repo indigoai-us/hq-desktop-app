@@ -49,6 +49,15 @@
   import ShellSettings, {
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
+  import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
+  import {
+    dismissRecommendBanner,
+    installRecommendedUpdate,
+    orchestrationAdapterFrom,
+    updateStore,
+    type UpdateStoreAdapter,
+  } from "../settings/update-store.svelte";
+  import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
@@ -448,6 +457,38 @@
   const hasWindowControls = $derived(
     adapter?.capabilities?.hasWindowControls ?? false,
   );
+  const recommendBanner = $derived(updateStore.recommendBanner);
+  let recommendInstalling = $state(false);
+
+  function updateOrchAdapter(): UpdateStoreAdapter {
+    const updates = adapter.updates;
+    return orchestrationAdapterFrom({
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+  }
+
+  async function handleRecommendedUpdateNow(): Promise<void> {
+    if (recommendInstalling || !adapter.isAvailable("canSelfUpdate")) return;
+    recommendInstalling = true;
+    try {
+      await installRecommendedUpdate(updateOrchAdapter());
+    } finally {
+      recommendInstalling = false;
+    }
+  }
 
   /**
    * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
@@ -2622,6 +2663,16 @@
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
   />
+
+  {#if recommendBanner}
+    <RecommendedUpdateBanner
+      version={recommendBanner.version}
+      message={recommendBanner.message}
+      installing={recommendInstalling}
+      onupdate={() => void handleRecommendedUpdateNow()}
+      ondismiss={dismissRecommendBanner}
+    />
+  {/if}
 
   {#if embeddedNavigationError}
     <div

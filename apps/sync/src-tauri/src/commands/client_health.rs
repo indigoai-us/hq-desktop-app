@@ -990,6 +990,7 @@ mod tests {
                 body: None,
                 date: None,
                 detected_at: "2026-09-03T17:00:00.000Z".to_string(),
+                waiting_for_idle_secs: None,
             })),
             ClientHealthUpdaterState::UpdateAvailable
         );
@@ -1453,6 +1454,7 @@ mod tests {
             body: None,
             date: None,
             detected_at: "2026-09-03T17:00:00.000Z".to_string(),
+            waiting_for_idle_secs: None,
         }));
         assert_eq!(
             with_state(|s| s.updater_state.clone()).unwrap().as_deref(),

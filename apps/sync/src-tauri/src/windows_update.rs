@@ -585,9 +585,9 @@ pub async fn install_verified_bytes(
     update: &Update,
     bytes: &[u8],
 ) -> Result<(), String> {
-    if crate::updater::sync_in_progress() {
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
-    }
+    // Sync-idle deferral is decided by `updater::deferral_decision` before this
+    // path runs. Manual and forced installs must not be bounced here, and the
+    // automatic waiter only arrives after an idle gap or the 10-minute cap.
 
     let staged = stage_update(bytes, &update.version)?;
     let mut helper = match spawn_helper(&staged) {
@@ -617,12 +617,10 @@ pub async fn install_verified_bytes(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Recheck after the download and helper startup. A manual sync gets to
-    // finish; the updater will retry instead of interrupting it.
-    if crate::updater::sync_in_progress() {
-        stop_helper_and_cleanup(&mut helper, &staged);
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
-    }
+    // Rechecking here used to bounce the install back into an unbounded
+    // "sync is active" deferral. The bounded waiter (or a manual/forced
+    // trigger) has already decided to proceed; quiesce will stop the
+    // in-flight pass instead of waiting forever.
     let quiescence = match crate::commands::process::quiesce_for_update(PROCESS_EXIT_TIMEOUT) {
         Ok(quiescence) => quiescence,
         Err(error) => {
