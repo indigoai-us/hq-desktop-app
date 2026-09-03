@@ -14,6 +14,8 @@ export { default as EmojiPicker } from "./EmojiPicker.svelte";
 export { default as IdentityMark } from "./IdentityMark.svelte";
 export * from "./agent-avatars";
 export { default as SystemEventLine } from "./SystemEventLine.svelte";
+export { default as RichMessageContent } from "./RichMessageContent.svelte";
+export * from "./richMessageContent";
 export { default as WorkMeshActivityRow } from "./WorkMeshActivityRow.svelte";
 export * from "./workSessionEvent";
 export * from "./channelMessageModels";
