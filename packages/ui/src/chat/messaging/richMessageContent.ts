@@ -97,7 +97,72 @@ export interface MarkdownBlock {
   text: string;
 }
 
-export type RichBlock = StatBlock | TableBlock | ChartBlock | MarkdownBlock;
+/**
+ * Closed tone enum shared by `badge` and `progress`. The agent may only pick
+ * one of these names; the renderer maps the name to one of its OWN CSS classes,
+ * so an agent never supplies a raw color/style. An unknown value collapses to
+ * `neutral` (see {@link parseBadgeTone}).
+ */
+export type BadgeTone = "neutral" | "success" | "warning" | "danger" | "accent";
+
+/**
+ * Closed tone enum for `callout`. Same rule as {@link BadgeTone}: name → class,
+ * never a raw value; unknown collapses to `info`.
+ */
+export type CalloutTone = "info" | "success" | "warning" | "danger";
+
+/** A small inline status pill: a text label + a closed-enum tone. */
+export interface BadgeBlock {
+  kind: "badge";
+  label: string;
+  /** Closed enum → CSS class only; never a raw color/style. */
+  tone: BadgeTone;
+}
+
+/** One row of a key→value definition list; both sides are sanitized text. */
+export interface KeyValueRow {
+  key: string;
+  value: string;
+}
+
+/** An aligned two-column definition list (label → value). */
+export interface KeyValueBlock {
+  kind: "keyValue";
+  items: KeyValueRow[];
+}
+
+/** A meter/bar with a numeric percentage (0..100, clamped) rendered as text. */
+export interface ProgressBlock {
+  kind: "progress";
+  label?: string;
+  /** Percentage in [0, 100]; the parser clamps out-of-range/NaN values. */
+  value: number;
+  /** Optional closed-enum tone → CSS class; omitted when absent. */
+  tone?: BadgeTone;
+}
+
+/**
+ * A bordered/tinted note banner. `body` is the ONLY markup path here and it is
+ * routed through the same CSP-safe markdown renderer the message body uses
+ * (no raw-HTML passthrough, validated hrefs only) — it is never agent-authored
+ * HTML. `tone` is a closed enum the renderer maps to a class + icon.
+ */
+export interface CalloutBlock {
+  kind: "callout";
+  tone: CalloutTone;
+  title?: string;
+  body: string;
+}
+
+export type RichBlock =
+  | StatBlock
+  | TableBlock
+  | ChartBlock
+  | MarkdownBlock
+  | BadgeBlock
+  | KeyValueBlock
+  | ProgressBlock
+  | CalloutBlock;
 
 export interface RichContentModel {
   blocks: RichBlock[];
@@ -109,6 +174,10 @@ export const KNOWN_BLOCK_KINDS = new Set<string>([
   "table",
   "chart",
   "markdown",
+  "badge",
+  "keyValue",
+  "progress",
+  "callout",
 ]);
 
 /** Hard caps so a hostile/oversized payload cannot freeze the render loop. */
@@ -121,6 +190,7 @@ const MAX_CHART_POINTS = 200;
 const MAX_TEXT_LEN = 4_000;
 const MAX_CELL_LEN = 500;
 const MAX_LABEL_LEN = 200;
+const MAX_KV_ITEMS = 50;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -160,6 +230,24 @@ function parseAlign(value: unknown): BlockAlign | null {
   return value === "left" || value === "center" || value === "right"
     ? value
     : null;
+}
+
+/** Coerce any agent value to a valid {@link BadgeTone}; unknown → `neutral`. */
+function parseBadgeTone(value: unknown): BadgeTone {
+  return value === "success" ||
+    value === "warning" ||
+    value === "danger" ||
+    value === "accent" ||
+    value === "neutral"
+    ? value
+    : "neutral";
+}
+
+/** Coerce any agent value to a valid {@link CalloutTone}; unknown → `info`. */
+function parseCalloutTone(value: unknown): CalloutTone {
+  return value === "success" || value === "warning" || value === "danger" || value === "info"
+    ? value
+    : "info";
 }
 
 function parseStatBlock(raw: Record<string, unknown>): StatBlock | null {
@@ -249,6 +337,53 @@ function parseMarkdownBlock(raw: Record<string, unknown>): MarkdownBlock | null 
   return text ? { kind: "markdown", text } : null;
 }
 
+function parseBadgeBlock(raw: Record<string, unknown>): BadgeBlock | null {
+  const label = toSafeText(raw.label, MAX_LABEL_LEN);
+  if (!label) return null;
+  return { kind: "badge", label, tone: parseBadgeTone(raw.tone) };
+}
+
+function parseKeyValueBlock(raw: Record<string, unknown>): KeyValueBlock | null {
+  const rawItems = Array.isArray(raw.items) ? raw.items : [];
+  const items: KeyValueRow[] = [];
+  for (const entry of rawItems.slice(0, MAX_KV_ITEMS)) {
+    if (!isRecord(entry)) continue;
+    const key = toSafeText(entry.key, MAX_LABEL_LEN);
+    const value = toSafeText(entry.value, MAX_CELL_LEN);
+    if (!key && !value) continue;
+    items.push({ key, value });
+  }
+  return items.length > 0 ? { kind: "keyValue", items } : null;
+}
+
+function parseProgressBlock(raw: Record<string, unknown>): ProgressBlock | null {
+  const value = toFiniteNumber(raw.value);
+  if (value === null) return null;
+  const clamped = Math.min(100, Math.max(0, value));
+  const label = toSafeText(raw.label, MAX_LABEL_LEN);
+  // Only carry a tone when the agent supplied one; an unknown value collapses
+  // to `neutral` rather than a raw pass-through.
+  const tone = raw.tone != null ? parseBadgeTone(raw.tone) : undefined;
+  return {
+    kind: "progress",
+    ...(label ? { label } : {}),
+    value: clamped,
+    ...(tone ? { tone } : {}),
+  };
+}
+
+function parseCalloutBlock(raw: Record<string, unknown>): CalloutBlock | null {
+  const body = toSafeText(raw.body, MAX_TEXT_LEN);
+  if (!body) return null;
+  const title = toSafeText(raw.title, MAX_LABEL_LEN);
+  return {
+    kind: "callout",
+    tone: parseCalloutTone(raw.tone),
+    ...(title ? { title } : {}),
+    body,
+  };
+}
+
 function parseBlock(raw: unknown): RichBlock | null {
   if (!isRecord(raw)) return null;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
@@ -261,6 +396,14 @@ function parseBlock(raw: unknown): RichBlock | null {
       return parseChartBlock(raw);
     case "markdown":
       return parseMarkdownBlock(raw);
+    case "badge":
+      return parseBadgeBlock(raw);
+    case "keyValue":
+      return parseKeyValueBlock(raw);
+    case "progress":
+      return parseProgressBlock(raw);
+    case "callout":
+      return parseCalloutBlock(raw);
     // `genui` (and any future arbitrary-markup kind) is DESIGN-ONLY and gated.
     // While GENUI_ENABLED is false it is dropped here so nothing renders.
     case "genui":
@@ -352,4 +495,60 @@ export function richContentForMessage(message: {
   const fromField = parseRichContent(message.richContent);
   if (fromField) return { text: body, rich: fromField };
   return extractRichContentFromBody(body);
+}
+
+/**
+ * Reduce a single block to a plain-text line. Every block kind must contribute
+ * a sensible, human-readable projection so a text-only surface (notification,
+ * old client, screen reader summary) still conveys the block's content. Values
+ * are already sanitized by the parser, so this only joins them.
+ */
+function blockToPlainText(block: RichBlock): string {
+  switch (block.kind) {
+    case "markdown":
+      return block.text;
+    case "stat":
+      return block.items
+        .map(
+          (i) =>
+            `${i.label}: ${i.value}${i.delta ? ` (${i.delta})` : ""}`.trim(),
+        )
+        .join("  ·  ");
+    case "table": {
+      const header = block.columns.length > 0 ? block.columns.join(" | ") : "";
+      const rows = block.rows.map((r) => r.join(" | "));
+      return [block.caption, header, ...rows].filter(Boolean).join("\n");
+    }
+    case "chart":
+      return (
+        block.caption ||
+        `${block.chartType} chart: ${block.series.map((s) => s.name).filter(Boolean).join(", ")}`.trim()
+      );
+    case "badge":
+      return block.label;
+    case "keyValue":
+      return block.items
+        .map((row) => `${row.key}: ${row.value}`.trim().replace(/^:\s*/, ""))
+        .join("\n");
+    case "progress":
+      return `${block.label ? `${block.label}: ` : ""}${block.value}%`;
+    case "callout":
+      return `${block.title ? `${block.title} — ` : ""}${block.body}`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Project a parsed rich-content model down to a plain-text fallback. This backs
+ * the "rich content is always additive" guarantee for surfaces that cannot
+ * render blocks: each block contributes readable text, joined with blank lines.
+ */
+export function richContentToPlainText(model: RichContentModel): string {
+  return model.blocks
+    .map((block) => blockToPlainText(block))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
