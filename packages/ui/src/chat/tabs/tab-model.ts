@@ -10,6 +10,7 @@ import {
   type LifecycleCardActionEvent,
   type LifecycleCardModel,
 } from "../messaging/channelMessageModels.js";
+import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
 
 export const COMPANY_CHANNEL_TABS = [
   { id: "chat", label: "Chat" },
@@ -35,6 +36,7 @@ export interface CompanyTabModel {
   viewer: { canAct: boolean; role?: string };
   sections: CompanyTabSectionModel[];
   appearance?: { name?: string; wallpaper?: string };
+  graph?: AtlasGraph;
 }
 
 export interface CompanyTabActionEvent extends LifecycleCardActionEvent {
@@ -108,6 +110,7 @@ export function parseCompanyTab(raw: unknown): CompanyTabModel | null {
               : undefined,
         }
       : undefined,
+    graph: parseAtlasGraph(row.graph) ?? undefined,
   };
 }
 
