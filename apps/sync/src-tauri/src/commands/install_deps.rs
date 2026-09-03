@@ -1791,14 +1791,25 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     }
 
     // Run `<tool> --version` and capture the first line of stdout.
+    //
+    // PATH is set to the same search path used to locate the tool: npm-global
+    // bins (qmd, hq, claude) are `#!/usr/bin/env node` scripts, and a GUI
+    // app's minimal PATH has no node, so the probe used to report
+    // `version: None` for a perfectly healthy qmd. A non-zero exit is a
+    // FAILED probe — a leftover stub that prints and exits 97 must not be
+    // mistaken for a working tool (install matrix `stale-toolchain`, 2026-09-03).
+    let probe_path = search_path
+        .map(str::to_owned)
+        .unwrap_or_else(extended_search_path);
     let version = Command::new(&bin_path)
         .arg("--version")
+        .env("PATH", probe_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .ok()
         .and_then(|out| {
-            if out.status.success() || !out.stdout.is_empty() {
+            if out.status.success() {
                 // Prefer stdout; fall back to stderr (e.g. git)
                 let raw = if !out.stdout.is_empty() {
                     out.stdout
@@ -5234,6 +5245,12 @@ fn dep_status_satisfies(dep: &DepDef, status: &DepStatus) -> bool {
     if dep.id == "node" {
         return node_version_meets_floor(status.version.as_deref());
     }
+    // A required tool that is on disk but cannot report a version does not
+    // run (broken shebang target, stale stub, wrong arch). Treat it as
+    // unsatisfied so the installer re-provisions instead of trusting it.
+    if !dep.optional && status.version.is_none() {
+        return false;
+    }
     true
 }
 
@@ -7116,5 +7133,22 @@ mod managed_node_health_tests {
         let p = stub(tmp.path(), "#!/bin/sh\necho v16.20.2\n");
         assert_ne!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
         assert_eq!(managed_node_reported_version(std::path::Path::new("/nonexistent/node")), None);
+    }
+}
+
+#[cfg(test)]
+mod dep_health_tests {
+    use super::*;
+
+    #[test]
+    fn required_dep_on_disk_without_a_version_is_not_satisfied() {
+        let qmd = dependency_defs().iter().find(|d| d.id == "qmd").unwrap();
+        let stub = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/qmd")) };
+        assert!(!dep_status_satisfies(qmd, &stub));
+        let healthy = DepStatus { installed: true, version: Some("qmd 2.5.3".into()), path: Some(PathBuf::from("/x/qmd")) };
+        assert!(dep_status_satisfies(qmd, &healthy));
+        let gh = dependency_defs().iter().find(|d| d.id == "gh").unwrap();
+        let opt_no_version = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/gh")) };
+        assert!(dep_status_satisfies(gh, &opt_no_version));
     }
 }
