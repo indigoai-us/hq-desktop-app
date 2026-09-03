@@ -69,7 +69,7 @@ describe("ArtifactPanel body", () => {
 
 describe("ArtifactPanel controls", () => {
   it("Copy writes the full content to the clipboard", async () => {
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn(async (_text: string) => {});
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
@@ -80,7 +80,7 @@ describe("ArtifactPanel controls", () => {
       ?.click();
     await Promise.resolve();
     await Promise.resolve();
-    const written = writeText.mock.calls[0][0] as string;
+    const written = writeText.mock.calls[0]?.[0] ?? "";
     expect(written).toContain("Paragraph one.");
     expect(written).toContain("TAIL LINE");
     expect(written.length).toBeGreaterThan(1500);

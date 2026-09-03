@@ -96,7 +96,7 @@ describe("ArtifactCard opening", () => {
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     flushSync();
     expect(onopen).toHaveBeenCalledTimes(1);
-    const artifact = onopen.mock.calls[0][0] as ChatArtifact;
+    const artifact = onopen.mock.calls[0]?.[0] as ChatArtifact;
     expect(artifact.text).toBe(LONG);
     expect(artifact.text).toContain("TAIL");
     expect(artifact.id).toBe("evt-1:details");
@@ -123,7 +123,7 @@ describe("ArtifactCard opening", () => {
   });
 
   it("copies the full content without opening the pane", async () => {
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn(async (_text: string) => {});
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
