@@ -1157,6 +1157,19 @@
       track(
         wakes.on("channel:new-message", (payload) => {
           const { channelId } = payload;
+          const stamp =
+            typeof payload.createdAt === "string" && payload.createdAt
+              ? payload.createdAt
+              : undefined;
+          // Stamp activity FIRST so own sends and the open channel still move
+          // under TODAY. The unread gate used to be the only caller, which
+          // left the row in an older day fold.
+          if (stamp) {
+            channels = applyChannelMessageWake(channels, {
+              channelId,
+              createdAt: stamp,
+            });
+          }
           const bump = shouldBumpChannelUnread({
             selectedId: selectedId ?? activeId,
             channelId,
@@ -1164,11 +1177,9 @@
             selfUid: self?.uid,
           });
           const absoluteUnread = payload.absoluteUnread === true;
-          // One-row cache patch from the wake specifics. Do not refetch the
-          // directory (or the DM inbox) for a single channel message.
+          if (!bump && !absoluteUnread) return;
           channels = applyChannelMessageWake(channels, {
             channelId,
-            createdAt: payload.createdAt,
             unread: absoluteUnread ? payload.unread : bump ? undefined : payload.unread,
             unreadDelta: absoluteUnread ? 0 : bump ? 1 : 0,
           });

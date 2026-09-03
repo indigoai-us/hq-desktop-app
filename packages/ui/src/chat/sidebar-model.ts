@@ -792,19 +792,24 @@ function groupRosterKey(row: ConversationRow): string | null {
 /**
  * Map one server-shaped directory row onto the sidebar's `Channel` shape.
  *
- * The directory row is AUTHORITATIVE for every directory field — name, scope,
- * companyUid, unread, memberCount, mentionFlag, and especially
- * `lastActivityAt`: a `null` there means the channel is EMPTY, so the mapped
- * channel carries no `lastMessageAt` / `createdAt` / `arrivedAt` fallback the
- * grouping could mistake for activity (an empty channel must NEVER bucket
- * under "today"). Enrichment the directory does not carry (group-DM roster,
- * membership, post policy, project binding) is preserved from the previously
- * hydrated channel when available.
+ * The directory row is AUTHORITATIVE for identity fields — name, scope,
+ * companyUid, unread, memberCount, mentionFlag. Activity is the NEWER of the
+ * directory stamp and any locally observed `lastActivityAt` / `lastMessageAt`
+ * (own sends and loaded timelines). A stale snapshot must not rewind a
+ * channel out of TODAY. A null directory stamp with no local activity still
+ * means empty — no arrivedAt / createdAt fabrication. Enrichment the
+ * directory does not carry (group-DM roster, membership, post policy, project
+ * binding) is preserved from the previously hydrated channel when available.
  */
 export function directoryRowToChannel(
   row: ChannelDirectoryRow,
   prev?: Channel,
 ): Channel {
+  const activity = newestIso(
+    row.lastActivityAt,
+    prev?.lastActivityAt,
+    prev?.lastMessageAt,
+  );
   return {
     channelId: row.channelId,
     name: row.name || prev?.name || "",
@@ -818,9 +823,10 @@ export function directoryRowToChannel(
       ? { members: row.members ?? prev?.members }
       : {}),
     projectId: row.projectId ?? prev?.projectId ?? null,
-    // Directory-authoritative activity. Null stays null — no arrivedAt /
-    // createdAt / lastMessageAt fabrication.
-    lastActivityAt: row.lastActivityAt,
+    lastActivityAt: activity,
+    ...(activity
+      ? { lastMessageAt: newestIso(prev?.lastMessageAt, activity) }
+      : {}),
     unread: mergeDirectoryUnread({
       incomingUnread: row.unreadCount,
       incomingActivityAt: row.lastActivityAt,

@@ -207,6 +207,7 @@
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
+    channelActivityFromTimeline,
     dmActivityFromInboxPage,
     dmActivityFromThreadsPage,
     dmActivityFromTimeline,
@@ -730,6 +731,8 @@
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
   const lastDmTimelineStampByUid = new Map<string, string>();
+  /** Last rail activity stamp emitted from a committed channel timeline. */
+  const lastChannelTimelineStampById = new Map<string, string>();
   /**
    * GET /v1/notify/dm-threads answered 404 for this tenant — the server
    * predates the peer index. Stop asking; the inbox path still runs.
@@ -783,7 +786,21 @@
           wakes?.emit?.("dm:pair-unreads", { activity: [entry] });
         }
       }
+      return;
     }
+    const channelId = row.channelId?.trim() ?? "";
+    if (!channelId) return;
+    const entry = channelActivityFromTimeline(channelId, next);
+    if (!entry) return;
+    const prev = lastChannelTimelineStampById.get(entry.channelId);
+    if (prev && entry.lastMessageAt <= prev) return;
+    lastChannelTimelineStampById.set(entry.channelId, entry.lastMessageAt);
+    wakes?.emit?.("channel:new-message", {
+      channelId: entry.channelId,
+      createdAt: entry.lastMessageAt,
+      ...(entry.fromPersonUid ? { fromPersonUid: entry.fromPersonUid } : {}),
+      ...(entry.eventId ? { eventId: entry.eventId } : {}),
+    });
   }
 
   async function fetchTimelineRaw(
@@ -1775,6 +1792,7 @@
     liveTimelineId = null;
     timelineHydrating = false;
     lastDmTimelineStampByUid.clear();
+    lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     openReplyRootId = null;
     openProfileMember = null;
@@ -1875,6 +1893,13 @@
       return;
     }
     if (timelineHasEvent(liveTimeline, wake.eventId)) return;
+    const wakeAt = (wake.createdAt ?? "").trim();
+    if (
+      wakeAt &&
+      liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+    ) {
+      return;
+    }
     const res = await adapter.messaging.fetchChannel({
       channelId: row.channelId,
       limit: 20,
@@ -2014,6 +2039,7 @@
     void tenantGeneration;
     void tenantCompanyId;
     lastDmTimelineStampByUid.clear();
+    lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     if (!wakes) return;
     untrack(() => {
