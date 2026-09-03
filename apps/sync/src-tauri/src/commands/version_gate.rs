@@ -176,8 +176,13 @@ async fn react_to_decision(app: &AppHandle, decision: &VersionCheckResponse) {
         );
         // Force installs through the bounded updater: skip the 10-minute idle
         // wait, pause new sync cycles, drain in-flight transfers, then install.
+        // A forced install that fails is the ONLY reason a client stays below
+        // the floor once the gate fires, so it must reach the server. Before
+        // this, the failure lived only in `~/.hq/logs/hq-sync.log`, which is
+        // why a stuck cohort was visible as "still old" but never as "cannot
+        // install".
         if let Err(e) = crate::updater::install_stable_update(app).await {
-            log("version-gate", &format!("safe install failed: {e}"));
+            crate::updater::report_install_failure("version-gate", &e);
         }
         return;
     }

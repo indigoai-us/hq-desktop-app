@@ -65,8 +65,10 @@ const HEARTBEAT_SESSION_RETRY: Duration = Duration::from_secs(30);
 /// Short debounce after a state-change trigger so one user action that flips
 /// several flags (pause + workspace toggles) coalesces into one heartbeat.
 const STATE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(1500);
-/// Same GTM-mapped client name the version heartbeat uses.
-const CLIENT_HEALTH_CLIENT_NAME: &str = "hq-desktop-app";
+/// Same GTM-mapped client name the version heartbeat and the default client
+/// headers use — one shared constant so no reporting channel can drift back to
+/// the sync runner's `hq-sync` name.
+const CLIENT_HEALTH_CLIENT_NAME: &str = hq_desktop_core::client_info::CLIENT_NAME;
 /// Contract ceiling for `sequence` (JS `Number.MAX_SAFE_INTEGER`).
 const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 
