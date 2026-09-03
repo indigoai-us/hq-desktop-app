@@ -5464,7 +5464,7 @@ mod install_deps_planner_tests {
             vec!["node", "yq", "git", "jq"]
         );
 
-        for dep_id in ["node", "yq", "git"] {
+        for dep_id in ["node", "yq", "git", "jq"] {
             let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
             result_by_id.insert(dep.id, ok_result(dep));
             ok_set.insert(dep.id);
