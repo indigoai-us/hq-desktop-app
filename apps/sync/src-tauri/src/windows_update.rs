@@ -639,6 +639,10 @@ pub async fn install_verified_bytes(
         ),
     );
     crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.version).await;
+    // Client health (US-002): best-effort heartbeat before the handoff exits —
+    // reports the staged (installed) version and clears the pending updater
+    // state so the server never sees the dying build + a still-available update.
+    crate::commands::client_health::emit_client_health_after_update(&staged.version).await;
     quiescence.commit();
     app.exit(0);
     Ok(())

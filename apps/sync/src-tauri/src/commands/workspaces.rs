@@ -682,6 +682,12 @@ pub fn set_workspace_sync_enabled(slug: String, enabled: bool) -> Result<bool, S
         return Err("personal sync is managed through settings".to_string());
     }
     write_workspace_sync_enabled(&slug, enabled)?;
+    // Client health (US-002): deliberately NO state-change heartbeat here.
+    // `derive_sync_state` only reflects the GLOBAL cloud pause — a
+    // per-workspace toggle changes neither `syncState` nor `failureReason`,
+    // so notifying would burn a sequence number on a byte-identical payload.
+    // (Reflecting workspace-level pause on the wire needs a contract field
+    // that does not exist yet; do not widen the closed contract from here.)
     Ok(enabled)
 }
 
