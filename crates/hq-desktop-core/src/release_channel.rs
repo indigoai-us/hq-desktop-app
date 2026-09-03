@@ -9,12 +9,9 @@
 //!
 //! Channel storage in `~/.hq/menubar.json` (`releaseChannel`) is the user
 //! preference; the *effective* channel returned by [`effective_channel`]
-//! coerces the preference against [`crate::util::feature_gate::is_indigo_user`]
-//! so a non-`@getindigo.ai` user is never served a pre-release even if their
-//! menubar.json has been hand-edited to `"beta"` or `"alpha"`. This is the
-//! defense-in-depth gate — the Settings UI is the first gate (only
-//! `@getindigo.ai` users see the picker), but a config-file edit must NOT
-//! be sufficient to escape stable.
+//! honours that preference for every signed-in user. Unset / unknown values
+//! default to Stable. Beta and Alpha are opt-in from Settings — they are not
+//! reserved for `@getindigo.ai`.
 //!
 //! Endpoint resolution ([`resolve_channel_endpoint`]) queries the public
 //! GitHub Releases API (`/repos/indigoai-us/hq-desktop-app/releases?per_page=30`),
@@ -182,27 +179,14 @@ pub fn parse_channel_from_tag(tag: &str) -> Option<(ReleaseChannel, semver::Vers
     Some((channel, version))
 }
 
-/// Compute the effective channel for the updater. Combines the user's
-/// stored preference with the indigo-domain gate.
+/// Compute the effective channel for the updater from the stored preference.
 ///
-/// `is_indigo` is taken as an argument (not fetched here) so this fn
-/// stays sync + pure and is trivial to unit-test. The async fetch lives
-/// at the call site in `updater.rs`.
-pub fn effective_channel(stored_pref: Option<&str>, is_indigo: bool) -> ReleaseChannel {
-    let parsed = ReleaseChannel::from_pref(stored_pref);
-    if is_indigo {
-        // Indigo user with no stored preference (None) defaults to Beta:
-        // they auto-opt-in on first launch. An explicit "stable" is
-        // honored — they can downgrade in Settings.
-        match (stored_pref, parsed) {
-            (None, _) => ReleaseChannel::Beta,
-            (Some(_), p) => p,
-        }
-    } else {
-        // Non-indigo: coerce to Stable regardless of stored value. This
-        // is the defense-in-depth gate against hand-edited menubar.json.
-        ReleaseChannel::Stable
-    }
+/// Every signed-in user may opt into Beta or Alpha from Settings. Unset,
+/// empty, or unknown values default to Stable — including a first launch
+/// that has never touched the picker. Pure so the updater and tests share
+/// one implementation.
+pub fn effective_channel(stored_pref: Option<&str>) -> ReleaseChannel {
+    ReleaseChannel::from_pref(stored_pref)
 }
 
 /// Minimal subset of the GitHub Releases API response. We only need the
@@ -429,8 +413,7 @@ fn resolve_endpoint_from_tags(channel: ReleaseChannel, tags: &[String]) -> Resol
 /// that fallback reports no update.
 ///
 /// `channel` MUST already be the effective channel (see
-/// [`effective_channel`]). This fn does not re-gate against indigo
-/// identity.
+/// [`effective_channel`]). This fn does not re-interpret the stored pref.
 pub async fn resolve_channel_endpoint(channel: ReleaseChannel) -> ResolvedChannelEndpoint {
     // Stable always uses the static `/releases/latest/download/` alias.
     // No API call, no rate-limit risk, no extra hop — GitHub already
@@ -499,20 +482,14 @@ mod tests {
     }
 
     #[test]
-    fn stored_channel_preference_drives_resolution_for_eligible_users() {
-        // An explicit selection is honored in both directions.
-        assert_eq!(
-            effective_channel(Some("stable"), true),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(effective_channel(Some("alpha"), true), ReleaseChannel::Alpha);
-        // Never chosen → the derived default, not a forced Stable.
-        assert_eq!(effective_channel(None, true), ReleaseChannel::Beta);
-        // Ineligible users are coerced regardless of what is on disk.
-        assert_eq!(
-            effective_channel(Some("alpha"), false),
-            ReleaseChannel::Stable
-        );
+    fn stored_channel_preference_drives_resolution_for_every_user() {
+        // An explicit selection is honored in both directions, including
+        // for a brand-new non-Indigo account (the former email coerce).
+        assert_eq!(effective_channel(Some("stable")), ReleaseChannel::Stable);
+        assert_eq!(effective_channel(Some("alpha")), ReleaseChannel::Alpha);
+        assert_eq!(effective_channel(Some("beta")), ReleaseChannel::Beta);
+        // Never chosen → Stable, not a forced Beta.
+        assert_eq!(effective_channel(None), ReleaseChannel::Stable);
     }
 
     #[test]
@@ -673,61 +650,40 @@ mod tests {
         );
     }
 
-    // --- effective_channel: the security-critical gate ------------------
+    // --- effective_channel: preference is the only input ----------------
 
     #[test]
-    fn non_indigo_always_coerced_to_stable() {
-        // The whole point of the gate: even if the menubar.json has been
-        // edited to "beta" or "alpha", a non-indigo user gets Stable.
-        assert_eq!(
-            effective_channel(Some("beta"), false),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(
-            effective_channel(Some("alpha"), false),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(
-            effective_channel(Some("stable"), false),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(effective_channel(None, false), ReleaseChannel::Stable);
-        // Junk preference for non-indigo also coerces to Stable.
-        assert_eq!(
-            effective_channel(Some("garbage"), false),
-            ReleaseChannel::Stable
-        );
+    fn non_indigo_beta_pref_is_honored() {
+        // A customer who opts into Beta (or Alpha) from Settings — or by
+        // editing menubar.json — must actually receive that channel. The
+        // former @getindigo.ai coerce-to-Stable gate is gone.
+        assert_eq!(effective_channel(Some("beta")), ReleaseChannel::Beta);
+        assert_eq!(effective_channel(Some("alpha")), ReleaseChannel::Alpha);
+        assert_eq!(effective_channel(Some("stable")), ReleaseChannel::Stable);
+        assert_eq!(effective_channel(None), ReleaseChannel::Stable);
+        assert_eq!(effective_channel(Some("garbage")), ReleaseChannel::Stable);
     }
 
     #[test]
-    fn indigo_with_no_pref_defaults_to_beta() {
-        // Auto-opt-in: indigo users land on Beta on first launch.
-        assert_eq!(effective_channel(None, true), ReleaseChannel::Beta);
+    fn unset_pref_defaults_to_stable_for_everyone() {
+        // First launch, Indigo or not, lands on Stable. Beta is opt-in.
+        assert_eq!(effective_channel(None), ReleaseChannel::Stable);
     }
 
     #[test]
-    fn indigo_with_explicit_pref_honored() {
-        // Indigo users can downgrade to Stable or upgrade to Alpha.
-        assert_eq!(
-            effective_channel(Some("stable"), true),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(effective_channel(Some("beta"), true), ReleaseChannel::Beta);
-        assert_eq!(
-            effective_channel(Some("alpha"), true),
-            ReleaseChannel::Alpha
-        );
+    fn explicit_pref_honored() {
+        assert_eq!(effective_channel(Some("stable")), ReleaseChannel::Stable);
+        assert_eq!(effective_channel(Some("beta")), ReleaseChannel::Beta);
+        assert_eq!(effective_channel(Some("alpha")), ReleaseChannel::Alpha);
     }
 
     #[test]
-    fn indigo_with_garbage_pref_falls_back_to_stable() {
+    fn garbage_pref_falls_back_to_stable() {
         // An explicit-but-unknown value still goes through from_pref,
-        // which coerces to Stable. The auto-opt-in only fires on None.
-        assert_eq!(
-            effective_channel(Some("nightly"), true),
-            ReleaseChannel::Stable
-        );
-        assert_eq!(effective_channel(Some(""), true), ReleaseChannel::Stable);
+        // which coerces to Stable. The auto-opt-in only fires on None,
+        // and None is also Stable.
+        assert_eq!(effective_channel(Some("nightly")), ReleaseChannel::Stable);
+        assert_eq!(effective_channel(Some("")), ReleaseChannel::Stable);
     }
 
     // --- pick_release_for_channel ---------------------------------------

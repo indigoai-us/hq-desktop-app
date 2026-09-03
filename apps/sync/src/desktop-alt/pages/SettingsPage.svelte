@@ -339,9 +339,7 @@
     windowOpacityFromTransparency(appearance.windowTransparency),
   );
 
-  const displayedChannel = $derived<Channel>(
-    releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
-  );
+  const displayedChannel = $derived<Channel>(releaseChannel ?? 'stable');
   const hqPathLabel = $derived(hqPath ? formatHqFolderMeta(hqPath) : 'HQ folder not set');
   const coreHasDrift = $derived((coreState?.driftReport.count ?? 0) > 0);
   const coreChannelPending = $derived(
@@ -1820,8 +1818,8 @@
           />
           <em>Gated</em>
         </label>
-        <label class="setting-row gated-row">
-          <span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span>
+        <label class="setting-row">
+          <span><strong>Release channel</strong><small>Stable is the default. Opt into Beta for pre-release builds.</small></span>
           <select
             disabled={isSettingsControlPending('release-channel') || availableChannels.length <= 1 || coreInstalling}
             aria-busy={isSettingsControlPending('release-channel') || coreInstalling}
@@ -1833,7 +1831,6 @@
               <option value={channel}>{channel}</option>
             {/each}
           </select>
-          <em>Gated</em>
         </label>
         <div class="setting-row">
           <span>

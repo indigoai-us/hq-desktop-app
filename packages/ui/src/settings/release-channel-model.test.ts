@@ -43,6 +43,15 @@ describe("selected channel reflects the host's derived default", () => {
   it("defaults to stable when nothing is known", () => {
     expect(selectedChannel(null, null)).toBe("stable");
   });
+
+  it("a non-Indigo customer who picked Beta keeps Beta", () => {
+    expect(selectedChannel("beta", "stable")).toBe("beta");
+    expect(channelOptions(["stable", "beta", "alpha"]).map((o) => o.id)).toEqual([
+      "stable",
+      "beta",
+      "alpha",
+    ]);
+  });
 });
 
 describe("version ordering", () => {

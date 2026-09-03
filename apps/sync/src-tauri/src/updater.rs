@@ -1,18 +1,19 @@
 //! Tauri auto-updater nag — soft, user-initiated, channel-aware.
 //!
 //! Three channels (`util::release_channel::ReleaseChannel`):
-//!   - Stable — every user. Polls the static
+//!   - Stable — default for every user. Polls the static
 //!     `releases/latest/download/latest.json` alias that GitHub already
 //!     filters to non-prereleases.
-//!   - Beta   — `@getindigo.ai` users by default. Newer of (stable, beta).
-//!   - Alpha  — `@getindigo.ai` opt-in via Settings. Newest of anything.
+//!   - Beta   — opt-in from Settings for any signed-in user. Newer of
+//!     (stable, beta).
+//!   - Alpha  — opt-in from Settings for any signed-in user. Newest of
+//!     anything.
 //!
-//! Gating is layered:
-//!   1. The Settings UI only renders the channel picker for
-//!      `@getindigo.ai` users (`available_channels` command).
-//!   2. The Rust-side resolver (`effective_channel`) coerces a non-indigo
-//!      preference to Stable regardless of what's in `menubar.json` — a
-//!      hand-edited config can't escape stable.
+//! Resolution:
+//!   1. The Settings UI offers Stable / Beta / Alpha to every signed-in
+//!      user (`available_channels` command).
+//!   2. The Rust-side resolver (`effective_channel`) honours the stored
+//!      preference; unset defaults to Stable.
 //!   3. The endpoint resolver falls back to the static stable alias on
 //!      any GitHub API failure, so prerelease users behind a blocked
 //!      proxy still get stable updates rather than nothing.
@@ -537,13 +538,12 @@ fn read_stored_release_channel() -> Option<String> {
 }
 
 /// Resolve the per-channel updater endpoint URL the background loop and
-/// on-demand command should poll. Combines the stored preference with
-/// the indigo gate, then resolves to a `latest.json` URL via the
+/// on-demand command should poll. Honours the stored preference (Stable
+/// when unset), then resolves to a `latest.json` URL via the
 /// `release_channel` module.
 async fn resolve_endpoint() -> (ReleaseChannel, ResolvedChannelEndpoint) {
     let stored = read_stored_release_channel();
-    let is_indigo = feature_gate::is_indigo_user().await;
-    let channel: ReleaseChannel = effective_channel(stored.as_deref(), is_indigo);
+    let channel: ReleaseChannel = effective_channel(stored.as_deref());
     let resolved = resolve_channel_endpoint(channel).await;
     log(
         "updater",
@@ -976,15 +976,11 @@ pub fn get_downloaded_update(app: AppHandle) -> Option<UpdateInfo> {
 
 #[tauri::command]
 pub async fn available_channels() -> Vec<String> {
-    if feature_gate::is_indigo_user().await {
-        vec![
-            ReleaseChannel::Stable.as_str().to_string(),
-            ReleaseChannel::Beta.as_str().to_string(),
-            ReleaseChannel::Alpha.as_str().to_string(),
-        ]
-    } else {
-        vec![ReleaseChannel::Stable.as_str().to_string()]
-    }
+    vec![
+        ReleaseChannel::Stable.as_str().to_string(),
+        ReleaseChannel::Beta.as_str().to_string(),
+        ReleaseChannel::Alpha.as_str().to_string(),
+    ]
 }
 
 /// Tauri command returning `true` iff the signed-in user's email ends in

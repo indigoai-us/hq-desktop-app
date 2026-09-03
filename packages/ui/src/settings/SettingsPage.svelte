@@ -422,9 +422,7 @@
     windowOpacityFromTransparency(appearance.windowTransparency),
   );
 
-  const displayedChannel = $derived<Channel>(
-    releaseChannel ?? (availableChannels.includes("beta") ? "beta" : "stable"),
-  );
+  const displayedChannel = $derived<Channel>(releaseChannel ?? "stable");
   const hqPathLabel = $derived(
     hqPath ? formatHqFolderMeta(hqPath) : "HQ folder not set",
   );
@@ -2121,10 +2119,10 @@
                   />
                   <em>Gated</em>
                 </label>
-                <label class="setting-row gated-row">
+                <label class="setting-row">
                   <span
                     ><strong>Release channel</strong><small
-                      >@getindigo.ai only. Stable is enforced for everyone else.</small
+                      >Stable is the default. Opt into Beta for pre-release builds.</small
                     ></span
                   >
                   <select
@@ -2144,7 +2142,6 @@
                       <option value={channel}>{channel}</option>
                     {/each}
                   </select>
-                  <em>Gated</em>
                 </label>
                 <div class="setting-row">
                   <span>

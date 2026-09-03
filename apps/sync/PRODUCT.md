@@ -13,7 +13,7 @@ This is a utility, not a destination. Success is the user opening the popover, g
 ## Users
 
 - **Primary: non-technical team members.** They were onboarded onto HQ by someone else. They do not know what a git branch is and never will. They need confidence that sync works and a clear, non-alarming path when it does not.
-- **Secondary: the operator / power user (e.g. @getindigo.ai builders).** They get extra surface gated behind an identity check: release channels, the staging update channel, drift diagnostics, share and DM notifications. For them density is acceptable; for the primary user it must never leak.
+- **Secondary: the operator / power user (e.g. @getindigo.ai builders).** They get extra surface gated behind an identity check: the HQ Core staging update channel and drift diagnostics. Release channels (Stable / Beta / Alpha) are available to every signed-in user from Settings; Stable is the default. For operators density is acceptable; for the primary user it must never leak.
 
 The same binary serves both. Gated features must stay invisible to users who don't have them, so the default experience reads as simple even though the app is capable.
 

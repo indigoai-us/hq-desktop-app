@@ -191,15 +191,9 @@ pub struct MenubarPrefs {
     pub staging_channel: Option<bool>,
     /// Auto-updater release channel: `"stable"`, `"beta"`, or `"alpha"`.
     /// Mapped to a GitHub-tag-suffix filter by
-    /// `util::release_channel::ReleaseChannel::from_pref` and gated by
-    /// `util::feature_gate::is_indigo_user()` — non-`@getindigo.ai` users
-    /// are coerced to `"stable"` at the resolver in `updater.rs`
-    /// regardless of what's stored here, so a hand-edited menubar.json
-    /// cannot escape stable.
-    ///
-    /// Absent in pre-channel-rollout menubar.json files → defaulted in
-    /// `get_settings` to `"beta"` for indigo users (auto-opt-in to
-    /// dogfood the freshest build) and `"stable"` for everyone else.
+    /// `util::release_channel::ReleaseChannel::from_pref`. Any signed-in
+    /// user may opt into Beta or Alpha from Settings; the resolver in
+    /// `updater.rs` honours this field. Absent / unknown → Stable.
     /// See `util::release_channel::effective_channel`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<String>,
