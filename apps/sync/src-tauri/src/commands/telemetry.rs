@@ -1093,8 +1093,10 @@ const VERSION_HEARTBEAT_SESSION_RETRY: Duration = Duration::from_secs(30);
 const VERSION_HEARTBEAT_MACHINE_PREFIX_CHARS: usize = 8;
 /// GTM #142 treats `hq-desktop-app` as an App client. hq-pro's
 /// `lastObservedClients` stores the raw `x-hq-client-name` with no allowlist
-/// (it would not drop this name). Default client headers stay `hq-sync`.
-const VERSION_HEARTBEAT_CLIENT_NAME: &str = "hq-desktop-app";
+/// (it would not drop this name). Sourced from the shared client-attribution
+/// constant so this heartbeat can never drift back to the sync runner's
+/// `hq-sync` name — the drift that made the desktop fleet unmeasurable.
+const VERSION_HEARTBEAT_CLIENT_NAME: &str = hq_desktop_core::client_info::CLIENT_NAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VersionHeartbeatTrigger {

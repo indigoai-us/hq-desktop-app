@@ -298,6 +298,119 @@ pub(crate) enum DeferralDecision {
     PauseThenInstall,
 }
 
+/// Why this installation cannot apply an in-place update, independent of the
+/// updater's own deferral policy.
+///
+/// Field context (the stuck-below-floor cohort): a forced `updateRequired`
+/// install bypasses every deferral, downloads, verifies — and then still leaves
+/// the user on the old build if the running bundle cannot be replaced. Both
+/// causes below are permanent for that installation, so the same user reappears
+/// below the floor after every release. Until this is reported, the server sees
+/// only "still old", never "cannot install".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallBlocker {
+    /// Gatekeeper App Translocation. The bundle is executing from a randomized
+    /// read-only mount because it was launched from a quarantined download
+    /// location instead of being moved to `/Applications`. An in-place update
+    /// either fails outright or writes into a throwaway path, so the next
+    /// launch of the user's original copy is still the old version.
+    Translocated,
+    /// The `.app` bundle directory is not writable by this user (e.g. a
+    /// root-owned copy), so the updater cannot swap the bundle.
+    BundleNotWritable,
+}
+
+impl InstallBlocker {
+    /// Stable, prose-free code for logs. Deliberately not user-facing text.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Translocated => "translocated-bundle",
+            Self::BundleNotWritable => "bundle-not-writable",
+        }
+    }
+}
+
+/// macOS App Translocation mounts the bundle under a path containing this
+/// component. Matching the component (not a prefix) keeps the check correct
+/// across the several private mount roots macOS has used.
+const APP_TRANSLOCATION_PATH_MARKER: &str = "/AppTranslocation/";
+
+/// Pure classifier so the policy is unit-testable without a real bundle.
+/// Translocation is checked first: a translocated mount is read-only, so
+/// reporting "not writable" for it would hide the actionable cause.
+pub(crate) fn classify_install_blocker(
+    executable_path: &str,
+    bundle_is_writable: bool,
+) -> Option<InstallBlocker> {
+    if executable_path.contains(APP_TRANSLOCATION_PATH_MARKER) {
+        return Some(InstallBlocker::Translocated);
+    }
+    if !bundle_is_writable {
+        return Some(InstallBlocker::BundleNotWritable);
+    }
+    None
+}
+
+/// The `.app` bundle directory containing `executable_path`, i.e. three
+/// ancestors up from `<Bundle>.app/Contents/MacOS/<binary>`. `None` when the
+/// executable is not inside a bundle (`cargo run`, tests, CI).
+fn bundle_dir_for_executable(executable_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let bundle = executable_path.ancestors().nth(3)?;
+    if bundle.extension().and_then(|e| e.to_str()) == Some("app") {
+        Some(bundle.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// True when we can create (and remove) a file inside `dir`. A metadata-mode
+/// check is not sufficient: ACLs, read-only mounts, and SIP all deny writes
+/// that permission bits alone would allow.
+fn directory_is_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(".hq-update-write-probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Inspect THIS installation for a permanent install blocker. `None` on
+/// non-macOS (Windows installs via the NSIS helper, which has its own
+/// diagnostics) and whenever the running binary is not inside an `.app`.
+pub(crate) fn install_blocker() -> Option<InstallBlocker> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bundle = bundle_dir_for_executable(&exe)?;
+    classify_install_blocker(&exe.to_string_lossy(), directory_is_writable(&bundle))
+}
+
+/// Report a failed install so it is visible on the SERVER, not only in
+/// `~/.hq/logs/hq-sync.log`.
+///
+/// `record_updater_install_failed` persists `updaterState = "update_failed"`,
+/// which the consent-free client-health heartbeat sends on its next (debounced)
+/// emit — the same presence/diagnostic channel as the version heartbeat. Any
+/// detected [`InstallBlocker`] is appended to the local log line as a stable
+/// code so a support session can name the cause immediately.
+pub(crate) fn report_install_failure(context: &str, message: &str) {
+    match install_blocker() {
+        Some(blocker) => log(
+            context,
+            &format!(
+                "install failed ({message}); install blocker detected: {}",
+                blocker.code()
+            ),
+        ),
+        None => log(context, &format!("install failed ({message})")),
+    }
+    crate::commands::client_health::record_updater_install_failed();
+}
+
 fn install_failure_is_transient_deferral(error: &str) -> bool {
     matches!(
         error,
@@ -1739,6 +1852,120 @@ mod tests {
         drop(first);
 
         assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
+    }
+
+    /// The stuck-below-floor cohort's root cause, locked in: an AUTOMATIC
+    /// install waits for a sync-idle gap (and sync is effectively always
+    /// active on a real install), but a FORCED install — the hq-pro
+    /// `updateRequired` gate — must never be parked in `WaitForIdle`, at any
+    /// point in the cap window. Regressing this recreates a fleet that cannot
+    /// install the fix that would let it install.
+    #[test]
+    fn forced_installs_never_wait_for_a_sync_idle_gap() {
+        for elapsed in [
+            Duration::from_secs(0),
+            Duration::from_secs(30),
+            AUTO_INSTALL_DEFER_CAP,
+            AUTO_INSTALL_DEFER_CAP + Duration::from_secs(3_600),
+        ] {
+            assert_eq!(
+                deferral_decision(
+                    InstallTrigger::Forced,
+                    true,
+                    elapsed,
+                    AUTO_INSTALL_DEFER_CAP
+                ),
+                DeferralDecision::PauseThenInstall,
+                "forced install with sync active must pause-then-install at elapsed={elapsed:?}",
+            );
+            assert_eq!(
+                deferral_decision(
+                    InstallTrigger::Forced,
+                    false,
+                    elapsed,
+                    AUTO_INSTALL_DEFER_CAP
+                ),
+                DeferralDecision::InstallNow,
+            );
+        }
+    }
+
+    /// Manual (Settings › Updates) is the escape hatch we hand a stuck user, so
+    /// it must be unconditional too.
+    #[test]
+    fn manual_installs_are_never_deferred() {
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Manual,
+                true,
+                Duration::from_secs(0),
+                AUTO_INSTALL_DEFER_CAP
+            ),
+            DeferralDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn translocated_bundle_is_classified_before_writability() {
+        let translocated = "/private/var/folders/ab/xyz/d/AppTranslocation/\
+                            1A2B-3C4D/d/HQ.app/Contents/MacOS/hq-sync-menubar";
+        // A translocated mount is read-only, so both signals fire at once.
+        // Translocation must win — it is the actionable one.
+        assert_eq!(
+            classify_install_blocker(translocated, false),
+            Some(InstallBlocker::Translocated)
+        );
+        assert_eq!(
+            classify_install_blocker(translocated, true),
+            Some(InstallBlocker::Translocated)
+        );
+    }
+
+    #[test]
+    fn unwritable_bundle_is_classified_as_a_blocker() {
+        assert_eq!(
+            classify_install_blocker("/Applications/HQ.app/Contents/MacOS/hq-sync-menubar", false),
+            Some(InstallBlocker::BundleNotWritable)
+        );
+    }
+
+    #[test]
+    fn a_normal_writable_applications_install_has_no_blocker() {
+        assert_eq!(
+            classify_install_blocker("/Applications/HQ.app/Contents/MacOS/hq-sync-menubar", true),
+            None
+        );
+    }
+
+    #[test]
+    fn install_blocker_codes_are_stable_and_prose_free() {
+        assert_eq!(InstallBlocker::Translocated.code(), "translocated-bundle");
+        assert_eq!(
+            InstallBlocker::BundleNotWritable.code(),
+            "bundle-not-writable"
+        );
+    }
+
+    #[test]
+    fn bundle_dir_is_three_ancestors_above_the_executable() {
+        assert_eq!(
+            bundle_dir_for_executable(std::path::Path::new(
+                "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar"
+            )),
+            Some(std::path::PathBuf::from("/Applications/HQ.app"))
+        );
+        // Not inside a bundle (cargo run / CI) — no blocker can be asserted.
+        assert_eq!(
+            bundle_dir_for_executable(std::path::Path::new("/usr/local/bin/hq-sync-menubar")),
+            None
+        );
+    }
+
+    #[test]
+    fn directory_is_writable_detects_a_writable_and_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(directory_is_writable(dir.path()));
+        assert!(!directory_is_writable(&dir.path().join("does-not-exist")));
     }
 
     #[test]
