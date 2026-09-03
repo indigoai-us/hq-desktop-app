@@ -5461,7 +5461,7 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             ids(ready_required_deps(deps, &result_by_id, &ok_set)),
-            vec!["node", "yq", "git"]
+            vec!["node", "yq", "git", "jq"]
         );
 
         for dep_id in ["node", "yq", "git"] {
@@ -5482,7 +5482,7 @@ mod install_deps_planner_tests {
         let mut result_by_id = premark_optional_results(deps);
         let mut ok_set = HashSet::new();
 
-        for dep_id in ["yq", "git"] {
+        for dep_id in ["yq", "git", "jq"] {
             let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
             result_by_id.insert(dep.id, ok_result(dep));
             ok_set.insert(dep.id);
@@ -5525,7 +5525,7 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             waves,
-            vec![vec!["node", "yq", "git"], vec!["qmd", "hq-cli"]]
+            vec![vec!["node", "yq", "git", "jq"], vec!["qmd", "hq-cli"]]
         );
     }
 }
