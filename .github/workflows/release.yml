@@ -119,15 +119,14 @@ jobs:
       # Branch policy, split by channel:
       #   - stable (vX.Y.Z) MUST ship from main — the release commit has to be
       #     merged before it is tagged.
-      #   - beta / alpha prereleases are testing builds cut from a feature
-      #     branch, so their tag must NOT be on main. A prerelease tag whose
-      #     commit is already in main's history is rejected: promote it to a
-      #     stable tag instead of shipping alpha/beta off main.
+      #   - beta / alpha prereleases may ONLY ship from release/* — their tag
+      #     commit must be contained in one of those remote branches. Creating
+      #     release/* branches is restricted to the Release Managers team.
       # Only enforced when a tag is first pushed. A workflow_dispatch run is a
       # deliberate re-release of an already-existing, immutable tag whose branch
       # was vetted at creation time — re-checking it here would break retries of
-      # historical prereleases (and of an off-main prerelease after its branch
-      # later merges to main), so dispatch retries skip the branch check.
+      # historical prereleases after their release branch is deleted, so dispatch
+      # retries skip the branch check.
       - name: Enforce release branch policy
         if: ${{ github.event_name == 'push' }}
         env:
@@ -138,7 +137,8 @@ jobs:
         run: |
           set -euo pipefail
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
           if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
             "${TAG}^{commit}" refs/remotes/origin/main; then
             ON_MAIN="true"
@@ -147,11 +147,15 @@ jobs:
           fi
 
           if [ "$PRERELEASE" = "true" ]; then
-            if [ "$ON_MAIN" = "true" ]; then
-              echo "::error::$CHANNEL prerelease tag $TAG points at a commit on origin/main. alpha and beta releases may only be cut from non-main branches — tag a commit that has not been merged to main, or promote it to a stable vX.Y.Z tag."
+            RELEASE_BRANCHES="$(git -C "$GITHUB_WORKSPACE" for-each-ref \
+              --format='%(refname:short)' \
+              --contains="${TAG}^{commit}" \
+              'refs/remotes/origin/release/*')"
+            if [ -z "$RELEASE_BRANCHES" ]; then
+              echo "::error::$CHANNEL prerelease tag $TAG is not contained in an origin/release/* branch. alpha and beta releases may only be cut from a release/* branch; creating one is restricted to the Release Managers team."
               exit 1
             fi
-            echo "$CHANNEL prerelease $TAG is off main — allowed."
+            echo "$CHANNEL prerelease $TAG is contained in origin/release/* — allowed."
           else
             if [ "$ON_MAIN" != "true" ]; then
               echo "::error::Stable release tag $TAG is not contained in origin/main. Merge the release commit before tagging a stable release."
@@ -1611,7 +1615,7 @@ jobs:
   # block shipping, and the published artifacts are correct either way.
   #
   # Only stable releases sync their version to main. beta/alpha prereleases are
-  # cut from non-main branches (enforced in `validate`), so stamping their
+  # cut from release/* branches (enforced in `validate`), so stamping their
   # version onto main would push a prerelease version to the trunk — skip them.
   sync-version:
     name: Sync released version to main
