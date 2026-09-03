@@ -23,6 +23,25 @@ describe("shared message-row name→body spacing", () => {
     expect(messageRowCss).toMatch(/margin-top:\s*0/);
   });
 
+  it("pins the compact intra-group padding and inter-group gap tokens", () => {
+    // 1px top + 1px bottom on adjacent same-author rows → ~2px stacked gap.
+    expect(messageRowCss).toContain("--msg-row-pad-y: 1px");
+    // Modest gap before a re-headered new-author group.
+    expect(messageRowCss).toContain("--msg-group-gap: 8px");
+  });
+
+  it("wires the row-rhythm tokens into the main-column message rows", () => {
+    // Continuation rows carry no extra top margin and use the compact pad.
+    expect(channelConversationSrc).toMatch(
+      /\.dm-msg\s*\{[\s\S]*?margin-top:\s*0;[\s\S]*?padding:\s*var\(--msg-row-pad-y, 1px\) 8px;/,
+    );
+    // A new author group gets the modest inter-group gap, not the old 10px.
+    expect(channelConversationSrc).toMatch(
+      /\.dm-msg-group-start\s*\{[\s\S]*?margin-top:\s*var\(--msg-group-gap, 8px\);/,
+    );
+    expect(channelConversationSrc).not.toContain("margin-top: 10px");
+  });
+
   it("uses the shared class and token in both the main column and the thread panel", () => {
     expect(channelConversationSrc).toContain('import "./message-row.css"');
     expect(replyPanelSrc).toContain('import "./message-row.css"');
