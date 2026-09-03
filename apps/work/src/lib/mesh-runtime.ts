@@ -21,6 +21,7 @@ import {
 import type { PlatformAdapter } from "@hq/platform";
 import {
   bindLiveReadStore,
+  bindLiveRefresh,
   bindPresenceStore,
   createChatWakeBus,
   routeMeshReconcile,
@@ -86,6 +87,9 @@ export function startWebMesh(opts: {
   const unwirePresence = wirePresenceStoreToChatBus(presenceStore, opts.wakes);
   const unbindRunes = bindPresenceStore(presenceStore);
   const unbindLive = bindLiveReadStore(liveReadStore);
+  const unbindRefresh = bindLiveRefresh((companyUid) => {
+    client.refreshLive(companyUid);
+  });
   client.on("wake", (topic, payloadText) => {
     console.info("[hq-web-mesh]", {
       event: "wake",
@@ -130,6 +134,7 @@ export function startWebMesh(opts: {
       unwirePresence();
       unbindRunes();
       unbindLive();
+      unbindRefresh();
       client.stop();
     },
     presenceStore,

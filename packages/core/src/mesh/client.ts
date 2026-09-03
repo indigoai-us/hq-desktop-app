@@ -469,6 +469,14 @@ export class MeshClient {
     return this.liveReadStore;
   }
 
+  /**
+   * Coalesced GET /v1/work-mesh/live for one company (Atlas / surfaces on open).
+   * Does not start a poll — MeshClient already refreshes on `{kind:"live"}` wakes.
+   */
+  refreshLive(companyUid: string): void {
+    this.liveCoalescer.refresh(companyUid);
+  }
+
   on<K extends keyof MeshClientEvents>(
     event: K,
     listener: MeshClientEvents[K],

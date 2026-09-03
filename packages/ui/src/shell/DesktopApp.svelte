@@ -81,6 +81,7 @@
     setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
+  import { AtlasPage, createGoChord } from "../atlas/index.js";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
@@ -527,6 +528,7 @@
     | "notifications"
     | "settings"
     | "meetings"
+    | "atlas"
     | "library"
     | "shared-files"
   >("conversation");
@@ -652,6 +654,16 @@
           view = "meetings";
         },
       },
+      {
+        id: "command-go-atlas",
+        label: "Atlas",
+        detail: "People and agents on projects, live",
+        shortcut: "g a",
+        action: () => {
+          view = "atlas";
+          meetingFocusRequest = null;
+        },
+      },
     ];
     nav.push({
       id: "command-go-library",
@@ -688,6 +700,22 @@
 
   const watched = $derived(companies?.length ?? 0);
   const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+
+  /** Company for Atlas — selected conversation company, else first cloud workspace. */
+  const atlasCompanyUid = $derived.by(() => {
+    const fromRow = (selectedRow?.companyUid ?? "").trim();
+    if (fromRow) return fromRow;
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      if (uid) return uid;
+    }
+    return "";
+  });
+  const atlasCompanyLabel = $derived(
+    companyDisplayName(atlasCompanyUid, companyNames) ||
+      companies?.find((c) => c.cloudUid === atlasCompanyUid)?.displayName ||
+      null,
+  );
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -2551,6 +2579,11 @@
           ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
           : null;
         return;
+      case "atlas":
+        view = "atlas";
+        settingsSection = null;
+        meetingFocusRequest = null;
+        return;
       case "library":
         openLibrary(target.tab);
         settingsSection = null;
@@ -2644,31 +2677,46 @@
     startMeetingsStore();
     void prefetchMeetings();
 
+    // US-016: `g a` opens Atlas (Slack-style go chord).
+    const goChord = createGoChord((letter) => {
+      if (letter !== "a") return false;
+      view = "atlas";
+      meetingFocusRequest = null;
+      return true;
+    });
+
     function onKey(event: KeyboardEvent) {
       const meta = event.metaKey || event.ctrlKey;
-      if (!meta) return;
-      const key = event.key.toLowerCase();
-      if (key === "k") {
+      if (meta) {
+        const key = event.key.toLowerCase();
+        if (key === "k") {
+          event.preventDefault();
+          paletteOpen = !paletteOpen;
+          goChord.reset();
+        } else if (key === ",") {
+          // macOS-standard ⌘, opens Settings.
+          event.preventDefault();
+          openSettings();
+        } else if (key === "1") {
+          event.preventDefault();
+          view = "notifications";
+          meetingFocusRequest = null;
+        } else if (key === "2") {
+          event.preventDefault();
+          view = "meetings";
+          meetingFocusRequest = null;
+        } else if (adapter.kind !== "web" && key === "3") {
+          event.preventDefault();
+          openLibrary("marketplace");
+        } else if (key === "4") {
+          event.preventDefault();
+          openLibrary("skills");
+        }
+        return;
+      }
+      if (paletteOpen) return;
+      if (goChord.handleKeydown(event)) {
         event.preventDefault();
-        paletteOpen = !paletteOpen;
-      } else if (key === ",") {
-        // macOS-standard ⌘, opens Settings.
-        event.preventDefault();
-        openSettings();
-      } else if (key === "1") {
-        event.preventDefault();
-        view = "notifications";
-        meetingFocusRequest = null;
-      } else if (key === "2") {
-        event.preventDefault();
-        view = "meetings";
-        meetingFocusRequest = null;
-      } else if (adapter.kind !== "web" && key === "3") {
-        event.preventDefault();
-        openLibrary("marketplace");
-      } else if (key === "4") {
-        event.preventDefault();
-        openLibrary("skills");
       }
     }
     window.addEventListener("keydown", onKey);
@@ -2912,6 +2960,17 @@
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
+          />
+        {:else if view === "atlas"}
+          <AtlasPage
+            companyUid={atlasCompanyUid}
+            companyLabel={atlasCompanyLabel}
+            featureEnabled={true}
+            headerVariant="embedded"
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
           />
         {:else if view === "conversation" && selectedRow}
           <header

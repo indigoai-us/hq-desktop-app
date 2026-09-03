@@ -16,6 +16,7 @@ import {
 } from '@hq/core';
 import {
   bindLiveReadStore,
+  bindLiveRefresh,
   bindPresenceStore,
   createChatWakeBus,
   wirePresenceStoreToChatBus,
@@ -86,6 +87,9 @@ export function startDesktopMeshPresence(
   const unwire = wirePresenceStoreToChatBus(presenceStore, opts.wakes);
   const unbind = bindPresenceStore(presenceStore);
   const unbindLive = bindLiveReadStore(liveReadStore);
+  const unbindRefresh = bindLiveRefresh((companyUid) => {
+    client.refreshLive(companyUid);
+  });
 
   client.on('presence', (change) => {
     // Bus already notified via wirePresenceStoreToChatBus; keep a log seam.
@@ -104,6 +108,7 @@ export function startDesktopMeshPresence(
       unwire();
       unbind();
       unbindLive();
+      unbindRefresh();
       client.stop();
     },
     presenceStore,
