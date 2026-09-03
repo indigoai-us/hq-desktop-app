@@ -378,6 +378,38 @@ pub(crate) fn record_updater_install_failed() {
     persist_updater_state(ClientHealthUpdaterState::UpdateFailed);
 }
 
+// ─── Diagnostics read seam (US-007) ──────────────────────────────────────────
+//
+// Read-only snapshots for the CHECK_NOW probe run (`commands::client_diagnostics`).
+// These never mutate sync/updater/auth state — they reuse the SAME derivation
+// this module already applies to the heartbeat (`derive_sync_state`,
+// `derive_failure_reason`, `reported_updater_state`) so a probe result can
+// never disagree with the heartbeat about the installation's own state.
+
+/// The installation ID this process reports under (stable across restarts).
+pub(crate) fn diagnostics_installation_id() -> Result<String, String> {
+    with_state(|state| state.installation_id.clone())
+}
+
+/// Current derived sync state + failure reason + conflict count, for the
+/// `sync` and `conflicts` probes. Read-only: does not touch `SYNC_RUNNING`
+/// beyond an atomic load, and never persists anything.
+pub(crate) fn diagnostics_sync_snapshot(
+) -> Result<(ClientHealthSyncState, Option<ClientHealthFailureReason>, u64), String> {
+    let paused = hq_desktop_core::daemon::is_cloud_paused();
+    let syncing = SYNC_RUNNING.load(Ordering::SeqCst);
+    let state = with_state(|state| state.clone())?;
+    let sync_state = derive_sync_state(paused, syncing, &state);
+    let reason = derive_failure_reason(sync_state, &state);
+    Ok((sync_state, reason, state.conflict_count))
+}
+
+/// Current updater state, for the `updater` probe.
+pub(crate) fn diagnostics_updater_snapshot() -> Result<ClientHealthUpdaterState, String> {
+    let state = with_state(|state| state.clone())?;
+    Ok(reported_updater_state(&state))
+}
+
 // ─── Snapshot derivation (pure) ──────────────────────────────────────────────
 
 fn derive_sync_state(
