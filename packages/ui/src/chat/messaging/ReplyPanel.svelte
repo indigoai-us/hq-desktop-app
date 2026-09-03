@@ -14,7 +14,8 @@
   import { authorAvatarUrl } from "./agent-avatars";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -115,6 +116,8 @@
     ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Releases host-created object URLs when inline reply images unmount. */
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
@@ -168,6 +171,7 @@
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
+    onopenartifact = undefined,
     onreleaseurl = undefined,
     vaultCompanyUid = null,
     onclose,
@@ -788,17 +792,19 @@
             <RichMessageContent content={rootRich.rich} />
           {/if}
           {#if root.details?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="details"
               text={root.details}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           {#if root.prompt?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="prompt"
               text={root.prompt}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           <MessageAttachments
