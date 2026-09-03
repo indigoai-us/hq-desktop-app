@@ -56,6 +56,7 @@
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import TeamTab from "../chat/tabs/TeamTab.svelte";
+  import IntegrationsTab from "../chat/tabs/IntegrationsTab.svelte";
   import {
     parseCompanyTab,
     type CompanyChannelTabId,
@@ -3312,6 +3313,16 @@
               <TeamTab
                 data={companyTabData ?? {
                   tab: "team",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else if companyTab === "integrations"}
+              <IntegrationsTab
+                data={companyTabData ?? {
+                  tab: "integrations",
                   companyUid: selectedRow.companyUid ?? "",
                   viewer: { canAct: false },
                   sections: [],
