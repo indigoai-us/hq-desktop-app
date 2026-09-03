@@ -413,6 +413,33 @@ fn classify(error: &std::io::Error) -> ProbeErrorKind {
 /// A probe failure never aborts the run — every probe always contributes
 /// exactly one closed [`ClientHealthCheckResult`].
 async fn run_all_probes() -> Vec<ClientHealthCheckResult> {
+    // Test-only override: forces every probe to a known-healthy result
+    // without touching real ambient machine state (an installed `hq` CLI, a
+    // populated npx runner cache, a real local HQ core checkout, etc.) that
+    // legitimately differs between a developer's machine and a bare CI
+    // runner — the exact same class of seam as `diagnostics_home_dir`'s
+    // `HQ_TEST_HOME` check above. Each probe's own pass/fail branch already
+    // has dedicated coverage (`every_probe_produces_only_closed_wire_values`,
+    // `timed_out_probe_maps_to_a_closed_reason_not_a_hang`,
+    // `panicking_probe_is_isolated_and_mapped_to_a_closed_reason`); what the
+    // full-lifecycle tests below need is a deterministic, environment
+    // -independent INPUT so the receipt state machine and wire redaction can
+    // be asserted against a known outcome instead of "whatever this runner
+    // happens to have installed."
+    #[cfg(test)]
+    if std::env::var_os("HQ_TEST_FORCE_ALL_PROBES_HEALTHY").is_some() {
+        return vec![
+            pass(ClientHealthDiagnosticCheck::Auth),
+            pass(ClientHealthDiagnosticCheck::Runner),
+            pass(ClientHealthDiagnosticCheck::Cli),
+            pass(ClientHealthDiagnosticCheck::Core),
+            pass(ClientHealthDiagnosticCheck::Updater),
+            pass(ClientHealthDiagnosticCheck::Sync),
+            pass(ClientHealthDiagnosticCheck::Conflicts),
+            pass(ClientHealthDiagnosticCheck::Storage),
+            pass(ClientHealthDiagnosticCheck::Permissions),
+        ];
+    }
     vec![
         run_probe_guarded(ClientHealthDiagnosticCheck::Auth, probe_auth()).await,
         run_probe_guarded(ClientHealthDiagnosticCheck::Runner, probe_runner()).await,
@@ -876,6 +903,17 @@ mod tests {
     #[tokio::test]
     async fn desired_check_now_command_reaches_a_terminal_receipt_with_closed_fields_only() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // This test proves the CHECK_NOW lifecycle (acknowledged -> running
+        // -> terminal) and the closed-wire-value contract for a fully
+        // healthy install. Without this override, `run_all_probes` exercises
+        // REAL ambient machine state — an installed `hq` CLI, a populated
+        // npx runner cache, a real local HQ core checkout, etc. — which
+        // legitimately differs between a developer's machine (often
+        // healthy) and a bare CI runner (never has any of those), so the
+        // terminal state this test asserts would depend on the runner
+        // rather than on the code under test. See `run_all_probes` for the
+        // override itself.
+        std::env::set_var("HQ_TEST_FORCE_ALL_PROBES_HEALTHY", "1");
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -953,6 +991,7 @@ mod tests {
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
+        std::env::remove_var("HQ_TEST_FORCE_ALL_PROBES_HEALTHY");
     }
 
     // ── Idempotency across a same-command retried poll (e2eTest #3 fallback) ─
