@@ -16,9 +16,9 @@ use tauri::{
     AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
 };
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use hq_platform::tray_geometry::MonitorBox;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use tauri::Monitor;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -594,7 +594,7 @@ const POPOVER_GAP_PX: f64 = 12.0;
 #[cfg(target_os = "windows")]
 const POPOVER_RIGHT_INSET_PX: i32 = 20;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn tray_anchor_monitor(
     monitors: impl IntoIterator<Item = Monitor>,
     tray_center_x: f64,
