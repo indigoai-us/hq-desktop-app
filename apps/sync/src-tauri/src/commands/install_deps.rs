@@ -2246,6 +2246,17 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 // install_node
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// `node --version` output of an on-disk managed node, or `None` if it does
+/// not run / exits non-zero. Pure over the given path; exposed for testing.
+#[cfg(not(windows))]
+pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<String> {
+    let out = Command::new(node_bin).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Install Node.js into HQ's user-local managed toolchain.
 ///
 /// The installer used to require Homebrew here, which stranded fresh Macs
@@ -2260,14 +2271,40 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     let node_bin = managed_node_bin_in(&home).join("node");
 
     if node_bin.exists() {
-        emit_preflight_line(
-            &app,
-            &format!(
-                "[node] managed Node already present at {}",
-                node_bin.display()
-            ),
-        );
-        return Ok(format!("node already installed at {}", node_bin.display()));
+        // A leftover from a half-finished or corrupted earlier install must not
+        // be trusted just because the file exists: the install matrix's
+        // `stale-toolchain` profile showed the engine adopting a broken node,
+        // then failing qmd/hq-cli with "prerequisite not installed". Only a
+        // node that runs AND reports the pinned version is reused.
+        match managed_node_reported_version(&node_bin) {
+            Some(v) if v.trim() == MANAGED_NODE_VERSION => {
+                emit_preflight_line(
+                    &app,
+                    &format!(
+                        "[node] managed Node {} already present at {}",
+                        v.trim(),
+                        node_bin.display()
+                    ),
+                );
+                return Ok(format!("node already installed at {}", node_bin.display()));
+            }
+            other => {
+                emit_preflight_line(
+                    &app,
+                    &format!(
+                        "[node] managed Node at {} is unusable ({}) — re-provisioning {}",
+                        node_bin.display(),
+                        other.map(|v| format!("reports '{}'", v.trim())).unwrap_or_else(|| "does not run".into()),
+                        MANAGED_NODE_VERSION
+                    ),
+                );
+                if let Err(e) = std::fs::remove_dir_all(&node_dir) {
+                    let msg = format!("[node] failed to remove stale toolchain {}: {e}", node_dir.display());
+                    emit_preflight_line(&app, &msg);
+                    return Err(msg);
+                }
+            }
+        }
     }
 
     let arch = std::env::consts::ARCH;
@@ -7049,5 +7086,35 @@ mod git_shim_tests {
     #[test]
     fn qmd_pin_matches_setup_sh_contract() {
         assert_eq!(MANAGED_QMD_VERSION, "2.5.3");
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod managed_node_health_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn stub(dir: &std::path::Path, body: &str) -> PathBuf {
+        let p = dir.join("node");
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn healthy_node_reports_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = stub(tmp.path(), &format!("#!/bin/sh\necho {MANAGED_NODE_VERSION}\n"));
+        assert_eq!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
+    }
+
+    #[test]
+    fn broken_or_wrong_node_is_not_trusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = stub(tmp.path(), "#!/bin/sh\necho 'node: stale stub'; exit 97\n");
+        assert_eq!(managed_node_reported_version(&p), None);
+        let p = stub(tmp.path(), "#!/bin/sh\necho v16.20.2\n");
+        assert_ne!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
+        assert_eq!(managed_node_reported_version(std::path::Path::new("/nonexistent/node")), None);
     }
 }
