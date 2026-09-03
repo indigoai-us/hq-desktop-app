@@ -35,7 +35,10 @@
     raceTimeout,
   } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
-  import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
+  import type {
+    FileAttachmentModel,
+    LifecycleCardActionEvent,
+  } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
@@ -267,6 +270,8 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /** Bubbled lifecycle-card action (host posts in US-009). */
+    oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
@@ -399,6 +404,7 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    oncardaction,
     wakes = null,
     companies = null,
     self = null,
@@ -3074,6 +3080,8 @@
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
                   {onopenurl}
+                  channelId={selectedRow.channelId}
+                  {oncardaction}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}

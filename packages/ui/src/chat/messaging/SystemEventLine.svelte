@@ -7,9 +7,10 @@
   interface Props {
     model: SystemEventLineModel;
     who?: string | null;
+    time?: string | null;
   }
 
-  let { model, who = null }: Props = $props();
+  let { model, who = null, time = null }: Props = $props();
 </script>
 
 <div
@@ -158,6 +159,9 @@
   {#if model.summary}
     <span class="sys-summary">· {model.summary}</span>
   {/if}
+  {#if time}
+    <span class="sys-time">· {time}</span>
+  {/if}
 </div>
 
 <style>
@@ -198,7 +202,8 @@
     color: var(--t3, var(--muted-2, var(--pop-muted)));
   }
 
-  .sys-summary {
+  .sys-summary,
+  .sys-time {
     color: var(--t3, var(--muted, var(--pop-muted)));
     overflow: hidden;
     text-overflow: ellipsis;

@@ -9,6 +9,7 @@ export { default as AgentThinkingRow } from "./AgentThinkingRow.svelte";
 export { default as BoardTab } from "./BoardTab.svelte";
 export { default as ChannelFilesTab } from "./ChannelFilesTab.svelte";
 export { default as RunCompleteCard } from "./RunCompleteCard.svelte";
+export { default as LifecycleCard } from "./LifecycleCard.svelte";
 export { default as ReactionBar } from "./ReactionBar.svelte";
 export { default as EmojiPicker } from "./EmojiPicker.svelte";
 export { default as IdentityMark } from "./IdentityMark.svelte";

@@ -18,7 +18,8 @@ export type KnownSystemEventType =
   | "deploy"
   | "file_added"
   | "work_session"
-  | "member_added";
+  | "member_added"
+  | "lifecycle_card";
 
 const KNOWN_TYPES = new Set<string>([
   "run_started",
@@ -29,7 +30,58 @@ const KNOWN_TYPES = new Set<string>([
   "file_added",
   "work_session",
   "member_added",
+  "lifecycle_card",
 ]);
+
+/** US-001 lifecycle_card kinds, plus companies_summary (US-002). */
+export const LIFECYCLE_CARD_KINDS = [
+  "create_company",
+  "activate_cloud",
+  "upgrade_plan",
+  "create_agent",
+  "status",
+  "companies_summary",
+] as const;
+export type LifecycleCardKind = (typeof LIFECYCLE_CARD_KINDS)[number];
+
+export const LIFECYCLE_CARD_STATES = [
+  "open",
+  "pending",
+  "done",
+  "blocked",
+  "skipped",
+] as const;
+export type LifecycleCardState = (typeof LIFECYCLE_CARD_STATES)[number];
+
+export const LIFECYCLE_CARD_CONTROLS = [
+  "text",
+  "select",
+  "radio",
+  "readonly",
+] as const;
+export type LifecycleCardControl = (typeof LIFECYCLE_CARD_CONTROLS)[number];
+
+export const LIFECYCLE_CARD_ACTION_STYLES = [
+  "primary",
+  "secondary",
+  "link",
+] as const;
+export type LifecycleCardActionStyle =
+  (typeof LIFECYCLE_CARD_ACTION_STYLES)[number];
+
+const KINDS_ALLOWING_NULL_COMPANY = new Set<string>([
+  "create_company",
+  "companies_summary",
+]);
+
+const DEFAULT_LIFECYCLE_TITLES: Record<LifecycleCardKind, string> = {
+  create_company: "Name your company",
+  activate_cloud: "Turning on cloud sync",
+  upgrade_plan: "Choose a plan",
+  create_agent: "Create an agent",
+  status: "Status",
+  companies_summary: "Your companies",
+};
 
 /** Wire shape for a channel file attachment (camelCase). */
 export interface MessageAttachmentWire {
@@ -59,10 +111,10 @@ export interface FileAttachmentModel {
   previewUrl: string | null;
 }
 
-/** Muted one-line system event (everything except run_complete). */
+/** Muted one-line system event (everything except cards). */
 export interface SystemEventLineModel {
   kind: "line";
-  type: Exclude<KnownSystemEventType, "run_complete">;
+  type: Exclude<KnownSystemEventType, "run_complete" | "lifecycle_card">;
   title: string;
   summary: string | null;
 }
@@ -76,10 +128,70 @@ export interface RunCompleteCardModel {
   diffUrl: string | null;
 }
 
-export type SystemEventModel = SystemEventLineModel | RunCompleteCardModel;
+export interface LifecycleCardFieldOption {
+  id: string;
+  label: string;
+  description: string | null;
+  price: string | null;
+}
+
+export interface LifecycleCardField {
+  id: string;
+  label: string;
+  control: LifecycleCardControl;
+  options: LifecycleCardFieldOption[];
+  value: string;
+  required: boolean;
+  error: string | null;
+  hint: string | null;
+  description: string | null;
+}
+
+export interface LifecycleCardAction {
+  id: string;
+  label: string;
+  style: LifecycleCardActionStyle;
+  href: string | null;
+}
+
+export interface LifecycleCardViewer {
+  canAct: boolean;
+  actorName: string | null;
+}
+
+/** Server-stamped lifecycle card (US-008). Unknown version → not parsed. */
+export interface LifecycleCardModel {
+  kind: "lifecycle_card";
+  cardId: string;
+  cardKind: LifecycleCardKind;
+  companyUid: string | null;
+  state: LifecycleCardState;
+  title: string;
+  summary: string | null;
+  stepLabel: string | null;
+  help: string | null;
+  reason: string | null;
+  statusLabel: string | null;
+  fields: LifecycleCardField[];
+  actions: LifecycleCardAction[];
+  viewer: LifecycleCardViewer;
+}
+
+/** Bubbled from LifecycleCard — host posts; this layer stays zero-network. */
+export interface LifecycleCardActionEvent {
+  channelId: string;
+  cardId: string;
+  actionId: string;
+  values: Record<string, string>;
+}
+
+export type SystemEventModel =
+  | SystemEventLineModel
+  | RunCompleteCardModel
+  | LifecycleCardModel;
 
 const DEFAULT_TITLES: Record<
-  Exclude<KnownSystemEventType, "run_complete">,
+  Exclude<KnownSystemEventType, "run_complete" | "lifecycle_card">,
   string
 > = {
   run_started: "Run started",
@@ -99,6 +211,138 @@ function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function isOneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+): value is T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value);
+}
+
+function parseLifecycleField(raw: unknown): LifecycleCardField | null {
+  if (!isRecord(raw)) return null;
+  const id = asOptionalString(raw.id);
+  const label = asOptionalString(raw.label);
+  if (!id || !label) return null;
+  if (!isOneOf(raw.control, LIFECYCLE_CARD_CONTROLS)) return null;
+  const options: LifecycleCardFieldOption[] = [];
+  if (raw.options !== undefined) {
+    if (!Array.isArray(raw.options)) return null;
+    for (const option of raw.options) {
+      if (!isRecord(option)) return null;
+      const optionId = asOptionalString(option.id);
+      const optionLabel = asOptionalString(option.label);
+      if (!optionId || !optionLabel) return null;
+      options.push({
+        id: optionId,
+        label: optionLabel,
+        description: asOptionalString(option.description),
+        price: asOptionalString(option.price),
+      });
+    }
+  }
+  if (raw.value !== undefined && typeof raw.value !== "string") return null;
+  if (raw.required !== undefined && typeof raw.required !== "boolean") {
+    return null;
+  }
+  return {
+    id,
+    label,
+    control: raw.control,
+    options,
+    value: typeof raw.value === "string" ? raw.value : "",
+    required: raw.required === true,
+    error: asOptionalString(raw.error),
+    hint: asOptionalString(raw.hint),
+    description: asOptionalString(raw.description),
+  };
+}
+
+function parseLifecycleAction(raw: unknown): LifecycleCardAction | null {
+  if (!isRecord(raw)) return null;
+  const id = asOptionalString(raw.id);
+  const label = asOptionalString(raw.label);
+  if (!id || !label) return null;
+  if (!isOneOf(raw.style, LIFECYCLE_CARD_ACTION_STYLES)) return null;
+  const href = asOptionalString(raw.href);
+  if (raw.style === "link" && !href) return null;
+  if (raw.href !== undefined && typeof raw.href !== "string") return null;
+  return { id, label, style: raw.style, href };
+}
+
+function parseLifecycleViewer(raw: unknown): LifecycleCardViewer {
+  if (!isRecord(raw)) return { canAct: true, actorName: null };
+  return {
+    canAct: raw.canAct !== false,
+    actorName: asOptionalString(raw.actorName) ?? asOptionalString(raw.askName),
+  };
+}
+
+/**
+ * Parse a lifecycle_card v1 envelope. Unknown version is gated by
+ * parseSystemEvent (returns null). Invalid shape → null (render nothing).
+ */
+export function parseLifecycleCard(raw: unknown): LifecycleCardModel | null {
+  if (!isRecord(raw)) return null;
+  if (asOptionalString(raw.type) !== "lifecycle_card") return null;
+  if ("v" in raw && raw.v !== 1 && raw.v !== "1") return null;
+  const cardId = asOptionalString(raw.cardId);
+  if (!cardId) return null;
+  if (!isOneOf(raw.kind, LIFECYCLE_CARD_KINDS)) return null;
+  if (!isOneOf(raw.state, LIFECYCLE_CARD_STATES)) return null;
+
+  let companyUid: string | null;
+  if (raw.companyUid === null || raw.companyUid === undefined) {
+    companyUid = null;
+  } else if (typeof raw.companyUid === "string" && raw.companyUid.length > 0) {
+    companyUid = raw.companyUid;
+  } else {
+    return null;
+  }
+  if (!KINDS_ALLOWING_NULL_COMPANY.has(raw.kind) && companyUid === null) {
+    return null;
+  }
+  if (!Array.isArray(raw.fields) || !Array.isArray(raw.actions)) return null;
+
+  const fields: LifecycleCardField[] = [];
+  for (const field of raw.fields) {
+    const parsed = parseLifecycleField(field);
+    if (!parsed) return null;
+    fields.push(parsed);
+  }
+  const actions: LifecycleCardAction[] = [];
+  for (const action of raw.actions) {
+    const parsed = parseLifecycleAction(action);
+    if (!parsed) return null;
+    actions.push(parsed);
+  }
+
+  const viewer = parseLifecycleViewer(raw.viewer);
+  const actorName =
+    viewer.actorName ??
+    asOptionalString(raw.actorName) ??
+    asOptionalString(raw.ownerName);
+  return {
+    kind: "lifecycle_card",
+    cardId,
+    cardKind: raw.kind,
+    companyUid,
+    state: raw.state,
+    title:
+      asOptionalString(raw.title) ?? DEFAULT_LIFECYCLE_TITLES[raw.kind],
+    summary: asOptionalString(raw.summary),
+    stepLabel: asOptionalString(raw.stepLabel),
+    help: asOptionalString(raw.help),
+    reason:
+      asOptionalString(raw.reason) ??
+      asOptionalString(raw.blockReason) ??
+      asOptionalString(raw.message),
+    statusLabel: asOptionalString(raw.statusLabel),
+    fields,
+    actions,
+    viewer: { canAct: viewer.canAct, actorName },
+  };
 }
 
 const IMAGE_NAME_EXT = new Set([
@@ -214,6 +458,7 @@ export function parseMessageAttachments(raw: {
  * - unknown `type` → null
  * - known non-run_complete types → line model (title falls back to a default)
  * - run_complete → card; missing previewUrl/diffUrl leave those buttons hidden
+ * - lifecycle_card → card; invalid shape or unknown version → null
  */
 export function parseSystemEvent(raw: unknown): SystemEventModel | null {
   if (raw == null) return null;
@@ -224,6 +469,8 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
 
   const type = asOptionalString(raw.type);
   if (!type || !KNOWN_TYPES.has(type)) return null;
+
+  if (type === "lifecycle_card") return parseLifecycleCard(raw);
 
   const title = asOptionalString(raw.title);
   const summary = asOptionalString(raw.summary);
@@ -240,7 +487,10 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
     };
   }
 
-  const lineType = type as Exclude<KnownSystemEventType, "run_complete">;
+  const lineType = type as Exclude<
+    KnownSystemEventType,
+    "run_complete" | "lifecycle_card"
+  >;
   const sessionTitle =
     type === "work_session"
       ? (note ?? title ?? (status ? `Work session · ${status}` : null))
