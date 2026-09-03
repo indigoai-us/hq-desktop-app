@@ -184,6 +184,8 @@
     draftKey?: string | null;
     /** Tenant-scoped storage for `draftKey`. Omit to disable drafts. */
     draftStorage?: DraftStorage | null;
+    /** US-011: lock the composer while an agent box is still provisioning. */
+    composerLocked?: boolean;
   }
 
   let {
@@ -214,6 +216,7 @@
     belowMessages,
     draftKey = null,
     draftStorage = null,
+    composerLocked = false,
   }: Props = $props();
 
   /** Emit an author-profile-open when we have a personUid to resolve. */
@@ -461,8 +464,9 @@
   });
 
   const canSend = $derived(
-    (replyText.trim().length > 0 && replyText.trim() !== "/") ||
-      pendingFiles.length > 0,
+    !composerLocked &&
+      ((replyText.trim().length > 0 && replyText.trim() !== "/") ||
+        pendingFiles.length > 0),
   );
   const showAgentMenu = $derived(replyText.trimStart().startsWith("/"));
   const mentionQuery = $derived(activeMentionQuery(replyText));
@@ -1281,7 +1285,7 @@
     </div>
   </div>
 
-  <div class="dm-reply">
+  <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -1338,6 +1342,7 @@
           rows="3"
           aria-label="Reply message"
           data-testid="conversation-composer"
+          disabled={composerLocked}
           autocomplete="off"
           data-gramm="false"
           data-gramm_editor="false"
@@ -2196,6 +2201,11 @@
     border: 1px solid var(--line2, var(--pop-border));
     border-radius: 8px;
     transition: border-color 0.12s;
+  }
+
+  .dm-reply.is-locked {
+    border-style: dashed;
+    opacity: 0.85;
   }
 
   .dm-reply:focus-within {

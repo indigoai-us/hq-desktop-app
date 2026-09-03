@@ -332,6 +332,9 @@ export interface CardActionResult {
   state: string;
   fields?: unknown;
   replayed?: boolean;
+  /** US-006/011: agent channel minted on create_agent accept. */
+  agentChannelId?: string;
+  agentUid?: string;
 }
 
 /** Backend seam for the notifications feed (replaces invoke calls). */

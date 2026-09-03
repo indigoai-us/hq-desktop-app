@@ -99,10 +99,10 @@ export async function submitLifecycleCardAction(opts: {
   store: CardActionIdempotencyStore;
   run: ConversationApi["runCardAction"];
   onFailure: (cardId: string, message: string) => void;
-}): Promise<void> {
+}): Promise<Awaited<ReturnType<ConversationApi["runCardAction"]>> | void> {
   const idempotencyKey = beginCardActionIdempotencyKey(opts.store, opts.event);
   try {
-    await opts.run({
+    return await opts.run({
       channelId: opts.event.channelId,
       cardId: opts.event.cardId,
       actionId: opts.event.actionId,

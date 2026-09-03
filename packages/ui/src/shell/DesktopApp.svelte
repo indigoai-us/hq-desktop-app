@@ -35,6 +35,11 @@
     type CardActionIdempotencyStore,
   } from "../chat/card-action.js";
   import {
+    agentComposerPlaceholder,
+    isAgentConversationRow,
+    provisioningFromMessages,
+  } from "../chat/agent-channel.js";
+  import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     raceTimeout,
@@ -488,6 +493,11 @@
     { id: "board", label: "Board" },
     { id: "files", label: "Files" },
   ];
+  const AGENT_CHANNEL_TABS = [
+    { id: "chat", label: "Chat" },
+    { id: "details", label: "Details" },
+  ] as const;
+  type AgentChannelTab = (typeof AGENT_CHANNEL_TABS)[number]["id"];
 
   let view = $state<
     | "conversation"
@@ -685,14 +695,39 @@
       ((selectedRow?.channelScope ?? "channel") === "project" ||
         Boolean(projectIdForRow(selectedRow))),
   );
+  let agentSurface = $state<AgentChannelTab>("chat");
+  const provisioning = $derived(provisioningFromMessages(liveTimeline));
+  const isAgentChannel = $derived(
+    isAgentConversationRow(selectedRow) ||
+      (!!selectedRow?.channelId &&
+        !isSetupChannel(selectedRow.channelId) &&
+        selectedRow.kind === "channel" &&
+        provisioning.state !== null),
+  );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
   const composerPlaceholder = $derived(
-    composerPlaceholderFor(selectedRow, headerTitle),
+    isAgentChannel && provisioning.state === "pending"
+      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+      : composerPlaceholderFor(selectedRow, headerTitle),
   );
+  const composerLocked = $derived(
+    isAgentChannel && provisioning.state === "pending",
+  );
+  const agentChannelUid = $derived(
+    selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
+      ?.personUid ??
+      provisioning.agentUid ??
+      null,
+  );
+
+  $effect(() => {
+    selectedRow?.id;
+    agentSurface = "chat";
+  });
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
   let liveTimelineId = $state<string | null>(null);
@@ -1477,12 +1512,22 @@
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
-    await submitLifecycleCardAction({
+    const result = await submitLifecycleCardAction({
       event,
       store: cardActionKeys,
       run: conversationApi.runCardAction,
       onFailure: applyCardActionFailure,
     });
+    const agentChannelId =
+      result && typeof result.agentChannelId === "string"
+        ? result.agentChannelId.trim()
+        : "";
+    if (agentChannelId.startsWith("chn_")) {
+      requestChannelOpen(agentChannelId, {
+        title: headerTitle,
+        companyUid: selectedRow?.companyUid ?? null,
+      });
+    }
   }
 
   function openReply(rootEventId: string): void {
@@ -2924,7 +2969,26 @@
                   Edit profile
                 </button>
               {/if}
-              {#if isProjectChannel}
+              {#if isAgentChannel}
+                <nav
+                  class="project-tabs"
+                  aria-label="Agent channel views"
+                  data-testid="agent-channel-tabs"
+                >
+                  {#each AGENT_CHANNEL_TABS as t (t.id)}
+                    <button
+                      type="button"
+                      class="project-tab"
+                      class:active={agentSurface === t.id}
+                      aria-current={agentSurface === t.id ? "page" : undefined}
+                      data-testid={`agent-tab-${t.id}`}
+                      onclick={() => (agentSurface = t.id)}
+                    >
+                      <span>{t.label}</span>
+                    </button>
+                  {/each}
+                </nav>
+              {:else if isProjectChannel}
                 <nav
                   class="project-tabs"
                   aria-label="Channel views"
@@ -3115,7 +3179,23 @@
             />
           {/if}
 
-          {#if activeTab === "chat"}
+          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+            <AgentDetailPanel
+              agentUid={agentChannelUid}
+              displayName={headerTitle}
+              avatarUrl={avatarByUid[agentChannelUid] ?? null}
+              companyUid={selectedRow?.companyUid}
+              {companyNames}
+              {self}
+              {isAdmin}
+              {adapter}
+              packs={loadedAvatarPacks}
+              avatarSaving={agentAvatarSaving}
+              avatarSaveError={agentAvatarSaveError}
+              onsaveavatar={saveOpenAgentAvatar}
+              onclose={() => (agentSurface = "chat")}
+            />
+          {:else if activeTab === "chat"}
             <div
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
@@ -3131,6 +3211,23 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if isAgentChannel && provisioning.state}
+                    <div
+                      class="agent-provision-status"
+                      data-testid="agent-provision-status"
+                    >
+                      {#if provisioning.machineStartedAt}
+                        <div data-testid="agent-machine-started">
+                          Machine started {provisioning.machineStartedAt}
+                        </div>
+                      {/if}
+                      {#if provisioning.checkedInAt}
+                        <div data-testid="agent-checked-in">
+                          {provisioning.agentName} checked in {provisioning.checkedInAt}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                   <AgentThinkingRow entries={agentThinking} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -3144,6 +3241,7 @@
                   messages={timeline}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
+                  composerLocked={composerLocked}
                   {onopenurl}
                   channelId={selectedRow.channelId}
                   oncardaction={handleCardAction}

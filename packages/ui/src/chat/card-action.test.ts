@@ -119,6 +119,25 @@ describe("submitLifecycleCardAction", () => {
     );
   });
 
+  it("returns the create_agent agentChannelId so the shell can select it", async () => {
+    const store: CardActionIdempotencyStore = new Map();
+    const result = await submitLifecycleCardAction({
+      event,
+      store,
+      run: async () => ({
+        cardId: event.cardId,
+        actionId: event.actionId,
+        state: "done",
+        agentChannelId: "chn_agent",
+        agentUid: "agt_1",
+      }),
+      onFailure: () => {
+        throw new Error("should not fail");
+      },
+    });
+    expect(result).toMatchObject({ agentChannelId: "chn_agent" });
+  });
+
   it("surfaces a 403 on the card via onFailure, never as a thrown toast", async () => {
     const store: CardActionIdempotencyStore = new Map();
     const failures: Array<{ cardId: string; message: string }> = [];

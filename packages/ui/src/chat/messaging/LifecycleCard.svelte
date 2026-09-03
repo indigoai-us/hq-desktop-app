@@ -33,8 +33,14 @@
   const collapsed = $derived(
     displayState === "done" || displayState === "skipped",
   );
+  const canRetry = $derived(
+    model.viewer.canAct &&
+      displayState === "blocked" &&
+      model.actions.some((action) => action.id === "retry"),
+  );
   const canEdit = $derived(
-    model.viewer.canAct && displayState === "open" && !localPending,
+    (model.viewer.canAct && displayState === "open" && !localPending) ||
+      canRetry,
   );
   const liveStep = $derived(
     displayState === "open" ||
