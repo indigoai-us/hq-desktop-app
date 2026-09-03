@@ -1480,8 +1480,45 @@ pub fn shell_path_block() -> String {
     // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
     // `yq: command not found` and the stub git after a reported-OK install.
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git/bin:$HOME/.local/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
     )
+}
+
+/// The portable (dugite) git has no compiled-in prefix and bundles no CA
+/// file: invoked bare from a user's shell it prints `templates not found` and
+/// `'remote-https' is not a git command`, so every https clone fails. The
+/// engine's own calls set `managed_git_env()`; users' shells need the same.
+/// Rather than exporting GIT_EXEC_PATH globally (which would break any other
+/// git the user later installs), install a tiny shim that sets the env and
+/// execs the real binary, and put the SHIM dir on PATH. Idempotent; returns
+/// the shim path when written. Exposed for testing.
+#[cfg(not(windows))]
+pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
+    let git_dir = managed_git_dir_in(home);
+    if !git_dir.join("bin").join("git").exists() {
+        return None;
+    }
+    let shim_dir = managed_git_shim_dir_in(home);
+    let shim = shim_dir.join("git");
+    let script = format!(
+        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
+    );
+    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
+        return Some(shim);
+    }
+    std::fs::create_dir_all(&shim_dir).ok()?;
+    std::fs::write(&shim, script).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
+    }
+    Some(shim)
+}
+
+#[cfg(not(windows))]
+pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("git-shim")
 }
 
 /// Profile files the PATH block must land in for this shell.
@@ -1513,6 +1550,10 @@ pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
 /// non-fatal and logged via `emit_preflight_line`.
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
+    match ensure_managed_git_shim_in(home) {
+        Some(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
+        None => emit_preflight_line(app, "[path] portable git not present; no shim written"),
+    }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
         if is_shell_path_configured(&profile_path) {
@@ -2645,6 +2686,112 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
     Ok(format!("yq installed at {}", target.display()))
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// install_jq (direct binary, macOS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pinned `jqlang/jq` release. HQ's hooks and `core/scripts/setup.sh` require
+/// jq; Sonoma ships none (Tahoe does), so a fresh Sonoma Mac failed setup.sh
+/// right after a reported-OK dependency install (install matrix, 2026-09-03).
+#[cfg(not(windows))]
+const JQ_BINARY_VERSION: &str = "jq-1.8.2";
+#[cfg(not(windows))]
+const JQ_BINARY_SHA256_AMD64: &str =
+    "e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0";
+#[cfg(not(windows))]
+const JQ_BINARY_SHA256_ARM64: &str =
+    "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e";
+
+#[cfg(not(windows))]
+async fn install_jq_macos(app: AppHandle) -> Result<String, String> {
+    let (arch, expected_sha) = match std::env::consts::ARCH {
+        "aarch64" => ("arm64", JQ_BINARY_SHA256_ARM64),
+        "x86_64" => ("amd64", JQ_BINARY_SHA256_AMD64),
+        other => {
+            let msg = format!("[jq] unsupported arch '{other}' — cannot install jq");
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
+    };
+    let url = format!(
+        "https://github.com/jqlang/jq/releases/download/{JQ_BINARY_VERSION}/jq-macos-{arch}"
+    );
+    let Some(home) = dirs::home_dir() else {
+        let msg = "[jq] could not resolve home directory".to_string();
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    };
+    let bin_dir = home.join(".local").join("bin");
+    let target = bin_dir.join("jq");
+    let staged = bin_dir.join(format!(".jq.{}.tmp", Uuid::new_v4()));
+    if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+        let msg = format!("[jq] failed to create {}: {e}", bin_dir.display());
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, &format!("[jq] downloading {url} → {}", staged.display()));
+    let staged_str = staged.to_string_lossy().into_owned();
+    run_streaming(&app, "curl", &["-fsSL", "-o", &staged_str, &url]).await?;
+
+    let check_path = bin_dir.join(format!(".{JQ_BINARY_VERSION}.sha256"));
+    let check_str = check_path.to_string_lossy().into_owned();
+    if let Err(e) = std::fs::write(&check_path, format!("{expected_sha}  {staged_str}\n")) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!("[jq] failed to write checksum file: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, "[jq] verifying checksum");
+    if let Err(e) = run_streaming(&app, "/usr/bin/shasum", &["-a", "256", "-c", &check_str]).await {
+        let _ = std::fs::remove_file(&staged);
+        let _ = std::fs::remove_file(&check_path);
+        let msg = format!("[jq] checksum verification failed: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    let _ = std::fs::remove_file(&check_path);
+    run_streaming(&app, "chmod", &["+x", &staged_str]).await?;
+
+    let output = Command::new(&staged)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("[jq] failed to run staged jq --version: {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() || !combined.contains(JQ_BINARY_VERSION) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!(
+            "[jq] staged jq version check failed: expected {JQ_BINARY_VERSION}, got '{}'",
+            combined.lines().next().unwrap_or("").trim()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    atomic_replace_file(&staged, &target).map_err(|e| {
+        let msg = format!("[jq] failed to activate staged binary: {e}");
+        emit_preflight_line(&app, &msg);
+        msg
+    })?;
+    Ok(format!("jq installed at {}", target.display()))
+}
+
+#[tauri::command]
+pub async fn install_jq(app: AppHandle) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        install_jq_macos(app).await
+    }
+    #[cfg(windows)]
+    {
+        let _ = app;
+        Err("jq is not provisioned by the Windows installer yet".to_string())
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // install_claude_code
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2685,7 +2832,14 @@ async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
 // install_qmd
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install qmd via `npm install -g @tobilu/qmd`.
+/// Pinned qmd version. MUST match `core/scripts/setup.sh` (`QMD_VERSION`),
+/// `core/scripts/install-deps.allow`, and the `@tobilu/qmd` dependency in
+/// hq-cli's package.json. Installing `latest` here produced a live three-way
+/// skew (2.8.3 vs 2.5.3 vs 1.0.7) that the install matrix caught on
+/// 2026-09-03 — `setup.sh` then "downgraded" what the app had just installed.
+pub const MANAGED_QMD_VERSION: &str = "2.5.3";
+
+/// Install qmd via `npm install -g @tobilu/qmd@<pin>`.
 ///
 /// Errors if npm is not available.
 #[cfg(not(windows))]
@@ -2706,7 +2860,7 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     run_streaming(
         &app,
         npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "--prefix", &prefix, "@tobilu/qmd"],
+        &["install", "-g", "--prefix", &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}")],
     )
     .await
 }
@@ -4405,7 +4559,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
             &managed_npm_prefix().to_string_lossy(),
             "--no-audit",
             "--no-fund",
-            "@tobilu/qmd@latest",
+            &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"),
         ],
     )
     .await?;
@@ -4865,6 +5019,15 @@ const DEP_DEFS: &[DepDef] = &[
         depends_on: &[],
     },
     DepDef {
+        id: "jq",
+        label: "jq",
+        binary: "jq",
+        // Required on macOS (setup.sh + hooks need it; Sonoma ships none).
+        // The Windows installer does not provision jq yet.
+        optional: cfg!(windows),
+        depends_on: &[],
+    },
+    DepDef {
         id: "gh",
         label: "GitHub CLI",
         binary: "gh",
@@ -5056,6 +5219,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         "qmd" => install_qmd(app.clone()).await,
         "hq-cli" => install_hq_cli(app.clone()).await,
         "yq" => install_yq(app.clone()).await,
+        "jq" => install_jq(app.clone()).await,
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
@@ -6840,8 +7004,8 @@ mod shell_path_block_tests {
         let export = block.lines().find(|l| l.starts_with("export PATH=")).expect("export line");
         let idx = |needle: &str| export.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
         assert!(idx("toolchain/node/bin") < idx("toolchain/npm-global/bin"));
-        assert!(idx("toolchain/npm-global/bin") < idx("toolchain/git/bin"));
-        assert!(idx("toolchain/git/bin") < idx("$HOME/.local/bin"));
+        assert!(idx("toolchain/npm-global/bin") < idx("toolchain/git-shim"));
+        assert!(idx("toolchain/git-shim") < idx("$HOME/.local/bin"));
         assert!(idx("$HOME/.local/bin") < idx(":$PATH"));
         assert!(block.contains(SHELL_PATH_MARKER));
     }
@@ -6858,5 +7022,32 @@ mod shell_path_block_tests {
         } else {
             assert_eq!(all.len(), 1);
         }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod git_shim_tests {
+    use super::*;
+
+    #[test]
+    fn shim_written_only_when_portable_git_exists_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        assert!(ensure_managed_git_shim_in(home).is_none());
+        let bin = managed_git_dir_in(home).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("git"), "").unwrap();
+        let shim = ensure_managed_git_shim_in(home).expect("shim");
+        let body = std::fs::read_to_string(&shim).unwrap();
+        assert!(body.starts_with("#!/bin/sh"));
+        assert!(body.contains("GIT_EXEC_PATH") && body.contains("GIT_TEMPLATE_DIR") && body.contains("exec "));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111, 0o111);
+        assert_eq!(ensure_managed_git_shim_in(home), Some(shim));
+    }
+
+    #[test]
+    fn qmd_pin_matches_setup_sh_contract() {
+        assert_eq!(MANAGED_QMD_VERSION, "2.5.3");
     }
 }

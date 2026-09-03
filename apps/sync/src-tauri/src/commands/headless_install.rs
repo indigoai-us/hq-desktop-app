@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Listener};
 
 use super::install_deps::{self, InstallProgress};
 
