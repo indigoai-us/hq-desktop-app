@@ -283,6 +283,23 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(sharedFile).toMatch(/background:/);
   });
 
+  it('stacks consecutive same-author messages tight and re-headers new authors with a modest gap', () => {
+    const row = rule(channelConversation, '.dm-msg');
+    const groupStart = rule(channelConversation, '.dm-msg-group-start');
+
+    // Intra-group: continuation rows carry no extra top margin and use the
+    // compact vertical pad so adjacent same-author lines collapse to ~2px.
+    expect(row, '.dm-msg selector should exist').not.toBe('');
+    expect(row).toMatch(/margin-top:\s*0;/);
+    expect(row).toContain('padding: var(--msg-row-pad-y, 1px) 8px;');
+
+    // Inter-group: a new author group re-headers with a modest gap, not the
+    // old oversized 10px margin.
+    expect(groupStart, '.dm-msg-group-start selector should exist').not.toBe('');
+    expect(groupStart).toContain('margin-top: var(--msg-group-gap, 8px);');
+    expect(groupStart).not.toMatch(/margin-top:\s*10px/);
+  });
+
   it('keeps the idle widget wordmark legible in forced light and dark visual previews', () => {
     expect(rule(widget, ":global(html[data-force-theme='light']) .wm")).toContain(
       '--wm-fg: #1d1d1d',

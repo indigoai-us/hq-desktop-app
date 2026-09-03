@@ -1605,8 +1605,8 @@
     gap: 8px;
     width: 100%;
     max-width: none;
-    margin-top: 2px;
-    padding: 5px 8px;
+    margin-top: 0;
+    padding: var(--msg-row-pad-y, 1px) 8px;
     border-radius: 6px;
   }
 
@@ -1616,7 +1616,7 @@
   }
 
   .dm-msg-group-start {
-    margin-top: 10px;
+    margin-top: var(--msg-group-gap, 8px);
     padding-top: 2px;
   }
 
