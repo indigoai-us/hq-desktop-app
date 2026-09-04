@@ -19,7 +19,6 @@
     "global-shortcut:default",
     "notification:default",
     "shell:allow-open",
-    "deep-link:default",
     {
       "identifier": "http:default",
       "allow": [
