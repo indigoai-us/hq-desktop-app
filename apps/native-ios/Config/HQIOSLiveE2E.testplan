@@ -1,0 +1,28 @@
+{
+  "configurations" : [
+    {
+      "id" : "A2E1E9A4-7098-4B03-9CE3-000000000003",
+      "name" : "Live E2E (explicit opt-in)",
+      "options" : {
+        "environmentVariableEntries" : [
+          { "key" : "HQIOS_LIVE_E2E", "value" : "1", "enabled" : true }
+        ]
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "maximumTestExecutionTimeAllowance" : 60,
+    "testTimeoutsEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:HQIOS.xcodeproj",
+        "identifier" : "BE839FCF99AB5EEE3875860E",
+        "name" : "HQIOSUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

@@ -1,0 +1,42 @@
+{
+  "testNodes": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {"name": "Fixture Visual Tour", "nodeType": "Test Plan Configuration", "result": "Passed"},
+                    {"name": "Smoke Local", "nodeType": "Test Plan Configuration", "result": "Passed"}
+                  ],
+                  "name": "testTransportContract()",
+                  "nodeIdentifier": "HQHTTPContractTests/testTransportContract()",
+                  "nodeType": "Test Case",
+                  "result": "Passed"
+                },
+                {
+                  "children": [
+                    {"name": "Fixture Visual Tour", "nodeType": "Test Plan Configuration", "result": "Passed"},
+                    {"name": "Smoke Local", "nodeType": "Test Plan Configuration", "result": "Passed"}
+                  ],
+                  "name": "testRealtimeContract()",
+                  "nodeIdentifier": "HQRealtimeE2ETests/testRealtimeContract()",
+                  "nodeType": "Test Case",
+                  "result": "Passed"
+                }
+              ],
+              "name": "HQIOSTests",
+              "nodeType": "Unit test bundle",
+              "result": "Passed"
+            }
+          ],
+          "name": "HQIOS",
+          "nodeType": "Test Plan",
+          "result": "Passed"
+        }
+      ]
+    }
+  ]
+}

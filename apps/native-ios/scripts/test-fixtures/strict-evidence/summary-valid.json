@@ -1,0 +1,42 @@
+{
+  "devicesAndConfigurations": [
+    {
+      "device": {
+        "deviceId": "TEST-UDID",
+        "deviceName": "iPhone 17 Pro",
+        "modelName": "iPhone 17 Pro",
+        "platform": "iOS Simulator"
+      },
+      "expectedFailures": 0,
+      "failedTests": 0,
+      "passedTests": 2,
+      "skippedTests": 0,
+      "testPlanConfiguration": {
+        "configurationId": "2",
+        "configurationName": "Fixture Visual Tour"
+      }
+    },
+    {
+      "device": {
+        "deviceId": "TEST-UDID",
+        "deviceName": "iPhone 17 Pro",
+        "modelName": "iPhone 17 Pro",
+        "platform": "iOS Simulator"
+      },
+      "expectedFailures": 0,
+      "failedTests": 0,
+      "passedTests": 2,
+      "skippedTests": 0,
+      "testPlanConfiguration": {
+        "configurationId": "1",
+        "configurationName": "Smoke Local"
+      }
+    }
+  ],
+  "expectedFailures": 0,
+  "failedTests": 0,
+  "passedTests": 2,
+  "result": "Passed",
+  "skippedTests": 0,
+  "totalTestCount": 2
+}

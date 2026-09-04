@@ -1,0 +1,28 @@
+{
+  "memberships": [
+    {
+      "schemaVersion": 0,
+      "role": "__redacted__",
+      "updatedAt": "1970-01-01T00:00:00Z",
+      "acceptedAt": "1970-01-01T00:00:00Z",
+      "invitedAt": "1970-01-01T00:00:00Z",
+      "companyUid": "__redacted__",
+      "invitationId": "__redacted__",
+      "createdAt": "1970-01-01T00:00:00Z",
+      "membershipKey": "__redacted__",
+      "invitedBy": "__redacted__",
+      "status": "__redacted__",
+      "personUid": "__redacted__",
+      "companyName": "__redacted__",
+      "companySlug": "__redacted__",
+      "bucketName": "__redacted__",
+      "fleetEnabled": false,
+      "teamPlanEnabled": false,
+      "brandingEnabled": false,
+      "brand": {
+        "website": "https://example.invalid",
+        "faviconUrl": "https://example.invalid/favicon.png"
+      }
+    }
+  ]
+}

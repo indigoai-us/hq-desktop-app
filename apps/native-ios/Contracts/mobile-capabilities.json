@@ -1,0 +1,478 @@
+{
+  "schemaVersion": 1,
+  "audit": {
+    "story": "US-001",
+    "sourceLedgers": {
+      "routes": "apps/native-macos/Parity/routes.json",
+      "secondarySurfaces": "apps/native-macos/Parity/windows.json"
+    },
+    "adaptationSource": "companies/indigo/projects/native-ios-hq-port/research/visual-parity-matrix.md",
+    "allowedDispositions": [
+      "cloud-backed-native",
+      "ios-adapted",
+      "degraded-read-only",
+      "device-unavailable",
+      "blocked-missing-external-backend"
+    ],
+    "verification": "blocked",
+    "blocker": "No authorized non-production Cognito identity or redacted authenticated payload captures were supplied. Unauthenticated probes establish only route registration; they cannot establish response contracts, permissions, pagination, enum drift, partial responses, or error envelopes.",
+    "unauthenticatedProbe": {
+      "at": "2026-09-02",
+      "baseURL": "https://hqapi.getindigo.ai",
+      "results": [
+        { "method": "GET", "path": "/v1/mobile/config", "status": 401 },
+        { "method": "GET", "path": "/v1/notify/channels", "status": 401 },
+        { "method": "GET", "path": "/v1/files/list", "status": 401 },
+        { "method": "POST", "path": "/v1/realtime/credentials", "status": 401 },
+        { "method": "GET", "path": "/v1/companies/indigo/summary", "status": 404 }
+      ]
+    },
+    "dependentStoriesBlocked": ["US-018"],
+    "noFixtureOnlyCompletion": true
+  },
+  "routeCapabilities": [
+    {
+      "id": "home",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "review-needs-you", "disposition": "cloud-backed-native", "contracts": ["notifications"] },
+        { "id": "review-today", "disposition": "blocked-missing-external-backend", "evidence": "No deployed Today aggregate is identified in the audited sources." },
+        { "id": "review-portfolio", "disposition": "cloud-backed-native", "contracts": ["company-board"] },
+        { "id": "review-activity", "disposition": "cloud-backed-native", "contracts": ["company-activity"] }
+      ]
+    },
+    {
+      "id": "mission-control",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "review-projects", "disposition": "cloud-backed-native", "contracts": ["company-board", "work-mesh-project"] },
+        { "id": "open-project-channel", "disposition": "cloud-backed-native", "contracts": ["channel-directory", "channel-messages"] },
+        { "id": "review-agent-sessions", "disposition": "blocked-missing-external-backend", "evidence": "The desktop session process and aggregate have no audited mobile-safe endpoint." },
+        { "id": "answer-question", "disposition": "blocked-missing-external-backend", "evidence": "The web adapter records the agency question API as not yet implemented." }
+      ]
+    },
+    {
+      "id": "inbox",
+      "disposition": "cloud-backed-native",
+      "contracts": ["notifications", "dm-inbox", "dm-threads", "shared-with-me"],
+      "actions": [
+        { "id": "list-notifications", "disposition": "cloud-backed-native", "contracts": ["notifications"] },
+        { "id": "open-dm", "disposition": "cloud-backed-native", "contracts": ["dm-threads", "dm-thread"] },
+        { "id": "send-dm", "disposition": "cloud-backed-native", "contracts": ["dm-send"] },
+        { "id": "open-share", "disposition": "cloud-backed-native", "contracts": ["shared-with-me"] }
+      ]
+    },
+    {
+      "id": "meetings",
+      "disposition": "cloud-backed-native",
+      "contracts": ["calendar-events", "bot-list"],
+      "actions": [
+        { "id": "list-agenda", "disposition": "cloud-backed-native", "contracts": ["calendar-events"] },
+        { "id": "list-cloud-bots", "disposition": "cloud-backed-native", "contracts": ["bot-list"] },
+        { "id": "invite-bot", "disposition": "cloud-backed-native", "contracts": ["bot-invite"] },
+        { "id": "cancel-bot", "disposition": "cloud-backed-native", "contracts": ["bot-cancel"] },
+        { "id": "capture-desktop-meeting", "disposition": "device-unavailable", "evidence": "The macOS capture process cannot run on iOS; cloud bot controls remain available." }
+      ]
+    },
+    {
+      "id": "marketplace",
+      "disposition": "cloud-backed-native",
+      "contracts": ["listings"],
+      "actions": [
+        { "id": "search-listings", "disposition": "cloud-backed-native", "contracts": ["listings"] },
+        { "id": "view-listing", "disposition": "cloud-backed-native", "contracts": ["listing-detail"] },
+        { "id": "record-install", "disposition": "cloud-backed-native", "contracts": ["listing-install"] },
+        { "id": "publish-local-pack", "disposition": "device-unavailable", "evidence": "Publishing requires a trustworthy local pack directory, which the mobile sandbox cannot provide." }
+      ]
+    },
+    {
+      "id": "moderation",
+      "disposition": "cloud-backed-native",
+      "contracts": ["moderation-queue"],
+      "actions": [
+        { "id": "review-queue", "disposition": "cloud-backed-native", "contracts": ["moderation-queue"] },
+        { "id": "decide-listing", "disposition": "cloud-backed-native", "contracts": ["moderation-decision"] },
+        { "id": "emergency-yank", "disposition": "cloud-backed-native", "contracts": ["moderation-yank"] }
+      ]
+    },
+    {
+      "id": "library:skills",
+      "disposition": "cloud-backed-native",
+      "contracts": ["skills-shelf"],
+      "actions": [
+        { "id": "browse-skills", "disposition": "cloud-backed-native", "contracts": ["skills-shelf"] },
+        { "id": "view-skill", "disposition": "cloud-backed-native", "contracts": ["skills-shelf"] }
+      ]
+    },
+    {
+      "id": "library:workers",
+      "disposition": "degraded-read-only",
+      "contracts": ["agent-mobile-roster"],
+      "actions": [
+        { "id": "browse-workers", "disposition": "cloud-backed-native", "contracts": ["agent-mobile-roster"] },
+        { "id": "view-worker-detail", "disposition": "blocked-missing-external-backend", "evidence": "The audited web adapter explicitly reports worker detail as not yet implemented." }
+      ]
+    },
+    {
+      "id": "library:installed",
+      "disposition": "degraded-read-only",
+      "contracts": ["skills-me"],
+      "actions": [
+        { "id": "list-installed-skills", "disposition": "cloud-backed-native", "contracts": ["skills-me"] },
+        { "id": "install-local-skill", "disposition": "device-unavailable", "evidence": "Desktop package installation mutates a local HQ tree and is unavailable on iOS." },
+        { "id": "uninstall-local-skill", "disposition": "device-unavailable", "evidence": "Desktop package removal mutates a local HQ tree and is unavailable on iOS." }
+      ]
+    },
+    {
+      "id": "library:profile",
+      "disposition": "cloud-backed-native",
+      "contracts": ["profile"],
+      "actions": [
+        { "id": "view-profile", "disposition": "cloud-backed-native", "contracts": ["profile"] },
+        { "id": "update-profile", "disposition": "cloud-backed-native", "contracts": ["profile-update"] }
+      ]
+    },
+    {
+      "id": "files",
+      "disposition": "cloud-backed-native",
+      "contracts": ["files-list", "files-presign"],
+      "actions": [
+        { "id": "browse-vault", "disposition": "cloud-backed-native", "contracts": ["files-list"] },
+        { "id": "preview-file", "disposition": "cloud-backed-native", "contracts": ["files-presign"] },
+        { "id": "upload-file", "disposition": "cloud-backed-native", "contracts": ["files-presign"] },
+        { "id": "reveal-in-finder", "disposition": "device-unavailable", "evidence": "Finder is a macOS-only integration." }
+      ]
+    },
+    {
+      "id": "settings:sync",
+      "disposition": "device-unavailable",
+      "actions": [
+        { "id": "manage-desktop-sync", "disposition": "device-unavailable", "evidence": "The desktop workspace and sync daemon have no mobile-safe replacement." },
+        { "id": "resolve-local-conflict", "disposition": "device-unavailable", "evidence": "Conflict resolution mutates the desktop HQ tree." }
+      ]
+    },
+    {
+      "id": "settings:notifications",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "request-notification-permission", "disposition": "ios-adapted", "evidence": "Maps to UNUserNotificationCenter authorization." },
+        { "id": "register-push-device", "disposition": "cloud-backed-native", "contracts": ["push-device-register"] },
+        { "id": "unregister-push-device", "disposition": "cloud-backed-native", "contracts": ["push-device-remove"] },
+        { "id": "open-system-settings", "disposition": "ios-adapted", "evidence": "Maps to the app-specific iOS Settings URL." }
+      ]
+    },
+    {
+      "id": "settings:widget",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "manage-widget", "disposition": "ios-adapted", "evidence": "Maps to WidgetKit small and medium families rather than a desktop window." },
+        { "id": "open-widget-deep-link", "disposition": "ios-adapted", "evidence": "Widget taps restore the exact app route." }
+      ]
+    },
+    {
+      "id": "settings:updates",
+      "disposition": "device-unavailable",
+      "actions": [
+        { "id": "check-desktop-update", "disposition": "device-unavailable", "evidence": "Sparkle and desktop release channels do not run on iOS." },
+        { "id": "install-app-update", "disposition": "device-unavailable", "evidence": "iOS application updates are App Store-managed." }
+      ]
+    },
+    {
+      "id": "settings:general",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "manage-app-settings", "disposition": "ios-adapted", "evidence": "Preferences are stored in the iOS app container." },
+        { "id": "manage-launch-at-login", "disposition": "device-unavailable", "evidence": "iOS has no launch-at-login setting." }
+      ]
+    },
+    {
+      "id": "settings:meetings",
+      "disposition": "ios-adapted",
+      "contracts": ["calendar-events", "bot-list"],
+      "actions": [
+        { "id": "manage-cloud-bots", "disposition": "cloud-backed-native", "contracts": ["bot-list", "bot-invite", "bot-cancel"] },
+        { "id": "manage-calendar-connection", "disposition": "cloud-backed-native", "contracts": ["calendar-events"] },
+        { "id": "capture-desktop-meeting", "disposition": "device-unavailable", "evidence": "Desktop screen and audio capture cannot run on iOS." }
+      ]
+    },
+    {
+      "id": "company:{slug}:overview",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "view-summary", "disposition": "blocked-missing-external-backend", "evidence": "The only unauthenticated probe of /v1/companies/indigo/summary returned 404; an authenticated deployed response is not available." },
+        { "id": "view-membership", "disposition": "cloud-backed-native", "contracts": ["membership-me"] }
+      ]
+    },
+    {
+      "id": "company:{slug}:goals",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "list-goals", "disposition": "blocked-missing-external-backend", "evidence": "The audited web adapter records the goals API as not yet implemented." },
+        { "id": "update-goal", "disposition": "blocked-missing-external-backend", "evidence": "No mobile-safe goal mutation contract is identified." }
+      ]
+    },
+    {
+      "id": "company:{slug}:projects",
+      "disposition": "cloud-backed-native",
+      "contracts": ["company-board"],
+      "actions": [
+        { "id": "list-projects", "disposition": "cloud-backed-native", "contracts": ["company-board"] },
+        { "id": "open-project", "disposition": "cloud-backed-native", "contracts": ["work-mesh-project"] }
+      ]
+    },
+    {
+      "id": "company:{slug}:skills",
+      "disposition": "cloud-backed-native",
+      "contracts": ["skills-shelf"],
+      "actions": [
+        { "id": "browse-skills", "disposition": "cloud-backed-native", "contracts": ["skills-shelf"] },
+        { "id": "view-installed-skills", "disposition": "cloud-backed-native", "contracts": ["skills-me"] }
+      ]
+    },
+    {
+      "id": "company:{slug}:workers",
+      "disposition": "degraded-read-only",
+      "contracts": ["agent-mobile-roster"],
+      "actions": [
+        { "id": "list-workers", "disposition": "cloud-backed-native", "contracts": ["agent-mobile-roster"] },
+        { "id": "open-worker-detail", "disposition": "blocked-missing-external-backend", "evidence": "No audited cloud worker-detail DTO exists." }
+      ]
+    },
+    {
+      "id": "company:{slug}:knowledge",
+      "disposition": "cloud-backed-native",
+      "contracts": ["files-list", "files-presign"],
+      "actions": [
+        { "id": "browse-knowledge", "disposition": "cloud-backed-native", "contracts": ["files-list"] },
+        { "id": "preview-knowledge", "disposition": "cloud-backed-native", "contracts": ["files-presign"] }
+      ]
+    },
+    {
+      "id": "company:{slug}:team",
+      "disposition": "cloud-backed-native",
+      "contracts": ["company-members"],
+      "actions": [
+        { "id": "list-members", "disposition": "cloud-backed-native", "contracts": ["company-members"] },
+        { "id": "view-membership-role", "disposition": "cloud-backed-native", "contracts": ["membership-me"] }
+      ]
+    },
+    {
+      "id": "company:{slug}:activity",
+      "disposition": "cloud-backed-native",
+      "contracts": ["company-activity"],
+      "actions": [
+        { "id": "list-activity", "disposition": "cloud-backed-native", "contracts": ["company-activity"] },
+        { "id": "open-activity-target", "disposition": "ios-adapted", "evidence": "The mobile shell maps activity targets to the preserved route catalog." }
+      ]
+    },
+    {
+      "id": "company:{slug}:deployments",
+      "disposition": "cloud-backed-native",
+      "contracts": ["company-deployments"],
+      "actions": [
+        { "id": "list-deployments", "disposition": "cloud-backed-native", "contracts": ["company-deployments"] },
+        { "id": "inspect-deployment", "disposition": "degraded-read-only", "evidence": "The iOS surface does not run desktop deployment commands." }
+      ]
+    },
+    {
+      "id": "company:{slug}:secrets",
+      "disposition": "degraded-read-only",
+      "contracts": ["company-secrets"],
+      "actions": [
+        { "id": "view-secret-metadata", "disposition": "degraded-read-only", "contracts": ["company-secrets"], "evidence": "Only non-sensitive metadata may be represented on device." },
+        { "id": "reveal-secret-value", "disposition": "device-unavailable", "evidence": "Secret material is deliberately not exposed to a general mobile client." },
+        { "id": "mutate-secret", "disposition": "blocked-missing-external-backend", "evidence": "No mobile-safe secret mutation contract is evidenced." }
+      ]
+    },
+    {
+      "id": "company:{slug}:settings",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "view-company-settings", "disposition": "blocked-missing-external-backend", "evidence": "No authoritative company-settings read contract is identified." },
+        { "id": "update-company-settings", "disposition": "blocked-missing-external-backend", "evidence": "No authoritative company-settings mutation contract is identified." }
+      ]
+    },
+    {
+      "id": "project:{company}:{project}",
+      "disposition": "cloud-backed-native",
+      "contracts": ["work-mesh-project"],
+      "actions": [
+        { "id": "view-project", "disposition": "cloud-backed-native", "contracts": ["work-mesh-project"] },
+        { "id": "open-project-channel", "disposition": "cloud-backed-native", "contracts": ["channel-directory", "channel-messages"] },
+        { "id": "ensure-project-channel", "disposition": "blocked-missing-external-backend", "evidence": "The existing mobile project-channel ensure call does not match a locally registered deployed route and must not be a first-launch dependency." }
+      ]
+    },
+    {
+      "id": "task:{company}:{project}:{task}",
+      "disposition": "blocked-missing-external-backend",
+      "actions": [
+        { "id": "view-task-detail", "disposition": "blocked-missing-external-backend", "evidence": "No task-detail endpoint is identified in the audited sources." },
+        { "id": "update-task-state", "disposition": "blocked-missing-external-backend", "evidence": "No mobile-safe task mutation contract is identified." },
+        { "id": "open-task-project", "disposition": "cloud-backed-native", "contracts": ["work-mesh-project"] }
+      ]
+    }
+  ],
+  "secondarySurfaceCapabilities": [
+    {
+      "id": "main",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "navigate-route", "disposition": "ios-adapted", "evidence": "Maps the macOS main window to the iPhone tab shell and iPad split view." },
+        { "id": "restore-deep-link", "disposition": "ios-adapted", "evidence": "Selects the enclosing tab or sidebar item before pushing the exact preserved route." }
+      ]
+    },
+    {
+      "id": "menubar",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "open-quick-status", "disposition": "ios-adapted", "evidence": "The visual parity matrix maps the menu-bar window to a Home quick-status sheet." },
+        { "id": "run-app-shortcut", "disposition": "ios-adapted", "evidence": "Quick actions move to an iOS App Shortcut." }
+      ]
+    },
+    {
+      "id": "onboarding",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "load-mobile-config", "disposition": "cloud-backed-native", "contracts": ["mobile-config"] },
+        { "id": "authenticate", "disposition": "ios-adapted", "evidence": "Hosted Cognito runs through ASWebAuthenticationSession and PKCE." },
+        { "id": "choose-workspace", "disposition": "cloud-backed-native", "contracts": ["membership-me"] }
+      ]
+    },
+    {
+      "id": "sign-in",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "start-pkce", "disposition": "ios-adapted", "evidence": "Uses the existing hqmobile://auth callback and Cognito public client." },
+        { "id": "cancel-sign-in", "disposition": "ios-adapted", "evidence": "ASWebAuthenticationSession cancellation returns to the signed-out state." }
+      ]
+    },
+    {
+      "id": "recovery",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "retry-cloud-session", "disposition": "ios-adapted", "evidence": "Mobile recovery can retry authentication and network state." },
+        { "id": "clear-mobile-session", "disposition": "ios-adapted", "evidence": "Clears Keychain tokens and protected in-memory data." },
+        { "id": "repair-desktop-install", "disposition": "device-unavailable", "evidence": "The mobile sandbox cannot repair a desktop HQ installation." }
+      ]
+    },
+    {
+      "id": "meetings",
+      "disposition": "ios-adapted",
+      "contracts": ["calendar-events", "bot-list"],
+      "actions": [
+        { "id": "open-meeting-sheet", "disposition": "ios-adapted", "evidence": "The macOS meetings window maps to a pushed or sheet presentation." },
+        { "id": "control-cloud-bot", "disposition": "cloud-backed-native", "contracts": ["bot-list", "bot-invite", "bot-cancel"] },
+        { "id": "capture-desktop-audio", "disposition": "device-unavailable", "evidence": "The macOS capture process cannot run on iOS." }
+      ]
+    },
+    {
+      "id": "meeting-permissions",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "view-permission-state", "disposition": "ios-adapted", "evidence": "Shows iOS notification and calendar permission status." },
+        { "id": "open-system-settings", "disposition": "ios-adapted", "evidence": "Opens the app-specific iOS Settings page." }
+      ]
+    },
+    {
+      "id": "dm-detail",
+      "disposition": "cloud-backed-native",
+      "contracts": ["dm-thread", "dm-send"],
+      "actions": [
+        { "id": "load-conversation", "disposition": "cloud-backed-native", "contracts": ["dm-thread"] },
+        { "id": "send-message", "disposition": "cloud-backed-native", "contracts": ["dm-send"] },
+        { "id": "open-reply-thread", "disposition": "cloud-backed-native", "contracts": ["reply-threads"] },
+        { "id": "toggle-reaction", "disposition": "cloud-backed-native", "contracts": ["reactions-fetch", "reaction-add", "reaction-remove"] }
+      ]
+    },
+    {
+      "id": "share-detail",
+      "disposition": "cloud-backed-native",
+      "contracts": ["shared-with-me"],
+      "actions": [
+        { "id": "preview-share", "disposition": "cloud-backed-native", "contracts": ["shared-with-me", "files-presign"] },
+        { "id": "acknowledge-share", "disposition": "cloud-backed-native", "contracts": ["shared-with-me-ack"] }
+      ]
+    },
+    {
+      "id": "messages",
+      "disposition": "cloud-backed-native",
+      "contracts": ["channel-directory", "dm-threads"],
+      "actions": [
+        { "id": "list-direct-messages", "disposition": "cloud-backed-native", "contracts": ["dm-threads", "dm-inbox"] },
+        { "id": "list-channels", "disposition": "cloud-backed-native", "contracts": ["channel-directory"] },
+        { "id": "list-requests", "disposition": "cloud-backed-native", "contracts": ["dm-requests"] },
+        { "id": "list-groups", "disposition": "cloud-backed-native", "contracts": ["channel-directory"] },
+        { "id": "search-messages", "disposition": "cloud-backed-native", "contracts": ["message-search"] },
+        { "id": "send-channel-message", "disposition": "cloud-backed-native", "contracts": ["channel-send"] },
+        { "id": "send-direct-message", "disposition": "cloud-backed-native", "contracts": ["dm-send"] },
+        { "id": "load-reply-thread", "disposition": "cloud-backed-native", "contracts": ["reply-threads"] },
+        { "id": "send-reply", "disposition": "cloud-backed-native", "contracts": ["dm-reply", "channel-reply"] },
+        { "id": "toggle-reaction", "disposition": "cloud-backed-native", "contracts": ["reactions-fetch", "reaction-add", "reaction-remove"] },
+        { "id": "manage-channel-members", "disposition": "cloud-backed-native", "contracts": ["channel-members", "channel-member-add", "channel-member-remove"] }
+      ]
+    },
+    {
+      "id": "banner",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "present-notification", "disposition": "ios-adapted", "evidence": "Maps to an in-app top banner and UNUserNotification." },
+        { "id": "run-notification-action", "disposition": "cloud-backed-native", "contracts": ["notification-action"] },
+        { "id": "dismiss-banner", "disposition": "ios-adapted", "evidence": "Dismisses only the transient presentation." }
+      ]
+    },
+    {
+      "id": "widget",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "present-small-widget", "disposition": "ios-adapted", "evidence": "Maps the compact desktop widget state to WidgetKit small." },
+        { "id": "present-medium-widget", "disposition": "ios-adapted", "evidence": "Maps the expanded desktop widget state to WidgetKit medium." },
+        { "id": "open-widget-route", "disposition": "ios-adapted", "evidence": "Widget deep links restore the exact route in the app shell." }
+      ]
+    },
+    {
+      "id": "activity",
+      "disposition": "cloud-backed-native",
+      "contracts": ["company-activity"],
+      "actions": [
+        { "id": "list-recent-changes", "disposition": "cloud-backed-native", "contracts": ["company-activity"] },
+        { "id": "open-change-target", "disposition": "ios-adapted", "evidence": "Routes into Home or the matching Company Activity destination." }
+      ]
+    },
+    {
+      "id": "drift",
+      "disposition": "device-unavailable",
+      "actions": [
+        { "id": "inspect-local-core", "disposition": "device-unavailable", "evidence": "iOS cannot inspect the desktop HQ core tree." },
+        { "id": "repair-core-drift", "disposition": "device-unavailable", "evidence": "iOS cannot replace or repair desktop core files." }
+      ]
+    },
+    {
+      "id": "new-files",
+      "disposition": "ios-adapted",
+      "contracts": ["files-list"],
+      "actions": [
+        { "id": "filter-new-files", "disposition": "ios-adapted", "contracts": ["files-list"], "evidence": "The desktop window maps to the Files New smart filter." },
+        { "id": "preview-new-file", "disposition": "cloud-backed-native", "contracts": ["files-presign"] }
+      ]
+    },
+    {
+      "id": "notification-history",
+      "disposition": "cloud-backed-native",
+      "contracts": ["notifications"],
+      "actions": [
+        { "id": "list-notifications", "disposition": "cloud-backed-native", "contracts": ["notifications"] },
+        { "id": "acknowledge-notification", "disposition": "cloud-backed-native", "contracts": ["notification-ack"] },
+        { "id": "mark-all-read", "disposition": "cloud-backed-native", "contracts": ["notifications-read-all"] },
+        { "id": "run-notification-action", "disposition": "cloud-backed-native", "contracts": ["notification-action"] }
+      ]
+    },
+    {
+      "id": "settings",
+      "disposition": "ios-adapted",
+      "actions": [
+        { "id": "open-settings-root", "disposition": "ios-adapted", "evidence": "Maps the desktop settings window to More > Settings." },
+        { "id": "navigate-setting", "disposition": "ios-adapted", "evidence": "Uses List navigation on iPhone and sidebar/detail on iPad." }
+      ]
+    }
+  ]
+}

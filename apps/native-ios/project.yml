@@ -1,0 +1,115 @@
+name: HQIOS
+options:
+  minimumXcodeGenVersion: 2.45.0
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    PRODUCT_BUNDLE_IDENTIFIER: com.hqforwork.mobile
+    PRODUCT_NAME: HQ
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+    "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": YES
+    "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  HQIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources
+    resources:
+      - path: Contracts
+    info:
+      path: Config/HQIOS-Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.hqforwork.mobile.oauth
+            CFBundleURLSchemes:
+              - hqmobile
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: HQIOS
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+  HQIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: HQIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hqforwork.mobile.tests
+        PRODUCT_NAME: HQIOSTests
+        PRODUCT_MODULE_NAME: HQIOSTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HQ.app/HQ"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  HQIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: HQIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hqforwork.mobile.uitests
+        PRODUCT_NAME: HQIOSUITests
+        PRODUCT_MODULE_NAME: HQIOSUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: HQIOS
+schemes:
+  HQIOS:
+    build:
+      targets:
+        HQIOS: all
+        HQIOSTests: [test]
+        HQIOSUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - HQIOSTests
+        - HQIOSUITests
+      testPlans:
+        - path: Config/HQIOS.testplan
+          defaultPlan: true
+    run:
+      config: Debug
+  HQIOSLiveE2E:
+    build:
+      targets:
+        HQIOS: all
+        HQIOSUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - HQIOSUITests
+      testPlans:
+        - path: Config/HQIOSLiveE2E.testplan
+          defaultPlan: true
+    run:
+      config: Debug

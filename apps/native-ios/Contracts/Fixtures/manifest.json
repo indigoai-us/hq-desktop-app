@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "capturedAt": "2026-09-03T01:23:00Z",
+  "company": "indigo",
+  "capturePolicy": "Authenticated production read-only responses were transformed in memory before output. All strings, numbers, and booleans are safe replacements; only object keys, value types, and collection shape come from the deployed response. These fixtures do not satisfy the global non-production canary audit.",
+  "fixtures": [
+    {
+      "contractId": "mobile-config",
+      "method": "GET",
+      "endpoint": "/v1/mobile/config",
+      "file": "mobile-config.redacted.json",
+      "sha256": "b7452cb1b3fb58d85ab8d97fde2bfeda67021f830d3418da8bbc4572b90d01ca",
+      "redacted": true,
+      "sourceKind": "redacted-real-payload",
+      "environmentClass": "production-read-only-operator",
+      "satisfiesGlobalAudit": false
+    },
+    {
+      "contractId": "membership-me",
+      "method": "GET",
+      "endpoint": "/membership/me",
+      "file": "membership-me.redacted.json",
+      "sha256": "246b659a4cfe0038324bb9c161a9f71df8ee8985bc3d1073d18589f93279e190",
+      "redacted": true,
+      "sourceKind": "redacted-real-payload",
+      "environmentClass": "production-read-only-operator",
+      "satisfiesGlobalAudit": false,
+      "scope": "Response was filtered to companySlug=indigo before value redaction."
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+HQHTTPContractTests/testTransportContract
+HQRealtimeE2ETests/testRealtimeContract
+HQHTTPContractTests/testTransportContract

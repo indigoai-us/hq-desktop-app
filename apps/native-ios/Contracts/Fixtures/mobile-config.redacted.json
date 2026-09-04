@@ -1,0 +1,11 @@
+{
+  "features": {
+    "agents": false,
+    "claudeAutoOpen": false,
+    "groupMessaging": false,
+    "pushPreviews": false,
+    "reactions": false,
+    "threadReplies": false,
+    "work": false
+  }
+}

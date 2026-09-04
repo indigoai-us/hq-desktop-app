@@ -16,6 +16,7 @@
     "test:scripts": "vitest run scripts/*.test.ts",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "visual-tour:ios": "bash apps/native-ios/scripts/run-simulator-tests.sh --visual-tour",
     "version:app": "tsx scripts/version-app.ts",
     "version:check": "tsx scripts/version-app.ts --check"
   },

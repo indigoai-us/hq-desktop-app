@@ -11,5 +11,9 @@ target/
 .env.*.local
 apps/sync/.dmgbuild-venv/
 
+# Local iOS simulator result bundles and exported screenshots. These are
+# reproducible verification evidence, never source artifacts.
+apps/native-ios/Evidence/
+
 # node_modules symlinks (the trailing-slash rule above only matches directories)
 **/node_modules
