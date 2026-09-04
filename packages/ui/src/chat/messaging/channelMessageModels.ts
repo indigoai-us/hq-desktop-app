@@ -657,3 +657,40 @@ export function shouldHideSystemMessage(message: {
   if (kind !== "system") return false;
   return parseSystemEvent(message.systemEvent) == null;
 }
+
+const ISO_TIMESTAMP_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/;
+
+/**
+ * Readonly card rows carry raw ISO 8601 stamps from hq-pro (server never
+ * pre-formats). Render them as a local time: "2:24 PM" when the stamp is
+ * today, "Sep 4, 2:24 PM" otherwise. Anything that is not an ISO timestamp
+ * is returned untouched so ordinary values ("plan", "3 of 25") pass through.
+ */
+export function formatReadonlyTimestamp(
+  value: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  const raw = (value ?? "").trim();
+  if (!raw || !ISO_TIMESTAMP_RE.test(raw)) return value ?? "";
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return value ?? "";
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return time;
+  const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${day}, ${time}`;
+}
+
+/** True when a readonly value was rewritten by {@link formatReadonlyTimestamp}. */
+export function isIsoTimestampValue(value: string | null | undefined): boolean {
+  const raw = (value ?? "").trim();
+  return ISO_TIMESTAMP_RE.test(raw) && Number.isFinite(Date.parse(raw));
+}

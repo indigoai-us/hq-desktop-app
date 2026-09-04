@@ -280,6 +280,7 @@
     buildCompanyDisplayMap,
     companyDisplayName,
   } from "../company/company-display-map.js";
+  import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
     isSelf,
@@ -589,6 +590,8 @@
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
   let companyWallpaper = $state("aurora");
+  /** Company display name from the settings tab appearance, when fetched. */
+  let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
@@ -818,6 +821,16 @@
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
+  /**
+   * Company hero shows the company's display name ("Ramen Bae"), not the
+   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
+   */
+  const companyHeroTitle = $derived(
+    companyAppearanceName ||
+      companyDisplayName(selectedRow?.companyUid, companyNames) ||
+      headerTitle,
+  );
+
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
   const composerPlaceholder = $derived(
     isAgentChannel && provisioning.state === "pending"
@@ -840,6 +853,7 @@
     companyTab = "chat";
     companyTabData = null;
     companyWallpaper = "aurora";
+    companyAppearanceName = null;
   });
 
   let timelineHydrating = $state(false);
@@ -1923,6 +1937,9 @@
       const parsed = parseCompanyTab(raw);
       if (parsed?.appearance?.wallpaper) {
         companyWallpaper = parsed.appearance.wallpaper;
+      }
+      if (parsed?.appearance?.name?.trim()) {
+        companyAppearanceName = parsed.appearance.name.trim();
       }
       companyTabData = tabId === "chat" ? companyTabData : parsed;
     } catch {
@@ -3846,13 +3863,23 @@
                       data-testid="agent-provision-status"
                     >
                       {#if provisioning.machineStartedAt}
-                        <div data-testid="agent-machine-started">
-                          Machine started {provisioning.machineStartedAt}
+                        <div
+                          data-testid="agent-machine-started"
+                          title={provisioning.machineStartedAt}
+                        >
+                          Machine started {formatReadonlyTimestamp(
+                            provisioning.machineStartedAt,
+                          )}
                         </div>
                       {/if}
                       {#if provisioning.checkedInAt}
-                        <div data-testid="agent-checked-in">
-                          {provisioning.agentName} checked in {provisioning.checkedInAt}
+                        <div
+                          data-testid="agent-checked-in"
+                          title={provisioning.checkedInAt}
+                        >
+                          {provisioning.agentName} checked in {formatReadonlyTimestamp(
+                            provisioning.checkedInAt,
+                          )}
                         </div>
                       {/if}
                     </div>
@@ -3867,7 +3894,7 @@
                   />
                 {/snippet}
                 {#snippet companyHeader()}
-                  <CompanyHero title={headerTitle} wallpaper={companyWallpaper} />
+                  <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
                 <ChannelConversation
                   messages={timeline}

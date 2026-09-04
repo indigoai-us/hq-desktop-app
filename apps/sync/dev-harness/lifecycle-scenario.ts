@@ -129,7 +129,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     { uid: MEMBER.personUid, name: MEMBER.displayName, email: MEMBER.email, role: 'member' },
   ];
   let agentCreated = false;
-  let agentSize: 'basic' | 'plus' | 'max' = 'basic';
+  let agentSize: 'basic' | 'power' | 'dev' = 'basic';
   const agentDraft = { name: 'Polar', handle: 'polar', runtime: 'codex' };
   const integrations = {
     connected: [
@@ -322,7 +322,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
               id: 'workforce',
               label: 'Workforce',
               description: 'Everything in Starter plus fleet agents and integrations.',
-              price: '$49 / seat / mo',
+              price: '$500/mo flat',
             },
             {
               id: 'enterprise',
@@ -403,9 +403,9 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
           required: true,
           value: agentSize,
           options: [
-            { id: 'basic', label: 'Basic', description: '1 concurrent session.', price: '$100 / mo' },
-            { id: 'plus', label: 'Plus', description: '3 concurrent sessions.', price: '$250 / mo' },
-            { id: 'max', label: 'Max', description: 'Unlimited sessions, dedicated Outpost.', price: '$600 / mo' },
+            { id: 'basic', label: 'Basic', description: 'Q&A, simple tasks.', price: '$100/mo' },
+            { id: 'power', label: 'Power', description: 'Multi-user, projects, light dev.', price: '$250/mo' },
+            { id: 'dev', label: 'Dev', description: 'Complex dev, many users, project orchestration.', price: '$500/mo' },
           ],
         },
       ],
@@ -421,7 +421,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       fields: [
         { id: 'agentUid', label: 'Agent', control: 'readonly', value: AGENT_UID },
         { id: 'runtime', label: 'Runtime', control: 'readonly', value: 'Codex' },
-        { id: 'size', label: 'Size', control: 'readonly', value: 'Basic · $100 / mo' },
+        { id: 'size', label: 'Size', control: 'readonly', value: 'Basic · $100/mo' },
       ],
       actions: [],
       ...extra,
@@ -676,7 +676,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     return id === 'claude' ? 'Claude Code' : id === 'grok' ? 'Grok Build' : 'Codex';
   }
   function sizeLabel(id: string): string {
-    return id === 'max' ? 'Max · $600 / mo' : id === 'plus' ? 'Plus · $250 / mo' : 'Basic · $100 / mo';
+    return id === 'dev' ? 'Dev · $500/mo' : id === 'power' ? 'Power · $250/mo' : 'Basic · $100/mo';
   }
 
   // ── company tabs ────────────────────────────────────────────────────────
@@ -744,12 +744,12 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
                 value: agentSize,
                 options: [
                   { id: 'basic', label: 'Basic' },
-                  { id: 'plus', label: 'Plus' },
-                  { id: 'max', label: 'Max' },
+                  { id: 'power', label: 'Power' },
+                  { id: 'dev', label: 'Dev' },
                 ],
               },
               { id: 'provider', label: 'Provider', control: 'readonly', value: runtimeLabel(agentDraft.runtime) },
-              { id: 'price', label: 'Price', control: 'readonly', value: sizeLabel(agentSize).split(' · ')[1] ?? '$100 / mo' },
+              { id: 'price', label: 'Price', control: 'readonly', value: sizeLabel(agentSize).split(' · ')[1] ?? '$100/mo' },
             ],
             [
               { id: 'resize', label: 'Resize', style: 'secondary' },
@@ -766,7 +766,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
             id: 'total',
             label: 'Agent spend',
             control: 'readonly',
-            value: agentRows.length ? sizeLabel(agentSize).split(' · ')[1] ?? '$100 / mo' : '$0 / mo',
+            value: agentRows.length ? sizeLabel(agentSize).split(' · ')[1] ?? '$100/mo' : '$0/mo',
           },
         ],
         [],
@@ -867,7 +867,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
 
   function settingsTab(): Json {
     const planLabel =
-      plan === 'enterprise' ? 'Enterprise' : plan === 'workforce' ? 'Workforce · $49 / seat / mo' : 'Starter · Free';
+      plan === 'enterprise' ? 'Enterprise' : plan === 'workforce' ? 'Workforce · $500/mo flat' : 'Starter · Free';
     return {
       tab: 'settings',
       companyUid: COMPANY_UID,

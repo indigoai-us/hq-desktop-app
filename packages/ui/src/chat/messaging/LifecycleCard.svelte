@@ -4,12 +4,14 @@
    * storyboard: a hairline step, mono label, title, controls, one action row.
    * No card chrome. Zero-network — actions bubble via `oncardaction`.
    */
-  import type {
-    LifecycleCardAction,
-    LifecycleCardActionEvent,
-    LifecycleCardField,
-    LifecycleCardModel,
-    LifecycleCardState,
+  import {
+    formatReadonlyTimestamp,
+    isIsoTimestampValue,
+    type LifecycleCardAction,
+    type LifecycleCardActionEvent,
+    type LifecycleCardField,
+    type LifecycleCardModel,
+    type LifecycleCardState,
   } from "./channelMessageModels";
 
   interface Props {
@@ -280,7 +282,9 @@
                 </div>
               {:else}
                 <div class="lc-in lc-in-ro" aria-readonly="true">
-                  <span>{current}</span>
+                  <span title={isIsoTimestampValue(current) ? current : undefined}
+                    >{formatReadonlyTimestamp(current)}</span
+                  >
                   {#if field.hint}
                     <span class="lc-hint">{field.hint}</span>
                   {/if}
@@ -391,7 +395,9 @@
                       />
                     </svg>
                   {/if}
-                  <span>{current || field.description || ""}</span>
+                  <span title={isIsoTimestampValue(current) ? current : undefined}
+                    >{formatReadonlyTimestamp(current) || field.description || ""}</span
+                  >
                 </span>
               </div>
             {/if}

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatReadonlyTimestamp,
+  isIsoTimestampValue,
   parseAttachment,
   parseLifecycleCard,
   parseMessageAttachments,
@@ -326,5 +328,40 @@ describe("systemModelForMessage — member_added", () => {
       title: "Stefan Johnson added Yousuf Kalim to the channel.",
       summary: null,
     });
+  });
+});
+
+describe("formatReadonlyTimestamp", () => {
+  const now = new Date(2026, 8, 4, 18, 0, 0); // local Sep 4 2026, 6:00 PM
+
+  it("renders a same-day ISO stamp as a local time", () => {
+    const stamp = new Date(2026, 8, 4, 14, 24, 0).toISOString();
+    expect(formatReadonlyTimestamp(stamp, now)).toBe("2:24 PM");
+  });
+
+  it("prefixes month and day when the stamp is not today", () => {
+    const stamp = new Date(2026, 8, 3, 9, 5, 0).toISOString();
+    expect(formatReadonlyTimestamp(stamp, now)).toBe("Sep 3, 9:05 AM");
+  });
+
+  it("accepts offset stamps without fractional seconds", () => {
+    const stamp = new Date(2026, 8, 4, 14, 24, 0);
+    const offset = -stamp.getTimezoneOffset();
+    const sign = offset >= 0 ? "+" : "-";
+    const hh = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
+    const mm = String(Math.abs(offset) % 60).padStart(2, "0");
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const iso = `2026-09-04T${pad(14)}:${pad(24)}:00${sign}${hh}:${mm}`;
+    expect(formatReadonlyTimestamp(iso, now)).toBe("2:24 PM");
+    expect(isIsoTimestampValue(iso)).toBe(true);
+  });
+
+  it("leaves non-timestamp values untouched", () => {
+    for (const raw of ["plan", "3 of 25", "2026-09-04", "$500/mo flat", "", "2026-13-99T99:99:99Z"]) {
+      expect(formatReadonlyTimestamp(raw, now)).toBe(raw);
+      expect(isIsoTimestampValue(raw)).toBe(false);
+    }
+    expect(formatReadonlyTimestamp(null, now)).toBe("");
+    expect(formatReadonlyTimestamp(undefined, now)).toBe("");
   });
 });

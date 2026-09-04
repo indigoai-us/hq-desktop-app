@@ -426,3 +426,26 @@ describe("LifecycleCard controls and states", () => {
     expect(css).toMatch(/text-decoration: none;/);
   });
 });
+
+describe("LifecycleCard readonly timestamps", () => {
+  it("renders ISO readonly values as local time and keeps the raw stamp in title", () => {
+    const stamp = new Date(2020, 0, 15, 14, 24, 0).toISOString();
+    const model = card({
+      kind: "status",
+      companyUid: "cmp_1",
+      fields: [
+        { id: "started", label: "Machine started", control: "readonly", value: stamp },
+        { id: "plain", label: "Status", control: "readonly", value: "plan" },
+      ],
+      actions: [],
+    });
+    const el = mountCard(model);
+    const stamped = [...el.querySelectorAll("span[title]")].find(
+      (node) => node.getAttribute("title") === stamp,
+    );
+    expect(stamped, "raw ISO kept in title").toBeTruthy();
+    expect(stamped?.textContent?.trim()).toBe("Jan 15, 2:24 PM");
+    expect(el.textContent).not.toContain(stamp);
+    expect(el.textContent).toContain("plan");
+  });
+});
