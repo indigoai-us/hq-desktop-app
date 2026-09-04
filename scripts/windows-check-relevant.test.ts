@@ -41,6 +41,17 @@ beforeAll(async () => {
   watchdogScript = await readFile(watchdogScriptPath, "utf8");
 });
 
+/** One job's declaration -- everything above its `steps:`. */
+function jobHead(name: string): string {
+  const start = workflow.indexOf(`\n  ${name}:\n`);
+
+  if (start === -1) {
+    throw new Error(`workflow is missing the ${name} job`);
+  }
+
+  return workflow.slice(start, workflow.indexOf("\n    steps:", start));
+}
+
 describe("paths that need the Windows gate", () => {
   const relevant = [
     "apps/sync/src-tauri/src/main.rs",
@@ -175,14 +186,23 @@ describe("the workflow keeps both required checks reachable", () => {
     expect(trigger).toContain("pull_request:");
   });
 
-  it("gates both required jobs on the changes job", () => {
-    for (const job of ["windows-check", "windows-installer-e2e"]) {
-      const body = workflow.slice(
-        workflow.indexOf(`\n  ${job}:\n`),
-        workflow.indexOf("\n    steps:", workflow.indexOf(`\n  ${job}:\n`)),
-      );
-      expect(body, `${job} must depend on the changes job`).toContain(
-        "needs: changes",
+  it("gates every Windows job on the changes job", () => {
+    // The installer gate is three jobs -- two parallel builds feeding the
+    // required E2E context -- and all of them have to observe the same gate,
+    // or a skipped PR pays for a Windows build it decided it did not need.
+    for (const job of [
+      "windows-check",
+      "windows-check-crates",
+      "windows-check-app",
+      "windows-check-live",
+      "build-bridge-installers",
+      "build-target-updater",
+      "windows-installer-e2e",
+    ]) {
+      const body = jobHead(job);
+
+      expect(body, `${job} must depend on the changes job`).toMatch(
+        /needs: (changes\n|\[changes,)/,
       );
       expect(body, `${job} must skip when the gate does not apply`).toContain(
         "needs.changes.outputs.windows == 'true'",
@@ -190,18 +210,31 @@ describe("the workflow keeps both required checks reachable", () => {
     }
   });
 
-  it("keeps the draft exclusion on both required jobs", () => {
-    const drafts = workflow.match(/github\.event\.pull_request\.draft == false/g);
-    expect(drafts).toHaveLength(2);
+  it("keeps the draft exclusion on every gated job", () => {
+    // Previously a count, which silently had to be bumped every time the file
+    // gained a job -- exactly the shape of assertion that lets the next new
+    // job land without the exclusion. Every job that reads the path gate must
+    // also read the draft gate; nothing else is a gated job.
+    const gated = [...workflow.matchAll(/\n {2}([a-zA-Z0-9_-]+):\n/g)]
+      .map((match) => match[1])
+      .filter((job) => jobHead(job).includes("needs.changes.outputs.windows"));
+
+    expect(gated.length).toBeGreaterThan(0);
+    expect(
+      gated.filter(
+        (job) =>
+          !jobHead(job).includes(
+            "github.event.pull_request.draft == false",
+          ),
+      ),
+    ).toEqual([]);
   });
 
   it("runs the relevance decision on a cheap runner", () => {
-    const body = workflow.slice(
-      workflow.indexOf("\n  changes:\n"),
-      workflow.indexOf("\n  windows-check:\n"),
-    );
+    const body = jobHead("changes");
+
     expect(body).toContain("runs-on: ubuntu-latest");
-    expect(body).toContain("scripts/windows-check-relevant.mjs");
+    expect(workflow).toContain("scripts/windows-check-relevant.mjs");
   });
 
   it("names the jobs exactly as branch protection requires them", () => {

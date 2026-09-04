@@ -8,6 +8,27 @@ use url::Url;
 
 use crate::library_local::resolve_hq_folder;
 use crate::paths::is_valid_hq_root;
+use crate::win32_path::strip_windows_verbatim_prefix;
+
+/// Render the resolved folder for the `folder` query parameter.
+///
+/// `std::fs::canonicalize` returns a Windows *verbatim* path (`\\?\C:\Users\
+/// you\HQ`, or `\\?\UNC\server\share\HQ`). That form is for the Win32 API,
+/// not for another application: Claude reads the leading `\\` as a UNC /
+/// network path and refuses it — "UNC / network paths are not supported" —
+/// so the HQ folder is never adopted and the session opens somewhere else.
+///
+/// `strip_windows_verbatim_prefix` returns the legacy Win32 spelling, and
+/// deliberately keeps the prefix when the remainder cannot be named without
+/// it (reserved DOS device, trailing dot/space, over MAX_PATH). Keeping the
+/// prefix in those cases is still wrong for Claude, but it is the pre-existing
+/// contract shared with Explorer Reveal and HQ-path persist, and a path that
+/// legacy Win32 cannot name is not one Claude could open either.
+///
+/// No-op on macOS and Linux, where canonicalize has no such prefix.
+fn deep_link_folder_value(folder: &Path) -> String {
+    strip_windows_verbatim_prefix(&folder.to_string_lossy())
+}
 
 /// Returns the list of missing marker paths relative to `path`.
 pub fn missing_claude_launch_markers(path: &Path) -> Vec<String> {
@@ -253,7 +274,7 @@ pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
         if !prompt.is_empty() {
             pairs.append_pair("q", &prompt);
         }
-        pairs.append_pair("folder", folder.unwrap().to_string_lossy().as_ref());
+        pairs.append_pair("folder", &deep_link_folder_value(&folder.unwrap()));
     }
     Ok(rebound.to_string())
 }
@@ -389,6 +410,94 @@ mod tests {
         assert!(parsed
             .query_pairs()
             .any(|(key, value)| key == "q" && value.contains("/setup")));
+    }
+
+    // Windows regression: `std::fs::canonicalize` returns a verbatim path,
+    // and handing `\\?\C:\...` to Claude reads as a UNC / network path, which
+    // it rejects — so the HQ folder was never adopted on Windows even though
+    // the link opened. These are string-level assertions on the pure renderer
+    // so Linux and macOS CI lock the Windows contract too (the same reason
+    // `win32_path` is implemented as string checks rather than `dunce`).
+
+    #[test]
+    fn deep_link_folder_strips_the_windows_verbatim_prefix() {
+        assert_eq!(
+            deep_link_folder_value(Path::new(r"\\?\C:\Users\person\HQ")),
+            r"C:\Users\person\HQ"
+        );
+        assert_eq!(
+            deep_link_folder_value(Path::new(r"\\?\C:\HQ Setup")),
+            r"C:\HQ Setup"
+        );
+    }
+
+    #[test]
+    fn deep_link_folder_rewrites_verbatim_unc_to_plain_unc() {
+        assert_eq!(
+            deep_link_folder_value(Path::new(r"\\?\UNC\server\share\HQ")),
+            r"\\server\share\HQ"
+        );
+    }
+
+    #[test]
+    fn deep_link_folder_keeps_the_prefix_when_legacy_win32_cannot_name_it() {
+        // Reserved DOS device and an over-MAX_PATH path must keep `\\?\` —
+        // dropping it would name a different (or unnameable) target. Claude
+        // cannot open either, but silently rewriting the path is worse than
+        // handing over the one the OS actually resolved.
+        assert_eq!(
+            deep_link_folder_value(Path::new(r"\\?\C:\CON")),
+            r"\\?\C:\CON"
+        );
+        let long = format!(r"\\?\C:\x\{}", "a".repeat(255));
+        assert_eq!(deep_link_folder_value(Path::new(&long)), long);
+    }
+
+    #[test]
+    fn deep_link_folder_leaves_posix_paths_alone() {
+        assert_eq!(
+            deep_link_folder_value(Path::new("/Users/person/HQ")),
+            "/Users/person/HQ"
+        );
+        assert_eq!(
+            deep_link_folder_value(Path::new("/Users/person/HQ Setup")),
+            "/Users/person/HQ Setup"
+        );
+    }
+
+    #[test]
+    fn preflight_never_emits_a_verbatim_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("HQ");
+        scaffold_hq(&root);
+        let root = fs::canonicalize(&root).unwrap();
+        let url = format!(
+            "claude://code/new?q=%2Fsetup&folder={}",
+            root.to_string_lossy().replace(' ', "%20")
+        );
+        let rebound = preflight_claude_code_url(&url).unwrap();
+        let folder = Url::parse(&rebound)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "folder")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        assert!(
+            !folder.starts_with(r"\\?\"),
+            "deep link folder must not carry the Win32 verbatim prefix: {folder}"
+        );
+    }
+
+    #[test]
+    fn preflight_renders_the_folder_through_the_verbatim_strip() {
+        // `preflight_never_emits_a_verbatim_folder` only bites on Windows,
+        // where canonicalize actually produces the prefix. This gate bites
+        // everywhere: it fails the moment the URL is rebuilt from a raw
+        // `to_string_lossy()` again instead of the shared renderer.
+        let src = include_str!("claude_launch.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production source");
+        assert!(production.contains(r#"pairs.append_pair("folder", &deep_link_folder_value("#));
+        assert!(production.contains("strip_windows_verbatim_prefix"));
     }
 
     #[test]

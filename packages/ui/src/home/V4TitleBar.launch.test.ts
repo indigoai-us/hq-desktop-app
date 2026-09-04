@@ -98,6 +98,13 @@ async function openMenuAndClick(
 }
 
 describe("V4TitleBar Launch menu", () => {
+  it("applies the shared window-controls inset so tokens.css owns height and gutter", async () => {
+    await mountBar(makeAdapter({}));
+    const header = host.querySelector<HTMLElement>(".v4-titlebar");
+    expect(header).toBeTruthy();
+    expect(header?.classList.contains("has-window-controls")).toBe(true);
+  });
+
   it("renders the Launch button immediately to the LEFT of the meetings icon", async () => {
     await mountBar(makeAdapter({}));
     const launch = host.querySelector('[data-testid="titlebar-launch"]');

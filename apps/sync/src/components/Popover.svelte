@@ -25,7 +25,7 @@
   import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
   import BrandLogoSlot from '../lib/BrandLogoSlot.svelte';
   import type { CachedBrand } from '../lib/brand';
-  import HqWorkHandoffCard from './HqWorkHandoffCard.svelte';
+
 
   interface Config {
     configured: boolean;
@@ -76,9 +76,6 @@
     oninstallupdate?: () => void | Promise<void>;
     onretrynotificationaction?: () => void | Promise<void>;
     bindStatsRefresh?: (fn: () => void) => void;
-    /** US-003: compact overlay instead of opening desktop-alt. */
-    showHqWorkHandoff?: boolean;
-    hqWorkHandoffFirstShow?: boolean;
   }
 
   interface SyncStatus {
@@ -127,8 +124,6 @@
     oninstallupdate,
     onretrynotificationaction,
     bindStatsRefresh,
-    showHqWorkHandoff = false,
-    hqWorkHandoffFirstShow = true,
   }: Props = $props();
 
   let popoverEl: HTMLElement | null = $state(null);
@@ -489,9 +484,6 @@
   data-testid="popover-root"
 >
   <div class="mbpop-content" bind:this={popoverContentEl}>
-  {#if showHqWorkHandoff}
-    <HqWorkHandoffCard firstShow={hqWorkHandoffFirstShow} />
-  {:else}
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
     {#if brand?.brandingEnabled}
@@ -830,6 +822,7 @@
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
+        sectioned={true}
         includeUpdates={!updateAvailable}
         hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
@@ -837,7 +830,6 @@
     </section>
     </div>
   </div>
-  {/if}
   </div>
 </div>
 
@@ -871,7 +863,11 @@
 
 <style>
   .popover {
-    width: min(100vw, 296px);
+    /* Compact tray popover — intentionally narrower than the in-app Messages
+       panel (364px). Long rows truncate with ellipsis (NotificationRow +
+       .snr-text line-clamp) so a preview or button never forces this wider. */
+    width: min(100vw, 288px);
+    max-width: 288px;
     height: 100vh;
     max-height: 100vh;
     display: flex;
@@ -1059,12 +1055,14 @@
     outline-offset: var(--popover-focus-offset, 2px);
   }
 
+  /* Compact sync-status chip — a single calm line (● All synced · 55m), not a
+     tall header block. Mirrors the desktop Messages panel's quiet header. */
   .mbp-status {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 9px;
-    padding: 12px;
+    gap: 7px;
+    padding: 8px 12px 6px;
   }
 
   .mbp-status .gd {
@@ -1093,7 +1091,7 @@
 
   .mbp-s1 {
     color: var(--pop-text);
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 600;
     white-space: nowrap;
   }

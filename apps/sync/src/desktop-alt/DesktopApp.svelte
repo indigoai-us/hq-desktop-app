@@ -29,12 +29,13 @@
   import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
   import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
-import SessionsPage from './pages/SessionsPage.svelte';
+  import AtlasPage from './pages/AtlasPage.svelte';
+  import SessionsPage from './pages/SessionsPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
+  import { createGoChord } from '@hq/ui';
   import InboxPage from './pages/InboxPage.svelte';
-  import MessagesShell from '../components/messaging/MessagesShell.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
@@ -255,13 +256,6 @@ import SessionsPage from './pages/SessionsPage.svelte';
   let hqFolderPath = $state<string | null>(null);
   // `realtimeSync` preference (auto-sync cadence in Home's meta line).
   let autoSyncOn = $state<boolean | null>(null);
-  // In-app Claude Code sessions (MenubarPrefs.inAppSessions). The Rust-side
-  // `HQ_DEV_IN_APP_SESSIONS=1` escape hatch is read in the backend only and
-  // never reaches the webview, so a dev build shows the palette entry too —
-  // otherwise the flag would be unreachable from the UI on the very machine
-  // that enabled it.
-  let inAppSessionsOn = $state(false);
-  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
   let statsBySlug = $state<Record<string, WorkspaceSyncStats>>({});
   let activity = $state<ActivityEntry[]>([]);
   let status = $state<SyncStatus | null>(null);
@@ -437,18 +431,13 @@ import SessionsPage from './pages/SessionsPage.svelte';
       detail: 'Live + historical view of running agent sessions',
       action: () => navigate({ kind: 'mission-control' }),
     },
-    // Flagged surface (inAppSessions), palette-only like Mission Control — it
-    // has no sidebar row in the V4 IA.
-    ...(sessionsEnabled
-      ? [
-          {
-            id: 'command-go-sessions',
-            label: 'Go to Sessions',
-            detail: 'Run a Claude Code session inside the app',
-            action: () => navigate({ kind: 'sessions' }),
-          },
-        ]
-      : []),
+    {
+      id: 'command-go-atlas',
+      label: 'Go to Atlas',
+      detail: 'People and agents on projects, live',
+      shortcut: 'g a',
+      action: () => navigate({ kind: 'atlas' }),
+    },
     {
       id: 'command-go-inbox',
       label: 'Go to Inbox',
@@ -1229,14 +1218,27 @@ import SessionsPage from './pages/SessionsPage.svelte';
     );
   }
 
+  // US-016: Slack-style `g a` opens Atlas (armed by createGoChord).
+  const goChord = createGoChord((letter) => {
+    if (letter !== 'a') return false;
+    navigate({ kind: 'atlas' });
+    return true;
+  });
+
   function handleKeydown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       commandPaletteOpen = true;
+      goChord.reset();
       return;
     }
 
     if (commandPaletteOpen) return;
+
+    if (goChord.handleKeydown(event)) {
+      event.preventDefault();
+      return;
+    }
 
     const nextRoute = getDesktopHotkeyRoute(event, shellCompanies);
     if (!nextRoute) return;
@@ -1274,18 +1276,19 @@ import SessionsPage from './pages/SessionsPage.svelte';
         if (mounted) hqVersion = version;
       })
       .catch(() => undefined);
+    void invoke<string | null>('take_launch_agent_repoint_notice')
+      .then((note) => {
+        if (mounted && note) flashToast(note, 'neutral');
+      })
+      .catch(() => undefined);
     void invoke<{ hqFolderPath?: string | null }>('get_config')
       .then((config) => {
         if (mounted) hqFolderPath = config?.hqFolderPath ?? null;
       })
       .catch(() => undefined);
-    void invoke<{ realtimeSync?: boolean | null; inAppSessions?: boolean | null }>(
-      'get_settings',
-    )
+    void invoke<{ realtimeSync?: boolean | null }>('get_settings')
       .then((settings) => {
-        if (!mounted) return;
-        autoSyncOn = settings.realtimeSync ?? null;
-        inAppSessionsOn = settings.inAppSessions === true;
+        if (mounted) autoSyncOn = settings.realtimeSync ?? null;
       })
       .catch(() => undefined);
     void invoke<HomeCoreState | null>('check_core_state')
@@ -1819,6 +1822,13 @@ import SessionsPage from './pages/SessionsPage.svelte';
             <div class="page">
               <MissionControlPage />
             </div>
+          {:else if route.kind === 'atlas'}
+            <div class="page">
+              <AtlasPage
+                companyUid={activeCompany?.cloudUid ?? ''}
+                companyLabel={activeCompany?.displayName ?? null}
+              />
+            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -1840,7 +1850,9 @@ import SessionsPage from './pages/SessionsPage.svelte';
               <InboxPage />
             </div>
           {:else if route.kind === 'messages'}
-            <MessagesShell embedded={true} />
+            <div class="page">
+              <InboxPage />
+            </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
                  (default-deny); ModerationPanel ALSO re-checks + locks itself, and
@@ -1931,7 +1943,13 @@ import SessionsPage from './pages/SessionsPage.svelte';
   {/if}
 
   {#if actionToast}
-    <div class={`action-toast ${actionToast.tone}`} role="status">
+    <div
+      class={`action-toast ${actionToast.tone}`}
+      role="status"
+      data-testid={actionToast.text === 'HQ updated its launch settings; the old copy was retired'
+        ? 'launchagent-repoint-notice'
+        : undefined}
+    >
       <span class="toast-dot" aria-hidden="true"></span>
       <span class="toast-text">{actionToast.text}</span>
       <button class="toast-dismiss" type="button" aria-label="Dismiss" onclick={dismissToast}>×</button>

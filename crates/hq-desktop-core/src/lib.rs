@@ -8,6 +8,8 @@ pub mod bandwidth;
 pub mod banner;
 pub mod claude_launch;
 pub mod cli_update_lock;
+pub mod client_diagnostics;
+pub mod client_health;
 pub mod client_info;
 pub mod cognito;
 pub mod config;
@@ -37,6 +39,7 @@ pub mod meeting_ledger;
 pub mod meetings;
 pub mod message_search;
 pub mod messages;
+pub mod native_notify;
 pub mod oauth;
 pub mod paths;
 pub mod prewarm;
@@ -63,6 +66,7 @@ pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
 pub mod watcher_fault;
+pub mod win32_path;
 pub mod workspaces;
 
 #[cfg(test)]

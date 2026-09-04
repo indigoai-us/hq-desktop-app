@@ -3,8 +3,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src.js";
 import MemberProfilePanel from "./MemberProfilePanel.svelte";
 import type { StatusPersonRow } from "./channel-status-model.js";
+
+const MARCUS_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_marcus/h.png?X-Amz-Signature=mock`;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -24,6 +27,7 @@ function row(over: Partial<StatusPersonRow> = {}): StatusPersonRow {
     avatarUrl: null,
     description: null,
     statusIcon: "idle",
+    online: false,
     ...over,
   };
 }
@@ -54,12 +58,24 @@ describe("MemberProfilePanel", () => {
     document.body.appendChild(host);
     component = mount(MemberProfilePanel, {
       target: host,
-      props: { member: row(), avatarUrl: "https://cdn.test/a.jpg" },
+      props: { member: row(), avatarUrl: MARCUS_PHOTO },
     });
     const img = host.querySelector(
       '[data-testid="member-profile-avatar-img"]',
     ) as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn.test/a.jpg");
+    expect(img?.getAttribute("src")).toBe(MARCUS_PHOTO);
+  });
+
+  it("does not paint an arbitrary https avatarUrl (packaged CSP contract)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: { member: row(), avatarUrl: "https://cdn.test/a.jpg" },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-img"]'),
+    ).toBeNull();
   });
 
   it("tags the panel 'you' for the signed-in member", async () => {
@@ -86,16 +102,56 @@ describe("MemberProfilePanel", () => {
     ).toBe("Founder, building HQ");
   });
 
+  it("shows the avatar picker only when the member is editable", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: {
+        member: row({ personUid: "agt_scout", displayName: "Scout" }),
+        editable: true,
+        packs: [
+          {
+            id: "generated-marks",
+            name: "Generated marks",
+            version: "1.0.0",
+            author: "Default",
+            baseUrl: "builtin:generated-marks",
+            items: [
+              { id: "agent-01", name: "Mark 01", src: "a.png", tags: ["generated"] },
+            ],
+          },
+        ],
+      },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-picker"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-picker"]')).not.toBeNull();
+  });
+
+  it("hides the picker for read-only profiles", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MemberProfilePanel, {
+      target: host,
+      props: { member: row({ personUid: "agt_scout", displayName: "Scout" }) },
+    });
+    expect(
+      host.querySelector('[data-testid="member-profile-avatar-picker"]'),
+    ).toBeNull();
+  });
+
   it("uses the member's own avatarUrl when no explicit photo is passed", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(MemberProfilePanel, {
       target: host,
-      props: { member: row({ avatarUrl: "https://cdn/m.jpg" }) },
+      props: { member: row({ avatarUrl: MARCUS_PHOTO }) },
     });
     const img = host.querySelector(
       '[data-testid="member-profile-avatar-img"]',
     ) as HTMLImageElement | null;
-    expect(img?.getAttribute("src")).toBe("https://cdn/m.jpg");
+    expect(img?.getAttribute("src")).toBe(MARCUS_PHOTO);
   });
 });

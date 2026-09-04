@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildActiveSessionRows,
   buildChannelStatusModel,
+  buildLiveReadSessionRows,
   computeStoryRollup,
   extractStoryId,
   firstOpenStoryId,
   formatLastActivity,
   liveAgentRowFromSession,
+  presenceOnlineFor,
   projectAboutBody,
   projectChannelHeaderParts,
   projectChannelHeaderTitle,
@@ -20,9 +22,9 @@ import {
 } from "./channel-status-model";
 
 describe("channel-status-model (US-005 status popover)", () => {
-  it("extracts US-xxx story ids from free text", () => {
+  it("extracts US-xxx story ids from free text (not used for cwd matching)", () => {
     expect(extractStoryId("working on US-003 now")).toBe("US-003");
-    expect(extractStoryId("/tmp/work/US_012/foo")).toBe("US-012");
+    expect(extractStoryId("US_012")).toBe("US-012");
     expect(extractStoryId("no story here")).toBeNull();
   });
 
@@ -75,7 +77,7 @@ describe("channel-status-model (US-005 status popover)", () => {
     expect(resolvePreviewUrl({ metadata: {} })).toBeNull();
   });
 
-  it("builds live agent row label with story + progress", () => {
+  it("builds live agent row label with explicit story + progress (never from cwd)", () => {
     const rollup = { complete: 2, total: 5, label: "stories 2/5", percent: 40 };
     const row = liveAgentRowFromSession(
       {
@@ -85,6 +87,8 @@ describe("channel-status-model (US-005 status popover)", () => {
         status: "running",
         tool: "claude",
         model: "opus",
+        storyId: "US-005",
+        serverSessionId: "sess_bound",
       },
       rollup,
       "US-001",
@@ -92,6 +96,20 @@ describe("channel-status-model (US-005 status popover)", () => {
     expect(row.storyId).toBe("US-005");
     expect(row.progressPercent).toBe(40);
     expect(row.label).toBe("Agent running · US-005 · 40%");
+    // cwd US-005 must not win when storyId is absent — fall back to open story.
+    const fromCwdOnly = liveAgentRowFromSession(
+      {
+        project: "hq-desktop-app",
+        company: "indigo",
+        cwd: "/work/US-005/src",
+        status: "running",
+        tool: "claude",
+        serverSessionId: "sess_bound",
+      },
+      rollup,
+      "US-001",
+    );
+    expect(fromCwdOnly.storyId).toBe("US-001");
   });
 
   it("picks first open story id from prd", () => {
@@ -128,6 +146,7 @@ describe("channel-status-model (US-005 status popover)", () => {
           { id: "US-004", passes: false },
         ],
       },
+      // Unbound local session must be ignored (US-015 — no cwd matching).
       sessions: [
         {
           project: "hq-desktop-app",
@@ -138,13 +157,23 @@ describe("channel-status-model (US-005 status popover)", () => {
           model: "opus",
           startedAt: "2026-08-11T10:00:00Z",
         },
+      ],
+      liveSessions: [
         {
-          project: "other-thing",
-          company: "indigo",
-          cwd: "/tmp/other",
-          status: "running",
-          tool: "codex",
+          sessionId: "sess_fleet",
+          actorUid: "agent:fleet-1",
+          actorType: "agent",
+          displayName: "Fleet Bot",
+          harness: "agent-box",
+          taskId: "US-002",
+          status: "active",
+          turnCount: 3,
+          lastTurnAt: "2026-08-11T10:00:00Z",
         },
+      ],
+      presence: [
+        { actorUid: "prs_human", status: "online", actorType: "human" },
+        { actorUid: "agent:fleet-1", status: "online", actorType: "agent" },
       ],
       members: [
         {
@@ -175,11 +204,48 @@ describe("channel-status-model (US-005 status popover)", () => {
     expect(model.liveAgents[0]?.label).toMatch(
       /^Agent running · US-002 · 25%$/,
     );
+    expect(model.activeSessions).toHaveLength(1);
+    expect(model.activeSessions[0]?.taskId).toBe("US-002");
+    expect(model.activeSessions[0]?.online).toBe(true);
     expect(model.members.map((m) => m.displayName)).toEqual(["Corey"]);
+    expect(model.members[0]?.online).toBe(true);
     expect(model.agents.some((a) => a.displayName === "Fleet Bot")).toBe(true);
     expect(model.agents.some((a) => a.statusIcon === "running")).toBe(true);
     expect(model.memberCount).toBe(2);
     expect(model.companyLabel).toBe("Indigo");
+  });
+
+  it("shows bound local sessions only when serverSessionId is set", () => {
+    const unbound = buildChannelStatusModel({
+      project: { id: "p", title: "P" },
+      sessions: [
+        {
+          project: "p",
+          company: "c",
+          cwd: "/tmp/p",
+          status: "running",
+          tool: "claude",
+        },
+      ],
+    });
+    expect(unbound.liveAgents).toEqual([]);
+
+    const bound = buildChannelStatusModel({
+      project: { id: "p", title: "P" },
+      sessions: [
+        {
+          project: "p",
+          company: "c",
+          cwd: "/tmp/p",
+          status: "running",
+          tool: "claude",
+          serverSessionId: "sess_1",
+          storyId: "US-009",
+        },
+      ],
+    });
+    expect(bound.liveAgents).toHaveLength(1);
+    expect(bound.liveAgents[0]?.storyId).toBe("US-009");
   });
 
   it("formats project channel header title", () => {
@@ -366,6 +432,51 @@ describe("active server sessions in the status popover (US-010)", () => {
     expect(at("2026-08-08T10:00:00.000Z")).toBe("last activity 5d ago");
     expect(at(undefined)).toBe("last activity unknown");
     expect(at("not-a-date")).toBe("last activity unknown");
+  });
+});
+
+describe("presence + live read (US-015)", () => {
+  it("never invents online from timestamps — only the presence store", () => {
+    expect(presenceOnlineFor(undefined, "prs_a")).toBe(false);
+    expect(
+      presenceOnlineFor(
+        [{ actorUid: "prs_a", status: "offline" }],
+        "prs_a",
+      ),
+    ).toBe(false);
+    expect(
+      presenceOnlineFor([{ actorUid: "prs_a", status: "online" }], "prs_a"),
+    ).toBe(true);
+  });
+
+  it("builds active session rows from the live read with harness and turns", () => {
+    const rows = buildLiveReadSessionRows(
+      [
+        {
+          sessionId: "sess_1",
+          actorUid: "prs_corey",
+          actorType: "human",
+          displayName: "Corey",
+          harness: "claude-code",
+          taskId: "US-015",
+          turnCount: 4,
+          lastTurnAt: "2026-08-13T09:18:00.000Z",
+          status: "active",
+        },
+      ],
+      Date.parse("2026-08-13T10:00:00.000Z"),
+      [{ actorUid: "prs_corey", status: "online" }],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      principal: "Corey",
+      principalKind: "human",
+      harness: "claude-code",
+      taskId: "US-015",
+      turnCount: 4,
+      online: true,
+      lastActivityLabel: "last activity 42m ago",
+    });
   });
 });
 

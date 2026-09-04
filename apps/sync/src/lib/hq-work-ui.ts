@@ -7,7 +7,7 @@ export {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
   type SyncPlatformAdapterConfig,
-} from './hq-work-adapter';
+} from '@hq/platform';
 export {
   bootDesktopAltWindow,
   resolveDesktopAltShell,

@@ -562,15 +562,34 @@ fn spawn_helper(staged: &StagedUpdate) -> Result<std::process::Child, String> {
 /// Download through Tauri (including minisign verification), then prepare the
 /// helper, stop HQ-owned processes, and exit through Tauri's normal lifecycle.
 pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result<(), String> {
+    let mut downloaded = 0_u64;
     let bytes = update
-        .download(|_, _| {}, || {})
+        .download(
+            |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                crate::updater::emit_update_download_progress(app, downloaded, total);
+            },
+            || {},
+        )
         .await
         .map_err(|error| error.to_string())?;
-    if crate::updater::sync_in_progress() {
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
-    }
+    install_verified_bytes(app, update, &bytes).await
+}
 
-    let staged = stage_update(&bytes, &update.version)?;
+/// Install an already-downloaded, Tauri-verified package through the helper
+/// handoff. Shared by the one-shot path above and the queued
+/// `download_update` → `install_downloaded_update` flow so both exit through
+/// the same NSIS-safe lifecycle.
+pub async fn install_verified_bytes(
+    app: &AppHandle,
+    update: &Update,
+    bytes: &[u8],
+) -> Result<(), String> {
+    // Sync-idle deferral is decided by `updater::deferral_decision` before this
+    // path runs. Manual and forced installs must not be bounced here, and the
+    // automatic waiter only arrives after an idle gap or the 10-minute cap.
+
+    let staged = stage_update(bytes, &update.version)?;
     let mut helper = match spawn_helper(&staged) {
         Ok(helper) => helper,
         Err(error) => {
@@ -598,12 +617,10 @@ pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Recheck after the download and helper startup. A manual sync gets to
-    // finish; the updater will retry instead of interrupting it.
-    if crate::updater::sync_in_progress() {
-        stop_helper_and_cleanup(&mut helper, &staged);
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
-    }
+    // Rechecking here used to bounce the install back into an unbounded
+    // "sync is active" deferral. The bounded waiter (or a manual/forced
+    // trigger) has already decided to proceed; quiesce will stop the
+    // in-flight pass instead of waiting forever.
     let quiescence = match crate::commands::process::quiesce_for_update(PROCESS_EXIT_TIMEOUT) {
         Ok(quiescence) => quiescence,
         Err(error) => {
@@ -619,6 +636,11 @@ pub async fn install_verified_update(app: &AppHandle, update: &Update) -> Result
             staged.version
         ),
     );
+    crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.version).await;
+    // Client health (US-002): best-effort heartbeat before the handoff exits —
+    // reports the staged (installed) version and clears the pending updater
+    // state so the server never sees the dying build + a still-available update.
+    crate::commands::client_health::emit_client_health_after_update(&staged.version).await;
     quiescence.commit();
     app.exit(0);
     Ok(())

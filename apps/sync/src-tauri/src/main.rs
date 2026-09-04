@@ -3,10 +3,13 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod boot_watchdog;
 mod commands;
 mod events;
 #[cfg(target_os = "macos")]
 mod glass;
+mod recovery;
+mod titlebar_layout;
 mod tray;
 mod tray_helper;
 mod updater;
@@ -130,6 +133,12 @@ fn setup_notification_producers(app: &tauri::AppHandle) {
     // singleton DM poll path; the interval poll remains the long-stop.
     commands::dm_mqtt::setup_dm_mqtt_receiver(app.clone());
 
+    // US-007: client-health diagnostics MQTT wake — best-effort optimization
+    // only. The authenticated polling fallback that actually guarantees
+    // desired commands run is wired UNCONDITIONALLY for every platform below
+    // (`commands::client_diagnostics::setup_client_diagnostics_poller`).
+    commands::dm_mqtt::setup_client_health_mqtt_receiver(app.clone());
+
     // Post-sync top-up remains additive to the independent interval poll.
     let poll_handle = app.clone();
     app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
@@ -145,6 +154,7 @@ fn setup_startup_surfaces(
     first_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
+    crate::recovery::on_startup(app);
 
     if first_run {
         tray::show_window_centered(app);
@@ -169,31 +179,11 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     hq_telemetry::record_native_panic_seam(
         hq_telemetry::NativePanicSeam::SingleInstanceSurfaceExisting,
     );
-
-    #[cfg(target_os = "windows")]
-    {
-        tray::show_window_at_tray(app);
-        util::logfile::log(
-            "app",
-            "single-instance: showed main popover at tray on second launch",
-        );
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        util::logfile::log(
-            "app",
-            "single-instance: focused existing window on second launch",
-        );
-    } else {
-        util::logfile::log(
-            "app",
-            "single-instance: second launch with no window to focus",
-        );
-    }
+    tray::activate_primary_surface(app);
+    util::logfile::log(
+        "app",
+        "single-instance: opened primary surface on second launch",
+    );
 }
 
 fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
@@ -339,7 +329,7 @@ fn main() {
         }
     }
 
-    tauri::Builder::default()
+    crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -380,6 +370,13 @@ fn main() {
             surface_existing_instance(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
+                .on_navigation(|webview, url| {
+                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -443,6 +440,8 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate::default())
+        .manage(updater::DownloadedUpdate::default())
+        .manage(crate::boot_watchdog::WatchdogRuntime::default())
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -479,6 +478,17 @@ fn main() {
                         tray::note_popover_dismissed();
                         let _ = window.hide();
                     });
+                }
+                if window.label() == crate::commands::desktop_alt::WINDOW_LABEL {
+                    crate::recovery::note_desktop_user_closed(window.app_handle());
+                }
+            }
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == crate::commands::desktop_alt::WINDOW_LABEL {
+                    crate::recovery::note_desktop_destroyed(window.app_handle());
+                }
+                if window.label() == crate::recovery::WINDOW_LABEL {
+                    crate::recovery::on_recovery_closed(window.app_handle());
                 }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
@@ -572,6 +582,7 @@ fn main() {
             commands::telemetry::mark_consent_reprompt_shown,
             commands::telemetry::write_menubar_telemetry_pref,
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
+            commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
@@ -599,6 +610,7 @@ fn main() {
             commands::install_stages::personalize_hq,
             commands::install_stages::import_existing_setup,
             commands::install_stages::install_menubar_app,
+            commands::install_stages::install_work_mesh,
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
@@ -627,13 +639,21 @@ fn main() {
             commands::long_paths::open_long_paths_settings,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
+            commands::autostart::take_launch_agent_repoint_notice,
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
             tray::set_tray_state,
             updater::check_for_updates,
+            updater::reinstall_latest_release,
+            crate::recovery::shell_ready,
+            crate::recovery::reset_local_ui_state,
+            crate::recovery::open_recovery_window_cmd,
             updater::get_pending_update,
             updater::install_update,
+            updater::download_update,
+            updater::install_downloaded_update,
+            updater::get_downloaded_update,
             updater::available_channels,
             updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,
@@ -826,6 +846,7 @@ fn main() {
             commands::messages::send_channel_message,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
+            commands::messages::delete_channel,
             commands::messages::mark_channel_read,
             tray_helper::set_tray_message_badge,
             commands::messages::toggle_reaction,
@@ -857,6 +878,7 @@ fn main() {
             commands::widget::widget_ready,
             commands::widget::list_displays,
             commands::widget::apply_widget_settings,
+            commands::widget::hide_widget_stack,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
@@ -885,6 +907,12 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Unattended dependency-install mode for the VM install matrix.
+            // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
+            // real `install_deps` orchestrator, writes a JSON result, exits.
+            if commands::headless_install::maybe_run(app.handle()) {
+                return Ok(());
+            }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
@@ -933,6 +961,7 @@ fn main() {
             // possible). Best-effort and idempotent — failures log to the
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
+            commands::config::migrate_retired_hq_work_handoff();
 
             // Record this app's version to ~/.hq/sync-version.json so the
             // hq-cli can attach the installed hq-sync version to feedback
@@ -941,6 +970,13 @@ fn main() {
             commands::config::record_sync_version(
                 &app.package_info().version.to_string(),
             );
+
+            // Heal a LaunchAgent still pointing at a renamed bundle
+            // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
+            // pass, so a KeepAlive agent cannot keep the previous binary
+            // running. Best-effort and idempotent — never aborts launch.
+            #[cfg(target_os = "macos")]
+            commands::autostart::reconcile_launch_agent_on_launch();
 
             // Default-on autostart: ensure the LaunchAgent plist matches the
             // effective `startAtLogin` pref (default true) so a fresh install
@@ -1055,6 +1091,18 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             updater::setup_update_checker(app.handle());
             commands::telemetry::setup_daily_active_emit();
+            commands::telemetry::setup_version_heartbeat();
+            // Client health (US-002): startup + 5-minute operational health
+            // heartbeat, woken immediately on sync/updater/auth/pause/conflict
+            // state changes. Consent-free operational reporting.
+            commands::client_health::setup_client_health_heartbeat();
+            // US-007: desktop self-diagnostics (CHECK_NOW) execution client.
+            // Authenticated polling fallback — wired UNCONDITIONALLY for
+            // EVERY platform (never gated behind target_os): the MQTT wake
+            // above is macOS/Windows-only optimization, but this poll is the
+            // long-stop that must work everywhere, including Linux dev boxes
+            // with no realtime MQTT stack at all.
+            commands::client_diagnostics::setup_client_diagnostics_poller(app.handle().clone());
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
@@ -1077,6 +1125,8 @@ fn main() {
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
                 #[cfg(target_os = "windows")]
                 commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+                #[cfg(target_os = "windows")]
+                commands::dm_mqtt::setup_client_health_mqtt_receiver(app.handle().clone());
 
                 let poll_handle = app.handle().clone();
                 app.listen(

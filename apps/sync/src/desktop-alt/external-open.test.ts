@@ -4,7 +4,12 @@ const open = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('@tauri-apps/plugin-shell', () => ({ open }));
 
-import { approvedExternalUrl, openApprovedExternalUrl } from './external-open';
+import {
+  approvedBrowserUrl,
+  approvedExternalUrl,
+  openApprovedExternalUrl,
+  openBrowserUrl,
+} from './external-open';
 
 describe('embedded Work external opener', () => {
   it('normalizes only the approved HTTPS browser handoffs', () => {
@@ -53,5 +58,24 @@ describe('embedded Work external opener', () => {
     await openApprovedExternalUrl('https://teams.microsoft.com/l/meetup-join/example');
 
     expect(open).toHaveBeenCalledWith('https://teams.microsoft.com/l/meetup-join/example');
+  });
+
+  it('opens credential-free http(s) and mailto chat links in the default browser', async () => {
+    expect(approvedBrowserUrl('https://example.com/docs')).toBe(
+      'https://example.com/docs',
+    );
+    expect(approvedBrowserUrl('http://example.com')).toBe('http://example.com/');
+    expect(approvedBrowserUrl('mailto:ada@example.com')).toBe(
+      'mailto:ada@example.com',
+    );
+    expect(approvedBrowserUrl('javascript:alert(1)')).toBeNull();
+    expect(approvedBrowserUrl('file:///etc/passwd')).toBeNull();
+    expect(approvedBrowserUrl('https://user:pass@example.com')).toBeNull();
+
+    await openBrowserUrl('https://example.com/docs');
+    expect(open).toHaveBeenCalledWith('https://example.com/docs');
+    open.mockClear();
+    await openBrowserUrl('javascript:alert(1)');
+    expect(open).not.toHaveBeenCalled();
   });
 });

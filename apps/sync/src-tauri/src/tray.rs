@@ -1,9 +1,9 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
-//! Left-click toggles the compact notification popover (US-004 WindowRouter);
-//! right-click shows a context menu with "Sync Now", "Open desktop view", and
-//! "Quit". Full desktop opens only via the explicit menu action / shortcut.
+//! Left-click opens the desktop workspace (first-run onboarding still uses
+//! the compact `main` card). Right-click shows a context menu with "Sync Now",
+//! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -192,7 +192,7 @@ pub fn set_tray_anchor_x(points: f64) {
     );
 }
 
-fn tray_anchor_x_points() -> Option<f64> {
+pub(crate) fn tray_anchor_x_points() -> Option<f64> {
     match TRAY_ANCHOR_X_POINTS.load(Ordering::SeqCst) {
         i64::MIN => None,
         x => Some(x as f64),
@@ -331,6 +331,9 @@ fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, _state: Tr
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
 const MENU_OPEN_DESKTOP: &str = "open-desktop";
+const MENU_HIDE_NOTIFICATIONS: &str = "hide-notifications";
+const MENU_CHECK_UPDATES: &str = "check-for-updates";
+const MENU_RECOVERY: &str = "recovery";
 const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
@@ -369,6 +372,11 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
     let open_desktop =
         MenuItemBuilder::with_id(MENU_OPEN_DESKTOP, "Open desktop view").build(app)?;
+    let hide_notifications =
+        MenuItemBuilder::with_id(MENU_HIDE_NOTIFICATIONS, "Hide notifications").build(app)?;
+    let check_updates =
+        MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for updates…").build(app)?;
+    let recovery = MenuItemBuilder::with_id(MENU_RECOVERY, "Recovery…").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
@@ -378,6 +386,10 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .separator()
         .item(&sync_now)
         .item(&open_desktop)
+        .item(&hide_notifications)
+        .separator()
+        .item(&check_updates)
+        .item(&recovery)
         .separator()
         .item(&settings)
         .item(&sign_out)
@@ -415,6 +427,15 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     id if id == MENU_OPEN_DESKTOP => {
                         let _ = app_handle.emit("tray:open-desktop", ());
                     }
+                    id if id == MENU_HIDE_NOTIFICATIONS => {
+                        crate::commands::widget::hide_widget_stack_now(&app_handle);
+                    }
+                    id if id == MENU_CHECK_UPDATES => {
+                        crate::recovery::spawn_tray_check_for_updates(app_handle.clone());
+                    }
+                    id if id == MENU_RECOVERY => {
+                        crate::recovery::spawn_tray_open_recovery(app_handle.clone());
+                    }
                     id if id == MENU_SIGN_OUT => {
                         let _ = app_handle.emit("tray:sign-out", ());
                     }
@@ -439,15 +460,19 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     ..
                 } = event
                 {
-                    // US-004: tray left-click toggles the compact popover only.
-                    // Full desktop is reserved for "Open desktop view" / shortcut.
+                    // Tray left-click opens the desktop workspace. First-run
+                    // onboarding still lives on `main`, so that path keeps the
+                    // installer card instead.
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
                     hq_telemetry::record_native_panic_seam(
                         hq_telemetry::NativePanicSeam::TrayLeftClick,
                     );
-                    toggle_popover_window(&app_handle);
+                    // Collapse any expanded widget overlay so it cannot cover
+                    // the desktop workspace we are about to show.
+                    crate::commands::widget::hide_widget_stack_now(&app_handle);
+                    activate_primary_surface(&app_handle);
                 }
             }
         })
@@ -713,10 +738,22 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
         tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
     };
     let win_w = size.width as f64;
+    // Only used on the macOS clamped-positioning path below.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let win_h = size.height as f64;
+    // Only used on the macOS anchor-lookup path below.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let tray_center_x = tray_x + tray_w / 2.0;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let tray_center_y = tray_y + tray_h / 2.0;
 
+    // `tray_anchor_monitor` (multi-monitor anchor lookup) and the `Monitor`
+    // type it returns are only defined on macOS. This whole function is
+    // compiled for every non-Windows target (currently macOS and Linux), so
+    // on Linux there is no anchor lookup to call — skip it entirely and go
+    // straight to the same fallback `compute_popover_position` call used
+    // below when the macOS lookup itself fails to resolve a monitor.
+    #[cfg(target_os = "macos")]
     let (pop_x, pop_y) = window
         .available_monitors()
         .ok()
@@ -747,6 +784,16 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
                 POPOVER_GAP_PX,
             )
         });
+
+    #[cfg(not(target_os = "macos"))]
+    let (pop_x, pop_y) = hq_platform::tray_geometry::compute_popover_position(
+        tray_x,
+        tray_y,
+        tray_w,
+        tray_h,
+        win_w,
+        POPOVER_GAP_PX,
+    );
 
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
@@ -804,10 +851,10 @@ pub fn show_window_centered(app: &AppHandle) {
 // Only one primary HQ surface is ever on-screen at a time: the classic popover
 // (`main`) OR the desktop window (`desktop-alt`). Showing one hides the other.
 //
-// US-004 WindowRouter activation policy:
-//   Tray left-click / taskbar second-process → compact popover
-//   Explicit "Open desktop view" / Opt+Shift+O → full desktop
-//   Opt+Shift+H → toggle compact popover
+// WindowRouter activation policy:
+//   Tray left-click / taskbar second-process / Dock → desktop workspace
+//   First-run onboarding still owns `main` until the wizard finishes
+//   Opt+Shift+H → toggle compact status popover
 // Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
@@ -824,8 +871,8 @@ pub fn hide_desktop_alt(app: &AppHandle) {
 /// popover). Kept for the global desktop shortcut which still toggles.
 ///
 /// If `desktop-alt` is already visible, hide it. Otherwise open it
-/// asynchronously; when the GA gate rejects a signed-out user, fall back to
-/// the classic popover so they still reach the SignInPrompt.
+/// asynchronously. Signed-out users are admitted so they can sign in inside
+/// the workspace; a real open failure still falls back to `main`.
 pub fn toggle_desktop_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("desktop-alt") {
         if win.is_visible().unwrap_or(false) {
@@ -840,9 +887,9 @@ pub fn toggle_desktop_window(app: &AppHandle) {
             crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
                 .await
         {
-            // GA gate rejects signed-out users — show classic popover so they
-            // still reach SignInPrompt. show_popover_window does AppKit window
-            // ops and must run on the main thread.
+            // Real open failure: keep first-run onboarding / sign-in reachable
+            // on `main`. show_popover_window does AppKit window ops and must
+            // run on the main thread.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
@@ -851,22 +898,16 @@ pub fn toggle_desktop_window(app: &AppHandle) {
     });
 }
 
-/// Show + focus the desktop window. Never hides it.
+/// Show + focus the desktop workspace. Never hides it.
 ///
 /// The show-only counterpart to [`toggle_desktop_window`], for activation
-/// sources where hiding would read as a no-op rather than a toggle — the macOS
-/// Dock icon click being the case this exists for. Clicking a Dock icon to make
-/// the window disappear is not behaviour any Mac app has.
+/// sources where hiding would read as a no-op rather than a toggle — tray
+/// left-click, Dock icon, and second-process activation.
 ///
 /// `open_desktop_alt_window_inner` already show+focuses an existing window, so
-/// this is safe to call whether or not the window has been built yet. When the
-/// GA gate rejects a signed-out user it falls back to the classic popover, same
-/// as `toggle_desktop_window`, so the Dock icon still reaches SignInPrompt.
-///
-/// macOS-only because the Dock-click (`RunEvent::Reopen`) handler is its only
-/// caller; ungated it would be dead code on Windows/Linux. Drop the gate if a
-/// non-macOS activation source ever needs show-without-toggle.
-#[cfg(target_os = "macos")]
+/// this is safe to call whether or not the window has been built yet. First-run
+/// onboarding still lives on `main`; callers that must not steal that card
+/// should use [`activate_primary_surface`].
 pub fn show_desktop_window(app: &AppHandle) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -874,13 +915,23 @@ pub fn show_desktop_window(app: &AppHandle) {
             crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone.clone(), None)
                 .await
         {
-            // show_popover_window does AppKit window ops — main thread only.
+            // Real open failure (not a signed-out gate): keep the onboarding /
+            // sign-in card reachable on `main`.
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
             });
         }
     });
+}
+
+/// Open the desktop workspace, unless first-run onboarding still owns `main`.
+pub fn activate_primary_surface(app: &AppHandle) {
+    if onboarding_window_requires_blur_suppression(app) {
+        show_popover_window(app);
+        return;
+    }
+    show_desktop_window(app);
 }
 
 /// Show the popover (`main`) on-screen, hiding the desktop window first.
@@ -1406,6 +1457,9 @@ mod tests {
     fn test_menu_id_constants() {
         assert_eq!(MENU_SYNC_NOW, "sync-now");
         assert_eq!(MENU_OPEN_DESKTOP, "open-desktop");
+        assert_eq!(MENU_HIDE_NOTIFICATIONS, "hide-notifications");
+        assert_eq!(MENU_CHECK_UPDATES, "check-for-updates");
+        assert_eq!(MENU_RECOVERY, "recovery");
         assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
         assert_eq!(MENU_QUIT, "quit");

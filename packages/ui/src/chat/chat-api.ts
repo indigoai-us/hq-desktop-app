@@ -33,6 +33,16 @@ export interface ChatSidebarApi {
   fetchChannelDirectory(cursor: string | null): Promise<ChannelDirectoryFeed>;
   /** the desktop `list_contacts` command. */
   listContacts(): Promise<ContactsResponse>;
+  /**
+   * the desktop `list_company_members` command
+   * (`GET /v1/notify/contacts?companyUid=…`) — the roster for ONE workspace.
+   *
+   * Optional: `listContacts()` returns rows WITHOUT a `companyUid`, so this is
+   * the only seam that can answer "is this person in that workspace?" (D7).
+   * Hosts without it degrade to no cross-company confirmation rather than
+   * confirming on every teammate.
+   */
+  listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
   /** the desktop `list_channels` command (US-021). */
@@ -66,6 +76,20 @@ export interface ChatSidebarApi {
   /** Send a one-to-one DM before closing or navigating compose. */
   sendDm(args: { toPersonUid: string; body: string }): Promise<void>;
   /**
+   * POST /v1/notify/dm (desktop `send_dm_to_email`) — message someone we
+   * cannot add directly. `delivered` when already connected; the server
+   * returns `connectionRequested` when it parked an approval request.
+   * Optional: hosts without it hide the email-invite affordance entirely.
+   *
+   * Exactly one of `toEmail` / `toPersonUid` is sent — the Rust
+   * `build_compose_payload` enforces this, so pass only the key you have.
+   */
+  sendDmToEmail?(args: {
+    toEmail?: string;
+    toPersonUid?: string;
+    body: string;
+  }): Promise<{ state: "delivered" | "connectionRequested" }>;
+  /**
    * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
    * rail uses it only to resolve a display name for a peer the contacts
    * roster does not carry (the DM peer index returns bare uids).
@@ -97,6 +121,13 @@ export interface ConversationMessageWire {
   messageKind?: string | null;
   /** Versioned system-event envelope (run_complete card, deploy/pr lines, …). */
   systemEvent?: unknown;
+  /**
+   * Versioned rich-content envelope (stat tiles, tables, charts). ADDITIVE and
+   * absent-safe: parsed via `parseRichContent`; `body` remains the required
+   * plain-text fallback for old clients and notifications. See
+   * chat/messaging/richMessageContent.ts.
+   */
+  richContent?: unknown;
   /** Cached emoji aggregates — shown before the live GET settles. */
   reactions?: Array<{
     emoji: string;
@@ -325,6 +356,8 @@ export interface ChatWakeEvents {
   };
   /** A channel row changed shape. */
   "channel:updated": Channel;
+  /** A channel was deleted (by this client, optimistically, or by its owner) — drop the row. */
+  "channel:removed": { channelId: string };
   /** Unread rollup changed — reconcile the directory. */
   "channel:unread-changed": void;
   /** Per-pair DM unreads from the inbox rollup. */
@@ -364,6 +397,20 @@ export interface ChatWakeEvents {
   };
   /** Run cursor catch-up (directory delta + open timeline `since`). */
   "mesh:catchup": { reason: "connect" | "focus" };
+  /**
+   * Presence store changed (MQTT retained/live or live-read rebuild).
+   * Ids + status only — never prompts or credentials.
+   */
+  "presence:changed": {
+    companyUid: string;
+    actorUid: string;
+    status: "online" | "offline";
+  };
+  /**
+   * Company-wide live read refreshed (`{kind:"live"}` wake). Ids only —
+   * hosts re-read the LiveReadStore; never invent presence from timestamps.
+   */
+  "live:wake": { companyUid: string };
   /**
    * A reply landed (hq-pro `type:"thread"`). Ids only — never a body.
    * Not named `thread:` (that collides with work-mesh).

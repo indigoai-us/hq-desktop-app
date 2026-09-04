@@ -10,9 +10,10 @@ import { createLivePreAuthProbe, type LiveDesktopAltProbe } from './live-driver'
  * user, and loosening `feature_gate::desktop_features_enabled` to let the test
  * through would delete the very check this suite is supposed to protect. So the
  * signed-out state is not a limitation worked around here, it is the subject:
- * this file asserts that the shipped binary boots, paints its sign-in surface
- * cleanly, and that the desktop-alt gate refuses an unauthenticated caller in
- * the exact way the Rust code says it does.
+ * this file asserts that the shipped binary boots and paints its sign-in
+ * surface cleanly. The desktop workspace window is allowed while signed out
+ * so onboarding/reauth can happen there; `desktop_alt_enabled` still reports
+ * whether a Cognito email is present.
  *
  * The signed-in desktop-alt surfaces (Home / Meetings / Company) stay covered
  * by `smoke-pages.spec.ts` in the scripted `Desktop-alt E2E` job — this file
@@ -24,9 +25,6 @@ import { createLivePreAuthProbe, type LiveDesktopAltProbe } from './live-driver'
  * bridge is not exposed to WebDriver"). The app is booted once in `beforeAll`
  * and every test shares it.
  */
-
-/** The literal the Rust gate returns — `commands/desktop_alt.rs`. */
-const SIGNED_OUT_GATE_ERROR = 'desktop-alt requires a signed-in user';
 
 // A full TermSrv recovery takes 10 seconds, may need its one final retry, and
 // the built binary needs startup margin before the single shared driver can
@@ -157,21 +155,10 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     expect(status, `latch reported ${status} without a session end`).not.toBe('latched');
   });
 
-  it('refuses to open the desktop window for a signed-out user', async () => {
-    // `desktop_alt_enabled` is what App.svelte, the tray and the notification
-    // deep-links consult before offering the surface at all.
+  it('lets a signed-out user open the desktop workspace for sign-in', async () => {
     expect(await app.invokeCommand<boolean>('desktop_alt_enabled')).toBe(false);
-
-    // Defense in depth: the command re-enters the gate itself, so a caller
-    // that ignores the flag still gets refused — by this exact message.
-    await expect(app.invokeCommand('open_desktop_alt_window')).rejects.toThrow(
-      SIGNED_OUT_GATE_ERROR,
-    );
-
-    // The refusal has to be real. If a regression ever built the window before
-    // (or despite) the gate, a desktop-alt webview would now be attached to
-    // this session and this assertion is what catches it.
-    expect(await app.hasDesktopAltWindow()).toBe(false);
+    await expect(app.invokeCommand('open_desktop_alt_window')).resolves.toBeUndefined();
+    expect(await app.hasDesktopAltWindow()).toBe(true);
   });
 
   it('runs the real quit path and exits the Windows process within its bound', async () => {

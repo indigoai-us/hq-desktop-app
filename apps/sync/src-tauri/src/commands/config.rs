@@ -115,31 +115,20 @@ pub async fn get_config() -> Result<ConfigState, String> {
     })
 }
 
-/// HQ Work desktop-view handoff. Absent prefs / absent key → false.
-pub fn hq_work_handoff_enabled(prefs: Option<&MenubarPrefs>) -> bool {
-    prefs.and_then(|p| p.hq_work_handoff).unwrap_or(false)
+/// Retired preference. The desktop workspace is the only UI, so this is
+/// always on — email domain, company affiliation, and any leftover
+/// `hqWorkHandoff` key in `menubar.json` cannot select a different shell.
+pub fn hq_work_handoff_enabled(_prefs: Option<&MenubarPrefs>) -> bool {
+    true
 }
 
-/// Parse `hqWorkHandoff` from menubar.json text. Typed prefs first; untyped
-/// fallback so unrelated schema drift cannot hide the flag. Never a setup trigger.
-pub fn hq_work_handoff_from_json(contents: &str) -> bool {
-    if let Ok(prefs) = serde_json::from_str::<MenubarPrefs>(contents) {
-        return hq_work_handoff_enabled(Some(&prefs));
-    }
-    serde_json::from_str::<serde_json::Value>(contents)
-        .ok()
-        .and_then(|v| v.get("hqWorkHandoff").and_then(|b| b.as_bool()))
-        .unwrap_or(false)
+/// Retired reader. Always `true`; the on-disk key is ignored.
+pub fn hq_work_handoff_from_json(_contents: &str) -> bool {
+    true
 }
 
-/// The user's explicit choice, or `None` when they have not made one.
-///
-/// [`hq_work_handoff_from_json`] collapses "absent" and "explicitly false"
-/// into `false`, which is right for the two-app readers that still use it but
-/// cannot express default-on: the cohort default and an opt-out would be
-/// indistinguishable. Typed prefs first, untyped fallback second, so unrelated
-/// schema drift cannot hide the key. Unparseable input is "no choice", never a
-/// silent opt-out.
+/// Detect the retired on-disk choice so the launch migration can strip it.
+/// `None` means the key is already gone (or the file is unreadable).
 pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
     if let Ok(prefs) = serde_json::from_str::<MenubarPrefs>(contents) {
         if let Some(explicit) = prefs.hq_work_handoff {
@@ -151,221 +140,68 @@ pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
         .and_then(|v| v.get("hqWorkHandoff").and_then(|b| b.as_bool()))
 }
 
-/// Compose the user's choice with cohort membership.
-///
-/// **On by default inside the approved HQ Work domain cohort.** The embed is the
-/// product direction, and the alpha cohort should not have to hand-edit
-/// `~/.hq/menubar.json` to see it — there is deliberately no Settings toggle.
-///
-/// Outside the cohort it is off no matter what the file says. `menubar.json`
-/// is a plain user-writable file, so the key is a preference, never an
-/// authorisation: writing `"hqWorkHandoff": true` outside the cohort still
-/// gets nothing, and default-on does not leak past the cohort either.
-///
-/// An explicit `false` remains an opt-out for cohort members. Without that
-/// there would be no way back to the legacy window short of signing out, and
-/// the US-107 rollback scenario would have nothing to exercise.
-///
-/// Pure, so the composition is unit-testable without a Cognito fixture.
-pub fn hq_work_handoff_visible(choice: Option<bool>, is_cohort_member: bool) -> bool {
-    is_cohort_member && choice.unwrap_or(true)
+/// The desktop workspace is the only shell. Choice and cohort no longer
+/// compose a second UI.
+pub fn hq_work_handoff_visible(_choice: Option<bool>, _is_cohort_member: bool) -> bool {
+    true
 }
 
-/// On by default for `@getindigo.ai`, `@vyg.ai`, and `@liverecover.com`; off
-/// for everyone else, whatever the file says. An explicit `false` opts a
-/// cohort member out.
-///
-/// A missing or unreadable `menubar.json` is "no explicit choice", not an
-/// opt-out — a fresh install by a cohort member gets the embed, same as an
-/// existing one that has never touched the key.
-///
-/// Every consumer of the flag — the desktop-alt boot in `main.ts`, the
-/// `hqwork://` internal route, and the retained two-app probe — reads it
-/// through this one command, so this is the whole policy. The dedicated HQ
-/// Work feature gate intentionally does not broaden the Indigo-only updater,
-/// moderation, admin, or staging predicates.
+/// Strip `hqWorkHandoff` from `~/.hq/menubar.json` if it is still present.
+/// Best-effort and idempotent — never aborts launch.
+pub fn migrate_retired_hq_work_handoff() {
+    let Ok(path) = paths::menubar_json_path() else {
+        return;
+    };
+    let _ = hq_desktop_core::first_run::migrate_retired_hq_work_handoff(&path);
+}
+
+/// Always on. Remaining callers (deep links, conversation intercepts, boot
+/// tests) keep this command so they do not grow a second policy.
 #[tauri::command]
 pub async fn get_hq_work_handoff() -> Result<bool, String> {
-    let path = paths::menubar_json_path()?;
-    let choice = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| hq_work_handoff_choice(&contents))
-    } else {
-        None
-    };
-    // Short-circuit an explicit opt-out: no gate evaluation, no token read.
-    if choice == Some(false) {
-        return Ok(false);
-    }
-    Ok(hq_work_handoff_visible(
-        choice,
-        hq_desktop_core::feature_gate::is_hq_work_cohort_user().await,
-    ))
+    Ok(true)
 }
 
-/// Persist the handoff flag via untyped merge so unrelated keys survive.
-///
-/// Refuses outside the cohort rather than writing a flag that
-/// [`get_hq_work_handoff`] would then ignore — a toggle that silently does
-/// nothing is worse than one that says why.
+/// Retired write path. Ignores `enabled` and strips the leftover key so an
+/// upgraded install cannot opt back into the classic shell.
 #[tauri::command]
-pub async fn set_hq_work_handoff(enabled: bool) -> Result<(), String> {
-    if enabled && !hq_desktop_core::feature_gate::is_hq_work_cohort_user().await {
-        return Err(
-            "The embedded HQ Work window is limited to @getindigo.ai, @vyg.ai, and @liverecover.com accounts."
-                .into(),
-        );
-    }
+pub async fn set_hq_work_handoff(_enabled: bool) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
-    hq_desktop_core::first_run::merge_menubar_flags(
-        &path,
-        &[("hqWorkHandoff", serde_json::json!(enabled))],
-    )
+    hq_desktop_core::first_run::migrate_retired_hq_work_handoff(&path).map(|_| ())
 }
 
 #[cfg(test)]
 mod hq_work_handoff_tests {
     use super::*;
 
-    fn prefs_with(flag: Option<bool>) -> MenubarPrefs {
-        let mut prefs: MenubarPrefs = serde_json::from_str("{}").unwrap();
-        prefs.hq_work_handoff = flag;
-        prefs
-    }
-
-    // ── Approved-domain cohort gate ───────────────────────────────────────
-    //
-    // The embedded HQ Work window is alpha and must stay inside the
-    // @getindigo.ai, @vyg.ai, and @liverecover.com cohort. The menubar.json
-    // flag alone is NOT sufficient:
-    // any user can hand-edit that file. The effective answer is
-    // `choice AND is_hq_work_cohort_user()`, composed by
-    // `hq_work_handoff_visible`.
-    //
-    // The async gate itself needs a Cognito fixture, so — mirroring
-    // `feature_gate`'s own tests — the composition is proved here over the
-    // canonical `is_hq_work_allowed_email` helper, and the wiring of the real
-    // command onto it is source-contracted in the US-108 story test.
-
-    fn visible_for(choice: Option<bool>, email: Option<&str>) -> bool {
-        hq_work_handoff_visible(
-            choice,
-            hq_desktop_core::feature_gate::is_hq_work_allowed_email(email),
-        )
+    #[test]
+    fn handoff_is_on_for_a_ga_user_with_no_company() {
+        assert!(hq_work_handoff_visible(None, false));
+        assert!(hq_work_handoff_visible(Some(false), false));
+        assert!(hq_work_handoff_enabled(None));
+        assert!(hq_work_handoff_from_json(r#"{"hqWorkHandoff":false}"#));
+        assert!(hq_work_handoff_from_json(r#"{}"#));
+        assert!(hq_work_handoff_from_json("not-json"));
     }
 
     #[test]
-    fn handoff_is_on_for_every_cohort_domain_by_default() {
-        // The cohort gets the embed without touching menubar.json — an
-        // explicit `true` and no key at all mean the same thing for them.
-        assert!(visible_for(None, Some("hassaan@getindigo.ai")));
-        assert!(visible_for(None, Some("HASSAAN@GETINDIGO.AI")));
-        assert!(visible_for(Some(true), Some("hassaan@getindigo.ai")));
-        assert!(visible_for(None, Some("corey@vyg.ai")));
-        assert!(visible_for(None, Some("aleena@liverecover.com")));
-        assert!(visible_for(None, Some("ALEENA@LIVERECOVER.COM")));
-    }
-
-    #[test]
-    fn explicit_false_still_opts_every_cohort_member_out() {
-        // Default-on must stay overridable, or there is no way back to the
-        // legacy window without signing out — and Scenario 4 of the US-107
-        // checklist (flag-off rollback) would have nothing to exercise.
-        assert!(!visible_for(Some(false), Some("hassaan@getindigo.ai")));
-        assert!(!visible_for(Some(false), Some("corey@vyg.ai")));
-        assert!(!visible_for(Some(false), Some("aleena@liverecover.com")));
-    }
-
-    #[test]
-    fn handoff_never_admits_a_non_indigo_account() {
-        // The escalation this gate exists to stop: someone outside the cohort
-        // writes `"hqWorkHandoff": true` into their own menubar.json. Default-on
-        // must not leak past the cohort either, so absent is false for them too.
-        for email in [
-            Some("someone@gmail.com"),
-            Some("qa@example.com"),
-            None,
-            Some(""),
-        ] {
-            assert!(!visible_for(Some(true), email), "explicit true: {email:?}");
-            assert!(!visible_for(None, email), "default: {email:?}");
-        }
-    }
-
-    #[test]
-    fn handoff_rejects_look_alike_domains() {
-        for email in [
-            Some("attacker@forgetindigo.ai"),
-            Some("attacker@notgetindigo.ai"),
-            Some("attacker@notvyg.ai"),
-            Some("attacker@liverecover.com.evil"),
-            Some("getindigo.ai"),
-        ] {
-            assert!(!visible_for(Some(true), email), "explicit true: {email:?}");
-            assert!(!visible_for(None, email), "default: {email:?}");
-        }
-    }
-
-    #[test]
-    fn choice_distinguishes_absent_from_explicit_false() {
-        // The whole default-on behaviour rests on telling these apart, which
-        // the bool-returning readers cannot do.
-        assert_eq!(
-            hq_work_handoff_choice(r#"{"hqWorkHandoff":true}"#),
-            Some(true)
-        );
+    fn upgraded_install_false_key_is_ignored() {
         assert_eq!(
             hq_work_handoff_choice(r#"{"hqWorkHandoff":false}"#),
             Some(false)
         );
+        assert!(hq_work_handoff_visible(Some(false), true));
+        assert!(hq_work_handoff_from_json(r#"{"hqWorkHandoff":false}"#));
+    }
+
+    #[test]
+    fn choice_still_detects_the_retired_key_so_migration_can_strip_it() {
+        assert_eq!(
+            hq_work_handoff_choice(r#"{"hqWorkHandoff":true}"#),
+            Some(true)
+        );
         assert_eq!(hq_work_handoff_choice(r#"{"hqPath":"/tmp/HQ"}"#), None);
         assert_eq!(hq_work_handoff_choice("{}"), None);
-        // Unparseable is "no explicit choice", never a silent opt-out.
         assert_eq!(hq_work_handoff_choice("not-json"), None);
-        // Untyped fallback, so unrelated schema drift cannot hide the key.
-        assert_eq!(
-            hq_work_handoff_choice(r#"{"hqWorkHandoff":false,"unknownFuture":{"x":1}}"#),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn hq_work_handoff_enabled_none_prefs_is_false() {
-        assert!(!hq_work_handoff_enabled(None));
-    }
-
-    #[test]
-    fn hq_work_handoff_enabled_absent_field_is_false() {
-        assert!(!hq_work_handoff_enabled(Some(&prefs_with(None))));
-    }
-
-    #[test]
-    fn hq_work_handoff_enabled_explicit_false() {
-        assert!(!hq_work_handoff_enabled(Some(&prefs_with(Some(false)))));
-    }
-
-    #[test]
-    fn hq_work_handoff_enabled_explicit_true() {
-        assert!(hq_work_handoff_enabled(Some(&prefs_with(Some(true)))));
-    }
-
-    #[test]
-    fn hq_work_handoff_from_json_reads_typed_true() {
-        assert!(hq_work_handoff_from_json(r#"{"hqWorkHandoff":true}"#));
-    }
-
-    #[test]
-    fn hq_work_handoff_from_json_absent_is_false() {
-        assert!(!hq_work_handoff_from_json(r#"{"hqPath":"/tmp/HQ"}"#));
-        assert!(!hq_work_handoff_from_json("not-json"));
-    }
-
-    #[test]
-    fn hq_work_handoff_from_json_survives_unrelated_schema_drift() {
-        // meetingDetectNotify.platforms as a string is invalid for MenubarPrefs,
-        // but the untyped fallback still sees hqWorkHandoff.
-        let drifted = r#"{"hqWorkHandoff":true,"meetingDetectNotify":{"platforms":"zoom"}}"#;
-        assert!(hq_work_handoff_from_json(drifted));
     }
 }

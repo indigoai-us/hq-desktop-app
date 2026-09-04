@@ -173,6 +173,29 @@ describe("createChannelDirectoryReconciler", () => {
     expect(applied[1][0].unreadCount).toBe(1);
   });
 
+  it("forget() drops a row locally and a delta without it does not resurrect it", async () => {
+    const applied: ChannelDirectoryRow[][] = [];
+    const fetchFeed = vi
+      .fn()
+      .mockResolvedValueOnce(snapshotFeed([row("ch_a"), row("ch_b")]))
+      .mockResolvedValueOnce(deltaFeed([], []));
+    const r = createChannelDirectoryReconciler({
+      fetchFeed,
+      onApply: (rows) => applied.push(rows),
+      now: () => NOW,
+    });
+    await r.reconcile();
+    expect(applied[0].map((x) => x.channelId)).toEqual(["ch_a", "ch_b"]);
+
+    r.forget("ch_b");
+    expect(r.snapshot().map((x) => x.channelId)).toEqual(["ch_a"]);
+    // Unknown ids are a no-op.
+    r.forget("ch_nope");
+
+    await r.reconcile("wake");
+    expect(applied[1].map((x) => x.channelId)).toEqual(["ch_a"]);
+  });
+
   it("an expired/invalidated cursor recovers by reset snapshot (never an error)", async () => {
     const applied: ChannelDirectoryRow[][] = [];
     const fetchFeed = vi

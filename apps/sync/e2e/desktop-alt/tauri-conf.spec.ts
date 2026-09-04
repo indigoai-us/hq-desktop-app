@@ -15,10 +15,20 @@ const desktopCommandSource = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url)),
   'utf8',
 );
+const mainRsSource = readFileSync(
+  fileURLToPath(new URL('../../src-tauri/src/main.rs', import.meta.url)),
+  'utf8',
+);
+const externalLinksRs = readFileSync(
+  fileURLToPath(new URL('../../src-tauri/src/util/external_links.rs', import.meta.url)),
+  'utf8',
+);
 const glassSource = readFileSync(
   fileURLToPath(new URL('../../src-tauri/src/glass.rs', import.meta.url)),
   'utf8',
 );
+const MARKETPLACE_COVER_ORIGIN =
+  'https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com';
 
 // Valid values for the macOS title bar style in Tauri 2's tauri.conf.json schema.
 const VALID_TITLE_BAR_STYLES = ['Visible', 'Transparent', 'Overlay'];
@@ -62,15 +72,46 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     );
   });
 
+  it('centres the overlay traffic lights on the titlebar content centre line', () => {
+    expect(desktopAlt.hiddenTitle).toBe(true);
+    expect(desktopAlt.trafficLightPosition).toEqual({ x: 20, y: 24 });
+    expect(desktopCommandSource).toContain('.hidden_title(true)');
+    expect(desktopCommandSource).toContain(
+      '.traffic_light_position(tauri::LogicalPosition::new',
+    );
+    expect(desktopCommandSource).toContain(
+      'crate::titlebar_layout::traffic_light_position',
+    );
+  });
+
   it('enforces a packaged image CSP that cannot auto-load remote tracking images', () => {
     const csp = conf.app?.security?.csp;
 
     expect(typeof csp).toBe('string');
-    expect(csp).toContain("img-src 'self'");
-    expect(csp).toContain('data:');
-    expect(csp).toContain('asset:');
-    expect(csp).not.toMatch(/img-src[^;]*https?:/i);
-    expect(csp).not.toMatch(/img-src[^;]*\*/i);
+    const imageSources = csp
+      .match(/(?:^|;)\s*img-src\s+([^;]+)/i)?.[1]
+      ?.trim()
+      .split(/\s+/);
+
+    expect(imageSources).toContain("'self'");
+    expect(imageSources).toContain('data:');
+    expect(imageSources).toContain('asset:');
+    // Marketplace listing covers AND creator avatars are presigned GETs on
+    // this one production assets host. A wildcard (`https:` / `*`) would
+    // re-open tracking pixels.
+    expect(imageSources?.filter((source) => /^https?:/i.test(source))).toEqual([
+      MARKETPLACE_COVER_ORIGIN,
+    ]);
+  });
+
+  it('routes target=_blank and in-webview navigations to the OS browser', () => {
+    expect(desktopCommandSource).toContain('deny_webview_new_windows');
+    expect(mainRsSource).toContain('Builder::<tauri::Wry, ()>::new("external-links")');
+    expect(mainRsSource).toContain('.on_navigation(|webview, url|');
+    expect(externalLinksRs).toContain('.on_new_window');
+    expect(externalLinksRs).toContain('is_browser_url');
+    expect(externalLinksRs).toContain('mailto');
+    expect(externalLinksRs).toContain('NewWindowResponse::Deny');
   });
 
   it('applies AppKit Liquid Glass on the main thread with an older-macOS vibrancy fallback', () => {

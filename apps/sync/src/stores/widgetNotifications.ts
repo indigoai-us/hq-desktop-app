@@ -10,6 +10,12 @@ import { automatedAgentJoinNoticeKey } from '../lib/automatedNotices';
 /** Auto-collapse timeout for each visible stack row (ms). */
 export const WIDGET_ROW_TIMEOUT_MS = 8000;
 
+/** Default stack auto-hide delay while HQ is not focused (seconds). */
+export const DEFAULT_WIDGET_AUTO_HIDE_SECONDS = WIDGET_ROW_TIMEOUT_MS / 1000;
+
+/** localStorage key for the user/system “stack hidden” flag (survives focus/wake). */
+export const WIDGET_STACK_HIDDEN_STORAGE_KEY = 'hq-widget-stack-hidden-v1';
+
 /** Max visible rows; overflow drops the oldest visible. */
 export const WIDGET_STACK_MAX = 4;
 
@@ -103,6 +109,7 @@ export type WidgetRowType =
   | 'share'
   | 'sync'
   | 'deploy'
+  | 'meeting'
   | 'system';
 
 /**
@@ -244,11 +251,89 @@ export interface WidgetStackState {
    * never disappears. Omitted/`undefined` is treated as false.
    */
   held?: boolean;
+  /**
+   * User/system dismissed the live stack overlay. Items stay in `visible` /
+   * `recent` so tray hover can re-surface them, but {@link widgetWindowSize}
+   * returns idle and the panel is not drawn. Omitted/`undefined` is shown.
+   */
+  hidden?: boolean;
 }
 
 /** Empty non-occluded stack. */
 export function emptyWidgetStack(): WidgetStackState {
-  return { visible: [], queued: [], recent: [], occluded: false, held: false };
+  return {
+    visible: [],
+    queued: [],
+    recent: [],
+    occluded: false,
+    held: false,
+    hidden: false,
+  };
+}
+
+/** Collapse the live overlay without dropping items from history. */
+export function hideStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden === true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: true,
+    held: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/** Reveal a previously hidden live overlay. No-op when already shown. */
+export function showStack(state: WidgetStackState): WidgetStackState {
+  if (state.hidden !== true) {
+    return state;
+  }
+  return {
+    ...state,
+    hidden: false,
+    visible: state.visible.slice(),
+    queued: state.queued.slice(),
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Drop the live toast overlay (visible + queued) without touching recent.
+ * Opening or closing the Messages panel consumes the toast so it cannot
+ * come back as a second persistent surface.
+ */
+export function clearLiveOverlay(state: WidgetStackState): WidgetStackState {
+  if (state.visible.length === 0 && state.queued.length === 0) {
+    return state;
+  }
+  return {
+    ...state,
+    visible: [],
+    queued: [],
+    recent: state.recent.slice(),
+  };
+}
+
+/**
+ * Whether the live stack should auto-hide: HQ is in the background, the
+ * pointer/reply hold is off, and the configured delay has elapsed.
+ * `autoHideSeconds <= 0` means never (persist until explicit dismiss).
+ */
+export function stackAutoHideDue(input: {
+  hidden: boolean;
+  held: boolean;
+  appFocused: boolean;
+  autoHideSeconds: number;
+  elapsedMs: number;
+}): boolean {
+  if (input.hidden || input.held || input.appFocused) return false;
+  if (!Number.isFinite(input.autoHideSeconds) || input.autoHideSeconds <= 0) {
+    return false;
+  }
+  return input.elapsedMs >= input.autoHideSeconds * 1000;
 }
 
 /**
@@ -319,10 +404,91 @@ export function resolutionForItem(item: {
 }): NotificationResolution | null {
   const wantsAssign = item.actionId === 'assign' || item.clickActionId === 'assign';
   if (item.kind !== 'meeting' || !wantsAssign) return null;
-  if (item.data === null || typeof item.data !== 'object') return null;
-  const meetingId = (item.data as Record<string, unknown>).meetingId;
-  if (typeof meetingId !== 'string' || meetingId === '') return null;
+  const meetingId = recordString(item.data, 'meetingId');
+  if (!meetingId) return null;
   return { kind: 'company-picker', meetingId, prompt: 'File to company' };
+}
+
+function recordString(data: unknown, key: string): string {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return '';
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Desktop Meetings deep-link id for a widget meeting row.
+ *
+ * Prefers the calendar event id (agenda rows key off `event.id`) and falls
+ * back to the Recall bot id the unattributed poller puts on the banner.
+ */
+export function meetingFocusId(data: unknown): string | undefined {
+  return recordString(data, 'calendarEventId') || recordString(data, 'meetingId') || undefined;
+}
+
+/** Collapse key for unattributed-meeting rows — one row per Recall bot id. */
+export function meetingIdentityKey(item: {
+  kind: string;
+  id: string;
+  data?: unknown;
+}): string | null {
+  if (item.kind !== 'meeting') return null;
+  const meetingId = recordString(item.data, 'meetingId');
+  if (meetingId) return `meeting:${meetingId}`;
+  return item.id.startsWith('meeting:') ? item.id : null;
+}
+
+const GENERIC_MEETING_TITLES = new Set(['meeting needs a company', 'meeting']);
+
+function quotedMeetingName(body: string): string {
+  const match = body.match(/"([^"]+)"/);
+  return match?.[1]?.replace(/…+$/, '').trim() ?? '';
+}
+
+function formatMeetingWhen(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(ms));
+}
+
+/**
+ * One-line widget title for a meeting notification: meeting name + date/time.
+ *
+ * Needs-action banners used to start with the generic "Meeting needs a company"
+ * prefix, which ellipsized to "Meeting …" and made stacked rows indistinguishable.
+ */
+export function formatMeetingNotificationTitle(payload: {
+  title?: string;
+  body?: string;
+  data?: unknown;
+}): string {
+  const title = (payload.title ?? '').trim();
+  const body = payload.body ?? '';
+  const name =
+    recordString(payload.data, 'meetingTitle') ||
+    quotedMeetingName(body) ||
+    (title && !GENERIC_MEETING_TITLES.has(title.toLowerCase()) ? title : '') ||
+    'Meeting';
+  const when = formatMeetingWhen(recordString(payload.data, 'scheduledStartTime'));
+  return when ? `${name} · ${when}` : name;
+}
+
+function sameNotification(existing: WidgetStackItem, incoming: WidgetStackItem): boolean {
+  if (existing.id === incoming.id) return true;
+  const incomingKey = meetingIdentityKey(incoming);
+  return incomingKey !== null && meetingIdentityKey(existing) === incomingKey;
+}
+
+function withoutMatching(
+  items: WidgetStackItem[],
+  incoming: WidgetStackItem,
+): WidgetStackItem[] {
+  return items.filter((existing) => !sameNotification(existing, incoming));
 }
 
 /**
@@ -410,8 +576,16 @@ export function bannerToStackItem(
       actor = payload.title;
       text = payload.body ?? '';
       break;
+    case 'meeting': {
+      type = 'meeting';
+      const wantsAssign =
+        payload.actionId === 'assign' || payload.clickActionId === 'assign';
+      text = wantsAssign
+        ? formatMeetingNotificationTitle(payload)
+        : joinTitleBody(payload.title, payload.body);
+      break;
+    }
     case 'update':
-    case 'meeting':
     default:
       type = 'system';
       text = joinTitleBody(payload.title, payload.body);
@@ -450,18 +624,41 @@ function joinTitleBody(title: string, body: string | undefined): string {
   return t || b;
 }
 
-/** Prepend into recent history: unread, dedupe by id, trim to max. */
+/** Prepend into recent history: unread, dedupe by id / meeting id, trim to max. */
 function prependRecent(recent: WidgetStackItem[], item: WidgetStackItem): WidgetStackItem[] {
   const entry: WidgetStackItem = { ...item, unread: true };
-  return [entry, ...recent.filter((r) => r.id !== item.id)].slice(0, WIDGET_RECENT_MAX);
+  return [entry, ...withoutMatching(recent, item)].slice(0, WIDGET_RECENT_MAX);
 }
 
+export type AddItemOptions = {
+  /**
+   * When false, needs-action rows go to `recent` (Messages → Activity)
+   * but never into the live toast overlay. Default true.
+   */
+  showNeedsAction?: boolean;
+  /**
+   * When false, skip visible/queued (the toast). The item still goes to
+   * `recent`. Used while the Messages panel is already open so a second
+   * surface cannot appear behind it. Default true.
+   */
+  liveOverlay?: boolean;
+};
+
 /**
- * Enqueue or show a notification. When occluded, push onto `queued` (newest
- * first); otherwise prepend to `visible` and trim to {@link WIDGET_STACK_MAX}.
- * Always also prepends into `recent` (unread, deduped, capped).
+ * Enqueue or show a notification toast. When occluded, push onto `queued`
+ * (newest first); otherwise prepend to `visible` and trim to
+ * {@link WIDGET_STACK_MAX}. Always also prepends into `recent` (unread,
+ * deduped, capped) so the Messages panel Activity list has the row.
+ *
+ * A hidden overlay re-surfaces only for a *new* item. Re-delivery of a row
+ * already on the hidden stack (wake/poller) must not pin the window on top
+ * again — that is the stuck-state the hide flag exists to prevent.
  */
-export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetStackState {
+export function addItem(
+  state: WidgetStackState,
+  item: WidgetStackItem,
+  options: AddItemOptions = {},
+): WidgetStackState {
   // The updater may rediscover the same version every six hours. Keep one
   // current update row instead of accumulating random banner ids.
   const isActionableUpdate =
@@ -480,18 +677,35 @@ export function addItem(state: WidgetStackState, item: WidgetStackItem): WidgetS
         }
       : state;
   const recent = prependRecent(base.recent, item);
+  const skipLive =
+    options.liveOverlay === false ||
+    (options.showNeedsAction === false && isNeedsActionItem(item));
+  if (skipLive) {
+    return {
+      ...base,
+      visible: withoutMatching(base.visible, item),
+      queued: withoutMatching(base.queued, item),
+      recent,
+    };
+  }
+  const isExistingLive =
+    base.visible.some((existing) => sameNotification(existing, item)) ||
+    base.queued.some((existing) => sameNotification(existing, item));
+  const hidden = base.hidden === true && isExistingLive;
   if (base.occluded) {
     return {
       ...base,
-      visible: base.visible.slice(),
-      queued: [item, ...base.queued],
+      hidden,
+      visible: withoutMatching(base.visible, item),
+      queued: [item, ...withoutMatching(base.queued, item)],
       recent,
     };
   }
   return {
     ...base,
-    queued: base.queued.slice(),
-    visible: [item, ...base.visible].slice(0, WIDGET_STACK_MAX),
+    hidden,
+    queued: withoutMatching(base.queued, item),
+    visible: [item, ...withoutMatching(base.visible, item)].slice(0, WIDGET_STACK_MAX),
     recent,
   };
 }
@@ -546,10 +760,18 @@ export function setOccluded(
  * Drop visible items whose `expiresAt <= now`. Queued/recent are untouched.
  * No-op while `held` — auto-collapse is suspended under the pointer / mid-reply.
  */
+/** True for rows the user can complete in place (they wait for a decision). */
+export function isNeedsActionItem(item: WidgetStackItem): boolean {
+  return resolutionForItem(item) !== null;
+}
+
 export function expireItems(state: WidgetStackState, now: number): WidgetStackState {
   if (state.held === true) {
     return state;
   }
+  // The live overlay is a toast: every row, including needs-action, auto-hides
+  // after expiresAt. Needs-action rows remain in `recent` (Messages → Activity)
+  // until the user files or dismisses them.
   const visible = state.visible.filter((item) => item.expiresAt > now);
   if (visible.length === state.visible.length) {
     return state;
@@ -619,6 +841,21 @@ export function markRecentRead(state: WidgetStackState): WidgetStackState {
  */
 export function unreadRecentCount(state: WidgetStackState): number {
   return state.recent.filter((r) => r.unread === true).length;
+}
+
+/**
+ * Badge on the HQ mark: unread rows plus unresolved needs-action rows
+ * (a meeting that still needs a company stays badged after the panel is
+ * marked read). Each recent item counts at most once.
+ */
+export function widgetBadgeCount(state: WidgetStackState): number {
+  let count = 0;
+  for (const item of state.recent) {
+    if (item.unread === true || isNeedsActionItem(item)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /**
@@ -875,6 +1112,7 @@ export function deserializeRecent(
       e.type === 'share' ||
       e.type === 'sync' ||
       e.type === 'deploy' ||
+      e.type === 'meeting' ||
       e.type === 'system'
         ? e.type
         : 'system';
@@ -1154,7 +1392,7 @@ export function hoverRows(
  * Backend clamps to 66..380 × 43..720.
  */
 export function widgetWindowSize(state: WidgetStackState): { width: number; height: number } {
-  const n = state.visible.length;
+  const n = state.hidden === true ? 0 : state.visible.length;
   if (n === 0) {
     return { width: WIDGET_IDLE_WIDTH, height: WIDGET_IDLE_HEIGHT };
   }

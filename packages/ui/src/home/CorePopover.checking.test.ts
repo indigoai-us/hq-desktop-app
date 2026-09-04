@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import CorePopover from "./CorePopover.svelte";
+import { resetUpdateStore } from "../settings/update-store.svelte";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -20,6 +21,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  resetUpdateStore();
 });
 
 function deferred<T>() {
@@ -47,7 +49,9 @@ function makeAdapter(overrides: {
       getVersions:
         overrides.getVersions ?? (async () => ok({ core: "15.0.118" })),
       checkCoreState: overrides.checkCoreState ?? (async () => ok(null)),
-      getPendingUpdate: async () => ok(null),
+      checkForUpdates: async () => ok(null),
+      checkCliUpdate: async () => ok(null),
+      installUpdate: async () => ok(undefined),
     },
     // Unused surface for these tests.
   } as never;

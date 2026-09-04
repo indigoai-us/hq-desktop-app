@@ -9,9 +9,13 @@
    */
   import { onMount, untrack } from "svelte";
 
+  import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
+  import { authorAvatarUrl } from "./agent-avatars";
   import MessageAttachments from "./MessageAttachments.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -38,16 +42,27 @@
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isAllowedChatAttachment,
+    filesFromDataTransfer,
+    namePastedImageFile,
+    validateChatAttachment,
+    type ChatAttachmentValidator,
     type ChatAttachmentWire,
   } from "./chat-attachments";
+  import { formatComposerSendError } from "./composer-send-error";
   import {
     toggleReaction,
     type ReactionAggregate,
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
-  import { safeHref } from "../../common/markdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import RichMessageContent from "./RichMessageContent.svelte";
+  import { richContentForMessage } from "./richMessageContent";
+  import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../../common/external-links.js";
   import type {
     ChatWakeBus,
     ConversationApi,
@@ -101,6 +116,8 @@
     ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Releases host-created object URLs when inline reply images unmount. */
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
@@ -127,6 +144,8 @@
     avatarByUid?: Record<string, string>;
     /** personUid → live roster display name (profile override). */
     displayNameByUid?: Record<string, string>;
+    /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
+    attachmentValidator?: ChatAttachmentValidator;
     /** Open a person's profile panel when their name/avatar/mention is clicked. */
     onopenprofile?: (author: {
       personUid: string;
@@ -152,6 +171,7 @@
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
+    onopenartifact = undefined,
     onreleaseurl = undefined,
     vaultCompanyUid = null,
     onclose,
@@ -159,6 +179,7 @@
     onactivethreadchange,
     avatarByUid = {},
     displayNameByUid = {},
+    attachmentValidator = validateChatAttachment,
     onopenprofile,
     mentionCandidates = [],
     onopenurl,
@@ -167,9 +188,9 @@
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
   let reactPickerFor = $state<string | null>(null);
 
-  /** Open the author's profile panel (humans only — agents have no profile). */
+  /** Open the author's profile or agent pane. */
   function openAuthorProfile(msg: ConversationMessageWire | null): void {
-    if (!msg || !onopenprofile || isAgent(msg)) return;
+    if (!msg || !onopenprofile) return;
     const personUid = (msg.fromPersonUid ?? "").trim();
     if (!personUid) return;
     onopenprofile({ personUid, displayName: messageAuthor(msg) });
@@ -191,23 +212,15 @@
     });
   }
 
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
-  function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-    node: EventTarget | null,
-  ): boolean {
-    if (!(node instanceof Element)) return false;
-    const body = event.currentTarget;
-    if (!(body instanceof Element)) return false;
-    const anchor = node.closest("a[href]");
-    if (!anchor || !body.contains(anchor)) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const href = safeHref(anchor.getAttribute("href") ?? "");
-    if (!href) return true;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-    return true;
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "message",
+    });
   }
 
   function storedMentions(
@@ -218,14 +231,6 @@
       participantType: storedMentionType(row),
       displayName: row.displayName,
     }));
-  }
-
-  /** Real avatar for a thread message's author, when known. */
-  function replyAvatarFor(
-    msg: { fromPersonUid?: string | null } | null | undefined,
-  ): string | null {
-    const uid = (msg?.fromPersonUid ?? "").trim();
-    return (uid && avatarByUid[uid]) || null;
   }
 
   let root = $state<ConversationMessageWire | null>(null);
@@ -239,7 +244,7 @@
   let localSeq = 0;
   let seenIds = $state(new Set<string>());
   let localReactions = $state<ReactionMap>({});
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -475,9 +480,9 @@
         errors.push(`You can attach up to ${MAX_CHAT_ATTACHMENTS} files`);
         break;
       }
-      const reason = isAllowedChatAttachment(file);
-      if (reason) {
-        errors.push(reason);
+      const error = attachmentValidator(file);
+      if (error) {
+        errors.push(error.message);
         continue;
       }
       if (
@@ -496,22 +501,15 @@
     attachError = null;
   }
 
-  /** Pasted screenshots all arrive named "image.png" — make each unique. */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
     if (!onuploadfiles) return;
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -551,10 +549,8 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
-        attachError =
-          err instanceof Error && err.message.trim()
-            ? err.message.trim()
-            : "Could not upload the file";
+        const raw = err instanceof Error ? err.message.trim() : "";
+        attachError = formatComposerSendError(raw, true);
         sending = false;
         return;
       }
@@ -712,11 +708,20 @@
   });
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
   class="reply-panel"
   aria-label="Thread"
   data-testid="reply-panel"
   data-root-event-id={rootEventId}
+  onclick={onBodyLinkActivate}
+  onauxclick={onBodyLinkActivate}
+  oncontextmenu={onBodyLinkActivate}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
+  }}
 >
   <header class="reply-header">
     <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
@@ -735,18 +740,19 @@
   <div class="reply-root" data-testid="reply-panel-root">
     {#if root}
       {@const rootId = root.eventId}
+      {@const rootRich = richContentForMessage(root)}
       <span class="reply-avatar" aria-hidden="true">
         <IdentityMark
           kind={isAgent(root) ? "agent" : "person"}
           label={messageAuthor(root)}
-          avatarUrl={replyAvatarFor(root)}
+          avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
           agentUid={root.fromPersonUid}
           size="regular"
         />
       </span>
       <div class="reply-col">
         <div class="reply-meta">
-          {#if onopenprofile && !isAgent(root) && (root.fromPersonUid ?? "").trim()}
+          {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
             <button
               type="button"
               class="reply-root-author reply-author-btn"
@@ -760,39 +766,45 @@
           <span class="reply-time">{formatTime(root.createdAt)}</span>
         </div>
         <div class="reply-root-body">
-          {#if root.body?.trim()}
+          {#if rootRich.text.trim()}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="reply-md"
+              class="reply-md msg-body"
+              class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
               onclick={(e) => {
-                if (onBodyLinkActivate(e, e.target)) return;
+                if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
               }}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
-                  if (onBodyLinkActivate(e, e.target)) return;
+                  if (onBodyLinkActivate(e)) return;
                   onMentionActivate(e, e.target);
                 }
               }}
             >
               {@html applyMentionMarkup(
-                renderMessageBodyMarkdown(root.body ?? ""),
+                renderMessageBodyMarkdown(rootRich.text),
                 storedMentions(root),
               )}
             </div>
           {/if}
+          {#if rootRich.rich}
+            <RichMessageContent content={rootRich.rich} />
+          {/if}
           {#if root.details?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="details"
               text={root.details}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           {#if root.prompt?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="prompt"
               text={root.prompt}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           <MessageAttachments
@@ -873,6 +885,7 @@
         </p>
       {:else}
         {#each visibleReplies as msg (msg.eventId)}
+          {@const replyRich = richContentForMessage(msg)}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
@@ -883,14 +896,14 @@
               <IdentityMark
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
-                avatarUrl={replyAvatarFor(msg)}
+                avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
                 size="regular"
               />
             </span>
             <div class="reply-col">
               <div class="reply-meta">
-                {#if onopenprofile && !isAgent(msg) && (msg.fromPersonUid ?? "").trim()}
+                {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
                   <button
                     type="button"
                     class="reply-author reply-author-btn"
@@ -903,26 +916,30 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
-              {#if msg.body?.trim()}
+              {#if replyRich.text.trim()}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="reply-md"
+                  class="reply-md msg-body"
+                  class:msg-body-jumbo={isJumboEmojiBody(replyRich.text)}
                   onclick={(e) => {
-                    if (onBodyLinkActivate(e, e.target)) return;
+                    if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);
                   }}
                   onkeydown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e, e.target)) return;
+                      if (onBodyLinkActivate(e)) return;
                       onMentionActivate(e, e.target);
                     }
                   }}
                 >
                   {@html applyMentionMarkup(
-                    renderMessageBodyMarkdown(msg.body ?? ""),
+                    renderMessageBodyMarkdown(replyRich.text),
                     storedMentions(msg),
                   )}
                 </div>
+              {/if}
+              {#if replyRich.rich}
+                <RichMessageContent content={replyRich.rich} />
               {/if}
               <MessageAttachments
                 attachments={parseMessageAttachments(msg)}
@@ -1009,24 +1026,12 @@
         />
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="reply-pending" data-testid="reply-panel-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            <span class="reply-chip">
-              <span class="reply-chip-name">{file.name}</span>
-              <button
-                type="button"
-                class="reply-chip-remove"
-                aria-label={`Remove ${file.name}`}
-                onclick={() => removePendingFile(i)}
-              >
-                ×
-              </button>
-            </span>
-          {/each}
-          {#if attachError}
-            <span class="reply-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          testid="reply-panel-pending"
+          onremove={removePendingFile}
+        />
       {/if}
       <textarea
         class="reply-input"
@@ -1101,6 +1106,13 @@
       </div>
     </div>
   </div>
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
+    />
+  {/if}
 </aside>
 
 <style>
@@ -1165,6 +1177,7 @@
     display: grid;
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
+    align-items: start;
     padding: 12px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
   }
@@ -1205,6 +1218,7 @@
   .reply-author {
     font-size: 13px;
     font-weight: 700;
+    line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
   }
 
@@ -1274,7 +1288,25 @@
     overflow-wrap: anywhere;
   }
 
+  /* Same first/last/p collapse as .dm-bubble-body — UA <p> margin was the
+     extra name→body line in the thread panel. */
+  .reply-md > :global(:first-child) {
+    margin-top: 0;
+  }
+
+  .reply-md > :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .reply-md :global(p) {
+    margin: var(--msg-body-p-margin, 0.375rem 0);
+    color: inherit;
+  }
+
   .reply-root-label {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
@@ -1318,6 +1350,15 @@
     align-items: start;
     padding: 5px 8px;
     border-radius: 6px;
+  }
+
+  .reply-avatar {
+    display: grid;
+    place-items: start center;
+    flex: 0 0 36px;
+    width: 36px;
+    min-height: 1px;
+    padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
   .reply-row:hover {
@@ -1392,13 +1433,15 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0;
   }
 
   .reply-meta {
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
+    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    min-width: 0;
   }
 
   .reply-send-state {
@@ -1419,44 +1462,6 @@
     font-size: 11px;
     font-weight: 400;
     cursor: pointer;
-  }
-
-  .reply-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .reply-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 200px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .reply-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .reply-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .reply-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .reply-attach {

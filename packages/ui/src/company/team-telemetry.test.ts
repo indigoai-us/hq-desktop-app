@@ -31,6 +31,38 @@ describe("memberKindLabel / memberTypeRoleLabel", () => {
   });
 });
 
+describe("normalizeCompanyTeamTelemetry presence honesty", () => {
+  it("never sets online/presence/isOnline from timestamps or events", () => {
+    const view = normalizeCompanyTeamTelemetry({
+      members: [
+        {
+          personUid: "prs_ada",
+          displayName: "Ada",
+          lastActivityAt: "2026-09-04T12:00:00.000Z",
+          events: 42,
+          distinctSessions: 3,
+          isOnline: true,
+          online: true,
+          presence: "online",
+          lastSeen: "2026-09-04T11:59:00.000Z",
+        },
+      ],
+    });
+    const member = view.members[0];
+    expect(member).toBeDefined();
+    expect(member).not.toHaveProperty("online");
+    expect(member).not.toHaveProperty("presence");
+    expect(member).not.toHaveProperty("isOnline");
+    expect(member).not.toHaveProperty("lastSeen");
+    expect(member).not.toHaveProperty("lastActivityAt");
+    expect(JSON.stringify(member).toLowerCase()).not.toContain('"online"');
+    expect(member?.displayName).toBe("Ada");
+    expect(member?.displayName.toLowerCase()).not.toBe("online");
+    expect(member?.events).toBe(42);
+    expect(member?.sessions).toBe(3);
+  });
+});
+
 describe("displayNameFromMember", () => {
   it("prefers genuine identity fields, then the source UID, then an explicit unavailable state", () => {
     expect(

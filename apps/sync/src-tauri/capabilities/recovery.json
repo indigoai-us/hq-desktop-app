@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "recovery-capability",
+  "description": "Native recovery window: a bundled HTML page that can check for updates (including server-directed rollback), reinstall latest, reset local UI state, and quit. No dependency on the main Svelte bundle.",
+  "windows": ["recovery"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

@@ -339,6 +339,18 @@ export function createHqWorkPackagesEvents(
   };
 }
 
+/** `list_company_members` answers `{ contacts: [...] }`; older stubs a bare array. */
+function asContacts(value: unknown): ContactsResponse['contacts'] {
+  if (Array.isArray(value)) return value as ContactsResponse['contacts'];
+  const rows = asRecord(value)?.contacts;
+  return Array.isArray(rows) ? (rows as ContactsResponse['contacts']) : [];
+}
+
+/**
+ * @deprecated Retired production host. DesktopApp now mounts
+ * `createChatSidebarApi` from apps/work; this remains only for legacy
+ * handoff-test compatibility until that suite is retired.
+ */
 export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi {
   return {
     fetchChannelDirectory: async (cursor) => {
@@ -350,6 +362,17 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
     listContacts: async () => ({
       contacts: await call<ContactsResponse['contacts']>(
         adapter.messaging.listContacts(),
+      ),
+    }),
+    // `list_company_members` (GET /v1/notify/contacts?companyUid=…). The
+    // unscoped contacts feed carries no companyUid, so this is the only source
+    // that can decide whether an invitee is outside the channel's workspace.
+    // NOT `adapter.company.listMembers` — that interface takes a company SLUG,
+    // so handing it a companyUid fetched the wrong roster on the Tauri/web
+    // adapters and silently disabled the cross-company confirm.
+    listCompanyMembers: async (companyUid) => ({
+      contacts: asContacts(
+        await call<unknown>(adapter.messaging.listContacts({ companyUid })),
       ),
     }),
     listDmRequests: async () => ({
@@ -416,6 +439,26 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
         adapter.messaging.addChannelMember(channelId, toPersonUid),
       );
     },
+    ...(adapter.messaging.sendDmToEmail
+      ? {
+          sendDmToEmail: async (args: {
+            toEmail?: string;
+            toPersonUid?: string;
+            body: string;
+          }) => {
+            const value = await call<unknown>(
+              adapter.messaging.sendDmToEmail!(args),
+            );
+            const rec = asRecord(value) ?? {};
+            return {
+              state:
+                rec.state === 'connectionRequested'
+                  ? ('connectionRequested' as const)
+                  : ('delivered' as const),
+            };
+          },
+        }
+      : {}),
   };
 }
 
@@ -546,6 +589,9 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       break;
     case 'meetings':
       if (!detail) return { kind: 'meetings' };
+      break;
+    case 'atlas':
+      if (!detail) return { kind: 'atlas' };
       break;
     case 'library':
       if (!hasExtraSegments && (!detail || detail === 'skills')) {

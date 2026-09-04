@@ -10,6 +10,7 @@
  * is never touched here.
  */
 import { escapeHtml, renderMarkdown, safeHref } from "./markdown.js";
+import { replaceEmojiShortcodesInHtml } from "./emojiShortcodes.js";
 
 function trimBlankBoundaryLines(lines: string[]): string[] {
   let start = 0;
@@ -227,10 +228,15 @@ export function autolinkMessageUrls(html: string): string {
 export function renderMessageBodyMarkdown(body: string): string {
   const hit = markdownCache.get(body);
   if (hit !== undefined) return hit;
-  const html = autolinkMessageUrls(
-    isHeavyMessageBody(body)
-      ? renderPlainMessageBody(body)
-      : renderMarkdown(normalizeMessageMarkdown(body)),
+  // Emoji conversion runs LAST, on already-escaped HTML: autolinking has
+  // already wrapped bare URLs in <a>, so shortcode-looking text inside links,
+  // code spans and fences is skipped (see replaceEmojiShortcodesInHtml).
+  const html = replaceEmojiShortcodesInHtml(
+    autolinkMessageUrls(
+      isHeavyMessageBody(body)
+        ? renderPlainMessageBody(body)
+        : renderMarkdown(normalizeMessageMarkdown(body)),
+    ),
   );
   if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) {
     const first = markdownCache.keys().next().value;

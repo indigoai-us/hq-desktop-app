@@ -18,8 +18,8 @@ export const MESH_BODY =
   "Now all your work syncs between machines, people and agents as it happens. Your team everywhere all at once.";
 
 export const MESH_BANDS = [
-  "Installing.",
-  "Syncing projects to the mesh.",
+  "Installing daemon.",
+  "Connecting presence.",
 ] as const;
 
 /** @deprecated use MESH_TITLE */
@@ -31,14 +31,14 @@ export const MESH_UPGRADE_BANDS = MESH_BANDS;
 
 export function meshProgressLine(progress: MeshDoctorProgress | null): string {
   if (!progress || progress.phase === "apply") return MESH_BANDS[0];
-  if (progress.phase === "done") return "Synced projects to the mesh.";
+  if (progress.phase === "done") return "Connected presence.";
   if (progress.phase === "error") {
-    return progress.label || "Couldn't finish syncing.";
+    return progress.label || "Couldn't finish connecting presence.";
   }
   const counts =
     progress.total > 0 ? ` ${progress.current}/${progress.total}` : "";
   if (progress.phase === "chats") {
-    return `Syncing chats.${counts}`;
+    return `Connecting presence.${counts}`;
   }
   return `${MESH_BANDS[1]}${counts}`;
 }
@@ -55,7 +55,7 @@ export function meshBandsFromProgress(
     progress != null &&
     (progress.phase === "projects" || progress.phase === "chats");
   let syncLabel: string = MESH_BANDS[1];
-  if (syncingDone) syncLabel = "Synced projects to the mesh.";
+  if (syncingDone) syncLabel = "Connected presence.";
   else if (syncingActive) syncLabel = meshProgressLine(progress);
   return [
     {

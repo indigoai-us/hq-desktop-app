@@ -134,20 +134,22 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // US-004: menu-bar click toggles the COMPACT popover (not the full
-            // desktop). Desktop is reserved for the right-click "Open desktop
-            // view" command below. Still parse the icon's on-screen centre
-            // ("show <x>", Cocoa points) so the popover anchors UNDER the icon.
+            // Menu-bar click opens the desktop workspace (first-run onboarding
+            // still keeps the installer card on `main`). Parse the icon's
+            // on-screen centre ("show <x>", Cocoa points) so a leftover
+            // popover still anchors under the icon if onboarding is showing.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);
                 }
-                // Window ops (esp. the `is_visible()` toggle query) MUST run on
-                // the main thread — calling them from this poll thread deadlocks
-                // AppKit and wedges the poller after the first click. Marshal it.
+                // Window ops MUST run on the main thread — calling them from
+                // this poll thread deadlocks AppKit.
                 let app_main = app.clone();
-                let _ =
-                    app.run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+                let app_hide = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::commands::widget::hide_widget_stack_now(&app_hide);
+                    crate::tray::activate_primary_surface(&app_main);
+                });
             } else {
                 match cmd {
                     "sync" => {
@@ -159,6 +161,18 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     // window gate is re-checked by open_desktop_alt_window).
                     "desktop" => {
                         let _ = app.emit("tray:open-desktop", ());
+                    }
+                    "hide-notifications" => {
+                        crate::commands::widget::hide_widget_stack_now(&app);
+                    }
+                    "widget-peek" => {
+                        crate::commands::widget::show_widget_stack_now(&app);
+                    }
+                    "updates" => {
+                        crate::recovery::spawn_tray_check_for_updates(app.clone());
+                    }
+                    "recovery" => {
+                        crate::recovery::spawn_tray_open_recovery(app.clone());
                     }
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
@@ -233,5 +247,16 @@ mod tests {
             .path()
             .join(format!(".tray-badge.{}.tmp", std::process::id()))
             .exists());
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_tray_message_badge_is_a_noop_off_macos() {
+        assert_eq!(set_tray_message_badge(0), Ok(()));
+        assert_eq!(set_tray_message_badge(12), Ok(()));
     }
 }

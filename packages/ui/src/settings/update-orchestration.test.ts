@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_UPDATE_CHECK_TIMEOUT_MS,
   appStatusFrom,
+  appUpdateVersionFrom,
   cliStatusFrom,
   coreStatusFrom,
   createUpdateCheckRunner,
@@ -32,6 +33,9 @@ describe("update orchestration status mapping (adopted from the native pane)", (
     expect(appStatusFrom(ok({ version: "1.0.0" }))).toBe("available");
     expect(appStatusFrom(fail("invoke"))).toBe("unchecked");
     expect(appStatusFrom(fail("timeout"))).toBe("failed");
+    expect(appUpdateVersionFrom(ok(null))).toBeNull();
+    expect(appUpdateVersionFrom(ok({ version: "0.10.173" }))).toBe("0.10.173");
+    expect(appUpdateVersionFrom(fail("invoke"))).toBeNull();
   });
 
   it("maps core results including probe failure and unlocated root", () => {
@@ -133,6 +137,7 @@ describe("regression: busy state always resolves", () => {
       { onRow: (row) => order.push(row) },
     );
     expect(outcome.appStatus).toBe("available");
+    expect(outcome.appUpdateVersion).toBe("0.10.174");
     expect(order[0]).toBe("app");
   });
 
@@ -175,6 +180,7 @@ describe("update orchestration: versions, errors, and coalescing", () => {
     const outcome = await run;
     expect(events).toContain("core");
     expect(outcome.coreVersion).toBe("15.0.120-beta.3");
+    expect(outcome.coreState).toEqual({ versionBehind: false });
   });
 
   it("a timed-out core check is failed with a non-empty timed-out reason", async () => {

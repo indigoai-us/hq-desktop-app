@@ -1,33 +1,42 @@
 <script lang="ts">
   /**
-   * Floating desktop widget — HQ wordmark (US-002) + notification stack (US-003).
+   * Floating desktop widget — HQ wordmark (US-002) + Messages panel + toast.
    *
    * Locked design: no circle, no badge chip, no rounded container around the
    * mark. Idle translucency + full opacity on hover. Color tracks system
    * appearance via prefers-color-scheme. Queued count is a plain superscript
-   * numeral (no chip). Notification rows stack above the wordmark in frosted
-   * glass shells; the pure reducers live in `stores/widgetNotifications.ts`.
+   * numeral (no chip). The HQ mark toggles one Messages panel. New items can
+   * flash a short-lived toast above the mark, then live in Activity. Reducers
+   * live in `stores/widgetNotifications.ts`.
    *
    * Mountable with zero Tauri APIs (happy-dom US-002 / US-003 tests). Listeners
    * and invokes only run when `__TAURI_INTERNALS__` is present.
    */
   import { onMount, tick, untrack } from 'svelte';
   import NotificationRow from './NotificationRow.svelte';
-  import { resolutionForItem } from '../stores/widgetNotifications';
+  import { meetingFocusId, resolutionForItem } from '../stores/widgetNotifications';
   import type { NotificationRowType } from './NotificationRow.svelte';
   import {
     type BannerPayloadLike,
     type WidgetStackItem,
     type WidgetStackState,
     WIDGET_RECENT_STORAGE_KEY,
+    WIDGET_STACK_HIDDEN_STORAGE_KEY,
+    DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
     addItem,
     bannerToStackItem,
     channelToStackItem,
+    clearLiveOverlay,
     compactHoverItems,
     deserializeRecent,
     dismissItem,
     dismissRecent,
+    WIDGET_ROW_TIMEOUT_MS,
     expireItems,
+    hideStack,
+    isNeedsActionItem,
+    showStack,
+    stackAutoHideDue,
     historyFeedItemToStackItem,
     hoverRows,
     markQueueSeen,
@@ -36,7 +45,7 @@
     serializeRecent,
     setHeld,
     setOccluded,
-    unreadRecentCount,
+    widgetBadgeCount,
     widgetEmptyHoverWindowSize,
     widgetHoverWindowSize,
     widgetWindowSize,
@@ -58,9 +67,24 @@
     queued = 0,
     /** Seed visible rows for happy-dom tests (no Tauri). */
     initialItems = [],
+    /** Test override for the persisted hide flag. */
+    initialHidden = false,
+    /** Test override — when set, skip native app-active events. */
+    appFocused: appFocusedProp = undefined as boolean | undefined,
+    /** Test override for the auto-hide delay (seconds; 0 = never). */
+    autoHideSeconds: autoHideSecondsProp = undefined as number | undefined,
+    /** Test override for whether needs-action rows enter the live overlay. */
+    showNeedsAction: showNeedsActionProp = undefined as boolean | undefined,
+    /** Test override for corner placement (CSS alignment). */
+    placement: placementProp = undefined as string | undefined,
   }: {
     queued?: number;
     initialItems?: WidgetStackItem[];
+    initialHidden?: boolean;
+    appFocused?: boolean;
+    autoHideSeconds?: number;
+    showNeedsAction?: boolean;
+    placement?: string;
   } = $props();
 
   function currentDesktopZoom(): number {
@@ -91,12 +115,15 @@
           recent: seeded.map((i) => ({ ...i, unread: i.unread ?? true })),
           occluded: false,
           held: false,
+          hidden: initialHidden,
         };
       }
       let recent: WidgetStackItem[] = [];
+      let hidden = false;
       try {
         if (typeof localStorage !== 'undefined') {
           recent = deserializeRecent(localStorage.getItem(WIDGET_RECENT_STORAGE_KEY));
+          hidden = localStorage.getItem(WIDGET_STACK_HIDDEN_STORAGE_KEY) === '1';
         }
       } catch {
         // localStorage unavailable / blocked — empty history.
@@ -107,9 +134,58 @@
         recent,
         occluded: false,
         held: false,
+        hidden,
       };
     }),
   );
+
+  let appFocused = $state(untrack(() => appFocusedProp ?? true));
+  let autoHideSeconds = $state(
+    untrack(() => autoHideSecondsProp ?? DEFAULT_WIDGET_AUTO_HIDE_SECONDS),
+  );
+  let showNeedsAction = $state(untrack(() => showNeedsActionProp ?? true));
+  let placement = $state(untrack(() => placementProp ?? 'bottom-right'));
+  let stackShownAt = $state(untrack(() => Date.now()));
+
+  function persistHidden(hidden: boolean): void {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        if (hidden) localStorage.setItem(WIDGET_STACK_HIDDEN_STORAGE_KEY, '1');
+        else localStorage.removeItem(WIDGET_STACK_HIDDEN_STORAGE_KEY);
+      }
+    } catch {
+      // Quota / private mode — no-op.
+    }
+  }
+
+  function markStackShown(): void {
+    stackShownAt = Date.now();
+  }
+
+  function hideVisibleStack(): void {
+    pinned = false;
+    hoverOpen = false;
+    contextMenuOpen = false;
+    desktopNavigationError = null;
+    applyStack(hideStack(stack));
+    persistHidden(true);
+    setPointerHold(false);
+    void setWidgetFocusable(false);
+    if (hasTauri()) {
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('hide_widget_stack').catch((err: unknown) => {
+          console.error('widget: hide_widget_stack failed', err);
+        });
+      });
+    }
+  }
+
+  function revealHiddenStack(): void {
+    if (stack.hidden !== true) return;
+    persistHidden(false);
+    applyStack(showStack(stack));
+    markStackShown();
+  }
 
   // US-015: persist recent history so the popup survives relaunch.
   $effect(() => {
@@ -144,7 +220,11 @@
    * to avoid effect loops — callers compute holdActive after local state updates.
    */
   function applyHold(holdActive: boolean): void {
+    const wasHeld = stack.held === true;
     stack = setHeld(stack, holdActive, Date.now());
+    // Re-arm auto-hide when the pointer/reply hold is released so a hover
+    // cannot cancel the timer forever.
+    if (wasHeld && !holdActive) markStackShown();
   }
 
   function setPointerHold(on: boolean): void {
@@ -178,8 +258,13 @@
   const queuedCount = $derived(
     stack.queued.length > 0 ? stack.queued.length : hoverSeen ? 0 : queued,
   );
-  const unreadCount = $derived(unreadRecentCount(stack));
-  const badgeCount = $derived(unreadCount > 0 ? unreadCount : queuedCount);
+  const badgeCount = $derived(
+    (() => {
+      const fromRecent = widgetBadgeCount(stack);
+      if (fromRecent > 0) return fromRecent;
+      return queuedCount;
+    })(),
+  );
 
   let idSeq = 0;
   let expiryTimer: ReturnType<typeof setInterval> | undefined;
@@ -306,13 +391,18 @@
   }
 
   function handlePointerDownCapture(e: PointerEvent): void {
-    if ((e.target as HTMLElement | null)?.closest?.('input')) {
+    if (
+      (e.target as HTMLElement | null)?.closest?.(
+        'input, select, textarea, [data-testid="notification-resolve-trigger"], [data-testid="notification-resolve-sheet"]',
+      )
+    ) {
       void setWidgetFocusable(true);
     }
   }
 
   function handleFocusInCapture(e: FocusEvent): void {
-    if ((e.target as HTMLElement | null)?.tagName === 'INPUT') {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
       void setWidgetFocusable(true);
     }
   }
@@ -342,7 +432,9 @@
     if (replyHolds.size > 0) return;
     hoverOpen = true;
     hoverSeen = true;
-    applyStack(markQueueSeen(stack));
+    // Opening Messages consumes the toast so closing the panel cannot
+    // resurrect a second persistent surface.
+    applyStack(markQueueSeen(clearLiveOverlay(stack)));
   }
 
   /** Close a click-pinned list and clear unread (mark-on-leave watermark). */
@@ -355,7 +447,7 @@
       clearTimeout(hoverCloseTimer);
       hoverCloseTimer = undefined;
     }
-    stack = markRecentRead(stack);
+    applyStack(markRecentRead(clearLiveOverlay(stack)));
     // The hover list unmounts without a pointerleave — never leave a stale
     // pointer hold behind (it would suspend auto-hide forever).
     setPointerHold(false);
@@ -366,8 +458,9 @@
   }
 
   /**
-   * Pin-open the mini inbox (hover/click notification + message list).
-   * Used by wordmark click, update Open, and the context-menu Inbox action.
+   * Pin-open the Messages panel. Used by wordmark click, update Open, and
+   * the context-menu Inbox action. The HQ mark is a strict toggle of this
+   * single panel — it never switches to a second stack surface.
    */
   function openMiniInbox(): void {
     // Don't pin (and unmount a drafting stack row) mid-reply — see
@@ -457,6 +550,27 @@
     closePinned(true);
   }
 
+  function handleGlobalEscape(): void {
+    if (replyHolds.size > 0) return;
+    if (contextMenuOpen) {
+      closeContextMenu(true);
+      return;
+    }
+    if (pinned || hoverOpen) {
+      closePinned(true);
+      return;
+    }
+    if (stack.visible.length > 0 && stack.hidden !== true) {
+      hideVisibleStack();
+    }
+  }
+
+  function handleGlobalKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    handleGlobalEscape();
+  }
+
   /**
    * Open the two-pane communications window (side pane + detail/reply canvas).
    * Used by context menu + mini-popup footer icons.
@@ -538,19 +652,23 @@
       // collapse the list mid-reply.
       if (replyHolds.size > 0) return;
       hoverOpen = false;
-      stack = markRecentRead(stack);
+      applyStack(markRecentRead(clearLiveOverlay(stack)));
       // Hover list unmounted without a pointerleave — drop any stale hold.
       setPointerHold(false);
     }, 450);
   }
 
   function applyStack(next: WidgetStackState): void {
+    const wasHidden = stack.hidden === true;
     stack = next;
+    if (wasHidden && next.hidden !== true) markStackShown();
+    persistHidden(next.hidden === true);
     syncExpiryTimer();
   }
 
   function syncExpiryTimer(): void {
-    if (stack.visible.length === 0) {
+    const live = stack.hidden !== true && stack.visible.length > 0;
+    if (!live) {
       if (expiryTimer !== undefined) {
         clearInterval(expiryTimer);
         expiryTimer = undefined;
@@ -559,10 +677,25 @@
     }
     if (expiryTimer !== undefined) return;
     expiryTimer = setInterval(() => {
-      const next = expireItems(stack, Date.now());
+      let next = expireItems(stack, Date.now());
+      if (
+        stackAutoHideDue({
+          hidden: next.hidden === true,
+          held: next.held === true,
+          appFocused,
+          autoHideSeconds,
+          elapsedMs: Date.now() - stackShownAt,
+        })
+      ) {
+        next = hideStack(next);
+      }
       if (next !== stack) {
         stack = next;
-        if (stack.visible.length === 0 && expiryTimer !== undefined) {
+        persistHidden(next.hidden === true);
+        if (
+          (stack.hidden === true || stack.visible.length === 0) &&
+          expiryTimer !== undefined
+        ) {
           clearInterval(expiryTimer);
           expiryTimer = undefined;
         }
@@ -582,6 +715,7 @@
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const explicitClickAction =
+        item.kind !== 'meeting' &&
         item.clickActionId !== '' &&
         item.clickActionId !== 'open' &&
         !item.clickActionId.startsWith('open-');
@@ -589,6 +723,9 @@
       // widget does not depend on the (often hidden) main webview's
       // notification:banner-action listener. Kind-based fallbacks keep
       // localStorage-hydrated rows (action surface stripped) usable.
+      // Meeting rows always open the desktop Meetings page (with the meeting
+      // selected when we have an id). `assign` used to go through banner_action
+      // → the hidden popover webview, which is a dead end in the new shell.
       if (explicitClickAction) {
         const payload: BannerPayloadLike = {
           kind: item.kind,
@@ -629,7 +766,9 @@
         // Inbox that may not have updater history hydrated yet.
         await invoke('open_desktop_alt_window', { route: 'settings:updates' });
       } else if (item.kind === 'meeting') {
-        await invoke('show_main_window');
+        await invoke('open_meetings_window', {
+          focusMeetingId: meetingFocusId(item.data) ?? null,
+        });
       } else if (item.clickActionId) {
         const payload: BannerPayloadLike = {
           kind: item.kind,
@@ -880,6 +1019,7 @@
 
     document.addEventListener('pointerdown', handleClickAway, true);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, handleDesktopZoomChange);
 
     if (!hasTauri()) {
@@ -887,6 +1027,7 @@
       return () => {
         document.removeEventListener('pointerdown', handleClickAway, true);
         window.removeEventListener('blur', handleWindowBlur);
+        window.removeEventListener('keydown', handleGlobalKeydown);
         window.removeEventListener(
           DESKTOP_ZOOM_CHANGE_EVENT,
           handleDesktopZoomChange,
@@ -900,6 +1041,11 @@
     let unlistenNotif: (() => void) | undefined;
     let unlistenOcc: (() => void) | undefined;
     let unlistenClickAway: (() => void) | undefined;
+    let unlistenHide: (() => void) | undefined;
+    let unlistenShow: (() => void) | undefined;
+    let unlistenEscape: (() => void) | undefined;
+    let unlistenAppActive: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
     let unlistenDm: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
     let unlistenUpdate: (() => void) | undefined;
@@ -929,7 +1075,14 @@
         const now = Date.now();
         const id = `wn-${now}-${++idSeq}`;
         const item = bannerToStackItem(e.payload, now, id);
-        applyStack(addItem(stack, item));
+        applyStack(
+          addItem(stack, item, {
+            showNeedsAction,
+            // The Messages panel is the only persistent surface. A new item
+            // while it is open updates Activity in place — no toast behind it.
+            liveOverlay: !hoverOpen && !pinned,
+          }),
+        );
       });
 
       unlistenOcc = await listen<{ visible: boolean }>('widget:occlusion', (e) => {
@@ -948,6 +1101,70 @@
         if (pinned) closePinned();
       });
 
+      unlistenHide = await listen('widget:hide', () => {
+        if (replyHolds.size > 0) return;
+        applyStack(hideStack(stack));
+        persistHidden(true);
+        pinned = false;
+        hoverOpen = false;
+        contextMenuOpen = false;
+        setPointerHold(false);
+        void setWidgetFocusable(false);
+      });
+
+      unlistenShow = await listen('widget:show', () => {
+        revealHiddenStack();
+      });
+
+      unlistenEscape = await listen('widget:escape', () => {
+        handleGlobalEscape();
+      });
+
+      unlistenAppActive = await listen<{ active: boolean }>('widget:app-active', (e) => {
+        if (appFocusedProp !== undefined) return;
+        appFocused = e.payload?.active === true;
+        if (appFocused) {
+          markStackShown();
+          return;
+        }
+        // Never leave the Messages panel covering other apps when HQ
+        // resigns the foreground. Reply drafts are protected (US-012).
+        if (replyHolds.size > 0) return;
+        if (contextMenuOpen) closeContextMenu();
+        if (pinned || hoverOpen) closePinned();
+      });
+
+      unlistenSettings = await listen<{
+        placement?: string;
+        autoHideSeconds?: number;
+        showNeedsAction?: boolean;
+        enabled?: boolean;
+      }>('widget:settings', (e) => {
+        const next = e.payload ?? {};
+        if (placementProp === undefined && typeof next.placement === 'string') {
+          placement = next.placement;
+        }
+        if (
+          autoHideSecondsProp === undefined &&
+          typeof next.autoHideSeconds === 'number'
+        ) {
+          autoHideSeconds = next.autoHideSeconds;
+        }
+        if (
+          showNeedsActionProp === undefined &&
+          typeof next.showNeedsAction === 'boolean'
+        ) {
+          showNeedsAction = next.showNeedsAction;
+          if (!showNeedsAction) {
+            applyStack({
+              ...stack,
+              visible: stack.visible.filter((row) => !isNeedsActionItem(row)),
+              queued: stack.queued.filter((row) => !isNeedsActionItem(row)),
+            });
+          }
+        }
+      });
+
       // Keep recent history in sync with the real notification feed and native
       // pending updater state.
       unlistenDm = await listen('dm:unread-summary', scheduleHistoryRefresh);
@@ -963,6 +1180,32 @@
       await invoke('widget_ready').catch((err: unknown) => {
         console.error('widget: widget_ready failed', err);
       });
+      await invoke<{
+        widgetPlacement?: string | null;
+        widgetAutoHideSeconds?: number | null;
+        widgetShowNeedsAction?: boolean | null;
+      }>('get_settings')
+        .then((settings) => {
+          if (!settings) return;
+          if (placementProp === undefined && settings.widgetPlacement) {
+            placement = settings.widgetPlacement;
+          }
+          if (
+            autoHideSecondsProp === undefined &&
+            typeof settings.widgetAutoHideSeconds === 'number'
+          ) {
+            autoHideSeconds = settings.widgetAutoHideSeconds;
+          }
+          if (
+            showNeedsActionProp === undefined &&
+            typeof settings.widgetShowNeedsAction === 'boolean'
+          ) {
+            showNeedsAction = settings.widgetShowNeedsAction;
+          }
+        })
+        .catch((err: unknown) => {
+          console.error('widget: get_settings failed', err);
+        });
       // Seed ~10 openable history rows (US-015 + Lizzie inbox mockup).
       if (!cancelled) await refreshRecentFromHistory();
     })();
@@ -972,6 +1215,7 @@
       historyLoadGeneration += 1;
       document.removeEventListener('pointerdown', handleClickAway, true);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener(
         DESKTOP_ZOOM_CHANGE_EVENT,
         handleDesktopZoomChange,
@@ -979,6 +1223,11 @@
       safeUnlisten(unlistenNotif)();
       safeUnlisten(unlistenOcc)();
       safeUnlisten(unlistenClickAway)();
+      safeUnlisten(unlistenHide)();
+      safeUnlisten(unlistenShow)();
+      safeUnlisten(unlistenEscape)();
+      safeUnlisten(unlistenAppActive)();
+      safeUnlisten(unlistenSettings)();
       safeUnlisten(unlistenDm)();
       safeUnlisten(unlistenSync)();
       safeUnlisten(unlistenUpdate)();
@@ -1036,6 +1285,9 @@
     } else {
       size = widgetWindowSize(stack);
     }
+    if (filingError) {
+      size = { width: Math.max(size.width, 348), height: size.height + 40 };
+    }
     size = scaleDesktopWindowSize(size, desktopZoom);
     if (!hasTauri()) return;
     if (
@@ -1064,10 +1316,22 @@
   // the meeting itself through the same backend the Meetings window uses
   // (`meetings_set_company`), and dismisses on success.
   let companyOptionsList = $state<Array<{ value: string; label: string }>>([]);
+  let filingError = $state<string | null>(null);
+  let filingErrorTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showFilingError(message: string): void {
+    filingError = message;
+    if (filingErrorTimer !== undefined) clearTimeout(filingErrorTimer);
+    filingErrorTimer = setTimeout(() => {
+      filingError = null;
+      filingErrorTimer = undefined;
+    }, WIDGET_ROW_TIMEOUT_MS);
+  }
 
   async function loadCompanyOptions(): Promise<void> {
     if (companyOptionsList.length > 0) return;
     if (!hasTauri()) return;
+    void setWidgetFocusable(true);
     const { listMemberships, companyOptions } = await import('../lib/meetingAttribution');
     const memberships = await listMemberships();
     companyOptionsList = companyOptions(memberships).map((o) => ({
@@ -1081,16 +1345,20 @@
     meetingId: string,
     companyId: string,
   ): Promise<void> {
+    filingError = null;
     if (!hasTauri()) throw new Error('Assignment is unavailable here');
     const { setMeetingCompany, setCompanyErrorMessage } = await import(
       '../lib/meetingAttribution'
     );
     const result = await setMeetingCompany(meetingId, companyId);
     if (!result.ok) {
-      throw new Error(setCompanyErrorMessage(result));
+      const message = setCompanyErrorMessage(result);
+      showFilingError(message);
+      throw new Error(message);
     }
-    // Resolved — the row no longer needs attention.
-    applyStack(dismissItem(stack, item.id));
+    // Resolved — drop the row from the live stack and history so it cannot
+    // come back as a duplicate needs-action item.
+    applyStack(dismissRecent(dismissItem(stack, item.id), item.id));
     setReplyHold(item.id, false);
   }
 </script>
@@ -1107,11 +1375,17 @@
       unread={row.item.unread ?? false}
       badgeCount={conversationUnreadFor(row.item)}
       hoverExpand={row.item.kind === 'dm' && !row.item.compactGroupCount}
-      actionLabel={row.item.actionLabel ?? undefined}
+      actionLabel={
+        resolutionForItem(row.item) ? undefined : (row.item.actionLabel ?? undefined)
+      }
       actionDisabled={actioningIds.has(row.item.id)}
       textDismiss
       onopen={() => handleOpen(row.item)}
-      onaction={row.item.actionId ? () => handleAction(row.item) : undefined}
+      onaction={
+        row.item.actionId && !resolutionForItem(row.item)
+          ? () => handleAction(row.item)
+          : undefined
+      }
       ondismiss={() => handleHoverDismiss(row.item)}
       onreply={row.item.kind === 'dm' && !row.item.compactGroupCount
         ? (text) => replyDm(row.item, text)
@@ -1189,6 +1463,8 @@
 <div
   class="wg"
   class:surface-open={hoverOpen || contextMenuOpen}
+  class:place-top={placement.startsWith('top') || placement === 'follow-tray'}
+  class:place-left={placement === 'top-left' || placement === 'bottom-left'}
   onpointerdowncapture={handlePointerDownCapture}
   onfocusincapture={handleFocusInCapture}
   onpointerenter={cancelHoverClose}
@@ -1407,15 +1683,33 @@
     </div>
   {/if}
 
-  {#if stack.visible.length > 0 && !hoverOpen}
+  {#if filingError}
+    <div class="wg-toast" data-testid="widget-filing-error" role="alert">
+      {filingError}
+    </div>
+  {/if}
+
+  {#if stack.visible.length > 0 && !hoverOpen && !pinned && stack.hidden !== true}
     <div
       class="stack"
       class:stack-single={stack.visible.length === 1}
       class:stack-grouped={stack.visible.length > 1}
       data-testid="widget-stack"
+      aria-label="Notification toast"
       onpointerenter={() => setPointerHold(true)}
       onpointerleave={() => setPointerHold(false)}
     >
+      <button
+        class="stack-hide"
+        type="button"
+        data-testid="widget-stack-hide"
+        aria-label="Hide notifications"
+        onclick={hideVisibleStack}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+        </svg>
+      </button>
       {#each stack.visible as item (item.id)}
         <div class="frost" data-kind={item.kind}>
           <NotificationRow
@@ -1424,10 +1718,16 @@
             sourceLabel={notificationSourceLabel(item)}
             text={item.text}
             ts={item.ts}
-            actionLabel={item.actionLabel ?? undefined}
+            actionLabel={
+              resolutionForItem(item) ? undefined : (item.actionLabel ?? undefined)
+            }
             actionDisabled={actioningIds.has(item.id)}
             onopen={() => handleOpen(item)}
-            onaction={item.actionId ? () => handleAction(item) : undefined}
+            onaction={
+              item.actionId && !resolutionForItem(item)
+                ? () => handleAction(item)
+                : undefined
+            }
             ondismiss={() => handleDismiss(item.id)}
             onreply={item.kind === 'dm' ? (text) => replyDm(item, text) : undefined}
             onreact={item.kind === 'dm' ? (emoji) => reactDm(item, emoji) : undefined}
@@ -1524,14 +1824,90 @@
     --glass-filter-soft: blur(16px) saturate(145%) contrast(102%);
   }
 
+  .wg.place-top {
+    justify-content: flex-start;
+  }
+
+  .wg.place-left {
+    align-items: flex-start;
+    padding: 8px 0 2px 8px;
+  }
+
+  .wg.place-top .hover-list,
+  .wg.place-top .stack,
+  .wg.place-top .ctx-menu {
+    margin-bottom: 0;
+    margin-top: 14px;
+    transform-origin: top right;
+  }
+
+  .wg.place-top.place-left .hover-list,
+  .wg.place-top.place-left .stack,
+  .wg.place-top.place-left .ctx-menu {
+    transform-origin: top left;
+  }
+
+  .wg.place-left:not(.place-top) .hover-list,
+  .wg.place-left:not(.place-top) .stack,
+  .wg.place-left:not(.place-top) .ctx-menu {
+    transform-origin: bottom left;
+  }
+
+  .wg-toast {
+    width: 348px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--row-bg);
+    color: var(--row-fg);
+    font-size: 11px;
+    line-height: 1.35;
+    box-sizing: border-box;
+    box-shadow: var(--row-shadow);
+  }
+
   /* Notification stack — column of one-line rows ABOVE the wordmark. */
   .stack {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 0;
     margin-bottom: 10px;
     flex-shrink: 0;
+  }
+
+  .stack-hide {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 2;
+    width: 22px;
+    height: 22px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-button, 6px);
+    background: transparent;
+    color: var(--row-muted);
+    cursor: pointer;
+  }
+
+  .wg.place-left .stack-hide {
+    right: auto;
+    left: 4px;
+  }
+
+  .stack-hide:hover,
+  .stack-hide:focus-visible {
+    background: var(--row-hover-bg);
+    color: var(--row-fg);
+  }
+
+  .stack-hide:focus-visible {
+    outline: 2px solid var(--row-fg);
+    outline-offset: -2px;
   }
 
   /* A single transient alert is a real toast card. When two or more alerts are

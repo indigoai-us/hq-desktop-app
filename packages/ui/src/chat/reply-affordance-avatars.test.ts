@@ -9,7 +9,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src";
 import ChannelConversation from "./messaging/ChannelConversation.svelte";
+
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 import type { ConversationMessageWire } from "./chat-api";
 import type { ReplyPreview } from "./messaging/ReplyPanel.svelte";
 
@@ -66,6 +69,33 @@ describe("thread-reply affordance avatars", () => {
     expect(affordance?.textContent?.indexOf("AL")).toBeLessThan(
       affordance?.textContent?.indexOf("4 replies") ?? -1,
     );
+  });
+
+  it("renders a roster photo in the reply stack when one is known", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        messages: [root],
+        avatarByUid: { prs_ada: ADA_PHOTO },
+        replyPreviewByRoot: {
+          [root.eventId]: {
+            author: "Ada",
+            at: "2026-08-17T02:00:00.000Z",
+            authors: [
+              { personUid: "prs_ada", displayName: "Ada Lovelace" },
+              { personUid: "agt_izzy", displayName: "Izzy", agent: true },
+            ],
+          },
+        },
+      },
+    });
+    await tick();
+    const stack = host.querySelector('[data-testid="reply-authors"]');
+    expect(
+      stack?.querySelector("img.avatar-img")?.getAttribute("src"),
+    ).toBe(ADA_PHOTO);
   });
 
   it("caps the avatar stack at 3 authors", async () => {

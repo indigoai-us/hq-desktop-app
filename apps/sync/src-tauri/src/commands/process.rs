@@ -254,10 +254,49 @@ static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// snapshot, so a watcher cannot slip into the install window after the
 /// snapshot but before the app exits.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Blocks new `hq-sync` passes while an automatic/forced desktop update is
+/// waiting for in-flight transfers to drain, then installing. Distinct from
+/// full process quiescence: the watch daemon stays up; only new sync cycles
+/// are refused.
+static SYNC_CYCLE_PAUSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Direct `hq` mutations that are intentionally awaited outside the streamed
 /// process registry. The updater closes their admission gate before reading
 /// this count, so it can defer instead of orphaning an in-flight mutation.
 static UPDATE_SENSITIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+const SYNC_PROCESS_HANDLE: &str = "hq-sync";
+
+/// Whether a new process registration should be refused because an update is
+/// pausing fresh sync cycles. Only the sync pass itself is gated; the watch
+/// daemon and other HQ children keep running.
+pub(crate) fn sync_cycle_registration_allowed(handle: &str, pause_requested: bool) -> bool {
+    !pause_requested || handle != SYNC_PROCESS_HANDLE
+}
+
+/// RAII lease that refuses new `hq-sync` registrations so an in-flight pass
+/// can finish and a new one cannot start before the updater restarts.
+pub struct SyncCyclePauseGuard {
+    released: bool,
+}
+
+impl SyncCyclePauseGuard {
+    fn new() -> Self {
+        SYNC_CYCLE_PAUSE_REQUESTED.store(true, Ordering::SeqCst);
+        Self { released: false }
+    }
+}
+
+impl Drop for SyncCyclePauseGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            SYNC_CYCLE_PAUSE_REQUESTED.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn pause_new_sync_cycles() -> SyncCyclePauseGuard {
+    SyncCyclePauseGuard::new()
+}
 
 pub struct UpdateSensitiveOperationGuard<'a> {
     active: &'a AtomicUsize,
@@ -309,6 +348,19 @@ mod update_sensitive_operation_tests {
 
         drop(guard);
         assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod sync_cycle_pause_tests {
+    use super::*;
+
+    #[test]
+    fn pause_refuses_only_new_sync_passes() {
+        assert!(sync_cycle_registration_allowed("hq-sync", false));
+        assert!(!sync_cycle_registration_allowed("hq-sync", true));
+        assert!(sync_cycle_registration_allowed("hq-sync-daemon", true));
+        assert!(sync_cycle_registration_allowed("hq-work", true));
     }
 }
 
@@ -532,6 +584,12 @@ pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
+        return None;
+    }
+    if !sync_cycle_registration_allowed(
+        handle,
+        SYNC_CYCLE_PAUSE_REQUESTED.load(Ordering::Acquire),
+    ) {
         return None;
     }
     match reg.active.entry(handle.to_string()) {
@@ -1234,9 +1292,13 @@ pub fn read_watcher_fault(
     let mut max_seen: u32 = 0;
     // The best (most specific) non-binding diagnosis from any sweep that DID parse
     // records but could not bind them — kept so that if our in-window record never
-    // publishes, the verdict is the honest "records existed, none were ours"
-    // rather than a blank one. Never terminal on its own: WER can publish our
-    // record AFTER an unrelated one, so a rejection must not end the poll early.
+    // publishes, the verdict is the honest one rather than blank. A near-miss or a
+    // code-mismatch says "records existed, none were ours"; an all-stale sweep
+    // (every parsed record predates this generation) is itself `DeadlineExpired`
+    // — "WER never published OUR record" — carrying the separate `stale` count, so
+    // a stale-only read is NOT mislabelled as a near-miss. Never terminal on its
+    // own: WER can publish our record AFTER an unrelated one, so a rejection must
+    // not end the poll early.
     let mut last_rejection: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome> = None;
     loop {
         sweeps = sweeps.saturating_add(1);
@@ -1282,8 +1344,12 @@ pub fn read_watcher_fault(
         if std::time::Instant::now() >= deadline {
             let ms_to_verdict = elapsed_ms(start);
             // Records existed across the read but none ever bound: report the
-            // concrete rejection reason (out-of-window vs code-mismatch), with the
-            // reader-measured counters folded onto the pure per-reason counts.
+            // concrete reason retained across sweeps — a near-miss
+            // (`rejected_out_of_window`), a code-mismatch, or, when every parsed
+            // record was stale, `deadline_expired` — with the reader-measured
+            // counters folded onto the pure per-reason counts. An all-stale read
+            // therefore reaches the deadline as `deadline_expired`, never pre-empted
+            // by a near-miss that was not there.
             if let Some(rejection) = last_rejection {
                 let mut counters = rejection.counters;
                 counters.records_seen = max_seen;
@@ -1778,6 +1844,11 @@ fn set_test_windows_termination_results(results: Vec<TestWindowsTerminationResul
     TEST_WINDOWS_TERMINATION_RESULTS.with(|outcomes| {
         *outcomes.borrow_mut() = results.into();
     });
+}
+
+#[cfg(all(test, target_os = "windows"))]
+fn clear_test_windows_termination_results() {
+    TEST_WINDOWS_TERMINATION_RESULTS.with(|outcomes| outcomes.borrow_mut().clear());
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -3508,11 +3579,16 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map_err(|_| "update process quiescence is already in progress".to_string())?;
     let guard = UpdateQuiescenceGuard { committed: false };
-    // The gate is already closed, so this check is race-free: a manual sync
-    // that registered first wins and defers the update; a later registration
-    // observes UPDATE_QUIESCE_REQUESTED and cannot enter the install window.
-    if is_registered("hq-sync") {
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
+    // The gate is already closed, so a later registration observes
+    // UPDATE_QUIESCE_REQUESTED and cannot enter the install window. An
+    // in-flight `hq-sync` is cancelled below rather than deferring forever —
+    // the updater only reaches this path after a bounded idle wait (or a
+    // manual/forced install that must not be blocked).
+    if is_registered(SYNC_PROCESS_HANDLE) {
+        log(
+            "updater",
+            "quiescing in-flight sync so the desktop update can proceed",
+        );
     }
     if UPDATE_SENSITIVE_OPERATIONS.load(Ordering::SeqCst) != 0 {
         return Err(crate::updater::UPDATE_DEFERRED_DURING_MUTATION.to_string());
@@ -5549,6 +5625,7 @@ mod windows_job_attachment_failure_tests {
                 // Panicking from Drop would continue unwinding, then drop the
                 // exact `Child` and lose the sole wait owner. Abort keeps the
                 // diagnostic above and fails this test binary without a leak.
+                let _ = std::io::Write::flush(&mut std::io::stderr());
                 std::process::abort();
             }
         }
@@ -5581,6 +5658,10 @@ mod windows_job_attachment_failure_tests {
         exit_delay: Duration,
         terminal_ack: TerminalAckGate,
     ) -> RunningFixture {
+        // Thread-local termination stubs persist across tests on a reused
+        // worker thread. A leftover TerminateProcess(false) makes Drop's
+        // teardown fail and abort the whole Windows test process.
+        clear_test_windows_termination_results();
         let handle = format!("{label}-{}", Uuid::new_v4());
         let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
         if let Some(forced) = forced {
@@ -5805,6 +5886,7 @@ mod windows_job_attachment_failure_tests {
                 // A panic would unwind through `JoinHandle::drop`, silently
                 // detach the exact runner, and recreate the bug. Abort keeps
                 // the emitted diagnostics and makes the fixture failure loud.
+                let _ = std::io::Write::flush(&mut std::io::stderr());
                 std::process::abort();
             }
         }

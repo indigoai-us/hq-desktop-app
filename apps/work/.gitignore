@@ -1,0 +1,6 @@
+.vercel
+.svelte-kit
+build
+coverage
+playwright-report
+test-results

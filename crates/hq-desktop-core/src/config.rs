@@ -137,6 +137,17 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dm_notifications: Option<bool>,
+    /// Notification style. When true (**the default**), DM / share / meeting /
+    /// update events render through HQ's in-app "custom banner" surface. When
+    /// false, they route through the native macOS path (Notification Center),
+    /// which is the only way to get real OS banners (clickable, Focus/DND
+    /// aware). Read untyped by `banner::custom_banner_enabled` on every
+    /// delivery so the toggle takes effect without a restart; this typed field
+    /// exists so the Settings "macOS system notifications" switch round-trips
+    /// cleanly through get/save_settings and isn't wiped on the next save.
+    /// Absent → true (see `banner::custom_banner_enabled` and `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_banner: Option<bool>,
     /// Auto-update the globally-installed `hq` CLI: when true (default), the
     /// background update checker, on detecting a newer `@indigoai-us/hq-cli`
     /// on the npm registry, runs `npm install -g …@latest` directly instead of
@@ -191,15 +202,9 @@ pub struct MenubarPrefs {
     pub staging_channel: Option<bool>,
     /// Auto-updater release channel: `"stable"`, `"beta"`, or `"alpha"`.
     /// Mapped to a GitHub-tag-suffix filter by
-    /// `util::release_channel::ReleaseChannel::from_pref` and gated by
-    /// `util::feature_gate::is_indigo_user()` — non-`@getindigo.ai` users
-    /// are coerced to `"stable"` at the resolver in `updater.rs`
-    /// regardless of what's stored here, so a hand-edited menubar.json
-    /// cannot escape stable.
-    ///
-    /// Absent in pre-channel-rollout menubar.json files → defaulted in
-    /// `get_settings` to `"beta"` for indigo users (auto-opt-in to
-    /// dogfood the freshest build) and `"stable"` for everyone else.
+    /// `util::release_channel::ReleaseChannel::from_pref`. Any signed-in
+    /// user may opt into Beta or Alpha from Settings; the resolver in
+    /// `updater.rs` honours this field. Absent / unknown → Stable.
     /// See `util::release_channel::effective_channel`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<String>,
@@ -243,6 +248,18 @@ pub struct MenubarPrefs {
     /// None = primary display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_display: Option<String>,
+    /// Widget stack corner: `bottom-right` (default), `bottom-left`,
+    /// `top-right`, `top-left`, or `follow-tray`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_placement: Option<String>,
+    /// Seconds the live stack stays up while HQ is not focused. `None` → 8
+    /// (the row auto-collapse). `Some(0)` → never auto-hide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_auto_hide_seconds: Option<u32>,
+    /// When true (default), meeting needs-action rows appear in the widget
+    /// stack. When false they still land in the desktop notifications list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_show_needs_action: Option<bool>,
     /// macOS Dock icon on/off. When true (**the default**), HQ runs under
     /// `NSApplicationActivationPolicyRegular` — Dock icon, Cmd-Tab entry, and
     /// the standard app menu bar. When false, HQ keeps the classic
@@ -261,18 +278,42 @@ pub struct MenubarPrefs {
     /// the app already owns a taskbar presence there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock_icon: Option<bool>,
-    /// HQ Work desktop-view handoff. Absent → false so existing installs
-    /// keep desktop-alt until ~/.hq/menubar.json is flipped (no rebuild).
+    /// Retired. The desktop workspace is the only UI. Kept on the typed
+    /// struct so an upgraded `menubar.json` still deserializes; writers
+    /// must not persist it (`skip_serializing_if = None` plus an explicit
+    /// strip in `merge_prefs_over_existing`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
-    /// In-app agent sessions (Phase 0 feature flag). Absent -> false: the
-    /// whole in-app sessions surface stays dark on every existing install
-    /// until the flag is explicitly written to ~/.hq/menubar.json (no rebuild
-    /// needed). A developer can force it on for one process with
-    /// `HQ_DEV_IN_APP_SESSIONS=1` without touching the file; see
-    /// `crate::agent_session_flags`.
+    /// In-app Claude/Codex sessions. Absent defaults off; local development can
+    /// force it on through the existing agent-session feature gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_app_sessions: Option<bool>,
+    /// Master switch for **native** (OS) notification banners. When true
+    /// (default), DM / share / meeting events may fire an OS banner (subject to
+    /// the per-event and focus rules below). When false, no OS banner fires at
+    /// all — the in-app NotificationFeed panel is unaffected. Read untyped on
+    /// every native delivery by `native_notify::should_native_notify` so the
+    /// toggle takes effect without a restart; this typed field exists so the
+    /// Settings round-trip through get/save_settings doesn't wipe it. Absent →
+    /// true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_notifications: Option<bool>,
+    /// Per-event native-banner toggle for direct messages. Default ON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_notify_direct_messages: Option<bool>,
+    /// Per-event native-banner toggle for file shares. Default ON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_notify_shares: Option<bool>,
+    /// Per-event native-banner toggle for meeting detections / recaps.
+    /// Default ON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_notify_meetings: Option<bool>,
+    /// "Only when the app is not focused": when true (default), an OS banner is
+    /// suppressed while any HQ window is focused. When false, banners fire even
+    /// while the user is looking at HQ. Read untyped by
+    /// `native_notify::should_native_notify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_notify_only_when_unfocused: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -807,42 +848,6 @@ mod tests {
         assert_eq!(prefs.hq_work_handoff, Some(false));
         let out = serde_json::to_string(&prefs).unwrap();
         assert!(out.contains("\"hqWorkHandoff\":false"));
-    }
-
-    #[test]
-    fn test_menubar_prefs_in_app_sessions_absent_deserializes_none() {
-        let json = r#"{}"#;
-        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.in_app_sessions, None);
-        // Absent stays absent on the way back out - a settings save must not
-        // materialize the flag for users who never opted in.
-        let out = serde_json::to_string(&prefs).unwrap();
-        assert!(
-            !out.contains("inAppSessions"),
-            "None must be omitted from serialized output, got: {out}"
-        );
-    }
-
-    #[test]
-    fn test_menubar_prefs_in_app_sessions_true_round_trip() {
-        let json = r#"{"inAppSessions": true}"#;
-        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.in_app_sessions, Some(true));
-        let out = serde_json::to_string(&prefs).unwrap();
-        assert!(
-            out.contains("\"inAppSessions\":true"),
-            "expected camelCase key 'inAppSessions' in serialized output, got: {out}"
-        );
-        assert!(!out.contains("in_app_sessions"));
-    }
-
-    #[test]
-    fn test_menubar_prefs_in_app_sessions_false_round_trip() {
-        let json = r#"{"inAppSessions": false}"#;
-        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.in_app_sessions, Some(false));
-        let out = serde_json::to_string(&prefs).unwrap();
-        assert!(out.contains("\"inAppSessions\":false"));
     }
 
     #[test]

@@ -41,7 +41,7 @@ describe('OAuth return focus (macOS + Windows)', () => {
     expect(generic).not.toContain('set_always_on_top(true)');
   });
 
-  it('oauth_listen_for_code raises main after a successful callback', () => {
+  it('oauth_listen_for_code raises the workspace window after a successful callback', () => {
     const oauth = readRepo('src-tauri/src/commands/oauth.rs');
     expect(oauth).toContain('oauth_flow_keeps_window_visible');
     expect(oauth).toContain('clear_sticky_topmost');
@@ -53,6 +53,7 @@ describe('OAuth return focus (macOS + Windows)', () => {
     expect(idx).toBeGreaterThan(-1);
     const body = oauth.slice(idx, idx + 3500);
     expect(body).toContain('AppHandle');
+    expect(body).toContain('desktop-alt');
     expect(body).toContain('bring_webview_to_front_after_oauth');
     expect(body).toContain('run_on_main_thread');
   });

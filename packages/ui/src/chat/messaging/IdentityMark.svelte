@@ -1,5 +1,6 @@
 <script lang="ts">
   import { agentAvatarFor } from "./agent-avatars";
+  import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
 
   interface Props {
     kind?: "person" | "group" | "agent" | "channel" | "file";
@@ -27,8 +28,11 @@
   }: Props = $props();
 
   // Photo > deterministic generated avatar (agents only) > monogram/glyph.
+  // paintableAvatarSrc drops arbitrary http(s); the packaged CSP would
+  // block those anyway, and we must not widen img-src to make them load.
   const effectiveAvatarUrl = $derived(
-    avatarUrl ?? (kind === "agent" ? agentAvatarFor(agentUid) : null),
+    paintableAvatarSrc(avatarUrl) ??
+      (kind === "agent" ? agentAvatarFor(agentUid) : null),
   );
 
   // Drop back to the monogram if the image 404s / fails to decode.

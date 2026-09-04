@@ -7,6 +7,8 @@ export * from "./onboarding/index.js";
 // Chat shell (US-007, ported from desktop-alt)
 export { default as ChatSidebar } from "./chat/ChatSidebar.svelte";
 export { default as ChannelStatusPopover } from "./chat/ChannelStatusPopover.svelte";
+export { default as AgentDetailPanel } from "./chat/AgentDetailPanel.svelte";
+export { default as AvatarPickerSlot } from "./chat/AvatarPickerSlot.svelte";
 export { default as ConversationView } from "./chat/ConversationView.svelte";
 export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 
@@ -42,9 +44,18 @@ export * from "./chat/dm-requests.js";
 export * from "./chat/workspaces.js";
 export * from "./chat/pending-conversation.js";
 export * from "./chat/open-target.js";
+export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export {
+  DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+  CONVERSATION_BOOT_GRACE_MS,
+  BootTimeoutError,
+  raceTimeout,
+} from "./chat/boot-timeout.js";
+export * from "./chat/create-flow.js";
+export * from "./chat/channel-create-scope.js";
 export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
@@ -60,6 +71,18 @@ export {
   submitAnswer,
   type AgencyApi,
 } from "./chat/agency-store.svelte.js";
+export {
+  bindPresenceStore,
+  presenceEntry,
+  presenceSnapshot,
+  presenceStatus,
+} from "./chat/presence-store.svelte.js";
+export {
+  bindLiveReadStore,
+  liveInputsForCompanyProject,
+  liveReadFor,
+  liveReadSnapshot,
+} from "./chat/live-read-store.svelte.js";
 
 // Work-mesh Board + project/thread views (US-008, ported from desktop-alt)
 export { default as BoardView } from "./board/BoardView.svelte";
@@ -87,15 +110,38 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
   readSettingsPrefs,
   writeSettingsPrefs,
 } from "./settings/settings-prefs.js";
+export * from "./avatars/index.js";
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
+export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
+export * from "./common/external-links.js";
+
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export {
+  updateStore,
+  checkDesktopUpdates,
+  downloadDesktopUpdate,
+  restartToUpdate,
+  hydrateDownloadedUpdate,
+  resetUpdateStore,
+  reportDownloadProgress,
+  markDownloaded,
+  markInstallStarted,
+  reportInstallFailed,
+  reportIdleWait,
+  applyAvailableUpdate,
+  applyRecommendBanner,
+  dismissRecommendBanner,
+  clearRecommendBanner,
+  installRecommendedUpdate,
+} from "./settings/update-store.svelte.js";
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";
@@ -127,6 +173,27 @@ export * as common from "./common/index.js";
 export * as settingsArea from "./settings/index.js";
 export * as meetings from "./meetings/index.js";
 export * as company from "./company/index.js";
+
+// Atlas v0 (work-mesh-live US-016) — company roster × live projects.
+export {
+  AtlasPage,
+  ATLAS_EMPTY_LIVE,
+  ATLAS_MIXED_LIVE,
+  ATLAS_ONE_ACTOR_LIVE,
+  bindLiveRefresh,
+  buildAtlasView,
+  createGoChord,
+  GO_CHORD_MS,
+  requestLiveRefresh,
+  type AtlasActorType,
+  type AtlasOnlineActor,
+  type AtlasProjectCard,
+  type AtlasViewModel,
+  type BuildAtlasViewOptions,
+  type GoChordController,
+  type GoChordHandler,
+} from "./atlas/index.js";
+export * as atlas from "./atlas/index.js";
 export {
   buildCompanyDisplayMap,
   companyDisplayName,

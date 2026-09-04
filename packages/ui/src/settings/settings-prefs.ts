@@ -13,6 +13,8 @@ export interface ShellSettingsPrefs {
   desktopWidget: boolean;
   windowOpacity: number;
   uiSize: SettingsUiSize;
+  /** Company names on channels/agents and emails on people, in the conversation rail. */
+  showSidebarScopeLabels: boolean;
 }
 
 export const SETTINGS_PREFS_KEY = "hq-work-settings-prefs";
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS_PREFS: ShellSettingsPrefs = {
   desktopWidget: true,
   windowOpacity: 80,
   uiSize: "default",
+  showSidebarScopeLabels: true,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -54,6 +57,10 @@ export function parseSettingsPrefs(raw: unknown): ShellSettingsPrefs {
         : DEFAULT_SETTINGS_PREFS.desktopWidget,
     windowOpacity: parseOpacity(rec.windowOpacity),
     uiSize: parseUiSize(rec.uiSize),
+    showSidebarScopeLabels:
+      typeof rec.showSidebarScopeLabels === "boolean"
+        ? rec.showSidebarScopeLabels
+        : DEFAULT_SETTINGS_PREFS.showSidebarScopeLabels,
   };
 }
 

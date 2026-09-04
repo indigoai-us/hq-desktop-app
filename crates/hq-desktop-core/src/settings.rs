@@ -34,6 +34,9 @@ pub fn merge_prefs_over_existing(
             obj.entry(k).or_insert(v);
         }
     }
+    // Retired shell-choice key. Never re-persist it, even if it is still on
+    // disk from a pre-desktop-workspace install.
+    obj.remove("hqWorkHandoff");
     serde_json::to_string_pretty(&serde_json::Value::Object(obj))
         .map_err(|e| format!("Failed to serialize settings: {}", e))
 }
@@ -62,6 +65,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
+            custom_banner: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,
@@ -72,9 +76,17 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: None,
             widget_display: None,
+            widget_placement: None,
+            widget_auto_hide_seconds: None,
+            widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
             in_app_sessions: None,
+            system_notifications: None,
+            native_notify_direct_messages: None,
+            native_notify_shares: None,
+            native_notify_meetings: None,
+            native_notify_only_when_unfocused: None,
         }
     }
 
@@ -98,6 +110,7 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+            custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
             auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
@@ -111,14 +124,28 @@ mod tests {
             widget_enabled: Some(prefs.widget_enabled.unwrap_or(true)),
             // Pass-through — None = primary display.
             widget_display: prefs.widget_display,
+            widget_placement: Some(
+                prefs
+                    .widget_placement
+                    .unwrap_or_else(|| "bottom-right".to_string()),
+            ),
+            widget_auto_hide_seconds: Some(prefs.widget_auto_hide_seconds.unwrap_or(8)),
+            widget_show_needs_action: Some(prefs.widget_show_needs_action.unwrap_or(true)),
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
-            // HQ Work handoff defaults OFF so existing installs keep desktop-alt.
-            hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
-            // In-app sessions ships dark - absent means off, so the
-            // surface never appears on an install that never opted in.
+            // Retired. Always None so Settings cannot resurrect the classic shell.
+            hq_work_handoff: None,
             in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
+            system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
+            native_notify_direct_messages: Some(
+                prefs.native_notify_direct_messages.unwrap_or(true),
+            ),
+            native_notify_shares: Some(prefs.native_notify_shares.unwrap_or(true)),
+            native_notify_meetings: Some(prefs.native_notify_meetings.unwrap_or(true)),
+            native_notify_only_when_unfocused: Some(
+                prefs.native_notify_only_when_unfocused.unwrap_or(true),
+            ),
         }
     }
 
@@ -152,10 +179,11 @@ mod tests {
         // Widget defaults ON when absent; display stays None (primary).
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
-        // HQ Work handoff defaults OFF when absent.
-        assert_eq!(result.hq_work_handoff, Some(false));
-        // In-app sessions (Phase 0) defaults OFF when absent.
-        assert_eq!(result.in_app_sessions, Some(false));
+        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(8));
+        assert_eq!(result.widget_show_needs_action, Some(true));
+        // Retired hqWorkHandoff is ignored, not defaulted.
+        assert_eq!(result.hq_work_handoff, None);
     }
 
     #[test]
@@ -190,6 +218,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(false),
             dm_notifications: Some(false),
+            custom_banner: Some(false),
             cli_auto_update: Some(false),
             auto_update: Some(false),
             staging_channel: Some(false),
@@ -200,9 +229,17 @@ mod tests {
             claude_projects_dir: Some("/Users/test/.claude-ridge/projects".to_string()),
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
+            widget_placement: Some("top-left".to_string()),
+            widget_auto_hide_seconds: Some(0),
+            widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
             in_app_sessions: Some(true),
+            system_notifications: Some(true),
+            native_notify_direct_messages: Some(false),
+            native_notify_shares: Some(false),
+            native_notify_meetings: Some(true),
+            native_notify_only_when_unfocused: Some(false),
         };
 
         let result = apply_defaults(prefs);
@@ -227,16 +264,19 @@ mod tests {
         );
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
-        // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
+        // `util::release_channel::tests::non_indigo_beta_pref_is_honored`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
         assert_eq!(result.widget_display, Some("DELL U2720Q".to_string()));
+        assert_eq!(result.widget_placement.as_deref(), Some("top-left"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(0));
+        assert_eq!(result.widget_show_needs_action, Some(false));
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
-        // explicit hq_work_handoff true survives the default-off coercion
-        assert_eq!(result.hq_work_handoff, Some(true));
+        // Retired hqWorkHandoff is ignored even when the typed field is set.
+        assert_eq!(result.hq_work_handoff, None);
     }
 
     #[test]
@@ -255,6 +295,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            custom_banner: Some(true),
             cli_auto_update: Some(true),
             auto_update: Some(true),
             staging_channel: Some(true),
@@ -265,9 +306,17 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
+            widget_placement: Some("follow-tray".to_string()),
+            widget_auto_hide_seconds: Some(15),
+            widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
             in_app_sessions: Some(false),
+            system_notifications: Some(false),
+            native_notify_direct_messages: Some(true),
+            native_notify_shares: Some(true),
+            native_notify_meetings: Some(false),
+            native_notify_only_when_unfocused: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -283,10 +332,16 @@ mod tests {
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
+        assert_eq!(parsed.widget_placement.as_deref(), Some("follow-tray"));
+        assert_eq!(parsed.widget_auto_hide_seconds, Some(15));
+        assert_eq!(parsed.widget_show_needs_action, Some(true));
         assert!(
             json.contains("\"releaseChannel\":"),
             "expected camelCase key 'releaseChannel' in serialized output, got: {json}"
         );
+        assert!(json.contains("\"widgetPlacement\": \"follow-tray\""));
+        assert!(json.contains("\"widgetAutoHideSeconds\": 15"));
+        assert!(json.contains("\"widgetShowNeedsAction\": true"));
     }
 
     #[test]
@@ -479,6 +534,9 @@ mod tests {
         let result = apply_defaults(empty_prefs());
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
+        assert_eq!(result.widget_placement.as_deref(), Some("bottom-right"));
+        assert_eq!(result.widget_auto_hide_seconds, Some(8));
+        assert_eq!(result.widget_show_needs_action, Some(true));
     }
 
     #[test]
@@ -498,6 +556,9 @@ mod tests {
         let with_values = MenubarPrefs {
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
+            widget_placement: Some("top-right".to_string()),
+            widget_auto_hide_seconds: Some(0),
+            widget_show_needs_action: Some(false),
             ..empty_prefs()
         };
         let json = serde_json::to_string(&with_values).unwrap();
@@ -509,6 +570,9 @@ mod tests {
             json.contains("\"widgetDisplay\":\"DELL U2720Q\""),
             "expected camelCase widgetDisplay, got: {json}"
         );
+        assert!(json.contains("\"widgetPlacement\":\"top-right\""));
+        assert!(json.contains("\"widgetAutoHideSeconds\":0"));
+        assert!(json.contains("\"widgetShowNeedsAction\":false"));
         assert!(!json.contains("widget_enabled"));
         assert!(!json.contains("widget_display"));
 
@@ -551,38 +615,40 @@ mod tests {
     }
 
     #[test]
-    fn test_hq_work_handoff_defaults_false() {
+    fn test_hq_work_handoff_is_ignored() {
         let result = apply_defaults(empty_prefs());
-        assert_eq!(result.hq_work_handoff, Some(false));
-    }
-
-    #[test]
-    fn test_in_app_sessions_defaults_false() {
-        let result = apply_defaults(empty_prefs());
-        assert_eq!(result.in_app_sessions, Some(false));
-    }
-
-    #[test]
-    fn test_explicit_in_app_sessions_true_preserved() {
-        // An opted-in install must not be flipped back off by the default-off
-        // coercion that runs on every settings read/save.
-        let prefs = MenubarPrefs {
-            in_app_sessions: Some(true),
-            ..empty_prefs()
-        };
-
-        let result = apply_defaults(prefs);
-
-        assert_eq!(result.in_app_sessions, Some(true));
-    }
-
-    #[test]
-    fn test_explicit_hq_work_handoff_true_preserved() {
+        assert_eq!(result.hq_work_handoff, None);
         let prefs = MenubarPrefs {
             hq_work_handoff: Some(true),
             ..empty_prefs()
         };
-        let result = apply_defaults(prefs);
-        assert_eq!(result.hq_work_handoff, Some(true));
+        assert_eq!(apply_defaults(prefs).hq_work_handoff, None);
+        let prefs = MenubarPrefs {
+            hq_work_handoff: Some(false),
+            ..empty_prefs()
+        };
+        assert_eq!(apply_defaults(prefs).hq_work_handoff, None);
+    }
+
+    #[test]
+    fn test_merge_strips_retired_hq_work_handoff() {
+        let existing = r#"{
+            "machineId": "keep-me",
+            "hqWorkHandoff": false
+        }"#;
+        let merged = merge_prefs_over_existing(&empty_prefs(), Some(existing)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert!(v.get("hqWorkHandoff").is_none());
+        assert_eq!(v["machineId"], "keep-me");
+    }
+
+    #[test]
+    fn test_in_app_sessions_defaults_false_and_preserves_true() {
+        assert_eq!(apply_defaults(empty_prefs()).in_app_sessions, Some(false));
+        let prefs = MenubarPrefs {
+            in_app_sessions: Some(true),
+            ..empty_prefs()
+        };
+        assert_eq!(apply_defaults(prefs).in_app_sessions, Some(true));
     }
 }

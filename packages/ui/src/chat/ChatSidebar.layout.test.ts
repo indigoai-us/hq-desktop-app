@@ -36,6 +36,18 @@ describe("ChatSidebar identity footer layout", () => {
     expect(src).toMatch(/browseOnly:\s*true/);
   });
 
+  it("sizes the filter popover for the rail and keeps it in the viewport", () => {
+    expect(src).toContain("FILTER_POPOVER_MAX_PX");
+    expect(src).toContain("FILTER_POPOVER_RAIL_OVERHANG_PX");
+    expect(src).toContain('placement: "bottom-end"');
+    expect(src).toMatch(
+      /max-width:\s*min\(360px,\s*calc\(100vw - 16px\)\)/,
+    );
+    expect(src).toMatch(
+      /\.chat-filter-row\s*\{[\s\S]*?font-size:\s*var\(--type-metadata,\s*13px\)/,
+    );
+  });
+
   it("uses border-box so rail padding cannot overflow the parent height", () => {
     const block = src.match(/\.chat-sidebar\s*\{[^}]+\}/);
     expect(block?.[0]).toMatch(/box-sizing:\s*border-box/);

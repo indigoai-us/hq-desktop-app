@@ -158,6 +158,29 @@ describe('US-010: widget click-to-open + unread badge', () => {
       expect(host.querySelector('[data-testid="widget-unread-badge"]')).toBeNull();
     });
 
+    it('three clicks on .wm toggle the Messages panel open, closed, open', () => {
+      const now = Date.now();
+      mountWidget({
+        initialItems: [stackItem({ id: 'a', text: 'row', unread: true }, now)],
+      });
+
+      const wm = host.querySelector('.wm')!;
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeNull();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+
+      wm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(host.querySelector('[data-testid="widget-hover-list"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="widget-stack"]')).toBeNull();
+    });
+
     it('clicking .wm with empty stack shows empty-state panel; re-click closes', () => {
       mountWidget();
 

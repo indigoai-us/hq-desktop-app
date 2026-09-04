@@ -797,6 +797,15 @@ pub(crate) fn system_program_roots() -> Vec<PathBuf> {
     }
 }
 
+/// Managed-toolchain bin dirs the app itself spawns from, in priority order.
+/// `git-shim` holds the wrapper the installer writes around the portable
+/// (dugite) git; it must be found BEFORE /usr/bin, whose `git` is the Xcode
+/// CLT stub on a fresh Mac. The headed install matrix (2026-09-03) caught the
+/// wizard's own git-init stage failing on exactly that stub right after the
+/// deps stage had installed a working git.
+#[cfg(not(target_os = "windows"))]
+pub const MANAGED_TOOLCHAIN_BIN_SUBDIRS: &[&str] = &["npm-global/bin", "node/bin", "git-shim"];
+
 #[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     if let Some(home) = home {
@@ -805,15 +814,19 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         // foreign `~/.npm-global/bin/hq` cannot shadow the managed CLI the
         // app's runtime PATH would execute.
         let toolchain = managed_toolchain_dir(home);
-        for subdir in ["npm-global/bin", "node/bin"] {
+        for subdir in MANAGED_TOOLCHAIN_BIN_SUBDIRS {
             let candidate = toolchain.join(subdir).join(name);
             if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
                 return Some(candidate.to_string_lossy().to_string());
             }
         }
 
-        // User-level npm/pnpm prefixes after the managed toolchain.
-        for dir in user_cli_dirs(home) {
+        // User-level npm/pnpm prefixes after the managed toolchain, then
+        // ~/.local/bin (where the installer's direct-binary yq/jq land).
+        for dir in user_cli_dirs(home)
+            .into_iter()
+            .chain(std::iter::once(home.join(".local").join("bin")))
+        {
             let candidate = dir.join(name);
             if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
                 return Some(candidate.to_string_lossy().to_string());
@@ -1414,11 +1427,16 @@ pub fn child_path() -> String {
             // so users who only have Node via the installer can resolve `npx`
             // and node shebangs.
             let toolchain = managed_toolchain_dir(&home);
-            for subdir in ["npm-global/bin", "node/bin"] {
+            for subdir in MANAGED_TOOLCHAIN_BIN_SUBDIRS {
                 let bin = toolchain.join(subdir);
                 if bin.exists() {
                     parts.push(bin.to_string_lossy().to_string());
                 }
+            }
+            // ~/.local/bin: the installer's direct-binary yq/jq fallback dir.
+            let local_bin = home.join(".local").join("bin");
+            if local_bin.exists() {
+                parts.push(local_bin.to_string_lossy().to_string());
             }
 
             // nvm: prepend every installed node version's bin dir. Order doesn't
@@ -2899,5 +2917,32 @@ mod tests {
             ),
             ResolutionSource::SettingsPath
         );
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod managed_git_shim_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_bin_prefers_managed_git_shim_and_finds_local_bin_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let shim = managed_toolchain_dir(home).join("git-shim");
+        std::fs::create_dir_all(&shim).unwrap();
+        std::fs::write(shim.join("git"), "#!/bin/sh\n").unwrap();
+        let local = home.join(".local").join("bin");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("jq"), "").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(home), "git").as_deref(),
+            Some(shim.join("git").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            resolve_bin_in_dirs(Some(home), "jq").as_deref(),
+            Some(local.join("jq").to_string_lossy().as_ref())
+        );
+        assert!(MANAGED_TOOLCHAIN_BIN_SUBDIRS.contains(&"git-shim"));
     }
 }

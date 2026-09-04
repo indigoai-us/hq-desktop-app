@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from '../../src/lib/hq-work-adapter';
+} from '@hq/platform';
 
 interface Invocation {
   command: string;

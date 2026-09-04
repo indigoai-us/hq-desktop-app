@@ -34,6 +34,21 @@
     onremovemember?: (row: StatusPersonRow) => void;
     /** personUid currently mid-removal — disables its button + shows "…". */
     removingUid?: string | null;
+    /**
+     * Delete the whole channel (owner only). The popover only raises the
+     * intent — the shell owns the confirm dialog + the call, because this
+     * popover closes on any outside mousedown and would eat the dialog.
+     */
+    ondeletechannel?: () => void;
+    /** Delete in flight — disables the trash control + shows "…". */
+    deleting?: boolean;
+    /**
+     * Move a live session to another company (company owner/admin). Shell owns
+     * the destination picker + confirm; popover only raises sessionId.
+     */
+    onmigratesession?: (sessionId: string) => void;
+    /** Migrate in flight for a session id — disables that row's control. */
+    migratingSessionId?: string | null;
   }
 
   let {
@@ -44,6 +59,10 @@
     onopenprofile,
     onremovemember,
     removingUid = null,
+    ondeletechannel,
+    deleting = false,
+    onmigratesession,
+    migratingSessionId = null,
   }: Props = $props();
 
   /** The signed-in member's role in this channel — gates removing others. */
@@ -313,6 +332,66 @@
     {/if}
   </section>
 
+  {#if model.activeSessions.length > 0}
+    <section aria-label="Active sessions">
+      <div class="p-sec">SESSIONS</div>
+      {#each model.activeSessions as s (s.id)}
+        <div
+          class="p-item static session-row"
+          data-testid="status-active-session"
+          data-session-id={s.id}
+        >
+          <span
+            class="m-ava"
+            class:ai={s.principalKind === "agent"}
+            aria-hidden="true"
+          >
+            {initialOf(s.principal)}
+            {#if s.online}
+              <span
+                class="presence-dot"
+                data-testid="status-presence-dot"
+                aria-label="Online"
+              ></span>
+            {/if}
+          </span>
+          <span class="m-id">
+            <span class="m-name">{s.principal}</span>
+            {#if s.taskId || s.context || s.harness || s.turnCount != null}
+              <span class="m-email">
+                {[
+                  s.taskId ?? s.context,
+                  s.harness,
+                  s.turnCount != null ? `${s.turnCount} turns` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            {/if}
+            <span class="m-email">{s.lastActivityLabel}</span>
+          </span>
+          {#if onmigratesession}
+            <button
+              type="button"
+              class="m-remove session-migrate"
+              data-testid="status-session-migrate"
+              aria-label="Move to another company"
+              title="Move to another company"
+              disabled={migratingSessionId === s.id}
+              onclick={() => onmigratesession?.(s.id)}
+            >
+              {#if migratingSessionId === s.id}
+                …
+              {:else}
+                Move
+              {/if}
+            </button>
+          {/if}
+        </div>
+      {/each}
+    </section>
+  {/if}
+
   <section aria-label="Members">
     <div class="p-sec">MEMBERS</div>
     {#each memberRows as m (m.personUid)}
@@ -324,9 +403,16 @@
           title={`Open ${m.displayName}'s profile`}
           onclick={() => onopenprofile?.(m)}
         >
-          <span class="m-ava" aria-hidden="true"
-            >{initialOf(m.displayName)}</span
-          >
+          <span class="m-ava" aria-hidden="true">
+            {initialOf(m.displayName)}
+            {#if m.online}
+              <span
+                class="presence-dot"
+                data-testid="status-presence-dot"
+                aria-label="Online"
+              ></span>
+            {/if}
+          </span>
           <span class="m-id">
             <span class="m-name">{m.displayName}</span>
             {#if m.email}
@@ -367,24 +453,97 @@
     <section aria-label="Agents">
       <div class="p-sec">AGENTS</div>
       {#each model.agents as a (a.personUid)}
-        <div class="p-item static" data-testid="status-agent">
-          <span class="m-ava ai" aria-hidden="true">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="11"
-              height="11"
-              fill="currentColor"
-              viewBox="0 0 256 256"
+        <div class="p-item static member-row" data-testid="status-agent">
+          {#if onopenprofile}
+            <button
+              type="button"
+              class="member-open"
+              data-testid="status-agent-open"
+              title={`View agent ${a.displayName}`}
+              onclick={() => onopenprofile?.(a)}
             >
-              <path
-                d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
-              ></path>
-            </svg>
-          </span>
-          <span class="m-name">{a.displayName}</span>
+              <span class="m-ava ai" aria-hidden="true">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="11"
+                  height="11"
+                  fill="currentColor"
+                  viewBox="0 0 256 256"
+                >
+                  <path
+                    d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
+                  ></path>
+                </svg>
+                {#if a.online}
+                  <span
+                    class="presence-dot"
+                    data-testid="status-presence-dot"
+                    aria-label="Online"
+                  ></span>
+                {/if}
+              </span>
+              <span class="m-id">
+                <span class="m-name">{a.displayName}</span>
+                <span class="m-email">View agent</span>
+              </span>
+            </button>
+          {:else}
+            <span class="m-ava ai" aria-hidden="true">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="11"
+                height="11"
+                fill="currentColor"
+                viewBox="0 0 256 256"
+              >
+                <path
+                  d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
+                ></path>
+              </svg>
+              {#if a.online}
+                <span
+                  class="presence-dot"
+                  data-testid="status-presence-dot"
+                  aria-label="Online"
+                ></span>
+              {/if}
+            </span>
+            <span class="m-name">{a.displayName}</span>
+          {/if}
         </div>
       {/each}
     </section>
+  {/if}
+
+  {#if ondeletechannel && selfIsOwner}
+    <div class="p-footer" data-testid="status-channel-actions">
+      <button
+        type="button"
+        class="m-remove p-delete"
+        data-testid="status-channel-delete"
+        aria-label="Delete channel"
+        title="Delete channel"
+        disabled={deleting}
+        onclick={() => ondeletechannel?.()}
+      >
+        {#if deleting}
+          …
+        {:else}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="13"
+            height="13"
+            fill="currentColor"
+            viewBox="0 0 256 256"
+            aria-hidden="true"
+          >
+            <path
+              d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"
+            ></path>
+          </svg>
+        {/if}
+      </button>
+    </div>
   {/if}
 </div>
 
@@ -620,6 +779,7 @@
   }
 
   .m-ava {
+    position: relative;
     display: flex;
     flex: 0 0 auto;
     align-items: center;
@@ -631,6 +791,21 @@
     color: var(--t1);
     font-size: 9px;
     font-weight: 600;
+  }
+
+  .presence-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 6px;
+    height: 6px;
+    border: 1.5px solid var(--panel-bg, var(--v4-ground, #151515));
+    border-radius: 50%;
+    background: var(--v4-ok, #42d77d);
+  }
+
+  .session-row {
+    align-items: flex-start;
   }
 
   :global([data-force-theme="light"]) .m-ava {
@@ -714,6 +889,31 @@
   .m-remove:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Owner-only channel actions: one right-justified trash control. */
+  .p-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 4px;
+    padding: 6px 8px 2px;
+    border-top: 1px solid var(--panel-border);
+  }
+
+  .p-delete {
+    font-size: 12px;
+  }
+
+  .p-delete svg {
+    display: block;
+  }
+
+  .session-migrate {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 6px;
+    font-size: 11px;
   }
 
   .member-open:focus-visible,

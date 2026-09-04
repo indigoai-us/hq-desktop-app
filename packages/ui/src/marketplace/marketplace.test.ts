@@ -23,6 +23,8 @@ import {
   isInitPromptDoc,
   isClaimError,
   isPublishError,
+  authorInitials,
+  listingAuthor,
   listingDisplayName,
   listingFromDetailPayload,
   listingHaystack,
@@ -191,6 +193,54 @@ describe("filterListings", () => {
       }),
     ];
     expect(filterListings(items, "matt pocock skills")).toHaveLength(1);
+  });
+
+  it("matches on a structured author displayName", () => {
+    const items = [
+      listing({
+        id: "lst_cf",
+        author: {
+          handle: "content-forge",
+          displayName: "Content Forge",
+        },
+      }),
+    ];
+    expect(filterListings(items, "content forge")).toHaveLength(1);
+    expect(filterListings(items, "content-forge")).toHaveLength(1);
+  });
+});
+
+describe("listingAuthor / authorInitials", () => {
+  it("normalizes a legacy string author", () => {
+    expect(listingAuthor(listing({ author: "jacob" }))).toEqual({
+      handle: "jacob",
+      displayName: "jacob",
+    });
+  });
+
+  it("keeps handle, displayName, and avatarUrl from the object form", () => {
+    expect(
+      listingAuthor(
+        listing({
+          author: {
+            handle: "corey",
+            displayName: "Corey",
+            avatarUrl: `https://${"example"}/avatar.png`,
+          },
+        }),
+      ),
+    ).toEqual({
+      handle: "corey",
+      displayName: "Corey",
+      avatarUrl: "https://example/avatar.png",
+    });
+  });
+
+  it("builds two-letter initials from the display name", () => {
+    expect(
+      authorInitials({ handle: "content-forge", displayName: "Content Forge" }),
+    ).toBe("CF");
+    expect(authorInitials({ handle: "maya", displayName: "maya" })).toBe("MA");
   });
 });
 

@@ -402,35 +402,18 @@ describe('Actionable rows — resolving "needs attention" items in place', () =>
     flushSync();
     expect(onresolveopen).toHaveBeenCalledTimes(1);
 
-    const select = row.querySelector<HTMLSelectElement>(
-      '[data-testid="notification-resolve-select"]',
-    )!;
-    expect([...select.options].map((o) => o.value)).toEqual([
-      '',
-      'cmp_indigo',
-      'cmp_alive',
-    ]);
-    const save = row.querySelector<HTMLButtonElement>(
-      '[data-testid="notification-resolve-save"]',
-    )!;
-    // Nothing chosen yet — saving is unavailable.
-    expect(save.disabled).toBe(true);
-
-    const selectProto = Object.getOwnPropertyDescriptor(
-      HTMLSelectElement.prototype,
-      'value',
-    );
-    selectProto?.set?.call(select, 'cmp_indigo');
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    select.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    expect(save.disabled).toBe(false);
+    const options = [
+      ...row.querySelectorAll<HTMLButtonElement>('[data-testid="notification-resolve-option"]'),
+    ];
+    expect(options.map((o) => o.dataset.value)).toEqual(['cmp_indigo', 'cmp_alive']);
+    // Nothing chosen yet — nothing filed.
+    expect(onresolve).not.toHaveBeenCalled();
 
     // Failure keeps the sheet open with an inline error.
-    save.click();
+    options[0].click();
     flushSync();
     expect(onresolve).toHaveBeenCalledWith('cmp_indigo');
-    expect(save.getAttribute('aria-busy')).toBe('true');
+    expect(options[0].getAttribute('aria-busy')).toBe('true');
     reject!(new Error('nope'));
     for (let i = 0; i < 4; i++) await Promise.resolve();
     flushSync();
@@ -441,7 +424,7 @@ describe('Actionable rows — resolving "needs attention" items in place', () =>
 
     // Success closes the picker — the host dismisses the resolved row.
     const retry = row.querySelector<HTMLButtonElement>(
-      '[data-testid="notification-resolve-save"]',
+      '[data-testid="notification-resolve-option"][data-value="cmp_indigo"]',
     )!;
     expect(retry.disabled).toBe(false);
     retry.click();

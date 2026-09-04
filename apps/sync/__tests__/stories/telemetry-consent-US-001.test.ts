@@ -43,6 +43,11 @@ const wizardSource = readFileSync(
   resolve(process.cwd(), 'src/components/onboarding/OnboardingWizard.svelte'),
   'utf8',
 );
+const syncAppSource = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
+const desktopAltSource = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'),
+  'utf8',
+);
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -285,10 +290,9 @@ describe('US-001 recording the answer', () => {
     expect(launch!.disabled).toBe(false);
   });
 
-  it('emits no desktop_setup_completed usage event when declining (AC 5)', async () => {
-    // A decline must produce zero usage events. The completion event is only
-    // emitted for opted-in users, and it flows through post_telemetry_events /
-    // the telemetry emit path — never fired here for a decline.
+  it('emits operational setup telemetry while declining and no skill telemetry (AC 5)', async () => {
+    // A decline must not block the operational onboarding trace, but it must
+    // not reach the consent-gated skill telemetry command.
     await mountAt(3);
     const [, decline] = consentRadios();
     decline.checked = true;
@@ -297,12 +301,14 @@ describe('US-001 recording the answer', () => {
     consentContinue().click();
     await flush();
 
-    const eventUploads = invoke.mock.calls.filter(
-      (c) =>
-        c[0] === 'emit_desktop_telemetry_if_opted_in' ||
-        c[0] === 'post_telemetry_events',
+    const operationalEmits = invoke.mock.calls.filter(
+      (c) => c[0] === 'emit_desktop_operational_telemetry',
     );
-    expect(eventUploads).toHaveLength(0);
+    const skillEmits = invoke.mock.calls.filter(
+      (c) => c[0] === 'emit_desktop_telemetry_if_opted_in',
+    );
+    expect(operationalEmits.length).toBeGreaterThanOrEqual(1);
+    expect(skillEmits).toHaveLength(0);
   });
 });
 
@@ -323,5 +329,14 @@ describe('US-001 source regressions', () => {
     expect(wizardSource).toContain(
       "let telemetryChoice = $state<'share' | 'decline' | null>(null);",
     );
+  });
+
+  it('keeps manual sync outcomes on the consent-gated telemetry path', () => {
+    for (const source of [syncAppSource, desktopAltSource]) {
+      expect(source).toContain("eventName: 'manual_sync_failed'");
+      expect(source).toContain("'manual_sync_completed'");
+      expect(source).toContain('emitDesktopTelemetry');
+      expect(source).not.toContain('emitDesktopOperationalTelemetry');
+    }
   });
 });

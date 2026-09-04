@@ -8,6 +8,7 @@ import { flushSync, mount, unmount } from "svelte";
 import CorePopover from "./CorePopover.svelte";
 import { CORE_POPOVER_FIXTURE_PACKS } from "./core-popover-model";
 import { packDisplayName } from "./pack-display-name";
+import { resetUpdateStore } from "../settings/update-store.svelte";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -16,6 +17,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  resetUpdateStore();
 });
 
 type Result = { ok: true; value: unknown };
@@ -38,7 +40,9 @@ function makeAdapter(overrides: {
     updates: {
       getVersions: async () => ok({ core: "15.0.118" }),
       checkCoreState: async () => ok(null),
-      getPendingUpdate: async () => ok(null),
+      checkForUpdates: async () => ok(null),
+      checkCliUpdate: async () => ok(null),
+      installUpdate: async () => ok(undefined),
     },
   } as never;
 }

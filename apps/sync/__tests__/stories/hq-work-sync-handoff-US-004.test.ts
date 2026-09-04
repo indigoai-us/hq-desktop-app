@@ -99,10 +99,16 @@ describe('US-004 silent HQ Work co-install after Sync update', () => {
     const autoIdx = updater.indexOf('BackgroundUpdateAction::Install =>');
     expect(autoIdx).toBeGreaterThan(-1);
     const auto = updater.slice(autoIdx, autoIdx + 4500);
-    expect(auto).toContain('#[cfg(not(target_os = "windows"))]');
-    const firstSpawn = auto.indexOf('spawn_maybe_co_install_hq_work');
-    const installAt = auto.indexOf('install_verified_update(&handle, &update)');
-    expect(firstSpawn).toBeGreaterThan(-1);
-    expect(installAt).toBeGreaterThan(firstSpawn);
+    expect(auto).toContain('stage_plugin_update');
+    expect(auto).toContain('spawn_auto_install_waiter');
+    expect(auto).not.toContain('install_verified_update(&handle, &update)');
+
+    const stagedFnAt = updater.indexOf('async fn install_staged_update(');
+    expect(stagedFnAt).toBeGreaterThan(-1);
+    const stagedFn = updater.slice(stagedFnAt, stagedFnAt + 2500);
+    expect(stagedFn).toContain('#[cfg(not(target_os = "windows"))]');
+    const stagedSpawn = stagedFn.indexOf('spawn_maybe_co_install_hq_work');
+    expect(stagedSpawn).toBeGreaterThan(-1);
+    expect(stagedFn.indexOf('app.restart()')).toBeGreaterThan(stagedSpawn);
   });
 });

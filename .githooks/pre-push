@@ -1,17 +1,32 @@
 #!/usr/bin/env bash
 #
-# pre-push: rate-limit release tag pushes.
+# pre-push: pace release tag pushes.
 #
 # Pushing a `v*` tag is the entire release trigger for this repository (see
 # docs/RELEASE.md and .github/workflows/release.yml). The Release workflow then
-# builds the macOS universal app and the Windows x64 + ARM64 installers on
-# GitHub-hosted runners. GitHub bills macOS minutes at 10x and Windows minutes
-# at 2x a Linux minute, so a single tag push is one of the most expensive things
-# anyone can do to this repo, and back-to-back tags multiply that cost for
-# builds nobody installs.
+# builds the macOS universal app and the Windows x64 + ARM64 installers, takes
+# 20-30 minutes, and — for a stable tag — publishes an updater manifest that
+# every installed copy of the app picks up.
+#
+# What this hook is NOT for, despite what it used to say: money. This repo is
+# public, so standard GitHub-hosted runners are free, and macos-14 /
+# windows-latest / ubuntu-latest are all standard. The 10x and 2x minute
+# multipliers apply to billable minutes on private repositories; they have
+# never applied here. Nor is it for publication ordering — `publish` re-checks
+# that inside the global publication lock, immediately before the only
+# public-state mutation, in its `Revalidate stable publication order` step. The
+# `concurrency` groups serialize execution but do not choose an order; the
+# revalidation is what stops an older release replacing a newer one, and this
+# hook is not involved either way.
+#
+# What is left is release hygiene, and it is enough to keep a window: a stable
+# release prompts users to update, so a burst of tags churns them for builds
+# that supersede each other within the hour, and it leaves no gap in which a
+# release can actually be looked at before the next one lands on top of it.
+# That reasoning supports a short window, not a long one -- hence 2 hours.
 #
 # This hook refuses a release tag push when another release tag was pushed
-# within the cooldown window (6 hours by default), and refuses to push more than
+# within the cooldown window (2 hours by default), and refuses to push more than
 # one release tag in a single push. Everything else — branches, tag deletions,
 # non-`v` tags — passes straight through.
 #
@@ -26,7 +41,7 @@
 
 set -euo pipefail
 
-COOLDOWN_SECONDS="${HQ_TAG_PUSH_COOLDOWN_SECONDS:-21600}" # 6 hours
+COOLDOWN_SECONDS="${HQ_TAG_PUSH_COOLDOWN_SECONDS:-7200}" # 2 hours
 
 # Git passes the destination remote name and location as $1 and $2.
 REMOTE_NAME="${1:-}"
@@ -40,9 +55,9 @@ REMOTE_URL="${2:-}"
 # matched or the hook is trivially bypassable.
 #
 # Only `v*` matches. The Release workflow triggers on `tags: ["v*"]` and nothing
-# else, so an unrelated tag like `docs-2026` starts no billed build — blocking it
-# would be a false positive, and recording it would suppress a real release for
-# six hours.
+# else, so an unrelated tag like `docs-2026` starts no build — blocking it would
+# be a false positive, and recording it would suppress a real release for the
+# length of the window.
 tags=()
 while read -r _local_ref local_sha remote_ref _remote_sha; do
   [ -n "${remote_ref:-}" ] || continue
@@ -77,8 +92,8 @@ now="$(date +%s)"
 
 record_push() {
   # Record on every push we let through — including a bypassed one. The bypass
-  # still starts a billed release, so it has to reset the window for the next
-  # push; otherwise an urgent release followed five hours later by an ordinary
+  # still ships a real release, so it has to reset the window for the next
+  # push; otherwise an urgent release followed 90 minutes later by an ordinary
   # one lets the second through against a marker the first should have moved.
   printf '%s\n' "$now" >"$marker"
 }
@@ -94,13 +109,14 @@ human_duration() {
   fi
 }
 
-cost_explanation() {
+pacing_explanation() {
   echo "Pushing a tag runs the release. The Release workflow builds the"
-  echo "macOS universal app and the Windows x64 + ARM64 installers on"
-  echo "GitHub-hosted runners, and GitHub bills macOS minutes at 10x and"
-  echo "Windows minutes at 2x a Linux minute. Each tag push therefore costs"
-  echo "a lot of real money in GitHub Actions, and pushing tags back to"
-  echo "back spends it over and over on builds nobody installs."
+  echo "macOS universal app and the Windows x64 + ARM64 installers, takes"
+  echo "20-30 minutes, and — for a stable tag — publishes an updater"
+  echo "manifest that every installed copy of the app picks up. Releasing"
+  echo "back to back therefore prompts users to update to builds that are"
+  echo "superseded within the hour, and leaves no window in which a release"
+  echo "can be observed before the next one lands on top of it."
 }
 
 if [ "${HQ_ALLOW_TAG_PUSH:-}" = "1" ]; then
@@ -119,10 +135,10 @@ if [ ${#tags[@]} -gt 1 ]; then
     echo
     echo "BLOCKED: refusing to push ${#tags[@]} release tags at once: ${tags[*]}"
     echo
-    cost_explanation
+    pacing_explanation
     echo
     echo "Push one release tag, let it build, then push the next — or, if you"
-    echo "accept the cost of all ${#tags[@]} builds, bypass explicitly:"
+    echo "really do want all ${#tags[@]} releases, bypass explicitly:"
     echo
     echo "  HQ_ALLOW_TAG_PUSH=1 git push ${REMOTE_NAME:-origin} ${tags[*]}"
     echo
@@ -179,10 +195,10 @@ if [ -n "$last" ]; then
       echo "A release went out $(human_duration "$elapsed") ago (per ${source})."
       echo "The cooldown between releases is $(human_duration "$COOLDOWN_SECONDS")."
       echo
-      cost_explanation
+      pacing_explanation
       echo
-      echo "Wait $(human_duration "$remaining"), or — if this release is genuinely urgent"
-      echo "and you accept the build cost — bypass the cooldown explicitly:"
+      echo "Wait $(human_duration "$remaining"), or — if this release is genuinely urgent —"
+      echo "bypass the cooldown explicitly:"
       echo
       echo "  HQ_ALLOW_TAG_PUSH=1 git push ${REMOTE_NAME:-origin} ${tags[0]}"
       echo
@@ -191,8 +207,8 @@ if [ -n "$last" ]; then
   fi
 fi
 
-# Allowed. Record before the push rather than after: the cost being paced is the
-# workflow trigger, and a failed push costs nothing, so a slightly conservative
-# window is the right failure direction.
+# Allowed. Record before the push rather than after: what is being paced is the
+# workflow trigger, and a failed push triggers nothing, so a slightly
+# conservative window is the right failure direction.
 record_push
 exit 0

@@ -147,6 +147,7 @@ function stubInvoke(options: StubOptions = {}): void {
         if (options.postOptIn === 'reject') throw new Error('server error');
         return undefined;
       case 'emit_desktop_telemetry_if_opted_in':
+      case 'emit_desktop_operational_telemetry':
         return undefined;
       case 'save_settings': {
         const prefs = (args?.prefs ?? {}) as Record<string, unknown>;
@@ -341,12 +342,8 @@ describe('US-003 — settings reflects the server', () => {
     expect(posted?.enabled).toBe(false);
   });
 
-  // ── finding #6: a withdrawal must not emit another telemetry event ──────
-  it('does NOT emit a telemetry_preference_changed event on a withdrawal', async () => {
-    // The old code emitted telemetry_preference_changed(false) BEFORE the
-    // withdrawal write — while the server still reported "enabled" — producing
-    // one more telemetry event AFTER the user had asked to stop. A withdrawal
-    // must halt emission immediately, so no such event may fire.
+  // ── Operational preference receipt is independent of skill consent ──────
+  it('records telemetry_preference_changed operationally on a withdrawal', async () => {
     stubInvoke({
       consent: { enabled: true, source: 'server', updatedAt: null, consentVersion: null, unset: false },
     });
@@ -357,13 +354,15 @@ describe('US-003 — settings reflects the server', () => {
     toggle.dispatchEvent(new Event('change', { bubbles: true }));
     await settle();
 
-    const emits = calls.filter((c) => c.command === 'emit_desktop_telemetry_if_opted_in');
-    expect(emits).toHaveLength(0);
+    const operationalEmits = calls.filter(
+      (c) => c.command === 'emit_desktop_operational_telemetry',
+    );
+    const skillEmits = calls.filter((c) => c.command === 'emit_desktop_telemetry_if_opted_in');
+    expect(operationalEmits.length).toBeGreaterThanOrEqual(1);
+    expect(skillEmits).toHaveLength(0);
   });
 
-  it('still records telemetry_preference_changed on an OPT-IN, after the server confirms it', async () => {
-    // Opting IN is a change worth recording, and by then collection is (about to
-    // be) on — so a single audit event after the confirmed write is correct.
+  it('records telemetry_preference_changed operationally on an opt-in, after the server confirms it', async () => {
     let phase: 'before' | 'after' = 'before';
     stubInvoke({
       consent: async () =>
@@ -382,7 +381,7 @@ describe('US-003 — settings reflects the server', () => {
     toggle.dispatchEvent(new Event('change', { bubbles: true }));
     await settle();
 
-    const emits = calls.filter((c) => c.command === 'emit_desktop_telemetry_if_opted_in');
+    const emits = calls.filter((c) => c.command === 'emit_desktop_operational_telemetry');
     expect(emits.length).toBeGreaterThanOrEqual(1);
   });
 

@@ -298,6 +298,7 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       expect(src).toContain('refreshRecentFromHistory');
       expect(src).toContain("open_dm_detail");
       expect(src).toContain("open_share_detail");
+      expect(src).toContain("open_meetings_window");
       expect(src).toContain("show_main_window");
       expect(src).toContain("open_desktop_alt_window");
       // Must not silent-dismiss when clickActionId is empty.
@@ -319,6 +320,9 @@ describe('US-015: widget popup shows recent history (not just unviewed)', () => 
       const openBody = src.slice(openStart, openEnd);
       expect(openBody).toMatch(
         /kind === 'update'[\s\S]*open_desktop_alt_window[\s\S]*route:\s*'settings:updates'/,
+      );
+      expect(openBody).toMatch(
+        /kind === 'meeting'[\s\S]*open_meetings_window[\s\S]*focusMeetingId/,
       );
       const menuStart = src.indexOf('async function menuOpenInbox');
       const menuEnd = src.indexOf('async function menuOpenDesktop', menuStart);

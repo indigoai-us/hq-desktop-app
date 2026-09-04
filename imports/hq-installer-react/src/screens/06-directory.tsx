@@ -151,7 +151,6 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         stage: stage === "directory" ? "directory" : "template-fetch",
         message: msg,
         version: installerVersionRef.current,
-        detail: { installPath },
       });
       try {
         await recordStepFailure(

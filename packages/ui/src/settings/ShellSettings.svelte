@@ -12,6 +12,7 @@
   import EmptyState from "../common/EmptyState.svelte";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import PageHeader from "../shell/PageHeader.svelte";
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
@@ -408,20 +409,13 @@
 </script>
 
 <section class="shell-settings" data-testid="settings-two-column">
-  <header class="ss-header">
-    <button
-      type="button"
-      class="ss-back"
-      data-testid="settings-back"
-      onclick={() => onback?.()}
-    >
-      <span aria-hidden="true">←</span> Back
-    </button>
-    <h1 class="ss-title">Settings</h1>
-    <span class="ss-subtitle" data-testid="settings-subtitle"
-      >yours — moved here from the Core menu</span
-    >
-  </header>
+  <PageHeader
+    title="Settings"
+    subtitle="yours — moved here from the Core menu"
+    subtitleTestId="settings-subtitle"
+    backTestId="settings-back"
+    onback={() => onback?.()}
+  />
 
   <div class="ss-body">
     <nav
@@ -711,51 +705,6 @@
     font: 400 13px/1.45 var(--font-ui);
   }
 
-  .ss-header {
-    display: flex;
-    align-items: baseline;
-    gap: 14px;
-    flex: 0 0 auto;
-    padding: 14px 24px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .ss-back {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 5px 10px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    color: var(--t2);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .ss-back:hover {
-    border-color: var(--line2);
-    color: var(--t1);
-  }
-
-  .ss-title {
-    margin: 0;
-    color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.2;
-  }
-
-  .ss-subtitle {
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-  }
-
   .ss-body {
     display: flex;
     flex: 1 1 auto;
@@ -823,8 +772,7 @@
     color: var(--t1);
   }
 
-  .ss-nav-item:focus-visible,
-  .ss-back:focus-visible {
+  .ss-nav-item:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
   }

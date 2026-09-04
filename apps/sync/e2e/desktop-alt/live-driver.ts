@@ -112,10 +112,11 @@ export async function createDesktopAltHarness(email: string): Promise<DesktopAlt
  * `DesktopAltTestHarness` is deliberately the *scripted* contract — it can only
  * express things both harnesses can answer, and every one of its verbs
  * (`openDesktopAltWindow`, `navigate`) assumes a signed-in user. The live
- * pre-auth smoke needs the opposite: read the real DOM of the classic popover,
- * and observe how the backend gate *refuses*. That is live-only by
- * construction, so it gets its own narrow surface instead of widening the
- * shared interface with methods the scripted harness would have to fake.
+ * pre-auth smoke needs the opposite: read the real DOM of the signed-out
+ * surfaces, and prove the workspace window still opens for sign-in. That is
+ * live-only by construction, so it gets its own narrow surface instead of
+ * widening the shared interface with methods the scripted harness would have
+ * to fake.
  */
 export interface LiveDesktopAltProbe {
   /** Focus the classic popover webview (`html[data-window="main"]`). */
@@ -214,8 +215,8 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
 
     // The only way the app opens this window — App.svelte, the
     // NotificationFeed deep-links and the tray item all invoke exactly this.
-    // It re-enters the Rust gate, so a signed-out run fails here, which is
-    // where that failure belongs.
+    // Signed-out callers are admitted so onboarding/reauth can happen in the
+    // workspace shell.
     await this.invokeTauriCommand('open_desktop_alt_window');
 
     const desktop = await this.waitForDesktopAltWindow();
@@ -350,10 +351,27 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
   }
 
   async hasDesktopAltWindow(): Promise<boolean> {
-    const desktop = await this.findDesktopAltWindow();
+    // Opening the workspace hides `main` and creates a second WebView2 target.
+    // Give msedgedriver a bounded window to attach instead of sampling once
+    // before the new handle exists.
+    let desktop: string | null = null;
+    try {
+      await this.driver.waitUntil(async () => {
+        desktop = await this.findDesktopAltWindow();
+        return Boolean(desktop);
+      }, 8_000);
+    } catch {
+      desktop = await this.findDesktopAltWindow();
+    }
     // `findDesktopAltWindow` walks every handle to probe it, so the focused
-    // window is wherever the walk stopped. Put the caller back on the popover.
-    await this.switchToMainWindow();
+    // window is wherever the walk stopped. Put the caller back on the popover
+    // when it is still addressable; a hidden `main` must not fail the probe
+    // after the workspace window has already appeared.
+    try {
+      await this.switchToMainWindow();
+    } catch {
+      if (desktop) await this.driver.switchToWindow(desktop).catch(() => undefined);
+    }
     return Boolean(desktop);
   }
 
@@ -526,6 +544,9 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     );
 
     if (!result.ok) throw new Error(result.error ?? `Tauri command failed: ${command}`);
+    // Tauri serializes `Ok(())` as JSON `null`. Callers (and
+    // `resolves.toBeUndefined()`) treat a unit result as JS undefined.
+    if (result.value === null) return undefined as T;
     return result.value as T;
   }
 }

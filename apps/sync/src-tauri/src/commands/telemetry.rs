@@ -19,7 +19,7 @@ use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{
-    RawTelemetryEvent, TelemetryEventsBatch, UsageBatch, VaultClient,
+    RawTelemetryEvent, TelemetryEventsBatch, UsageBatch, VaultClient, VaultClientError,
 };
 use crate::util::client_info::build_client;
 use crate::util::paths;
@@ -868,6 +868,7 @@ fn build_desktop_telemetry_event(
     properties: Option<Value>,
     session_id: Option<String>,
     occurred_at: Option<String>,
+    consent_basis: &str,
 ) -> RawTelemetryEvent {
     let properties = sanitize_desktop_properties(properties);
     RawTelemetryEvent {
@@ -884,7 +885,7 @@ fn build_desktop_telemetry_event(
             .unwrap_or_else(|| {
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             }),
-        consent_basis: "desktop-opt-in".to_string(),
+        consent_basis: consent_basis.to_string(),
         schema_version: 1,
         idempotency_key: None,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
@@ -907,7 +908,13 @@ async fn emit_desktop_telemetry_with_vault(
         return Ok(());
     }
 
-    let event = build_desktop_telemetry_event(event_name, properties, session_id, occurred_at);
+    let event = build_desktop_telemetry_event(
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+        "desktop-opt-in",
+    );
     let batch = TelemetryEventsBatch {
         events: vec![event],
     };
@@ -929,6 +936,70 @@ pub async fn emit_desktop_telemetry_if_opted_in(
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_telemetry_with_vault(&vault, event_name, properties, session_id, occurred_at).await
+}
+
+async fn emit_desktop_operational_telemetry_with_vault(
+    vault: &VaultClient,
+    event_name: String,
+    properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
+) -> Result<(), String> {
+    if !is_operational_desktop_event_name(&event_name) {
+        return Err(format!(
+            "event is not approved operational telemetry: {event_name}"
+        ));
+    }
+
+    let event = build_desktop_telemetry_event(
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+        "no-consent",
+    );
+    let batch = TelemetryEventsBatch {
+        events: vec![event],
+    };
+
+    vault
+        .post_telemetry_events(&batch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
+    "desktop_app_daily_active",
+    "desktop_onboarding_step",
+    "desktop_setup_completed",
+    "oauth_signin_succeeded",
+    "telemetry_preference_changed",
+];
+
+fn is_operational_desktop_event_name(event_name: &str) -> bool {
+    OPERATIONAL_DESKTOP_EVENT_NAMES.contains(&event_name)
+}
+
+/// Emit an installation or delivery-health record. Operational telemetry is
+/// intentionally independent of the skill-telemetry opt-in.
+#[tauri::command]
+pub async fn emit_desktop_operational_telemetry(
+    event_name: String,
+    properties: Option<Value>,
+    session_id: Option<String>,
+    occurred_at: Option<String>,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name,
+        properties,
+        session_id,
+        occurred_at,
+    )
+    .await
 }
 
 /// Queue a consent-gated desktop event without delaying the updater path.
@@ -962,7 +1033,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         app: "hq-desktop-app".to_string(),
         source: "desktop".to_string(),
         occurred_at,
-        consent_basis: "desktop-opt-in".to_string(),
+        consent_basis: "no-consent".to_string(),
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
@@ -974,10 +1045,6 @@ async fn emit_daily_active_with_vault(
     vault: &VaultClient,
     utc_day: chrono::NaiveDate,
 ) -> Result<(), String> {
-    if !resolve_telemetry_enabled(vault).await {
-        return Ok(());
-    }
-
     let batch = TelemetryEventsBatch {
         events: vec![build_daily_active_event(utc_day)],
     };
@@ -1007,6 +1074,203 @@ pub fn setup_daily_active_emit() {
     tauri::async_runtime::spawn(async move {
         emit_daily_active_for_utc_day(utc_day).await;
     });
+}
+
+// ── Version heartbeat (GTM last-seen / running desktop build) ─────────────────
+//
+// hq-pro persists per-machine app/CLI versions on POST /v1/usage
+// (`recordClientVersions` in usage.ts, hq-pro #2784). An empty `events` array
+// is accepted and still refreshes `clientVersions.lastSeenAt` *before* the
+// skill-consent gate, so a signed-in user who launches and does nothing still
+// shows up on GTM People. `GET /membership/me` `lastObservedClients` is
+// change-only and is not this feed.
+//
+// Consent: this is version/presence, not skill telemetry (hq-pro #2877). Skill
+// event collection is untouched.
+
+const VERSION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const VERSION_HEARTBEAT_SESSION_RETRY: Duration = Duration::from_secs(30);
+const VERSION_HEARTBEAT_MACHINE_PREFIX_CHARS: usize = 8;
+/// GTM #142 treats `hq-desktop-app` as an App client. hq-pro's
+/// `lastObservedClients` stores the raw `x-hq-client-name` with no allowlist
+/// (it would not drop this name). Sourced from the shared client-attribution
+/// constant so this heartbeat can never drift back to the sync runner's
+/// `hq-sync` name — the drift that made the desktop fleet unmeasurable.
+const VERSION_HEARTBEAT_CLIENT_NAME: &str = hq_desktop_core::client_info::CLIENT_NAME;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionHeartbeatTrigger {
+    Launch,
+    Interval,
+    PostUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionHeartbeatOutcome {
+    Sent,
+    NoSession,
+    Failed,
+}
+
+fn version_heartbeat_delay(trigger: VersionHeartbeatTrigger) -> Duration {
+    match trigger {
+        VersionHeartbeatTrigger::Launch | VersionHeartbeatTrigger::PostUpdate => Duration::ZERO,
+        VersionHeartbeatTrigger::Interval => VERSION_HEARTBEAT_INTERVAL,
+    }
+}
+
+fn next_version_heartbeat_delay(outcome: VersionHeartbeatOutcome) -> Duration {
+    match outcome {
+        VersionHeartbeatOutcome::NoSession => VERSION_HEARTBEAT_SESSION_RETRY,
+        VersionHeartbeatOutcome::Sent | VersionHeartbeatOutcome::Failed => {
+            VERSION_HEARTBEAT_INTERVAL
+        }
+    }
+}
+
+fn heartbeat_error_is_retryable(err: &VaultClientError) -> bool {
+    matches!(err, VaultClientError::Request(_))
+}
+
+fn machine_id_log_prefix(machine_id: &str) -> &str {
+    if machine_id.is_empty() {
+        return "-";
+    }
+    let end = machine_id
+        .char_indices()
+        .nth(VERSION_HEARTBEAT_MACHINE_PREFIX_CHARS)
+        .map(|(i, _)| i)
+        .unwrap_or(machine_id.len());
+    &machine_id[..end]
+}
+
+fn log_version_heartbeat(version: &str, machine_id: &str, ok: bool) {
+    let status = if ok { "ok" } else { "failed" };
+    eprintln!(
+        "[heartbeat] version={version} machine={} {status}",
+        machine_id_log_prefix(machine_id)
+    );
+}
+
+fn build_version_heartbeat_batch(
+    machine_id: &str,
+    installer_version: &str,
+    cli_version: Option<&str>,
+) -> UsageBatch {
+    UsageBatch {
+        machine_id: machine_id.to_string(),
+        installer_version: installer_version.to_string(),
+        cli_version: cli_version.map(str::to_string),
+        events: Vec::new(),
+    }
+}
+
+fn heartbeat_app_version() -> String {
+    env!("APP_VERSION").to_string()
+}
+
+#[cfg(test)]
+async fn post_heartbeat_attempts<F, Fut>(mut post: F) -> Result<(), VaultClientError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), VaultClientError>>,
+{
+    match post().await {
+        Ok(()) => Ok(()),
+        Err(err) if heartbeat_error_is_retryable(&err) => post().await,
+        Err(err) => Err(err),
+    }
+}
+
+async fn post_version_heartbeat_request(
+    api_url: &str,
+    jwt: &str,
+    batch: &UsageBatch,
+) -> Result<(), VaultClientError> {
+    let resp = build_client()
+        .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
+        .header("x-hq-client-name", VERSION_HEARTBEAT_CLIENT_NAME)
+        .bearer_auth(jwt)
+        .json(batch)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(VaultClientError::Http {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(())
+}
+
+async fn post_version_heartbeat_with_retry(
+    api_url: &str,
+    jwt: &str,
+    batch: &UsageBatch,
+) -> Result<(), VaultClientError> {
+    match post_version_heartbeat_request(api_url, jwt, batch).await {
+        Ok(()) => Ok(()),
+        Err(err) if heartbeat_error_is_retryable(&err) => {
+            post_version_heartbeat_request(api_url, jwt, batch).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn emit_version_heartbeat_once(installed_version: Option<&str>) -> VersionHeartbeatOutcome {
+    let machine_id = read_machine_id();
+    let version = installed_version
+        .map(str::to_string)
+        .unwrap_or_else(heartbeat_app_version);
+
+    let access_token = match crate::commands::cognito::get_valid_access_token().await {
+        Ok(token) => token,
+        Err(_) => return VersionHeartbeatOutcome::NoSession,
+    };
+    let api_url = match resolve_vault_api_url() {
+        Ok(url) => url,
+        Err(_) => {
+            log_version_heartbeat(&version, &machine_id, false);
+            return VersionHeartbeatOutcome::Failed;
+        }
+    };
+
+    let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
+    let batch = build_version_heartbeat_batch(&machine_id, &version, cli_version.as_deref());
+
+    match post_version_heartbeat_with_retry(&api_url, &access_token, &batch).await {
+        Ok(()) => {
+            log_version_heartbeat(&version, &machine_id, true);
+            VersionHeartbeatOutcome::Sent
+        }
+        Err(_) => {
+            log_version_heartbeat(&version, &machine_id, false);
+            VersionHeartbeatOutcome::Failed
+        }
+    }
+}
+
+/// Fire-and-forget launch + 6h version heartbeat. Returns immediately so
+/// startup is never blocked on network or auth.
+pub fn setup_version_heartbeat() {
+    let launch_delay = version_heartbeat_delay(VersionHeartbeatTrigger::Launch);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(launch_delay).await;
+        loop {
+            let outcome = emit_version_heartbeat_once(None).await;
+            tokio::time::sleep(next_version_heartbeat_delay(outcome)).await;
+        }
+    });
+}
+
+/// Best-effort heartbeat immediately after an update installs, sending the
+/// *new* version so GTM does not wait for the relaunched process. Awaited by
+/// the updater so the request can land before restart/exit; failures are
+/// swallowed.
+pub async fn emit_version_heartbeat_after_update(installed_version: &str) {
+    let _ = emit_version_heartbeat_once(Some(installed_version)).await;
 }
 
 fn read_machine_id() -> String {
@@ -2236,7 +2500,7 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_desktop_telemetry_opt_in_false_sends_no_events() {
+    async fn test_skill_telemetry_opt_in_false_sends_no_events() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/usage/opt-in"))
@@ -2275,13 +2539,8 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_desktop_telemetry_posts_sanitized_envelope() {
+    async fn test_operational_telemetry_posts_when_skill_opt_in_is_declined() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
-            .mount(&server)
-            .await;
         Mock::given(method("POST"))
             .and(path("/v1/telemetry/events"))
             .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
@@ -2294,7 +2553,7 @@ mod codex_telemetry_tests {
         std::env::set_var("HOME", home.path());
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let result = emit_desktop_telemetry_with_vault(
+        let result = emit_desktop_operational_telemetry_with_vault(
             &vault,
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -2328,7 +2587,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["eventName"], "desktop_onboarding_step");
         assert_eq!(event["app"], "hq-desktop-app");
         assert_eq!(event["source"], "desktop");
-        assert_eq!(event["consentBasis"], "desktop-opt-in");
+        assert_eq!(event["consentBasis"], "no-consent");
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
@@ -2369,6 +2628,106 @@ mod codex_telemetry_tests {
         assert!(!props.contains_key("email"));
         assert!(!props.contains_key("message"));
         assert!(!props.contains_key("companyUid"));
+
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/usage/opt-in"),
+            "operational telemetry must not wait for or read the skill consent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        let server = MockServer::start().await;
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+
+        let result = emit_desktop_operational_telemetry_with_vault(
+            &vault,
+            "manual_sync_completed".to_string(),
+            Some(json!({"filesDownloaded": 3})),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "event is not approved operational telemetry: manual_sync_completed"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_opted_in_user_emits_operational_and_skill_telemetry() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(complete_ack)
+            .mount(&server)
+            .await;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-both"}"#);
+        write_jsonl(
+            home.path(),
+            "project",
+            "session.jsonl",
+            &[USER_ROW, ASST_ROW],
+        );
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let vault = VaultClient::new(server.uri(), "test-jwt");
+        emit_desktop_operational_telemetry_with_vault(
+            &vault,
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 3})),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let app = make_app_handle();
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/telemetry/events")
+                .count(),
+            1,
+            "the setup record is emitted"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/usage")
+                .count(),
+            1,
+            "the opted-in skill batch is emitted"
+        );
     }
 
     #[test]
@@ -2391,6 +2750,7 @@ mod codex_telemetry_tests {
         assert_eq!(serialized["eventName"], "desktop_app_daily_active");
         assert_eq!(serialized["app"], "hq-desktop-app");
         assert_eq!(serialized["source"], "desktop");
+        assert_eq!(serialized["consentBasis"], "no-consent");
         assert_eq!(
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
@@ -2402,11 +2762,11 @@ mod codex_telemetry_tests {
     }
 
     #[tokio::test]
-    async fn test_daily_active_opt_out_sends_no_event() {
+    async fn test_daily_active_posts_when_skill_opt_in_is_declined() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/usage/opt-in"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
             .mount(&server)
             .await;
 
@@ -2417,9 +2777,19 @@ mod codex_telemetry_tests {
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
-        assert!(reqs
+        let posts: Vec<_> = reqs
             .iter()
-            .all(|request| request.method != wiremock::http::Method::POST));
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .collect();
+        assert_eq!(posts.len(), 1);
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        assert_eq!(body["events"][0]["consentBasis"], "no-consent");
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/usage/opt-in"),
+            "app launch telemetry must not consult skill consent"
+        );
     }
 
     #[tokio::test]
@@ -2477,6 +2847,305 @@ mod codex_telemetry_tests {
                 .count(),
             1
         );
+    }
+
+    // ── Version heartbeat ────────────────────────────────────────────────────
+
+    #[test]
+    fn version_heartbeat_schedule_is_launch_then_6h_and_post_update_is_immediate() {
+        assert_eq!(
+            version_heartbeat_delay(VersionHeartbeatTrigger::Launch),
+            Duration::ZERO,
+            "launch emits as soon as a session exists, without delaying startup"
+        );
+        assert_eq!(
+            version_heartbeat_delay(VersionHeartbeatTrigger::PostUpdate),
+            Duration::ZERO,
+            "an installed update heartbeats before restart/exit"
+        );
+        assert_eq!(
+            version_heartbeat_delay(VersionHeartbeatTrigger::Interval),
+            Duration::from_secs(6 * 60 * 60)
+        );
+        assert_eq!(
+            next_version_heartbeat_delay(VersionHeartbeatOutcome::Sent),
+            Duration::from_secs(6 * 60 * 60)
+        );
+        assert_eq!(
+            next_version_heartbeat_delay(VersionHeartbeatOutcome::Failed),
+            Duration::from_secs(6 * 60 * 60)
+        );
+        assert_eq!(
+            next_version_heartbeat_delay(VersionHeartbeatOutcome::NoSession),
+            Duration::from_secs(30)
+        );
+        assert!(
+            next_version_heartbeat_delay(VersionHeartbeatOutcome::NoSession)
+                < next_version_heartbeat_delay(VersionHeartbeatOutcome::Sent)
+        );
+    }
+
+    #[test]
+    fn version_heartbeat_payload_is_the_usage_empty_batch_shape() {
+        let batch = build_version_heartbeat_batch("mach-abc-123", "0.10.178", Some("5.10.2"));
+        let serialized = serde_json::to_value(&batch).unwrap();
+        assert_eq!(serialized["machineId"], "mach-abc-123");
+        assert_eq!(serialized["installerVersion"], "0.10.178");
+        assert_eq!(serialized["cliVersion"], "5.10.2");
+        assert_eq!(serialized["events"], json!([]));
+        let obj = serialized.as_object().expect("object");
+        assert_eq!(obj.len(), 4, "only the usage allowlist top-level keys");
+        for unexpected in [
+            "platform",
+            "arch",
+            "osVersion",
+            "os_version",
+            "personUid",
+            "appVersion",
+        ] {
+            assert!(
+                serialized.get(unexpected).is_none(),
+                "usage ingest rejects extra top-level field {unexpected}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_heartbeat_payload_omits_unresolved_cli_version() {
+        let batch = build_version_heartbeat_batch("mach-1", "0.10.178", None);
+        let serialized = serde_json::to_value(&batch).unwrap();
+        assert!(serialized.get("cliVersion").is_none());
+        assert_eq!(serialized["events"], json!([]));
+    }
+
+    #[test]
+    fn version_heartbeat_client_name_is_the_gtm_mapped_desktop_app() {
+        assert_eq!(VERSION_HEARTBEAT_CLIENT_NAME, "hq-desktop-app");
+    }
+
+    #[test]
+    fn version_heartbeat_log_prefix_truncates_machine_id() {
+        assert_eq!(machine_id_log_prefix("abcdefgh-ijkl-mnop"), "abcdefgh");
+        assert_eq!(machine_id_log_prefix("short"), "short");
+        assert_eq!(machine_id_log_prefix(""), "-");
+    }
+
+    #[test]
+    fn version_heartbeat_is_wired_at_launch_and_after_update() {
+        let main = include_str!("../main.rs");
+        let daily = main
+            .find("commands::telemetry::setup_daily_active_emit();")
+            .expect("daily-active setup");
+        let heartbeat = main
+            .find("commands::telemetry::setup_version_heartbeat();")
+            .expect("version heartbeat setup");
+        assert!(
+            heartbeat > daily,
+            "version heartbeat starts next to daily-active, after it"
+        );
+
+        let updater = include_str!("../updater.rs");
+        assert!(
+            updater.contains("emit_version_heartbeat_after_update"),
+            "macOS update install must heartbeat before restart"
+        );
+
+        let windows = include_str!("../windows_update.rs");
+        assert!(
+            windows.contains("emit_version_heartbeat_after_update"),
+            "Windows update handoff must heartbeat before exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_posts_empty_usage_batch_without_consulting_consent() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({"enabled": false})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .and(wiremock::matchers::header(
+                "x-hq-client-name",
+                "hq-desktop-app",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "ok": true, "written": 0, "skipped": []
+            })))
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-heartbeat-consent"}"#);
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let outcome = emit_version_heartbeat_once(None).await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert_eq!(outcome, VersionHeartbeatOutcome::Sent);
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/usage/opt-in"),
+            "version/presence must not consult skill consent"
+        );
+        assert!(
+            !reqs
+                .iter()
+                .any(|request| request.url.path() == "/v1/telemetry/events"),
+            "heartbeat must not emit skill or operational product events"
+        );
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST && request.url.path() == "/v1/usage"
+            })
+            .collect();
+        assert_eq!(posts.len(), 1);
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        assert_eq!(body["machineId"], "mid-heartbeat-consent");
+        assert_eq!(body["installerVersion"], env!("APP_VERSION"));
+        assert_eq!(body["events"], json!([]));
+        let client_name = posts[0]
+            .headers
+            .get("x-hq-client-name")
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(client_name, Some("hq-desktop-app"));
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_post_update_sends_the_installed_version() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "ok": true, "written": 0, "skipped": []
+            })))
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-post-update"}"#);
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_version_heartbeat_after_update("0.10.200").await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let reqs = server.received_requests().await.unwrap();
+        let posts: Vec<_> = reqs
+            .iter()
+            .filter(|request| request.url.path() == "/v1/usage")
+            .collect();
+        assert_eq!(posts.len(), 1);
+        let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        assert_eq!(body["installerVersion"], "0.10.200");
+        assert_eq!(body["machineId"], "mid-post-update");
+        assert_eq!(body["events"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_missing_session_does_not_post_or_panic() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-no-session"}"#);
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let outcome = emit_version_heartbeat_once(None).await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert_eq!(outcome, VersionHeartbeatOutcome::NoSession);
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_http_failure_is_swallowed_without_retry() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-http-fail"}"#);
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        let outcome = emit_version_heartbeat_once(None).await;
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert_eq!(outcome, VersionHeartbeatOutcome::Failed);
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_retries_transport_error_once_then_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let batch = build_version_heartbeat_batch("m1", "1.0.0", None);
+        let result = post_heartbeat_attempts(|| {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            let batch = batch.clone();
+            async move {
+                if n == 0 {
+                    post_version_heartbeat_request("http://127.0.0.1:1", "tok", &batch).await
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn version_heartbeat_transport_failure_does_not_panic() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let batch = build_version_heartbeat_batch("m1", "1.0.0", None);
+        let result = post_heartbeat_attempts(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            let batch = batch.clone();
+            async move { post_version_heartbeat_request("http://127.0.0.1:1", "tok", &batch).await }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(heartbeat_error_is_retryable(result.as_ref().unwrap_err()));
+    }
+
+    #[test]
+    fn setup_version_heartbeat_is_fire_and_forget() {
+        // `setup_version_heartbeat` is a sync fn that only spawns; the first
+        // emit is inside the task (`version_heartbeat_delay(Launch) == 0`).
+        // Do not call it here — the spawned loop would outlive the test.
+        assert_eq!(
+            version_heartbeat_delay(VersionHeartbeatTrigger::Launch),
+            Duration::ZERO
+        );
+        let _: fn() = setup_version_heartbeat;
     }
 
     // ── (a) opt-in=false → 0 bytes sent ──────────────────────────────────────

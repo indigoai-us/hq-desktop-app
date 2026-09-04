@@ -1,11 +1,18 @@
 // Behaviour tests for `.githooks/pre-push`, the release-tag cooldown.
 //
 // Pushing a `v*` tag is the whole release trigger (docs/RELEASE.md), and the
-// Release workflow builds macOS universal + Windows x64/ARM64 installers on
-// GitHub-hosted runners. macOS minutes bill at 10x and Windows at 2x a Linux
-// minute, so a tag push is the single most expensive action in this repo.
-// The hook paces those pushes; these tests run it for real against throwaway
-// git repositories rather than asserting on its source text.
+// Release workflow builds macOS universal + Windows x64/ARM64 installers, takes
+// 20-30 minutes, and publishes an updater manifest that every installed copy of
+// the app picks up. The hook paces those pushes so a burst of tags does not
+// churn users through builds that supersede each other within the hour.
+//
+// It is NOT paced for cost. This repo is public, so standard GitHub-hosted
+// runners are free; the 10x macOS / 2x Windows multipliers the hook used to
+// cite apply to billable minutes on private repositories and never applied
+// here. That correction is why the window is 2 hours rather than 6.
+//
+// These tests run the hook for real against throwaway git repositories rather
+// than asserting on its source text.
 
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from "node:fs/promises";
@@ -153,7 +160,7 @@ describe("the hook is installable", () => {
 });
 
 describe("release tag pushes are paced", () => {
-  it("blocks a tag pushed inside the 6 hour cooldown", async () => {
+  it("blocks a tag pushed inside the 2 hour cooldown", async () => {
     const repo = await makeRepo("inside-window");
     await setMarker(repo, 1.2);
 
@@ -161,9 +168,12 @@ describe("release tag pushes are paced", () => {
 
     expect(code).toBe(1);
     expect(stderr).toContain("v1.2.3");
-    // The message has to explain the cost, not just say "no".
+    // The message has to explain why, not just say "no". It must NOT claim the
+    // release costs money: this repo is public, standard runners are free, and
+    // a refusal that argues from a false premise trains people to bypass it.
     const flat = stderr.replace(/\s+/g, " ");
-    expect(flat).toMatch(/costs? a lot of real money in GitHub Actions/);
+    expect(flat).not.toMatch(/money|\b10x\b|\b2x\b|bills?\b/i);
+    expect(flat).toMatch(/updater manifest that every installed copy/);
     expect(stderr).toContain("macOS");
     expect(stderr).toContain("Windows");
     expect(stderr).toContain("HQ_ALLOW_TAG_PUSH=1");
@@ -171,7 +181,7 @@ describe("release tag pushes are paced", () => {
 
   it("allows a tag once the cooldown has elapsed", async () => {
     const repo = await makeRepo("outside-window");
-    await setMarker(repo, 6.5);
+    await setMarker(repo, 2.5);
 
     expect((await pushRef(repo, "refs/tags/v1.2.4", SHA)).code).toBe(0);
   });
@@ -254,7 +264,7 @@ describe("the destination ref decides, not the source ref", () => {
 
 describe("only release tags count", () => {
   // The Release workflow triggers on `tags: ["v*"]` and nothing else, so any
-  // other tag starts no billed build.
+  // other tag starts no release build.
   it("allows a non-release tag during the cooldown", async () => {
     const repo = await makeRepo("non-release-tag");
     await setMarker(repo, 0.5);
@@ -374,7 +384,10 @@ describe("the newest signal wins", () => {
 describe("a fresh clone falls back to tag dates", () => {
   it("blocks when the newest existing release tag is recent", async () => {
     const repo = await makeRepo("fallback-recent");
-    await tagAt(repo, "v3.0.0", 2);
+    // Inside the window with room to spare. This used to be 2 hours, which sat
+    // comfortably inside a 6 hour window and exactly ON the boundary of a 2
+    // hour one -- a fixture that stopped exercising the behaviour it names.
+    await tagAt(repo, "v3.0.0", 1);
 
     const { code, stderr } = await pushRef(repo, "refs/tags/v3.0.1", SHA);
 
@@ -440,7 +453,7 @@ describe("the cooldown is scoped to its destination", () => {
   });
 
   // The marker is per-destination; the tag-date floor deliberately is not. A
-  // release tag that exists locally and was created minutes ago means a billed
+  // release tag that exists locally and was created minutes ago means a release
   // release is probably already running, and the hook cannot tell a harmless
   // bare mirror from a fork that would build it. Blocking is the safe
   // direction, and the bypass is one environment variable away.
@@ -518,11 +531,15 @@ describe("the cooldown is escapable and configurable", () => {
   });
 
   it("resets the cooldown when a bypass releases", async () => {
-    // A bypassed release still starts a billed build, so it has to move the
-    // window. Otherwise an urgent release now, followed by an ordinary one
-    // five hours later, sees a six-hour-old marker and goes out early.
+    // A bypassed release still ships, so it has to move the window. Otherwise
+    // an urgent release now, followed by an ordinary one 90 minutes later, sees
+    // the pre-bypass marker and goes out early.
+    //
+    // The starting marker is inside the window on purpose: if it were already
+    // cold the first push would succeed with or without the bypass, and this
+    // would silently stop testing the bypass path at all.
     const repo = await makeRepo("bypass-records");
-    await setMarker(repo, 5);
+    await setMarker(repo, 0.5);
 
     await pushRef(repo, "refs/tags/v6.1.0", SHA, { HQ_ALLOW_TAG_PUSH: "1" });
 
@@ -552,12 +569,14 @@ describe("the cooldown is escapable and configurable", () => {
     ).toBe(1);
   });
 
-  it("defaults to a 6 hour window", async () => {
+  it("defaults to a 2 hour window", async () => {
+    // Pins the default from both sides, so shortening or lengthening the window
+    // is a deliberate edit here rather than a number that quietly drifts.
     const repo = await makeRepo("default-window");
-    await setMarker(repo, 5.9);
+    await setMarker(repo, 1.9);
     expect((await pushRef(repo, "refs/tags/v8.0.0", SHA)).code).toBe(1);
 
-    await setMarker(repo, 6.1);
+    await setMarker(repo, 2.1);
     expect((await pushRef(repo, "refs/tags/v8.0.1", SHA)).code).toBe(0);
   });
 });

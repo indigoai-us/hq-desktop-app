@@ -3,6 +3,7 @@
   import type { SettingsTab } from "../settings/settings-sections.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { getV4TitleBarModel, type V4HydrationIssue } from "./model.js";
+  import { startWindowDrag } from "./window-drag.js";
   import { titlebarDayDate } from "../chat/sidebar-model.js";
   import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
@@ -132,7 +133,9 @@
    * Platform capability seam (not hardcoded): only hosts that draw native
    * window controls (desktop traffic lights / caption buttons) need the
    * left inset that clears them. On web there are no controls, so the wordmark
-   * + DAY·DATE sit flush-left.
+   * + DAY·DATE sit flush-left. Height and gutter come from the shared
+   * `--titlebar-height` / `--titlebar-leading-inset` tokens so sub-page
+   * headers stay on the same centre line as the overlay traffic lights.
    */
   const hasWindowControls = $derived(
     adapter?.capabilities?.hasWindowControls ?? false,
@@ -476,32 +479,6 @@
     if (coreOpen) launchOpen = false;
   }
 
-  function isDragBlocker(target: EventTarget | null): boolean {
-    return (
-      target instanceof Element &&
-      Boolean(
-        target.closest("button, a, input, textarea, select, [data-no-drag]"),
-      )
-    );
-  }
-
-  function startWindowDrag(event: PointerEvent): void {
-    if (event.button !== 0 || isDragBlocker(event.target)) return;
-    const internals = (
-      window as unknown as {
-        __TAURI_INTERNALS__?: {
-          invoke?: (
-            cmd: string,
-            args?: Record<string, unknown>,
-          ) => Promise<unknown>;
-          metadata?: { currentWindow?: { label?: string } };
-        };
-      }
-    ).__TAURI_INTERNALS__;
-    const label = internals?.metadata?.currentWindow?.label ?? "main";
-    void internals?.invoke?.("plugin:window|start_dragging", { label });
-  }
-
   $effect(() => {
     if (!coreOpen) return;
 
@@ -528,6 +505,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <header
   class="v4-titlebar chat-shell"
+  class:has-window-controls={hasWindowControls}
   aria-label="Window chrome"
   data-tauri-drag-region
   onpointerdown={startWindowDrag}
@@ -844,8 +822,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    flex: 0 0 48px;
-    height: 48px;
+    flex: 0 0 var(--titlebar-height, 48px);
+    height: var(--titlebar-height, 48px);
     overflow: visible;
     padding: 0 16px 0 0;
     border-bottom: 1px solid var(--line);
@@ -861,15 +839,17 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 8px;
-    /* 78px left inset clears the overlay traffic lights (macOS). Platform-
-       conditional: hosts without native window controls (web) drop it so the
-       wordmark is flush-left — see `.no-window-controls`. */
-    padding-left: 78px;
+    /* Leading gutter clears overlay traffic lights (macOS). Shared with
+       sub-page headers via `--titlebar-leading-inset` (titlebar-layout.ts).
+       Hosts without native window controls (web) drop it so the wordmark is
+       flush-left — see `.no-window-controls`. */
+    padding-left: var(--titlebar-leading-inset);
   }
 
   /* Web / no OS window controls: wordmark + DAY·DATE flush-left. */
   .v4-titlebar-leading.no-window-controls {
-    padding-left: 16px;
+    --titlebar-leading-inset: 16px;
+    padding-left: var(--titlebar-leading-inset);
   }
 
   .v4-wordmark {
@@ -1015,11 +995,8 @@
 
 
   /* Windows uses the native decorated title bar (system controls + Snap
-     Layouts). The HQ toolbar sits below it — no macOS traffic-light gutter. */
-  :global(html[data-platform="windows"]) .v4-titlebar-leading {
-    padding-left: 12px;
-  }
-
+     Layouts). `--titlebar-leading-inset` is 12px via tokens.css; hide the
+     macOS traffic-light drag pad. */
   :global(html[data-platform="windows"]) .v4-drag-lights {
     width: 0;
     display: none;

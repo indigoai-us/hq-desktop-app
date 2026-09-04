@@ -12,7 +12,6 @@ use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
 const INDIGO_ALLOWED_DOMAIN: &str = "@getindigo.ai";
-const HQ_WORK_ALLOWED_DOMAINS: [&str; 3] = ["@getindigo.ai", "@vyg.ai", "@liverecover.com"];
 
 /// Future yielding the signed-in user's email claim (None when signed out / on error).
 pub type EmailClaimFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
@@ -37,7 +36,6 @@ async fn current_email_claim() -> Option<String> {
 }
 
 static CACHED_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
-static CACHED_HQ_WORK_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 static CACHED_GA_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 
 fn gate_cache() -> &'static Mutex<Option<bool>> {
@@ -46,10 +44,6 @@ fn gate_cache() -> &'static Mutex<Option<bool>> {
 
 fn ga_gate_cache() -> &'static Mutex<Option<bool>> {
     CACHED_GA_GATE.get_or_init(|| Mutex::new(None))
-}
-
-fn hq_work_gate_cache() -> &'static Mutex<Option<bool>> {
-    CACHED_HQ_WORK_GATE.get_or_init(|| Mutex::new(None))
 }
 
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
@@ -74,32 +68,6 @@ pub async fn is_indigo_user() -> bool {
     enabled
 }
 
-/// Embedded HQ Work rollout gate for the approved company domains.
-///
-/// This is deliberately separate from [`is_indigo_user`]: moderation, admin,
-/// staging, and pre-release channels remain Indigo-only while the embedded HQ
-/// Work window also admits VYG and LiveRecover users.
-pub async fn is_hq_work_cohort_user() -> bool {
-    {
-        let guard = hq_work_gate_cache()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(v) = *guard {
-            return v;
-        }
-    }
-
-    let enabled = compute_hq_work_gate().await;
-    let mut guard = hq_work_gate_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(v) = *guard {
-        return v;
-    }
-    *guard = Some(enabled);
-    enabled
-}
-
 /// GA gate — true for **any** signed-in user (non-empty email claim),
 /// regardless of email domain.
 ///
@@ -111,8 +79,9 @@ pub async fn is_hq_work_cohort_user() -> bool {
 /// returns true whenever a non-empty email claim is present instead of
 /// requiring the `@getindigo.ai` domain.
 ///
-/// `is_indigo_user()` is intentionally kept intact — the updater still uses
-/// it to keep pre-release auto-update channels Indigo-only.
+/// `is_indigo_user()` is intentionally kept intact — Settings still uses
+/// it for the HQ Core staging-channel toggle (builder-only). The updater
+/// no longer consults it; Beta/Alpha are opt-in for every signed-in user.
 ///
 /// Process-lifetime cache (separate from the Indigo cache) — safe because the
 /// email claim is stable across Cognito token rotations. Returns false
@@ -139,24 +108,16 @@ pub async fn desktop_features_enabled() -> bool {
 ///
 /// This keeps the caches process-lifetime for steady-state reads while
 /// allowing the first post-OAuth gate check to use the newly persisted
-/// ID-token claims. Clears the Indigo, HQ Work cohort, and GA gates.
+/// ID-token claims. Clears the Indigo and GA gates.
 pub fn clear_cached_gate() {
     let mut guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
-    let mut hq_work_guard = hq_work_gate_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *hq_work_guard = None;
     let mut ga_guard = ga_gate_cache().lock().unwrap_or_else(|e| e.into_inner());
     *ga_guard = None;
 }
 
 async fn compute_gate() -> bool {
     is_allowed_email(current_email_claim().await.as_deref())
-}
-
-async fn compute_hq_work_gate() -> bool {
-    is_hq_work_allowed_email(current_email_claim().await.as_deref())
 }
 
 /// GA-gate counterpart to [`compute_gate`] — identical token/claims decode,
@@ -173,23 +134,6 @@ async fn compute_ga_gate() -> bool {
 pub fn is_allowed_email(email: Option<&str>) -> bool {
     match email {
         Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(INDIGO_ALLOWED_DOMAIN),
-        _ => false,
-    }
-}
-
-/// Pure matcher for the embedded HQ Work cohort.
-///
-/// Each entry includes the leading `@`, so suffix matching admits only the
-/// exact email domain and rejects look-alikes such as `notvyg.ai`, subdomains,
-/// and `liverecover.com.evil`.
-pub fn is_hq_work_allowed_email(email: Option<&str>) -> bool {
-    match email {
-        Some(s) if !s.is_empty() => {
-            let normalized = s.to_ascii_lowercase();
-            HQ_WORK_ALLOWED_DOMAINS
-                .iter()
-                .any(|domain| normalized.ends_with(domain))
-        }
         _ => false,
     }
 }
@@ -227,39 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn hq_work_cohort_admits_only_the_three_exact_domains() {
-        for email in [
-            "builder@getindigo.ai",
-            "operator@vyg.ai",
-            "teammate@liverecover.com",
-            "OPERATOR@VYG.AI",
-            "TEAMMATE@LIVERECOVER.COM",
-        ] {
-            assert!(
-                is_hq_work_allowed_email(Some(email)),
-                "expected cohort: {email}"
-            );
-        }
-
-        for email in [
-            "operator@gmail.com",
-            "attacker@notvyg.ai",
-            "attacker@forgetindigo.ai",
-            "attacker@liverecover.com.evil",
-            "vyg.ai",
-            "liverecover.com",
-            "",
-        ] {
-            assert!(
-                !is_hq_work_allowed_email(Some(email)),
-                "unexpected cohort: {email}"
-            );
-        }
-        assert!(!is_hq_work_allowed_email(None));
-    }
-
-    #[test]
-    fn hq_work_expansion_does_not_expand_the_indigo_admin_gate() {
+    fn indigo_admin_gate_does_not_admit_vyg_or_liverecover() {
         assert!(!is_allowed_email(Some("operator@vyg.ai")));
         assert!(!is_allowed_email(Some("teammate@liverecover.com")));
     }

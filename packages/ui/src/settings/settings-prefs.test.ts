@@ -22,6 +22,10 @@ describe("settings prefs", () => {
     expect(parseSettingsPrefs(null).showInDock).toBe(true);
     expect(parseSettingsPrefs({ windowOpacity: 20 }).windowOpacity).toBe(50);
     expect(parseSettingsPrefs({ uiSize: "large" }).uiSize).toBe("large");
+    expect(parseSettingsPrefs(null).showSidebarScopeLabels).toBe(true);
+    expect(parseSettingsPrefs({ showSidebarScopeLabels: false }).showSidebarScopeLabels).toBe(
+      false,
+    );
   });
 
   it("round-trips a patch through storage", () => {
@@ -35,6 +39,9 @@ describe("settings prefs", () => {
     expect(readSettingsPrefs(storage).showInDock).toBe(
       DEFAULT_SETTINGS_PREFS.showInDock,
     );
+    expect(readSettingsPrefs(storage).showSidebarScopeLabels).toBe(true);
+    writeSettingsPrefs({ showSidebarScopeLabels: false }, storage);
+    expect(readSettingsPrefs(storage).showSidebarScopeLabels).toBe(false);
   });
 
   it("does not retain legacy host-control fields in local presentation preferences", () => {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Channel } from "./channels";
-import { dmActivityFromTimeline } from "./live-catchup";
+import { applyChannelMessageWake, type Channel } from "./channels";
+import {
+  channelActivityFromTimeline,
+  dmActivityFromTimeline,
+} from "./live-catchup";
 import {
   applyDirectoryFeed,
   applyDirectoryRows,
@@ -26,7 +29,9 @@ import {
   groupByType,
   historySearchScopeLabel,
   initialsFor,
+  isStrictlyRicherConversationRow,
   loadPins,
+  loadSetupPinDismissed,
   loadShowFilter,
   normalizeChannel,
   normalizeConversations,
@@ -36,6 +41,7 @@ import {
   resolveSearchHitRow,
   rowAvatar,
   savePins,
+  saveSetupPinDismissed,
   saveShowFilter,
   scopeFromHotkey,
   scopePillLabel,
@@ -47,13 +53,21 @@ import {
   takeDirectorySeed,
   takeRailConversations,
   pickAutoOpenConversation,
+  pickSettledBootConversation,
+  railRowScopeLabel,
+  duplicateHumanDmTitles,
+  resolveRailCompanyName,
   titlebarDayDate,
   togglePin,
   type ConversationRow,
   type DmContactInput,
   type MessageSearchHit,
 } from "./sidebar-model";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src";
 import { agentAvatarAssets, agentAvatarFor } from "./messaging/agent-avatars";
+
+const PARKER_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/agt_parker/h.png?X-Amz-Signature=mock`;
+const ADA_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_ada/h.png?X-Amz-Signature=mock`;
 
 // Fixed "now": Wednesday Aug 12, 2026 15:00 local — tests use local day math.
 const NOW = new Date(2026, 7, 12, 15, 0, 0, 0).getTime();
@@ -114,6 +128,44 @@ function memoryStorage(seed: Record<string, string> = {}): Storage {
     },
   } as Storage;
 }
+
+describe("isStrictlyRicherConversationRow", () => {
+  const stub: ConversationRow = {
+    id: "ch:chn_atlas",
+    kind: "channel",
+    title: "",
+    companyUid: null,
+    unreadDot: false,
+    lastActivityAt: 0,
+    pinned: false,
+  };
+  const enriched: ConversationRow = {
+    ...stub,
+    title: "Atlas",
+    companyUid: "cmp_acme",
+    channelId: "chn_atlas",
+    channelScope: "project",
+    projectId: "atlas",
+    membership: "joined",
+  };
+
+  it("adopts metadata that fills gaps without dropping known values", () => {
+    expect(isStrictlyRicherConversationRow(enriched, stub)).toBe(true);
+  });
+
+  it("does not adopt an identical row, a row that drops metadata, or a different conversation", () => {
+    expect(isStrictlyRicherConversationRow(enriched, enriched)).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow(
+        { ...enriched, companyUid: null },
+        enriched,
+      ),
+    ).toBe(false);
+    expect(
+      isStrictlyRicherConversationRow({ ...enriched, id: "ch:chn_other" }, stub),
+    ).toBe(false);
+  });
+});
 
 describe("normalizeChannel / normalizeDm", () => {
   it("maps company channels with numeric unread and no DM-style assumptions", () => {
@@ -545,6 +597,56 @@ describe("pickAutoOpenConversation", () => {
   });
 });
 
+describe("pickSettledBootConversation", () => {
+  function row(
+    partial: Partial<ConversationRow> & { id: string; lastActivityAt: number },
+  ): ConversationRow {
+    return {
+      kind: "channel",
+      title: partial.id,
+      companyUid: null,
+      unreadDot: false,
+      pinned: false,
+      ...partial,
+    };
+  }
+
+  it("still prefers a real conversation over #setup", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 99,
+    });
+    const live = row({
+      id: "ch:chn_ops",
+      channelId: "chn_ops",
+      lastActivityAt: 1,
+    });
+    expect(pickSettledBootConversation([setup, live], null)?.id).toBe(
+      "ch:chn_ops",
+    );
+  });
+
+  it("falls back to #setup so an empty tenant is not stuck on the skeleton", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+      pinned: true,
+    });
+    expect(pickSettledBootConversation([setup], null)?.id).toBe("ch:setup");
+  });
+
+  it("returns null when a selection already exists", () => {
+    const setup = row({
+      id: "ch:setup",
+      channelId: "setup",
+      lastActivityAt: 0,
+    });
+    expect(pickSettledBootConversation([setup], "ch:setup")).toBeNull();
+  });
+});
+
 describe("company scope filtering", () => {
   const rows: ConversationRow[] = [
     {
@@ -812,6 +914,23 @@ describe("pin persistence", () => {
     expect(loadPins(storage)).toEqual(["dm:2"]);
   });
 
+  it("loadSetupPinDismissed defaults to false and round-trips the flag", () => {
+    const storage = memoryStorage();
+    expect(loadSetupPinDismissed(storage)).toBe(false);
+    expect(loadSetupPinDismissed(null)).toBe(false);
+    saveSetupPinDismissed(storage, true);
+    expect(loadSetupPinDismissed(storage)).toBe(true);
+    saveSetupPinDismissed(storage, false);
+    expect(loadSetupPinDismissed(storage)).toBe(false);
+    expect(storage.getItem("hq.chat.setup-pin-dismissed")).toBeNull();
+    // Unknown values are not "dismissed".
+    expect(
+      loadSetupPinDismissed(
+        memoryStorage({ "hq.chat.setup-pin-dismissed": "yes" }),
+      ),
+    ).toBe(false);
+  });
+
   it("loadPins tolerates corrupt JSON", () => {
     const storage = memoryStorage({ "hq.chat.pins": "{not-json" });
     expect(loadPins(storage)).toEqual([]);
@@ -1009,6 +1128,139 @@ describe("US-013 palette conversation ranking", () => {
     const companies = [{ companyUid: "cmp_acme", label: "Acme" }];
     expect(companyLabelFor("cmp_acme", companies)).toBe("Acme");
     expect(companyLabelFor(null, companies)).toBeNull();
+  });
+});
+
+describe("rail scope labels", () => {
+  const companies = [
+    { companyUid: "cmp_indigo", label: "Indigo" },
+    { companyUid: "cmp_lr", label: "Liverecover" },
+  ];
+
+  function channelRow(
+    name: string,
+    companyUid: string,
+  ): ConversationRow {
+    return normalizeChannel(
+      channel({ channelId: name, name, companyUid, companyName: null }),
+    );
+  }
+
+  function humanRow(
+    personUid: string,
+    displayName: string,
+    email: string,
+  ): ConversationRow {
+    return normalizeDm(dm({ personUid, displayName, email }));
+  }
+
+  function agentRow(
+    personUid: string,
+    displayName: string,
+    companyUid: string,
+  ): ConversationRow {
+    return normalizeDm(
+      dm({
+        personUid,
+        displayName,
+        email: null,
+        companyUid,
+      }),
+    );
+  }
+
+  it("resolveRailCompanyName prefers the memberships list and hides raw uids", () => {
+    expect(resolveRailCompanyName("cmp_indigo", companies)).toBe("Indigo");
+    expect(resolveRailCompanyName("cmp_missing", companies)).toBeNull();
+    expect(resolveRailCompanyName("Liverecover", companies)).toBe("Liverecover");
+    expect(resolveRailCompanyName(null, companies)).toBeNull();
+  });
+
+  it("channel rows in All scope show the company name", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "all",
+        companies,
+        enabled: true,
+      }),
+    ).toEqual({ kind: "company", text: "Indigo" });
+  });
+
+  it("agent DMs in All scope show the company name", () => {
+    expect(
+      railRowScopeLabel(agentRow("agt_fleet", "Fleet", "cmp_lr"), {
+        scope: "all",
+        companies,
+        enabled: true,
+      }),
+    ).toEqual({ kind: "company", text: "Liverecover" });
+  });
+
+  it("human DMs in All scope show email", () => {
+    expect(
+      railRowScopeLabel(
+        humanRow("prs_ada", "Ada Lovelace", "ada@getindigo.ai"),
+        { scope: "all", companies, enabled: true },
+      ),
+    ).toEqual({ kind: "email", text: "ada@getindigo.ai" });
+  });
+
+  it("single-company scope hides company labels", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+      }),
+    ).toBeNull();
+    expect(
+      railRowScopeLabel(agentRow("agt_fleet", "Fleet", "cmp_indigo"), {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("duplicate-name humans keep email in single-company scope", () => {
+    const alexA = humanRow("prs_a", "Alex", "alex@indigo.ai");
+    const alexB = humanRow("prs_b", "Alex", "alex@liverecover.com");
+    const unique = humanRow("prs_c", "Sofia", "sofia@indigo.ai");
+    const dupes = duplicateHumanDmTitles([alexA, alexB, unique]);
+    expect(dupes.has("alex")).toBe(true);
+    expect(dupes.has("sofia")).toBe(false);
+    expect(
+      railRowScopeLabel(alexA, {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+        duplicateHumanTitles: dupes,
+      }),
+    ).toEqual({ kind: "email", text: "alex@indigo.ai" });
+    expect(
+      railRowScopeLabel(unique, {
+        scope: "cmp_indigo",
+        companies,
+        enabled: true,
+        duplicateHumanTitles: dupes,
+      }),
+    ).toBeNull();
+  });
+
+  it("toggle off hides every label", () => {
+    expect(
+      railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
+        scope: "all",
+        companies,
+        enabled: false,
+      }),
+    ).toBeNull();
+    expect(
+      railRowScopeLabel(
+        humanRow("prs_ada", "Ada", "ada@getindigo.ai"),
+        { scope: "all", companies, enabled: false },
+      ),
+    ).toBeNull();
   });
 });
 
@@ -1513,6 +1765,151 @@ describe("applyDirectoryFeed — host seed vs empty reconcile", () => {
     );
     expect(next[0]?.unread).toBe(1);
   });
+
+  it("does not rewind a newer local activity stamp when the snapshot is older", () => {
+    const painted = [
+      {
+        channelId: "chn_live",
+        name: "work-mesh-testing",
+        scope: "project" as const,
+        unread: 0,
+        lastActivityAt: "2026-08-22T12:00:00.000Z",
+        lastMessageAt: "2026-08-22T12:00:00.000Z",
+        companyUid: "cmp_indigo",
+      },
+    ];
+    const next = applyDirectoryRows(
+      [
+        {
+          ...seed[0]!,
+          unreadCount: 0,
+          lastActivityAt: "2026-08-16T05:00:00.000Z",
+        },
+      ],
+      painted,
+    );
+    expect(next[0]?.lastActivityAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(next[0]?.lastMessageAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(next[0]?.companyUid).toBe("cmp_indigo");
+  });
+
+  it("adopts a newer directory activity stamp", () => {
+    const painted = [
+      {
+        channelId: "chn_live",
+        name: "work-mesh-testing",
+        scope: "project" as const,
+        unread: 0,
+        lastActivityAt: "2026-08-16T05:00:00.000Z",
+        companyUid: "cmp_indigo",
+      },
+    ];
+    const next = applyDirectoryRows(
+      [
+        {
+          ...seed[0]!,
+          lastActivityAt: "2026-08-22T12:00:00.000Z",
+        },
+      ],
+      painted,
+    );
+    expect(next[0]?.lastActivityAt).toBe("2026-08-22T12:00:00.000Z");
+  });
+});
+
+describe("channel rail stamps from own send and loaded timeline", () => {
+  it("owner send in a company channel moves the row to TODAY without an unread badge", () => {
+    const old = iso(msOnDay(10, 9));
+    const sent = iso(msOnDay(0, 21));
+    const stamped = applyChannelMessageWake(
+      [
+        channel({
+          channelId: "chn_hq_dev",
+          name: "hq-dev",
+          scope: "company",
+          companyUid: "cmp_indigo",
+          lastActivityAt: old,
+          lastMessageAt: old,
+          unread: 0,
+        }),
+      ],
+      { channelId: "chn_hq_dev", createdAt: sent },
+    );
+    expect(stamped[0]?.unread).toBe(0);
+    const rows = normalizeConversations(stamped, []);
+    const grouped = groupByDay(rows, NOW);
+    const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+    const row = today?.rows.find((r) => r.id === "ch:chn_hq_dev");
+    expect(row).toBeTruthy();
+    expect(row!.unreadCount).toBeUndefined();
+    expect(row!.unreadDot).toBe(false);
+    expect(row!.companyUid).toBe("cmp_indigo");
+    expect(grouped.lastWeek.some((r) => r.id === "ch:chn_hq_dev")).toBe(false);
+  });
+
+  it("inbound message regroups the channel under TODAY with a badge", () => {
+    const old = iso(msOnDay(10, 9));
+    const inbound = iso(msOnDay(0, 15));
+    const stamped = applyChannelMessageWake(
+      [
+        channel({
+          channelId: "chn_hq_dev",
+          name: "hq-dev",
+          scope: "company",
+          companyUid: "cmp_indigo",
+          lastActivityAt: old,
+          lastMessageAt: old,
+          unread: 0,
+        }),
+      ],
+      { channelId: "chn_hq_dev", createdAt: inbound, unreadDelta: 1 },
+    );
+    expect(stamped[0]?.unread).toBe(1);
+    const rows = normalizeConversations(stamped, []);
+    const grouped = groupByDay(rows, NOW);
+    const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+    const row = today?.rows.find((r) => r.id === "ch:chn_hq_dev");
+    expect(row).toBeTruthy();
+    expect(row!.unreadCount).toBe(1);
+  });
+
+  it("a loaded timeline newer than the rail stamp regroups company, project, and group channels", () => {
+    const old = iso(msOnDay(10, 9));
+    const newer = iso(msOnDay(0, 21));
+    for (const scope of ["company", "project", "group"] as const) {
+      const activity = channelActivityFromTimeline("chn_row", [
+        { createdAt: old, fromPersonUid: "prs_other", eventId: "evt_old" },
+        { createdAt: newer, fromPersonUid: "prs_me", eventId: "evt_own" },
+      ]);
+      expect(activity).toEqual({
+        channelId: "chn_row",
+        lastMessageAt: newer,
+        fromPersonUid: "prs_me",
+        eventId: "evt_own",
+      });
+      const stamped = applyChannelMessageWake(
+        [
+          channel({
+            channelId: "chn_row",
+            name: scope === "group" ? "" : "hq-dev",
+            scope,
+            companyUid: scope === "group" ? null : "cmp_indigo",
+            lastActivityAt: old,
+            lastMessageAt: old,
+            unread: 0,
+          }),
+        ],
+        { channelId: "chn_row", createdAt: activity!.lastMessageAt },
+      );
+      const rows = normalizeConversations(stamped, []);
+      const grouped = groupByDay(rows, NOW);
+      const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+      expect(
+        today?.rows.some((r) => r.id === "ch:chn_row"),
+        `${scope} channel should land under TODAY`,
+      ).toBe(true);
+    }
+  });
 });
 
 describe("G3: contacts directory never renders as sidebar conversation rows", () => {
@@ -1798,13 +2195,23 @@ describe("rowAvatar", () => {
   };
 
   it("uses a known photo for anyone", () => {
-    expect(
-      rowAvatar(agent, { agt_parker: "https://cdn/parker.jpg" }),
-    ).toEqual({ kind: "photo", src: "https://cdn/parker.jpg" });
-    expect(rowAvatar(human, { prs_ada: "https://cdn/ada.jpg" })).toEqual({
+    expect(rowAvatar(agent, { agt_parker: PARKER_PHOTO })).toEqual({
       kind: "photo",
-      src: "https://cdn/ada.jpg",
+      src: PARKER_PHOTO,
     });
+    expect(rowAvatar(human, { prs_ada: ADA_PHOTO })).toEqual({
+      kind: "photo",
+      src: ADA_PHOTO,
+    });
+  });
+
+  it("ignores arbitrary http(s) photos the packaged CSP cannot paint", () => {
+    expect(
+      rowAvatar(agent, { agt_parker: "https://cdn.test/parker.jpg" }),
+    ).toMatchObject({ kind: "generated" });
+    expect(
+      rowAvatar(human, { prs_ada: "https://cdn.test/ada.jpg" }),
+    ).toEqual({ kind: "initials", initials: "AL" });
   });
 
   it("uses a deterministic generated avatar for a photo-less agent", () => {

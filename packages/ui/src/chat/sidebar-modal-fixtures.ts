@@ -1,9 +1,11 @@
 /**
- * Switcher / compose row helpers for the sidebar SEARCH and CREATE modals.
+ * Switcher row helpers for the sidebar SEARCH and HISTORY overlays.
  *
  * Product data comes from live conversation rows. The authored
  * SWITCHER_ROWS / COMPOSE_SUGGESTIONS lists below are retained only for
  * isolated visual-QA tests — ChatSidebar must not use them as a fallback.
+ *
+ * The create flow's own rules live in `create-flow.ts`.
  */
 import { mentionTypeForUid } from "./mentions";
 import type { ConversationKind, ConversationRow } from "./sidebar-model";
@@ -120,28 +122,6 @@ export function filterSwitcher(
   const q = query.trim().toLowerCase();
   if (!q) return rows;
   return rows.filter((r) => r.name.toLowerCase().includes(q));
-}
-
-/**
- * Channel name the compose query could create, or null when creation should
- * not be offered. Offered whenever the typed query (leading `#` stripped,
- * spaces collapsed to `-`) is non-empty and no existing channel row matches it
- * exactly — the "typed a channel that doesn't exist" case. An exact match means
- * the user should pick the existing channel instead.
- */
-export function channelCreateCandidate(
-  rows: SwitcherRow[],
-  query: string,
-): string | null {
-  const name = query.trim().replace(/^#+/, "").trim().replace(/\s+/g, "-");
-  if (!name) return null;
-  const q = name.toLowerCase();
-  const exists = rows.some(
-    (r) =>
-      r.kind === "channel" &&
-      r.name.trim().replace(/^#+/, "").toLowerCase() === q,
-  );
-  return exists ? null : name;
 }
 
 /** Map live sidebar conversations into the switcher/compose roster. */

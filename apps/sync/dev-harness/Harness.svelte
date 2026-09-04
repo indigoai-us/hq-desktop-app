@@ -7,6 +7,7 @@
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import SessionsPage from '../src/desktop-alt/pages/SessionsPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
+  import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
@@ -22,8 +23,7 @@
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
-  import MessagesShell from '../src/components/messaging/MessagesShell.svelte';
-  import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
+
   import {
     WIDGET_RECENT_STORAGE_KEY,
     type WidgetStackItem,
@@ -222,8 +222,9 @@
   ];
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|signin|banner   ?theme=light|dark
+  //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
+  //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
   // For the popover view, size the browser viewport to ~320x440 (the real
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
@@ -273,7 +274,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions'
+      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions' || view === 'shell'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -291,7 +292,7 @@
                     ? 'widget'
         : view === 'permissions'
           ? 'meeting-permissions'
-          : view === 'messages' || view === 'conversation' || view === 'createchannel'
+          : view === 'conversation'
             ? 'messages'
             : 'main'
   );
@@ -378,6 +379,11 @@
   <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
        live strip). Resize the preview viewport to ~1180x720. -->
   <DesktopApp />
+{:else if view === 'shell'}
+  <!-- Production HQ Work shell (HqWorkWorkShell). Pair with
+       ?persona=empty-inbox|personal-only|multi-company|indigo so the mocked
+       adapter is the same matrix CI mounts. -->
+  <HqWorkWorkShell />
 {:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
@@ -398,18 +404,6 @@
       onsend={() => {}}
       ontogglereaction={() => {}}
     />
-  </div>
-{:else if view === 'messages'}
-  <!-- Full standalone Messages window: unified recency rail with DMs, channels,
-       connection requests, and shared-path notifications. -->
-  <MessagesShell />
-{:else if view === 'createchannel'}
-  <!-- The New-channel modal (font-size pass). data-window='messages' so the
-       desktop tokens resolve. Companies/contacts come from Tauri commands that
-       the harness doesn't fully mock, so the dropdown + picker may be empty —
-       the type scale is what this view is for. -->
-  <div class="conversation-stage" style="justify-content: center; background: var(--bg, #161616);">
-    <CreateChannel onclose={() => {}} oncreated={() => {}} />
   </div>
 {:else if view === 'sessions'}
   <!-- The in-app Sessions chat. `?session=` mounts a live transcript (folded

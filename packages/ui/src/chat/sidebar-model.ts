@@ -16,6 +16,8 @@ import {
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
+import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
+import { isSetupChannel } from "./setup-channel";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
 
@@ -63,6 +65,54 @@ export interface ConversationRow {
    * the member directory only returns the caller's own channels).
    */
   membership?: ChannelMembership;
+}
+
+/**
+ * Metadata that can arrive after a deep-link's synthetic conversation row.
+ * Activity and local presentation state (`unreadCount`, `unreadDot`,
+ * `lastActivityAt`, `pinned`) are deliberately excluded: they fluctuate and
+ * must never make initial-row reconciliation replace a user's selection.
+ */
+const CONVERSATION_ROW_RICHNESS_FIELDS = [
+  "companyUid",
+  "projectId",
+  "channelId",
+  "channelScope",
+  "title",
+  "personUid",
+  "email",
+  "memberCount",
+  "members",
+  "browseOnly",
+  "membership",
+] as const satisfies readonly (keyof ConversationRow)[];
+
+function hasConversationRowValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+/**
+ * True only when `next` is the same conversation and fills metadata gaps
+ * without dropping any known metadata. This monotone rule prevents the shell
+ * from oscillating between a deep-link stub and a partial live directory row.
+ */
+export function isStrictlyRicherConversationRow(
+  next: ConversationRow,
+  current: ConversationRow,
+): boolean {
+  if (next.id !== current.id || next.kind !== current.kind) return false;
+
+  let fillsGap = false;
+  for (const field of CONVERSATION_ROW_RICHNESS_FIELDS) {
+    const currentHasValue = hasConversationRowValue(current[field]);
+    const nextHasValue = hasConversationRowValue(next[field]);
+    if (currentHasValue && !nextHasValue) return false;
+    if (!currentHasValue && nextHasValue) fillsGap = true;
+  }
+  return fillsGap;
 }
 
 /** Company option for the scope pill (order preserved from caller). */
@@ -123,6 +173,12 @@ export const CONVERSATION_CACHE_KEY = "hq.chat.conversation-cache";
 export const DM_DOTS_STORAGE_KEY = "hq.chat.dm-dots";
 export const RECENT_DMS_STORAGE_KEY = "hq.chat.recent-dms";
 export const SHOW_FILTER_STORAGE_KEY = "hq.chat.show-filter";
+/**
+ * Set once the user unpins the synthetic #setup channel. The default rail pins
+ * #setup for a fresh profile; this flag keeps it unpinned across restarts
+ * until the user pins it again.
+ */
+export const SETUP_PIN_DISMISSED_STORAGE_KEY = "hq.chat.setup-pin-dismissed";
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
 
@@ -135,7 +191,7 @@ export function parseActivityMs(
   return Number.isFinite(t) ? t : 0;
 }
 
-function startOfLocalDay(ms: number): number {
+export function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -205,6 +261,8 @@ export interface DmContactInput {
   email?: string | null;
   displayName?: string | null;
   companyUid?: string | null;
+  /** Presigned avatar URL when hq-pro included it on the contacts roster. */
+  avatarUrl?: string | null;
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
@@ -734,19 +792,24 @@ function groupRosterKey(row: ConversationRow): string | null {
 /**
  * Map one server-shaped directory row onto the sidebar's `Channel` shape.
  *
- * The directory row is AUTHORITATIVE for every directory field — name, scope,
- * companyUid, unread, memberCount, mentionFlag, and especially
- * `lastActivityAt`: a `null` there means the channel is EMPTY, so the mapped
- * channel carries no `lastMessageAt` / `createdAt` / `arrivedAt` fallback the
- * grouping could mistake for activity (an empty channel must NEVER bucket
- * under "today"). Enrichment the directory does not carry (group-DM roster,
- * membership, post policy, project binding) is preserved from the previously
- * hydrated channel when available.
+ * The directory row is AUTHORITATIVE for identity fields — name, scope,
+ * companyUid, unread, memberCount, mentionFlag. Activity is the NEWER of the
+ * directory stamp and any locally observed `lastActivityAt` / `lastMessageAt`
+ * (own sends and loaded timelines). A stale snapshot must not rewind a
+ * channel out of TODAY. A null directory stamp with no local activity still
+ * means empty — no arrivedAt / createdAt fabrication. Enrichment the
+ * directory does not carry (group-DM roster, membership, post policy, project
+ * binding) is preserved from the previously hydrated channel when available.
  */
 export function directoryRowToChannel(
   row: ChannelDirectoryRow,
   prev?: Channel,
 ): Channel {
+  const activity = newestIso(
+    row.lastActivityAt,
+    prev?.lastActivityAt,
+    prev?.lastMessageAt,
+  );
   return {
     channelId: row.channelId,
     name: row.name || prev?.name || "",
@@ -760,9 +823,10 @@ export function directoryRowToChannel(
       ? { members: row.members ?? prev?.members }
       : {}),
     projectId: row.projectId ?? prev?.projectId ?? null,
-    // Directory-authoritative activity. Null stays null — no arrivedAt /
-    // createdAt / lastMessageAt fabrication.
-    lastActivityAt: row.lastActivityAt,
+    lastActivityAt: activity,
+    ...(activity
+      ? { lastMessageAt: newestIso(prev?.lastMessageAt, activity) }
+      : {}),
     unread: mergeDirectoryUnread({
       incomingUnread: row.unreadCount,
       incomingActivityAt: row.lastActivityAt,
@@ -1114,6 +1178,28 @@ export function pickAutoOpenConversation(
   return best;
 }
 
+/**
+ * Conversation to open once first-paint fetches have settled (or timed out).
+ * Real rows still win. If the rail is only the synthetic #setup channel,
+ * open that rather than leaving the conversation pane on an infinite skeleton.
+ */
+export function pickSettledBootConversation(
+  rows: readonly ConversationRow[],
+  selectedId?: string | null,
+): ConversationRow | null {
+  if ((selectedId ?? "").trim()) return null;
+  const live = pickAutoOpenConversation(
+    rows.filter((row) => !isSetupChannel(row.channelId)),
+    selectedId,
+  );
+  if (live) return live;
+  for (const row of rows) {
+    if (row.browseOnly) continue;
+    if (isSetupChannel(row.channelId)) return row;
+  }
+  return null;
+}
+
 /** Cap the authoritative directory dump before it hits sidebar state. */
 export const DIRECTORY_SEED_LIMIT = 24;
 
@@ -1255,6 +1341,30 @@ export function saveShowFilter(
   if (!storage) return;
   try {
     storage.setItem(SHOW_FILTER_STORAGE_KEY, filter);
+  } catch {
+    // Quota / private mode — best-effort.
+  }
+}
+
+export function loadSetupPinDismissed(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(SETUP_PIN_DISMISSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSetupPinDismissed(
+  storage: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  dismissed: boolean,
+): void {
+  if (!storage) return;
+  try {
+    if (dismissed) storage.setItem(SETUP_PIN_DISMISSED_STORAGE_KEY, "1");
+    else storage.removeItem(SETUP_PIN_DISMISSED_STORAGE_KEY);
   } catch {
     // Quota / private mode — best-effort.
   }
@@ -1500,7 +1610,7 @@ export function rowAvatar(
   avatarByUid?: Record<string, string> | null,
 ): RowAvatar {
   const uid = (row.personUid ?? "").trim();
-  const photo = uid ? avatarByUid?.[uid] : undefined;
+  const photo = uid ? paintableAvatarSrc(avatarByUid?.[uid]) : null;
   if (photo) return { kind: "photo", src: photo };
   if (row.kind === "dm" && uid && isAgentUid(uid)) {
     const generated = agentAvatarFor(uid);
@@ -1576,6 +1686,96 @@ export function companyLabelFor(
 ): string | null {
   if (!companyUid) return null;
   return companies.find((c) => c.companyUid === companyUid)?.label ?? null;
+}
+
+/** Inline rail chip: company name for channels/agents, email for people. */
+export type RailScopeLabelKind = "company" | "email";
+
+export interface RailScopeLabel {
+  kind: RailScopeLabelKind;
+  text: string;
+}
+
+const RAW_COMPANY_UID = /^[a-z]{2,5}_[A-Za-z0-9_-]+$/;
+
+/**
+ * Display name for a conversation's company. Prefers the memberships list;
+ * falls back to a human-readable `companyUid` (fixture rows that stored the
+ * name in that field). Opaque `cmp_…` / `co_…` identifiers stay hidden.
+ */
+export function resolveRailCompanyName(
+  companyUid: string | null | undefined,
+  companies: ScopeCompany[],
+): string | null {
+  const fromList = companyLabelFor(companyUid, companies)?.trim();
+  if (fromList) return fromList;
+  const raw = companyUid?.trim() ?? "";
+  if (!raw || RAW_COMPANY_UID.test(raw)) return null;
+  return raw;
+}
+
+function isAgentDmRow(row: ConversationRow): boolean {
+  return row.kind === "dm" && !!row.personUid && isAgentUid(row.personUid);
+}
+
+function isHumanDmRow(row: ConversationRow): boolean {
+  return row.kind === "dm" && !!row.personUid && !isAgentUid(row.personUid);
+}
+
+/** Lowercased titles that appear on more than one human DM (disambiguation). */
+export function duplicateHumanDmTitles(
+  rows: readonly ConversationRow[],
+): Set<string> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!isHumanDmRow(row)) continue;
+    const key = row.title.trim().toLowerCase();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const dupes = new Set<string>();
+  for (const [key, count] of counts) {
+    if (count > 1) dupes.add(key);
+  }
+  return dupes;
+}
+
+/**
+ * Secondary rail label. In "All companies", channels and agent DMs show the
+ * company name and human DMs show email. In a single-company (or personal)
+ * scope the company name is redundant, so it is omitted; human emails stay
+ * only when two people share a display name.
+ */
+export function railRowScopeLabel(
+  row: ConversationRow,
+  options: {
+    scope: CompanyScope;
+    companies: ScopeCompany[];
+    enabled: boolean;
+    duplicateHumanTitles?: ReadonlySet<string>;
+  },
+): RailScopeLabel | null {
+  if (!options.enabled) return null;
+  const allCompanies = options.scope === "all";
+
+  if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
+    if (!allCompanies) return null;
+    const name = resolveRailCompanyName(row.companyUid, options.companies);
+    return name ? { kind: "company", text: name } : null;
+  }
+
+  if (isHumanDmRow(row)) {
+    const email = row.email?.trim() ?? "";
+    if (!email) return null;
+    if (allCompanies) return { kind: "email", text: email };
+    const titleKey = row.title.trim().toLowerCase();
+    if (titleKey && options.duplicateHumanTitles?.has(titleKey)) {
+      return { kind: "email", text: email };
+    }
+    return null;
+  }
+
+  return null;
 }
 
 // ── Message content search (all-history, US-013) ─────────────────────────────

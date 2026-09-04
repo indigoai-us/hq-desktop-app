@@ -7,23 +7,29 @@
 // busy flag always clears, and the explicit check button + release-channel
 // selector drive the SAME orchestration.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
+import { resetUpdateStore } from "./update-store.svelte";
 
 const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+beforeEach(() => {
+  resetUpdateStore();
+});
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
   memoryStorage.clear();
+  resetUpdateStore();
   vi.clearAllMocks();
 });
 
@@ -45,6 +51,7 @@ function updatesAdapter(overrides: Record<string, unknown> = {}) {
       checkForUpdates: vi.fn(async () => ok(null)),
       checkCoreState: vi.fn(async () => ok({ versionBehind: false })),
       checkCliUpdate: vi.fn(async () => ok(null)),
+      installUpdate: vi.fn(async () => ok(undefined)),
       availableChannels: vi.fn(async () => ok(["stable", "beta", "alpha"])),
       ...overrides,
     },

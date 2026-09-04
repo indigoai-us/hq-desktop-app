@@ -29,6 +29,8 @@
     eventMeetingUrl,
     extractedSignalLabels,
     isPlausibleMeetingUrl,
+    botForEvent,
+    meetingMatchesFocusId,
     pickLiveMeeting,
     pickUpNext,
     timeLabel,
@@ -48,6 +50,7 @@
     type MeetingsAgendaTab,
   } from "./meetings-view-model";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
+  import PageHeader from "../shell/PageHeader.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -460,9 +463,22 @@
   });
 
   // Host-driven deep-link focus (replaces the Tauri meetings:focus-meeting
-  // listener + meetings_take_pending_focus cold-mount stash).
+  // listener + meetings_take_pending_focus cold-mount stash). Unattributed
+  // recordings live on the Past tab — switch to it so the selected row exists.
   $effect(() => {
-    if (focusRequest) focusMeetingRow(focusRequest.meetingId);
+    if (!focusRequest) return;
+    const id = focusRequest.meetingId;
+    const matches = (event: MeetingEvent) =>
+      meetingMatchesFocusId(
+        id,
+        event,
+        botForEvent(event, botsByEventId, scheduledBots) ??
+          botsByEventId.get(event.id),
+      );
+    if (pastEvents.some(matches) && !upcomingEvents.some(matches) && agendaTab !== "past") {
+      agendaTab = "past";
+    }
+    focusMeetingRow(id);
   });
 </script>
 
@@ -503,47 +519,41 @@
     </svg>
   {/snippet}
 
-  <header class="page-header meetings-toolbar chat-shell">
-    <div class="ph-titles">
-      {#if onback}
-        <button
-          type="button"
-          class="meetings-back"
-          data-testid="meetings-back"
-          onclick={onback}
-        >
-          ← Back
-        </button>
-      {/if}
-      <h1>Meetings</h1>
-      <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
-      <div class="subtitle toolbar-meta">{toolbarMeta}</div>
-      {#if fetchError}
-        <div
-          class="page-error"
-          role="status"
-          data-testid="meetings-refresh-error"
-        >
-          <span class="error-pill" title={fetchError}>Refresh issue</span>
-          <span class="error-copy">{fetchError}</span>
-          {#if refreshBlocked}
-            <button
-              type="button"
-              class="report-link"
-              data-testid="meetings-report-problem"
-              onclick={onReportProblem}
-              disabled={reporting}
-              aria-busy={reporting}
-              aria-label={reporting
-                ? "Reporting refresh problem"
-                : "Report refresh problem"}
-            >
-              {reporting ? "Reporting…" : "Report a problem"}
-            </button>
-          {/if}
-        </div>
-      {/if}
-    </div>
+  <PageHeader
+    title="Meetings"
+    onback={onback}
+    backTestId="meetings-back"
+    variant="embedded"
+    extraClass="meetings-toolbar chat-shell"
+  >
+    <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
+    <div class="subtitle toolbar-meta">{toolbarMeta}</div>
+    {#if fetchError}
+      <div
+        class="page-error"
+        role="status"
+        data-testid="meetings-refresh-error"
+      >
+        <span class="error-pill" title={fetchError}>Refresh issue</span>
+        <span class="error-copy">{fetchError}</span>
+        {#if refreshBlocked}
+          <button
+            type="button"
+            class="report-link"
+            data-testid="meetings-report-problem"
+            onclick={onReportProblem}
+            disabled={reporting}
+            aria-busy={reporting}
+            aria-label={reporting
+              ? "Reporting refresh problem"
+              : "Report refresh problem"}
+          >
+            {reporting ? "Reporting…" : "Report a problem"}
+          </button>
+        {/if}
+      </div>
+    {/if}
+    {#snippet trailing()}
     <div class="actions detail-primary-actions">
       <button
         type="button"
@@ -582,7 +592,8 @@
         {loading ? "Refreshing" : "Refresh"}
       </button>
     </div>
-  </header>
+    {/snippet}
+  </PageHeader>
 
   {#if toast}
     <div class="toast" class:toast-warn={toast.kind === "warn"} role="status">
@@ -958,48 +969,8 @@
     }
   }
   /* Compact toolbar — no oversized title block. */
-  .page-header,
-  .meetings-toolbar {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 0;
-  }
   .meetings-open-cal {
     display: none;
-  }
-
-  .meetings-back {
-    appearance: none;
-    -webkit-appearance: none;
-    height: 29.4px;
-    padding: 5px 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t2, var(--v4-text-2));
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .ph-titles {
-    min-width: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 10px;
-  }
-  .ph-titles h1 {
-    margin: 0;
-    color: var(--t1, var(--v4-text-1));
-    font-family: var(--font-ui, var(--font-display, var(--font-sans)));
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.45;
-    letter-spacing: 0;
   }
   .subtitle {
     margin: 0;
@@ -1665,8 +1636,7 @@
     .secondary-grid {
       grid-template-columns: minmax(0, 1fr);
     }
-    .page-header,
-    .meetings-toolbar {
+    :global(.meetings-toolbar) {
       flex-wrap: wrap;
     }
     .actions,

@@ -24,6 +24,60 @@ import type { Workspace } from "../chat/workspaces.js";
  * classifiers below (`toPublishError` / `toClaimError` / `looks*`).
  */
 
+/** Public author on a listing card — handle is the @-mention. */
+export interface MarketplaceListingAuthor {
+  handle: string;
+  displayName: string;
+  avatarUrl?: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Normalize a listing's `author` field (legacy string or `{ handle, displayName,
+ * avatarUrl? }`) into a single shape the cards can render.
+ */
+export function listingAuthor(
+  listing: Pick<MarketplaceListing, "author">,
+): MarketplaceListingAuthor {
+  const raw = listing.author as unknown;
+  if (typeof raw === "string") {
+    const handle = raw.trim();
+    return { handle, displayName: handle };
+  }
+  if (isRecord(raw)) {
+    const handle = typeof raw.handle === "string" ? raw.handle.trim() : "";
+    const displayName =
+      typeof raw.displayName === "string" && raw.displayName.trim()
+        ? raw.displayName.trim()
+        : handle;
+    const avatarUrl =
+      typeof raw.avatarUrl === "string" && raw.avatarUrl.trim()
+        ? raw.avatarUrl.trim()
+        : undefined;
+    return { handle, displayName, ...(avatarUrl ? { avatarUrl } : {}) };
+  }
+  return { handle: "", displayName: "" };
+}
+
+export function listingAuthorHandle(
+  listing: Pick<MarketplaceListing, "author">,
+): string {
+  return listingAuthor(listing).handle;
+}
+
+/** Two-letter initials from display name, then handle. */
+export function authorInitials(author: MarketplaceListingAuthor): string {
+  const source = (author.displayName || author.handle).trim().replace(/^@/, "");
+  const parts = source.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase() || "?";
+}
+
 /** One approved listing row (`MarketplaceListing` wire shape, US-005 public). */
 export interface MarketplaceListing {
   /** Stable listing id — the detail key. */
@@ -36,8 +90,13 @@ export interface MarketplaceListing {
   slug: string;
   /** Published semantic version. */
   version: string;
-  /** Author's PUBLIC handle (a string — never the internal creator uid). */
-  author: string;
+  /**
+   * Author of this pack. The public listings route used to send a bare handle
+   * string; it now sends `{ handle, displayName, avatarUrl? }`. Both shapes
+   * are accepted so a mixed desktop/server deploy still renders. Use
+   * `listingAuthor()` to normalize.
+   */
+  author: string | MarketplaceListingAuthor;
   /** Short directory description, when present. */
   summary?: string | null;
   /** Human-readable summary of what the pack contributes, when present. */
@@ -45,10 +104,10 @@ export interface MarketplaceListing {
   /** ISO-8601 publish timestamp. */
   createdAt: string;
   /**
-   * Optional server-provided cover-art URL (forward-compat). Absent today — the
-   * UI falls back to bundled-by-slug art (see `lib/pack-covers.ts`). When the
-   * backend starts serving a per-listing cover, it takes precedence over the
-   * bundled map with no client change.
+   * Presigned cover-art GET URL from hq-pro, when the listing has a stored
+   * cover. The card renderer allowlists the marketplace assets host (see
+   * `library/pack-covers.ts`); anything else falls back to bundled-by-slug art
+   * or the gradient placeholder.
    */
   coverImageUrl?: string | null;
   /**
@@ -119,10 +178,6 @@ export function listingDisplayName(listing: MarketplaceListing): string {
 export interface MarketplaceListingDetail extends MarketplaceListing {
   /** Presigned GET URL for the pack tarball (24h expiry). */
   downloadUrl: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asListing(value: unknown): MarketplaceListing | null {
@@ -209,7 +264,8 @@ export function listingHaystack(listing: MarketplaceListing): string {
     listing.name,
     listingDisplayName(listing),
     listing.slug,
-    listing.author,
+    listingAuthor(listing).handle,
+    listingAuthor(listing).displayName,
     listing.summary ?? "",
     listing.contributes ?? "",
     listing.type,

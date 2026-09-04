@@ -74,6 +74,20 @@ describe("toSelfIdentity", () => {
       displayName: "Stefan Johnson",
     });
   });
+
+  it("accepts a Cognito subject when the vault person entity is missing", () => {
+    expect(
+      toSelfIdentity({
+        uid: "cognito-sub-michel",
+        email: "michel@other-company.com",
+        displayName: "Michel Triana",
+      }),
+    ).toEqual({
+      uid: "cognito-sub-michel",
+      email: "michel@other-company.com",
+      displayName: "Michel Triana",
+    });
+  });
 });
 
 describe("accountChromeFromSelf / settingsProfileFromSelf", () => {

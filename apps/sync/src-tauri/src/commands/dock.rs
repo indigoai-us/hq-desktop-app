@@ -305,6 +305,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
+            custom_banner: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,
@@ -315,9 +316,17 @@ mod tests {
             claude_projects_dir: None,
             widget_enabled: None,
             widget_display: None,
+            widget_placement: None,
+            widget_auto_hide_seconds: None,
+            widget_show_needs_action: None,
             dock_icon,
             hq_work_handoff: None,
             in_app_sessions: None,
+            system_notifications: None,
+            native_notify_direct_messages: None,
+            native_notify_shares: None,
+            native_notify_meetings: None,
+            native_notify_only_when_unfocused: None,
         }
     }
 

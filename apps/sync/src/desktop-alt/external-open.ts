@@ -57,3 +57,32 @@ export function approvedExternalUrl(raw: string): string {
 export async function openApprovedExternalUrl(raw: string): Promise<void> {
   await tauriOpen(approvedExternalUrl(raw));
 }
+
+/**
+ * Chat and shell links: any credential-free http(s)/mailto URL. Host
+ * allowlists belong on calendar-derived handoffs (`approvedExternalUrl`).
+ */
+export function approvedBrowserUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password) return null;
+  if (
+    parsed.protocol !== 'https:' &&
+    parsed.protocol !== 'http:' &&
+    parsed.protocol !== 'mailto:'
+  ) {
+    return null;
+  }
+  return parsed.toString();
+}
+
+/** Open a chat/shell URL in the default browser. Unknown schemes are ignored. */
+export async function openBrowserUrl(raw: string): Promise<void> {
+  const url = approvedBrowserUrl(raw);
+  if (!url) return;
+  await tauriOpen(url);
+}

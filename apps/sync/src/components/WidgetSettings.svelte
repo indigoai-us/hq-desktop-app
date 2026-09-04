@@ -3,10 +3,47 @@
   import { updateSettings } from '../lib/settings-mutations';
 
   type DisplayInfo = { name: string; primary: boolean };
+  type WidgetPlacement =
+    | 'bottom-right'
+    | 'bottom-left'
+    | 'top-right'
+    | 'top-left'
+    | 'follow-tray';
   type WidgetMutation =
     | { setting: 'enabled'; value: boolean }
-    | { setting: 'display'; value: string | null };
+    | { setting: 'display'; value: string | null }
+    | { setting: 'placement'; value: WidgetPlacement }
+    | { setting: 'autoHide'; value: number }
+    | { setting: 'needsAction'; value: boolean };
   type WidgetMutationFailure = WidgetMutation & { message: string };
+
+  const PLACEMENT_OPTIONS: Array<{ value: WidgetPlacement; label: string }> = [
+    { value: 'bottom-right', label: 'Bottom right' },
+    { value: 'bottom-left', label: 'Bottom left' },
+    { value: 'top-right', label: 'Top right' },
+    { value: 'top-left', label: 'Top left' },
+    { value: 'follow-tray', label: 'Follow tray' },
+  ];
+
+  const AUTO_HIDE_OPTIONS: Array<{ value: number; label: string }> = [
+    { value: 5, label: '5 seconds' },
+    { value: 8, label: '8 seconds' },
+    { value: 15, label: '15 seconds' },
+    { value: 30, label: '30 seconds' },
+    { value: 0, label: 'Never' },
+  ];
+
+  function parsePlacement(raw: string | null | undefined): WidgetPlacement {
+    switch (raw) {
+      case 'bottom-left':
+      case 'top-right':
+      case 'top-left':
+      case 'follow-tray':
+        return raw;
+      default:
+        return 'bottom-right';
+    }
+  }
 
   interface Props {
     /** Parent Settings already owns the same get_settings failure surface. */
@@ -17,6 +54,9 @@
 
   let widgetEnabled = $state(true);
   let widgetDisplay = $state<string | null>(null);
+  let widgetPlacement = $state<WidgetPlacement>('bottom-right');
+  let widgetAutoHideSeconds = $state(8);
+  let widgetShowNeedsAction = $state(true);
   let displays = $state<DisplayInfo[]>([]);
   let loading = $state(true);
   let pendingSetting = $state<WidgetMutation['setting'] | null>(null);
@@ -41,11 +81,20 @@
         invoke<{
           widgetEnabled?: boolean | null;
           widgetDisplay?: string | null;
+          widgetPlacement?: string | null;
+          widgetAutoHideSeconds?: number | null;
+          widgetShowNeedsAction?: boolean | null;
         }>('get_settings'),
         invoke<DisplayInfo[]>('list_displays').catch(() => [] as DisplayInfo[]),
       ]);
       widgetEnabled = settings.widgetEnabled ?? true;
       widgetDisplay = settings.widgetDisplay ?? null;
+      widgetPlacement = parsePlacement(settings.widgetPlacement);
+      widgetAutoHideSeconds =
+        typeof settings.widgetAutoHideSeconds === 'number'
+          ? settings.widgetAutoHideSeconds
+          : 8;
+      widgetShowNeedsAction = settings.widgetShowNeedsAction ?? true;
       displays = displayList;
     } catch (err) {
       loadError = String(err);
@@ -64,7 +113,13 @@
    * `save` errors (handlers revert optimistic UI); apply failures throw tagged
    * `apply` errors (disk is already authoritative — keep value, reload).
    */
-  async function persist(partial: { widgetEnabled?: boolean; widgetDisplay?: string | null }) {
+  async function persist(partial: {
+    widgetEnabled?: boolean;
+    widgetDisplay?: string | null;
+    widgetPlacement?: WidgetPlacement;
+    widgetAutoHideSeconds?: number;
+    widgetShowNeedsAction?: boolean;
+  }) {
     try {
       await updateSettings(partial);
     } catch (err) {
@@ -94,22 +149,57 @@
   }
 
   function assignMutationValue(mutation: WidgetMutation): void {
-    if (mutation.setting === 'enabled') widgetEnabled = mutation.value;
-    else widgetDisplay = mutation.value;
+    switch (mutation.setting) {
+      case 'enabled':
+        widgetEnabled = mutation.value;
+        break;
+      case 'display':
+        widgetDisplay = mutation.value;
+        break;
+      case 'placement':
+        widgetPlacement = mutation.value;
+        break;
+      case 'autoHide':
+        widgetAutoHideSeconds = mutation.value;
+        break;
+      case 'needsAction':
+        widgetShowNeedsAction = mutation.value;
+        break;
+    }
   }
 
   function mutationPartial(
     mutation: WidgetMutation,
-  ): { widgetEnabled?: boolean; widgetDisplay?: string | null } {
-    return mutation.setting === 'enabled'
-      ? { widgetEnabled: mutation.value }
-      : { widgetDisplay: mutation.value };
+  ): {
+    widgetEnabled?: boolean;
+    widgetDisplay?: string | null;
+    widgetPlacement?: WidgetPlacement;
+    widgetAutoHideSeconds?: number;
+    widgetShowNeedsAction?: boolean;
+  } {
+    switch (mutation.setting) {
+      case 'enabled':
+        return { widgetEnabled: mutation.value };
+      case 'display':
+        return { widgetDisplay: mutation.value };
+      case 'placement':
+        return { widgetPlacement: mutation.value };
+      case 'autoHide':
+        return { widgetAutoHideSeconds: mutation.value };
+      case 'needsAction':
+        return { widgetShowNeedsAction: mutation.value };
+    }
   }
 
   async function applyMutation(mutation: WidgetMutation, isRetry = false): Promise<void> {
     if (loading || saving) return;
-    const previousEnabled = widgetEnabled;
-    const previousDisplay = widgetDisplay;
+    const previous = {
+      widgetEnabled,
+      widgetDisplay,
+      widgetPlacement,
+      widgetAutoHideSeconds,
+      widgetShowNeedsAction,
+    };
     pendingSetting = mutation.setting;
     if (!isRetry) mutationFailure = null;
     assignMutationValue(mutation);
@@ -118,8 +208,11 @@
       mutationFailure = null;
     } catch (err) {
       if (isPhaseError(err, 'save')) {
-        widgetEnabled = previousEnabled;
-        widgetDisplay = previousDisplay;
+        widgetEnabled = previous.widgetEnabled;
+        widgetDisplay = previous.widgetDisplay;
+        widgetPlacement = previous.widgetPlacement;
+        widgetAutoHideSeconds = previous.widgetAutoHideSeconds;
+        widgetShowNeedsAction = previous.widgetShowNeedsAction;
       } else {
         // Disk already has the new value; keep optimistic state and re-sync.
         await load();
@@ -142,27 +235,53 @@
     });
   }
 
+  async function handlePlacementChange(event: Event): Promise<void> {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    await applyMutation({
+      setting: 'placement',
+      value: parsePlacement(value),
+    });
+  }
+
+  async function handleAutoHideChange(event: Event): Promise<void> {
+    const value = Number((event.currentTarget as HTMLSelectElement).value);
+    await applyMutation({
+      setting: 'autoHide',
+      value: Number.isFinite(value) ? value : 8,
+    });
+  }
+
+  async function handleNeedsActionToggle(): Promise<void> {
+    await applyMutation({ setting: 'needsAction', value: !widgetShowNeedsAction });
+  }
+
   async function retryMutation(): Promise<void> {
     const failure = mutationFailure;
     if (!failure || saving) return;
-    await applyMutation(
-      failure.setting === 'enabled'
-        ? { setting: 'enabled', value: failure.value }
-        : { setting: 'display', value: failure.value },
-      true,
-    );
+    await applyMutation(failure, true);
   }
 
   function mutationLabel(failure: WidgetMutationFailure): string {
-    return failure.setting === 'enabled' ? 'desktop widget setting' : 'widget display';
+    switch (failure.setting) {
+      case 'enabled':
+        return 'desktop widget setting';
+      case 'display':
+        return 'widget display';
+      case 'placement':
+        return 'widget placement';
+      case 'autoHide':
+        return 'widget auto-hide delay';
+      case 'needsAction':
+        return 'needs-action widget setting';
+    }
   }
 </script>
 
 <div class="widget-settings" data-loading={loading || undefined}>
   <div class="setting-row">
     <div class="setting-info">
-      <span class="setting-label">Desktop widget</span>
-      <span class="setting-desc">Show the floating hq mark and its notifications on your desktop</span>
+      <span class="setting-label">Show notifications widget</span>
+      <span class="setting-desc">Show the HQ mark and Messages panel on your desktop. Off hides both; items still go to the desktop notifications list.</span>
     </div>
     <span class="setting-control">
       {#if pendingSetting === 'enabled'}
@@ -189,7 +308,7 @@
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-label">Widget display</span>
-        <span class="setting-desc">Which screen the widget anchors to (lower-right)</span>
+        <span class="setting-desc">Which screen the widget anchors to</span>
       </div>
       <span class="setting-control">
         {#if pendingSetting === 'display'}
@@ -214,6 +333,82 @@
             <option value={disconnectedDisplay}>{disconnectedDisplay} (disconnected)</option>
           {/if}
         </select>
+      </span>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Placement</span>
+        <span class="setting-desc">Corner of the display work area (or follow the tray)</span>
+      </div>
+      <span class="setting-control">
+        {#if pendingSetting === 'placement'}
+          <span class="setting-pending" role="status">Saving…</span>
+        {/if}
+        <select
+          class="display-picker"
+          data-testid="widget-placement-picker"
+          aria-label="Widget placement"
+          aria-busy={pendingSetting === 'placement'}
+          value={widgetPlacement}
+          onchange={handlePlacementChange}
+          disabled={loading || saving}
+        >
+          {#each PLACEMENT_OPTIONS as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </span>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Auto-hide delay</span>
+        <span class="setting-desc">How long a new-item toast stays up. Never keeps the toast until you dismiss it. Does not apply to the Messages panel.</span>
+      </div>
+      <span class="setting-control">
+        {#if pendingSetting === 'autoHide'}
+          <span class="setting-pending" role="status">Saving…</span>
+        {/if}
+        <select
+          class="display-picker"
+          data-testid="widget-auto-hide-picker"
+          aria-label="Widget auto-hide delay"
+          aria-busy={pendingSetting === 'autoHide'}
+          value={String(widgetAutoHideSeconds)}
+          onchange={handleAutoHideChange}
+          disabled={loading || saving}
+        >
+          {#each AUTO_HIDE_OPTIONS as option (option.value)}
+            <option value={String(option.value)}>{option.label}</option>
+          {/each}
+        </select>
+      </span>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Show needs-action items in the widget</span>
+        <span class="setting-desc">Show a short toast when a meeting still needs a company. The row lives in Messages → Activity until you file it.</span>
+      </div>
+      <span class="setting-control">
+        {#if pendingSetting === 'needsAction'}
+          <span class="setting-pending" role="status">Saving…</span>
+        {/if}
+        <button
+          type="button"
+          class="toggle"
+          class:active={widgetShowNeedsAction}
+          onclick={handleNeedsActionToggle}
+          disabled={loading || saving}
+          role="switch"
+          aria-checked={widgetShowNeedsAction}
+          aria-busy={pendingSetting === 'needsAction'}
+          aria-label="Show needs-action items in the widget"
+          data-testid="widget-needs-action-toggle"
+        >
+          <span class="toggle-knob"></span>
+        </button>
       </span>
     </div>
   {/if}

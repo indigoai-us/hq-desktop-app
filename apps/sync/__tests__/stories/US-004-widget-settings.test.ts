@@ -349,7 +349,7 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(widgetRs).toMatch(/fn apply_widget_settings_on_main/);
       const applyFnIdx = widgetRs.indexOf('fn apply_widget_settings_on_main');
       expect(applyFnIdx).toBeGreaterThan(-1);
-      const applySlice = widgetRs.slice(applyFnIdx, applyFnIdx + 800);
+      const applySlice = widgetRs.slice(applyFnIdx, applyFnIdx + 1400);
 
       // enabled → setup_widget_window; disabled → close
       expect(applySlice).toMatch(/if widget_enabled\(\)/);
@@ -514,6 +514,78 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
     });
   });
 
+  describe('placement, auto-hide, and needs-action persist through save then apply', () => {
+    function placementPicker(): HTMLSelectElement | null {
+      return host.querySelector('[data-testid="widget-placement-picker"]');
+    }
+    function autoHidePicker(): HTMLSelectElement | null {
+      return host.querySelector('[data-testid="widget-auto-hide-picker"]');
+    }
+    function needsActionToggle(): HTMLButtonElement | null {
+      return host.querySelector('[data-testid="widget-needs-action-toggle"]');
+    }
+
+    it('behavioral: placement change saves widgetPlacement then apply_widget_settings', async () => {
+      stubInvoke({
+        settings: { widgetEnabled: true, widgetDisplay: null, widgetPlacement: 'bottom-right' },
+      });
+      await mountWidgetSettings();
+      const picker = placementPicker();
+      expect(picker).toBeTruthy();
+      expect(picker!.value).toBe('bottom-right');
+
+      mockInvoke.mockClear();
+      stubInvoke({
+        settings: { widgetEnabled: true, widgetDisplay: null, widgetPlacement: 'bottom-right' },
+      });
+      picker!.value = 'top-left';
+      picker!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flushPersist();
+      await vi.waitFor(() => {
+        expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
+      });
+      const saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
+      expect(saveArgs.prefs.widgetPlacement).toBe('top-left');
+    });
+
+    it('behavioral: auto-hide Never and needs-action off persist and restore', async () => {
+      stubInvoke({
+        settings: {
+          widgetEnabled: true,
+          widgetAutoHideSeconds: 0,
+          widgetShowNeedsAction: false,
+        },
+      });
+      await mountWidgetSettings();
+      expect(autoHidePicker()?.value).toBe('0');
+      expect(needsActionToggle()?.getAttribute('aria-checked')).toBe('false');
+
+      mockInvoke.mockClear();
+      stubInvoke({
+        settings: {
+          widgetEnabled: true,
+          widgetAutoHideSeconds: 0,
+          widgetShowNeedsAction: false,
+        },
+      });
+      needsActionToggle()!.click();
+      flushSync();
+      await flushPersist();
+      await vi.waitFor(() => {
+        expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
+      });
+      const saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
+      expect(saveArgs.prefs.widgetShowNeedsAction).toBe(true);
+    });
+
+    it('source contract: apply_widget_settings re-anchors so placement moves the native window', () => {
+      expect(widgetRs).toContain('fn widget_position_in_work_area');
+      expect(widgetRs).toContain('apply_widget_settings: enabled — setup/re-anchor');
+      expect(widgetRs).toContain('emit_widget_live_settings');
+      expect(mainRs).toContain('commands::widget::hide_widget_stack');
+    });
+  });
+
   // ── 3. Restart preserves prefs ────────────────────────────────────────────
 
   describe('Given preferences are set, when the app restarts, then widget state and display choice are preserved', () => {
@@ -563,6 +635,9 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       // Typed fields with skip_serializing_if (merge preservation on unrelated saves)
       expect(configRs).toMatch(/pub widget_enabled:\s*Option<bool>/);
       expect(configRs).toMatch(/pub widget_display:\s*Option<String>/);
+      expect(configRs).toMatch(/pub widget_placement:\s*Option<String>/);
+      expect(configRs).toMatch(/pub widget_auto_hide_seconds:\s*Option<u32>/);
+      expect(configRs).toMatch(/pub widget_show_needs_action:\s*Option<bool>/);
       // Both fields carry skip_serializing_if = "Option::is_none"
       const enabledFieldIdx = configRs.indexOf('pub widget_enabled');
       const displayFieldIdx = configRs.indexOf('pub widget_display');
@@ -613,7 +688,9 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
 
       // route.ts SETTINGS_SECTIONS includes widget row
       expect(routeSource).toMatch(/SETTINGS_SECTIONS/);
-      expect(routeSource).toMatch(/\{\s*id:\s*['"]widget['"]\s*,\s*label:\s*['"]Widget['"]\s*\}/);
+      expect(routeSource).toMatch(
+        /\{\s*id:\s*['"]widget['"]\s*,\s*label:\s*['"]Notifications widget['"]\s*\}/,
+      );
 
       // Self-contained UI: owns load + apply + list_displays. Persistence is
       // routed through the shared serialized mutation helper.
@@ -625,6 +702,9 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       expect(widgetSettingsSource).toMatch(/['"]list_displays['"]/);
       expect(widgetSettingsSource).toContain('data-testid="widget-toggle"');
       expect(widgetSettingsSource).toContain('data-testid="widget-display-picker"');
+      expect(widgetSettingsSource).toContain('data-testid="widget-placement-picker"');
+      expect(widgetSettingsSource).toContain('data-testid="widget-auto-hide-picker"');
+      expect(widgetSettingsSource).toContain('data-testid="widget-needs-action-toggle"');
     });
   });
 });

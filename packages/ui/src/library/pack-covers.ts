@@ -3,21 +3,20 @@
  *
  * Each listing gets a unique, on-brand piece of cover art (the Indigo Midjourney
  * "moodboard" style shared with getindigo.ai + the email headers) so a card reads
- * as a distinct object, not a row of text. Covers are bundled with the app and
- * keyed by the pack `slug` (the stable, per-creator install identifier).
+ * as a distinct object, not a row of text.
  *
- * Server-provided remote cover URLs are intentionally not rendered directly:
- * the packaged CSP blocks remote images so a listing cannot become a tracking
- * pixel. Once an authorized native proxy returns a raster data URL,
- * `coverForListing` will accept it. Until then, shipped art wins and every other
- * pack gets the deterministic branded gradient placeholder.
+ * Precedence: a presigned `coverImageUrl` from the marketplace assets bucket
+ * (the only remote host the packaged CSP allowlists) wins, then a CSP-safe
+ * local/data URL, then bundled-by-slug art. Arbitrary https hosts stay blocked
+ * so a listing cannot become a tracking pixel. Packs with none of the above
+ * get the deterministic branded gradient placeholder.
  *
  * Kept rune-free + asset-import-only so it's trivially unit-testable.
  */
 
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
+import { marketplaceCoverSrc } from "../avatars/csp-image-src.js";
 import { safeLocalImageSrc } from "../common/local-image-src.js";
-
 // Vite resolves each import to a hashed asset URL string at build time.
 import engineeringCover from "./assets/pack-covers/engineering.jpg";
 import gstackCover from "./assets/pack-covers/gstack.jpg";
@@ -25,11 +24,18 @@ import pocockCover from "./assets/pack-covers/pocock-skills.jpg";
 import impeccableCover from "./assets/pack-covers/impeccable.jpg";
 import magicpathCover from "./assets/pack-covers/magicpath-agent-skills.jpg";
 
+export {
+  MARKETPLACE_COVER_HOST,
+  marketplaceAvatarSrc,
+  marketplaceCoverSrc,
+  paintableAvatarSrc,
+} from "../avatars/csp-image-src.js";
+
 /**
  * Bundled cover art, keyed by pack slug. Add an entry here (and the asset under
  * `assets/pack-covers/`) when a new pack ships with first-party art; everything
- * else falls back to the branded gradient placeholder until the backend serves a
- * per-listing `coverImageUrl`.
+ * else falls back to the branded gradient placeholder when the listing has no
+ * hosted `coverImageUrl`.
  */
 export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
   engineering: engineeringCover,
@@ -42,11 +48,13 @@ export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
 /**
  * Resolve the cover-art URL for a listing, or `null` when none is available.
  *
- * Precedence: a CSP-compatible, locally rendered `coverImageUrl` (for example a
- * raster data URL from a future native proxy) wins over bundled-by-slug art.
- * Direct http(s) URLs are ignored and fall through to bundled or generated art.
+ * Precedence: an allowlisted marketplace `coverImageUrl` (presigned S3 GET),
+ * then a CSP-compatible local/data URL, then bundled-by-slug art. Arbitrary
+ * http(s) URLs are ignored and fall through to bundled or generated art.
  */
 export function coverForListing(listing: MarketplaceListing): string | null {
+  const hosted = marketplaceCoverSrc(listing.coverImageUrl);
+  if (hosted) return hosted;
   const local = safeLocalImageSrc(listing.coverImageUrl);
   if (local) return local;
   return BUNDLED_PACK_COVERS[listing.slug] ?? null;

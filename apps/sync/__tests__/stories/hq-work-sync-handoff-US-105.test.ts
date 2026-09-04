@@ -40,13 +40,10 @@ import {
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
-} from '../../src/lib/hq-work-adapter';
+} from '@hq/platform';
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
-import HqWorkDesktopShell from '../../src/desktop-alt/HqWorkDesktopShell.svelte';
-import {
-  getVaultObject,
-  putVaultObject,
-} from '../../src/desktop-alt/vault-s3-put';
+import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { getVaultObject } from '../../src/desktop-alt/vault-s3-put';
 import { hqWorkHandoffEnabled } from '../../src/lib/hq-work';
 
 const repoRoot = resolve(process.cwd());
@@ -301,9 +298,9 @@ afterEach(async () => {
 
 describe('US-105 embedded feature-parity QA', () => {
   it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(false);
-    expect(hqWorkHandoffEnabled(null)).toBe(false);
-    expect(hqWorkHandoffEnabled(false)).toBe(false);
+    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
+    expect(hqWorkHandoffEnabled(null)).toBe(true);
+    expect(hqWorkHandoffEnabled(false)).toBe(true);
     expect(hqWorkHandoffEnabled(true)).toBe(true);
   });
 
@@ -357,6 +354,30 @@ describe('US-105 embedded feature-parity QA', () => {
         'fetch_reactions',
         'toggle_reaction',
       ]);
+    });
+
+    it('deleteChannel maps onto the delete_channel Sync command', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd, args) => {
+        if (cmd === 'delete_channel') return { deleted: args?.channelId };
+        throw new Error(`unexpected command: ${cmd}`);
+      });
+      const value = expectOk(await adapter.messaging.deleteChannel('chn_1'));
+      expect(value).toEqual({ deleted: 'chn_1' });
+      expect(calls).toEqual([
+        { cmd: 'delete_channel', args: { channelId: 'chn_1' } },
+      ]);
+    });
+
+    it('deleteChannel surfaces the Rust error string, never a swallowed failure', async () => {
+      const { adapter } = makeAdapter(async () => {
+        throw new Error("This server doesn't support deleting channels yet.");
+      });
+      const res = await adapter.messaging.deleteChannel('chn_1');
+      expect(res.ok).toBe(false);
+      if (res.ok) throw new Error('unreachable');
+      expect(res.message).toBe(
+        "This server doesn't support deleting channels yet.",
+      );
     });
 
     it('reply threads fetch and send map fetch_thread / send_thread_reply', async () => {
@@ -543,6 +564,70 @@ describe('US-105 embedded feature-parity QA', () => {
       });
     });
 
+    // Retired-host compatibility only: live-path coverage lives beside
+    // createChatSidebarApi in apps/work. The cross-company confirmation (D7)
+    // has no other source: the unscoped
+    // `list_contacts` feed carries no companyUid at all, so without this seam
+    // the modal can never tell an outsider from a teammate.
+    it('listCompanyMembers maps list_company_members and unwraps its envelope', async () => {
+      const { adapter, calls } = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? { contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }] }
+          : null,
+      );
+      const api = createHqWorkSidebarApi(adapter);
+      expect(await api.listCompanyMembers?.('cmp_indigo')).toEqual({
+        contacts: [{ personUid: 'prs_kai', email: 'kai@acme.test' }],
+      });
+      expect(calls[0]).toEqual({
+        cmd: 'list_company_members',
+        args: { companyUid: 'cmp_indigo' },
+      });
+    });
+
+    // Regression: the roster went through `adapter.company.listMembers`, which
+    // takes a company SLUG. Handed a companyUid it fetched the wrong thing on
+    // the Tauri/web adapters and silently disabled the cross-company confirm.
+    it('listCompanyMembers goes through the uid-scoped contacts feed, not company.listMembers', async () => {
+      const listContacts = vi.fn(async () => ({
+        ok: true as const,
+        value: { contacts: [{ personUid: 'prs_kai' }] },
+      }));
+      const listMembers = vi.fn(async () => ({
+        ok: true as const,
+        value: [{ personUid: 'prs_wrong' }],
+      }));
+      const fake = {
+        messaging: { listContacts },
+        company: { listMembers },
+      } as unknown as Parameters<typeof createHqWorkSidebarApi>[0];
+      expect(
+        await createHqWorkSidebarApi(fake).listCompanyMembers?.('cmp_indigo'),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+      expect(listContacts).toHaveBeenCalledWith({ companyUid: 'cmp_indigo' });
+      expect(listMembers).not.toHaveBeenCalled();
+    });
+
+    it('listCompanyMembers accepts a bare array and degrades to empty', async () => {
+      const bare = makeAdapter(async (cmd) =>
+        cmd === 'list_company_members'
+          ? [{ personUid: 'prs_kai' }]
+          : null,
+      );
+      expect(
+        await createHqWorkSidebarApi(bare.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [{ personUid: 'prs_kai' }] });
+
+      const junk = makeAdapter(async () => 'nope');
+      expect(
+        await createHqWorkSidebarApi(junk.adapter).listCompanyMembers?.(
+          'cmp_indigo',
+        ),
+      ).toEqual({ contacts: [] });
+    });
+
     it('readLocalSnapshot stays not-yet-mapped (DesktopApp does not call it)', async () => {
       const { adapter } = makeAdapter();
       expect(await adapter.workMesh.readLocalSnapshot()).toMatchObject({
@@ -554,30 +639,16 @@ describe('US-105 embedded feature-parity QA', () => {
   });
 
   describe('attachment native hop (CORS-safe PUT/GET)', () => {
-    it('wires putAttachmentObject and getAttachmentObject on the embedded shell', () => {
-      const shell = readRepo('src/desktop-alt/HqWorkDesktopShell.svelte');
-      expect(shell).toContain('putAttachmentObject={putVaultObject}');
-      expect(shell).toContain('getAttachmentObject={getVaultObject}');
-      expect(shell).toContain("from './vault-s3-put'");
-    });
-
-    it('TS hop invokes vault_s3_put with content-type headers and file bytes', async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(200);
-      const file = new File([new Uint8Array([1, 2, 3])], 'shot.png', {
-        type: 'image/png',
-      });
-      const headers = { 'content-type': 'image/png' };
-      const res = await putVaultObject(
-        'https://bucket.s3.us-east-1.amazonaws.com/shot.png',
-        headers,
-        file,
+    it('wires putAttachmentObject and getAttachmentObject through the shared shell native hop', () => {
+      const shell = readMono('apps', 'work', 'src', 'lib', 'WorkShell.svelte');
+      const nativeHop = readMono('apps', 'work', 'src', 'lib', 'desktop-shell.ts');
+      expect(shell).toMatch(
+        /adapter\.kind === "desktop"\s*\? createTauriAttachmentHandlers\(nativeInvoke\)\s*:\s*null/,
       );
-      expect(res.status).toBe(200);
-      expect(vi.mocked(invoke)).toHaveBeenCalledWith('vault_s3_put', {
-        url: 'https://bucket.s3.us-east-1.amazonaws.com/shot.png',
-        headers,
-        body: [1, 2, 3],
-      });
+      expect(shell).toContain('putAttachmentObject={attachmentHandlers?.putAttachmentObject}');
+      expect(shell).toContain('getAttachmentObject={attachmentHandlers?.getAttachmentObject}');
+      expect(nativeHop).toContain('invoke("vault_s3_put", {');
+      expect(nativeHop).toContain('invoke("vault_s3_get", {');
     });
 
     it('TS hop invokes vault_s3_get and returns content-type', async () => {
@@ -640,7 +711,7 @@ describe('US-105 embedded feature-parity QA', () => {
     it('⌘, opens settings and the Light appearance pill applies', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
-      component = mount(HqWorkDesktopShell, {
+      component = mount(HqWorkWorkShell, {
         target: host,
         props: { invokeFn: mockInvoke() },
       });

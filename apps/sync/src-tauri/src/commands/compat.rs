@@ -100,6 +100,8 @@ pub async fn keychain_get(service: String, account: String) -> Result<Option<Str
 pub async fn keychain_delete(service: String, account: String) -> Result<(), String> {
     if service == COGNITO_KEYCHAIN_SERVICE && account == COGNITO_KEYCHAIN_ACCOUNT {
         cognito::clear_tokens().await?;
+        // Client health (US-002): sign-out is an auth state change.
+        crate::commands::client_health::notify_client_health_state_changed();
     }
     Ok(())
 }

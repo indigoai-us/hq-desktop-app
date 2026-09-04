@@ -40,6 +40,10 @@ pub struct Contact {
     pub last_message_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_direction: Option<String>,
+    /// Presigned avatar GET URL from hq-pro (contacts + company members).
+    /// Absent/null on older servers or people without a photo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +192,11 @@ pub struct ChannelMember {
     pub display_name: String,
     #[serde(default)]
     pub role: String,
+    /// Presigned avatar GET URL from `GET /v1/notify/channels/{id}/members`.
+    /// hq-pro sends this (or `null`) on every enriched roster row; dropping it
+    /// here is what left human channel messages as initials-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -501,6 +510,26 @@ mod tests {
     }
 
     #[test]
+    fn contact_round_trips_avatar_url() {
+        let json = r#"{
+            "personUid": "prs_a",
+            "displayName": "Ada",
+            "avatarUrl": "https://cdn/a.jpg"
+        }"#;
+        let c: Contact = serde_json::from_str(json).expect("Contact parses");
+        assert_eq!(c.avatar_url.as_deref(), Some("https://cdn/a.jpg"));
+        let out = serde_json::to_value(&c).expect("Contact serializes");
+        assert_eq!(out["avatarUrl"], "https://cdn/a.jpg");
+
+        let no_photo: Contact =
+            serde_json::from_str(r#"{ "personUid": "prs_b", "avatarUrl": null }"#)
+                .expect("null avatarUrl parses");
+        assert!(no_photo.avatar_url.is_none());
+        let omitted = serde_json::to_value(&no_photo).expect("serializes");
+        assert!(omitted.get("avatarUrl").is_none());
+    }
+
+    #[test]
     fn channel_detail_decodes_without_channel_key() {
         // Regression: the `/v1/notify/channels/{id}/messages` endpoint returns
         // only the message page (no nested `channel`). A required `channel`
@@ -735,6 +764,21 @@ mod tests {
         let m: ChannelMembersResponse = serde_json::from_str(members_json).expect("members parse");
         assert_eq!(m.members.len(), 2);
         assert_eq!(m.members[0].role, "owner");
+        assert!(m.members[0].avatar_url.is_none());
+
+        let with_photos = r#"{ "members": [
+            { "personUid": "prs_o", "email": "o@x.com", "displayName": "Owner",
+              "role": "owner", "avatarUrl": "https://cdn/o.jpg" },
+            { "personUid": "prs_m", "displayName": "Member", "role": "member",
+              "avatarUrl": null }
+        ] }"#;
+        let photos: ChannelMembersResponse =
+            serde_json::from_str(with_photos).expect("members with avatars parse");
+        assert_eq!(photos.members[0].avatar_url.as_deref(), Some("https://cdn/o.jpg"));
+        assert!(photos.members[1].avatar_url.is_none());
+        let out = serde_json::to_value(&photos).expect("members serialize");
+        assert_eq!(out["members"][0]["avatarUrl"], "https://cdn/o.jpg");
+        assert!(out["members"][1].get("avatarUrl").is_none());
 
         let detail_json = r#"{
             "channel": { "channelId": "chn_1", "name": "g", "scope": "personal" },

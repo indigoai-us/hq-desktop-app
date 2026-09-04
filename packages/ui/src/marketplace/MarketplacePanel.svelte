@@ -19,9 +19,11 @@
   import { onMount } from "svelte";
   import { safeUnlisten, type UnlistenFn } from "../library/library-refresh.js";
   import {
+    authorInitials,
     companyInstallTargets,
     filterListings,
     installMarketplacePack,
+    listingAuthor,
     listingDisplayName,
     loadMarketplaceListings,
     recordMarketplaceInstall,
@@ -33,6 +35,7 @@
     coverForListing,
     coverFallback,
     coverTone,
+    marketplaceAvatarSrc,
   } from "../library/pack-covers.js";
   import type { WorkspacesResult } from "../chat/workspaces.js";
 
@@ -246,7 +249,8 @@
   const visible = $derived(filterListings(listings, query));
 
   function authorLabel(listing: MarketplaceListing): string {
-    return listing.author ? `@${listing.author}` : "unknown";
+    const handle = listingAuthor(listing).handle;
+    return handle ? `@${handle}` : "unknown";
   }
 
   // ── US-019: attribution byline links to the creator profile ────────────────
@@ -261,7 +265,7 @@
 
   /** The creator-profile URL for a handle, or null when there's no handle. */
   function creatorProfileHref(listing: MarketplaceListing): string | null {
-    const handle = listing.author?.trim();
+    const handle = listingAuthor(listing).handle;
     if (!handle) return null;
     return `${CREATOR_PROFILE_BASE}/${encodeURIComponent(handle)}`;
   }
@@ -362,6 +366,8 @@
     <div class="grid" aria-label="Marketplace listings">
       {#each visible as listing (listing.id)}
         {@const cover = coverForListing(listing)}
+        {@const author = listingAuthor(listing)}
+        {@const avatarSrc = marketplaceAvatarSrc(author.avatarUrl)}
         <!--
           The card is keyboard-focusable + clickable (role="button") to open the
           detail slide-over, but it is a <div> rather than a <button> so the
@@ -419,24 +425,43 @@
             </h3>
           </div>
           <div class="card-body">
-            {#if creatorProfileHref(listing)}
-              <!-- Byline → creator profile (US-019). stopPropagation so clicking
-                   the link opens the profile instead of selecting the card. -->
-              <a
-                class="author author-link"
-                href={creatorProfileHref(listing)}
-                target="_blank"
-                rel="noreferrer noopener"
-                data-testid="marketplace-author"
-                title={`View ${authorLabel(listing)} on the creator directory`}
-                onclick={(event) => event.stopPropagation()}
-                >{authorLabel(listing)}</a
-              >
-            {:else}
-              <span class="author" data-testid="marketplace-author"
-                >{authorLabel(listing)}</span
-              >
-            {/if}
+            <div
+              class="author-row"
+              data-testid="marketplace-author"
+              title={author.displayName || authorLabel(listing)}
+            >
+              {#if avatarSrc}
+                <img
+                  class="author-avatar"
+                  src={avatarSrc}
+                  alt=""
+                  width="22"
+                  height="22"
+                  data-testid="marketplace-author-avatar"
+                />
+              {:else}
+                <span
+                  class="author-avatar author-initials"
+                  aria-hidden="true"
+                  data-testid="marketplace-author-initials">{authorInitials(author)}</span
+                >
+              {/if}
+              {#if creatorProfileHref(listing)}
+                <!-- Byline → creator profile (US-019). stopPropagation so clicking
+                     the link opens the profile instead of selecting the card. -->
+                <a
+                  class="author author-link"
+                  href={creatorProfileHref(listing)}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title={`View ${authorLabel(listing)} on the creator directory`}
+                  onclick={(event) => event.stopPropagation()}
+                  >{authorLabel(listing)}</a
+                >
+              {:else}
+                <span class="author">{authorLabel(listing)}</span>
+              {/if}
+            </div>
             {#if listing.summary}
               <p class="card-desc" title={listing.summary}>{listing.summary}</p>
             {/if}
@@ -449,6 +474,8 @@
 
 {#if selected}
   {@const detailCover = coverForListing(selected)}
+  {@const detailAuthor = listingAuthor(selected)}
+  {@const detailAvatar = marketplaceAvatarSrc(detailAuthor.avatarUrl)}
   <div
     class="detail-backdrop"
     data-testid="marketplace-detail-backdrop"
@@ -505,25 +532,42 @@
     <div class="detail-body">
       <section class="detail-section">
         <h3 class="section-title">Author</h3>
-        {#if creatorProfileHref(selected)}
-          <!-- Byline → creator profile (US-019). Opens the public directory
-               profile (US-018) in the system browser. -->
-          <p class="section-body">
+        <p
+          class="section-body author-row"
+          data-testid="marketplace-detail-author"
+          title={detailAuthor.displayName || authorLabel(selected)}
+        >
+          {#if detailAvatar}
+            <img
+              class="author-avatar"
+              src={detailAvatar}
+              alt=""
+              width="22"
+              height="22"
+              data-testid="marketplace-detail-author-avatar"
+            />
+          {:else}
+            <span
+              class="author-avatar author-initials"
+              aria-hidden="true"
+              data-testid="marketplace-detail-author-initials">{authorInitials(detailAuthor)}</span
+            >
+          {/if}
+          {#if creatorProfileHref(selected)}
+            <!-- Byline → creator profile (US-019). Opens the public directory
+                 profile (US-018) in the system browser. -->
             <a
               class="author-link"
               href={creatorProfileHref(selected)}
               target="_blank"
               rel="noreferrer noopener"
-              data-testid="marketplace-detail-author"
               title={`View ${authorLabel(selected)} on the creator directory`}
               >{authorLabel(selected)}</a
             >
-          </p>
-        {:else}
-          <p class="section-body" data-testid="marketplace-detail-author">
-            {authorLabel(selected)}
-          </p>
-        {/if}
+          {:else}
+            <span>{authorLabel(selected)}</span>
+          {/if}
+        </p>
       </section>
 
       {#if selected.summary}
@@ -958,6 +1002,32 @@
     gap: var(--v4-space-1);
     min-width: 0;
     padding: var(--v4-space-3);
+  }
+
+  .author-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    align-self: flex-start;
+  }
+
+  .author-avatar {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .author-initials {
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--v4-text-2) 14%, var(--v4-ground));
+    color: var(--v4-text-2);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
   }
 
   .author {

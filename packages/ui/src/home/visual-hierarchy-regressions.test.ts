@@ -37,8 +37,13 @@ describe("desktop visual hierarchy regressions", () => {
   });
 
   it("starts a Tauri window drag from the titlebar with the window label", () => {
-    expect(titleBar).toContain("plugin:window|start_dragging");
-    expect(titleBar).toContain("{ label }");
+    const windowDrag = readFileSync(
+      new URL("./window-drag.ts", import.meta.url),
+      "utf8",
+    );
+    expect(titleBar).toContain("startWindowDrag");
+    expect(windowDrag).toContain("plugin:window|start_dragging");
+    expect(windowDrag).toContain("{ label }");
     const css = titleBar.split("<style>")[1] ?? "";
     expect(css).not.toMatch(/-webkit-app-region:\s*drag/);
   });

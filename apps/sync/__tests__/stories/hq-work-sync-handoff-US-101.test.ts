@@ -104,7 +104,7 @@ describe('US-101 consume @hq/ui + platform contracts', () => {
     // Vitest will not strip TypeScript under node_modules, and these packages
     // ship source with no build step.
     expect(readRepo('vite.config.ts')).toContain(
-      'inline: [/@hq\\/(ui|platform|core)($|\\/)/]',
+      'inline: [/@hq\\/(ui|platform|core|work)($|\\/)/]',
     );
   });
 

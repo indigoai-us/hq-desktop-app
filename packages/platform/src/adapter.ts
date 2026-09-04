@@ -221,6 +221,82 @@ export interface UpdateProfileInput {
   avatarBase64?: string;
 }
 
+/**
+ * PATCH /v1/agents/{uid}/profile body. At least one field must be present.
+ * Avatars are uploaded bytes (`avatarBase64`); hq-pro does not accept an
+ * external image URL here.
+ */
+export interface UpdateAgentProfileInput {
+  displayName?: string;
+  title?: string;
+  description?: string;
+  avatarBase64?: string;
+}
+
+export interface AgentProfileWire {
+  displayName?: string;
+  title?: string;
+  description?: string;
+  avatarUrl?: string;
+  avatarBase64?: string;
+}
+
+export interface UpdateAgentProfileResult {
+  uid: string;
+  profile: AgentProfileWire;
+  slackUpdated?: boolean;
+}
+
+export interface AvatarPackAuthorWire {
+  handle: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
+export interface AvatarPackListEntry {
+  id: string;
+  name: string;
+  version: string;
+  author: AvatarPackAuthorWire;
+  count: number;
+  thumbnailUrl?: string;
+}
+
+export interface AvatarPackListPayload {
+  packs: AvatarPackListEntry[];
+  expiresAt: number;
+}
+
+export interface AvatarPackItemWire {
+  id: string;
+  name: string;
+  tags: string[];
+  thumbUrl: string;
+  fullUrl: string;
+}
+
+export interface AvatarPackDetailPayload {
+  id: string;
+  name: string;
+  version: string;
+  author: AvatarPackAuthorWire;
+  count: number;
+  items: AvatarPackItemWire[];
+  expiresAt: number;
+}
+
+export interface SelectAgentAvatarInput {
+  packId: string;
+  itemId: string;
+}
+
+export interface SelectAgentAvatarResult {
+  uid: string;
+  avatarUrl?: string;
+  profile?: AgentProfileWire;
+  slackUpdated?: boolean;
+}
+
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   isAdmin(): AdapterPromise<boolean>;
@@ -233,6 +309,26 @@ export interface IdentityApi {
   updateProfile(input: UpdateProfileInput): AdapterPromise<{
     profile: MemberProfileWire | null;
   }>;
+  /**
+   * PATCH /v1/agents/{agentUid}/profile — owner/admin merge of displayName /
+   * title / description / avatarBase64 onto `metadata.agentConfig.profile`.
+   */
+  updateAgentProfile(
+    agentUid: string,
+    input: UpdateAgentProfileInput,
+  ): AdapterPromise<UpdateAgentProfileResult>;
+  /** GET /v1/avatar-packs — published gallery catalog. */
+  listAvatarPacks(): AdapterPromise<AvatarPackListPayload>;
+  /** GET /v1/avatar-packs/{id} — items with presigned thumb/full URLs. */
+  getAvatarPack(packId: string): AdapterPromise<AvatarPackDetailPayload>;
+  /**
+   * POST /v1/agents/{agentUid}/avatar — copy a pack item onto the agent's
+   * profile avatarKey.
+   */
+  selectAgentAvatar(
+    agentUid: string,
+    input: SelectAgentAvatarInput,
+  ): AdapterPromise<SelectAgentAvatarResult>;
 }
 
 export interface MessageSearchOptions {
@@ -431,6 +527,14 @@ export function normalizeReplyThreadValue(value: unknown): ReplyThreadValue {
   };
 }
 
+/**
+ * Shown when `deleteChannel` hits a server that predates the delete route
+ * (API Gateway's generic `{"message":"Not Found"}`, no `code`). Mirrors the
+ * string the Sync Rust command returns so every adapter reads the same.
+ */
+export const DELETE_CHANNEL_UNSUPPORTED_MESSAGE =
+  "This server doesn't support deleting channels yet.";
+
 export interface MessagingApi {
   listChannels(opts?: ListChannelsOptions): AdapterPromise<ChannelSummary[]>;
   fetchChannelDirectory(cursor?: string): AdapterPromise<Json>;
@@ -449,6 +553,20 @@ export interface MessagingApi {
     channelId: string,
     personUid: string,
   ): AdapterPromise<Json>;
+  /**
+   * DELETE /v1/notify/channels/{channelId} — delete a channel outright.
+   * Owner-only (server-enforced). Contract:
+   *   200 `{ deleted: "<channelId>" }`
+   *   403 `{ error, code: "CHANNEL_NOT_OWNER" }`
+   *   404 `{ error, code: "CHANNEL_NOT_FOUND" }`
+   *   409 `{ error, code: "CHANNEL_GROUP_NOT_DELETABLE" }` (group DMs)
+   * A server that predates the route answers API Gateway's generic 404
+   * `{"message":"Not Found"}` (no `code`) — adapters surface that as
+   * "This server doesn't support deleting channels yet." rather than a bare
+   * "Not Found". After a delete the server fans out a directory-feed change;
+   * the deleting client drops the row itself (optimistic `channel:removed`).
+   */
+  deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
   markChannelRead(id: string): AdapterPromise<void>;
@@ -508,6 +626,20 @@ export interface MessagingApi {
       }>;
     },
   ): AdapterPromise<Json>;
+  /**
+   * POST /v1/notify/dm (desktop `send_dm_to_email`) — address a DM by email
+   * OR person uid, never both. Returns `{ state: "delivered" }` when the pair
+   * is already connected and `{ state: "connectionRequested" }` when the
+   * server parked an approval request instead.
+   *
+   * OPTIONAL: the web adapter does not implement it, and the UI hides every
+   * email-invite affordance when it is absent.
+   */
+  sendDmToEmail?(args: {
+    toEmail?: string;
+    toPersonUid?: string;
+    body: string;
+  }): AdapterPromise<Json>;
   fetchReplyThread(args: {
     scope: "dm" | "channel";
     rootEventId: string;
@@ -670,6 +802,74 @@ export interface AgencyApi {
   sendMessage(team: string, message: Json): AdapterPromise<void>;
 }
 
+/**
+ * Fleet-agent control plane (hq-pro `/v1/agents`, `/v1/telemetry/company`,
+ * `/v1/fleet/.../owners`). Person JWTs: owner/admin for status, jobs, profile
+ * mutations, stop/start/deprovision. `listMobileRoster` is member-safe.
+ * Resume-job and run-now are machine-JWT only and are intentionally omitted.
+ */
+export interface AgentProfilePatch {
+  displayName?: string;
+  description?: string;
+}
+
+export const AGENT_PATHS = {
+  status: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/status`,
+  jobs: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/jobs`,
+  pauseJob: (agentUid: string, jobId: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
+  profile: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  stop: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
+  start: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/start`,
+  deprovision: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}`,
+  mobileRoster: (companyUid?: string | null) => {
+    const uid = (companyUid ?? "").trim();
+    return uid
+      ? `/v1/agents/mobile-roster?companyUid=${encodeURIComponent(uid)}`
+      : "/v1/agents/mobile-roster";
+  },
+  owners: (companyUid: string, agentUid: string) =>
+    `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
+  companyTelemetry: (companyUid: string, from: string, to: string) =>
+    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+} as const;
+
+export interface AgentsApi {
+  /** GET /v1/agents/{uid}/status — owner/admin. */
+  getStatus(agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/agents/mobile-roster — member-safe directory. */
+  listMobileRoster(companyUid?: string | null): AdapterPromise<Json>;
+  /** GET /v1/agents/{uid}/jobs — owner/admin operator list. */
+  listJobs(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
+  pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /** PATCH /v1/agents/{uid}/profile — owner/admin. */
+  updateProfile(
+    agentUid: string,
+    patch: AgentProfilePatch,
+  ): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/stop — pause the box. */
+  stop(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/start — resume a stopped box. */
+  start(agentUid: string): AdapterPromise<Json>;
+  /** DELETE /v1/agents/{uid} — reverse deprovision / remove. */
+  deprovision(agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
+  listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
+  /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */
+  getCompanyTelemetry(
+    companyUid: string,
+    from: string,
+    to: string,
+  ): AdapterPromise<Json>;
+}
+
 export interface FeedbackApi {
   submitBugReport(title: string, body: string): AdapterPromise<Json>;
 }
@@ -739,6 +939,13 @@ export interface UpdatesApi {
   getVersions(): AdapterPromise<VersionInfo>;
   checkForUpdates(): AdapterPromise<Json>;
   installUpdate(): AdapterPromise<void>;
+  /** Queued update, phase 1: verify + download in the background (progress
+   *  arrives on the host `update:progress` event), staging the package. */
+  downloadUpdate(): AdapterPromise<Json>;
+  /** Queued update, phase 2: install the staged package and restart. */
+  installDownloadedUpdate(): AdapterPromise<void>;
+  /** The staged-but-not-installed package, if any (hydrates "Restart to update"). */
+  getDownloadedUpdate(): AdapterPromise<Json | null>;
   getPendingUpdate(): AdapterPromise<Json | null>;
   checkCoreState(): AdapterPromise<Json>;
   installCoreUpdate(): AdapterPromise<void>;
@@ -784,6 +991,28 @@ export interface SettingsApi {
 }
 
 /**
+ * Optional destination binding for cross-company session migrate (US-017B).
+ * Empty `{}` leaves project/task unset on the destination copy.
+ */
+export interface MigrateSessionDestination {
+  projectId?: string;
+  taskId?: string;
+}
+
+/**
+ * Body for POST /v1/work-mesh/sessions/{sessionId}/migrate.
+ * This is the only desktop client path that rebinds a session across companies.
+ */
+export interface MigrateSessionRequest {
+  operationId: string;
+  digest: string;
+  sourceCompanyUid: string;
+  destinationCompanyUid: string;
+  destination: MigrateSessionDestination;
+  expectedVersion: number;
+}
+
+/**
  * Work-mesh PROJECT_VIEW + local machine cache.
  *
  * Desktop `readLocalSnapshot` returns the on-disk cache
@@ -795,6 +1024,14 @@ export interface WorkMeshApi {
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
+  /**
+   * Cross-company session migrate (US-017A/B).
+   * POST /v1/work-mesh/sessions/{sessionId}/migrate — only rebind path.
+   */
+  migrateSession(
+    sessionId: string,
+    body: MigrateSessionRequest,
+  ): AdapterPromise<Json>;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +1056,7 @@ export interface PlatformAdapter {
   readonly library: LibraryApi;
   readonly files: FilesApi;
   readonly agency: AgencyApi;
+  readonly agents: AgentsApi;
   readonly feedback: FeedbackApi;
   readonly sync: SyncApi;
   readonly shell: ShellApi;

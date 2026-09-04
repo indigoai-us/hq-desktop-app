@@ -80,7 +80,44 @@ export function companyDisplayName(
   return null;
 }
 
-/** Turn membership rows into the Workspace list the shell already consumes. */
+const WORKSPACE_KINDS = new Set(["personal", "company"]);
+const WORKSPACE_STATES = new Set([
+  "personal",
+  "synced",
+  "cloud-only",
+  "local-only",
+  "broken",
+]);
+
+function optStr(value: unknown): string | null {
+  const s = str(value);
+  return s || null;
+}
+
+/**
+ * True when `row` is already a `Workspace` from `list_syncable_workspaces`
+ * (it carries a `kind`), as opposed to a bare membership row from
+ * `GET /membership/me` (which never does).
+ */
+function isWorkspaceRow(row: Record<string, unknown>): boolean {
+  return WORKSPACE_KINDS.has(str(row.kind).toLowerCase());
+}
+
+/**
+ * Turn membership rows into the Workspace list the shell already consumes.
+ *
+ * Two shapes arrive here and they must NOT be treated alike:
+ *
+ * - Membership rows (`GET /membership/me`) know nothing about local state, so
+ *   they are synthesized as an active, synced company — that is all a
+ *   membership can mean.
+ * - Real `Workspace` rows (`list_syncable_workspaces`) already carry `kind`,
+ *   `state` and `membershipStatus`. Those pass through INTACT. Flattening them
+ *   to "active company" was a real bug: the personal vault (kind `personal`,
+ *   displayName = the person's own name, sorted first) came out as an active
+ *   company named after the user, became the default "In" target of the
+ *   create modal, and the server refused it with "not an active member".
+ */
 export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
   const seen = new Set<string>();
   const out: Workspace[] = [];
@@ -96,13 +133,54 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
       readableName(row.companySlug) ||
       readableName(row.slug) ||
       "Company";
+
+    if (isWorkspaceRow(row)) {
+      const kind = str(row.kind).toLowerCase() as Workspace["kind"];
+      const rawState = str(row.state).toLowerCase();
+      const state = (
+        WORKSPACE_STATES.has(rawState)
+          ? rawState
+          : kind === "personal"
+            ? "personal"
+            : "synced"
+      ) as Workspace["state"];
+      out.push({
+        slug,
+        displayName,
+        kind,
+        state,
+        cloudUid: uid,
+        bucketName: optStr(row.bucketName),
+        hasLocalFolder: row.hasLocalFolder === true,
+        localPath: optStr(row.localPath),
+        // Preserve null: for a real workspace row "unknown" is a fact, not
+        // something to paper over with "active".
+        membershipStatus: optStr(row.membershipStatus) ?? optStr(row.status),
+        role: optStr(row.role),
+        ...(typeof row.syncEnabled === "boolean"
+          ? { syncEnabled: row.syncEnabled }
+          : {}),
+        lastSyncedAt: optStr(row.lastSyncedAt),
+        brokenReason: optStr(row.brokenReason),
+        invitedBy: optStr(row.invitedBy),
+        invitedAt: optStr(row.invitedAt),
+        ...(typeof row.brandingEnabled === "boolean"
+          ? { brandingEnabled: row.brandingEnabled }
+          : {}),
+        ...(isRecord(row.brand) || row.brand === null
+          ? { brand: row.brand as Workspace["brand"] }
+          : {}),
+      });
+      continue;
+    }
+
     out.push({
       slug,
       displayName,
       kind: "company",
       state: "synced",
       cloudUid: uid,
-      bucketName: str(row.bucketName) || null,
+      bucketName: optStr(row.bucketName),
       hasLocalFolder: false,
       localPath: null,
       membershipStatus: str(row.status) || "active",

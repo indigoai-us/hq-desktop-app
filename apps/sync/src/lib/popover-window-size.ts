@@ -1,4 +1,4 @@
-export const POPOVER_WIDTH = 296;
+export const POPOVER_WIDTH = 288;
 export const POPOVER_MIN_HEIGHT = 226;
 export const POPOVER_MAX_HEIGHT = 480;
 

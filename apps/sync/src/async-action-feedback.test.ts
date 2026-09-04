@@ -54,8 +54,12 @@ describe('user-triggered async action feedback contracts', () => {
       'let mutationFailure = $state<WidgetMutationFailure | null>(null);',
     );
     expect(widgetSettings).toContain('const failure = mutationFailure;');
-    expect(widgetSettings).toContain("{ setting: 'enabled', value: failure.value }");
-    expect(widgetSettings).toContain("{ setting: 'display', value: failure.value }");
+    expect(widgetSettings).toContain('await applyMutation(failure, true)');
+    expect(widgetSettings).toContain("setting: 'enabled'");
+    expect(widgetSettings).toContain("setting: 'display'");
+    expect(widgetSettings).toContain("setting: 'placement'");
+    expect(widgetSettings).toContain("setting: 'autoHide'");
+    expect(widgetSettings).toContain("setting: 'needsAction'");
     expect(widgetSettings).toContain('data-testid="widget-setting-error"');
     expect(widgetSettings).toContain('aria-busy={pendingSetting ===');
   });

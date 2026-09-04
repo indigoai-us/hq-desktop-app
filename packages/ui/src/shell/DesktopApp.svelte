@@ -19,20 +19,30 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import type { PlatformAdapter } from "@hq/platform";
+  import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { presenceStatus } from "../chat/presence-store.svelte.js";
+  import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel } from "../chat/setup-channel.js";
+  import {
+    CONVERSATION_BOOT_GRACE_MS,
+    DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    raceTimeout,
+  } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
   import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
+  import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import NotificationsView from "../inbox/NotificationsView.svelte";
@@ -43,8 +53,37 @@
   import ShellSettings, {
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
+  import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
+  import {
+    dismissRecommendBanner,
+    installRecommendedUpdate,
+    orchestrationAdapterFrom,
+    updateStore,
+    type UpdateStoreAdapter,
+  } from "../settings/update-store.svelte";
+  import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import MigrateSessionDialog from "../common/MigrateSessionDialog.svelte";
+  import { canMigrateCompanySession } from "../avatars/can-edit.js";
+  import {
+    digestMigratePayload,
+    migrateDestinationCompanies,
+    newMigrateOperationId,
+    normalizeMigrateDestination,
+  } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
+  import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import { avatarBase64FromFile } from "../settings/avatar-image.js";
+  import { canEditAgentProfile } from "../avatars/can-edit.js";
+  import { loadAvatarGallery } from "../avatars/gallery.js";
+  import {
+    avatarsFromContactPayload,
+    composeAvatarByUid,
+    fetchBytesWith,
+    saveAgentAvatar,
+  } from "../avatars/save-agent-avatar.js";
+  import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
   import {
@@ -53,6 +92,7 @@
     setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
+  import { AtlasPage, createGoChord } from "../atlas/index.js";
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
@@ -77,10 +117,12 @@
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
   import type { SyncState } from "../common/sync-model.js";
-  import type {
-    ChannelStatusModel,
-    StatusPersonRow,
+  import {
+    buildChannelStatusModel,
+    type ChannelStatusModel,
+    type StatusPersonRow,
   } from "../chat/channel-status-model.js";
+  import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
   import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
@@ -90,6 +132,11 @@
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import LinkContextMenu from "../common/LinkContextMenu.svelte";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../common/external-links.js";
   import {
     disambiguateMentionTargets,
     mentionTargetsFromContacts,
@@ -141,14 +188,28 @@
     fileCompanyScope,
     loadVaultFilePreview,
   } from "../chat/messaging/channel-file-preview.js";
-  import { conversationPairKey } from "../chat/messaging/chat-attachments.js";
+  import {
+    attachmentVaultScopeUid,
+    chatAttachmentValidatorForPlatform,
+    conversationPairKey,
+  } from "../chat/messaging/chat-attachments.js";
   import {
     presignUrlFromResult,
     uploadChatAttachments,
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
-  import type { ConversationRow } from "../chat/sidebar-model.js";
-  import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import {
+    isStrictlyRicherConversationRow,
+    type ConversationRow,
+  } from "../chat/sidebar-model.js";
+  import {
+    composerPlaceholderFor,
+    DIRECT_MESSAGE_PLACEHOLDER,
+    GROUP_MESSAGE_PLACEHOLDER,
+    isRawParticipantUid,
+    resolveConversationRow,
+    resolveConversationTitle,
+  } from "../chat/conversation-title.js";
   import {
     mergeFetchedTimeline,
     mergeTimelineMessages,
@@ -161,6 +222,7 @@
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
+    channelActivityFromTimeline,
     dmActivityFromInboxPage,
     dmActivityFromThreadsPage,
     dmActivityFromTimeline,
@@ -341,15 +403,14 @@
      */
     getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
     /**
-     * Host-registered destinations, keyed by page id. The shared shell knows
-     * nothing about a page beyond its palette copy and its component: each
-     * entry gains a `command-go-<id>` palette row and becomes reachable as an
-     * embedded-navigation `{ kind: "extra", page: "<id>" }` target. `param` is
-     * the page's own opaque selection, echoed back through `onnavigate`.
-     *
-     * This is the ONLY seam a host uses to add its own full-column surface —
-     * `packages/ui` must never import a host's page or platform SDK.
+     * Bound for first-paint optional fetches (directory, contacts, DM
+     * threads). Tests pass a short value so a hung/404 call cannot leave the
+     * conversation pane on a skeleton.
      */
+    bootTimeoutMs?: number;
+    /** First successful conversation/empty paint — host reports `shell_ready`. */
+    onShellReady?: () => void;
+    /** Host-registered full-column destinations keyed by page id. */
     extraPages?: Record<
       string,
       {
@@ -361,11 +422,7 @@
         }>;
       }
     >;
-    /**
-     * Host decoration for sidebar rows (badge, hover card, context-menu
-     * actions) — the row-level twin of `extraPages`. The shell passes it to
-     * the sidebar untouched; see `chat/row-extras.ts`.
-     */
+    /** Host decoration for sidebar rows: badge, hover card, and actions. */
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -413,6 +470,8 @@
     onselectrow,
     putAttachmentObject,
     getAttachmentObject,
+    bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    onShellReady,
     extraPages,
     rowExtras = null,
   }: Props = $props();
@@ -427,6 +486,41 @@
   const resolvedSettingsProfile = $derived(
     settingsProfile ?? settingsProfileFromSelf(self) ?? null,
   );
+  const hasWindowControls = $derived(
+    adapter?.capabilities?.hasWindowControls ?? false,
+  );
+  const recommendBanner = $derived(updateStore.recommendBanner);
+  let recommendInstalling = $state(false);
+
+  function updateOrchAdapter(): UpdateStoreAdapter {
+    const updates = adapter.updates;
+    return orchestrationAdapterFrom({
+      getVersions: () =>
+        updates.getVersions() as Promise<AdapterResult<Record<string, unknown>>>,
+      checkForUpdates: () =>
+        updates.checkForUpdates() as Promise<AdapterResult<unknown>>,
+      checkCoreState: () =>
+        updates.checkCoreState() as Promise<AdapterResult<unknown>>,
+      checkCliUpdate: () =>
+        updates.checkCliUpdate() as Promise<AdapterResult<unknown>>,
+      downloadUpdate: () =>
+        updates.downloadUpdate() as Promise<AdapterResult<unknown>>,
+      installDownloadedUpdate: () =>
+        updates.installDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+      getDownloadedUpdate: () =>
+        updates.getDownloadedUpdate() as Promise<AdapterResult<unknown>>,
+    });
+  }
+
+  async function handleRecommendedUpdateNow(): Promise<void> {
+    if (recommendInstalling || !adapter.isAvailable("canSelfUpdate")) return;
+    recommendInstalling = true;
+    try {
+      await installRecommendedUpdate(updateOrchAdapter());
+    } finally {
+      recommendInstalling = false;
+    }
+  }
 
   /**
    * Never ask a browser to fetch a presigned Vault URL directly: Vault has no
@@ -462,13 +556,12 @@
     | "notifications"
     | "settings"
     | "meetings"
+    | "atlas"
     | "library"
     | "shared-files"
     | "extra"
   >("conversation");
-  /** Host-registered destination currently shown when `view === "extra"`. */
   let extraPageId = $state<string | null>(null);
-  /** The extra page's own opaque selection (deep-link param). */
   let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
@@ -480,6 +573,9 @@
   let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
   let openReplyRootId = $state<string | null>(null);
+  /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
+   *  closing it falls back to whatever pane was open underneath. */
+  let openArtifactView = $state<ChatArtifact | null>(null);
   let attachTray = $state<{
     selectedId: string;
     items: FileAttachmentModel[];
@@ -489,12 +585,51 @@
   let narrowViewport = $state(false);
   let sidebarCollapsed = $state(false);
   let selectedRow = $state<ConversationRow | null>(initialRow);
+  let railRows = $state<ConversationRow[]>([]);
+  let conversationBootTimedOut = $state(false);
+  $effect(() => {
+    if (selectedRow) {
+      conversationBootTimedOut = false;
+      return;
+    }
+    const handle = setTimeout(() => {
+      conversationBootTimedOut = true;
+      console.info("[hq-desktop]", {
+        t: Date.now(),
+        event: "conversation-boot-timeout",
+      });
+    }, bootTimeoutMs + CONVERSATION_BOOT_GRACE_MS);
+    return () => clearTimeout(handle);
+  });
   $effect(() => {
     const next = initialRow;
     if (!next) return;
     untrack(() => {
-      if (!selectedRow) selectedRow = next;
+      if (
+        !selectedRow ||
+        isStrictlyRicherConversationRow(next, selectedRow)
+      ) {
+        selectedRow = next;
+      }
     });
+  });
+
+  $effect(() => {
+    const selected = selectedRow;
+    const rows = railRows;
+    if (!selected) return;
+    const rail = resolveConversationRow(selected, rows);
+    if (!rail || rail.id !== selected.id) return;
+    const currentTitle = untrack(() => selected.title);
+    if (rail.title === currentTitle) return;
+    if (
+      !isRawParticipantUid(currentTitle) &&
+      currentTitle !== DIRECT_MESSAGE_PLACEHOLDER &&
+      currentTitle !== GROUP_MESSAGE_PLACEHOLDER
+    ) {
+      return;
+    }
+    selectedRow = rail;
   });
   let pendingReplyRootId = $state<string | null>(
     initialReplyRootEventId?.trim() || null,
@@ -516,6 +651,7 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
@@ -552,6 +688,16 @@
           view = "meetings";
         },
       },
+      {
+        id: "command-go-atlas",
+        label: "Atlas",
+        detail: "People and agents on projects, live",
+        shortcut: "g a",
+        action: () => {
+          view = "atlas";
+          meetingFocusRequest = null;
+        },
+      },
     ];
     nav.push({
       id: "command-go-library",
@@ -565,8 +711,6 @@
       detail: "Open settings",
       action: () => openSettings(),
     });
-    // Host-registered destinations. The shell contributes only the row; the
-    // host decides which pages exist (and therefore does its own gating).
     for (const [id, page] of Object.entries(extraPages ?? {})) {
       nav.push({
         id: `command-go-${id}`,
@@ -599,6 +743,22 @@
   const watched = $derived(companies?.length ?? 0);
   const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
 
+  /** Company for Atlas — selected conversation company, else first cloud workspace. */
+  const atlasCompanyUid = $derived.by(() => {
+    const fromRow = (selectedRow?.companyUid ?? "").trim();
+    if (fromRow) return fromRow;
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      if (uid) return uid;
+    }
+    return "";
+  });
+  const atlasCompanyLabel = $derived(
+    companyDisplayName(atlasCompanyUid, companyNames) ||
+      companies?.find((c) => c.cloudUid === atlasCompanyUid)?.displayName ||
+      null,
+  );
+
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
     const row = selectedRow;
@@ -630,13 +790,12 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
+  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
-  const composerPlaceholder = $derived.by(() => {
-    const row = selectedRow;
-    if (!row) return "Reply…";
-    const isGroup = row.kind === "dm" || row.kind === "group";
-    return `Message ${isGroup ? row.title : `# ${row.title}`} — or type @ to mention an agent…`;
-  });
+  const composerPlaceholder = $derived(
+    composerPlaceholderFor(selectedRow, headerTitle),
+  );
 
   let liveTimeline = $state<ConversationMessageWire[]>([]);
   let liveTimelineId = $state<string | null>(null);
@@ -644,6 +803,8 @@
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
   const lastDmTimelineStampByUid = new Map<string, string>();
+  /** Last rail activity stamp emitted from a committed channel timeline. */
+  const lastChannelTimelineStampById = new Map<string, string>();
   /**
    * GET /v1/notify/dm-threads answered 404 for this tenant — the server
    * predates the peer index. Stop asking; the inbox path still runs.
@@ -697,7 +858,21 @@
           wakes?.emit?.("dm:pair-unreads", { activity: [entry] });
         }
       }
+      return;
     }
+    const channelId = row.channelId?.trim() ?? "";
+    if (!channelId) return;
+    const entry = channelActivityFromTimeline(channelId, next);
+    if (!entry) return;
+    const prev = lastChannelTimelineStampById.get(entry.channelId);
+    if (prev && entry.lastMessageAt <= prev) return;
+    lastChannelTimelineStampById.set(entry.channelId, entry.lastMessageAt);
+    wakes?.emit?.("channel:new-message", {
+      channelId: entry.channelId,
+      createdAt: entry.lastMessageAt,
+      ...(entry.fromPersonUid ? { fromPersonUid: entry.fromPersonUid } : {}),
+      ...(entry.eventId ? { eventId: entry.eventId } : {}),
+    });
   }
 
   async function fetchTimelineRaw(
@@ -879,6 +1054,12 @@
   let channelRosterById = $state<
     Record<string, ReturnType<typeof parseChannelMembers>>
   >({});
+  let contactAvatarByUid = $state<Record<string, string>>({});
+  let avatarOverridesByUid = $state<Record<string, string>>({});
+  let rosterWakeSeq = $state(0);
+  let agentAvatarSaving = $state(false);
+  let agentAvatarSaveError = $state<string | null>(null);
+  let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
 
   async function loadChannelRoster(channelId: string): Promise<void> {
     const id = channelId.trim();
@@ -891,25 +1072,93 @@
     };
   }
 
-  // ── Member profile panel + remove-member (Slack-style right panel) ──────────
+  // ── Member profile / agent detail (Slack-style right panel) ───────────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
+  let openAgentMember = $state<StatusPersonRow | null>(null);
   let removingMemberUid = $state<string | null>(null);
+  /**
+   * Owner-only "Delete channel" (members popover → trash). The shell owns the
+   * confirm + the call: the popover closes on outside mousedown and would eat
+   * a dialog it rendered itself.
+   */
+  let deleteChannelConfirmOpen = $state(false);
+  let deletingChannel = $state(false);
+  /**
+   * Company owner/admin "Move to another company" (US-017B). Shell owns the
+   * destination picker + confirm — same outside-mousedown reason as delete.
+   */
+  let migrateSessionTarget = $state<{
+    sessionId: string;
+    sourceCompanyUid: string;
+  } | null>(null);
+  let migratingSessionId = $state<string | null>(null);
+  let migrateSessionError = $state<string | null>(null);
+  /** Last channel-level action failure — rendered under the header, never console-only. */
+  let channelActionError = $state<string | null>(null);
+
+  // A new selection starts clean — a stale delete error must not follow the
+  // user into the next conversation.
+  $effect(() => {
+    void selectedRow?.id;
+    channelActionError = null;
+  });
   let selfAvatarUrl = $state<string | null>(null);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
-   *  roster plus the signed-in user's own profile. Feeds chat/thread/panel
-   *  photos — including agent DMs whose photo arrived on a channel roster. */
-  const avatarByUid = $derived.by(() => {
-    const map: Record<string, string> = {};
-    for (const roster of Object.values(channelRosterById)) {
-      for (const m of roster) {
-        if (m.avatarUrl && m.personUid) map[m.personUid] = m.avatarUrl;
-      }
-    }
-    if (self?.uid && selfAvatarUrl) map[self.uid] = selfAvatarUrl;
-    return map;
-  });
+   *  roster, the contacts list, the signed-in user's own profile, and any
+   *  just-saved override. Feeds chat/thread/panel photos — including agent
+   *  DMs whose photo arrived on a channel roster or contacts. */
+  const avatarByUid = $derived(
+    composeAvatarByUid({
+      rosters: Object.values(channelRosterById).flat(),
+      contacts: contactAvatarByUid,
+      selfUid: self?.uid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+    }),
+  );
+
+  const canEditOpenAgent = $derived(
+    canEditAgentProfile({
+      agentUid: openProfileMember?.personUid,
+      agentCompanyUid: selectedRow?.companyUid,
+      companies,
+      isAdmin,
+    }),
+  );
+
+  const canEditSelectedAgent = $derived(
+    selectedRow?.kind === "dm" &&
+      canEditAgentProfile({
+        agentUid: selectedRow.personUid,
+        agentCompanyUid: selectedRow.companyUid,
+        companies,
+        isAdmin,
+      }),
+  );
+
+  const canMigrateSelectedChannelSessions = $derived(
+    canMigrateCompanySession({
+      companyUid: selectedRow?.companyUid,
+      companies,
+    }),
+  );
+  const migrateDestinationsForSelected = $derived(
+    migrateDestinationCompanies(
+      companies,
+      selectedRow?.companyUid?.trim() ?? "",
+    ),
+  );
+  const canMigrateAtlasSessions = $derived(
+    canMigrateCompanySession({
+      companyUid: atlasCompanyUid,
+      companies,
+    }),
+  );
+  const migrateDestinationsForAtlas = $derived(
+    migrateDestinationCompanies(companies, atlasCompanyUid),
+  );
 
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
@@ -932,14 +1181,128 @@
   );
 
   function openMemberProfile(row: StatusPersonRow): void {
-    // One right panel at a time — a profile supersedes an open reply thread.
+    // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
-    openProfileMember = row;
+    openArtifactView = null;
+    if (isAgentUid(row.personUid)) {
+      openProfileMember = null;
+      openAgentMember = row;
+    } else {
+      openAgentMember = null;
+      openProfileMember = row;
+    }
     if (tab !== "chat") tab = "chat";
   }
 
   function closeMemberProfile(): void {
     openProfileMember = null;
+    agentAvatarSaveError = null;
+  }
+
+  function openAgentProfileFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim();
+    if (!uid) return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow?.email?.trim() || null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow?.companyUid ?? "", uid) === "online",
+    });
+  }
+
+  async function loadAvatarPacks(): Promise<AvatarPack[]> {
+    const loaded = await loadAvatarGallery(adapter.identity);
+    loadedAvatarPacks = loaded.packs;
+    return loaded.packs;
+  }
+
+  async function refreshAvatarsAfterSave(): Promise<void> {
+    const ids = Object.keys(channelRosterById);
+    await Promise.all(ids.map((id) => loadChannelRoster(id)));
+    try {
+      const contactsRes = await adapter.messaging.listContacts();
+      if (contactsRes.ok) {
+        contactAvatarByUid = {
+          ...contactAvatarByUid,
+          ...avatarsFromContactPayload(contactsRes.value),
+        };
+      }
+    } catch {
+      /* keep the optimistic override */
+    }
+    rosterWakeSeq += 1;
+  }
+
+  async function saveOpenAgentAvatar(selection: AvatarSelection): Promise<void> {
+    const uid =
+      openAgentMember?.personUid?.trim() ||
+      openProfileMember?.personUid?.trim();
+    if (!uid || agentAvatarSaving) return;
+    agentAvatarSaving = true;
+    agentAvatarSaveError = null;
+    try {
+      const packs =
+        loadedAvatarPacks ??
+        (await loadAvatarGallery(adapter.identity)).packs;
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(uid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) =>
+          avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (agentUid, input) =>
+          adapter.identity.updateAgentProfile(agentUid, input),
+        selectAgentAvatar: (agentUid, input) =>
+          adapter.identity.selectAgentAvatar(agentUid, input),
+      });
+      avatarOverridesByUid = {
+        ...avatarOverridesByUid,
+        [uid]: saved.previewDataUrl,
+      };
+      if (openAgentMember) {
+        openAgentMember = {
+          ...openAgentMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      if (openProfileMember) {
+        openProfileMember = {
+          ...openProfileMember,
+          avatarUrl: saved.previewDataUrl,
+        };
+      }
+      await refreshAvatarsAfterSave();
+    } catch (err) {
+      agentAvatarSaveError =
+        err instanceof Error ? err.message : "Could not save the avatar.";
+    } finally {
+      agentAvatarSaving = false;
+    }
+  }
+
+  function closeAgentDetail(): void {
+    openAgentMember = null;
+  }
+
+  function openAgentFromHeader(): void {
+    const uid = selectedRow?.personUid?.trim() ?? "";
+    if (!uid || !isAgentUid(uid) || selectedRow?.kind !== "dm") return;
+    openMemberProfile({
+      personUid: uid,
+      displayName: headerTitle,
+      email: selectedRow.email ?? null,
+      avatarUrl: avatarByUid[uid] ?? null,
+      description: null,
+      role: "agent",
+      statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow.companyUid ?? "", uid) === "online",
+    });
   }
 
   /** Resolve a message author against the live roster to enrich email/role. */
@@ -963,6 +1326,8 @@
         match?.description?.trim() || (mine ? selfDescription : null),
       role: match?.role?.trim() || null,
       statusIcon: "idle",
+      online:
+        presenceStatus(selectedRow?.companyUid ?? "", uid) === "online",
     });
   }
 
@@ -980,9 +1345,124 @@
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
         }
+        if (openAgentMember?.personUid === row.personUid) {
+          openAgentMember = null;
+        }
       }
     } finally {
       removingMemberUid = null;
+    }
+  }
+
+  function openMigrateSession(sessionId: string, sourceCompanyUid: string): void {
+    const sid = sessionId.trim();
+    const source = sourceCompanyUid.trim();
+    if (!sid || !source) return;
+    const destinations = migrateDestinationCompanies(companies, source);
+    if (destinations.length === 0) {
+      channelActionError =
+        "No other company is available to move this session into.";
+      return;
+    }
+    if (
+      !canMigrateCompanySession({
+        companyUid: source,
+        companies,
+      })
+    ) {
+      return;
+    }
+    membersOpen = false;
+    migrateSessionError = null;
+    migrateSessionTarget = { sessionId: sid, sourceCompanyUid: source };
+  }
+
+  async function confirmMigrateSession(
+    destinationCompanyUid: string,
+  ): Promise<void> {
+    const target = migrateSessionTarget;
+    const sessionId = target?.sessionId?.trim() ?? "";
+    const sourceCompanyUid = target?.sourceCompanyUid?.trim() ?? "";
+    const dest = destinationCompanyUid.trim();
+    if (!sessionId || !sourceCompanyUid || !dest || migratingSessionId) return;
+    if (sourceCompanyUid === dest) return;
+    if (
+      !canMigrateCompanySession({
+        companyUid: sourceCompanyUid,
+        companies,
+      })
+    ) {
+      return;
+    }
+    migratingSessionId = sessionId;
+    migrateSessionError = null;
+    channelActionError = null;
+    try {
+      const destination = normalizeMigrateDestination({});
+      const expectedVersion = 0;
+      const operationId = newMigrateOperationId();
+      const digest = await digestMigratePayload({
+        sessionId,
+        sourceCompanyUid,
+        destinationCompanyUid: dest,
+        destination,
+        expectedVersion,
+      });
+      const res = await adapter.workMesh.migrateSession(sessionId, {
+        operationId,
+        digest,
+        sourceCompanyUid,
+        destinationCompanyUid: dest,
+        destination,
+        expectedVersion,
+      });
+      if (!res.ok) {
+        migrateSessionError =
+          res.message?.trim() || "Couldn't move the session to that company.";
+        return;
+      }
+      migrateSessionTarget = null;
+    } catch (err) {
+      migrateSessionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      migratingSessionId = null;
+    }
+  }
+
+  async function deleteSelectedChannel(): Promise<void> {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    deleteChannelConfirmOpen = false;
+    if (!row || !channelId.startsWith("chn_") || deletingChannel) return;
+    deletingChannel = true;
+    channelActionError = null;
+    try {
+      const res = await adapter.messaging.deleteChannel(channelId);
+      if (!res.ok) {
+        channelActionError =
+          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        return;
+      }
+      // Optimistic: drop the rail row now. The server fans out a directory
+      // feed change so every other member's rail follows.
+      wakes?.emit?.("channel:removed", { channelId });
+      timelineCache.delete(row.id);
+      // Clear the selection the way changeTenantCompany does so the pane
+      // falls back to its empty state instead of a dead conversation.
+      membersOpen = false;
+      projectAboutOpen = false;
+      selectedRow = null;
+      liveTimeline = [];
+      liveTimelineId = null;
+      timelineHydrating = false;
+      openReplyRootId = null;
+      openProfileMember = null;
+      attachTray = null;
+      replyPreviewByRoot = {};
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      deletingChannel = false;
     }
   }
 
@@ -1101,10 +1581,49 @@
     };
   });
 
+  /** Sidebar presence dot: only when a project channel has a known online actor. */
+  function rowHasProjectPresence(row: ConversationRow): boolean {
+    if (row.kind !== "channel") return false;
+    const isProject =
+      (row.channelScope ?? "").trim() === "project" ||
+      Boolean((row.projectId ?? "").trim());
+    if (!isProject) return false;
+    const companyUid = (row.companyUid ?? "").trim();
+    if (!companyUid) return false;
+    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row);
+    const live = liveInputsForCompanyProject(companyUid, projectId);
+    // Prefer live-read actors on this project; fall back to channel roster.
+    const fromLive = live.liveSessions
+      .map((s) => s.actorUid)
+      .filter(Boolean);
+    if (fromLive.length > 0) {
+      return fromLive.some(
+        (uid) => presenceStatus(companyUid, uid) === "online",
+      );
+    }
+    const channelId = row.channelId?.trim() ?? "";
+    const roster = channelRosterById[channelId] ?? [];
+    const actorUids =
+      roster.length > 0
+        ? roster.map((m) => m.personUid)
+        : (row.members ?? []).map((m) => m.personUid);
+    if (actorUids.length === 0) {
+      // Company-wide online on any presence entry for transparent companies is
+      // not enough — without project actors we stay dark (fail closed).
+      return false;
+    }
+    return actorUids.some(
+      (uid) => presenceStatus(companyUid, uid) === "online",
+    );
+  }
+
   const channelStatus = $derived.by((): ChannelStatusModel | null => {
     if (!selectedRow) return null;
     const channelId = selectedRow.channelId?.trim() ?? "";
     const roster = channelRosterById[channelId] ?? [];
+    const companyUid = (selectedRow.companyUid ?? "").trim();
+    const projectId = (selectedRow.projectId ?? "").trim() || projectIdForRow(selectedRow);
+    const live = liveInputsForCompanyProject(companyUid, projectId);
     const base =
       channelStatusByRow?.(selectedRow) ??
       liveTabs?.status ??
@@ -1112,14 +1631,84 @@
         ? rosterStatusForRow(
             selectedRow,
             roster,
-            selectedRow.companyUid
-              ? companyDisplayName(selectedRow.companyUid, companyNames)
+            companyUid
+              ? companyDisplayName(companyUid, companyNames)
               : null,
           )
         : null);
-    if (!base) return null;
-    if (roster.length === 0) return base;
-    return applyChannelRoster(base, roster, identities);
+    // Prefer rebuilding from live read + presence when we have sessions.
+    const fromLive =
+      live.liveSessions.length > 0 || live.presence.length > 0
+        ? buildChannelStatusModel({
+            project: {
+              id: projectId || channelId || selectedRow.id,
+              title: selectedRow.title,
+              company: companyUid || undefined,
+              storiesTotal: base?.stories.total,
+              storiesComplete: base?.stories.complete,
+              description: base?.project.description ?? null,
+            },
+            prd: base
+              ? {
+                  branchName: base.project.branch,
+                  repoPath: base.project.repo,
+                  repos: base.project.repos,
+                  previewUrl: base.project.previewUrl ?? undefined,
+                }
+              : null,
+            members:
+              roster.length > 0
+                ? roster
+                : [
+                    ...((base?.members ?? []).map((m) => ({
+                      personUid: m.personUid,
+                      displayName: m.displayName,
+                      email: m.email ?? undefined,
+                      role: m.role ?? undefined,
+                      avatarUrl: m.avatarUrl ?? undefined,
+                      description: m.description ?? undefined,
+                    })) ?? []),
+                    ...((base?.agents ?? []).map((a) => ({
+                      personUid: a.personUid,
+                      displayName: a.displayName,
+                      email: a.email ?? undefined,
+                      role: a.role ?? undefined,
+                      avatarUrl: a.avatarUrl ?? undefined,
+                      description: a.description ?? undefined,
+                      isAgent: true,
+                    })) ?? []),
+                  ],
+            liveSessions: live.liveSessions,
+            presence: live.presence,
+            companyLabel: base?.companyLabel ?? null,
+          })
+        : null;
+    const merged = fromLive ?? base;
+    if (!merged) return null;
+    const withRoster =
+      roster.length === 0
+        ? merged
+        : applyChannelRoster(merged, roster, identities);
+    // Presence store is the only online source (US-015) — re-apply after roster
+    // rebuild so timestamps/sessions never invent connection state.
+    const withPresence = (uid: string): boolean =>
+      Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
+    return {
+      ...withRoster,
+      activeSessions:
+        fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
+      liveAgents: fromLive?.liveAgents?.length
+        ? fromLive.liveAgents
+        : withRoster.liveAgents,
+      members: withRoster.members.map((m) => ({
+        ...m,
+        online: withPresence(m.personUid),
+      })),
+      agents: withRoster.agents.map((a) => ({
+        ...a,
+        online: withPresence(a.personUid),
+      })),
+    };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
   const memberPillCount = $derived(
@@ -1208,8 +1797,21 @@
     const id = rootEventId.trim();
     if (id) {
       openProfileMember = null;
+      openAgentMember = null;
+      openArtifactView = null;
       openReplyRootId = id;
     }
+  }
+
+  /** Artifact mode for the side pane. The thread underneath is left intact so
+   *  closing the artifact returns to it. */
+  function openArtifact(artifact: ChatArtifact): void {
+    openArtifactView = artifact;
+    if (tab !== "chat") tab = "chat";
+  }
+
+  function closeArtifact(): void {
+    openArtifactView = null;
   }
 
   function closeReply(): void {
@@ -1307,7 +1909,10 @@
   );
 
   $effect(() => {
-    if (activeTab !== "chat") openReplyRootId = null;
+    if (activeTab !== "chat") {
+      openReplyRootId = null;
+      openArtifactView = null;
+    }
   });
 
   $effect(() => {
@@ -1318,6 +1923,7 @@
       if (rowId !== lastReplyRowId) {
         lastReplyRowId = rowId;
         openReplyRootId = null;
+        openArtifactView = null;
       }
       if (!rowId || !pending) return;
       if (boundTo && boundTo !== rowId) return;
@@ -1345,6 +1951,10 @@
     row: ConversationRow,
     options?: { replyRootEventId?: string | null; preserveView?: boolean },
   ): void {
+    if (selectedRow?.id !== row.id) {
+      openProfileMember = null;
+      openAgentMember = null;
+    }
     selectedRow = row;
     if (!options?.preserveView) {
       view = "conversation";
@@ -1365,7 +1975,7 @@
     options?: { preserveView?: boolean },
   ): void {
     const row =
-      conversationRowForDeepLink(link, searchRows) ??
+      conversationRowForDeepLink(link, [...searchRows, ...railRows]) ??
       (link.replyRootEventId ? selectedRow : null);
     if (!row) return;
     const reply = link.replyRootEventId?.trim() || null;
@@ -1395,6 +2005,8 @@
         channelId: pending.channelId,
         personUid: null,
         replyRootEventId: pending.replyRootEventId,
+        title: pending.title,
+        companyUid: pending.companyUid,
       },
       { preserveView: pending.automatic && view !== "conversation" },
     );
@@ -1406,10 +2018,35 @@
         channelId: null,
         personUid: target.personUid?.trim() || null,
         replyRootEventId: target.replyRootEventId ?? null,
+        displayName: target.displayName?.trim() || null,
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
   }
+
+  /**
+   * Self-heal a placeholder selection. `selectedRow` is a snapshot taken at
+   * open time; when the channel was opened before the directory listed it
+   * (a just-created channel, a deep link, a notification), the snapshot is a
+   * stub — possibly titled with the raw `chn_…` id — and nothing ever
+   * refreshed it, so the header stayed wrong until the user clicked away and
+   * back. Once the real row shows up under the same id, adopt it in place.
+   * Never touches `view`, replies, or focus: only the row's metadata changes.
+   */
+  $effect(() => {
+    const rows = searchRows;
+    const current = untrack(() => selectedRow);
+    if (!current) return;
+    const real = rows.find((row) => row.id === current.id);
+    if (!real || real === current) return;
+    if (
+      real.title === current.title &&
+      (real.companyUid ?? null) === (current.companyUid ?? null)
+    ) {
+      return;
+    }
+    selectedRow = real;
+  });
 
   $effect(() => {
     const scope = messageScope;
@@ -1466,9 +2103,11 @@
     liveTimelineId = null;
     timelineHydrating = false;
     lastDmTimelineStampByUid.clear();
+    lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     openReplyRootId = null;
     openProfileMember = null;
+    openAgentMember = null;
     attachTray = null;
     replyPreviewByRoot = {};
     // Meetings is a module-level warm store. Rotate it with the visible
@@ -1565,6 +2204,13 @@
       return;
     }
     if (timelineHasEvent(liveTimeline, wake.eventId)) return;
+    const wakeAt = (wake.createdAt ?? "").trim();
+    if (
+      wakeAt &&
+      liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+    ) {
+      return;
+    }
     const res = await adapter.messaging.fetchChannel({
       channelId: row.channelId,
       limit: 20,
@@ -1609,12 +2255,20 @@
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
     const [res, threadsRes] = await Promise.all([
-      notifications.fetchDmInbox({
-        ...(since ? { since } : {}),
-        limit: "50",
-      }),
+      raceTimeout(
+        notifications.fetchDmInbox({
+          ...(since ? { since } : {}),
+          limit: "50",
+        }),
+        bootTimeoutMs,
+        "dm-inbox",
+      ).catch(() => failure("timeout", "dm-inbox timed out")),
       wantThreads
-        ? notifications.fetchDmThreads!({ limit: 100 }).catch(() => null)
+        ? raceTimeout(
+            notifications.fetchDmThreads!({ limit: 100 }),
+            bootTimeoutMs,
+            "dm-threads",
+          ).catch(() => null)
         : Promise.resolve(null),
     ]);
     if (
@@ -1696,6 +2350,7 @@
     void tenantGeneration;
     void tenantCompanyId;
     lastDmTimelineStampByUid.clear();
+    lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     if (!wakes) return;
     untrack(() => {
@@ -1717,10 +2372,10 @@
   });
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
-    const fromRow = row?.companyUid?.trim();
-    if (fromRow) return fromRow;
-    const first = (companies ?? []).find((company) => company.cloudUid?.trim());
-    return first?.cloudUid?.trim() || null;
+    return attachmentVaultScopeUid({
+      row,
+      selfUid: self?.uid,
+    });
   }
 
   const channelFilePreviewContext = $derived(
@@ -2027,21 +2682,22 @@
   function openNotification(item: NotificationItem): void {
     const dest = notificationDestination(item);
     if (dest.kind === "dm") {
-      const existing = (searchRows ?? []).find(
-        (row) => row.personUid === dest.personUid,
-      );
-      handleSelect(
-        existing ?? {
-          id: `dm:${dest.personUid}`,
-          kind: "dm",
-          title: dest.title,
-          companyUid: null,
-          unreadDot: false,
-          lastActivityAt: item.createdAtMs,
-          pinned: false,
-          personUid: dest.personUid,
-        },
-      );
+      const stub: ConversationRow = {
+        id: `dm:${dest.personUid}`,
+        kind: "dm",
+        title: dest.title,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: item.createdAtMs,
+        pinned: false,
+        personUid: dest.personUid,
+      };
+      const existing =
+        resolveConversationRow(stub, railRows) ??
+        (searchRows ?? []).find(
+          (row) => row.personUid === dest.personUid && !row.channelId,
+        );
+      handleSelect(existing ?? stub);
       return;
     }
     if (dest.kind === "files") {
@@ -2063,11 +2719,21 @@
     projectAboutOpen = false;
   }
 
-  /**
-   * Open a host-registered destination. An id the host never registered is a
-   * routing bug, not a blank screen: report it through the same navigation
-   * error banner an unsupported native route uses.
-   */
+  function toggleNotifications(): void {
+    view = view === "notifications" ? "conversation" : "notifications";
+    meetingFocusRequest = null;
+  }
+
+  function openSettings(section: EmbeddedSettingsSection | null = null): void {
+    view = "settings";
+    settingsSection = section;
+    meetingFocusRequest = null;
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+    onOpenSettings?.();
+  }
+
   function openExtraPage(id: string, param: string | null = null): void {
     if (!extraPages?.[id]) {
       embeddedNavigationError = `Unknown destination: ${id}`;
@@ -2083,19 +2749,12 @@
     projectAboutOpen = false;
   }
 
-  function toggleNotifications(): void {
-    view = view === "notifications" ? "conversation" : "notifications";
-    meetingFocusRequest = null;
-  }
-
-  function openSettings(section: EmbeddedSettingsSection | null = null): void {
-    view = "settings";
-    settingsSection = section;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
-    onOpenSettings?.();
+  function onShellLinkEvent(event: Event): void {
+    handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "shell",
+    });
   }
 
   function closeSettings(): void {
@@ -2125,6 +2784,11 @@
         meetingFocusRequest = target.meetingId?.trim()
           ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
           : null;
+        return;
+      case "atlas":
+        view = "atlas";
+        settingsSection = null;
+        meetingFocusRequest = null;
         return;
       case "library":
         openLibrary(target.tab);
@@ -2222,31 +2886,46 @@
     startMeetingsStore();
     void prefetchMeetings();
 
+    // US-016: `g a` opens Atlas (Slack-style go chord).
+    const goChord = createGoChord((letter) => {
+      if (letter !== "a") return false;
+      view = "atlas";
+      meetingFocusRequest = null;
+      return true;
+    });
+
     function onKey(event: KeyboardEvent) {
       const meta = event.metaKey || event.ctrlKey;
-      if (!meta) return;
-      const key = event.key.toLowerCase();
-      if (key === "k") {
+      if (meta) {
+        const key = event.key.toLowerCase();
+        if (key === "k") {
+          event.preventDefault();
+          paletteOpen = !paletteOpen;
+          goChord.reset();
+        } else if (key === ",") {
+          // macOS-standard ⌘, opens Settings.
+          event.preventDefault();
+          openSettings();
+        } else if (key === "1") {
+          event.preventDefault();
+          view = "notifications";
+          meetingFocusRequest = null;
+        } else if (key === "2") {
+          event.preventDefault();
+          view = "meetings";
+          meetingFocusRequest = null;
+        } else if (adapter.kind !== "web" && key === "3") {
+          event.preventDefault();
+          openLibrary("marketplace");
+        } else if (key === "4") {
+          event.preventDefault();
+          openLibrary("skills");
+        }
+        return;
+      }
+      if (paletteOpen) return;
+      if (goChord.handleKeydown(event)) {
         event.preventDefault();
-        paletteOpen = !paletteOpen;
-      } else if (key === ",") {
-        // macOS-standard ⌘, opens Settings.
-        event.preventDefault();
-        openSettings();
-      } else if (key === "1") {
-        event.preventDefault();
-        view = "notifications";
-        meetingFocusRequest = null;
-      } else if (key === "2") {
-        event.preventDefault();
-        view = "meetings";
-        meetingFocusRequest = null;
-      } else if (adapter.kind !== "web" && key === "3") {
-        event.preventDefault();
-        openLibrary("marketplace");
-      } else if (key === "4") {
-        event.preventDefault();
-        openLibrary("skills");
       }
     }
     window.addEventListener("keydown", onKey);
@@ -2270,6 +2949,8 @@
         createdAt: detail.createdAt ?? null,
         replyRootEventId: reply,
         automatic: detail.automatic === true,
+        title: detail.title ?? null,
+        companyUid: detail.companyUid ?? null,
       });
     }
     function onMessagePerson(event: Event): void {
@@ -2320,7 +3001,19 @@
   });
 </script>
 
-<div class="desktop-shell chat-shell" data-testid="desktop-shell">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="desktop-shell chat-shell"
+  class:has-window-controls={hasWindowControls}
+  data-testid="desktop-shell"
+  onclick={onShellLinkEvent}
+  onauxclick={onShellLinkEvent}
+  oncontextmenu={onShellLinkEvent}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
+  }}
+>
   <V4TitleBar
     {adapter}
     {version}
@@ -2346,6 +3039,16 @@
     {onopenurl}
   />
 
+  {#if recommendBanner}
+    <RecommendedUpdateBanner
+      version={recommendBanner.version}
+      message={recommendBanner.message}
+      installing={recommendInstalling}
+      onupdate={() => void handleRecommendedUpdateNow()}
+      ondismiss={dismissRecommendBanner}
+    />
+  {/if}
+
   {#if embeddedNavigationError}
     <div
       class="embedded-navigation-error"
@@ -2355,6 +3058,39 @@
       Couldn’t open requested destination. {embeddedNavigationError}
     </div>
   {/if}
+
+  <ConfirmDialog
+    open={deleteChannelConfirmOpen && selectedRow != null}
+    title={`Delete #${selectedRow?.title ?? "channel"}?`}
+    message="This permanently deletes the channel and its messages for everyone in it. This can't be undone."
+    confirmLabel="Delete channel"
+    danger
+    oncancel={() => (deleteChannelConfirmOpen = false)}
+    onconfirm={() => void deleteSelectedChannel()}
+  />
+
+  <MigrateSessionDialog
+    open={migrateSessionTarget != null}
+    sessionId={migrateSessionTarget?.sessionId ?? ""}
+    sourceLabel={companyDisplayName(
+      migrateSessionTarget?.sourceCompanyUid ?? null,
+      companyNames,
+    )}
+    destinations={migrateDestinationCompanies(
+      companies,
+      migrateSessionTarget?.sourceCompanyUid ?? "",
+    )}
+    submitting={migratingSessionId != null}
+    error={migrateSessionError}
+    oncancel={() => {
+      if (!migratingSessionId) {
+        migrateSessionTarget = null;
+        migrateSessionError = null;
+      }
+    }}
+    onconfirm={(destinationCompanyUid) =>
+      void confirmMigrateSession(destinationCompanyUid)}
+  />
 
   {#if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
@@ -2397,7 +3133,8 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
-          {rowExtras}
+          {rosterWakeSeq}
+          onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
@@ -2410,6 +3147,11 @@
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
+          onrows={(rows) => (railRows = rows)}
+          {bootTimeoutMs}
+          {onShellReady}
+          projectHasPresence={rowHasProjectPresence}
+          {rowExtras}
         />
         {/key}
       {/if}
@@ -2440,10 +3182,6 @@
             }}
           />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
-          <!-- Host-registered destination: a full-bleed surface in the main
-               column, exactly like Meetings. Keyed on id + param so a page
-               that treats its param as a mount-time selection still remounts
-               when a deep link changes it. -->
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
             {#key `${extraPageId}:${extraPageParam ?? ""}`}
@@ -2468,6 +3206,23 @@
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
           />
+        {:else if view === "atlas"}
+          <AtlasPage
+            companyUid={atlasCompanyUid}
+            companyLabel={atlasCompanyLabel}
+            featureEnabled={true}
+            headerVariant="embedded"
+            canMigrate={canMigrateAtlasSessions &&
+              migrateDestinationsForAtlas.length > 0}
+            migrateDestinations={migrateDestinationsForAtlas}
+            onmigratesession={(sessionId) =>
+              openMigrateSession(sessionId, atlasCompanyUid)}
+            migratingSessionId={migratingSessionId}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
+          />
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
@@ -2479,23 +3234,60 @@
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
                 {#if selectedRow.kind === "dm"}
-                  <span
-                    class="channel-header-avatar"
-                    data-testid="channel-header-avatar"
-                  >
-                    <IdentityMark
-                      kind={isAgentUid(selectedRow.personUid ?? "")
-                        ? "agent"
-                        : "person"}
-                      label={selectedRow.title}
-                      agentUid={selectedRow.personUid}
-                      avatarUrl={avatarByUid[selectedRow.personUid ?? ""] ??
-                        null}
-                      size="small"
-                    />
-                  </span>
+                  {#if isAgentUid(selectedRow.personUid ?? "")}
+                    <button
+                      type="button"
+                      class="channel-header-agent"
+                      data-testid="channel-header-agent"
+                      aria-label={`View agent ${headerTitle}`}
+                      onclick={openAgentFromHeader}
+                    >
+                      <span
+                        class="channel-header-avatar"
+                        data-testid="channel-header-avatar"
+                      >
+                        <IdentityMark
+                          kind="agent"
+                          label={headerTitle}
+                          agentUid={selectedRow.personUid}
+                          avatarUrl={authorAvatarUrl(
+                            selectedRow.personUid,
+                            avatarByUid,
+                          )}
+                          size="small"
+                          online={presenceStatus(
+                            selectedRow.companyUid ?? "",
+                            selectedRow.personUid ?? "",
+                          ) === "online"}
+                        />
+                      </span>
+                      <h2 data-testid="channel-name">{headerTitle}</h2>
+                    </button>
+                  {:else}
+                    <span
+                      class="channel-header-avatar"
+                      data-testid="channel-header-avatar"
+                    >
+                      <IdentityMark
+                        kind="person"
+                        label={headerTitle}
+                        agentUid={selectedRow.personUid}
+                        avatarUrl={authorAvatarUrl(
+                          selectedRow.personUid,
+                          avatarByUid,
+                        )}
+                        size="small"
+                        online={presenceStatus(
+                          selectedRow.companyUid ?? "",
+                          selectedRow.personUid ?? "",
+                        ) === "online"}
+                      />
+                    </span>
+                    <h2 data-testid="channel-name">{headerTitle}</h2>
+                  {/if}
+                {:else}
+                  <h2 data-testid="channel-name">{headerTitle}</h2>
                 {/if}
-                <h2 data-testid="channel-name">{selectedRow.title}</h2>
                 {#if channelSubtitle}
                   <span class="channel-sub-row">
                     <span class="channel-sub" data-testid="channel-sub"
@@ -2547,6 +3339,16 @@
             </div>
 
             <div class="channel-header-trailing">
+              {#if canEditSelectedAgent}
+                <button
+                  type="button"
+                  class="edit-profile-btn"
+                  data-testid="agent-edit-profile"
+                  onclick={openAgentProfileFromHeader}
+                >
+                  Edit profile
+                </button>
+              {/if}
               {#if isProjectChannel}
                 <nav
                   class="project-tabs"
@@ -2710,15 +3512,38 @@
                       }}
                       onremovemember={(row) => void removeMember(row)}
                       removingUid={removingMemberUid}
+                      ondeletechannel={() => {
+                        membersOpen = false;
+                        deleteChannelConfirmOpen = true;
+                      }}
+                      deleting={deletingChannel}
+                      onmigratesession={canMigrateSelectedChannelSessions &&
+                      migrateDestinationsForSelected.length > 0
+                        ? (sessionId) =>
+                            openMigrateSession(
+                              sessionId,
+                              selectedRow?.companyUid?.trim() ?? "",
+                            )
+                        : undefined}
+                      migratingSessionId={migratingSessionId}
                     />
                   {/if}
                 </div>
               {/if}
             </div>
           </header>
+          {#if channelActionError}
+            <div
+              class="channel-action-error"
+              data-testid="channel-action-error"
+              role="alert"
+            >
+              {channelActionError}
+            </div>
+          {/if}
           {#if projectAboutOpen && isProjectChannel}
             <ProjectAboutDialog
-              title={selectedRow.title}
+              title={headerTitle}
               description={channelStatus?.project.description ?? null}
               onclose={() => (projectAboutOpen = false)}
             />
@@ -2729,7 +3554,9 @@
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
-              data-reply-open={openReplyRootId || openProfileMember
+              data-reply-open={openReplyRootId ||
+                openProfileMember ||
+                openAgentMember
                 ? "true"
                 : "false"}
             >
@@ -2761,8 +3588,11 @@
                   onreply={openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
+                  onopenartifact={openArtifact}
                   onreleaseurl={releaseAttachmentUrl}
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                  companyUid={selectedRow.companyUid}
+                  attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                   {replyPreviewByRoot}
                   {avatarByUid}
                   {displayNameByUid}
@@ -2772,9 +3602,51 @@
                     ? setupHeader
                     : undefined}
                   belowMessages={agentThinkingBelow}
+                  draftKey={selectedRow.id}
+                  draftStorage={tenantStorage}
                 />
               {/key}
-              {#if openProfileMember}
+              {#if openArtifactView}
+                <div
+                  class="reply-column"
+                  class:overlay={narrowViewport}
+                  data-testid="artifact-column"
+                  data-pane-mode="artifact"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <ArtifactPanel
+                    artifact={openArtifactView}
+                    onclose={closeArtifact}
+                  />
+                </div>
+              {:else if openAgentMember}
+                <div
+                  class="reply-column profile-column"
+                  class:overlay={narrowViewport}
+                  data-testid="agent-detail-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <AgentDetailPanel
+                    agentUid={openAgentMember.personUid}
+                    displayName={openAgentMember.displayName}
+                    avatarUrl={openAgentMember.avatarUrl ??
+                      avatarByUid[openAgentMember.personUid] ??
+                      null}
+                    description={openAgentMember.description}
+                    companyUid={selectedRow.companyUid}
+                    {companyNames}
+                    {self}
+                    {isAdmin}
+                    {adapter}
+                    packs={loadedAvatarPacks}
+                    loadPacks={loadAvatarPacks}
+                    avatarSaving={agentAvatarSaving}
+                    avatarSaveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
+                    onclose={closeAgentDetail}
+                  />
+                </div>
+              {:else if openProfileMember}
                 <div
                   class="reply-column profile-column"
                   class:overlay={narrowViewport}
@@ -2785,6 +3657,12 @@
                     member={openProfileMember}
                     {self}
                     avatarUrl={profilePanelAvatarUrl}
+                    editable={canEditOpenAgent}
+                    packs={loadedAvatarPacks}
+                    loadPacks={loadAvatarPacks}
+                    saving={agentAvatarSaving}
+                    saveError={agentAvatarSaveError}
+                    onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
                   />
                 </div>
@@ -2809,8 +3687,10 @@
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
+                    onopenartifact={openArtifact}
                     onreleaseurl={releaseAttachmentUrl}
                     vaultCompanyUid={attachmentCompanyUid(selectedRow)}
+                    attachmentValidator={chatAttachmentValidatorForPlatform(adapter.kind)}
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     onactivethreadchange={onactivethreadchange}
@@ -2839,6 +3719,14 @@
               onopen={openChannelFile}
             />
           {/if}
+        {:else if conversationBootTimedOut}
+          <div
+            class="conversation-boot-error"
+            data-testid="conversation-boot-error"
+            role="alert"
+          >
+            Couldn’t load conversations.
+          </div>
         {:else}
           <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
           <ChannelSkeleton />
@@ -2878,6 +3766,13 @@
       resolveUrl={resolveTrayUrl}
       onreleaseurl={releaseAttachmentUrl}
       {onopenurl}
+    />
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
     />
   {/if}
 </div>
@@ -2927,9 +3822,11 @@
     min-height: 0;
     padding: 0;
     overflow: hidden;
+    /* In-pane destinations (Meetings, Notifications) are not under the
+       overlay traffic lights — don't inherit the window-chrome gutter. */
+    --titlebar-leading-inset: 16px;
   }
 
-  /* Host-registered destination: same full-bleed box Meetings occupies. */
   .extra-page-host {
     display: flex;
     flex: 1 1 auto;
@@ -2937,6 +3834,19 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .conversation-boot-error {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
   }
 
   .notifications-layer {
@@ -2966,13 +3876,22 @@
   }
 
   .chat-stage :global(.conversation) {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 0;
     min-height: 0;
   }
 
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
     min-width: 320px;
+  }
+
+  /* Open thread pane takes half the conversation area — a 50/50 split
+     between the main channel column and the thread panel. Profile panels
+     keep their narrower fixed column (see .reply-column below). */
+  .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
+    :global(.conversation) {
+    flex: 1 1 0;
+    min-width: 360px;
   }
 
   .reply-column {
@@ -2993,6 +3912,16 @@
     transition: width 150ms ease;
   }
 
+  /* Thread pane (not the profile panel): open at half the conversation
+     width. flex: 1 1 0 pairs with the sibling .conversation (also
+     flex: 1 1 0) for a 50/50 split; the min-width keeps the composer usable
+     on narrow windows. The border-left above keeps the hairline divider. */
+  .reply-column:not(.profile-column):not(.overlay) {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 360px;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .reply-column {
       transition: none;
@@ -3011,6 +3940,17 @@
 
   /* Channel header — ported from the real ChannelView: title left, tabs +
      member pill grouped right in `.channel-header-trailing`. */
+  .channel-action-error {
+    margin: 0 16px 6px;
+    padding: 6px 10px;
+    border: 1px solid
+      color-mix(in srgb, var(--warn-ink, #d9584a) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn-ink, #d9584a) 12%, transparent);
+    color: var(--t1);
+    font: 400 12px/1.4 var(--font-ui);
+  }
+
   .channel-header {
     position: relative;
     z-index: 20;
@@ -3045,6 +3985,41 @@
     flex: 0 0 auto;
     align-self: center;
     align-items: center;
+  }
+
+  .channel-header-agent {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .channel-header-agent h2 {
+    margin: 0;
+    color: var(--t1);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .channel-header-agent:hover h2 {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .channel-header-agent:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 
   .channel-hash {
@@ -3114,6 +4089,28 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
+  }
+
+  .edit-profile-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--t2);
+    font: 500 12px/1.45 inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .edit-profile-btn:hover {
+    color: var(--t1);
+  }
+
+  .edit-profile-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
   }
 
   .project-tabs {

@@ -33,7 +33,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@hq/ui', '@hq/platform', '@hq/core'],
+    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
@@ -61,7 +61,7 @@ export default defineConfig({
     // will not strip types under node_modules unless we inline them.
     server: {
       deps: {
-        inline: [/@hq\/(ui|platform|core)($|\/)/],
+        inline: [/@hq\/(ui|platform|core|work)($|\/)/],
       },
     },
   },

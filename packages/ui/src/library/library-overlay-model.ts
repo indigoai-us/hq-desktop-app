@@ -16,6 +16,7 @@ import {
 } from "./library.js";
 import {
   filterListings,
+  listingAuthorHandle,
   listingDisplayName,
   type MarketplaceListing,
 } from "../marketplace/marketplace.js";
@@ -326,7 +327,7 @@ export function toMarketplaceCards(
     displayName: listingDisplayName(listing),
     slug: listing.slug,
     version: listing.version,
-    author: listing.author,
+    author: listingAuthorHandle(listing),
     summary: (listing.summary ?? listing.contributes ?? "").trim(),
     badge: marketplaceBadgeForListing(listing, index),
   }));

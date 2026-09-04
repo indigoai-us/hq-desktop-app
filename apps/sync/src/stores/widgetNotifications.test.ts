@@ -16,6 +16,7 @@ import {
   WIDGET_RECENT_MAX,
   WIDGET_ROW_GAP,
   WIDGET_ROW_HEIGHT,
+  DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
   WIDGET_ROW_TIMEOUT_MS,
   WIDGET_STACK_MARGIN_BOTTOM,
   WIDGET_STACK_MAX,
@@ -23,6 +24,10 @@ import {
   WIDGET_TOP_HEADROOM,
   addItem,
   bannerToStackItem,
+  clearLiveOverlay,
+  hideStack,
+  showStack,
+  stackAutoHideDue,
   channelToStackItem,
   compactActivityBursts,
   compactHoverItems,
@@ -41,6 +46,7 @@ import {
   serializeRecent,
   setOccluded,
   unreadRecentCount,
+  widgetBadgeCount,
   widgetEmptyHoverWindowSize,
   widgetHoverWindowSize,
   widgetWindowSize,
@@ -48,6 +54,9 @@ import {
   stableBannerId,
   contentDedupeKey,
   resolutionForItem,
+  formatMeetingNotificationTitle,
+  meetingFocusId,
+  meetingIdentityKey,
 } from './widgetNotifications';
 
 function item(overrides: Partial<WidgetStackItem> & Pick<WidgetStackItem, 'id'>): WidgetStackItem {
@@ -167,7 +176,7 @@ describe('bannerToStackItem', () => {
         1,
         'm',
       ),
-    ).toMatchObject({ type: 'system', text: 'Standup — starting' });
+    ).toMatchObject({ type: 'meeting', text: 'Standup — starting' });
 
     expect(
       bannerToStackItem(
@@ -204,6 +213,56 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(state.queued).toEqual([]);
     expect(state.visible.map((v) => v.id)).toEqual(['b', 'a']);
     expect(state.visible.every((v) => v.expiresAt === now + WIDGET_ROW_TIMEOUT_MS)).toBe(true);
+  });
+
+  it('expireItems drops needs-action toast rows but keeps them in recent', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const notice = bannerToStackItem(
+      { kind: 'update', title: 'New version', body: 'ready', clickActionId: 'open', data: null },
+      0,
+      'wn-2',
+    );
+    let state = addItem(emptyWidgetStack(), notice);
+    state = addItem(state, needsAction);
+    const next = expireItems(state, WIDGET_ROW_TIMEOUT_MS + 1);
+    expect(next.visible).toEqual([]);
+    expect(next.recent.map((item) => item.id)).toContain('meeting:bot_1');
+    expect(dismissItem(next, 'meeting:bot_1').visible).toEqual([]);
+  });
+
+  it('liveOverlay=false keeps the item in recent without a live toast', () => {
+    const next = addItem(emptyWidgetStack(), item({ id: 'a', text: 'a' }), {
+      liveOverlay: false,
+    });
+    expect(next.visible).toEqual([]);
+    expect(next.queued).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['a']);
+  });
+
+  it('clearLiveOverlay drops visible and queued and leaves recent', () => {
+    const state = {
+      ...emptyWidgetStack(),
+      visible: [item({ id: 'v' })],
+      queued: [item({ id: 'q' })],
+      recent: [item({ id: 'v' }), item({ id: 'q' })],
+    };
+    const next = clearLiveOverlay(state);
+    expect(next.visible).toEqual([]);
+    expect(next.queued).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['v', 'q']);
+    expect(clearLiveOverlay(next)).toBe(next);
   });
 
   it('expireItems drops only past-due visible rows', () => {
@@ -250,6 +309,130 @@ describe('addItem / setOccluded / expire / dismiss', () => {
     expect(unknown.visible.map((v) => v.id)).toEqual(next.visible.map((v) => v.id));
     expect(unknown.recent.map((r) => r.id)).toEqual(next.recent.map((r) => r.id));
     expect(unknown.queued.map((q) => q.id)).toEqual(next.queued.map((q) => q.id));
+  });
+});
+
+describe('hideStack / showStack / auto-hide', () => {
+  it('hideStack idles the window without dropping needs-action rows', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const shown = addItem(emptyWidgetStack(), needsAction);
+    expect(widgetWindowSize(shown).width).toBe(WIDGET_STACK_WIDTH);
+    const hidden = hideStack(shown);
+    expect(hidden.hidden).toBe(true);
+    expect(hidden.visible.map((row) => row.id)).toEqual(['meeting:bot_1']);
+    expect(widgetWindowSize(hidden)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+    expect(showStack(hidden).hidden).toBe(false);
+    expect(widgetWindowSize(showStack(hidden)).width).toBe(WIDGET_STACK_WIDTH);
+  });
+
+  it('re-delivery of a hidden needs-action row does not re-show the overlay', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const hidden = hideStack(addItem(emptyWidgetStack(), needsAction));
+    const replayed = addItem(hidden, { ...needsAction, ts: 50 });
+    expect(replayed.hidden).toBe(true);
+    expect(widgetWindowSize(replayed)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+  });
+
+  it('a genuinely new item re-surfaces a hidden stack', () => {
+    const hidden = hideStack(
+      addItem(emptyWidgetStack(), item({ id: 'old', text: 'old' })),
+    );
+    const next = addItem(hidden, item({ id: 'new', text: 'new' }));
+    expect(next.hidden).toBe(false);
+    expect(next.visible.map((row) => row.id)).toEqual(['new', 'old']);
+  });
+
+  it('showNeedsAction=false keeps needs-action out of the live overlay', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    const next = addItem(emptyWidgetStack(), needsAction, { showNeedsAction: false });
+    expect(next.visible).toEqual([]);
+    expect(next.recent.map((row) => row.id)).toEqual(['meeting:bot_1']);
+    expect(widgetWindowSize(next)).toEqual({
+      width: WIDGET_IDLE_WIDTH,
+      height: WIDGET_IDLE_HEIGHT,
+    });
+  });
+
+  it('needs-action rows do not keep the window shown when unfocused after the auto-hide delay', () => {
+    expect(DEFAULT_WIDGET_AUTO_HIDE_SECONDS).toBe(8);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: false,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: DEFAULT_WIDGET_AUTO_HIDE_SECONDS * 1000,
+      }),
+    ).toBe(true);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: true,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: true,
+        appFocused: false,
+        autoHideSeconds: DEFAULT_WIDGET_AUTO_HIDE_SECONDS,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      stackAutoHideDue({
+        hidden: false,
+        held: false,
+        appFocused: false,
+        autoHideSeconds: 0,
+        elapsedMs: 60_000,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -648,6 +831,32 @@ describe('unreadRecentCount', () => {
 
     state = markRecentRead(state);
     expect(unreadRecentCount(state)).toBe(0);
+  });
+});
+
+describe('widgetBadgeCount', () => {
+  it('counts unread rows and unresolved needs-action rows once each', () => {
+    const needsAction = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Weekly sync',
+        body: '"Weekly sync" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        actionLabel: 'Assign',
+        data: { meetingId: 'bot_1', meetingTitle: 'Weekly sync' },
+      },
+      0,
+      'wn-1',
+    );
+    let state = addItem(emptyWidgetStack(), item({ id: 'a', text: 'hello' }));
+    state = addItem(state, needsAction);
+    expect(widgetBadgeCount(state)).toBe(2);
+
+    state = markRecentRead(state);
+    expect(unreadRecentCount(state)).toBe(0);
+    expect(widgetBadgeCount(state)).toBe(1);
+    expect(widgetBadgeCount(dismissRecent(state, 'meeting:bot_1'))).toBe(0);
   });
 });
 
@@ -1429,5 +1638,101 @@ describe('inline resolution seam', () => {
     ).toBeNull();
     expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: {} })).toBeNull();
     expect(resolutionForItem({ kind: 'meeting', actionId: 'assign', data: null })).toBeNull();
+  });
+});
+
+describe('meeting needs-action titles, focus, and dedupe', () => {
+  it('formats a meeting name + date/time instead of the generic "Meeting needs a company" prefix', () => {
+    const text = formatMeetingNotificationTitle({
+      title: 'Meeting needs a company',
+      body: '"Amir Tor sync" isn\'t filed to a company yet.',
+      data: {
+        meetingId: 'bot_42',
+        meetingTitle: 'Amir Tor sync',
+        scheduledStartTime: '2026-09-01T16:00:00.000Z',
+      },
+    });
+    expect(text).toContain('Amir Tor sync');
+    expect(text).toMatch(/·/);
+    expect(text).toMatch(/\d/);
+    expect(text.startsWith('Meeting')).toBe(false);
+  });
+
+  it('falls back to a quoted body name, then a non-generic title', () => {
+    expect(
+      formatMeetingNotificationTitle({
+        title: 'Meeting needs a company',
+        body: '"Weekly standup" isn\'t filed yet.',
+        data: { meetingId: 'bot_1' },
+      }),
+    ).toBe('Weekly standup');
+    expect(
+      formatMeetingNotificationTitle({
+        title: 'Detected call',
+        body: 'starting now',
+        data: null,
+      }),
+    ).toBe('Detected call');
+  });
+
+  it('uses the meeting name + when as the live banner row text', () => {
+    const mapped = bannerToStackItem(
+      {
+        kind: 'meeting',
+        title: 'Meeting needs a company',
+        body: '"Design review" isn\'t filed to a company yet.',
+        clickActionId: 'assign',
+        actionId: 'assign',
+        data: {
+          meetingId: 'bot_9',
+          meetingTitle: 'Design review',
+          scheduledStartTime: '2026-09-01T18:30:00.000Z',
+          calendarEventId: 'evt_9',
+        },
+      },
+      1,
+      'wn-1',
+    );
+    expect(mapped.type).toBe('meeting');
+    expect(mapped.text).toContain('Design review');
+    expect(mapped.text).toMatch(/·/);
+    expect(mapped.id).toBe('meeting:bot_9');
+  });
+
+  it('prefers the calendar event id for Meetings-page navigation, then the bot id', () => {
+    expect(
+      meetingFocusId({ meetingId: 'bot_9', calendarEventId: 'evt_9' }),
+    ).toBe('evt_9');
+    expect(meetingFocusId({ meetingId: 'bot_9' })).toBe('bot_9');
+    expect(meetingFocusId(null)).toBeUndefined();
+  });
+
+  it('collapses repeated live deliveries of the same meeting into one visible row', () => {
+    let state = emptyWidgetStack();
+    state = addItem(
+      state,
+      item({
+        id: 'wn-1',
+        kind: 'meeting',
+        type: 'meeting',
+        text: 'Standup',
+        data: { meetingId: 'bot_dup' },
+      }),
+    );
+    state = addItem(
+      state,
+      item({
+        id: 'wn-2',
+        kind: 'meeting',
+        type: 'meeting',
+        text: 'Standup · later',
+        data: { meetingId: 'bot_dup' },
+      }),
+    );
+    expect(state.visible).toHaveLength(1);
+    expect(state.visible[0]?.id).toBe('wn-2');
+    expect(state.visible[0]?.text).toBe('Standup · later');
+    expect(state.recent).toHaveLength(1);
+    expect(meetingIdentityKey(state.visible[0]!)).toBe('meeting:bot_dup');
   });
 });

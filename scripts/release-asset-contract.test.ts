@@ -217,6 +217,44 @@ describe("atomic release asset contract", () => {
     ).toThrow("release prerelease=false does not match true");
   });
 
+  it("resumes a staged stable public prerelease at promote-pending", () => {
+    expect(
+      planRelease({
+        releases: [[
+          release({
+            tag_name: "v0.10.179",
+            name: "HQ v0.10.179",
+            draft: false,
+            prerelease: true,
+          }),
+        ]],
+        localAssets,
+        tag: "v0.10.179",
+        prerelease: true,
+        stagedStable: true,
+      }),
+    ).toEqual({ action: "promote-pending", releaseId: "42" });
+  });
+
+  it("treats a promoted staged stable release as already-published", () => {
+    expect(
+      planRelease({
+        releases: [[
+          release({
+            tag_name: "v0.10.179",
+            name: "HQ v0.10.179",
+            draft: false,
+            prerelease: false,
+          }),
+        ]],
+        localAssets,
+        tag: "v0.10.179",
+        prerelease: true,
+        stagedStable: true,
+      }),
+    ).toEqual({ action: "already-published", releaseId: "42" });
+  });
+
   it.each([
     [
       "wrong size",

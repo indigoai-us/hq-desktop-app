@@ -287,6 +287,21 @@ export function botForEvent(
 }
 
 /**
+ * True when a Meetings agenda row is the target of a notification deep-link.
+ * Unattributed banners carry the Recall bot id; agenda rows key off the
+ * calendar event id — match either, plus the bot's own calendarEventId.
+ */
+export function meetingMatchesFocusId(
+  focusedId: string | null | undefined,
+  event: MeetingEvent,
+  bot: ScheduledBot | undefined,
+): boolean {
+  const id = focusedId?.trim();
+  if (!id) return false;
+  return event.id === id || bot?.botId === id || bot?.calendarEventId === id;
+}
+
+/**
  * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips
  * to "already invited" immediately while a background refresh reconciles the
  * real bot id/status from the server.

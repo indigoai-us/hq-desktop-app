@@ -7,6 +7,8 @@
  */
 
 import {
+  AGENT_PATHS,
+  DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
   buildReplyThreadPath,
   buildSendReplyRequest,
   failure,
@@ -28,6 +30,22 @@ const MEETINGS_USE_CLOUD = unavailable(
   "Meetings go through hq-pro REST via the desktop composite adapter.",
 );
 
+function membershipRowsFromPayload(value: unknown): Json[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is Json =>
+        typeof item === "object" && item !== null && !Array.isArray(item),
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["memberships", "companies", "workspaces"] as const) {
+      if (Array.isArray(record[key])) return membershipRowsFromPayload(record[key]);
+    }
+  }
+  return [];
+}
+
 export type InvokeFn = (
   cmd: string,
   args?: Record<string, unknown>,
@@ -35,6 +53,23 @@ export type InvokeFn = (
 
 export interface TauriPlatformAdapterConfig {
   invoke: InvokeFn;
+}
+
+/**
+ * True when a non-OK result is the generic API-Gateway 404 — `http-404` code
+ * (the body carried no `code`) and the default "<METHOD> <path> failed"
+ * message (the body carried no `error` string either).
+ */
+function isCodelessHttp404(
+  res: { ok: boolean; code?: string; message?: string },
+  method: string,
+  path: string,
+): boolean {
+  return (
+    !res.ok &&
+    res.code === "http-404" &&
+    (res.message === undefined || res.message === `${method} ${path} failed`)
+  );
 }
 
 export class TauriPlatformAdapter implements PlatformAdapter {
@@ -97,7 +132,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
    * sync fetch_reply_thread / send_reply command.
    */
   private async hqProJson<T>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
@@ -145,12 +180,34 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   }
 
   readonly identity: PlatformAdapter["identity"] = {
-    whoami: () => this.call("whoami"),
+    whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) => this.call("has_feature", { flag }),
-    listWorkspaces: () => this.call("list_workspaces"),
+    listWorkspaces: async () => {
+      const result = await this.hqProJson<Json>("GET", "/membership/me");
+      if (!result.ok) return result;
+      return ok(membershipRowsFromPayload(result.value));
+    },
     getProfile: () => this.hqProJson("GET", "/v1/profile"),
     updateProfile: (input) => this.hqProJson("PUT", "/v1/profile", input),
+    updateAgentProfile: (agentUid, input) =>
+      this.hqProJson(
+        "PATCH",
+        `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+        input,
+      ),
+    listAvatarPacks: () => this.hqProJson("GET", "/v1/avatar-packs"),
+    getAvatarPack: (packId) =>
+      this.hqProJson(
+        "GET",
+        `/v1/avatar-packs/${encodeURIComponent(packId)}`,
+      ),
+    selectAgentAvatar: (agentUid, input) =>
+      this.hqProJson(
+        "POST",
+        `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -176,6 +233,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "DELETE",
         `/v1/notify/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(personUid)}`,
       ),
+    deleteChannel: async (channelId) => {
+      const path = `/v1/notify/channels/${encodeURIComponent(channelId)}`;
+      const res = await this.hqProJson<Json>("DELETE", path);
+      // Only the bare API-Gateway `{"message":"Not Found"}` shape (no `code`
+      // AND no server `error` string) means the route does not exist yet. A
+      // coded 404 (CHANNEL_NOT_FOUND) or any 404 that carries a server
+      // `error` keeps the server text.
+      if (isCodelessHttp404(res, "DELETE", path)) {
+        return failure("http-404", DELETE_CHANNEL_UNSUPPORTED_MESSAGE);
+      }
+      return res;
+    },
     // Scoped reads go through the existing company-scoped command rather than
     // a new IPC surface: list_company_members is GET /v1/notify/contacts
     // ?companyUid=… and is already registered + capability-listed.
@@ -325,6 +394,25 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     decideModerationListing: (id, decision) =>
       this.call("decide_moderation_listing", { id, decision }),
     installPack: (listing) => this.call("install_pack", { listing }),
+  };
+
+  readonly agents: PlatformAdapter["agents"] = {
+    getStatus: (agentUid) => this.hqProJson("GET", AGENT_PATHS.status(agentUid)),
+    listMobileRoster: (companyUid) =>
+      this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),
+    listJobs: (agentUid) => this.hqProJson("GET", AGENT_PATHS.jobs(agentUid)),
+    pauseJob: (agentUid, jobId) =>
+      this.hqProJson("POST", AGENT_PATHS.pauseJob(agentUid, jobId)),
+    updateProfile: (agentUid, patch) =>
+      this.hqProJson("PATCH", AGENT_PATHS.profile(agentUid), patch),
+    stop: (agentUid) => this.hqProJson("POST", AGENT_PATHS.stop(agentUid)),
+    start: (agentUid) => this.hqProJson("POST", AGENT_PATHS.start(agentUid)),
+    deprovision: (agentUid) =>
+      this.hqProJson("DELETE", AGENT_PATHS.deprovision(agentUid)),
+    listOwners: (companyUid, agentUid) =>
+      this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
+    getCompanyTelemetry: (companyUid, from, to) =>
+      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -484,6 +572,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     },
     checkForUpdates: () => this.call("check_for_updates"),
     installUpdate: () => this.call("install_update"),
+    downloadUpdate: () => this.call("download_update"),
+    installDownloadedUpdate: () => this.call("install_downloaded_update"),
+    getDownloadedUpdate: () => this.call("get_downloaded_update"),
     getPendingUpdate: () => this.call("get_pending_update"),
     checkCoreState: () => this.call("check_core_state"),
     installCoreUpdate: () => this.call("install_hq_core_update"),
@@ -543,5 +634,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
             `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}`,
           )
         : this.call("read_work_mesh_project", { projectId }),
+    migrateSession: (sessionId, body) =>
+      this.hqProJson(
+        "POST",
+        `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
+        body,
+      ),
   };
 }

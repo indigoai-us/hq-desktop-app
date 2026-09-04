@@ -77,6 +77,13 @@ export interface AgentSession {
    * the observation channel and aids debugging.
    */
   source: string;
+  /**
+   * Server work-mesh session id when this local observation is bound (US-015).
+   * Absent → channel/board live UI must not surface the row (no cwd guessing).
+   */
+  serverSessionId?: string;
+  /** Bound task id from the server when known. */
+  taskId?: string;
 }
 
 /** Type guard: is `value` a member of the status taxonomy? */

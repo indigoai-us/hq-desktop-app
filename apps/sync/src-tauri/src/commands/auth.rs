@@ -3,7 +3,6 @@ use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 
-
 /// Canonical identity the embedded shell hydrates from. Person UID comes from
 /// the vault (same `list_entities_by_type("person")` path as
 /// `list_syncable_workspaces`); email / display name come from Cognito claims
@@ -16,7 +15,6 @@ pub struct WhoAmIIdentity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }
-
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
 const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
@@ -377,21 +375,13 @@ pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     Ok(state)
 }
 
-/// Clear this device's stale session and take the user straight to the
-/// provider buttons in the compact popover. This is the desktop Home/titlebar
-/// one-click bridge into the existing OAuth flow.
+/// Clear this device's stale session and open the desktop workspace so the
+/// user can sign in there. The compact popover is not the sign-in surface.
 #[tauri::command]
 pub async fn begin_reauth(app: tauri::AppHandle) -> Result<(), String> {
     sign_out(app.clone()).await?;
-    app.emit_to("main", "auth:reauth-required", ())
-        .map_err(|err| err.to_string())?;
-
-    let app_for_main = app.clone();
-    app.run_on_main_thread(move || {
-        crate::tray::show_popover_window(&app_for_main);
-    })
-    .map_err(|err| err.to_string())?;
-    Ok(())
+    let _ = app.emit("auth:reauth-required", ());
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app, None).await
 }
 
 #[cfg(test)]

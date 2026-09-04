@@ -11,17 +11,20 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { untrack, type Snippet } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
 
+  import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
+  import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
     systemModelForMessage,
@@ -29,23 +32,45 @@
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
+  import { authorAvatarUrl } from "./agent-avatars";
+  import { presenceStatus } from "../presence-store.svelte.js";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
-    isAllowedChatAttachment,
+    attachmentKindForContentType,
+    contentTypeForFile,
+    filesFromDataTransfer,
+    namePastedImageFile,
+    newAttachmentId,
+    validateChatAttachment,
+    type ChatAttachmentValidator,
   } from "./chat-attachments";
   import {
     clipMessageBodyForDisplay,
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
-  import { safeHref } from "../../common/markdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import RichMessageContent from "./RichMessageContent.svelte";
+  import { richContentForMessage } from "./richMessageContent";
+  import {
+    handleLinkActivate,
+    type LinkMenuAnchor,
+  } from "../../common/external-links.js";
   import {
     toggleReaction,
     type ReactionAggregate,
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import { formatComposerSendError } from "./composer-send-error";
+  import {
+    clearDraft,
+    loadDraft,
+    saveDraft,
+    type DraftStorage,
+  } from "./composer-drafts";
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
   import {
@@ -94,8 +119,12 @@
     ) => void;
     /** Releases host-created object URLs when an attachment consumer closes. */
     onreleaseurl?: (url: string) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
+    /** Company scope for presence lookups on message avatars (US-015). */
+    companyUid?: string | null;
     /**
      * Last-reply preview from a prior ReplyPanel fetch. Never required from
      * the list API — omit unless the host already knows author + time.
@@ -131,6 +160,8 @@
     /** personUid → live roster display name (profile override), preferred over
      *  the name baked into each message at send time. */
     displayNameByUid?: Record<string, string>;
+    /** Host-specific attachment limits; desktop uses the shared 25 MB default. */
+    attachmentValidator?: ChatAttachmentValidator;
     /**
      * Optional header rendered at the very top of the `.dm-thread` scroller
      * (before empty-state / load-earlier). Used for Slack-style channel intros
@@ -144,6 +175,15 @@
      * would lay out as a second column in the upper-right instead.
      */
     belowMessages?: Snippet;
+    /**
+     * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
+     * `draftStorage`, unsent text is restored on mount, persisted (debounced)
+     * while typing, flushed on unmount, and cleared on send — so switching
+     * conversations (the host remounts per row) never loses a draft.
+     */
+    draftKey?: string | null;
+    /** Tenant-scoped storage for `draftKey`. Omit to disable drafts. */
+    draftStorage?: DraftStorage | null;
   }
 
   let {
@@ -157,8 +197,10 @@
     mentionCandidates = [],
     onreply,
     onopenattachment,
+    onopenartifact,
     onreleaseurl,
     vaultCompanyUid = null,
+    companyUid = null,
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
@@ -167,19 +209,24 @@
     onopenprofile,
     avatarByUid = {},
     displayNameByUid = {},
+    attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
+    draftKey = null,
+    draftStorage = null,
   }: Props = $props();
 
-  /** Real avatar for a message's author, when the roster carried one. */
-  function avatarFor(msg: ConversationMessageWire): string | null {
-    const uid = (msg.fromPersonUid ?? "").trim();
-    return (uid && avatarByUid[uid]) || null;
+  /** Presence-store online flag for an actor in this conversation's company. */
+  function actorOnline(actorUid: string | null | undefined): boolean {
+    const uid = (actorUid ?? "").trim();
+    const company = (companyUid ?? vaultCompanyUid ?? "").trim();
+    if (!uid || !company) return false;
+    return presenceStatus(company, uid) === "online";
   }
 
-  /** Emit an author-profile-open when we have a human personUid to resolve. */
+  /** Emit an author-profile-open when we have a personUid to resolve. */
   function openAuthorProfile(msg: ConversationMessageWire): void {
-    if (!onopenprofile || isAgent(msg)) return;
+    if (!onopenprofile) return;
     const personUid = (msg.fromPersonUid ?? "").trim();
     if (!personUid) return;
     onopenprofile({ personUid, displayName: messageAuthor(msg) });
@@ -202,23 +249,15 @@
     });
   }
 
+  let linkMenu = $state<LinkMenuAnchor | null>(null);
+
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
-  function onBodyLinkActivate(
-    event: MouseEvent | KeyboardEvent,
-    node: EventTarget | null,
-  ): boolean {
-    if (!(node instanceof Element)) return false;
-    const body = event.currentTarget;
-    if (!(body instanceof Element)) return false;
-    const anchor = node.closest("a[href]");
-    if (!anchor || !body.contains(anchor)) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const href = safeHref(anchor.getAttribute("href") ?? "");
-    if (!href) return true;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-    return true;
+  function onBodyLinkActivate(event: Event): boolean {
+    return handleLinkActivate(event, {
+      onopenurl,
+      onmenu: (menu) => (linkMenu = menu),
+      mode: "message",
+    });
   }
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -271,10 +310,16 @@
     return out;
   });
 
-  let replyText = $state("");
+  // One-shot restore of the stored draft — `draftKey`/`draftStorage` are fixed
+  // for this instance (the host keys the component on the row id).
+  let replyText = $state(
+    untrack(() =>
+      draftKey && draftStorage ? loadDraft(draftStorage, draftKey) : "",
+    ),
+  );
   let replyInputEl = $state<HTMLTextAreaElement | null>(null);
   let attachInputEl = $state<HTMLInputElement | null>(null);
-  let pendingFiles = $state<File[]>([]);
+  let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
@@ -346,6 +391,82 @@
     if (!el || el.value === replyText) return;
     replyText = el.value;
   }
+
+  // ── Composer draft persistence ────────────────────────────────────────────
+  // `draftKey` is fixed for the life of this instance (the host keys the
+  // component on the row id), so the restore above is a one-shot read and the
+  // effect below only has to follow `replyText`.
+  const DRAFT_DEBOUNCE_MS = 300;
+  let draftTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Text last written to (or read from) storage — skip no-op writes. */
+  let draftPersisted = untrack(() => replyText);
+  let draftPending: string | null = null;
+
+  /**
+   * Write `text` now. `draftPersisted` only advances when storage really took
+   * it, so a quota failure is not mistaken for a saved draft.
+   */
+  function writeDraft(text: string): boolean {
+    if (!draftKey || !draftStorage) return true;
+    if (text === draftPersisted) return true;
+    if (!saveDraft(draftStorage, draftKey, text)) return false;
+    draftPersisted = text;
+    return true;
+  }
+
+  /**
+   * Write any debounced-but-unsaved text now (unmount / send). On a failed
+   * write `draftPending` stays set so the next change (or unmount) retries.
+   */
+  function flushDraft(): void {
+    if (draftTimer != null) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    if (draftPending != null && writeDraft(draftPending)) {
+      draftPending = null;
+    }
+  }
+
+  /** Send succeeded (optimistically): forget the draft outright. */
+  function discardDraft(): void {
+    if (draftTimer != null) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    draftPending = null;
+    if (!draftKey || !draftStorage || clearDraft(draftStorage, draftKey)) {
+      draftPersisted = "";
+    }
+  }
+
+  /**
+   * Send failed: put the text back (unless the user already typed something
+   * new) and persist it again so it is not lost to a remount either.
+   */
+  function restoreDraftAfterFailedSend(body: string): void {
+    if (!body) return;
+    syncComposerFromDom();
+    if (replyText.trim() !== "") return;
+    replyText = body;
+    writeDraft(body);
+  }
+
+  $effect(() => {
+    const text = replyText;
+    if (!draftKey || !draftStorage) return;
+    if (text === draftPersisted && draftPending == null) return;
+    draftPending = text;
+    if (draftTimer != null) clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      draftTimer = null;
+      flushDraft();
+    }, DRAFT_DEBOUNCE_MS);
+  });
+
+  onDestroy(() => {
+    flushDraft();
+  });
 
   const canSend = $derived(
     (replyText.trim().length > 0 && replyText.trim() !== "/") ||
@@ -592,9 +713,9 @@
         errors.push(`You can attach up to ${MAX_CHAT_ATTACHMENTS} files`);
         break;
       }
-      const reason = isAllowedChatAttachment(file);
-      if (reason) {
-        errors.push(reason);
+      const error = attachmentValidator(file);
+      if (error) {
+        errors.push(error.message);
         continue;
       }
       if (
@@ -616,24 +737,14 @@
     attachError = null;
   }
 
-  /**
-   * Pasted screenshots arrive as clipboard files all named "image.png" — give
-   * each a unique name so the (name, size) dedupe and vault path stay distinct.
-   */
   function namePastedFile(file: File): File {
-    if (!file.type.startsWith("image/") || file.name !== "image.png") {
-      return file;
-    }
-    pasteCounter += 1;
-    const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return new File([file], `pasted-${stamp}-${pasteCounter}.${ext}`, {
-      type: file.type,
-    });
+    const renamed = namePastedImageFile(file, pasteCounter + 1);
+    if (renamed !== file) pasteCounter += 1;
+    return renamed;
   }
 
   function onComposerPaste(e: ClipboardEvent): void {
-    const files = Array.from(e.clipboardData?.files ?? []);
+    const files = filesFromDataTransfer(e.clipboardData);
     if (files.length === 0) return;
     e.preventDefault();
     addPendingFiles(files.map(namePastedFile));
@@ -667,48 +778,11 @@
     e.preventDefault();
     dragDepth = 0;
     dragActive = false;
-    const files = Array.from(e.dataTransfer?.files ?? []);
+    const files = filesFromDataTransfer(e.dataTransfer);
     if (files.length > 0) {
       addPendingFiles(files);
       replyInputEl?.focus();
     }
-  }
-
-  /** Soft, human copy for composer failures — never dump raw API codes. */
-  function formatComposerSendError(raw: string, hadFiles: boolean): string {
-    if (/failed to fetch|networkerror|^load failed$/i.test(raw)) {
-      return hadFiles
-        ? "Could not upload the file"
-        : "Could not send the message";
-    }
-    if (/CHANNEL_NOT_FOUND|channel not found/i.test(raw)) {
-      return "Couldn't send — this channel isn't available right now. Try reopening it.";
-    }
-    if (/CHANNEL_MENTION_INVITE_FORBIDDEN|mention-invite/i.test(raw)) {
-      return "Couldn't send — only the channel owner can mention someone who isn't a member yet.";
-    }
-    if (
-      /MENTION_PARTICIPANT_NOT_FOUND|mentioned participant was not found/i.test(
-        raw,
-      )
-    ) {
-      return "Couldn't send — that @mention couldn't be resolved.";
-    }
-    if (
-      /MENTION_PARTICIPANT_NOT_VISIBLE|not active in this company/i.test(raw)
-    ) {
-      return "Couldn't send — that person isn't active in this company.";
-    }
-    // Strip machine codes like "[CHANNEL_NOT_FOUND] …" if a human message remains.
-    const stripped = raw.replace(/^\[[A-Z0-9_]+\]\s*/i, "").trim();
-    if (stripped && stripped.length <= 160 && !/^[A-Z0-9_]+$/.test(stripped)) {
-      return stripped.startsWith("Couldn't") || stripped.startsWith("Could not")
-        ? stripped
-        : `Couldn't send — ${stripped}`;
-    }
-    return hadFiles
-      ? "Could not send the attachment"
-      : "Could not send the message";
   }
 
   function openAttachment(item: FileAttachmentModel): void {
@@ -747,17 +821,20 @@
         createdAt: new Date().toISOString(),
         direction: "out",
         mentions,
-        attachments: files.map((file) => ({
-          id: file.name,
-          vaultPath: file.name,
-          name: file.name,
-          contentType: file.type,
-          sizeBytes: file.size,
-          kind: file.type.startsWith("image/") ? "image" : "file",
-          previewUrl: file.type.startsWith("image/")
-            ? URL.createObjectURL(file)
-            : null,
-        })),
+        attachments: files.map((file) => {
+          const contentType = contentTypeForFile(file);
+          const kind = attachmentKindForContentType(contentType);
+          return {
+            id: newAttachmentId(),
+            vaultPath: file.name,
+            name: file.name,
+            contentType,
+            sizeBytes: file.size,
+            kind,
+            previewUrl:
+              kind === "image" ? URL.createObjectURL(file) : null,
+          };
+        }),
       },
     ];
     replyText = "";
@@ -765,6 +842,7 @@
     mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
+    discardDraft();
     try {
       await onsend?.(body, mentions, files);
     } catch (err) {
@@ -772,6 +850,7 @@
       localSends = localSends.filter((row) => row.eventId !== eventId);
       const raw = err instanceof Error ? err.message.trim() : "";
       attachError = formatComposerSendError(raw, files.length > 0);
+      restoreDraftAfterFailedSend(body);
     }
   }
 
@@ -844,6 +923,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   class="conversation chat-shell"
   data-testid="conversation-view"
@@ -851,6 +931,12 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onclick={onBodyLinkActivate}
+  onauxclick={onBodyLinkActivate}
+  oncontextmenu={onBodyLinkActivate}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
+  }}
 >
   {#if dragActive}
     <div class="drop-overlay" data-testid="composer-drop-overlay">
@@ -899,10 +985,23 @@
               <span>{formatDateSeparator(msg.createdAt)}</span>
             </div>
           {/if}
-          {#if systemModel?.kind === "line"}
+          {#if systemModel?.kind === "work_session_card"}
+            <WorkMeshActivityRow
+              card={systemModel}
+              actorLabel={resolveWorkActor(
+                systemModel.principalDisplay ??
+                  systemModel.actorUid ??
+                  messageAuthor(msg),
+                msg,
+              )}
+            />
+          {:else if systemModel?.kind === "line"}
             <SystemEventLine
               model={systemModel}
-              who={systemModel.type === "member_added"
+              who={systemModel.type === "member_added" ||
+              systemModel.type === "work_session_blocked" ||
+              systemModel.type === "work_session_task_status" ||
+              systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
             />
@@ -915,8 +1014,10 @@
                 <IdentityMark
                   kind="agent"
                   label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
                   size="regular"
+                  online={actorOnline(msg.fromPersonUid)}
                 />
               </span>
               <div class="dm-msg-column">
@@ -945,6 +1046,7 @@
               time={formatTime(msg.createdAt)}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
+            {@const rich = richContentForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -959,16 +1061,18 @@
                     <IdentityMark
                       kind="agent"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       agentUid={msg.fromPersonUid}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {:else}
                     <IdentityMark
                       kind="person"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {/if}
                 </span>
@@ -982,7 +1086,7 @@
               <div class="dm-msg-column">
                 {#if groupStart}
                   <div class="dm-msg-meta">
-                    {#if onopenprofile && !isAgent(msg) && (msg.fromPersonUid ?? "").trim()}
+                    {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
                       <button
                         type="button"
                         class="dm-msg-author dm-msg-author-btn"
@@ -999,45 +1103,51 @@
                   </div>
                 {/if}
                 <div class="dm-bubble">
-                  {#if msg.body?.trim()}
+                  {#if rich.text.trim()}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
-                      class="dm-bubble-body selectable-text"
+                      class="dm-bubble-body selectable-text msg-body"
+                      class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
                       onclick={(e) => {
-                        if (onBodyLinkActivate(e, e.target)) return;
+                        if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
                       }}
                       onkeydown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
-                          if (onBodyLinkActivate(e, e.target)) return;
+                          if (onBodyLinkActivate(e)) return;
                           onMentionActivate(e, e.target);
                         }
                       }}
                     >
-                      {#if isHeavyMessageBody(msg.body ?? "")}
+                      {#if isHeavyMessageBody(rich.text)}
                         <pre class="dm-plain">{clipMessageBodyForDisplay(
-                            msg.body ?? "",
+                            rich.text,
                           )}</pre>
                       {:else}
                         {@html applyMentionMarkup(
-                          renderMessageBodyMarkdown(msg.body ?? ""),
+                          renderMessageBodyMarkdown(rich.text),
                           storedMentions(msg),
                         )}
                       {/if}
                     </div>
                   {/if}
+                  {#if rich.rich}
+                    <RichMessageContent content={rich.rich} />
+                  {/if}
                   {#if msg.details?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="details"
                       text={msg.details}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   {#if msg.prompt?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="prompt"
                       text={msg.prompt}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   <MessageAttachments
@@ -1066,10 +1176,13 @@
                             <IdentityMark
                               kind={a.agent ? "agent" : "person"}
                               label={a.displayName}
-                              avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
-                                null}
+                              avatarUrl={authorAvatarUrl(
+                                a.personUid,
+                                avatarByUid,
+                              )}
                               agentUid={a.personUid}
                               size="small"
+                              online={actorOnline(a.personUid)}
                             />
                           </span>
                         {/each}
@@ -1189,24 +1302,11 @@
         </div>
       {/if}
       {#if pendingFiles.length > 0 || attachError}
-        <div class="composer-pending" data-testid="composer-pending">
-          {#each pendingFiles as file, i (file.name + file.size + i)}
-            <span class="composer-chip">
-              <span class="composer-chip-name">{file.name}</span>
-              <button
-                type="button"
-                class="composer-chip-remove"
-                aria-label={`Remove ${file.name}`}
-                onclick={() => removePendingFile(i)}
-              >
-                ×
-              </button>
-            </span>
-          {/each}
-          {#if attachError}
-            <span class="composer-attach-error">{attachError}</span>
-          {/if}
-        </div>
+        <ComposerPendingAttachments
+          files={pendingFiles}
+          error={attachError}
+          onremove={removePendingFile}
+        />
       {/if}
       <div class="mention-input-frame">
         {#if replyText.length > 0}
@@ -1374,6 +1474,13 @@
       {onopenurl}
     />
   {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      {onopenurl}
+      onclose={() => (linkMenu = null)}
+    />
+  {/if}
 </div>
 
 <style>
@@ -1437,45 +1544,6 @@
     clip: rect(0 0 0 0);
     white-space: nowrap;
     border: 0;
-  }
-
-  .composer-pending {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 0 2px 8px;
-  }
-
-  .composer-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 220px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .composer-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .composer-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--t2);
-    cursor: pointer;
-  }
-
-  .composer-attach-error {
-    /* Soft status — never alarm red (Indigo / HQ anti-pattern). */
-    color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 12px;
   }
 
   .dm-thread-wrap {
@@ -1574,8 +1642,8 @@
     gap: 8px;
     width: 100%;
     max-width: none;
-    margin-top: 2px;
-    padding: 5px 8px;
+    margin-top: 0;
+    padding: var(--msg-row-pad-y, 1px) 8px;
     border-radius: 6px;
   }
 
@@ -1585,7 +1653,7 @@
   }
 
   .dm-msg-group-start {
-    margin-top: 10px;
+    margin-top: var(--msg-group-gap, 8px);
     padding-top: 2px;
   }
 
@@ -1600,7 +1668,7 @@
     flex: 0 0 36px;
     width: 36px;
     min-height: 1px;
-    padding-top: 2px;
+    padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
   .dm-msg-gutter-time {
@@ -1632,7 +1700,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
-    margin: 0 0 0.125rem;
+    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
     min-width: 0;
   }
 
@@ -1642,7 +1710,7 @@
     color: var(--t1);
     font-size: 13px;
     font-weight: 700;
-    line-height: 1.3;
+    line-height: var(--msg-author-line-height, 1.3);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1755,7 +1823,7 @@
   }
 
   .dm-bubble-body :global(p) {
-    margin: 0.375rem 0;
+    margin: var(--msg-body-p-margin, 0.375rem 0);
     color: inherit;
   }
 

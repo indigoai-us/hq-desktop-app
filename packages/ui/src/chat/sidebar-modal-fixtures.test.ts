@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  channelCreateCandidate,
   filterSwitcher,
   switcherRowsFromConversations,
 } from "./sidebar-modal-fixtures.js";
@@ -112,43 +111,5 @@ describe("switcherRowsFromConversations", () => {
       "Jacob Posel, Caitlin Hutchinson",
       undefined,
     ]);
-  });
-});
-
-describe("channelCreateCandidate", () => {
-  const rows = switcherRowsFromConversations([
-    row({ title: "launch-week", id: "ch:lw", channelId: "chn_lw" }),
-    row({
-      id: "dm:prs_ada",
-      kind: "dm",
-      title: "Ada",
-      personUid: "prs_ada",
-      channelId: undefined,
-    }),
-  ]);
-
-  it("offers creation for a channel name that doesn't exist", () => {
-    expect(channelCreateCandidate(rows, "growth")).toBe("growth");
-    expect(channelCreateCandidate(rows, "#growth")).toBe("growth");
-  });
-
-  it("normalizes spaces to dashes and strips leading hashes", () => {
-    expect(channelCreateCandidate(rows, "  # Launch Party ")).toBe(
-      "Launch-Party",
-    );
-  });
-
-  it("suppresses the offer when the channel already exists (any case)", () => {
-    expect(channelCreateCandidate(rows, "launch-week")).toBeNull();
-    expect(channelCreateCandidate(rows, "#Launch-Week")).toBeNull();
-  });
-
-  it("does not treat a DM title as an existing channel", () => {
-    expect(channelCreateCandidate(rows, "Ada")).toBe("Ada");
-  });
-
-  it("returns null for an empty or hash-only query", () => {
-    expect(channelCreateCandidate(rows, "")).toBeNull();
-    expect(channelCreateCandidate(rows, "  #  ")).toBeNull();
   });
 });

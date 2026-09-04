@@ -119,15 +119,14 @@ jobs:
       # Branch policy, split by channel:
       #   - stable (vX.Y.Z) MUST ship from main — the release commit has to be
       #     merged before it is tagged.
-      #   - beta / alpha prereleases are testing builds cut from a feature
-      #     branch, so their tag must NOT be on main. A prerelease tag whose
-      #     commit is already in main's history is rejected: promote it to a
-      #     stable tag instead of shipping alpha/beta off main.
+      #   - beta / alpha prereleases may ONLY ship from release/* — their tag
+      #     commit must be contained in one of those remote branches. Creating
+      #     release/* branches is restricted to the Release Managers team.
       # Only enforced when a tag is first pushed. A workflow_dispatch run is a
       # deliberate re-release of an already-existing, immutable tag whose branch
       # was vetted at creation time — re-checking it here would break retries of
-      # historical prereleases (and of an off-main prerelease after its branch
-      # later merges to main), so dispatch retries skip the branch check.
+      # historical prereleases after their release branch is deleted, so dispatch
+      # retries skip the branch check.
       - name: Enforce release branch policy
         if: ${{ github.event_name == 'push' }}
         env:
@@ -138,7 +137,8 @@ jobs:
         run: |
           set -euo pipefail
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
           if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
             "${TAG}^{commit}" refs/remotes/origin/main; then
             ON_MAIN="true"
@@ -148,10 +148,18 @@ jobs:
 
           if [ "$PRERELEASE" = "true" ]; then
             if [ "$ON_MAIN" = "true" ]; then
-              echo "::error::$CHANNEL prerelease tag $TAG points at a commit on origin/main. alpha and beta releases may only be cut from non-main branches — tag a commit that has not been merged to main, or promote it to a stable vX.Y.Z tag."
+              echo "::error::$CHANNEL prerelease tag $TAG is contained in origin/main. alpha and beta prereleases must not be cut from main; promote this commit as a stable vX.Y.Z release instead."
               exit 1
             fi
-            echo "$CHANNEL prerelease $TAG is off main — allowed."
+            RELEASE_BRANCHES="$(git -C "$GITHUB_WORKSPACE" for-each-ref \
+              --format='%(refname:short)' \
+              --contains="${TAG}^{commit}" \
+              'refs/remotes/origin/release/*')"
+            if [ -z "$RELEASE_BRANCHES" ]; then
+              echo "::error::$CHANNEL prerelease tag $TAG is not contained in an origin/release/* branch. alpha and beta releases may only be cut from a release/* branch; creating one is restricted to the Release Managers team."
+              exit 1
+            fi
+            echo "$CHANNEL prerelease $TAG is contained in origin/release/* — allowed."
           else
             if [ "$ON_MAIN" != "true" ]; then
               echo "::error::Stable release tag $TAG is not contained in origin/main. Merge the release commit before tagging a stable release."
@@ -310,6 +318,18 @@ jobs:
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
+
+      # Smoke helpers must come from the workflow commit so a dispatch retry
+      # of an older tag still fail-closes on a missing non-Indigo identity.
+      - name: Checkout release control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/macos-artifact-smoke.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 
@@ -649,7 +669,21 @@ jobs:
             exit 1
           fi
           xcrun stapler staple "$APP_PATH"
-          xcrun stapler validate "$APP_PATH"
+          # Apple's ticket lookup can lag the staple by a few seconds; a first-try
+          # validate then fails with "CloudKit query … failed" / Error 65 even
+          # though notarization was Accepted and the staple succeeded (v0.10.176).
+          # Retry with backoff before declaring the release broken.
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun stapler validate "$APP_PATH"; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::stapler validate still failing after $attempt attempts"
+              exit 65
+            fi
+            echo "stapler validate attempt $attempt failed; retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
 
       - name: Regenerate updater archive and signature
         env:
@@ -717,6 +751,30 @@ jobs:
             apps/sync/src-tauri/target/release-artifacts/*.dmg
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz
             apps/sync/src-tauri/target/release-artifacts/*.app.tar.gz.sig
+
+      # Fail-closed: a missing secret or a skeleton boot must fail this job
+      # so Publish GitHub release never runs. This is the check that would
+      # have stopped v0.10.178 — every prior test ran as an Indigo user
+      # with conversations.
+      - name: Non-Indigo artifact smoke
+        timeout-minutes: 5
+        env:
+          HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then
+            echo "::error::HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO is not set. Provision a Cognito refresh token for a non-Indigo account with an empty inbox (only #setup) and add it as a repository secret. This step is fail-closed so a missing identity cannot skip the gate that would have caught v0.10.178."
+            exit 1
+          fi
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          test -d "$APP"
+          xattr -cr "$APP" || true
+          node "$GITHUB_WORKSPACE/.release-control/scripts/macos-artifact-smoke.mjs" \
+            --app "$APP" \
+            --version "$RELEASE_VERSION" \
+            --timeout-ms 30000 \
+            --launch
 
   windows:
     name: Build Windows ${{ matrix.target }}
@@ -1086,6 +1144,7 @@ jobs:
           sparse-checkout: |
             scripts/release-asset-contract.mjs
             scripts/release-stable-order.mjs
+            scripts/macos-artifact-smoke.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1245,12 +1304,21 @@ jobs:
         id: release-plan
         env:
           TAG: ${{ needs.validate.outputs.tag }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           releases_json="${RUNNER_TEMP}/github-releases.json"
           plan_json="${RUNNER_TEMP}/release-plan.json"
+
+          if [ "$CHANNEL" = "stable" ]; then
+            STAGED_STABLE="true"
+            PUBLISH_PRERELEASE="true"
+          else
+            STAGED_STABLE="false"
+            PUBLISH_PRERELEASE="$PRERELEASE"
+          fi
 
           gh api --paginate --slurp \
             "repos/${REPOSITORY}/releases?per_page=100" \
@@ -1259,7 +1327,8 @@ jobs:
             --releases "$releases_json" \
             --directory release \
             --tag "$TAG" \
-            --prerelease "$PRERELEASE" \
+            --prerelease "$PUBLISH_PRERELEASE" \
+            --staged-stable "$STAGED_STABLE" \
             > "$plan_json"
           cat "$plan_json"
 
@@ -1269,7 +1338,7 @@ jobs:
             create-draft)
               test -z "$release_id"
               ;;
-            reset-draft|already-published)
+            reset-draft|already-published|promote-pending)
               [[ "$release_id" =~ ^[0-9]+$ ]]
               ;;
             *)
@@ -1278,15 +1347,19 @@ jobs:
               ;;
           esac
 
-          echo "action=${action}" >> "$GITHUB_OUTPUT"
-          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+          {
+            echo "action=${action}"
+            echo "release_id=${release_id}"
+            echo "publish_prerelease=${PUBLISH_PRERELEASE}"
+            echo "staged_stable=${STAGED_STABLE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create or reset hidden draft GitHub release
         id: draft-release
-        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
           REPOSITORY: ${{ github.repository }}
           RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
           PLANNED_RELEASE_ID: ${{ steps.release-plan.outputs.release_id }}
@@ -1349,7 +1422,7 @@ jobs:
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
 
       - name: Upload complete asset set to draft
-        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
@@ -1358,10 +1431,10 @@ jobs:
           gh release upload "$TAG" release/* -R "$REPOSITORY"
 
       - name: Verify exact draft release asset set
-        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
           RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -1413,12 +1486,14 @@ jobs:
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 
+      # Stable tags become a public GitHub prerelease first (not latest).
+      # Betas stay prerelease/not-latest. Latest is flipped only after the
+      # tag-pinned latest.json smoke below succeeds.
       - name: Publish verified GitHub release
-        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
         env:
           TAG: ${{ needs.validate.outputs.tag }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
-          MAKE_LATEST: ${{ needs.validate.outputs.make_latest }}
+          PRERELEASE: ${{ steps.release-plan.outputs.publish_prerelease }}
           RELEASE_ID: ${{ steps.draft-release.outputs.release_id }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -1426,11 +1501,10 @@ jobs:
           release_json="$(
             jq -n \
               --argjson prerelease "$PRERELEASE" \
-              --arg make_latest "$MAKE_LATEST" \
               '{
                 draft: false,
                 prerelease: $prerelease,
-                make_latest: $make_latest
+                make_latest: false
               }' |
               gh api --method PATCH \
                 "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
@@ -1442,7 +1516,38 @@ jobs:
             --argjson prerelease "$PRERELEASE" \
             '.tag_name == $tag and .draft == false and .prerelease == $prerelease' \
             <<<"$release_json" >/dev/null
-          echo "Published verified release ${TAG} (prerelease=${PRERELEASE}, make_latest=${MAKE_LATEST})."
+          echo "Published verified release ${TAG} as prerelease=${PRERELEASE}, make_latest=false."
+
+      - name: Smoke published latest.json for this tag
+        if: ${{ steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          LATEST_JSON_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}/latest.json"
+          node .release-control/scripts/macos-artifact-smoke.mjs \
+            --latest-json "$LATEST_JSON_URL" \
+            --version "$VERSION"
+          node .release-control/scripts/release-asset-contract.mjs manifest \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --version "$VERSION"
+          node .release-control/scripts/release-stable-order.mjs confirm-channel \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --make-latest false
+
+      - name: Promote stable release to latest
+        if: ${{ needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published' }}
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" -R "$REPOSITORY" --latest --prerelease=false
+          echo "Promoted ${TAG} to GitHub latest and cleared prerelease."
 
       # This also makes an ambiguous rerun idempotent: if GitHub published but
       # the previous runner lost the PATCH response, the resolver accepts the
@@ -1459,12 +1564,12 @@ jobs:
           RELEASE_ACTION: ${{ steps.release-plan.outputs.action }}
         run: |
           set -euo pipefail
-          if [ "$RELEASE_ACTION" = "already-published" ]; then
-            release_id="$PLANNED_RELEASE_ID"
-            match_bytes="false"
-          else
+          if [ "$RELEASE_ACTION" = "create-draft" ] || [ "$RELEASE_ACTION" = "reset-draft" ]; then
             release_id="$DRAFT_RELEASE_ID"
             match_bytes="true"
+          else
+            release_id="$PLANNED_RELEASE_ID"
+            match_bytes="false"
           fi
           if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
             echo "::error::Cannot confirm invalid release id ${release_id}."
@@ -1514,7 +1619,7 @@ jobs:
   # block shipping, and the published artifacts are correct either way.
   #
   # Only stable releases sync their version to main. beta/alpha prereleases are
-  # cut from non-main branches (enforced in `validate`), so stamping their
+  # cut from release/* branches (enforced in `validate`), so stamping their
   # version onto main would push a prerelease version to the trunk — skip them.
   sync-version:
     name: Sync released version to main

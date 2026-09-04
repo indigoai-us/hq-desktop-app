@@ -34,9 +34,9 @@ afterEach(() => {
 
 describe('US-104 internal notification + deep-link routing', () => {
   it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(false);
-    expect(hqWorkHandoffEnabled(null)).toBe(false);
-    expect(hqWorkHandoffEnabled(false)).toBe(false);
+    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
+    expect(hqWorkHandoffEnabled(null)).toBe(true);
+    expect(hqWorkHandoffEnabled(false)).toBe(true);
     expect(hqWorkHandoffEnabled(true)).toBe(true);
   });
 
@@ -49,6 +49,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         createdAt: null,
         replyRootEventId: null,
         automatic: false,
+        title: null,
+        companyUid: null,
       });
       expect(takePendingConversation()).toBeNull();
     });
@@ -61,6 +63,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         createdAt: null,
         replyRootEventId: 'evt_root',
         automatic: false,
+        title: null,
+        companyUid: null,
       });
       expect(takePendingConversation()).toBeNull();
     });

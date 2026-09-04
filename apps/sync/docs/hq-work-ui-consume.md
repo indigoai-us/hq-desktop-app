@@ -62,7 +62,7 @@ The cost is a fork — see the sync procedure in `packages/VENDORED.md`.
 ## The seam that actually breaks
 
 `@hq/platform`'s `PlatformAdapter`. When the upstream contract gains or drops a
-member, `apps/sync/src/lib/hq-work-adapter.ts` must follow — this has already
+member, `packages/platform/src/tauri/sync-adapter.ts` must follow — this has already
 broken twice:
 
 - Missing members fail `apps/sync/__tests__/stories/hq-work-adapter-contract-parity.test.ts`,

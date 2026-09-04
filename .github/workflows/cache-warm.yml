@@ -13,6 +13,13 @@
 # warm). Each PR then saves its own 1.7 GB + 0.8 GB copy and blows the 10 GB
 # repo cache budget.
 #
+# `windows-installer-release` is now restored by the two parallel release
+# builds in windows-check.yml, and only the bridge one writes it back (two
+# writers would just race for one entry). This warmer staying green on main is
+# what keeps both off the cold path -- including the `cargo install
+# tauri-driver` below, whose ~/.cargo/bin entry the bridge build republishes as
+# an artifact so the E2E job needs no Rust toolchain at all.
+#
 # The cache key rust-cache computes includes runner OS/arch, the shared-key,
 # a hash of rustc version + CARGO_*/RUST* env vars, and the lockfiles. Each
 # job here must mirror the runner image, toolchain targets, env, and cargo

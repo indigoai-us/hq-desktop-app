@@ -38,27 +38,25 @@ use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 pub use hq_desktop_core::desktop_alt::{
     activity_url, board_url, bool_field, build_file_tree, build_node,
     canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
-    deployment_entry_from_value, deployment_last_deploy,
-    deployment_matches_selected_slug, deployment_org_slug, deployment_rows, deployment_size,
-    deployment_version, deployments_url, derive_initials, dir_has_visible_children,
-    first_row_key_names, format_board_date, format_bytes, format_deployment_age,
-    is_activity_not_provisioned, is_auth_required_error, is_board_not_provisioned,
-    is_deployments_not_provisioned, is_dev_noise, is_safe_deployment_host,
-    is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id, is_within, json_code,
-    json_kind, lexically_normalize, list_dir_entries, live_cloud_uid_from_broken_reason,
-    nested_number_field, nested_string_field, normalize_deployment_host,
-    normalize_deployment_state, normalize_slug, number_field, parse_activity_response,
-    parse_board_response, parse_company_activity, parse_company_board,
+    deployment_entry_from_value, deployment_last_deploy, deployment_matches_selected_slug,
+    deployment_org_slug, deployment_rows, deployment_size, deployment_version, deployments_url,
+    derive_initials, dir_has_visible_children, first_row_key_names, format_board_date,
+    format_bytes, format_deployment_age, is_activity_not_provisioned, is_auth_required_error,
+    is_board_not_provisioned, is_deployments_not_provisioned, is_dev_noise,
+    is_safe_deployment_host, is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id,
+    is_within, json_code, json_kind, lexically_normalize, list_dir_entries,
+    live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
+    normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
+    parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
-    read_file_content, read_file_content_capped,
-    resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
-    secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
-    string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
-    workspace_grants_company_file_access, workspace_grants_company_file_read_access,
-    ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
-    BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
+    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
+    resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
+    secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
+    summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
+    workspace_grants_company_file_read_access, ActivityContributor, ActivityEntry, ActivityStats,
+    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
     CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
     LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
     DEV_NOISE_NAMES,
@@ -98,7 +96,10 @@ pub fn set_desktop_active_company(
         .map(|slug| slug.trim().to_string())
         .filter(|slug| !slug.is_empty());
     if let Some(slug) = &normalized {
-        if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+        if !slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
             return Err(format!("invalid company_slug: {slug:?}"));
         }
     }
@@ -110,14 +111,13 @@ pub fn set_desktop_active_company(
 }
 
 #[tauri::command]
-pub fn get_desktop_active_company(scope: State<'_, DesktopSessionScope>) -> Result<Option<String>, String> {
+pub fn get_desktop_active_company(
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<Option<String>, String> {
     Ok(scope.active_company_slug())
 }
 
-fn enforce_desktop_read_scope(
-    rel_path: &str,
-    scope: &DesktopSessionScope,
-) -> Result<(), String> {
+fn enforce_desktop_read_scope(rel_path: &str, scope: &DesktopSessionScope) -> Result<(), String> {
     enforce_read_scope(rel_path, scope.active_company_slug().as_deref())
 }
 
@@ -546,11 +546,10 @@ pub enum ActivationAction {
 /// Pure activation matrix — unit-testable without a Tauri runtime.
 pub fn activation_policy(source: ActivationSource) -> ActivationAction {
     match source {
-        ActivationSource::TrayLeftClick | ActivationSource::CompactShortcut => {
-            ActivationAction::ToggleCompact
-        }
-        ActivationSource::TaskbarSecondProcess => ActivationAction::ShowCompact,
-        ActivationSource::OpenHqMenu
+        ActivationSource::CompactShortcut => ActivationAction::ToggleCompact,
+        ActivationSource::TrayLeftClick
+        | ActivationSource::TaskbarSecondProcess
+        | ActivationSource::OpenHqMenu
         | ActivationSource::DesktopShortcut
         | ActivationSource::DockIconClick => ActivationAction::ShowDesktop { route: None },
     }
@@ -635,15 +634,16 @@ pub async fn open_destination(
     open_desktop_alt_window_inner(app, Some(destination.route_str())).await
 }
 
-/// Open or focus the expanded desktop window (GA — any signed-in user).
+/// Open or focus the desktop workspace window.
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
-/// startup does not surface it. This command is still defensive and can
-/// rebuild the window if it was closed earlier in the session.
+/// startup does not surface it until an activation source asks. This command
+/// is still defensive and can rebuild the window if it was closed earlier
+/// in the session. Signed-out and onboarding users are admitted — the
+/// webview hosts sign-in / the workspace shell itself.
 ///
 /// `route` (optional) lands the window on a specific screen — e.g. `"meetings"`
-/// from the meeting-detected notification. Omitted (the manual "open new UX"
-/// button) keeps the default Sync screen.
+/// from the meeting-detected notification. Omitted keeps the default home.
 ///
 /// Prefer [`open_destination`] / typed [`DesktopDestination`] for new call sites;
 /// this command remains the IPC surface and still reuses one desktop window.
@@ -654,8 +654,7 @@ pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> R
 
 /// Window open/focus body, callable from non-command contexts (e.g. the
 /// `UNUserNotificationCenter` delegate handling a cold notification click,
-/// where no `#[tauri::command]` invocation is in flight). Keeps the GA
-/// gate (signed-in check) so the delegate path is defense-in-depth too.
+/// where no `#[tauri::command]` invocation is in flight).
 ///
 /// `route` routes the window to a screen: an already-open window gets a live
 /// `desktop:navigate` event; a fresh build queues the route for the frontend
@@ -664,13 +663,8 @@ pub async fn open_desktop_alt_window_inner(
     app: AppHandle,
     route: Option<&str>,
 ) -> Result<(), String> {
-    if !desktop_alt_enabled().await? {
-        return Err("desktop-alt requires a signed-in user".to_string());
-    }
-
     // US-103: intercept is a no-op (always false). Combined-app embed still
-    // opens THIS desktop-alt window; the webview mounts @hq/ui DesktopApp when
-    // hq_work_handoff is on. Flag-off must not probe install or log (finding-6).
+    // opens THIS desktop-alt window; the webview always mounts @hq/ui DesktopApp.
     if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
         return Ok(());
     }
@@ -736,8 +730,16 @@ pub async fn open_desktop_alt_window_inner(
     #[cfg(target_os = "macos")]
     {
         let first_page_finished = AtomicBool::new(false);
+        let (traffic_x, traffic_y) = crate::titlebar_layout::traffic_light_position(
+            crate::titlebar_layout::TITLEBAR_HEIGHT_PX,
+        );
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
+            // wry's traffic-light inset only sticks on Overlay + hidden title.
+            .hidden_title(true)
+            // Native lights sit on the same centre line as the wordmark/date.
+            // Shared with `packages/ui/src/home/titlebar-layout.ts`.
+            .traffic_light_position(tauri::LogicalPosition::new(traffic_x, traffic_y))
             .on_page_load(move |loaded_window, payload| {
                 if payload.event() != tauri::webview::PageLoadEvent::Finished
                     || first_page_finished.swap(true, Ordering::AcqRel)
@@ -764,7 +766,12 @@ pub async fn open_desktop_alt_window_inner(
         }
     }
 
+    // target=_blank / window.open from message HTML must not spawn a webview.
+    // Allowed http(s)/mailto URLs open in the default browser instead.
+    builder = crate::util::external_links::deny_webview_new_windows(builder, &app);
+
     let _window = builder.build().map_err(|e| e.to_string())?;
+    crate::recovery::note_desktop_window_created(&app);
 
     // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a
     // `PageLoadEvent::Finished` for the first load. That event can be dropped
@@ -885,7 +892,10 @@ fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-fn require_company_file_read_access(workspaces: &[Workspace], rel_path: &str) -> Result<(), String> {
+fn require_company_file_read_access(
+    workspaces: &[Workspace],
+    rel_path: &str,
+) -> Result<(), String> {
     let Some(slug) = company_slug_for_hq_path(rel_path)? else {
         return Ok(());
     };
@@ -1596,18 +1606,18 @@ mod window_router_tests {
     }
 
     #[test]
-    fn activation_matrix_tray_and_taskbar_are_compact() {
+    fn activation_matrix_tray_and_taskbar_open_desktop() {
         assert_eq!(
             activation_policy(ActivationSource::TrayLeftClick),
-            ActivationAction::ToggleCompact
+            ActivationAction::ShowDesktop { route: None }
+        );
+        assert_eq!(
+            activation_policy(ActivationSource::TaskbarSecondProcess),
+            ActivationAction::ShowDesktop { route: None }
         );
         assert_eq!(
             activation_policy(ActivationSource::CompactShortcut),
             ActivationAction::ToggleCompact
-        );
-        assert_eq!(
-            activation_policy(ActivationSource::TaskbarSecondProcess),
-            ActivationAction::ShowCompact
         );
     }
 
@@ -1625,13 +1635,11 @@ mod window_router_tests {
 
     #[test]
     fn activation_matrix_dock_icon_click_opens_the_desktop_window() {
-        // The Dock icon is a full-application affordance — it must NOT land on
-        // the compact popover the way a taskbar re-activation does.
         assert_eq!(
             activation_policy(ActivationSource::DockIconClick),
             ActivationAction::ShowDesktop { route: None }
         );
-        assert_ne!(
+        assert_eq!(
             activation_policy(ActivationSource::DockIconClick),
             activation_policy(ActivationSource::TaskbarSecondProcess)
         );

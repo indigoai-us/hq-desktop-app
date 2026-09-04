@@ -17,6 +17,7 @@ const normalize = (s: string) => s.replace(/\s+/g, ' ');
 const app = read('src/App.svelte');
 const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const appUpdater = read('src-tauri/src/updater.rs');
+const workShell = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
@@ -54,13 +55,22 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('BackgroundUpdateAction::Install');
     expect(appUpdater).toContain('download_and_install');
-    expect(appUpdater).toContain('BackgroundUpdateAction::DeferForSync');
+    expect(appUpdater).toContain('DeferralDecision::WaitForIdle');
+    expect(appUpdater).toContain('AUTO_INSTALL_DEFER_CAP');
+    expect(appUpdater).toContain('spawn_auto_install_waiter');
     expect(appUpdater).toContain('UPDATE_SYNC_RETRY_INTERVAL');
     expect(appUpdater).toContain('automatic install failed — offering manual recovery');
     expect(appUpdater).toContain('record_and_announce_update');
     expect(appUpdater).toContain('UpdateAnnouncement::PersistentOnly');
     expect(appUpdater).toContain('UpdateAnnouncement::TransientBanner');
     expect(appUpdater).toContain('should_raise_transient_update_surface');
+    expect(workShell).toContain('version-gate:update-recommended');
+    expect(workShell).toContain('update:waiting-for-idle');
+    expect(workShell).toContain('applyRecommendBanner');
+    expect(workShell).toContain('reportIdleWait');
+    const desktopApp = read('../../packages/ui/src/shell/DesktopApp.svelte');
+    expect(desktopApp).toContain('RecommendedUpdateBanner');
+    expect(desktopApp).toContain('installRecommendedUpdate');
   });
 
   it('Windows background installs use the safe helper lifecycle', () => {
@@ -74,8 +84,11 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('silent_install_supported(),');
     expect(normalize(appUpdater)).toContain(
-      'automatic_updates && silent_install_supported, sync_in_progress,',
+      'if automatic_updates && silent_install_supported {',
     );
+    expect(appUpdater).toContain('InstallTrigger::Forced');
+    expect(appUpdater).toContain('InstallTrigger::Manual');
+    expect(appUpdater).toContain('pause_new_sync_cycles()');
     expect(appUpdater).toContain(
       'crate::windows_update::install_verified_update(app, update).await',
     );
