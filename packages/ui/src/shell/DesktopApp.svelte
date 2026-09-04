@@ -23,6 +23,10 @@
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import {
+    SIDEBAR_OVERLAY_MAX_PX,
+    sidebarLayout,
+  } from "./sidebar-layout.js";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
@@ -563,7 +567,17 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
-  let sidebarCollapsed = $state(false);
+  /**
+   * On a phone the channel list is an overlay, so it must start closed —
+   * otherwise the first thing the app shows is a list covering the
+   * conversation. Resolved synchronously from the initial width so there is no
+   * frame where the list is on screen before an effect hides it.
+   */
+  const startsAsOverlay =
+    typeof window !== "undefined" &&
+    sidebarLayout(window.innerWidth) === "overlay";
+  let phoneViewport = $state(startsAsOverlay);
+  let sidebarCollapsed = $state(startsAsOverlay);
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
   let conversationBootTimedOut = $state(false);
@@ -1919,9 +1933,28 @@
     return () => mq.removeEventListener("change", apply);
   });
 
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia(`(max-width: ${SIDEBAR_OVERLAY_MAX_PX}px)`);
+    const apply = () => {
+      phoneViewport = mq.matches;
+      // Crossing into phone width with the list open would bury the
+      // conversation under it. Widening again leaves the choice to the user.
+      if (mq.matches) sidebarCollapsed = true;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  });
+
   function handleSelect(
     row: ConversationRow,
-    options?: { replyRootEventId?: string | null; preserveView?: boolean },
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      /** The shell picked this row, not the person using it. */
+      automatic?: boolean;
+    },
   ): void {
     if (selectedRow?.id !== row.id) {
       openProfileMember = null;
@@ -1939,6 +1972,12 @@
     openReplyRootId = null;
     queueReplyForRow(row, options?.replyRootEventId);
     attachTray = null;
+    // The phone list overlays the conversation it just navigated to, so it has
+    // to get out of the way. On wider screens it is a column and stays put.
+    //
+    // Only for a deliberate pick: the list auto-selects a row as it mounts, so
+    // closing on every select shut the overlay again the instant it opened.
+    if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
   }
 
@@ -3071,9 +3110,13 @@
     </div>
   {:else}
     <div class="desktop-body">
-      {#if !sidebarCollapsed}
+      <!-- Kept mounted while closed at phone width: the list owns roster
+           loading and the #setup fallback, so unmounting it leaves the phone
+           with nothing selected. -->
+      {#if !sidebarCollapsed || phoneViewport}
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
+          offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
           {companies}
@@ -3092,6 +3135,7 @@
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
+              automatic: options?.automatic === true,
             })}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
@@ -3752,6 +3796,16 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  /* Anchors the phone channel-list overlay (see ChatSidebar's matching block);
+     without a positioned ancestor it escapes to the viewport and renders
+     behind the title bar. Pinned to SIDEBAR_OVERLAY_MAX_PX by
+     shell/sidebar-layout.test.ts. */
+  @media (max-width: 640px) {
+    .desktop-body {
+      position: relative;
+    }
   }
 
   .desktop-main {
