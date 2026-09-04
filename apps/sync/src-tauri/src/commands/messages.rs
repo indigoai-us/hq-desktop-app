@@ -1011,31 +1011,53 @@ pub async fn run_card_action(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let map = values.unwrap_or_default();
     let (base, token) = auth_and_base("MESSAGES_CARD_ACTION").await?;
-    let out = post_card_action(&base, &token, id, card, action, &map, &key).await?;
-    log(
-        LOG_TAG,
-        &format!(
-            "MESSAGES_CARD_ACTION_OK id={id} card={card} action={action} replayed={}",
-            out.replayed
-        ),
-    );
-    if card_action_triggers_reconcile(card, &out) {
-        reconcile_after_card_action(&base, &token).await;
-    }
-    Ok(out)
+    run_card_action_with(&base, &token, id, card, action, &map, &key, || {
+        reconcile_after_card_action(&base, &token)
+    })
+    .await
 }
 
-/// Whether a successful card action should be followed by the server-first
-/// cloud-activation reconcile pass.
+/// Posts the card action and, only when it succeeds, runs `after_success`.
 ///
 /// Card ids are server-minted (`setup:activate_cloud:cmp_x`, `card_7f…`) and
 /// the action response carries no card kind, so there is no reliable local
 /// signal for "this was the activate_cloud card". The reconcile pass is
-/// idempotent (it only writes when the server says activated and local files
-/// are missing, and it acks only after writing), so it runs after every
-/// successful action rather than guessing from the id.
-fn card_action_triggers_reconcile(_card_id: &str, _out: &CardActionResult) -> bool {
-    true
+/// idempotent and single-flight, so it runs after every successful action
+/// rather than guessing from the id. A failed POST never triggers it.
+#[allow(clippy::too_many_arguments)]
+async fn run_card_action_with<F, Fut>(
+    base: &str,
+    token: &str,
+    channel_id: &str,
+    card_id: &str,
+    action_id: &str,
+    values: &HashMap<String, String>,
+    idempotency_key: &str,
+    after_success: F,
+) -> Result<CardActionResult, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let out = post_card_action(
+        base,
+        token,
+        channel_id,
+        card_id,
+        action_id,
+        values,
+        idempotency_key,
+    )
+    .await?;
+    log(
+        LOG_TAG,
+        &format!(
+            "MESSAGES_CARD_ACTION_OK id={channel_id} card={card_id} action={action_id} replayed={}",
+            out.replayed
+        ),
+    );
+    after_success().await;
+    Ok(out)
 }
 
 /// Best-effort: run the activation reconcile and log the outcome. Never
@@ -1610,22 +1632,74 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconcile_runs_after_any_successful_card_action_not_only_literal_activate_cloud() {
-        let ok = card_action_from_body(
-            &serde_json::json!({
-                "cardId": "setup:activate_cloud:cmp_acme",
-                "actionId": "activate",
+    #[tokio::test]
+    async fn reconcile_runs_after_successful_card_action_and_not_after_failed_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Success: any card id (not only a literal "activate_cloud") triggers
+        // the post-action hook exactly once.
+        let ok_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/card_7f3a/actions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cardId": "card_7f3a",
+                "actionId": "submit",
                 "state": "pending"
-            }),
-            false,
-        );
-        // Real server card ids are never the bare literal "activate_cloud".
-        assert!(card_action_triggers_reconcile("setup:activate_cloud:cmp_acme", &ok));
-        assert!(card_action_triggers_reconcile("card_7f3a", &ok));
-        assert!(card_action_triggers_reconcile("activate_cloud", &ok));
-        let replayed = card_action_from_body(&serde_json::json!({}), true);
-        assert!(card_action_triggers_reconcile("team:invite", &replayed));
+            })))
+            .mount(&ok_server)
+            .await;
+        let ok_calls = Arc::new(AtomicUsize::new(0));
+        let out = run_card_action_with(
+            &ok_server.uri(),
+            "test-token",
+            "chn_1",
+            "card_7f3a",
+            "submit",
+            &HashMap::new(),
+            "idem-ok",
+            {
+                let ok_calls = ok_calls.clone();
+                move || async move {
+                    ok_calls.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        )
+        .await
+        .expect("success");
+        assert_eq!(out.card_id, "card_7f3a");
+        assert_eq!(ok_calls.load(Ordering::SeqCst), 1);
+
+        // Failure: a 500 from the server must not run the hook.
+        let err_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/card_7f3a/actions"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "message": "boom"
+            })))
+            .mount(&err_server)
+            .await;
+        let err_calls = Arc::new(AtomicUsize::new(0));
+        let res = run_card_action_with(
+            &err_server.uri(),
+            "test-token",
+            "chn_1",
+            "card_7f3a",
+            "submit",
+            &HashMap::new(),
+            "idem-err",
+            {
+                let err_calls = err_calls.clone();
+                move || async move {
+                    err_calls.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        )
+        .await;
+        assert!(res.is_err());
+        assert_eq!(err_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
