@@ -153,4 +153,12 @@ describe("SetupChannelIntro welcome experience", () => {
     expect(onopenurl).toHaveBeenCalledWith(SETUP_URLS.training);
     expect(onopenurl).toHaveBeenCalledWith(SETUP_URLS.docs);
   });
+
+  it("does not invent per-company threads inside #setup", async () => {
+    await mountIntro();
+    const intro = host.querySelector("[data-testid='setup-channel-intro']");
+    expect(intro?.getAttribute("data-setup-threads")).toBe("none");
+    expect(host.querySelector("[data-thread-key]")).toBeNull();
+    expect(host.querySelector("[data-testid='company-thread-header']")).toBeNull();
+  });
 });

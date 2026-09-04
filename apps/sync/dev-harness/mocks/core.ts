@@ -1300,6 +1300,26 @@ This final paragraph verifies spacing after a thematic break.
   },
   mark_channel_read: () => null,
   send_channel_message: () => ({ eventId: 'channel-sent-1', createdAt: new Date().toISOString() }),
+  run_card_action: () => ({
+    cardId: 'card_1',
+    actionId: 'submit',
+    eventId: 'evt_card_1',
+    state: 'pending',
+    replayed: false,
+  }),
+  get_company_tab: () => ({
+    tab: 'team',
+    companyUid: 'cmp_indigo',
+    viewer: { canAct: true, role: 'owner' },
+    sections: [],
+  }),
+  run_company_tab_action: () => ({
+    cardId: 'team:invite',
+    actionId: 'invite',
+    state: 'done',
+    replayed: false,
+  }),
+  take_pending_setup_target: () => null,
   list_company_members: () => ({
     members: [
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },

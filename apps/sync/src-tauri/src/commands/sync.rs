@@ -2461,9 +2461,37 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         );
     }
 
+    // Server-first activation (US-010): write local markers for companies the
+    // owner activated from a card, then the existing cloud:true walker runs.
+    log("sync", "phase: reconcile_server_activated_companies");
+    let vault = VaultClient::new(&vault_api_url, &jwt);
+    match crate::commands::provision_reconcile::reconcile_server_activated_companies(
+        &std::path::PathBuf::from(&hq_folder_path),
+        &vault,
+        &vault_api_url,
+    )
+    .await
+    {
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::Ran(rows)) => log(
+            "sync",
+            &format!(
+                "reconciled {} server-activated companies: {:?}",
+                rows.len(),
+                rows.iter().map(|r| &r.slug).collect::<Vec<_>>()
+            ),
+        ),
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::SkippedInFlight) => log(
+            "sync",
+            "reconcile_server_activated_companies skipped: another pass in flight",
+        ),
+        Err(e) => log(
+            "sync",
+            &format!("reconcile_server_activated_companies failed (continuing): {e}"),
+        ),
+    }
+
     // Provision any cloud: true companies that haven't been provisioned yet
     log("sync", "phase: provision_missing_companies");
-    let vault = VaultClient::new(&vault_api_url, &jwt);
     let companies = match crate::commands::provision::provision_missing_companies(
         &std::path::PathBuf::from(&hq_folder_path),
         &vault,

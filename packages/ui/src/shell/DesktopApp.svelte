@@ -33,14 +33,27 @@
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel } from "../chat/setup-channel.js";
+  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import {
+    patchLifecycleCardState,
+    submitLifecycleCardAction,
+    type CardActionIdempotencyStore,
+  } from "../chat/card-action.js";
+  import {
+    agentComposerPlaceholder,
+    isAgentConversationRow,
+    provisioningFromMessages,
+  } from "../chat/agent-channel.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     raceTimeout,
   } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
-  import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
+  import type {
+    FileAttachmentModel,
+    LifecycleCardActionEvent,
+  } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
@@ -48,6 +61,18 @@
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
+  import CompanyTabs from "../chat/CompanyTabs.svelte";
+  import TeamTab from "../chat/tabs/TeamTab.svelte";
+  import IntegrationsTab from "../chat/tabs/IntegrationsTab.svelte";
+  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
+  import AtlasTab from "../chat/tabs/AtlasTab.svelte";
+  import CompanyHero from "../chat/CompanyHero.svelte";
+  import {
+    parseCompanyTab,
+    type CompanyChannelTabId,
+    type CompanyTabActionEvent,
+    type CompanyTabModel,
+  } from "../chat/tabs/tab-model.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
@@ -267,6 +292,7 @@
     buildCompanyDisplayMap,
     companyDisplayName,
   } from "../company/company-display-map.js";
+  import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
     isSelf,
@@ -303,6 +329,8 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /** Bubbled lifecycle-card action (host posts in US-009). */
+    oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
@@ -435,6 +463,7 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    oncardaction,
     wakes = null,
     companies = null,
     self = null,
@@ -545,6 +574,11 @@
     { id: "board", label: "Board" },
     { id: "files", label: "Files" },
   ];
+  const AGENT_CHANNEL_TABS = [
+    { id: "chat", label: "Chat" },
+    { id: "details", label: "Details" },
+  ] as const;
+  type AgentChannelTab = (typeof AGENT_CHANNEL_TABS)[number]["id"];
 
   let view = $state<
     | "conversation"
@@ -564,6 +598,12 @@
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
   let tab = $state<ChannelTab>("chat");
+  let companyTab = $state<CompanyChannelTabId>("chat");
+  let companyTabData = $state<CompanyTabModel | null>(null);
+  let companyTabLoading = $state(false);
+  let companyWallpaper = $state("aurora");
+  /** Company display name from the settings tab appearance, when fetched. */
+  let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
@@ -782,20 +822,65 @@
       ((selectedRow?.channelScope ?? "channel") === "project" ||
         Boolean(projectIdForRow(selectedRow))),
   );
+  let agentSurface = $state<AgentChannelTab>("chat");
+  let liveTimeline = $state<ConversationMessageWire[]>([]);
+  let liveTimelineId = $state<string | null>(null);
+  const provisioning = $derived(provisioningFromMessages(liveTimeline));
+  const isAgentChannel = $derived(
+    isAgentConversationRow(selectedRow) ||
+      (!!selectedRow?.channelId &&
+        !isSetupChannel(selectedRow.channelId) &&
+        selectedRow.kind === "channel" &&
+        provisioning.state !== null),
+  );
+  const isCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow?.channelScope ?? "channel") === "company" &&
+      !isSetupChannel(selectedRow.channelId) &&
+      !isAgentChannel,
+  );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
+  /**
+   * Company hero shows the company's display name ("Ramen Bae"), not the
+   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
+   */
+  const companyHeroTitle = $derived(
+    companyAppearanceName ||
+      companyDisplayName(selectedRow?.companyUid, companyNames) ||
+      headerTitle,
+  );
+
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
   const composerPlaceholder = $derived(
-    composerPlaceholderFor(selectedRow, headerTitle),
+    isAgentChannel && provisioning.state === "pending"
+      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+      : composerPlaceholderFor(selectedRow, headerTitle),
   );
+  const composerLocked = $derived(
+    isAgentChannel && provisioning.state === "pending",
+  );
+  const agentChannelUid = $derived(
+    selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
+      ?.personUid ??
+      provisioning.agentUid ??
+      null,
+  );
+
+  $effect(() => {
+    selectedRow?.id;
+    agentSurface = "chat";
+    companyTab = "chat";
+    companyTabData = null;
+    companyWallpaper = "aurora";
+    companyAppearanceName = null;
+  });
 
   /** Threads fetched per project channel — bounded so a long-lived project
    *  cannot fan out into hundreds of event requests on channel open. */
   const PROJECT_ACTIVITY_THREAD_CAP = 25;
-  let liveTimeline = $state<ConversationMessageWire[]>([]);
-  let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
@@ -1916,7 +2001,164 @@
     sendReply: async (args) => {
       unwrapAdapter(await adapter.messaging.sendReply(args));
     },
+    runCardAction: async (args) => {
+      const raw = unwrapAdapter(
+        await adapter.messaging.runCardAction(args),
+      ) as Record<string, unknown> | undefined;
+      return {
+        cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+        actionId: typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+        eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+        state: typeof raw?.state === "string" ? raw.state : "",
+        fields: raw?.fields,
+        replayed: raw?.replayed === true,
+        // US-006/011: create_agent accept mints the agent channel; keep the
+        // ids so handleCardAction can select it (they were dropped here).
+        agentChannelId:
+          typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
+        agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+      };
+    },
+    getCompanyTab: adapter.messaging.getCompanyTab
+      ? async (companyUid, tabId) =>
+          unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
+      : undefined,
+    runCompanyTabAction: adapter.messaging.runCompanyTabAction
+      ? async (args) => {
+          const raw = unwrapAdapter(
+            await adapter.messaging.runCompanyTabAction!(args),
+          ) as Record<string, unknown> | undefined;
+          return {
+            cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+            actionId:
+              typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+            eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+            state: typeof raw?.state === "string" ? raw.state : "",
+            fields: raw?.fields,
+            replayed: raw?.replayed === true,
+            navigateTo:
+              raw?.navigateTo === "chat" ? "chat" : undefined,
+            focusCardId:
+              typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+          };
+        }
+      : undefined,
   });
+
+  const cardActionKeys: CardActionIdempotencyStore = new Map();
+
+  function applyCardActionFailure(cardId: string, message: string): void {
+    const row = selectedRow;
+    if (!row) return;
+    const current =
+      liveTimelineId === row.id
+        ? liveTimeline
+        : (messagesByRow?.(row) ?? liveTimeline);
+    commitTimeline(
+      row,
+      patchLifecycleCardState(current, cardId, {
+        state: "blocked",
+        reason: message,
+      }),
+    );
+  }
+
+  async function loadCompanyTabSurface(
+    tabId: CompanyChannelTabId,
+  ): Promise<void> {
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (!uid) {
+      companyTabData = null;
+      return;
+    }
+    const getTab = conversationApi.getCompanyTab;
+    const fetchId = tabId === "chat" ? "settings" : tabId;
+    if (!getTab) {
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
+      return;
+    }
+    companyTabLoading = true;
+    try {
+      const raw = await getTab(uid, fetchId);
+      const parsed = parseCompanyTab(raw);
+      if (parsed?.appearance?.wallpaper) {
+        companyWallpaper = parsed.appearance.wallpaper;
+      }
+      if (parsed?.appearance?.name?.trim()) {
+        companyAppearanceName = parsed.appearance.name.trim();
+      }
+      companyTabData = tabId === "chat" ? companyTabData : parsed;
+    } catch {
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
+    } finally {
+      companyTabLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!isCompanyChannel) return;
+    const tabId = companyTab;
+    void loadCompanyTabSurface(tabId);
+  });
+
+  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
+    const run = conversationApi.runCompanyTabAction;
+    if (!run) return;
+    const result = await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: (args) =>
+        run({
+          companyUid: event.companyUid,
+          tab: event.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      onFailure: () => {},
+    });
+    if (result?.navigateTo === "chat") {
+      companyTab = "chat";
+      return;
+    }
+    await loadCompanyTabSurface(companyTab);
+  }
+
+  async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    oncardaction?.(event);
+    if (typeof adapter.messaging.runCardAction !== "function") return;
+    const result = await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: conversationApi.runCardAction,
+      onFailure: applyCardActionFailure,
+    });
+    const agentChannelId =
+      result && typeof result.agentChannelId === "string"
+        ? result.agentChannelId.trim()
+        : "";
+    if (agentChannelId.startsWith("chn_")) {
+      requestChannelOpen(agentChannelId, {
+        title: headerTitle,
+        companyUid: selectedRow?.companyUid ?? null,
+      });
+    }
+  }
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
@@ -2353,18 +2595,25 @@
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
       return;
     }
-    if (timelineHasEvent(liveTimeline, wake.eventId)) return;
-    const wakeAt = (wake.createdAt ?? "").trim();
-    if (
-      wakeAt &&
-      liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
-    ) {
-      return;
+    // In-place lifecycle-card updates reuse the same eventId. Skip the
+    // already-seen short-circuit and drop `since` so the rewritten envelope
+    // is in the page. New events keep main's createdAt short-circuit.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
+    if (!already) {
+      const wakeAt = (wake.createdAt ?? "").trim();
+      if (
+        wakeAt &&
+        liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+      ) {
+        return;
+      }
     }
     const res = await adapter.messaging.fetchChannel({
       channelId: row.channelId,
       limit: 20,
-      since: sinceForChannelWake(liveTimeline, wake.createdAt),
+      since: already
+        ? undefined
+        : sinceForChannelWake(liveTimeline, wake.createdAt),
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
@@ -2918,6 +3167,19 @@
         settingsSection = null;
         meetingFocusRequest = null;
         return;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        meetingFocusRequest = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, {
+          companyUid: target.companyUid,
+        });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        return;
+      }
       case "inbox":
         view = "notifications";
         settingsSection = null;
@@ -3483,7 +3745,31 @@
                   Edit profile
                 </button>
               {/if}
-              {#if isProjectChannel}
+              {#if isAgentChannel}
+                <nav
+                  class="project-tabs"
+                  aria-label="Agent channel views"
+                  data-testid="agent-channel-tabs"
+                >
+                  {#each AGENT_CHANNEL_TABS as t (t.id)}
+                    <button
+                      type="button"
+                      class="project-tab"
+                      class:active={agentSurface === t.id}
+                      aria-current={agentSurface === t.id ? "page" : undefined}
+                      data-testid={`agent-tab-${t.id}`}
+                      onclick={() => (agentSurface = t.id)}
+                    >
+                      <span>{t.label}</span>
+                    </button>
+                  {/each}
+                </nav>
+              {:else if isCompanyChannel}
+                <CompanyTabs
+                  active={companyTab}
+                  onselect={(id) => (companyTab = id)}
+                />
+              {:else if isProjectChannel}
                 <nav
                   class="project-tabs"
                   aria-label="Channel views"
@@ -3683,7 +3969,72 @@
             />
           {/if}
 
-          {#if activeTab === "chat"}
+          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+            <AgentDetailPanel
+              agentUid={agentChannelUid}
+              displayName={headerTitle}
+              avatarUrl={avatarByUid[agentChannelUid] ?? null}
+              companyUid={selectedRow?.companyUid}
+              {companyNames}
+              {self}
+              {isAdmin}
+              {adapter}
+              packs={loadedAvatarPacks}
+              avatarSaving={agentAvatarSaving}
+              avatarSaveError={agentAvatarSaveError}
+              onsaveavatar={saveOpenAgentAvatar}
+              onclose={() => (agentSurface = "chat")}
+            />
+          {:else if isCompanyChannel && companyTab !== "chat"}
+            {#if companyTab === "team"}
+              <TeamTab
+                data={companyTabData ?? {
+                  tab: "team",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else if companyTab === "integrations"}
+              <IntegrationsTab
+                data={companyTabData ?? {
+                  tab: "integrations",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else if companyTab === "atlas"}
+              <AtlasTab
+                graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
+              />
+            {:else if companyTab === "settings"}
+              <SettingsTab
+                data={companyTabData ?? {
+                  tab: "settings",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else}
+              <div
+                class="company-tab-placeholder"
+                data-testid={`company-tab-panel-${companyTab}`}
+              >
+                {#if companyTabLoading}
+                  Loading…
+                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
+                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
+                {:else}
+                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
+                {/if}
+              </div>
+            {/if}
+          {:else if activeTab === "chat"}
             <div
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
@@ -3699,6 +4050,33 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if isAgentChannel && provisioning.state}
+                    <div
+                      class="agent-provision-status"
+                      data-testid="agent-provision-status"
+                    >
+                      {#if provisioning.machineStartedAt}
+                        <div
+                          data-testid="agent-machine-started"
+                          title={provisioning.machineStartedAt}
+                        >
+                          Machine started {formatReadonlyTimestamp(
+                            provisioning.machineStartedAt,
+                          )}
+                        </div>
+                      {/if}
+                      {#if provisioning.checkedInAt}
+                        <div
+                          data-testid="agent-checked-in"
+                          title={provisioning.checkedInAt}
+                        >
+                          {provisioning.agentName} checked in {formatReadonlyTimestamp(
+                            provisioning.checkedInAt,
+                          )}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                   <AgentThinkingRow entries={agentThinking} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -3708,12 +4086,18 @@
                     {onopenurl}
                   />
                 {/snippet}
+                {#snippet companyHeader()}
+                  <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
+                {/snippet}
                 <ChannelConversation
                   messages={timelineWithActivity}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
+                  composerLocked={composerLocked}
                   {onopenurl}
+                  channelId={selectedRow.channelId}
+                  oncardaction={handleCardAction}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
@@ -3736,7 +4120,9 @@
                     timelineWithActivity.length === 0}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
-                    : undefined}
+                    : isCompanyChannel
+                      ? companyHeader
+                      : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -4248,6 +4634,15 @@
   .edit-profile-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
+  }
+
+  .company-tab-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .project-tabs {

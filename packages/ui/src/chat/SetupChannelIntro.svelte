@@ -14,7 +14,9 @@
    * (shared with the classic messaging surface); art from
    * `setup-welcome-art.ts`. The live message thread + composer below this
    * header are the shell's standard ChannelConversation pipeline with
-   * channelId "setup" — this component owns only the intro.
+   * channelId "setup" — this component owns only the intro. Lifecycle cards
+   * (`create_company`, `companies_summary`) render in that conversation.
+   * Do not group #setup by threadKey or invent per-company threads here.
    *
    * External links never navigate the webview: every resource row calls
    * `onopenurl` (host → system browser) and cancels the anchor default.
@@ -134,6 +136,7 @@
   class="setup-intro"
   aria-label="Getting started with HQ Desktop"
   data-testid="setup-channel-intro"
+  data-setup-threads="none"
 >
   <div class="hero" data-testid="setup-hero">
     <img

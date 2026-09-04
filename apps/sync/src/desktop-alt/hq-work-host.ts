@@ -546,6 +546,22 @@ export function createEmbeddedNavigationController(): EmbeddedNavigationControll
 
 function routeTarget(route: string): EmbeddedNavigationTarget {
   // hqwork:// must be handled before slash→colon (otherwise `://` becomes `:::`).
+  if (route.startsWith('hq-desktop://')) {
+    const parsed = parseHqDesktopSetupUrl(route);
+    if (!parsed) {
+      return {
+        kind: 'unsupported',
+        route,
+        reason: 'Invalid hq-desktop deep link',
+      };
+    }
+    return {
+      kind: 'setup-checkout',
+      companyUid: parsed.companyUid,
+      checkout: parsed.checkout,
+    };
+  }
+
   if (route.startsWith('hqwork://')) {
     const target = parseHqWorkOpenUrl(route);
     if (!target) {
@@ -622,6 +638,26 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
   };
 }
 
+export function parseHqDesktopSetupUrl(
+  raw: string,
+): { companyUid: string; checkout: string } | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== 'hq-desktop:') return null;
+    const host = url.hostname;
+    const path = url.pathname.replace(/^\/+|\/+$/g, '');
+    if (host !== 'setup' && path !== 'setup') return null;
+    const companyUid = url.searchParams.get('company')?.trim() ?? '';
+    if (!companyUid) return null;
+    return {
+      companyUid,
+      checkout: url.searchParams.get('checkout')?.trim() ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function deliverImmediately(target: EmbeddedNavigationTarget): void {
   // Preserve the public helper's existing unit-test seam. The real embedded
   // shell supplies a controller and therefore only delivers after mount.
@@ -643,6 +679,11 @@ function deliverImmediately(target: EmbeddedNavigationTarget): void {
   }
   if (target.kind === 'settings' && !target.section) {
     window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
+    return;
+  }
+  if (target.kind === 'setup-checkout') {
+    requestChannelOpen('setup', { companyUid: target.companyUid });
+    dispatchEmbeddedNavigation(target);
     return;
   }
   dispatchEmbeddedNavigation(target);

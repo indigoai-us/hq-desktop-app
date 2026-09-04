@@ -442,6 +442,25 @@
             navigation,
           );
         }
+        const setupTarget = await invokeFn('take_pending_setup_target');
+        if (
+          !cancelled &&
+          setupTarget &&
+          typeof setupTarget === 'object' &&
+          typeof (setupTarget as { companyUid?: string }).companyUid === 'string' &&
+          (setupTarget as { companyUid: string }).companyUid.trim()
+        ) {
+          const companyUid = (setupTarget as { companyUid: string }).companyUid.trim();
+          const checkout =
+            typeof (setupTarget as { checkout?: string }).checkout === 'string'
+              ? (setupTarget as { checkout: string }).checkout
+              : 'done';
+          navigation.navigate({
+            kind: 'setup-checkout',
+            companyUid,
+            checkout,
+          });
+        }
         const meetingId = await invokeFn('meetings_take_pending_focus');
         const pendingFocusIsCurrent =
           latestLiveNavigation === null ||
@@ -461,6 +480,20 @@
       void reveal();
       if (!cancelled) void restoreInitialNavigation();
     });
+
+    const unlistenSetupPromise = listen<{
+      companyUid?: string;
+      checkout?: string;
+    }>('messages:open-setup', (event) => {
+      const companyUid = event.payload?.companyUid?.trim();
+      if (!companyUid) return;
+      latestLiveNavigation = 'other';
+      navigation.navigate({
+        kind: 'setup-checkout',
+        companyUid,
+        checkout: event.payload?.checkout ?? 'done',
+      });
+    }).catch(() => () => {});
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
       const target = applyDesktopAltRoute(event.payload, navigation);
@@ -580,6 +613,7 @@
       hydration += 1;
       detachNavigation?.();
       detachNavigation = null;
+      void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());

@@ -27,6 +27,7 @@ export type EmbeddedNavigationTarget =
   | { kind: 'home' }
   | { kind: 'inbox' }
   | { kind: 'messages' }
+  | { kind: 'setup-checkout'; companyUid: string; checkout?: string | null }
   | { kind: 'meetings'; meetingId?: string | null }
   | { kind: 'atlas' }
   | {

@@ -57,6 +57,10 @@ pub struct EntityInfo {
     /// vault responses that omit the field.
     #[serde(default)]
     pub deleted: bool,
+    /// Set by hq-pro `POST /v1/companies/{uid}/activate-cloud` (US-004).
+    /// Absent on older servers and on companies that have not been activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_activated_at: Option<String>,
 }
 
 /// Response from the caller-scoped `GET /entity/check-slug/me` endpoint.
@@ -88,6 +92,14 @@ pub struct CreateEntityInput {
 pub struct BucketInfo {
     pub bucket_name: String,
     pub kms_key_id: String,
+}
+
+/// Outcome of `POST /v1/companies/{uid}/activate-cloud/ack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivateCloudAck {
+    Done,
+    NotFound,
+    Forbidden,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,6 +650,34 @@ impl VaultClient {
         self.handle_response(resp).await
     }
 
+    /// `POST /v1/companies/{uid}/activate-cloud/ack` — desktop finished local
+    /// reconciliation after server-side cloud activation (US-010).
+    ///
+    /// 403/404 are returned as outcomes so a member machine or a deleted
+    /// company cannot fail the whole reconcile pass.
+    pub async fn ack_activate_cloud(
+        &self,
+        uid: &str,
+    ) -> Result<ActivateCloudAck, VaultClientError> {
+        let resp = self
+            .client
+            .post(format!(
+                "{}/v1/companies/{}/activate-cloud/ack",
+                self.base_url, uid
+            ))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        match status {
+            200..=299 => Ok(ActivateCloudAck::Done),
+            404 => Ok(ActivateCloudAck::NotFound),
+            403 => Ok(ActivateCloudAck::Forbidden),
+            other => Err(VaultClientError::Http { status: other, body }),
+        }
+    }
+
     /// `POST /provision/bucket` — provision (or idempotently confirm) an S3 bucket for `uid`.
     pub async fn provision_bucket(&self, uid: &str) -> Result<BucketInfo, VaultClientError> {
         let body = serde_json::json!({ "companyUid": uid });
@@ -982,6 +1022,81 @@ mod tests {
         let result = client(&server.uri()).create_entity(&input).await.unwrap();
         assert_eq!(result.uid, "cmp_y");
         assert_eq!(result.slug, "newco");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_optional_cloud_activated_at() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_x", "slug": "acme", "type": "company",
+                    "status": "active", "createdAt": "2026-01-01T00:00:00Z",
+                    "cloudActivatedAt": "2026-09-03T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+        let info = client(&server.uri())
+            .find_entity_by_uid("cmp_x")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.cloud_activated_at.as_deref(), Some("2026-09-03T00:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_tolerates_missing_cloud_activated_at() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_x", "slug": "acme", "type": "company",
+                    "status": "active", "createdAt": "2026-01-01T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+        let info = client(&server.uri())
+            .find_entity_by_uid("cmp_x")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.cloud_activated_at, None);
+    }
+
+    #[tokio::test]
+    async fn ack_activate_cloud_done_and_forbidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/companies/cmp_x/activate-cloud/ack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "companyUid": "cmp_x",
+                "state": "done"
+            })))
+            .mount(&server)
+            .await;
+        let ok = client(&server.uri())
+            .ack_activate_cloud("cmp_x")
+            .await
+            .unwrap();
+        assert_eq!(ok, ActivateCloudAck::Done);
+
+        let server_403 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/companies/cmp_x/activate-cloud/ack"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(&json!({
+                "error": "Only the company owner can activate cloud"
+            })))
+            .mount(&server_403)
+            .await;
+        let forbidden = client(&server_403.uri())
+            .ack_activate_cloud("cmp_x")
+            .await
+            .unwrap();
+        assert_eq!(forbidden, ActivateCloudAck::Forbidden);
     }
 
     #[tokio::test]

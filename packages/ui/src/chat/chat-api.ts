@@ -317,6 +317,44 @@ export interface ConversationApi {
    * thread after send.
    */
   sendReply(args: SendReplyArgs): Promise<void>;
+  /**
+   * POST /v1/notify/channels/{id}/cards/{cardId}/actions — desktop
+   * `run_card_action`. The client supplies (or the command generates) an
+   * idempotencyKey so a replayed submit is a no-op.
+   */
+  runCardAction(args: {
+    channelId: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): Promise<CardActionResult>;
+  /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
+  getCompanyTab?(companyUid: string, tab: string): Promise<unknown>;
+  /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
+  runCompanyTabAction?(args: {
+    companyUid: string;
+    tab: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): Promise<CardActionResult>;
+}
+
+/** Wire result of `run_card_action` / the cards actions route. */
+export interface CardActionResult {
+  cardId: string;
+  actionId: string;
+  eventId?: string;
+  state: string;
+  fields?: unknown;
+  replayed?: boolean;
+  /** US-006/011: agent channel minted on create_agent accept. */
+  agentChannelId?: string;
+  agentUid?: string;
+  navigateTo?: "chat";
+  focusCardId?: string;
 }
 
 /** Backend seam for the notifications feed (replaces invoke calls). */
