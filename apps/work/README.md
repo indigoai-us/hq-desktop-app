@@ -1,8 +1,16 @@
 # HQ Work
 
 `apps/work` is the one HQ Work frontend. It owns the shared SvelteKit shell
-for desktop, web, and a future mobile target; the UI and platform contracts
-remain in `packages/{ui,platform,core,auth}`.
+for web, desktop and mobile; the UI and platform contracts remain in
+`packages/{ui,platform,core,auth}`.
+
+**There is exactly one copy of this app.** All three targets render the same
+Svelte source. Where behaviour has to differ per platform, branch inline on the
+resolved host platform — or better, on a capability flag derived from it — and
+never fork a component into per-platform files. `single-svelte-source.test.ts`
+enforces this: it fails on `*.mobile.svelte`-style variants, on a second
+SvelteKit app under `apps/`, on application source inside a native shell
+directory, and on any two byte-identical `.svelte` files across app trees.
 
 ## Targets
 
@@ -10,10 +18,11 @@ remain in `packages/{ui,platform,core,auth}`.
 | --- | --- | --- | --- |
 | Web | `pnpm --dir apps/work build` | `apps/work/.vercel/output` | Vercel serverless auth and S3 byte-hop routes, plus the web shell. |
 | Desktop | `TAURI=1 pnpm --dir apps/work build` | `apps/work/build/index.html` | Static SPA fallback for Tauri's `frontendDist`. No server routes are published. |
-| Mobile (later) | `TAURI=1 pnpm --dir apps/work build` | `apps/work/build` | Reuses the same static target and shared shell. |
+| Mobile | `pnpm --dir apps/work build:mobile` | `apps/work/build` | Same static target as desktop, rendered by the `apps/work/src-tauri` shell on iOS and Android. |
 
 The adapter decision is intentionally one line in `svelte.config.js`: static
-when `TAURI` is set and Vercel otherwise. The static target selects the empty
+when `TAURI` is set and Vercel otherwise. Mobile takes the same static branch
+as desktop — `build:mobile` is just `TAURI=1 vite build`. The static target selects the empty
 Tauri hook entry and adapter-static emits only the fallback document and
 assets; the hosted server-only routes are not copied to `build/`.
 
@@ -60,3 +69,80 @@ pnpm --dir apps/work build
 TAURI=1 pnpm --dir apps/work build
 pnpm --dir apps/work test:e2e
 ```
+
+## Platform resolution
+
+`resolveHostPlatform()` in `packages/platform` is the single place the app
+decides which of `web | desktop | ios | android` it is. Nothing else should
+inspect `window.__TAURI__` to work that out.
+
+It reads two facts. First, whether a native shell is present at all — checked
+*before* the OS, so a browser on an iPhone stays the `web` target and does not
+inherit mobile-native capabilities. Second, which OS that shell is running on,
+taken from `window.__HQ_HOST_OS__`, which `apps/work/src-tauri` injects as a
+non-writable global from Rust's compile-time target before any page script
+runs. That value cannot disagree with the binary that is executing; the Tauri
+os-plugin global is kept only as a fallback.
+
+`capabilitiesFor(platform)` turns that into the capability table the UI reads.
+The switch is exhaustive, so adding a platform without a table is a compile
+error rather than a silently degraded UI.
+
+## Mobile
+
+The native shell lives in `apps/work/src-tauri`. It is a wrapper with exactly
+two jobs — host the shared build in a webview, and report the OS. It carries no
+product behaviour, and no `tray-icon`, `window-vibrancy`, `global-shortcut`,
+`single-instance` or `macos-private-api` dependency, none of which build for
+iOS or Android.
+
+| Command | What it does |
+| --- | --- |
+| `pnpm --dir apps/work icons` | Regenerate every icon set from the source image. |
+| `pnpm --dir apps/work ios:init` | Generate the Xcode project (`src-tauri/gen/apple`). |
+| `pnpm --dir apps/work ios:dev` | Run on a simulator or device. |
+| `pnpm --dir apps/work ios:build` | Build the iOS app. |
+| `pnpm --dir apps/work android:init` | Generate the Gradle project (`src-tauri/gen/android`). |
+| `pnpm --dir apps/work android:dev` | Run on an emulator or device. |
+| `pnpm --dir apps/work android:build` | Build the Android app. |
+
+Rust targets:
+
+```sh
+# iOS
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+# Android
+rustup target add aarch64-linux-android armv7-linux-androideabi \
+  i686-linux-android x86_64-linux-android
+```
+
+### Icons
+
+Icon sets are generated, not committed. `pnpm icons` renders every desktop,
+Android and iOS size from the single source image
+(`apps/sync/src-tauri/icons/app-icon.png`) into `src-tauri/icons` and
+`src-tauri/gen/apple/Assets.xcassets`, both of which are gitignored. Every
+`ios:*` and `android:*` script runs it first, so the normal build path needs no
+extra step.
+
+They are generated because `tauri ios init` seeds the icon set with Tauri's own
+placeholder logo, and a committed placeholder is indistinguishable from a real
+icon in review — this repo shipped one that way once. Regenerating makes the
+source image the only thing that can be wrong.
+
+The cost: a fresh checkout has no `AppIcon-*.png` until `pnpm icons` runs, so
+**opening `src-tauri/gen/apple` in Xcode directly fails asset-catalog
+compilation** until you run it. `pnpm --dir apps/work icons` fixes that.
+
+**Android additionally needs the Android SDK and NDK**, with `ANDROID_HOME` and
+`NDK_HOME` exported. Neither is installed on every dev machine, so the Android
+target is scaffolded and its Gradle project is generated, but an Android build
+is not part of any verified path yet. Do not report it as passing without
+running it.
+
+Mobile capabilities are deliberately narrow (`MOBILE_CAPABILITIES` in
+`packages/platform/src/capabilities.ts`): notifications and HTTP only. Every
+local-machine capability — file browsing, sync daemon, launching apps, package
+management, session spawning, the on-disk work-mesh cache — is false, because a
+phone has no HQ checkout. `canSelfUpdate` is false because the app stores own
+the update path.

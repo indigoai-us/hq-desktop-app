@@ -19,7 +19,16 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=json-summary",
     "test:e2e": "playwright test --project=smoke",
-    "test:canary": "PW_NO_SERVER=1 playwright test --project=canary"
+    "test:canary": "PW_NO_SERVER=1 playwright test --project=canary",
+    "build:mobile": "TAURI=1 vite build",
+    "icons": "tauri icon ../sync/src-tauri/icons/app-icon.png",
+    "ios:init": "pnpm icons && tauri ios init",
+    "ios:dev": "pnpm icons && tauri ios dev",
+    "ios:build": "pnpm icons && tauri ios build",
+    "android:init": "pnpm icons && tauri android init",
+    "android:dev": "pnpm icons && tauri android dev",
+    "android:build": "pnpm icons && tauri android build",
+    "dev:mobile": "TAURI=1 vite dev"
   },
   "dependencies": {
     "@hq/auth": "workspace:*",
@@ -35,6 +44,7 @@
     "@sveltejs/adapter-vercel": "^5.7.0",
     "@sveltejs/kit": "^2.20.7",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tauri-apps/cli": "^2.0.0",
     "happy-dom": "^20.10.3",
     "svelte": "^5.0.0",
     "svelte-check": "^4.4.8",

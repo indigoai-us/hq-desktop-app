@@ -58,7 +58,6 @@ export function buildCsp(apiUrl?: string): string {
       "wss://*.amazonaws.com",
       // Direct S3 PUT/GET for chat attachment bytes (presigned URLs).
       "https://*.amazonaws.com",
-      "https://s3.*.amazonaws.com",
       "https://*.s3.amazonaws.com",
       "https://*.s3.us-east-1.amazonaws.com",
       COGNITO_HOSTED_UI,
