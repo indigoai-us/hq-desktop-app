@@ -9,6 +9,7 @@ import {
 import {
   isSetupChannel,
   SETUP_CHANNEL,
+  SETUP_CHANNEL_DISPLAY_NAME,
   SETUP_CHANNEL_ID,
   SETUP_ROW_ID,
   withSetupChannel,
@@ -55,6 +56,33 @@ describe("withSetupChannel", () => {
     const input = [realChannel()];
     withSetupChannel(input);
     expect(input).toHaveLength(1);
+  });
+
+  // The 2026-09 rename is display-only. A migrated user's server row arrives
+  // named "welcome" but under the UNCHANGED wire id, so the dedupe still fires
+  // and the rail shows exactly one conversation. If the id had been renamed
+  // too, this list would carry both a #setup and a #welcome row.
+  it("yields a single row for a migrated user whose server row is named welcome", () => {
+    const migrated = realChannel({
+      channelId: SETUP_CHANNEL_ID,
+      name: "welcome",
+      unread: 2,
+    });
+    const out = withSetupChannel([realChannel(), migrated]);
+    expect(out.filter((c) => isSetupChannel(c.channelId))).toEqual([migrated]);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe("setup channel rename invariants", () => {
+  it("displays as welcome while routing on the unchanged setup wire id", () => {
+    expect(SETUP_CHANNEL_DISPLAY_NAME).toBe("welcome");
+    expect(SETUP_CHANNEL.name).toBe(SETUP_CHANNEL_DISPLAY_NAME);
+    // Load-bearing: the id is the backend/Slack-bridge route key and the key
+    // every user's history is stored under. Renaming it would orphan history
+    // and break already-shipped clients.
+    expect(SETUP_CHANNEL_ID).toBe("setup");
+    expect(SETUP_ROW_ID).toBe("ch:setup");
   });
 });
 
@@ -112,7 +140,9 @@ describe("setup row through the sidebar derivation", () => {
     expect(grouped.pinned.map((r) => r.id)).toContain(SETUP_ROW_ID);
     const setupRow = grouped.pinned.find((r) => r.id === SETUP_ROW_ID);
     expect(setupRow?.kind).toBe("channel");
-    expect(setupRow?.title).toBe("setup");
+    // Display name after the 2026-09 rename; the channelId below is the wire
+    // id, which deliberately did NOT change.
+    expect(setupRow?.title).toBe("welcome");
     expect(setupRow?.channelId).toBe(SETUP_CHANNEL_ID);
   });
 
