@@ -90,6 +90,36 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('install_env.toolchain_source');
   });
 
+  it('widens the self-heal to a markerless failure whose npm never ran (HQ-DESKTOP-56 reopen)', () => {
+    // The pure gate gains a THIRD repairable shape: an `Unexpected` failure whose
+    // stderr origin is `non-npm` (npm's own logger emitted nothing at all), under the
+    // UNCHANGED runtime conditions — HQ's checksum-verified managed npm bypasses a
+    // broken user npm/shim entirely. Only the non-npm origin arms.
+    expect(cli).toContain('unattributed_origin: Option<&str>');
+    expect(cli).toContain(
+      'kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM)',
+    );
+    expect(cli).toContain(
+      'repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)',
+    );
+    // The origin is computed ONCE from the already-probed environment and threaded
+    // into the gate, never re-derived at the call site.
+    expect(cli).toContain('let unattributed_origin = unattributed_install_stderr_origin(');
+    expect(cli).toContain('unattributed_origin,');
+    // And it still routes through the SAME one-shot managed-toolchain retry.
+    expect(cli).toContain('managed_toolchain_retry(');
+    expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
+    // Stream preservation: the origin AND the repeat-guarded Sentry report key on the
+    // ACTUAL stderr, never npm_output_detail's stdout fallback. An empty stderr with
+    // non-empty stdout must therefore stay genuinely shapeless (none:unknown:none,
+    // unbounded) and must NOT arm the ~50MB managed-Node download from stdout bytes.
+    expect(cli).toContain(
+      'let raw_stderr = String::from_utf8_lossy(&install_run.output.stderr)',
+    );
+    // Used by both the origin computation and report_install_failure_episode.
+    expect(occurrences(cli, '&raw_stderr')).toBeGreaterThanOrEqual(2);
+  });
+
   it('bounds the self-heal to one provision and one re-run — no loop', () => {
     // Exactly one provision call in the whole updater module...
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);

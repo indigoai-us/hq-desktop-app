@@ -38,6 +38,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::paths;
+use crate::watcher_fault::{UnmatchedStderrShape, UnmatchedStderrShapeRollup};
 
 /// Re-exported so probe diagnostics and their telemetry tests have a single
 /// import path for the resolver's program classification and resolution lane.
@@ -4592,6 +4593,153 @@ fn symbolic_npm_error_code(detail: &str) -> String {
     code
 }
 
+/// The env-blind signature every fully markerless install failure collapses to:
+/// npm structured no error code, no syscall, and no path. It is simultaneously the
+/// Sentry title and the 4th fingerprint component, so historically two unrelated
+/// markerless causes shared one permanently-Error issue (HQ-DESKTOP-56). The new
+/// attributed-signature arm and the episode-key arm both key off this exact string,
+/// so they can never disagree about which failures are "shapeless".
+const SHAPELESS_INSTALL_SIGNATURE: &str = "none:unknown:none";
+
+/// The closed origin vocabulary for a markerless install stderr — WHERE the bytes
+/// came from, decided purely by whether npm's own logger emitted any line. `empty`
+/// is folded out of the attributed subclass (an empty stderr stays the
+/// genuinely-shapeless `none:unknown:none`), leaving `npm-logger` and `non-npm` as
+/// the two attributed origins.
+pub const STDERR_ORIGIN_EMPTY: &str = "empty";
+pub const STDERR_ORIGIN_NPM_LOGGER: &str = "npm-logger";
+pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";
+
+/// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
+/// case-insensitively). These are the lines npm's own error reporter writes; their
+/// presence proves npm ran and reported, even when it never emitted the structured
+/// `code`/`syscall`/`path` trio the signature keys on.
+fn is_npm_marker_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    lower.starts_with("npm error ") || lower.starts_with("npm err! ")
+}
+
+/// True when ANY line of the stderr is an npm-logger line. Tells an `npm-logger`
+/// origin (npm printed something) from a `non-npm` one (npm's logger produced
+/// nothing at all — the user's npm/shim never really ran).
+fn has_any_npm_marker_line(detail: &str) -> bool {
+    detail.lines().any(is_npm_marker_line)
+}
+
+/// The origin of a markerless install stderr, as the closed
+/// `empty | npm-logger | non-npm` enumeration. A pure function of `detail`, so it
+/// crosses no app/core boundary and needs no new [`InstallEnvironment`] field.
+fn stderr_origin(detail: &str) -> &'static str {
+    if detail.trim().is_empty() {
+        STDERR_ORIGIN_EMPTY
+    } else if has_any_npm_marker_line(detail) {
+        STDERR_ORIGIN_NPM_LOGGER
+    } else {
+        STDERR_ORIGIN_NON_NPM
+    }
+}
+
+/// A bounded, content-safe structural profile of a NON-EMPTY markerless install
+/// stderr: its origin, the dominant unmatched-shape token, and a bounded top-N
+/// `shape:count` render. Built by reusing the reviewed, content-free
+/// [`UnmatchedStderrShapeRollup`] vocabulary (HQ-DESKTOP-5H) rather than inventing a
+/// second telemetry primitive. Only structure is inspected; not one stderr byte is
+/// retained.
+struct UnattributedStderrProfile {
+    origin: &'static str,
+    dominant_shape: &'static str,
+    /// The bounded `shape:count` tag render. Always non-empty here because a profile
+    /// is only ever built for a non-empty stderr.
+    shapes_tag: String,
+}
+
+/// Build the structural profile for a non-empty stderr. Splits on newlines
+/// (trimming a trailing carriage return so Windows CRLF output does not scatter the
+/// shapes — [`str::lines`] does exactly this), skips npm-logger lines so the profile
+/// describes what npm did NOT characterise, and classifies each remaining line
+/// through the closed shape vocabulary. If every line was an npm-logger line (a pure
+/// `npm-logger` origin), it falls back to classifying the marker lines themselves,
+/// so the dominant shape is always a real bounded token and the group cardinality
+/// stays exactly origins × shapes.
+fn unattributed_stderr_profile(detail: &str) -> UnattributedStderrProfile {
+    let origin = stderr_origin(detail);
+    let mut rollup = UnmatchedStderrShapeRollup::default();
+    let mut recorded_non_marker = false;
+    for line in detail.lines() {
+        if is_npm_marker_line(line) {
+            continue;
+        }
+        rollup.record(line);
+        recorded_non_marker = true;
+    }
+    if !recorded_non_marker {
+        // Every line was an npm-logger line; classify them so a pure npm-logger
+        // stderr still yields a bounded dominant shape instead of an empty rollup.
+        for line in detail.lines() {
+            rollup.record(line);
+        }
+    }
+    let dominant_shape = rollup
+        .dominant()
+        .unwrap_or(UnmatchedStderrShape::Other)
+        .as_str();
+    let shapes_tag = rollup.tag_value().unwrap_or_else(|| "none".to_string());
+    UnattributedStderrProfile {
+        origin,
+        dominant_shape,
+        shapes_tag,
+    }
+}
+
+/// The structural profile IFF this failure is the newly attributed subclass: an
+/// `Unexpected` failure whose env-blind signature is the shapeless
+/// `none:unknown:none`, whose stderr is non-empty, AND for which npm reported NO
+/// lifecycle failure. `None` for every other failure:
+///   * an EMPTY stderr stays genuinely shapeless (keeps today's `none:unknown:none`
+///     envelope and unbounded paging);
+///   * any shape npm actually characterised keeps its existing discriminating
+///     signature;
+///   * a lifecycle failure whose numeric build-script status collapsed to
+///     `none:unknown:none` is a DIFFERENT mechanism (npm DID recognise a lifecycle
+///     failure and the event already carries `npm_lifecycle_cause`), so it keeps its
+///     existing envelope — the reopen population this fix targets is precisely the
+///     one where npm reported nothing at all (`npm_lifecycle_failed=false`).
+fn install_failure_unattributed_profile(
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+) -> Option<UnattributedStderrProfile> {
+    let attributed = kind == InstallFailureKind::Unexpected
+        && install_failure_signature(kind, detail, prefix) == SHAPELESS_INSTALL_SIGNATURE
+        && !detail.trim().is_empty()
+        && !npm_lifecycle_failure(detail).failed;
+    attributed.then(|| unattributed_stderr_profile(detail))
+}
+
+/// The stderr origin of an attributed markerless install failure, for the
+/// managed-toolchain retry decision. `Some(origin)` ONLY when this is the newly
+/// attributed subclass (see [`install_failure_unattributed_profile`]); `None`
+/// otherwise, so the retry gate can never arm on a shape npm characterised or on a
+/// genuinely empty stderr. The returned origin is `npm-logger` or `non-npm` — the
+/// `empty` case is folded into `None`. Pure so the app-side gate stays unit-testable
+/// from a value instead of re-deriving the classification at the call site.
+pub fn unattributed_install_stderr_origin(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> Option<&'static str> {
+    let kind = classify_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    );
+    install_failure_unattributed_profile(kind, detail, prefix).map(|profile| profile.origin)
+}
+
 /// The grouping discriminator for a reportable install failure.
 ///
 /// Every component is a closed enumeration or an npm package name already
@@ -4678,6 +4826,20 @@ fn install_failure_signature_with_environment(
             .map(|major| major.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         return format!("unsupported-node:{major}");
+    }
+    // A NON-EMPTY markerless `Unexpected` failure (HQ-DESKTOP-56 reopen): npm
+    // structured nothing, so the env-blind signature would collapse to the empty
+    // `none:unknown:none` bucket where unrelated causes merged into one permanently
+    // Error issue. Give it a bounded structural signature — `unattributed:<origin>:
+    // <dominant shape>`, at most 2 origins × 8 shapes = 16 groups — so distinct
+    // causes stop colliding and the next occurrence is self-diagnosing. An EMPTY
+    // stderr is deliberately excluded (returns `None` from the profile), so it keeps
+    // the byte-identical `none:unknown:none` envelope and its pinned test.
+    if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+        return format!(
+            "unattributed:{}:{}",
+            profile.origin, profile.dominant_shape
+        );
     }
     install_failure_signature(kind, detail, prefix)
 }
@@ -5349,8 +5511,21 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    // Structural attribution for a NON-EMPTY markerless failure (HQ-DESKTOP-56):
+    // `Some` only for the attributed subclass, so every other event's tags and the
+    // diagnostics extra stay byte-identical to today.
+    let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
+    // Append the origin + shape render to the diagnostics extra ONLY for the
+    // attributed subclass, so the extra stays a fixed-shape string within each class
+    // (the six-key provenance suffix is unchanged for every other event).
+    let unattributed_diag_suffix = match &unattributed_profile {
+        Some(profile) => {
+            format!(" stderr_origin={} stderr_shapes={}", profile.origin, profile.shapes_tag)
+        }
+        None => String::new(),
+    };
     let mut npm_diagnostics = format!(
-        "{} {}",
+        "{} {}{}",
         npm_diagnostics_summary(
             exit_str.as_str(),
             npm_errno,
@@ -5367,6 +5542,7 @@ pub fn report_install_failure_with_environment(
             toolchain_source,
             env.managed_retry_outcome.tag_value(),
         ),
+        unattributed_diag_suffix,
     );
     // Append the missing-target diagnostic ONLY when the mkdir remedy actually ran
     // (state != Unknown). The default keeps every existing event's `npm_diagnostics`
@@ -5483,6 +5659,16 @@ pub fn report_install_failure_with_environment(
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
             scope.set_tag("npm_errno", npm_errno);
+            // Structural attribution for a NON-EMPTY markerless failure
+            // (HQ-DESKTOP-56): the stderr origin (closed 3-value enum) and a bounded
+            // `shape:count` render of its unmatched-shape mix. Present ONLY for the
+            // attributed subclass; both are tags/diagnostics ONLY and must never enter
+            // the fingerprint — the shape counts vary run to run, so grouping keys only
+            // on `unattributed:<origin>:<dominant shape>` in the signature above.
+            if let Some(profile) = &unattributed_profile {
+                scope.set_tag("npm_stderr_origin", profile.origin);
+                scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());
+            }
             // Group on the failure's bounded signature, never on npm's exit
             // status — see `install_failure_signature`.
             let fingerprint = [
@@ -5629,16 +5815,34 @@ pub fn install_failure_episode_key_with_environment(
                 key
             });
         }
+        // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now carries a bounded
+        // structural signature, so it CAN be episode-bounded: page once per published
+        // CLI version per distinct `(origin, dominant shape)` instead of on every
+        // ~6-hourly check. The key mirrors the attributed SIGNATURE (same profile
+        // helper) so the key and the group can never disagree, and `|managed` matches
+        // the other shapes so a managed-retry event never collides with its user-path
+        // predecessor.
+        if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+            let key = format!(
+                "{latest}|unattributed|{}|{}",
+                profile.origin, profile.dominant_shape
+            );
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
         let code = symbolic_npm_error_code(detail);
         let syscall = npm_syscall(detail);
         let path_shape = npm_path_shape(detail, prefix).tag_value();
-        // A fully SHAPELESS failure (`none:unknown:none` — npm structured nothing)
-        // must NOT be repeat-suppressed: two entirely different root causes collapse
-        // into that single empty signature, so bounding it would hide a newly
-        // introduced updater failure behind an unrelated earlier one until the next
-        // CLI version publishes. Such failures keep paging every time, exactly as
-        // today; only a shape npm actually characterised earns the bound.
         if code == "none" && syscall == "unknown" && path_shape == "none" {
+            // A GENUINELY shapeless failure the profile did NOT attribute — an empty
+            // stderr, or a lifecycle failure whose numeric build-script status
+            // collapsed to the empty signature — must NOT be repeat-suppressed (commit
+            // e24e7a45): its signature carries no discriminator, so bounding it would
+            // hide a newly introduced failure behind an unrelated earlier one until the
+            // next CLI publish. It keeps paging every check, exactly as today.
             return None;
         }
         let key = format!("{latest}|unexpected|{code}|{syscall}|{path_shape}");
@@ -10632,7 +10836,11 @@ mod tests {
         // The title carries the bounded grouping signature, not npm's exit
         // status (main's `install_failure_signature`); the point of this test is
         // that a lifecycle failure wearing transient tokens stays Unexpected
-        // and still reports.
+        // and still reports. npm DID report a lifecycle failure here
+        // (`npm_lifecycle_failed=true`, its numeric build-script status collapsed to
+        // the empty code), so this is NOT the reopen's "npm reported nothing" subclass
+        // and keeps its byte-identical `none:unknown:none` envelope (HQ-DESKTOP-56
+        // targets only `npm_lifecycle_failed=false` markerless failures).
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
@@ -11428,10 +11636,26 @@ mod tests {
             None
         );
 
-        // A fully SHAPELESS unexpected failure (no npm code / syscall / path — the
-        // `none:unknown:none` signature) is deliberately NOT bounded: it mints no
-        // key and keeps paging every check, so a different newly introduced failure
-        // sharing that empty signature is never hidden behind an earlier one.
+        // A GENUINELY shapeless failure — empty stderr, npm structured nothing — is
+        // still deliberately NOT bounded: it mints no key and keeps paging every
+        // check, so a different newly introduced failure sharing that empty signature
+        // is never hidden behind an earlier one (commit e24e7a45).
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                "",
+                None,
+                false,
+                latest,
+                &InstallEnvironment::default(),
+            ),
+            None
+        );
+        // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now DOES earn a bounded key
+        // from its structural attribution, so it pages once per published CLI version
+        // instead of on every ~6-hourly check. `SyntaxError: …` is one bare
+        // `identifier:` line, so the dominant shape is `key_colon` and the origin is
+        // `non-npm` (npm's logger emitted nothing).
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -11440,8 +11664,9 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            ),
-            None
+            )
+            .as_deref(),
+            Some("5.103.17|unattributed|non-npm|key_colon")
         );
     }
 
@@ -11636,10 +11861,13 @@ mod tests {
     #[test]
     fn install_failure_report_captures_genuine_failures() {
         // A real, unexpected failure stays loud — `Some(message)` drives the
-        // Error-level capture.
+        // Error-level capture. npm printed a marker line but structured no
+        // code/syscall/path, so this NON-EMPTY markerless failure now groups under the
+        // attributed `unattributed:npm-logger:<dominant shape>` signature
+        // (HQ-DESKTOP-56); the single marker line classifies as `other`.
         assert_eq!(
             install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
-            Some("[hq-cli-update] install failed (none:unknown:none)".to_string()),
+            Some("[hq-cli-update] install failed (unattributed:npm-logger:other)".to_string()),
         );
         // Killed by signal (no exit code) still reports — and now lands in the
         // same group as the exit-1 run, because the cause is the same.
@@ -13485,9 +13713,9 @@ mod tests {
     #[test]
     fn env_blind_wrappers_are_behaviour_preserving_for_a_node_6_stderr() {
         let stderr = node_six_stderr();
-        // Every env-blind entrypoint returns TODAY's values for the Node-6 stderr —
-        // the reported `Unexpected` / `none:unknown:none` / raw-passthrough shape —
-        // proving default-env delegation changed nothing for existing callers.
+        // Env-blind delegation is unchanged where it must be: the Node-6 stderr still
+        // classifies `Unexpected` and the detail still passes the raw stderr through,
+        // proving default-env delegation changed neither the kind nor the copy.
         assert_eq!(
             classify_install_failure(Some(1), stderr, Some("/usr/local")),
             InstallFailureKind::Unexpected
@@ -13496,9 +13724,16 @@ mod tests {
             classify_install_failure_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
             InstallFailureKind::Unexpected
         );
+        // The reported grouping intentionally moves off the empty `none:unknown:none`
+        // bucket: this NON-EMPTY markerless stderr is attributed (HQ-DESKTOP-56) as
+        // `unattributed:non-npm:stack_frame` — a pure function of `detail`, so the
+        // env-blind and default-env-aware paths agree by construction. A Node-6
+        // MACHINE reports differently again (`unsupported-node:6`) because the app
+        // passes the probed environment; only these legacy env-blind callers see the
+        // attributed shape.
         assert_eq!(
             install_failure_report_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
-            Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
+            Some("[hq-cli-update] install failed (unattributed:non-npm:stack_frame)".to_string())
         );
         // The env-blind detail still shows the raw stderr passthrough...
         assert_eq!(
@@ -13597,11 +13832,12 @@ mod tests {
             &managed_env,
         );
         assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
-        // The env-blind shape (no probed Node) is a plain `Unexpected` failure whose
-        // signature is fully shapeless (`none:unknown:none`) — npm structured
-        // nothing — so it is deliberately NOT repeat-suppressed and mints no key: it
-        // keeps paging every check, exactly as before this change, so an unrelated
-        // new failure sharing the empty signature is never hidden behind it.
+        // The env-blind shape (no probed Node) is a plain `Unexpected` failure. Before
+        // HQ-DESKTOP-56 its empty `none:unknown:none` signature minted no key; now this
+        // NON-EMPTY markerless stderr is attributed, so it earns a bounded key
+        // (`unattributed|non-npm|stack_frame`) and pages once per published version. A
+        // genuinely EMPTY stderr still mints no key — pinned in
+        // `unexpected_install_failure_episode_key_pages_once_per_version_and_signature`.
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -13610,7 +13846,110 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            ),
+            )
+            .as_deref(),
+            Some("5.101.7|unattributed|non-npm|stack_frame")
+        );
+    }
+
+    // ── HQ-DESKTOP-56 reopen: attribution for a NON-EMPTY markerless failure ──
+
+    /// The reopen environment: a Windows machine on a SUPPORTED Node 26 whose npm
+    /// exited 1 with a short stderr carrying none of npm's structured markers.
+    fn reopen_env() -> InstallEnvironment {
+        InstallEnvironment {
+            node_version: Some("26.3.0".to_string()),
+            node_abi: Some("147".to_string()),
+            npm_version: Some("11.16.0".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nonempty_markerless_failure_leaves_the_empty_bucket_for_a_bounded_group() {
+        let env = reopen_env();
+        // A markerless shim/OS error carrying Windows drive paths — no `npm error`
+        // line at all, so npm's logger produced nothing (non-npm origin), and the
+        // dominant structural shape is path_like. CRLF-delimited, as Windows emits.
+        let stderr = "Access to 'C:\\Users\\me\\AppData\\Roaming\\npm\\hq' is denied.\r\n\
+                      Could not write to C:\\ProgramData\\hq; the update stopped.";
+        // Supported Node 26 -> not UnsupportedNode; stays Unexpected.
+        assert_eq!(
+            classify_install_failure_with_environment(Some(1), stderr, None, false, &env),
+            InstallFailureKind::Unexpected
+        );
+        let signature = install_failure_signature_with_environment(
+            InstallFailureKind::Unexpected,
+            stderr,
+            None,
+            &env,
+        );
+        assert_eq!(signature, "unattributed:non-npm:path_like");
+        // The signature carries only closed tokens: no count, no length, and no raw
+        // path byte can enter the group.
+        for token in ["C:\\", "Users", "ProgramData"] {
+            assert!(!signature.contains(token), "signature leaked {token}: {signature}");
+        }
+        assert!(
+            signature.bytes().all(|b| !b.is_ascii_digit()),
+            "the attributed signature must not embed any count or length: {signature}"
+        );
+        // It pages once per published CLI version on that discriminating signature.
+        let key = install_failure_episode_key_with_environment(
+            Some(1), stderr, None, false, "5.103.23", &env,
+        )
+        .expect("a non-empty markerless failure now mints a bounded episode key");
+        assert_eq!(key, "5.103.23|unattributed|non-npm|path_like");
+        assert!(install_failure_episode_blocked(&[key.clone()], &key));
+        // A newly published CLI version pages a first occurrence again.
+        let bumped = install_failure_episode_key_with_environment(
+            Some(1), stderr, None, false, "5.103.24", &env,
+        )
+        .expect("bumped version mints a distinct key");
+        assert!(!install_failure_episode_blocked(&[key], &bumped));
+    }
+
+    #[test]
+    fn stderr_origin_splits_non_npm_from_npm_logger_and_folds_empty_to_none() {
+        let env = reopen_env();
+        let drive_path = "cannot write C:\\Users\\me\\npm\\hq: access denied.";
+        // non-npm: npm's own logger emitted nothing.
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), drive_path, None, false, &env),
+            Some("non-npm")
+        );
+        // npm-logger: npm printed marker lines but structured no code/syscall/path.
+        let npm_logger = "npm error Unexpected end of JSON input while parsing\n\
+                          npm error A complete log of this run can be found above.";
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), npm_logger, None, false, &env),
+            Some("npm-logger")
+        );
+        // Empty stderr is genuinely shapeless: no attributed origin, no retry-arming.
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), "", None, false, &env),
+            None
+        );
+        // A shape npm actually characterised keeps its discriminating signature, so it
+        // is never the unattributed subclass.
+        let enotempty = "npm error code ENOTEMPTY\n\
+                         npm error syscall rename\n\
+                         npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(190), enotempty, None, false, &env),
+            None
+        );
+        // A below-floor Node reclassifies to UnsupportedNode, so the same markerless
+        // stderr is owned by the unsupported-node path, not the unattributed subclass.
+        let node6 = InstallEnvironment {
+            node_version: Some("6.17.1".to_string()),
+            node_abi: Some("48".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        };
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), drive_path, None, false, &node6),
             None
         );
     }
@@ -13839,11 +14178,16 @@ mod tests {
             ),
             "ENOTDIR:mkdir:global-lib-node-modules"
         );
-        // A fully shapeless failure still mints NO repeat-guard key.
+        // A GENUINELY shapeless failure — an EMPTY stderr, npm structured nothing —
+        // still mints NO repeat-guard key. (HQ-DESKTOP-56 now attributes a NON-EMPTY
+        // markerless stderr as `unattributed:<origin>:<shape>` and bounds its paging;
+        // only the empty case stays genuinely shapeless and unbounded, per commit
+        // e24e7a45. The attribution of non-empty markerless failures is covered by the
+        // dedicated HQ-DESKTOP-56 tests.)
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
-                "some unstructured failure with no npm markers",
+                "",
                 None,
                 false,
                 "0.10.157",
@@ -14330,5 +14674,125 @@ mod tests {
             std::cmp::Ordering::Less,
             "HQ_CLI_MIN_VERSION ({HQ_CLI_MIN_VERSION}) is below the resolver's npx range floor ({resolver_floor})"
         );
+    }
+
+    #[test]
+    fn unattributed_profile_ignores_npm_markers_stays_closed_and_path_free() {
+        // CRLF classifies identically to LF (the trailing carriage return is
+        // trimmed), so a Windows machine's shape is stable across occurrences.
+        assert_eq!(
+            unattributed_stderr_profile("SyntaxError: boom\r\nat run (x)").dominant_shape,
+            unattributed_stderr_profile("SyntaxError: boom\nat run (x)").dominant_shape
+        );
+        // npm-marker lines are skipped when a non-marker line remains, so the profile
+        // describes what npm did NOT characterise.
+        let mixed = "npm error code\nActually failed writing C:\\Users\\me\\hq at C:\\hq";
+        let profile = unattributed_stderr_profile(mixed);
+        assert_eq!(profile.origin, "npm-logger");
+        assert_eq!(profile.dominant_shape, "path_like");
+        // A stderr full of user paths yields path_like, and NO path substring reaches
+        // the dominant shape or the bounded shapes render.
+        let paths_only =
+            "C:\\Users\\alice\\secret\\a\r\n/home/alice/secret/b\r\nC:\\Users\\alice\\secret\\c";
+        let profile = unattributed_stderr_profile(paths_only);
+        assert_eq!(profile.dominant_shape, "path_like");
+        assert_eq!(profile.shapes_tag, "path_like:3");
+        for token in ["alice", "secret", "C:\\", "/home/"] {
+            assert!(!profile.dominant_shape.contains(token));
+            assert!(
+                !profile.shapes_tag.contains(token),
+                "shapes tag leaked {token}: {}",
+                profile.shapes_tag
+            );
+        }
+        // Lossily-decoded UTF-16 (replacement chars) must not panic and must still
+        // classify to a closed vocabulary token.
+        let lossy = unattributed_stderr_profile("\u{FFFD}\u{FFFD} npm\u{FFFD} died");
+        assert!(UnmatchedStderrShape::ALL
+            .iter()
+            .any(|shape| shape.as_str() == lossy.dominant_shape));
+    }
+
+    #[test]
+    fn empty_and_discriminating_failures_keep_their_pre_fix_envelope() {
+        let env = reopen_env();
+        // Empty stderr stays the byte-identical shapeless envelope and mints no key.
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                "",
+                None,
+                &env
+            ),
+            "none:unknown:none"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1), "", None, false, "5.103.23", &env
+            ),
+            None
+        );
+        // A discriminating Unexpected keeps its existing signature untouched.
+        let enotempty = "npm error code ENOTEMPTY\n\
+                         npm error syscall rename\n\
+                         npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotempty,
+                None,
+                &env
+            ),
+            "ENOTEMPTY:rename:global-lib-node-modules"
+        );
+        // A lifecycle failure whose numeric build-script status collapsed to the empty
+        // signature is NOT the reopen's "npm reported nothing" subclass — npm DID
+        // report a lifecycle failure — so it keeps its byte-identical `none:unknown:none`
+        // envelope and mints no bounded key.
+        let lifecycle_numeric = "npm error code 1\n\
+                                 npm error command failed\n\
+                                 npm error command sh -c node postinstall.js";
+        assert!(
+            install_failure_unattributed_profile(
+                InstallFailureKind::Unexpected,
+                lifecycle_numeric,
+                None
+            )
+            .is_none(),
+            "a lifecycle-failed numeric-code failure must not be the unattributed subclass"
+        );
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                lifecycle_numeric,
+                None,
+                &env
+            ),
+            "none:unknown:none"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                lifecycle_numeric,
+                None,
+                false,
+                "5.103.23",
+                &env
+            ),
+            None
+        );
+        // No non-Unexpected kind is ever the unattributed subclass, so every
+        // expected/lifecycle/unsupported signature and key is unchanged.
+        for kind in [
+            InstallFailureKind::ExpectedPrefixPermission,
+            InstallFailureKind::ExpectedDiskFull,
+            InstallFailureKind::UnexpectedLifecycle,
+            InstallFailureKind::UnsupportedNode,
+        ] {
+            assert!(
+                install_failure_unattributed_profile(kind, "boom without markers", None).is_none(),
+                "kind {kind:?} must never be the unattributed subclass"
+            );
+        }
     }
 }
