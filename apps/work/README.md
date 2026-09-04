@@ -134,11 +134,45 @@ The cost: a fresh checkout has no `AppIcon-*.png` until `pnpm icons` runs, so
 **opening `src-tauri/gen/apple` in Xcode directly fails asset-catalog
 compilation** until you run it. `pnpm --dir apps/work icons` fixes that.
 
-**Android additionally needs the Android SDK and NDK**, with `ANDROID_HOME` and
-`NDK_HOME` exported. Neither is installed on every dev machine, so the Android
-target is scaffolded and its Gradle project is generated, but an Android build
-is not part of any verified path yet. Do not report it as passing without
-running it.
+**Android additionally needs a JDK, the Android SDK and the NDK**, with
+`ANDROID_HOME` and `NDK_HOME` exported. Neither is installed on every dev
+machine. A working macOS setup:
+
+```sh
+brew install openjdk@21
+brew install --cask android-commandlinetools
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21
+export PATH="$JAVA_HOME/bin:$PATH"
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+# accepts Google's SDK licences — a legal agreement, so read it first
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+  platform-tools "platforms;android-36" "build-tools;36.0.0" \
+  "ndk;27.3.13750724"
+export NDK_HOME="$ANDROID_HOME/ndk/27.3.13750724"
+```
+
+The generated project pins `compileSdk`/`targetSdk` 36 and `minSdk` 24, so the
+platform and build-tools majors must match 36. `pnpm --dir apps/work
+android:build --debug --target aarch64` is a verified path on that setup.
+
+`gen/android`'s Gradle `rustBuild*` task shells out to
+`npm run -- tauri android android-studio-script`, which is why `package.json`
+carries a bare `"tauri": "tauri"` passthrough. Nothing invokes that script by
+hand; deleting it fails the APK assembly with only `Process 'command 'npm''
+finished with non-zero exit value 1`, so `mobile-shell-config.test.ts` pins it.
+
+### Known gap: the shell runs, the app does not render
+
+Both mobile targets build, install and launch, but the root route does not
+paint. `+layout.server.ts` and `+page.server.ts` are **server** loads, so the
+client router requests `/__data.json` at startup, and a static bundle with no
+server answers 404 — SvelteKit then renders its own 404 page. Reproducible off
+-device by serving `apps/work/build` over plain HTTP.
+
+Making mobile functional therefore means moving the root route's session data
+off a server load (universal load + a native-auth branch), not fixing anything
+in the native shell. Treat "it built" and "it works" as separate claims here.
 
 Mobile capabilities are deliberately narrow (`MOBILE_CAPABILITIES` in
 `packages/platform/src/capabilities.ts`): notifications and HTTP only. Every
