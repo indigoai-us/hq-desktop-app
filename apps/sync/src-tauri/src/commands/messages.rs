@@ -1019,29 +1019,43 @@ pub async fn run_card_action(
             out.replayed
         ),
     );
-    if card == "activate_cloud" {
-        if let Ok(hq) = crate::commands::workspaces::resolve_hq_folder_path() {
-            let vault = crate::commands::vault_client::VaultClient::new(&base, &token);
-            match crate::commands::provision_reconcile::reconcile_server_activated_companies(
-                &hq, &vault, &base,
-            )
-            .await
-            {
-                Ok(rows) => log(
-                    LOG_TAG,
-                    &format!(
-                        "MESSAGES_ACTIVATE_RECONCILE_OK n={}",
-                        rows.len()
-                    ),
-                ),
-                Err(e) => log(
-                    LOG_TAG,
-                    &format!("MESSAGES_ACTIVATE_RECONCILE_ERR {e}"),
-                ),
-            }
-        }
+    if card_action_triggers_reconcile(card, &out) {
+        reconcile_after_card_action(&base, &token).await;
     }
     Ok(out)
+}
+
+/// Whether a successful card action should be followed by the server-first
+/// cloud-activation reconcile pass.
+///
+/// Card ids are server-minted (`setup:activate_cloud:cmp_x`, `card_7f…`) and
+/// the action response carries no card kind, so there is no reliable local
+/// signal for "this was the activate_cloud card". The reconcile pass is
+/// idempotent (it only writes when the server says activated and local files
+/// are missing, and it acks only after writing), so it runs after every
+/// successful action rather than guessing from the id.
+fn card_action_triggers_reconcile(_card_id: &str, _out: &CardActionResult) -> bool {
+    true
+}
+
+/// Best-effort: run the activation reconcile and log the outcome. Never
+/// fails the card action that triggered it.
+async fn reconcile_after_card_action(base: &str, token: &str) {
+    let Ok(hq) = crate::commands::workspaces::resolve_hq_folder_path() else {
+        return;
+    };
+    let vault = crate::commands::vault_client::VaultClient::new(base, token);
+    match crate::commands::provision_reconcile::reconcile_server_activated_companies(
+        &hq, &vault, base,
+    )
+    .await
+    {
+        Ok(rows) => log(
+            LOG_TAG,
+            &format!("MESSAGES_ACTIVATE_RECONCILE_OK n={}", rows.len()),
+        ),
+        Err(e) => log(LOG_TAG, &format!("MESSAGES_ACTIVATE_RECONCILE_ERR {e}")),
+    }
 }
 
 /// GET `/v1/companies/{uid}/tabs/{tab}` (US-015).
@@ -1591,6 +1605,24 @@ mod tests {
             delete_channel_error_message(403, Some(&unrelated)),
             "Delete failed (status 403)"
         );
+    }
+
+    #[test]
+    fn reconcile_runs_after_any_successful_card_action_not_only_literal_activate_cloud() {
+        let ok = card_action_from_body(
+            &serde_json::json!({
+                "cardId": "setup:activate_cloud:cmp_acme",
+                "actionId": "activate",
+                "state": "pending"
+            }),
+            false,
+        );
+        // Real server card ids are never the bare literal "activate_cloud".
+        assert!(card_action_triggers_reconcile("setup:activate_cloud:cmp_acme", &ok));
+        assert!(card_action_triggers_reconcile("card_7f3a", &ok));
+        assert!(card_action_triggers_reconcile("activate_cloud", &ok));
+        let replayed = card_action_from_body(&serde_json::json!({}), true);
+        assert!(card_action_triggers_reconcile("team:invite", &replayed));
     }
 
     #[tokio::test]
