@@ -709,6 +709,7 @@ fn main() {
             commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
             commands::desktop_alt::get_company_team_telemetry,
+            commands::desktop_alt::list_agent_tasks,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
@@ -880,6 +881,12 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Unattended dependency-install mode for the VM install matrix.
+            // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
+            // real `install_deps` orchestrator, writes a JSON result, exits.
+            if commands::headless_install::maybe_run(app.handle()) {
+                return Ok(());
+            }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.

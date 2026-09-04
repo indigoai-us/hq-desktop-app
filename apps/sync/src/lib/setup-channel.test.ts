@@ -10,13 +10,15 @@ import {
 const TERMINAL_TOOL_ALLOWLIST = ['claude', 'codex', 'grok'] as const;
 
 describe('SETUP_CHANNEL', () => {
-  it('is a personal joined channel whose wire id is setup', () => {
+  it('displays as welcome while keeping the setup wire id', () => {
     expect(SETUP_CHANNEL).toEqual({
       channelId: SETUP_CHANNEL_ID,
-      name: 'setup',
+      name: 'welcome',
       scope: 'personal',
       membership: 'joined',
     });
+    // The rename is display-only: the wire id stays "setup" so history and
+    // older clients keep resolving the same conversation.
     expect(SETUP_CHANNEL.channelId).toBe('setup');
     expect(SETUP_CHANNEL_ID).toBe('setup');
   });

@@ -27,6 +27,10 @@ import {
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
+import {
+  createFeatureFlagGate,
+  createHqProFlagFetch,
+} from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 
 export type SyncInvokeFn = (
@@ -134,6 +138,12 @@ export function createSyncPlatformAdapter(
   // Production must not use window.fetch; tests pass a throwing stub.
   void config.fetch;
   const invokeFn = config.invoke;
+  const flags = createFeatureFlagGate({
+    // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
+    endpoint: '',
+    getToken: () => '',
+    fetch: createHqProFlagFetch(invokeFn),
+  });
 
   async function call<T>(
     cmd: string,
@@ -333,15 +343,16 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: async (flag) => {
-        if (flag === 'meetings') {
-          return call<boolean>('meetings_feature_enabled');
-        }
-        if (flag === 'is_indigo_user') {
-          return call<boolean>('is_indigo_user');
-        }
-        return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
-      },
+      hasFeature: (flag) =>
+        flags.resolve(flag, () => {
+          if (flag === 'meetings') {
+            return call<boolean>('meetings_feature_enabled');
+          }
+          if (flag === 'is_indigo_user') {
+            return call<boolean>('is_indigo_user');
+          }
+          return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
+        }),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
@@ -1070,6 +1081,24 @@ export function createSyncPlatformAdapter(
           'POST',
           WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
           body,
+        ),
+      listProjectThreads: (projectId, companyUid, cursor) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreads, {
+            companyUid: companyUid.trim() || null,
+            projectId: projectId.trim() || null,
+            limit: '100',
+            cursor: cursor?.trim() || null,
+          }),
+        ),
+      listThreadEvents: (threadId, companyUid, since) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreadEvents(threadId.trim()), {
+            companyUid: companyUid.trim() || null,
+            since: since?.trim() || null,
+          }),
         ),
     },
   };

@@ -227,6 +227,7 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             custom_banner: None,
+            notification_surface: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,

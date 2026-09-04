@@ -23,6 +23,11 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import {
+  createFeatureFlagGate,
+  createHqProFlagFetch,
+  type FeatureFlagGate,
+} from "../flags.js";
 
 /** Meetings are cloud-backed — desktop composite routes them via web.meetings. */
 const MEETINGS_USE_CLOUD = unavailable(
@@ -79,9 +84,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   private readonly invokeFn: InvokeFn;
   /** Serializes get-settings → merge → save across generic desktop callers. */
   private settingsMutationTail: Promise<void> = Promise.resolve();
+  private readonly flags: FeatureFlagGate;
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
+    this.flags = createFeatureFlagGate({
+      // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
+      endpoint: "",
+      getToken: () => "",
+      fetch: createHqProFlagFetch(this.invokeFn),
+    });
   }
 
   isAvailable(cap: Capability): boolean {
@@ -182,7 +194,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
-    hasFeature: (flag) => this.call("has_feature", { flag }),
+    hasFeature: (flag) =>
+      this.flags.resolve(flag, () => this.call("has_feature", { flag })),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;
@@ -658,6 +671,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "POST",
         `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
         body,
+      ),
+    listProjectThreads: (projectId, companyUid, cursor) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads/${encodeURIComponent(threadId.trim())}/events?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
       ),
   };
 }

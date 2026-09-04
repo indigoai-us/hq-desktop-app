@@ -156,6 +156,11 @@
     activeRootEventId?: string | null;
     /** Host is fetching history — do not flash “No messages yet”. */
     loading?: boolean;
+    /**
+     * Empty-state copy. A project channel with zero chat AND zero work-mesh
+     * events is empty of ACTIVITY, so the host passes "No activity yet" there.
+     */
+    emptyLabel?: string;
     /** Signed-in display name so optimistic sends are not labelled "You". */
     selfDisplayName?: string | null;
     selfPersonUid?: string | null;
@@ -217,6 +222,7 @@
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
+    emptyLabel = "No messages yet",
     selfDisplayName = null,
     selfPersonUid = null,
     onopenprofile,
@@ -973,7 +979,7 @@
             data-testid="conversation-empty"
             role="status"
           >
-            No messages yet
+            {emptyLabel}
           </div>
         {/if}
         {#if windowed.hidden > 0}

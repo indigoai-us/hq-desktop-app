@@ -1,0 +1,36 @@
+# HQ install matrix — nightly cell list.  <image>:<profile>:<journey>
+# Images: sonoma-consumer tahoe-consumer sequoia-consumer sonoma-configured
+# Profiles: bare no-github-api stale-toolchain path-polluted bash-default-shell low-disk
+# Journeys: probe-machine desktop-deps-headless setup-sh full-fresh-install
+#
+# Tier 0 — clean-room proof (fast, ~2 min each)
+sonoma-consumer:bare:probe-machine
+tahoe-consumer:bare:probe-machine
+sequoia-consumer:bare:probe-machine
+# Tier 1 — the real user path on every OS
+sonoma-consumer:bare:full-fresh-install
+tahoe-consumer:bare:full-fresh-install
+sequoia-consumer:bare:full-fresh-install
+sonoma-configured:bare:full-fresh-install
+# Tier 2 — machine-shape variants (Sonoma; add other OSes once tier 1 is green)
+sonoma-consumer:stale-toolchain:desktop-deps-headless
+sonoma-consumer:path-polluted:desktop-deps-headless
+sonoma-consumer:bash-default-shell:desktop-deps-headless
+sonoma-consumer:no-github-api:desktop-deps-headless
+sonoma-consumer:low-disk:desktop-deps-headless
+# Tier 3 — legacy script alone on a bare Mac (documents fail-fast behaviour)
+sonoma-consumer:bare:setup-sh
+# Tier 4 — the REAL onboarding wizard, headed (own stage runner + manifest), parity check vs the headless engine
+sonoma-consumer:bare:wizard-resume-headed
+sequoia-consumer:bare:wizard-resume-headed
+tahoe-consumer:bare:wizard-resume-headed
+# Tier 5 — environment profiles from real incident reports (vault + Sentry + GitHub, 2026-09-03 research)
+sonoma-consumer:nonadmin-user:desktop-deps-headless
+tahoe-consumer:nonadmin-user:desktop-deps-headless
+sonoma-consumer:readonly-install-root:desktop-deps-headless
+sonoma-consumer:foreign-npm-global:desktop-deps-headless
+sonoma-consumer:eacces-npm-global:desktop-deps-headless
+sonoma-consumer:corporate-npmrc:desktop-deps-headless
+sonoma-consumer:c-locale:full-fresh-install
+sonoma-consumer:dirty-hq-dir:desktop-deps-headless
+sonoma-consumer:pnpm-global-ghost:desktop-deps-headless

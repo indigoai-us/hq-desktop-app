@@ -1,6 +1,7 @@
 // Full platform adapter surface (US-004).
 export * from "./adapter.js";
 export * from "./capabilities.js";
+export * from "./host-platform.js";
 export * from "./library-shelf.js";
 export { WebPlatformAdapter, WEB_PATHS } from "./web/index.js";
 export type { WebPlatformAdapterConfig } from "./web/index.js";

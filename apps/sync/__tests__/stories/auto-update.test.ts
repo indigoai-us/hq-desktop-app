@@ -125,9 +125,21 @@ describe('master automatic-updates switch', () => {
 
   it('the CLI background auto-installer gates on the master switch', () => {
     // The Rust CLI checker now installs when the master `autoUpdate` is on
-    // (default), superseding the old `cliAutoUpdate`-only gate.
-    expect(cliUpdate).toContain('if auto_update_enabled() {');
-    expect(cliUpdate).toContain('auto_update_enabled');
+    // (default), superseding the old `cliAutoUpdate`-only gate. The switch is
+    // read once per check cycle and fed to a single pure gate.
+    expect(cliUpdate).toContain('let auto_update = auto_update_enabled();');
+    expect(cliUpdate).toContain('if auto_install_allowed(auto_update, floor_repair) {');
+    // The only pass that may install past the opt-out is the launch-time
+    // version-floor repair (installed CLI below HQ_CLI_MIN_VERSION), which
+    // mirrors hq-core's ensure-hq-cli hook — that hook has no opt-out either.
+    // The scheduled loop never takes it.
+    expect(normalize(cliUpdateCore)).toContain(
+      'pub fn auto_install_allowed(auto_update_enabled: bool, floor_repair: bool) -> bool { auto_update_enabled || floor_repair }',
+    );
+    expect(cliUpdate).toContain('run_check_cycle(&handle, /* floor_repair */ true).await;');
+    const scheduledLoop = cliUpdate.slice(cliUpdate.indexOf('tokio::time::sleep(INITIAL_DELAY).await;'));
+    expect(scheduledLoop).toContain('run_check_cycle(&handle, /* floor_repair */ false).await;');
+    expect(scheduledLoop).not.toContain('/* floor_repair */ true');
     // The pref defaults ON in both get_settings branches.
     expect(settingsRs).toContain('auto_update: Some(true)');
     expect(settingsRs).toContain('auto_update: Some(prefs.auto_update.unwrap_or(true))');
@@ -172,7 +184,7 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('NonConvergenceKind::ForeignManaged');
     // 3. ...and the background loop consults that record before reinstalling.
     expect(normalize(cliUpdate)).toContain(
-      'if should_auto_install( &info.latest, non_convergent_cli_version().as_deref(), )',
+      'if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {',
     );
     // A convergent install must clear the block so a later version is never
     // gated by a condition the user has since fixed.
@@ -548,6 +560,47 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('classify_install_failure_with_environment(');
     expect(cliUpdate).toContain('kind == InstallFailureKind::UnsupportedNode');
     expect(cliUpdate).toContain('install_failure_detail_with_environment(');
+  });
+
+  it('attributes, self-heals, and episode-bounds a markerless install failure whose npm never ran (HQ-DESKTOP-56 reopen)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    // Core reuses the reviewed, content-safe stderr-shape vocabulary (HQ-DESKTOP-5H)
+    // rather than inventing a second telemetry primitive.
+    expect(cliUpdateCore).toContain(
+      'use crate::watcher_fault::{UnmatchedStderrShape, UnmatchedStderrShapeRollup};',
+    );
+    // A NON-EMPTY markerless Unexpected failure leaves the empty none:unknown:none
+    // bucket for a bounded `unattributed:<origin>:<dominant shape>` group...
+    expect(cliUpdateCore).toContain('"unattributed:{}:{}"');
+    // ...while an EMPTY stderr stays byte-identical (shapeless, unbounded).
+    expect(cliUpdateCore).toContain(
+      'const SHAPELESS_INSTALL_SIGNATURE: &str = "none:unknown:none";',
+    );
+    // The failure is attributed by WHERE its bytes came from — a closed origin enum.
+    expect(cliUpdateCore).toContain('pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";');
+    expect(cliUpdateCore).toContain('pub fn unattributed_install_stderr_origin(');
+    // Two diagnostics-only tags (never in the fingerprint) make the next occurrence
+    // self-diagnosing.
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_stderr_origin", profile.origin);');
+    expect(cliUpdateCore).toContain(
+      'scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());',
+    );
+    // It pages once per published CLI version on that discriminating signature.
+    expect(cliUpdateCore).toContain('"{latest}|unattributed|{}|{}"');
+
+    // The app widens its OWN managed-toolchain self-heal to the non-npm subclass —
+    // npm's logger emitted nothing, so the user's npm/shim never really ran and HQ's
+    // managed npm bypasses it — computing the origin once and threading it into the
+    // pure gate, which arms ONLY for the non-npm origin.
+    expect(cliUpdate).toContain('unattributed_install_stderr_origin(');
+    expect(cliUpdate).toContain('unattributed_origin: Option<&str>');
+    expect(appCli).toContain(
+      'kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM)',
+    );
+    expect(appCli).toContain(
+      'repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)',
+    );
   });
 
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {

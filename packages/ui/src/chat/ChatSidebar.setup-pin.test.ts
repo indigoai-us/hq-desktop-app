@@ -108,12 +108,12 @@ afterEach(async () => {
   window.localStorage?.clear?.();
 });
 
-describe("ChatSidebar #setup default pin", () => {
+describe("ChatSidebar #welcome default pin", () => {
   it("is pinned for a fresh profile", async () => {
     await mountRail();
     expect(pinnedIds()).toEqual([SETUP_ROW_ID]);
     expect(pinButtonFor(SETUP_ROW_ID).getAttribute("aria-label")).toBe(
-      "Unpin setup",
+      "Unpin welcome",
     );
   });
 
@@ -130,7 +130,7 @@ describe("ChatSidebar #setup default pin", () => {
       "no collapsed LAST WEEK bucket appears for the unpinned setup row",
     ).toBeNull();
     expect(pinButtonFor(SETUP_ROW_ID).getAttribute("aria-label")).toBe(
-      "Pin setup",
+      "Pin welcome",
     );
     // Persisted under the tenant scope.
     const dismissedKey = Object.keys(window.localStorage).find((k) =>

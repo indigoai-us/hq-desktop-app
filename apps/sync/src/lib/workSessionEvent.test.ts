@@ -31,6 +31,14 @@ describe('parseWorkSessionEvent', () => {
       doneCriteria: null,
       branch: null,
       runtime: null,
+      // Additive fields shared with the v1/v2 work-mesh normaliser.
+      taskStatus: null,
+      harness: null,
+      actorUid: null,
+      actorType: null,
+      eventId: null,
+      threadId: 'work-desktop-dogfood:T-002',
+      burstCount: 1,
     });
   });
 

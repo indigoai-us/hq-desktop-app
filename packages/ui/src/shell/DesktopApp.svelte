@@ -23,6 +23,10 @@
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import {
+    SIDEBAR_OVERLAY_MAX_PX,
+    sidebarLayout,
+  } from "./sidebar-layout.js";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
@@ -189,6 +193,14 @@
     replyScopeForRow,
   } from "../chat/chat-api.js";
   import { REPLY_OVERLAY_MAX_PX } from "../chat/reply-layout.js";
+  import {
+    activityTimelineMessages,
+    collectProjectThreadIds,
+    groupActivityBursts,
+    mergeActivityIntoTimeline,
+    projectActivityEntries,
+    type ThreadEventsInput,
+  } from "../chat/messaging/projectActivity.js";
   import {
     notificationDestination,
     type NotificationItem,
@@ -603,7 +615,17 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
-  let sidebarCollapsed = $state(false);
+  /**
+   * On a phone the channel list is an overlay, so it must start closed —
+   * otherwise the first thing the app shows is a list covering the
+   * conversation. Resolved synchronously from the initial width so there is no
+   * frame where the list is on screen before an effect hides it.
+   */
+  const startsAsOverlay =
+    typeof window !== "undefined" &&
+    sidebarLayout(window.innerWidth) === "overlay";
+  let phoneViewport = $state(startsAsOverlay);
+  let sidebarCollapsed = $state(startsAsOverlay);
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
   let conversationBootTimedOut = $state(false);
@@ -856,6 +878,9 @@
     companyAppearanceName = null;
   });
 
+  /** Threads fetched per project channel — bounded so a long-lived project
+   *  cannot fan out into hundreds of event requests on channel open. */
+  const PROJECT_ACTIVITY_THREAD_CAP = 25;
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
@@ -1082,6 +1107,134 @@
         : msg,
     );
   });
+  // ── Project-channel work-mesh activity ───────────────────────────────────
+  //
+  // A project channel's real trail lives in work-mesh threads, not in the chat
+  // table, so the channel used to render empty while a project had a live claim
+  // and a progress log. Fetch that trail for the selected project channel and
+  // fold it into the same timeline. Best-effort by design: any failure leaves
+  // chat-only rendering exactly as before.
+  let projectActivityRows = $state<ConversationMessageWire[]>([]);
+  let projectActivityKey = $state("");
+  let projectActivityLoading = $state(false);
+
+  function activityKeyForRow(row: ConversationRow | null): string {
+    if (!row) return "";
+    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row) || "";
+    const companyUid = (row.companyUid ?? "").trim();
+    return projectId && companyUid ? `${companyUid}/${projectId}` : "";
+  }
+
+  /** Roster-backed actor names so rows never show a raw `prs_…`. */
+  function resolveActivityActor(actorUid: string): string | null {
+    const uid = actorUid.trim();
+    if (!uid) return null;
+    const named = displayNameByUid[uid];
+    if (named?.trim()) return named.trim();
+    const roster = channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    const hit = roster.find((m) => m.personUid === uid);
+    return hit?.displayName?.trim() || null;
+  }
+
+  async function loadProjectActivity(row: ConversationRow): Promise<void> {
+    const key = activityKeyForRow(row);
+    if (!key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      return;
+    }
+    const [companyUid, projectId] = key.split("/");
+    const api = adapter.workMesh;
+    if (!api?.listProjectThreads || !api?.listThreadEvents) return;
+    projectActivityLoading = true;
+    try {
+      // The server-side `projectId` filter is additive and may not be deployed
+      // yet, so collectProjectThreadIds filters client-side and pages while a
+      // cursor comes back. Once the filter is live, page one has no cursor.
+      const threadIds = await collectProjectThreadIds(
+        projectId,
+        async (cursor) => {
+          const res = await api.listProjectThreads!(
+            projectId,
+            companyUid,
+            cursor,
+          );
+          if (!res.ok) return null;
+          const payload = res.value as {
+            threads?: unknown;
+            nextCursor?: unknown;
+          } | null;
+          return {
+            threads: Array.isArray(payload?.threads) ? payload.threads : [],
+            nextCursor:
+              typeof payload?.nextCursor === "string" ? payload.nextCursor : null,
+          };
+        },
+        PROJECT_ACTIVITY_THREAD_CAP,
+      );
+      const pages = await Promise.all(
+        threadIds.map(async (threadId): Promise<ThreadEventsInput> => {
+          try {
+            const res = await api.listThreadEvents!(threadId, companyUid);
+            const body = res.ok
+              ? (res.value as { events?: unknown } | null)
+              : null;
+            return {
+              threadId,
+              events: Array.isArray(body?.events) ? body.events : [],
+            };
+          } catch {
+            return { threadId, events: [] };
+          }
+        }),
+      );
+      if (activityKeyForRow(selectedRow) !== key) return;
+      const entries = groupActivityBursts(
+        projectActivityEntries(pages, { resolveActor: resolveActivityActor }),
+      );
+      projectActivityRows = activityTimelineMessages(entries);
+      projectActivityKey = key;
+    } catch (err) {
+      console.warn("[hq-desktop]", {
+        t: Date.now(),
+        event: "project-activity-error",
+        key,
+        err: String(err),
+      });
+    } finally {
+      if (activityKeyForRow(selectedRow) === key) projectActivityLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const row = selectedRow;
+    const key = activityKeyForRow(row);
+    if (!row || !key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      projectActivityLoading = false;
+      return;
+    }
+    if (projectActivityKey === key) return;
+    projectActivityRows = [];
+    void loadProjectActivity(row);
+  });
+
+  /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
+  const timelineWithActivity = $derived.by(() =>
+    projectActivityRows.length > 0
+      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+      : timeline,
+  );
+
+  /**
+   * A project channel with no chat AND no work-mesh events is empty of
+   * ACTIVITY, not of messages — the label has to say so.
+   */
+  const conversationEmptyLabel = $derived(
+    isProjectChannel ? "No activity yet" : "No messages yet",
+  );
+
   const messageScope = $derived(messageScopeForRow(selectedRow));
   let liveReactions = $state<ReactionMap>({});
   let reactionScope = $state("");
@@ -2161,9 +2314,28 @@
     return () => mq.removeEventListener("change", apply);
   });
 
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia(`(max-width: ${SIDEBAR_OVERLAY_MAX_PX}px)`);
+    const apply = () => {
+      phoneViewport = mq.matches;
+      // Crossing into phone width with the list open would bury the
+      // conversation under it. Widening again leaves the choice to the user.
+      if (mq.matches) sidebarCollapsed = true;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  });
+
   function handleSelect(
     row: ConversationRow,
-    options?: { replyRootEventId?: string | null; preserveView?: boolean },
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      /** The shell picked this row, not the person using it. */
+      automatic?: boolean;
+    },
   ): void {
     if (selectedRow?.id !== row.id) {
       openProfileMember = null;
@@ -2181,6 +2353,12 @@
     openReplyRootId = null;
     queueReplyForRow(row, options?.replyRootEventId);
     attachTray = null;
+    // The phone list overlays the conversation it just navigated to, so it has
+    // to get out of the way. On wider screens it is a column and stays put.
+    //
+    // Only for a deliberate pick: the list auto-selects a row as it mounts, so
+    // closing on every select shut the overlay again the instant it opened.
+    if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
   }
 
@@ -2554,7 +2732,17 @@
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
         if (row) void catchUpTimeline(row);
+        // Thread events arrive on hq/{companyUid}/thread/# as ids-only wakes,
+        // so a catch-up must re-read the project trail too — otherwise a live
+        // progress event only appears after the user leaves and returns.
+        if (row && activityKeyForRow(row)) void loadProjectActivity(row);
         void catchUpDmInbox();
+      }),
+      bus.on("work-mesh:thread", ({ companyUid }) => {
+        const row = selectedRow;
+        if (!row || !activityKeyForRow(row)) return;
+        if ((row.companyUid ?? "").trim() !== companyUid) return;
+        void loadProjectActivity(row);
       }),
       bus.on("mesh:connection", ({ state }) => {
         meshConnectionState = state;
@@ -3333,9 +3521,13 @@
     </div>
   {:else}
     <div class="desktop-body">
-      {#if !sidebarCollapsed}
+      <!-- Kept mounted while closed at phone width: the list owns roster
+           loading and the #setup fallback, so unmounting it leaves the phone
+           with nothing selected. -->
+      {#if !sidebarCollapsed || phoneViewport}
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
+          offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
           {companies}
@@ -3354,6 +3546,7 @@
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
+              automatic: options?.automatic === true,
             })}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
@@ -3897,7 +4090,8 @@
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
                 <ChannelConversation
-                  messages={timeline}
+                  messages={timelineWithActivity}
+                  emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
                   composerLocked={composerLocked}
@@ -3922,7 +4116,8 @@
                   {avatarByUid}
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
-                  loading={timelineHydrating && timeline.length === 0}
+                  loading={(timelineHydrating || projectActivityLoading) &&
+                    timelineWithActivity.length === 0}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
@@ -4138,6 +4333,16 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  /* Anchors the phone channel-list overlay (see ChatSidebar's matching block);
+     without a positioned ancestor it escapes to the viewport and renders
+     behind the title bar. Pinned to SIDEBAR_OVERLAY_MAX_PX by
+     shell/sidebar-layout.test.ts. */
+  @media (max-width: 640px) {
+    .desktop-body {
+      position: relative;
+    }
   }
 
   .desktop-main {
