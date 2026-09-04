@@ -50,6 +50,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    setupFiles: ["./src/vitest-setup.ts"],
     include: [
       "src/**/*.test.ts",
       "__tests__/stories/**/*.test.ts",
