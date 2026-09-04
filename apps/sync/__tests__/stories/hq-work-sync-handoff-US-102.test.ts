@@ -453,11 +453,19 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(expectOk(await adapter.identity.hasFeature('is_indigo_user'))).toBe(
       false,
     );
+    // Registry is absent here (hq_pro_fetch returns `{}`, not a snapshot), so
+    // meetings must still reach the legacy Rust mapping. is_indigo_user is
+    // unmapped and must not probe /v1/flags/resolve.
     expect(calls.map((c) => c.cmd)).toEqual([
       'desktop_alt_is_admin',
+      'hq_pro_fetch',
       'meetings_feature_enabled',
       'is_indigo_user',
     ]);
+    expect(calls[1]?.args).toMatchObject({
+      method: 'GET',
+      url: '/v1/flags/resolve',
+    });
   });
 
   it('listChannels maps channelId → id and unread → unreadCount', async () => {
