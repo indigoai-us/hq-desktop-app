@@ -23,6 +23,26 @@ What did *not* exist: a way for an agent to emit **stat tiles, data tables, and
 charts as structured data** that a trusted component renders (rather than as
 Markdown text the model has to hand-format).
 
+### The `systemEvent` v1 envelope (separate contract)
+
+`hq-block` fences are agent-authored content. Server-authored channel events
+use the `systemEvent` v1 envelope, parsed in
+`packages/ui/src/chat/messaging/channelMessageModels.ts`. `KnownSystemEventType`
+is: `run_started`, `run_progress`, `run_complete`, `pr_opened`, `deploy`,
+`file_added`, `work_session`, `work_session_blocked`,
+`work_session_task_status`, `work_session_finished`, `member_added`,
+`lifecycle_card`. Unknown types are dropped, not rendered.
+
+`lifecycle_card` (0.10.194) carries a `kind` from `LIFECYCLE_CARD_KINDS`
+(`create_company`, `activate_cloud`, `upgrade_plan`, `create_agent`, `status`,
+`companies_summary`, `tab_row`) and renders through
+`messaging/LifecycleCard.svelte`; an unknown envelope version parses to `null`
+rather than rendering. Actions are submitted by
+`card-action.ts::submitLifecycleCardAction` → the desktop `run_card_action`
+command. Non-card system events render as a one-line
+`messaging/SystemEventLine.svelte`. Cards are server-stamped only — the
+client never mints a `lifecycle_card` through `POST /messages`.
+
 ## GOAL A — the structured-content contract (shipped, safe)
 
 ### Wire shape

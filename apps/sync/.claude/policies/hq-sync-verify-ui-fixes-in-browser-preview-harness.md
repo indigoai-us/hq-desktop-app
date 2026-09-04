@@ -13,7 +13,7 @@ source: session-learning
 
 ## Rule
 
-ALWAYS: verify hq-sync (Tauri menubar) UI fixes in the browser preview harness. Run `npm run dev:preview` (port 1422) — it serves `/dev-harness/index.html?view=popover&theme=dark` with mocked Tauri APIs. Edit `dev-harness/fixtures.ts` to reproduce a specific footer/popover state, then screenshot at 320x440.
+ALWAYS: verify hq-sync (Tauri menubar) UI fixes in the browser preview harness. Run `npm run dev:preview` (port 1422) — it serves `/dev-harness/index.html?view=<view>&theme=light|dark` with mocked Tauri APIs. Views include `popover`, `signin`, `banner`, `shell`, `home`, `company`, `desktop`, `meetings`, `drift`, `activity`, `widget`, `messages`, `conversation`, `createchannel`, `permissions`, and `lifecycle` — the channel-native company lifecycle against a stateful in-memory backend (`dev-harness/lifecycle-scenario.ts`; add `&role=member` for a viewer who cannot act, `&state=blocked` for blocked states). Edit `dev-harness/fixtures.ts` to reproduce a specific footer/popover state, then screenshot at 320x440.
 
 The real app is served at `/`; the harness only at `/dev-harness/`.
 
