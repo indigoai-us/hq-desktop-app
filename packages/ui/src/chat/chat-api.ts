@@ -398,6 +398,13 @@ export interface ChatWakeEvents {
   /** Run cursor catch-up (directory delta + open timeline `since`). */
   "mesh:catchup": { reason: "connect" | "focus" };
   /**
+   * A work-mesh thread event landed on `hq/{companyUid}/thread/#` — ids only,
+   * like every other wake. The open project channel re-reads its activity trail
+   * so a live claim / progress / blocked / task move appears without the user
+   * leaving and returning.
+   */
+  "work-mesh:thread": { companyUid: string; threadId: string };
+  /**
    * Presence store changed (MQTT retained/live or live-read rebuild).
    * Ids + status only — never prompts or credentials.
    */

@@ -84,6 +84,8 @@ export function createDesktopAdapter(
     workMesh: {
       readLocalSnapshot: tauri.workMesh.readLocalSnapshot,
       getProjectView: web.workMesh.getProjectView,
+      listProjectThreads: web.workMesh.listProjectThreads,
+      listThreadEvents: web.workMesh.listThreadEvents,
       migrateSession: web.workMesh.migrateSession,
     },
   };

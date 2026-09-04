@@ -5,7 +5,11 @@
   // legacy activity with details expands a muted key/value block.
   import { formatLastActivity } from "../channel-status-model";
   import type { WorkSessionCardModel } from "./channelMessageModels";
-  import { isOpaqueActorId, type WorkSessionActivity } from "./workSessionEvent";
+  import {
+    isOpaqueActorId,
+    taskStatusLabel,
+    type WorkSessionActivity,
+  } from "./workSessionEvent";
 
   interface Props {
     /** Legacy JSON work-session-event activity (claim/start/blocked/done). */
@@ -31,8 +35,22 @@
   // the id after the verb. Omit the id token when it is null.
   function verbPhrase(row: WorkSessionActivity): string {
     const id = row.storyId;
+    if (row.kind === "task_status" && row.taskStatus) {
+      const move = row.taskStatus;
+      const target = move.taskId ?? id;
+      const arrow = move.from
+        ? `${taskStatusLabel(move.from)} \u2192 ${taskStatusLabel(move.to)}`
+        : `to ${taskStatusLabel(move.to)}`;
+      return target ? `moved ${target} ${arrow}` : `moved a task ${arrow}`;
+    }
     if (row.kind === "done") return id ? `marked ${id} done` : "marked done";
     return id ? `${row.verb} ${id}` : row.verb;
+  }
+
+  /** "· 3 updates" tail when consecutive same-actor events were collapsed. */
+  function burstSuffix(row: WorkSessionActivity): string {
+    const n = row.burstCount ?? 1;
+    return n > 1 ? ` \u00b7 ${n} updates` : "";
   }
 
   /** Unresolved raw UIDs never render verbatim. */
@@ -46,7 +64,7 @@
 
   const fullLabel = $derived(
     activity
-      ? `${legacyActorLabel} ${verbPhrase(activity)}${activity.title ? ` — ${activity.title}` : ""}`
+      ? `${legacyActorLabel} ${verbPhrase(activity)}${activity.title ? ` — ${activity.title}` : ""}${burstSuffix(activity)}`
       : "",
   );
 
@@ -145,11 +163,23 @@
       type="button"
       class="sys-line work-mesh-row"
       data-testid="work-mesh-row"
+      data-kind={activity.kind}
       aria-expanded={hasDetails ? expanded : undefined}
       onclick={toggle}
     >
       <span class="sys-icon" aria-hidden="true">
-        {#if activity.kind === "blocked"}
+        {#if activity.kind === "task_status"}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2.5 8h8.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            <path
+              d="M8.6 5.2 11.9 8l-3.3 2.8"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {:else if activity.kind === "blocked"}
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path
               d="M8 2.75 14.2 13.4H1.8L8 2.75Z"
@@ -185,7 +215,7 @@
         {/if}
       </span>
       <span class="sys-summary" title={fullLabel}>
-        <span class="sys-who">{legacyActorLabel}</span>{` ${verbPhrase(activity)}`}{#if activity.title}{` — ${activity.title}`}{/if}
+        <span class="sys-who">{legacyActorLabel}</span>{` ${verbPhrase(activity)}`}{#if activity.title}{` — ${activity.title}`}{/if}{#if (activity.burstCount ?? 1) > 1}<span class="sys-sep"> · </span><span class="sys-meta">{activity.burstCount} updates</span>{/if}
       </span>
       {#if time}
         <span class="sys-time">{time}</span>
@@ -235,6 +265,14 @@
 
   .work-mesh-card {
     cursor: default;
+  }
+
+  /* The one accent on an otherwise fully muted row: attention states get the
+   * violet, everything else stays --t3. */
+  .work-mesh-row[data-kind="blocked"] .sys-icon,
+  .work-mesh-row[data-kind="task_status"] .sys-icon {
+    color: var(--accent, #7c5cff);
+    opacity: 1;
   }
 
   .sys-icon {

@@ -1032,6 +1032,25 @@ export interface WorkMeshApi {
     sessionId: string,
     body: MigrateSessionRequest,
   ): AdapterPromise<Json>;
+  /**
+   * hq-pro GET /v1/work-mesh/threads?companyUid=&projectId= — the work threads
+   * of one project. Additive: hosts that cannot reach hq-pro return
+   * unavailable, and the project channel simply shows chat only.
+   */
+  listProjectThreads(
+    projectId: string,
+    companyUid: string,
+  ): AdapterPromise<Json>;
+  /**
+   * hq-pro GET /v1/work-mesh/threads/{threadId}/events?companyUid= — the
+   * append-only event log of one thread (v1 envelope today, v2 session events
+   * once Work Mesh Live is enabled; both are parsed by @hq/ui).
+   */
+  listThreadEvents(
+    threadId: string,
+    companyUid: string,
+    since?: string,
+  ): AdapterPromise<Json>;
 }
 
 // ---------------------------------------------------------------------------

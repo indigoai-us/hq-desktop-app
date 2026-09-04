@@ -159,6 +159,9 @@ export const WEB_PATHS = {
     `/v1/work-mesh/projects/${encodeURIComponent(id)}`,
   workMeshSessionMigrate: (sessionId: string) =>
     `/v1/work-mesh/sessions/${encodeURIComponent(sessionId)}/migrate`,
+  workMeshThreads: "/v1/work-mesh/threads",
+  workMeshThreadEvents: (threadId: string) =>
+    `/v1/work-mesh/threads/${encodeURIComponent(threadId)}/events`,
 
   skillsShelf: (companyUid: string) =>
     `/v1/skills/${encodeURIComponent(companyUid)}/shelf`,
@@ -1018,5 +1021,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     migrateSession: (sessionId, body) =>
       this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
+    listProjectThreads: (projectId, companyUid) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreads}?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreadEvents(threadId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
+      ),
   };
 }
