@@ -158,6 +158,7 @@
     NotificationsApi,
     ReplyThreadScope,
     ReplyThreadResponse,
+    DmThreadResponse,
   } from "../chat/chat-api.js";
   import {
     replyNewMatchesConversation,
@@ -214,6 +215,7 @@
     mergeTimelineMessages,
     messagesForDisplay,
     normalizeConversationMessages,
+    peerIsSystemFromPayload,
     sentMessageFromResult,
     sinceForChannelWake,
     timelineHasEvent,
@@ -773,6 +775,9 @@
   let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
+  /** Rows whose DM peer the server flagged as an automated system sender. */
+  const systemPeerRows = new Set<string>();
+  let timelineReadOnly = $state(false);
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
   const lastDmTimelineStampByUid = new Map<string, string>();
   /** Last rail activity stamp emitted from a committed channel timeline. */
@@ -865,6 +870,13 @@
           limit: since ? 20 : 50,
           since,
         });
+        if (res.ok) {
+          if (peerIsSystemFromPayload(res.value)) systemPeerRows.add(row.id);
+          else systemPeerRows.delete(row.id);
+          if (selectedRow?.id === row.id) {
+            timelineReadOnly = systemPeerRows.has(row.id);
+          }
+        }
         console.info("[hq-desktop]", {
           t: Date.now(),
           event: "timeline-fetch-done",
@@ -961,6 +973,7 @@
     // Keep hydrating=true so "No messages yet" does not flash (US-018).
     liveTimeline = [];
     liveTimelineId = row.id;
+    timelineReadOnly = systemPeerRows.has(row.id);
     const cached = untrack(() => timelineCache.get(row.id) ?? []);
     timelineHydrating = true;
     const token = row.id;
@@ -1747,6 +1760,9 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(peerIsSystemFromPayload(raw)
+          ? { peer: (raw as { peer: DmThreadResponse["peer"] }).peer }
+          : {}),
       };
     },
     sendDm: async (args) => {
@@ -3539,6 +3555,7 @@
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
                   loading={timelineHydrating && timeline.length === 0}
+                  readOnly={timelineReadOnly}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : undefined}

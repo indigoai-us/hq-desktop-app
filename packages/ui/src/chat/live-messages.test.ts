@@ -423,3 +423,18 @@ describe("sentMessageFromResult", () => {
     );
   });
 });
+
+describe("peerIsSystemFromPayload", () => {
+  it("is true only for an explicit peer.isSystem === true", async () => {
+    const { peerIsSystemFromPayload } = await import("./live-messages.js");
+    expect(
+      peerIsSystemFromPayload({ messages: [], peer: { isSystem: true } }),
+    ).toBe(true);
+    expect(
+      peerIsSystemFromPayload({ messages: [], peer: { isSystem: "true" } }),
+    ).toBe(false);
+    expect(peerIsSystemFromPayload({ messages: [] })).toBe(false);
+    expect(peerIsSystemFromPayload([])).toBe(false);
+    expect(peerIsSystemFromPayload(null)).toBe(false);
+  });
+});

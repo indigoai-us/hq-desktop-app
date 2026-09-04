@@ -150,6 +150,13 @@
     /** Signed-in display name so optimistic sends are not labelled "You". */
     selfDisplayName?: string | null;
     selfPersonUid?: string | null;
+    /**
+     * Server-driven read-only mode (e.g. an automated HQ system sender such
+     * as "HQ Calendar" — nothing reads replies). Hides the composer and shows
+     * `readOnlyNotice` in its place. Never inferred from names client-side.
+     */
+    readOnly?: boolean;
+    readOnlyNotice?: string;
     /** Open a person's profile panel when their name/avatar is clicked. */
     onopenprofile?: (author: {
       personUid: string;
@@ -206,6 +213,8 @@
     loading = false,
     selfDisplayName = null,
     selfPersonUid = null,
+    readOnly = false,
+    readOnlyNotice = "This is an automated HQ notification. Replies are not monitored.",
     onopenprofile,
     avatarByUid = {},
     displayNameByUid = {},
@@ -1275,120 +1284,98 @@
     </div>
   </div>
 
-  <div class="dm-reply">
-    <div class="dm-reply-composer">
-      {#if showMentionPicker}
-        <MentionPicker
-          hits={mentionHits}
-          highlight={mentionHighlight}
-          onpick={applyMention}
-        />
-      {:else if showAgentMenu}
-        <div
-          class="agent-menu"
-          role="listbox"
-          aria-label="Agent commands"
-          data-testid="agent-slash-menu"
-        >
-          <button
-            type="button"
-            class="agent-menu-row"
-            role="option"
-            aria-selected="true"
+  {#if readOnly}
+    <div class="dm-reply dm-reply-readonly" data-testid="composer-readonly">
+      <p class="dm-reply-readonly-notice">{readOnlyNotice}</p>
+    </div>
+  {:else}
+    <div class="dm-reply">
+      <div class="dm-reply-composer">
+        {#if showMentionPicker}
+          <MentionPicker
+            hits={mentionHits}
+            highlight={mentionHighlight}
+            onpick={applyMention}
+          />
+        {:else if showAgentMenu}
+          <div
+            class="agent-menu"
+            role="listbox"
+            aria-label="Agent commands"
+            data-testid="agent-slash-menu"
           >
-            <span class="agent-menu-label">Run an agent</span>
-            <span class="agent-menu-hint">Claude Code handoff</span>
-          </button>
-        </div>
-      {/if}
-      {#if pendingFiles.length > 0 || attachError}
-        <ComposerPendingAttachments
-          files={pendingFiles}
-          error={attachError}
-          onremove={removePendingFile}
-        />
-      {/if}
-      <div class="mention-input-frame">
-        {#if replyText.length > 0}
-          <div class="mention-input-overlay" aria-hidden="true">
-            {#each composerSegments as part, i (`${i}:${part.mention}`)}
-              {#if part.mention}
-                <span class="composer-mention">{part.text}</span>
-              {:else}
-                {part.text}
-              {/if}
-            {/each}
+            <button
+              type="button"
+              class="agent-menu-row"
+              role="option"
+              aria-selected="true"
+            >
+              <span class="agent-menu-label">Run an agent</span>
+              <span class="agent-menu-hint">Claude Code handoff</span>
+            </button>
           </div>
         {/if}
-        <textarea
-          class="dm-reply-input"
-          class:has-overlay={replyText.length > 0}
-          bind:this={replyInputEl}
-          bind:value={replyText}
-          oninput={syncComposerFromDom}
-          onkeydown={onReplyKeydown}
-          onpaste={onComposerPaste}
-          {placeholder}
-          rows="3"
-          aria-label="Reply message"
-          data-testid="conversation-composer"
-          autocomplete="off"
-          data-gramm="false"
-          data-gramm_editor="false"
-          data-enable-grammarly="false"
-          data-lt-active="false"
-          data-1p-ignore="true"
-        ></textarea>
-      </div>
-    </div>
-    <div class="dm-reply-footer">
-      <div class="dm-reply-tools">
-        <label
-          class="dm-tool-btn composer-attach"
-          title="Attach a file"
-          data-testid="composer-attach"
-        >
-          <input
-            bind:this={attachInputEl}
-            type="file"
-            class="composer-file-input"
-            accept={CHAT_ATTACHMENT_ACCEPT}
-            multiple
-            data-testid="composer-attach-input"
-            aria-label="Attach a file"
-            onchange={(e) => {
-              const input = e.currentTarget;
-              if (input.files) addPendingFiles(input.files);
-              input.value = "";
-            }}
+        {#if pendingFiles.length > 0 || attachError}
+          <ComposerPendingAttachments
+            files={pendingFiles}
+            error={attachError}
+            onremove={removePendingFile}
           />
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
+        {/if}
+        <div class="mention-input-frame">
+          {#if replyText.length > 0}
+            <div class="mention-input-overlay" aria-hidden="true">
+              {#each composerSegments as part, i (`${i}:${part.mention}`)}
+                {#if part.mention}
+                  <span class="composer-mention">{part.text}</span>
+                {:else}
+                  {part.text}
+                {/if}
+              {/each}
+            </div>
+          {/if}
+          <textarea
+            class="dm-reply-input"
+            class:has-overlay={replyText.length > 0}
+            bind:this={replyInputEl}
+            bind:value={replyText}
+            oninput={syncComposerFromDom}
+            onkeydown={onReplyKeydown}
+            onpaste={onComposerPaste}
+            {placeholder}
+            rows="3"
+            aria-label="Reply message"
+            data-testid="conversation-composer"
+            autocomplete="off"
+            data-gramm="false"
+            data-gramm_editor="false"
+            data-enable-grammarly="false"
+            data-lt-active="false"
+            data-1p-ignore="true"
+          ></textarea>
+        </div>
+      </div>
+      <div class="dm-reply-footer">
+        <div class="dm-reply-tools">
+          <label
+            class="dm-tool-btn composer-attach"
+            title="Attach a file"
+            data-testid="composer-attach"
           >
-            <path
-              d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+            <input
+              bind:this={attachInputEl}
+              type="file"
+              class="composer-file-input"
+              accept={CHAT_ATTACHMENT_ACCEPT}
+              multiple
+              data-testid="composer-attach-input"
+              aria-label="Attach a file"
+              onchange={(e) => {
+                const input = e.currentTarget;
+                if (input.files) addPendingFiles(input.files);
+                input.value = "";
+              }}
             />
-          </svg>
-        </label>
-        <div class="dm-tool-emoji-wrap">
-          <button
-            type="button"
-            class="dm-tool-btn"
-            onclick={() => (composerEmojiOpen = !composerEmojiOpen)}
-            aria-label="Insert emoji"
-            title="Insert emoji"
-            aria-expanded={composerEmojiOpen}
-            aria-haspopup="menu"
-            data-testid="composer-emoji"
-          >
             <svg
               width="15"
               height="15"
@@ -1396,73 +1383,101 @@
               fill="none"
               aria-hidden="true"
             >
-              <circle
-                cx="8"
-                cy="8"
-                r="6.25"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
-              <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
               <path
-                d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5"
+                d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
                 stroke="currentColor"
-                stroke-width="1.3"
+                stroke-width="1.35"
                 stroke-linecap="round"
+                stroke-linejoin="round"
               />
             </svg>
-          </button>
-          {#if composerEmojiOpen}
-            <EmojiPicker
-              onpick={insertComposerEmoji}
-              onclose={() => (composerEmojiOpen = false)}
-            />
+          </label>
+          <div class="dm-tool-emoji-wrap">
+            <button
+              type="button"
+              class="dm-tool-btn"
+              onclick={() => (composerEmojiOpen = !composerEmojiOpen)}
+              aria-label="Insert emoji"
+              title="Insert emoji"
+              aria-expanded={composerEmojiOpen}
+              aria-haspopup="menu"
+              data-testid="composer-emoji"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6.25"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                />
+                <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
+                <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
+                <path
+                  d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+            {#if composerEmojiOpen}
+              <EmojiPicker
+                onpick={insertComposerEmoji}
+                onclose={() => (composerEmojiOpen = false)}
+              />
+            {/if}
+          </div>
+          {#if replyText.startsWith("/") || showAgentMenu}
+            <button
+              type="button"
+              class="dm-tool-btn"
+              aria-label="Run an agent"
+              title="Type / to run an agent"
+              onclick={() => {
+                if (!replyText.startsWith("/")) replyText = `/${replyText}`;
+                replyInputEl?.focus();
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style="font: 600 13px/1 var(--font-mono, ui-monospace);">/</span
+              >
+            </button>
           {/if}
         </div>
-        {#if replyText.startsWith("/") || showAgentMenu}
-          <button
-            type="button"
-            class="dm-tool-btn"
-            aria-label="Run an agent"
-            title="Type / to run an agent"
-            onclick={() => {
-              if (!replyText.startsWith("/")) replyText = `/${replyText}`;
-              replyInputEl?.focus();
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style="font: 600 13px/1 var(--font-mono, ui-monospace);">/</span
-            >
-          </button>
-        {/if}
-      </div>
-      <button
-        type="button"
-        class="btn btn-send"
-        class:is-idle={!canSend}
-        onclick={send}
-        onpointerdown={syncComposerFromDom}
-        aria-disabled={!canSend}
-        aria-label="Send"
-        title="Send"
-        data-testid="composer-send"
-      >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          aria-hidden="true"
+        <button
+          type="button"
+          class="btn btn-send"
+          class:is-idle={!canSend}
+          onclick={send}
+          onpointerdown={syncComposerFromDom}
+          aria-disabled={!canSend}
+          aria-label="Send"
+          title="Send"
+          data-testid="composer-send"
         >
-          <path
-            d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-          />
-        </svg>
-      </button>
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
-  </div>
+  {/if}
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
       items={conversationAttachments}
@@ -1484,6 +1499,16 @@
 </div>
 
 <style>
+  .dm-reply-readonly {
+    padding: 12px 16px;
+  }
+  .dm-reply-readonly-notice {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--text-muted, #8b8b8b);
+    text-align: center;
+  }
+
   .conversation {
     position: relative;
     /* Own stacking context so z-indexed hover chrome (.dm-quick-react z2,
