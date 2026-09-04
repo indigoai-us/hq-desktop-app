@@ -187,6 +187,12 @@
      */
     bootTimeoutMs?: number;
     /**
+     * Phone-width shells keep this mounted while it is closed — it is what
+     * loads the roster and falls back to #setup — and move it off screen
+     * instead of unmounting it.
+     */
+    offscreen?: boolean;
+    /**
      * First successful paint of the conversation rail or its empty state.
      * Not called while loading, and not called on an error-only rail.
      */
@@ -222,6 +228,7 @@
     onsignout,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
   }: Props = $props();
@@ -1504,6 +1511,7 @@
 
 <aside
   class="chat-sidebar chat-shell"
+  class:offscreen
   aria-label="Conversations"
   data-testid="chat-sidebar"
 >
@@ -3675,6 +3683,40 @@
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .chat-switcher {
       background: var(--v4-surface-solid, #303030);
+    }
+  }
+  /*
+   * Phone width: a fixed 260px column would leave the conversation ~130px, so
+   * the list overlays it instead. `DesktopApp` starts it closed here and
+   * closes it again after a channel is picked; the number below is pinned to
+   * SIDEBAR_OVERLAY_MAX_PX by `shell/sidebar-layout.test.ts`.
+   */
+  @media (max-width: 640px) {
+    .chat-sidebar {
+      position: absolute;
+      inset: 0 auto 0 0;
+      z-index: 40;
+      flex-basis: min(320px, 86vw);
+      width: min(320px, 86vw);
+      /* Dims the conversation behind it without a second element to keep in
+         sync; .desktop-body clips the spread. */
+      box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.45);
+      transition: transform 160ms ease;
+    }
+
+    /* Closed, but still running: unmounting the list is what stopped the
+       roster loading and left the phone with no channel selected at all. */
+    .chat-sidebar.offscreen {
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateX(-100%);
+      box-shadow: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-sidebar {
+      transition: none;
     }
   }
 </style>

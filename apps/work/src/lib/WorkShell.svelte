@@ -10,6 +10,7 @@
   import { onMount } from "svelte";
   import {
     createSyncPlatformAdapter,
+    resolveHostPlatform,
     WebPlatformAdapter,
     type InvokeFn,
     type PlatformAdapter,
@@ -77,6 +78,7 @@
     type HqProFetch,
   } from "./hq-pro-client";
   import { displayVersion } from "./version";
+  import { workRuntimeFor } from "./work-runtime";
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
@@ -106,7 +108,7 @@
       item: ChannelFileItemModel,
       selectedCompanyUid: string | null,
     ) => Promise<ChannelFilePreview>;
-    /** Mirrors the safe user shape supplied by +layout.server on the web. */
+    /** Mirrors the safe user shape supplied by the root +layout on the web. */
     hostIdentity?: WorkShellHostIdentity | null;
     /** Native host-owned storage partition for the authenticated account. */
     hostTenantAccountId?: string | null;
@@ -180,23 +182,9 @@
     onactivethreadchange,
   }: WorkShellProps = $props();
 
-  type TauriWindow = Window & {
-    __TAURI__?: {
-      core?: { invoke?: InvokeFn };
-      tauri?: { invoke?: InvokeFn };
-    };
-  };
-
-  function isTauriRuntime(): boolean {
-    return (
-      (import.meta.env as Record<string, string | boolean | undefined>).TAURI ===
-        "1" ||
-      (typeof window !== "undefined" &&
-        Boolean((window as TauriWindow).__TAURI__))
-    );
-  }
-
-  const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
+  // Only a real desktop host gets the native command bridge. A phone runs a
+  // native shell too, but that shell exposes no commands — see work-runtime.ts.
+  const runtime = runtimeKind ?? workRuntimeFor(resolveHostPlatform());
   const nativeInvoke = hostInvoke ?? tauriInvoke;
   const nativeListen = hostListen ?? tauriListen;
   // The Sync embed supplies a settled desktop identity only after its own

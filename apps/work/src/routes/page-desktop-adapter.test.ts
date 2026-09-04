@@ -42,12 +42,12 @@ describe("HQ Work desktop platform adapter", () => {
       "utf8",
     );
 
+    // Precedence only. Which platform the ambient fallback picks is
+    // work-runtime.test.ts's contract, not this one's.
     expect(
       page,
-      "A host-supplied runtimeKind must select the platform adapter before Work falls back to its existing Tauri detection.",
-    ).toMatch(
-      /const runtime = runtimeKind \?\? \(isTauriRuntime\(\) \? "desktop" : "web"\);/,
-    );
+      "A host-supplied runtimeKind must select the platform adapter before Work falls back to ambient host detection.",
+    ).toMatch(/const runtime = runtimeKind \?\? \w+\(/);
     expect(page).toContain('const adapter: PlatformAdapter = runtime === "desktop"');
   });
 

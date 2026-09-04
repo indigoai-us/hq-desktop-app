@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  iOS Info.plist additions, merged into the generated
+  `gen/apple/hq-work-mobile_iOS/Info.plist` by the Tauri CLI.
+
+  This file exists rather than an edit to the generated plist because
+  `tauri ios build` REWRITES that file on every run, not just on `ios init` —
+  an edit there survives review, survives a commit, and is silently gone by the
+  time the app is packaged. Tauri looks for `Info.ios.plist` next to
+  `tauri.conf.json` specifically so additions like this one are durable.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Cognito returns here after sign-in. The scheme must stay in step with
+	  MOBILE_REDIRECT_URI, which is a REGISTERED callback URL on the
+	  vault-client app client - Cognito rejects any redirect_uri not on that
+	  list. mobile-deep-link.test.ts pins the two together.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.indigo.hq-work.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hqmobile</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -40,5 +40,16 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.indigo.hq-work.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hqmobile</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
