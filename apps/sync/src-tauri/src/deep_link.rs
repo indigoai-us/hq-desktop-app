@@ -60,13 +60,27 @@ pub fn parse_hq_desktop_url(raw: &str) -> Option<SetupDeepLinkTarget> {
         }
     }
     let company_uid = company_uid.trim().to_string();
-    if company_uid.is_empty() {
+    if !is_valid_company_uid(&company_uid) {
         return None;
     }
     Some(SetupDeepLinkTarget {
         checkout: checkout.trim().to_string(),
         company_uid,
     })
+}
+
+/// Company UIDs forwarded from a deep link must match `^cmp_[A-Za-z0-9_-]+$`.
+/// The value lands in a Tauri event and a channel lookup, so anything a
+/// third-party URL could smuggle in (path separators, whitespace, query
+/// syntax) is rejected here rather than downstream.
+pub fn is_valid_company_uid(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("cmp_") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// First `hq-desktop://` argument the OS handed this process, if valid.
@@ -165,6 +179,51 @@ mod tests {
         assert!(parse_hq_desktop_url("https://example.com/setup?company=cmp_x").is_none());
         assert!(parse_hq_desktop_url("hq-desktop://messages?company=cmp_x").is_none());
         assert!(parse_hq_desktop_url("hqwork://open?channel=setup").is_none());
+    }
+
+    #[test]
+    fn parse_requires_cmp_prefixed_company_uid() {
+        for bad in [
+            "acme",
+            "cmp_",
+            "CMP_acme",
+            "cmp_ac me",
+            "cmp_acme/../x",
+            "cmp_acme%00",
+            "cmp_acme?x=1",
+            "prs_owner",
+            "cmp_ac.me",
+        ] {
+            let url = format!("hq-desktop://setup?checkout=done&company={bad}");
+            assert!(
+                parse_hq_desktop_url(&url).is_none(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+        // Percent-encoded separators decode to invalid characters too.
+        assert!(parse_hq_desktop_url(
+            "hq-desktop://setup?checkout=done&company=cmp_acme%2F..%2Fx"
+        )
+        .is_none());
+
+        for good in ["cmp_acme", "cmp_Acme-1_B", "cmp_0"] {
+            let url = format!("hq-desktop://setup?checkout=done&company={good}");
+            assert_eq!(
+                parse_hq_desktop_url(&url).map(|t| t.company_uid),
+                Some(good.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn is_valid_company_uid_matches_the_pattern() {
+        assert!(is_valid_company_uid("cmp_acme"));
+        assert!(is_valid_company_uid("cmp_a-b_C9"));
+        assert!(!is_valid_company_uid(""));
+        assert!(!is_valid_company_uid("cmp_"));
+        assert!(!is_valid_company_uid("cmp_a b"));
+        assert!(!is_valid_company_uid("cmp_é"));
+        assert!(!is_valid_company_uid("xcmp_acme"));
     }
 
     #[test]
