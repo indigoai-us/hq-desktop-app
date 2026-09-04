@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkSessionFeed, type FeedTimerHost } from "./work-session-feed";
+import {
+  createWorkSessionFeed,
+  isLiveWakeKind,
+  shouldTreatAsWorkSessionWake,
+  type FeedTimerHost,
+} from "./work-session-feed";
 
 function fakeTimers(): FeedTimerHost & { tick(): void; active: number } {
   let fns: Array<() => void> = [];
@@ -82,5 +87,29 @@ describe("work-session feed (US-008 AC3)", () => {
     timers.tick();
     await Promise.resolve();
     expect(feed.mode).toBe("polling");
+  });
+
+  it("treats live kind as a wake signal and flips to wake-driven", () => {
+    expect(isLiveWakeKind("live")).toBe(true);
+    expect(isLiveWakeKind("work-session")).toBe(true);
+    expect(isLiveWakeKind("presence")).toBe(false);
+    expect(shouldTreatAsWorkSessionWake("live")).toBe(true);
+    expect(shouldTreatAsWorkSessionWake("hq/prs_bob/work-session/sess-1")).toBe(
+      true,
+    );
+    expect(
+      shouldTreatAsWorkSessionWake("hq/cmp_acme/thread/proj/work-session-notes"),
+    ).toBe(false);
+
+    const timers = fakeTimers();
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const feed = createWorkSessionFeed({ refresh, pollMs: 1000, timers });
+    feed.start();
+    expect(feed.mode).toBe("polling");
+
+    if (shouldTreatAsWorkSessionWake("live")) feed.wake();
+    expect(feed.mode).toBe("wake-driven");
+    expect(timers.active).toBe(0);
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });

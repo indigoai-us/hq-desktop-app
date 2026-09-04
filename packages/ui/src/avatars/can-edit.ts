@@ -19,3 +19,22 @@ export function canEditAgentProfile(input: {
   }
   return selfIsAdmin(input.companies, input.isAdmin);
 }
+
+/**
+ * Company-scoped owner/admin gate for "Move to another company" (US-017B).
+ * Not channel selfIsOwner — same membership scope as canEditAgentProfile.
+ */
+export function canMigrateCompanySession(input: {
+  companyUid?: string | null;
+  companies?: ReadonlyArray<WorkspaceLike> | null;
+}): boolean {
+  const companyUid = input.companyUid?.trim();
+  if (!companyUid) return false;
+  const workspace = (input.companies ?? []).find(
+    (row) => (row.cloudUid ?? "").trim() === companyUid,
+  );
+  if (!workspace) return false;
+  const active =
+    (workspace.membershipStatus ?? "active").toLowerCase() === "active";
+  return active && roleIsAdminOrOwner(workspace.role);
+}

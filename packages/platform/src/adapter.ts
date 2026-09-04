@@ -237,12 +237,63 @@ export interface AgentProfileWire {
   displayName?: string;
   title?: string;
   description?: string;
+  avatarUrl?: string;
   avatarBase64?: string;
 }
 
 export interface UpdateAgentProfileResult {
   uid: string;
   profile: AgentProfileWire;
+  slackUpdated?: boolean;
+}
+
+export interface AvatarPackAuthorWire {
+  handle: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
+export interface AvatarPackListEntry {
+  id: string;
+  name: string;
+  version: string;
+  author: AvatarPackAuthorWire;
+  count: number;
+  thumbnailUrl?: string;
+}
+
+export interface AvatarPackListPayload {
+  packs: AvatarPackListEntry[];
+  expiresAt: number;
+}
+
+export interface AvatarPackItemWire {
+  id: string;
+  name: string;
+  tags: string[];
+  thumbUrl: string;
+  fullUrl: string;
+}
+
+export interface AvatarPackDetailPayload {
+  id: string;
+  name: string;
+  version: string;
+  author: AvatarPackAuthorWire;
+  count: number;
+  items: AvatarPackItemWire[];
+  expiresAt: number;
+}
+
+export interface SelectAgentAvatarInput {
+  packId: string;
+  itemId: string;
+}
+
+export interface SelectAgentAvatarResult {
+  uid: string;
+  avatarUrl?: string;
+  profile?: AgentProfileWire;
   slackUpdated?: boolean;
 }
 
@@ -266,6 +317,18 @@ export interface IdentityApi {
     agentUid: string,
     input: UpdateAgentProfileInput,
   ): AdapterPromise<UpdateAgentProfileResult>;
+  /** GET /v1/avatar-packs — published gallery catalog. */
+  listAvatarPacks(): AdapterPromise<AvatarPackListPayload>;
+  /** GET /v1/avatar-packs/{id} — items with presigned thumb/full URLs. */
+  getAvatarPack(packId: string): AdapterPromise<AvatarPackDetailPayload>;
+  /**
+   * POST /v1/agents/{agentUid}/avatar — copy a pack item onto the agent's
+   * profile avatarKey.
+   */
+  selectAgentAvatar(
+    agentUid: string,
+    input: SelectAgentAvatarInput,
+  ): AdapterPromise<SelectAgentAvatarResult>;
 }
 
 export interface MessageSearchOptions {
@@ -950,6 +1013,28 @@ export interface SettingsApi {
 }
 
 /**
+ * Optional destination binding for cross-company session migrate (US-017B).
+ * Empty `{}` leaves project/task unset on the destination copy.
+ */
+export interface MigrateSessionDestination {
+  projectId?: string;
+  taskId?: string;
+}
+
+/**
+ * Body for POST /v1/work-mesh/sessions/{sessionId}/migrate.
+ * This is the only desktop client path that rebinds a session across companies.
+ */
+export interface MigrateSessionRequest {
+  operationId: string;
+  digest: string;
+  sourceCompanyUid: string;
+  destinationCompanyUid: string;
+  destination: MigrateSessionDestination;
+  expectedVersion: number;
+}
+
+/**
  * Work-mesh PROJECT_VIEW + local machine cache.
  *
  * Desktop `readLocalSnapshot` returns the on-disk cache
@@ -961,6 +1046,14 @@ export interface WorkMeshApi {
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
+  /**
+   * Cross-company session migrate (US-017A/B).
+   * POST /v1/work-mesh/sessions/{sessionId}/migrate — only rebind path.
+   */
+  migrateSession(
+    sessionId: string,
+    body: MigrateSessionRequest,
+  ): AdapterPromise<Json>;
 }
 
 // ---------------------------------------------------------------------------

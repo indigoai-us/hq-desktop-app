@@ -146,7 +146,17 @@ export type SettingsTab =
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }
+  | {
+      kind:
+        | 'home'
+        | 'mission-control'
+        | 'atlas'
+        | 'inbox'
+        | 'messages'
+        | 'meetings'
+        | 'marketplace'
+        | 'moderation';
+    }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -390,6 +400,8 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
       return { kind: 'home' };
     case 'mission-control':
       return { kind: 'mission-control' };
+    case 'atlas':
+      return { kind: 'atlas' };
     case 'inbox':
       return { kind: 'inbox' };
     case 'messages':

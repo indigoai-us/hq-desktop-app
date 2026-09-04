@@ -764,7 +764,10 @@ pub(crate) async fn clear_notification_credentials<R: Runtime>(
         .ok_or_else(|| "Notification session state is unavailable".to_string())?;
     invalidate_notification_session(app).await;
     let _credential_write = state.credential_write_gate.lock().await;
-    cognito::clear_tokens().await
+    let cleared = cognito::clear_tokens().await;
+    // Client health (US-002): sign-out is an auth state change.
+    crate::commands::client_health::notify_client_health_state_changed();
+    cleared
 }
 
 pub(crate) async fn refresh_notification_credentials<R: Runtime>(
@@ -2732,37 +2735,45 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
 
     #[cfg(target_os = "macos")]
     {
-        // Lazily register the bundle identifier with mac-notification-sys so the
-        // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
-        // the guard in share_notify::do_poll.
-        static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
-        NOTIFICATION_APP_INIT.get_or_init(|| {
-            const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
-            match mac_notification_sys::set_application(BUNDLE_ID) {
-                Ok(()) => log(LOG_TAG, &format!("DM_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}")),
-                Err(e) => log(
-                    LOG_TAG,
-                    &format!("DM_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
+        // Native fallback (customBanner: false). Deliver through
+        // `un_notify::deliver_message`, which fires a real macOS banner via
+        // `UNUserNotificationCenter` when notification permission is granted and
+        // falls back to `osascript display notification` otherwise.
+        //
+        // This replaces the old `mac_notification_sys` (NSUserNotification)
+        // send, which produced NO banner on modern macOS: the process becomes a
+        // UN "modern client" at launch (the UN delegate + permission probe both
+        // touch UN), after which usernoted permanently denies every legacy
+        // NSUserNotification deliver from this process. That silent denial was
+        // the root cause of "native DM notifications don't appear".
+        // Native-banner gate (Settings → Notifications). The master switch,
+        // the per-event DM toggle, and the "only when unfocused" rule all live
+        // in menubar.json and are read fresh here so a toggle takes effect on
+        // the next DM without a restart. When suppressed we skip only the OS
+        // banner — the DMs are still ACKed and emitted to the in-app
+        // NotificationFeed panel below, so nothing is lost.
+        let app_focused = crate::commands::notifications::app_is_focused(app);
+        let native_allowed =
+            hq_desktop_core::native_notify::should_native_notify("dm", app_focused);
+        if !native_allowed {
+            log(
+                LOG_TAG,
+                &format!(
+                    "DM_NOTIFY_NATIVE_SUPPRESSED {} DM(s) (settings gate, focused={app_focused})",
+                    fresh.len()
                 ),
-            }
-        });
-
-        for dm in &fresh {
+            );
+        }
+        for dm in fresh.iter().filter(|_| native_allowed) {
             let title = dm.from_display_name.clone();
             let message = dm.body.clone();
             let title_for_log = title.clone();
             let dispatched = with_current_notification_mutation(app, auth, || async move {
+                // Fire-and-forget: the custom banner/widget path above owns
+                // interactive actions, and UN delivery is async, so we never
+                // block an account transition waiting on a click.
                 tokio::task::spawn_blocking(move || {
-                    // Native fallback is intentionally fire-and-forget. The
-                    // custom banner/widget path above owns interactive actions;
-                    // waiting for a native click here would keep an account
-                    // transition blocked until the user acted.
-                    let mut notification = mac_notification_sys::Notification::default();
-                    notification
-                        .title(&title)
-                        .message(&message)
-                        .asynchronous(true);
-                    notification.send()
+                    crate::commands::un_notify::deliver_message(&title, &message, "dm");
                 })
                 .await
             })
@@ -2773,11 +2784,10 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
                     log(LOG_TAG, "DM_NOTIFY_TOAST_STALE auth session changed");
                     return;
                 }
-                Some(Ok(Ok(_))) => log(
+                Some(Ok(())) => log(
                     LOG_TAG,
                     &format!("DM_NOTIFY_TOAST_SHOWN from={title_for_log}"),
                 ),
-                Some(Ok(Err(error))) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={error}")),
                 Some(Err(error)) => log(
                     LOG_TAG,
                     &format!("DM_NOTIFY_SEND_WORKER_FAILED err={error}"),

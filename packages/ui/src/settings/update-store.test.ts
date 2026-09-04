@@ -8,17 +8,23 @@ import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import CorePopover from "../home/CorePopover.svelte";
 import {
   appRowActions,
+  appRowIdleHint,
   appRowStatusLabel,
   isInstallAlreadyInProgress,
   progressPercentFrom,
+  recommendBannerFromPayload,
 } from "./update-presentation";
 import {
+  applyRecommendBanner,
   checkDesktopUpdates,
+  dismissRecommendBanner,
   downloadDesktopUpdate,
   hydrateDownloadedUpdate,
+  installRecommendedUpdate,
   markDownloaded,
   markInstallStarted,
   reportDownloadProgress,
+  reportIdleWait,
   reportInstallFailed,
   resetUpdateStore,
   restartToUpdate,
@@ -99,6 +105,18 @@ describe("update presentation labels", () => {
         downloadPercent: 100,
       }),
     ).toBe("RESTART TO UPDATE");
+    expect(appRowIdleHint(480)).toBe(
+      "Auto-install waits for a sync gap · 8 min left",
+    );
+    expect(appRowIdleHint(0)).toBe(
+      "Auto-install is pausing sync, then restarting",
+    );
+    expect(
+      recommendBannerFromPayload({
+        latestVersion: "0.10.185",
+        message: "Please update.",
+      }),
+    ).toEqual({ version: "0.10.185", message: "Please update." });
     expect(
       appRowStatusLabel({
         status: "available",
@@ -254,6 +272,67 @@ describe("shared update store", () => {
     resetUpdateStore();
     await hydrateDownloadedUpdate(orch({}));
     expect(updateStore.installPhase).toBe("idle");
+  });
+
+  it("never keeps DOWNLOADING 0% once the host has staged the package", async () => {
+    reportDownloadProgress({ percent: 0 });
+    expect(updateStore.installPhase).toBe("downloading");
+    expect(
+      appRowStatusLabel({
+        status: "available",
+        installPhase: updateStore.installPhase,
+        downloadPercent: updateStore.downloadPercent,
+      }),
+    ).toBe("DOWNLOADING 0%");
+    await hydrateDownloadedUpdate(
+      orch({
+        getDownloadedUpdate: async () =>
+          pass({ version: "0.10.184", waitingForIdleSecs: 480 }),
+      }),
+    );
+    expect(updateStore.installPhase).toBe("ready");
+    expect(updateStore.downloadPercent).toBe(100);
+    expect(
+      appRowStatusLabel({
+        status: updateStore.appStatus,
+        installPhase: updateStore.installPhase,
+        downloadPercent: updateStore.downloadPercent,
+      }),
+    ).toBe("RESTART TO UPDATE");
+    expect(updateStore.idleWaitRemainingSecs).toBe(480);
+    reportDownloadProgress({ percent: 0 });
+    expect(updateStore.installPhase).toBe("ready");
+  });
+
+  it("waiting-for-idle events keep Restart to update with a countdown", () => {
+    reportIdleWait({ version: "0.10.184", remainingSecs: 600 });
+    expect(updateStore.installPhase).toBe("ready");
+    expect(appRowIdleHint(updateStore.idleWaitRemainingSecs)).toContain(
+      "sync gap",
+    );
+  });
+
+  it("recommend banner is dismissible and Update now downloads then installs", async () => {
+    const downloadUpdate = vi.fn(async () => pass({ version: "0.10.185" }));
+    const installDownloadedUpdate = vi.fn(async () => pass(undefined));
+    applyRecommendBanner({
+      latestVersion: "0.10.185",
+      message: "A newer HQ is recommended.",
+    });
+    expect(updateStore.recommendBanner).toEqual({
+      version: "0.10.185",
+      message: "A newer HQ is recommended.",
+    });
+    dismissRecommendBanner();
+    expect(updateStore.recommendBanner).toBeNull();
+    applyRecommendBanner({ latest_version: "0.10.185" });
+    await installRecommendedUpdate(
+      orch({ downloadUpdate, installDownloadedUpdate }),
+    );
+    expect(updateStore.recommendBanner).toBeNull();
+    expect(downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(installDownloadedUpdate).toHaveBeenCalledTimes(1);
+    expect(updateStore.installPhase).toBe("installing");
   });
 
   it("host events move the row from downloading to staged to failed", () => {
@@ -511,6 +590,23 @@ describe("shared store keeps pane and popover in lockstep", () => {
       flushSync();
       expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
       expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeTruthy();
+    });
+  });
+
+  it("shows the idle-wait hint on both surfaces while auto-install waits", async () => {
+    const adapter = updatesAdapter({
+      getDownloadedUpdate: vi.fn(async () =>
+        ok({ version: "0.10.184", waitingForIdleSecs: 420 }),
+      ),
+    });
+    const { paneHost, popoverHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(paneHost.textContent).toContain("sync gap");
+      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("sync gap");
+      expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
     });
   });
 });

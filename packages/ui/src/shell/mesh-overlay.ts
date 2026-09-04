@@ -24,7 +24,9 @@ import {
   extractStoryId,
   type ChannelStatusModel,
   type LiveAgentStatusRow,
+  type LiveReadSessionInput,
   type StatusMemberInput,
+  type StatusPresenceInput,
 } from "../chat/channel-status-model.js";
 import type { WorkMeshThread } from "../board/thread-model.js";
 import type {
@@ -541,6 +543,10 @@ export interface StatusForRowOptions {
   channelMembers?: readonly StatusMemberInput[] | null;
   /** person/agent uid → display name (contacts, work-mesh identities). */
   identities?: Readonly<Record<string, string>> | null;
+  /** Live-read sessions already scoped to this project (US-015). */
+  liveSessions?: readonly LiveReadSessionInput[] | null;
+  /** Presence store snapshot for the company (US-015). */
+  presence?: readonly StatusPresenceInput[] | null;
 }
 
 export function isAgentUid(uid: string): boolean {
@@ -791,8 +797,11 @@ export function statusForRow(
     },
     members,
     companyLabel: mesh.companyLabel,
+    liveSessions: options.liveSessions ?? undefined,
+    presence: options.presence ?? undefined,
   });
-  if (fromThreads.length > 0) {
+  // Prefer live-read agents; fall back to work-thread projection.
+  if (built.liveAgents.length === 0 && fromThreads.length > 0) {
     built.liveAgents = fromThreads;
   }
   return built;

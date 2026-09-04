@@ -51,6 +51,21 @@ describe("applyChannelMessageWake", () => {
       }),
     ).toBe(list);
   });
+
+  it("advances the activity stamp without bumping unread", () => {
+    const list = [ch({ unread: 0 })];
+    const next = applyChannelMessageWake(list, {
+      channelId: "chn_x",
+      createdAt: "2026-09-02T03:19:00.000Z",
+    });
+    expect(next[0]).toEqual(
+      expect.objectContaining({
+        unread: 0,
+        lastMessageAt: "2026-09-02T03:19:00.000Z",
+        lastActivityAt: "2026-09-02T03:19:00.000Z",
+      }),
+    );
+  });
 });
 
 describe("shouldBumpChannelUnread", () => {

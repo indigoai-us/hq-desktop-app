@@ -60,7 +60,7 @@ describe("parseMessageAttachments", () => {
   });
 });
 
-describe("parseSystemEvent — work_session", () => {
+describe("parseSystemEvent — work_session card", () => {
   it("renders a work-mesh session card from cache envelopes", () => {
     const model = parseSystemEvent({
       v: 1,
@@ -69,10 +69,12 @@ describe("parseSystemEvent — work_session", () => {
       note: "US-006 throwaway cleanup",
     });
     expect(model).toMatchObject({
-      kind: "line",
+      kind: "work_session_card",
       type: "work_session",
       title: "US-006 throwaway cleanup",
       summary: "done",
+      status: "done",
+      note: "US-006 throwaway cleanup",
     });
     expect(
       shouldHideSystemMessage({
@@ -80,6 +82,105 @@ describe("parseSystemEvent — work_session", () => {
         systemEvent: { v: 1, type: "work_session", status: "in_progress" },
       }),
     ).toBe(false);
+  });
+
+  it("accepts additive envelope fields and ignores unknown keys", () => {
+    const model = parseSystemEvent({
+      v: 1,
+      type: "work_session",
+      status: "active",
+      actorUid: "agt_parker",
+      actorType: "agent",
+      harness: "claude-code",
+      taskId: "US-015",
+      turnCount: 12,
+      lastTurnAt: "2026-09-04T11:58:00.000Z",
+      principal: { uid: "agt_parker", kind: "agent" },
+      displayName: "Parker",
+      futureField: { nested: true },
+      anotherUnknown: "ignored",
+    });
+    expect(model).toMatchObject({
+      kind: "work_session_card",
+      type: "work_session",
+      actorUid: "agt_parker",
+      actorType: "agent",
+      harness: "claude-code",
+      taskId: "US-015",
+      turnCount: 12,
+      lastTurnAt: "2026-09-04T11:58:00.000Z",
+      status: "active",
+      principalDisplay: "Parker",
+    });
+    expect(model && "futureField" in model).toBe(false);
+  });
+
+  it("keeps the v=1 gate and returns null for unknown types", () => {
+    expect(parseSystemEvent({ v: 2, type: "work_session" })).toBeNull();
+    expect(
+      parseSystemEvent({ v: 1, type: "work_session_unknown_future" }),
+    ).toBeNull();
+  });
+});
+
+describe("parseSystemEvent — discrete work_session lines", () => {
+  it("maps blocked / task_status / finished to line titles from note", () => {
+    expect(
+      parseSystemEvent({
+        v: 1,
+        type: "work_session_blocked",
+        note: "Deacon is blocked on review",
+      }),
+    ).toMatchObject({
+      kind: "line",
+      type: "work_session_blocked",
+      title: "Deacon is blocked on review",
+      summary: null,
+    });
+    expect(
+      parseSystemEvent({
+        v: 1,
+        type: "work_session_task_status",
+        note: "Deacon moved US-3 to done",
+      }),
+    ).toMatchObject({
+      kind: "line",
+      type: "work_session_task_status",
+      title: "Deacon moved US-3 to done",
+    });
+    expect(
+      parseSystemEvent({
+        v: 1,
+        type: "work_session_finished",
+        note: "Deacon finished 30 turns on US-3",
+      }),
+    ).toMatchObject({
+      kind: "line",
+      type: "work_session_finished",
+      title: "Deacon finished 30 turns on US-3",
+    });
+  });
+
+  it("falls back to DEFAULT_TITLES when title/note/body are absent", () => {
+    expect(
+      parseSystemEvent({ v: 1, type: "work_session_blocked" }),
+    ).toMatchObject({ title: "Blocked" });
+    expect(
+      parseSystemEvent({ v: 1, type: "work_session_task_status" }),
+    ).toMatchObject({ title: "Task moved" });
+    expect(
+      parseSystemEvent({ v: 1, type: "work_session_finished" }),
+    ).toMatchObject({ title: "Finished" });
+  });
+
+  it("prefers summary when note is absent", () => {
+    expect(
+      parseSystemEvent({
+        v: 1,
+        type: "work_session_blocked",
+        summary: "Blocked waiting on review",
+      }),
+    ).toMatchObject({ title: "Blocked waiting on review" });
   });
 });
 

@@ -19,13 +19,30 @@ export interface AgentProfileUpdateInput {
 
 export interface AgentProfileUpdateResult {
   uid?: string;
-  profile?: { avatarBase64?: string; displayName?: string; description?: string };
+  profile?: {
+    avatarBase64?: string;
+    avatarUrl?: string;
+    displayName?: string;
+    description?: string;
+  };
   slackUpdated?: boolean;
 }
 
 export type AdapterResultLike<T> =
   | { ok: true; value: T }
   | { ok: false; reason?: string; message?: string; code?: string };
+
+export interface SelectAgentAvatarInput {
+  packId: string;
+  itemId: string;
+}
+
+export interface SelectAgentAvatarResult {
+  uid?: string;
+  avatarUrl?: string;
+  profile?: AgentProfileUpdateResult["profile"];
+  slackUpdated?: boolean;
+}
 
 export interface SaveAgentAvatarDeps {
   packs: readonly AvatarPack[];
@@ -35,6 +52,10 @@ export interface SaveAgentAvatarDeps {
     agentUid: string,
     input: AgentProfileUpdateInput,
   ) => Promise<AdapterResultLike<AgentProfileUpdateResult>>;
+  selectAgentAvatar?: (
+    agentUid: string,
+    input: SelectAgentAvatarInput,
+  ) => Promise<AdapterResultLike<SelectAgentAvatarResult>>;
 }
 
 export interface SaveAgentAvatarResult {
@@ -82,6 +103,32 @@ export async function saveAgentAvatar(
 ): Promise<SaveAgentAvatarResult> {
   const uid = agentUid.trim();
   if (!uid) throw new Error("Missing agent.");
+  if (selection.kind === "item") {
+    if (!deps.selectAgentAvatar) {
+      throw new Error("Could not save the agent avatar.");
+    }
+    const result = await deps.selectAgentAvatar(uid, {
+      packId: selection.packId,
+      itemId: selection.itemId,
+    });
+    if (!result.ok) {
+      throw new Error(result.message?.trim() || "Could not save the agent avatar.");
+    }
+    const pack = deps.packs.find((entry) => entry.id === selection.packId);
+    const item = pack?.items.find((entry) => entry.id === selection.itemId);
+    const src = item
+      ? (item.fullUrl ?? resolvePackItemSrc(pack!, item))
+      : "";
+    const preview =
+      result.value?.avatarUrl?.trim() ||
+      result.value?.profile?.avatarUrl?.trim() ||
+      src;
+    return {
+      previewDataUrl: preview,
+      src: preview,
+      profile: result.value ?? null,
+    };
+  }
   const { src } = itemForSelection(deps.packs, selection, uid);
   const bytes = await deps.fetchBytes(src);
   if (bytes.byteLength === 0) {

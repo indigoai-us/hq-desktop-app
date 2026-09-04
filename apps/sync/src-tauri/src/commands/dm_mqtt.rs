@@ -267,13 +267,48 @@ fn client_id() -> String {
     )
 }
 
+/// What an inbound wake (ConnAck offline catch-up, or any Publish) should do.
+/// The MQTT payload is NEVER inspected either way — only its arrival matters
+/// ("the MQTT message is ONLY a wake signal", per the module docs). Shared by
+/// the DM receiver and the US-007 client-health diagnostics wake receiver so
+/// both reuse the exact same credential-fetch/SigV4-presign/reconnect
+/// machinery instead of a second copy.
+#[derive(Clone, Copy)]
+pub(crate) enum MqttWakeAction {
+    /// The original DM behavior: re-run the singleton-guarded DM poll.
+    Dm,
+    /// A plain synchronous notify — used by the client-health diagnostics
+    /// poller, which owns its own polling/backoff logic and only needs an
+    /// early wake signal.
+    Notify(fn()),
+}
+
+impl MqttWakeAction {
+    async fn fire(self, app: &AppHandle) {
+        match self {
+            MqttWakeAction::Dm => poll_dm_once(app.clone()).await,
+            MqttWakeAction::Notify(notify) => notify(),
+        }
+    }
+}
+
 /// One connect→subscribe→receive cycle. Returns `Ok(())` on a clean shutdown
 /// signal (never, in practice — the loop runs until the process exits) and
 /// `Err(reason)` on any connection failure so the caller can back off and retry.
 ///
-/// Calls `poll_dm_once(app)` once right after a successful connect (offline
-/// catch-up, US-006) and once per inbound Publish (the wake signal).
-async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), String> {
+/// Fires `wake` once right after a successful connect (offline catch-up,
+/// US-006) and once per inbound Publish (the wake signal). Subscribes to
+/// `topic_override` when set, else `creds.topic` — the DM receiver relies on
+/// the server-vended `creds.topic`; the diagnostics receiver subscribes to a
+/// sibling leaf under the SAME already-granted `hq/<personUid>/*` wildcard
+/// (see `setup_client_health_mqtt_receiver`), so no new IAM/session-policy
+/// grant is needed.
+async fn run_once(
+    app: &AppHandle,
+    creds: &RealtimeCredsResponse,
+    topic_override: Option<fn(&str) -> String>,
+    wake: MqttWakeAction,
+) -> Result<(), String> {
     use rumqttc::{AsyncClient, MqttOptions};
 
     let now = SystemTime::now();
@@ -321,9 +356,12 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     // error: tear the (now-poisoned) eventloop down and let the caller reconnect
     // with a fresh eventloop and fresh creds, instead of the panic unwinding
     // through and killing the long-lived receiver task.
-    let topic = creds.topic.clone();
+    let topic = match topic_override {
+        Some(derive) => derive(&creds.topic),
+        None => creds.topic.clone(),
+    };
     let app = app.clone();
-    let handle = tokio::task::spawn(drive_eventloop(app, client, eventloop, topic));
+    let handle = tokio::task::spawn(drive_eventloop(app, client, eventloop, topic, wake));
     match handle.await {
         Ok(result) => result,
         Err(join_err) if join_err.is_panic() => {
@@ -348,6 +386,7 @@ async fn drive_eventloop(
     client: rumqttc::AsyncClient,
     mut eventloop: rumqttc::EventLoop,
     topic: String,
+    wake: MqttWakeAction,
 ) -> Result<(), String> {
     use rumqttc::{Event, Packet, QoS};
     loop {
@@ -362,12 +401,12 @@ async fn drive_eventloop(
                 log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
-                poll_dm_once(app.clone()).await;
+                wake.fire(&app).await;
             }
             Ok(Event::Incoming(Packet::Publish(_))) => {
-                // Wake signal. We do not inspect the payload — just poll.
+                // Wake signal. We do not inspect the payload — just wake.
                 log(LOG_TAG, "DM_MQTT_WAKE");
-                poll_dm_once(app.clone()).await;
+                wake.fire(&app).await;
             }
             Ok(_) => { /* SubAck, PingResp, Outgoing, etc. — ignore. */ }
             Err(e) => {
@@ -420,6 +459,63 @@ fn capture_wss_transport_panic(panic_message: &str) {
     );
 }
 
+/// Shared connect/backoff/reconnect loop for every MQTT wake receiver in this
+/// module (DM + US-007 client-health diagnostics). `topic_override` is
+/// applied to each (re)connect the same way `run_once` does; `log_prefix`
+/// keeps the existing `DM_MQTT_*` log codes exactly as-is for the DM
+/// receiver while giving the diagnostics receiver its own `CLIENT_HEALTH_MQTT_*`
+/// vocabulary.
+async fn run_wake_receiver_loop(
+    app: AppHandle,
+    topic_override: Option<fn(&str) -> String>,
+    wake: MqttWakeAction,
+    log_prefix: &'static str,
+) {
+    // Give the app a moment to finish init + load the Cognito token from
+    // disk (mirrors the share-notify poller's 5s launch delay).
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let mut backoff = BACKOFF_MIN;
+    loop {
+        // Re-fetch credentials before every (re)connect — they are short-lived
+        // STS creds and will have expired across a long backoff.
+        match fetch_realtime_credentials().await {
+            Ok(creds) => {
+                // A successful connect cycle runs until the socket drops; only
+                // then do we fall through to back off + reconnect. Reset the
+                // backoff after a connection that actually established.
+                let started = SystemTime::now();
+                match run_once(&app, &creds, topic_override, wake).await {
+                    Ok(()) => { /* unreachable in practice; treat as disconnect */ }
+                    Err(e) => log(LOG_TAG, &format!("{log_prefix}_DISCONNECT {e}")),
+                }
+                // If we stayed connected for a while, reset backoff so the next
+                // transient drop reconnects fast.
+                if started
+                    .elapsed()
+                    .map(|d| d > Duration::from_secs(30))
+                    .unwrap_or(false)
+                {
+                    backoff = BACKOFF_MIN;
+                }
+            }
+            Err(e) => {
+                log(LOG_TAG, &format!("{log_prefix}_CREDS_FAIL {e}"));
+            }
+        }
+
+        log(
+            LOG_TAG,
+            &format!(
+                "{log_prefix}_FALLBACK reconnect in {}s (poll still active)",
+                backoff.as_secs()
+            ),
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
+}
+
 /// Spawn the instant-DM MQTT receiver. Called from `main.rs` `.setup()`,
 /// macOS-gated like the other background tasks.
 ///
@@ -428,51 +524,36 @@ fn capture_wss_transport_panic(panic_message: &str) {
 /// On any failure the task logs and retries with capped exponential backoff — it
 /// never surfaces an error to the user and never blocks the 60s poll.
 pub fn setup_dm_mqtt_receiver(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        // Give the app a moment to finish init + load the Cognito token from
-        // disk (mirrors the share-notify poller's 5s launch delay).
-        tokio::time::sleep(Duration::from_secs(5)).await;
+    tauri::async_runtime::spawn(run_wake_receiver_loop(app, None, MqttWakeAction::Dm, "DM_MQTT"));
+}
 
-        let mut backoff = BACKOFF_MIN;
-        loop {
-            // Re-fetch credentials before every (re)connect — they are short-lived
-            // STS creds and will have expired across a long backoff.
-            match fetch_realtime_credentials().await {
-                Ok(creds) => {
-                    // A successful connect cycle runs until the socket drops; only
-                    // then do we fall through to back off + reconnect. Reset the
-                    // backoff after a connection that actually established.
-                    let started = SystemTime::now();
-                    match run_once(&app, &creds).await {
-                        Ok(()) => { /* unreachable in practice; treat as disconnect */ }
-                        Err(e) => log(LOG_TAG, &format!("DM_MQTT_DISCONNECT {e}")),
-                    }
-                    // If we stayed connected for a while, reset backoff so the next
-                    // transient drop reconnects fast.
-                    if started
-                        .elapsed()
-                        .map(|d| d > Duration::from_secs(30))
-                        .unwrap_or(false)
-                    {
-                        backoff = BACKOFF_MIN;
-                    }
-                }
-                Err(e) => {
-                    log(LOG_TAG, &format!("DM_MQTT_CREDS_FAIL {e}"));
-                }
-            }
+/// Derive the client-health wake topic from the server-vended DM topic by
+/// replacing its final segment (`hq/<personUid>/dm` -> `hq/<personUid>/client-health`).
+/// Both leaves fall under the SAME `hq/<personUid>/*` wildcard the realtime
+/// credentials grant already scopes `iot:Connect/Subscribe/Receive` to (see
+/// module docs), so this needs no new IAM/session-policy grant.
+fn client_health_topic_from(dm_topic: &str) -> String {
+    match dm_topic.rsplit_once('/') {
+        Some((prefix, _leaf)) => format!("{prefix}/client-health"),
+        None => "client-health".to_string(),
+    }
+}
 
-            log(
-                LOG_TAG,
-                &format!(
-                    "DM_MQTT_FALLBACK reconnect in {}s (poll still active)",
-                    backoff.as_secs()
-                ),
-            );
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(BACKOFF_MAX);
-        }
-    });
+/// Spawn the US-007 client-health diagnostics MQTT wake receiver. Best-effort
+/// optimization ONLY — per the story's AC #1, the authenticated polling
+/// fallback in `client_diagnostics::setup_client_diagnostics_poller` is wired
+/// unconditionally for every platform and is what actually guarantees desired
+/// commands get executed. This receiver, like `setup_dm_mqtt_receiver`, is
+/// gated to the platforms where the realtime MQTT stack is wired at all
+/// (macOS `.setup()` notification producers + Windows `.setup()`); it never
+/// inspects the MQTT payload, only wakes the poller early.
+pub fn setup_client_health_mqtt_receiver(app: AppHandle) {
+    tauri::async_runtime::spawn(run_wake_receiver_loop(
+        app,
+        Some(client_health_topic_from),
+        MqttWakeAction::Notify(crate::commands::client_diagnostics::notify_client_diagnostics_wake),
+        "CLIENT_HEALTH_MQTT",
+    ));
 }
 
 #[cfg(test)]

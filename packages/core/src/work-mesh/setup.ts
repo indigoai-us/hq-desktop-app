@@ -37,9 +37,13 @@ export interface MeshSetupDecision {
   reason: string;
 }
 
-/** Cache is "set up properly" when the v2 marker, helper, and cache dir exist. */
+/**
+ * Cache/setup is ready when the upgrade marker and cache dir exist.
+ * The pack helper (`~/.hq/work-mesh/bin`) is optional after 0.2.0 — presence
+ * is owned by `hq mesh daemon`, which does not require hq-pack-work-mesh.
+ */
 export function isMeshCacheReady(disk: MeshDiskState): boolean {
-  return disk.hasUpgradeMarker && disk.hasHelper && disk.hasCache;
+  return disk.hasUpgradeMarker && disk.hasCache;
 }
 
 export function evaluateMeshSetup(
@@ -47,7 +51,9 @@ export function evaluateMeshSetup(
   env: MeshSetupEnv,
 ): MeshSetupDecision {
   const ready = isMeshCacheReady(disk);
-  const canInstall = disk.hqRootValid && disk.hasPack;
+  // Fresh install: only an HQ root is required. The Rust stage runs
+  // `hq mesh daemon install` and does not need hq-pack-work-mesh on disk.
+  const canInstall = disk.hqRootValid;
 
   if (env.sessionOk) {
     return {

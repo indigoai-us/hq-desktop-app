@@ -14,7 +14,8 @@
   import { authorAvatarUrl } from "./agent-avatars";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -54,6 +55,9 @@
     type ReactionMap,
   } from "./reactions";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import RichMessageContent from "./RichMessageContent.svelte";
+  import { richContentForMessage } from "./richMessageContent";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -112,6 +116,8 @@
     ) => Promise<string | null>;
     /** Open the host attachment viewer (optional — thumbs render regardless). */
     onopenattachment?: (item: FileAttachmentModel) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Releases host-created object URLs when inline reply images unmount. */
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
@@ -165,6 +171,7 @@
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
+    onopenartifact = undefined,
     onreleaseurl = undefined,
     vaultCompanyUid = null,
     onclose,
@@ -733,6 +740,7 @@
   <div class="reply-root" data-testid="reply-panel-root">
     {#if root}
       {@const rootId = root.eventId}
+      {@const rootRich = richContentForMessage(root)}
       <span class="reply-avatar" aria-hidden="true">
         <IdentityMark
           kind={isAgent(root) ? "agent" : "person"}
@@ -758,10 +766,11 @@
           <span class="reply-time">{formatTime(root.createdAt)}</span>
         </div>
         <div class="reply-root-body">
-          {#if root.body?.trim()}
+          {#if rootRich.text.trim()}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="reply-md msg-body"
+              class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
               onclick={(e) => {
                 if (onBodyLinkActivate(e)) return;
                 onMentionActivate(e, e.target);
@@ -774,23 +783,28 @@
               }}
             >
               {@html applyMentionMarkup(
-                renderMessageBodyMarkdown(root.body ?? ""),
+                renderMessageBodyMarkdown(rootRich.text),
                 storedMentions(root),
               )}
             </div>
           {/if}
+          {#if rootRich.rich}
+            <RichMessageContent content={rootRich.rich} />
+          {/if}
           {#if root.details?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="details"
               text={root.details}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           {#if root.prompt?.trim()}
-            <PromptAttachment
+            <ArtifactCard
               kind="prompt"
               text={root.prompt}
               eventId={root.eventId}
+              onopen={onopenartifact}
             />
           {/if}
           <MessageAttachments
@@ -871,6 +885,7 @@
         </p>
       {:else}
         {#each visibleReplies as msg (msg.eventId)}
+          {@const replyRich = richContentForMessage(msg)}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
@@ -901,10 +916,11 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
-              {#if msg.body?.trim()}
+              {#if replyRich.text.trim()}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="reply-md msg-body"
+                  class:msg-body-jumbo={isJumboEmojiBody(replyRich.text)}
                   onclick={(e) => {
                     if (onBodyLinkActivate(e)) return;
                     onMentionActivate(e, e.target);
@@ -917,10 +933,13 @@
                   }}
                 >
                   {@html applyMentionMarkup(
-                    renderMessageBodyMarkdown(msg.body ?? ""),
+                    renderMessageBodyMarkdown(replyRich.text),
                     storedMentions(msg),
                   )}
                 </div>
+              {/if}
+              {#if replyRich.rich}
+                <RichMessageContent content={replyRich.rich} />
               {/if}
               <MessageAttachments
                 attachments={parseMessageAttachments(msg)}

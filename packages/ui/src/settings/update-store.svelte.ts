@@ -17,8 +17,11 @@ import {
   isInstallAlreadyInProgress,
   isInstallBusyPhase,
   progressPercentFrom,
+  recommendBannerFromPayload,
+  remainingSecsFromPayload,
   versionFromPayload,
   type AppInstallPhase,
+  type RecommendBanner,
 } from "./update-presentation";
 
 export interface UpdateStoreAdapter extends UpdateOrchestrationAdapter {
@@ -45,6 +48,8 @@ const INITIAL = {
   downloadPercent: null as number | null,
   autoUpdateEnabled: true,
   installError: null as string | null,
+  idleWaitRemainingSecs: null as number | null,
+  recommendBanner: null as RecommendBanner | null,
 };
 
 let appStatus = $state<UpdateRowStatus>(INITIAL.appStatus);
@@ -61,11 +66,42 @@ let installPhase = $state<AppInstallPhase>(INITIAL.installPhase);
 let downloadPercent = $state<number | null>(INITIAL.downloadPercent);
 let autoUpdateEnabled = $state(INITIAL.autoUpdateEnabled);
 let installError = $state<string | null>(INITIAL.installError);
+let idleWaitRemainingSecs = $state<number | null>(INITIAL.idleWaitRemainingSecs);
+let recommendBanner = $state<RecommendBanner | null>(INITIAL.recommendBanner);
 
 let runner = createUpdateCheckRunner();
 let downloadInFlight: Promise<void> | null = null;
 let installInFlight: Promise<void> | null = null;
 let storeGeneration = 0;
+let idleWaitTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopIdleWaitTicker(): void {
+  if (idleWaitTimer != null) {
+    clearInterval(idleWaitTimer);
+    idleWaitTimer = null;
+  }
+}
+
+function startIdleWaitTicker(secs: number): void {
+  stopIdleWaitTicker();
+  idleWaitRemainingSecs = Math.max(0, secs);
+  idleWaitTimer = setInterval(() => {
+    if (idleWaitRemainingSecs == null) {
+      stopIdleWaitTicker();
+      return;
+    }
+    if (idleWaitRemainingSecs <= 0) {
+      stopIdleWaitTicker();
+      return;
+    }
+    idleWaitRemainingSecs -= 1;
+  }, 1000);
+}
+
+function clearIdleWait(): void {
+  stopIdleWaitTicker();
+  idleWaitRemainingSecs = null;
+}
 
 function applyOutcome(outcome: UpdateCheckOutcome): void {
   appStatus =
@@ -201,6 +237,7 @@ export async function restartToUpdate(
   if (installInFlight) return installInFlight;
   const generation = storeGeneration;
   installError = null;
+  clearIdleWait();
   installPhase = "installing";
   const run = (async () => {
     const result = await adapter.installDownloadedUpdate();
@@ -222,7 +259,8 @@ export async function restartToUpdate(
 /**
  * Late-mounting surfaces (the popover opens after a download finished in the
  * background) hydrate straight into RESTART TO UPDATE from the host's staged
- * package. Never downgrades an in-flight phase.
+ * package. Never downgrades an in-flight install. A stuck DOWNLOADING 0%
+ * after the host already staged the package is upgraded to ready.
  */
 export async function hydrateDownloadedUpdate(
   adapter: Pick<UpdateStoreAdapter, "getDownloadedUpdate">,
@@ -232,15 +270,19 @@ export async function hydrateDownloadedUpdate(
   if (generation !== storeGeneration || !result.ok) return;
   const version = versionFromPayload(result.value);
   if (!version) return;
-  if (installPhase !== "idle" && installPhase !== "failed") return;
+  if (installPhase === "installing") return;
   availableVersion = version;
   if (appStatus !== "checking") appStatus = "available";
   installPhase = "ready";
   downloadPercent = 100;
+  const remaining = remainingSecsFromPayload(result.value);
+  if (remaining != null) startIdleWaitTicker(remaining);
 }
 
 export function reportDownloadProgress(payload: unknown): void {
   const percent = progressPercentFrom(payload);
+  // A staged package must never fall back to DOWNLOADING 0%.
+  if (installPhase === "ready" || installPhase === "installing") return;
   if (installPhase === "idle" || installPhase === "failed") {
     // Progress without a local download call means the automatic installer
     // (or another window) owns this package.
@@ -260,12 +302,22 @@ export function markDownloaded(version?: string | null): void {
   if (installPhase === "installing") return;
   installPhase = "ready";
   downloadPercent = 100;
+  if (appStatus !== "checking") appStatus = "available";
+}
+
+/** Host `update:waiting-for-idle` — auto-install is waiting for a sync gap. */
+export function reportIdleWait(payload: unknown): void {
+  const version = versionFromPayload(payload);
+  markDownloaded(version);
+  const remaining = remainingSecsFromPayload(payload);
+  if (remaining != null) startIdleWaitTicker(remaining);
 }
 
 /** Host `update:install-started` — automatic or manual install began. */
 export function markInstallStarted(version?: string | null): void {
   if (version && version.trim()) availableVersion = version.trim();
   installError = null;
+  clearIdleWait();
   if (installPhase === "ready" || installPhase === "installing") {
     installPhase = "installing";
     return;
@@ -285,6 +337,40 @@ export function reportInstallFailed(payload: unknown): void {
       ? rec.message.trim()
       : "Update failed";
   installPhase = "failed";
+  clearIdleWait();
+}
+
+export function applyRecommendBanner(payload: unknown): void {
+  const next = recommendBannerFromPayload(payload);
+  if (!next) return;
+  recommendBanner = next;
+  if (appStatus !== "checking") appStatus = "available";
+  if (next.version) availableVersion = next.version;
+}
+
+export function dismissRecommendBanner(): void {
+  recommendBanner = null;
+}
+
+export function clearRecommendBanner(): void {
+  recommendBanner = null;
+}
+
+/** Recommend-banner "Update now": download if needed, then install immediately. */
+export async function installRecommendedUpdate(
+  adapter: Pick<
+    UpdateStoreAdapter,
+    "downloadUpdate" | "installDownloadedUpdate" | "getDownloadedUpdate"
+  >,
+): Promise<void> {
+  dismissRecommendBanner();
+  await hydrateDownloadedUpdate(adapter);
+  if (installPhase !== "ready") {
+    await downloadDesktopUpdate(adapter);
+  }
+  if (installPhase === "ready") {
+    await restartToUpdate(adapter);
+  }
 }
 
 export function setAutoUpdateEnabled(enabled: boolean): void {
@@ -319,6 +405,9 @@ export function resetUpdateStore(): void {
   downloadPercent = INITIAL.downloadPercent;
   autoUpdateEnabled = INITIAL.autoUpdateEnabled;
   installError = INITIAL.installError;
+  clearIdleWait();
+  idleWaitRemainingSecs = INITIAL.idleWaitRemainingSecs;
+  recommendBanner = INITIAL.recommendBanner;
   installInFlight = null;
   downloadInFlight = null;
   runner = createUpdateCheckRunner();
@@ -369,5 +458,11 @@ export const updateStore = {
   },
   get isInstallBusy() {
     return isInstallBusyPhase(installPhase);
+  },
+  get idleWaitRemainingSecs() {
+    return idleWaitRemainingSecs;
+  },
+  get recommendBanner() {
+    return recommendBanner;
   },
 };

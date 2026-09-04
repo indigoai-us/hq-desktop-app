@@ -606,6 +606,9 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
     case 'meetings':
       if (!detail) return { kind: 'meetings' };
       break;
+    case 'atlas':
+      if (!detail) return { kind: 'atlas' };
+      break;
     case 'library':
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
         return { kind: 'library', tab: 'skills' };

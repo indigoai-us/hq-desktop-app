@@ -28,6 +28,7 @@ export function channelFromTag(tag: string): "stable" | "alpha" | "beta" {
 export * from "./mesh/presign.js";
 export * from "./mesh/credentials.js";
 export * from "./mesh/reconcile.js";
+export * from "./mesh/presence-store.js";
 export * from "./mesh/client.js";
 export {
   type ChannelWakeHint,

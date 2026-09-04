@@ -448,37 +448,163 @@ describe("createChatSidebarApi", () => {
     expect(invoke).toHaveBeenCalledWith("list_channels", args);
   });
 
-  it("keeps web project-channel listing on the work feed", async () => {
-    const webTransport = vi.fn();
-    const adapter = new WebPlatformAdapter({
-      baseUrl: "https://hq-pro.test",
-      fetch: webTransport,
-    });
-    const nativeListing = vi.spyOn(adapter.messaging, "listChannels");
+  it("lists an inactive company project from the scoped directory", async () => {
+    const channels = [
+      {
+        channelId: "chn_active_project",
+        name: "Active project",
+        scope: "project",
+        companyUid: "cmp_indigo",
+        projectId: "active-project",
+      },
+      {
+        channelId: "chn_quiet_project",
+        name: "Quiet project",
+        scope: "project",
+        companyUid: "cmp_indigo",
+        projectId: "quiet-project",
+      },
+    ];
+    const webTransport = vi.fn(async () =>
+      new Response(JSON.stringify({ channels }), { status: 200 }),
+    );
     const workFeed = vi.fn(async () =>
       new Response(
         JSON.stringify({
           items: [
-            { projectId: "project_web", companyUid: "cmp_indigo" },
+            {
+              projectId: "active-project",
+              companyUid: "cmp_indigo",
+            },
           ],
         }),
         { status: 200 },
       ),
     );
-    const api = createChatSidebarApi(adapter, [], "prs_web", {
-      fetch: workFeed,
-    });
+    const api = createChatSidebarApi(
+      new WebPlatformAdapter({
+        baseUrl: "https://hq-pro.test",
+        fetch: webTransport,
+      }),
+      [],
+      "prs_web",
+      { fetch: workFeed },
+    );
 
     await expect(
       api.listChannels({
         companyUid: "cmp_indigo",
         includeCompanyProjects: true,
       }),
-    ).resolves.toMatchObject({
-      channels: [expect.objectContaining({ channelId: "project_web" })],
+    ).resolves.toEqual({ channels });
+    expect(webTransport).toHaveBeenCalledWith(
+      "https://hq-pro.test/v1/notify/channels?companyUid=cmp_indigo&includeCompanyProjects=1",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(workFeed).not.toHaveBeenCalled();
+  });
+
+  it("does not leak work-feed rows without a company scope into an arbitrary company", async () => {
+    const webTransport = vi.fn(async () =>
+      new Response(JSON.stringify({ channels: [] }), { status: 200 }),
+    );
+    const workFeed = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            { projectId: "missing-company", companyUid: null },
+            { projectId: "empty-company", companyUid: "" },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const api = createChatSidebarApi(
+      new WebPlatformAdapter({
+        baseUrl: "https://hq-pro.test",
+        fetch: webTransport,
+      }),
+      [],
+      "prs_web",
+      { fetch: workFeed },
+    );
+
+    await expect(
+      api.listChannels({
+        companyUid: "cmp_arbitrary",
+        includeCompanyProjects: true,
+      }),
+    ).resolves.toEqual({ channels: [] });
+    expect(webTransport).toHaveBeenCalledWith(
+      "https://hq-pro.test/v1/notify/channels?companyUid=cmp_arbitrary&includeCompanyProjects=1",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(workFeed).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-slug projects distinct across company-scoped directory requests", async () => {
+    const webTransport = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const companyUid = new URL(path).searchParams.get("companyUid");
+      const channels =
+        companyUid === "cmp_indigo"
+          ? [
+              {
+                channelId: "chn_indigo_shared",
+                name: "Indigo shared project",
+                scope: "project",
+                companyUid: "cmp_indigo",
+                projectId: "shared-project",
+              },
+            ]
+          : [
+              {
+                channelId: "chn_other_shared",
+                name: "Other shared project",
+                scope: "project",
+                companyUid: "cmp_other",
+                projectId: "shared-project",
+              },
+            ];
+      return new Response(JSON.stringify({ channels }), { status: 200 });
     });
-    expect(nativeListing).not.toHaveBeenCalled();
-    expect(webTransport).not.toHaveBeenCalled();
+    const workFeed = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            { projectId: "shared-project", companyUid: "cmp_indigo" },
+            { projectId: "shared-project", companyUid: "cmp_other" },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const api = createChatSidebarApi(
+      new WebPlatformAdapter({
+        baseUrl: "https://hq-pro.test",
+        fetch: webTransport,
+      }),
+      [],
+      "prs_web",
+      { fetch: workFeed },
+    );
+
+    const indigo = await api.listChannels({
+      companyUid: "cmp_indigo",
+      includeCompanyProjects: true,
+    });
+    const other = await api.listChannels({
+      companyUid: "cmp_other",
+      includeCompanyProjects: true,
+    });
+    const indigoChannels = indigo?.channels ?? [];
+    const otherChannels = other?.channels ?? [];
+
+    expect([...indigoChannels, ...otherChannels]).toMatchObject([
+      { channelId: "chn_indigo_shared", companyUid: "cmp_indigo" },
+      { channelId: "chn_other_shared", companyUid: "cmp_other" },
+    ]);
+    expect(workFeed).not.toHaveBeenCalled();
   });
 
   it("partitions the work-feed cache by hydrating identity", async () => {
@@ -507,23 +633,13 @@ describe("createChatSidebarApi", () => {
         rows: [],
       }),
     );
-    const accountA = createChatSidebarApi(adapter, [], "prs_a");
-    const accountB = createChatSidebarApi(adapter, [], "prs_b");
-    const listProjectIds = async (api: typeof accountA) =>
-      (
-        await api.listChannels({
-          companyUid: "cmp_shared",
-          includeCompanyProjects: true,
-        })
-      )?.channels?.map((channel) => channel.channelId) ?? [];
-
-    expect(await listProjectIds(accountA)).toEqual(["project_a"]);
+    await hydrateLiveRail(adapter, [], "prs_a");
     expect(hqProFetch).toHaveBeenCalledTimes(1);
 
-    expect(await listProjectIds(accountA)).toEqual(["project_a"]);
+    await hydrateLiveRail(adapter, [], "prs_a");
     expect(hqProFetch).toHaveBeenCalledTimes(1);
 
-    expect(await listProjectIds(accountB)).toEqual(["project_b"]);
+    await hydrateLiveRail(adapter, [], "prs_b");
     expect(hqProFetch).toHaveBeenCalledTimes(2);
   });
 
@@ -541,20 +657,28 @@ describe("createChatSidebarApi", () => {
         snapshot: true,
         cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        rows: [],
+        rows: [
+          {
+            channelId: "chn_project_injected",
+            name: "Injected project",
+            scope: "project",
+            projectId: "project_injected",
+            lastActivityAt: "2026-08-15T00:00:00.000Z",
+          },
+        ],
       }),
     );
     const api = createChatSidebarApi(adapter, [], "prs_injected", {
       fetch: fetchImpl,
     });
 
-    await expect(
-      api.listChannels({
-        companyUid: "cmp_work",
-        includeCompanyProjects: true,
-      }),
-    ).resolves.toMatchObject({
-      channels: [expect.objectContaining({ channelId: "project_injected" })],
+    await expect(api.fetchChannelDirectory(null)).resolves.toMatchObject({
+      rows: [
+        expect.objectContaining({
+          channelId: "chn_project_injected",
+          lastActivityAt: "2026-08-15T00:00:00.000Z",
+        }),
+      ],
     });
     expect(fetchImpl).toHaveBeenCalledWith("/v1/work-mesh/work");
     expect(hqProFetch).not.toHaveBeenCalled();
@@ -574,18 +698,26 @@ describe("createChatSidebarApi", () => {
         snapshot: true,
         cursor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         cursorExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        rows: [],
+        rows: [
+          {
+            channelId: "chn_project_browser",
+            name: "Browser project",
+            scope: "project",
+            projectId: "project_browser",
+            lastActivityAt: "2026-08-15T00:00:00.000Z",
+          },
+        ],
       }),
     );
     const api = createChatSidebarApi(adapter, [], "prs_browser");
 
-    await expect(
-      api.listChannels({
-        companyUid: "cmp_work",
-        includeCompanyProjects: true,
-      }),
-    ).resolves.toMatchObject({
-      channels: [expect.objectContaining({ channelId: "project_browser" })],
+    await expect(api.fetchChannelDirectory(null)).resolves.toMatchObject({
+      rows: [
+        expect.objectContaining({
+          channelId: "chn_project_browser",
+          lastActivityAt: "2026-08-15T00:00:00.000Z",
+        }),
+      ],
     });
     expect(hqProFetch).toHaveBeenCalledWith("/v1/work-mesh/work");
   });

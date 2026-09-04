@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Channel } from "./channels";
-import { dmActivityFromTimeline } from "./live-catchup";
+import { applyChannelMessageWake, type Channel } from "./channels";
+import {
+  channelActivityFromTimeline,
+  dmActivityFromTimeline,
+} from "./live-catchup";
 import {
   applyDirectoryFeed,
   applyDirectoryRows,
@@ -1761,6 +1764,151 @@ describe("applyDirectoryFeed — host seed vs empty reconcile", () => {
       painted,
     );
     expect(next[0]?.unread).toBe(1);
+  });
+
+  it("does not rewind a newer local activity stamp when the snapshot is older", () => {
+    const painted = [
+      {
+        channelId: "chn_live",
+        name: "work-mesh-testing",
+        scope: "project" as const,
+        unread: 0,
+        lastActivityAt: "2026-08-22T12:00:00.000Z",
+        lastMessageAt: "2026-08-22T12:00:00.000Z",
+        companyUid: "cmp_indigo",
+      },
+    ];
+    const next = applyDirectoryRows(
+      [
+        {
+          ...seed[0]!,
+          unreadCount: 0,
+          lastActivityAt: "2026-08-16T05:00:00.000Z",
+        },
+      ],
+      painted,
+    );
+    expect(next[0]?.lastActivityAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(next[0]?.lastMessageAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(next[0]?.companyUid).toBe("cmp_indigo");
+  });
+
+  it("adopts a newer directory activity stamp", () => {
+    const painted = [
+      {
+        channelId: "chn_live",
+        name: "work-mesh-testing",
+        scope: "project" as const,
+        unread: 0,
+        lastActivityAt: "2026-08-16T05:00:00.000Z",
+        companyUid: "cmp_indigo",
+      },
+    ];
+    const next = applyDirectoryRows(
+      [
+        {
+          ...seed[0]!,
+          lastActivityAt: "2026-08-22T12:00:00.000Z",
+        },
+      ],
+      painted,
+    );
+    expect(next[0]?.lastActivityAt).toBe("2026-08-22T12:00:00.000Z");
+  });
+});
+
+describe("channel rail stamps from own send and loaded timeline", () => {
+  it("owner send in a company channel moves the row to TODAY without an unread badge", () => {
+    const old = iso(msOnDay(10, 9));
+    const sent = iso(msOnDay(0, 21));
+    const stamped = applyChannelMessageWake(
+      [
+        channel({
+          channelId: "chn_hq_dev",
+          name: "hq-dev",
+          scope: "company",
+          companyUid: "cmp_indigo",
+          lastActivityAt: old,
+          lastMessageAt: old,
+          unread: 0,
+        }),
+      ],
+      { channelId: "chn_hq_dev", createdAt: sent },
+    );
+    expect(stamped[0]?.unread).toBe(0);
+    const rows = normalizeConversations(stamped, []);
+    const grouped = groupByDay(rows, NOW);
+    const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+    const row = today?.rows.find((r) => r.id === "ch:chn_hq_dev");
+    expect(row).toBeTruthy();
+    expect(row!.unreadCount).toBeUndefined();
+    expect(row!.unreadDot).toBe(false);
+    expect(row!.companyUid).toBe("cmp_indigo");
+    expect(grouped.lastWeek.some((r) => r.id === "ch:chn_hq_dev")).toBe(false);
+  });
+
+  it("inbound message regroups the channel under TODAY with a badge", () => {
+    const old = iso(msOnDay(10, 9));
+    const inbound = iso(msOnDay(0, 15));
+    const stamped = applyChannelMessageWake(
+      [
+        channel({
+          channelId: "chn_hq_dev",
+          name: "hq-dev",
+          scope: "company",
+          companyUid: "cmp_indigo",
+          lastActivityAt: old,
+          lastMessageAt: old,
+          unread: 0,
+        }),
+      ],
+      { channelId: "chn_hq_dev", createdAt: inbound, unreadDelta: 1 },
+    );
+    expect(stamped[0]?.unread).toBe(1);
+    const rows = normalizeConversations(stamped, []);
+    const grouped = groupByDay(rows, NOW);
+    const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+    const row = today?.rows.find((r) => r.id === "ch:chn_hq_dev");
+    expect(row).toBeTruthy();
+    expect(row!.unreadCount).toBe(1);
+  });
+
+  it("a loaded timeline newer than the rail stamp regroups company, project, and group channels", () => {
+    const old = iso(msOnDay(10, 9));
+    const newer = iso(msOnDay(0, 21));
+    for (const scope of ["company", "project", "group"] as const) {
+      const activity = channelActivityFromTimeline("chn_row", [
+        { createdAt: old, fromPersonUid: "prs_other", eventId: "evt_old" },
+        { createdAt: newer, fromPersonUid: "prs_me", eventId: "evt_own" },
+      ]);
+      expect(activity).toEqual({
+        channelId: "chn_row",
+        lastMessageAt: newer,
+        fromPersonUid: "prs_me",
+        eventId: "evt_own",
+      });
+      const stamped = applyChannelMessageWake(
+        [
+          channel({
+            channelId: "chn_row",
+            name: scope === "group" ? "" : "hq-dev",
+            scope,
+            companyUid: scope === "group" ? null : "cmp_indigo",
+            lastActivityAt: old,
+            lastMessageAt: old,
+            unread: 0,
+          }),
+        ],
+        { channelId: "chn_row", createdAt: activity!.lastMessageAt },
+      );
+      const rows = normalizeConversations(stamped, []);
+      const grouped = groupByDay(rows, NOW);
+      const today = grouped.sections.find((s) => s.label.startsWith("TODAY"));
+      expect(
+        today?.rows.some((r) => r.id === "ch:chn_row"),
+        `${scope} channel should land under TODAY`,
+      ).toBe(true);
+    }
   });
 });
 

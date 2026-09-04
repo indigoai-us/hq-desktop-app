@@ -1,12 +1,12 @@
 /**
- * Channel chat-tab message models (US-004).
+ * Channel chat-tab message models (US-004 / US-015).
  *
  * Parses the optional hq-pro wire fields on channel message rows:
  * - `systemEvent` — versioned envelope; unknown type / wrong v → null (render nothing)
  * - `attachment`  — file card model; missing sizeBytes/kind are fine
  *
  * Pure + absent-safe. Components consume the render models; raw payloads never
- * throw.
+ * throw. Unknown keys on known envelopes are ignored (additive-safe).
  */
 
 /** Known system-event types from the v1 envelope. */
@@ -18,6 +18,9 @@ export type KnownSystemEventType =
   | "deploy"
   | "file_added"
   | "work_session"
+  | "work_session_blocked"
+  | "work_session_task_status"
+  | "work_session_finished"
   | "member_added"
   | "lifecycle_card";
 
@@ -29,6 +32,9 @@ const KNOWN_TYPES = new Set<string>([
   "deploy",
   "file_added",
   "work_session",
+  "work_session_blocked",
+  "work_session_task_status",
+  "work_session_finished",
   "member_added",
   "lifecycle_card",
 ]);
@@ -113,10 +119,16 @@ export interface FileAttachmentModel {
   previewUrl: string | null;
 }
 
-/** Muted one-line system event (everything except cards). */
+/** Line types: everything except run_complete, work_session, and lifecycle cards. */
+export type SystemEventLineType = Exclude<
+  KnownSystemEventType,
+  "run_complete" | "work_session" | "lifecycle_card"
+>;
+
+/** Muted one-line system event (everything except the card types). */
 export interface SystemEventLineModel {
   kind: "line";
-  type: Exclude<KnownSystemEventType, "run_complete" | "lifecycle_card">;
+  type: SystemEventLineType;
   title: string;
   summary: string | null;
 }
@@ -187,21 +199,43 @@ export interface LifecycleCardActionEvent {
   values: Record<string, string>;
 }
 
+/**
+ * Coalesced work_session card (US-006 / US-015). Additive envelope fields are
+ * optional so older payloads still parse; unknown keys are ignored.
+ */
+export interface WorkSessionCardModel {
+  kind: "work_session_card";
+  type: "work_session";
+  title: string;
+  summary: string | null;
+  actorUid: string | null;
+  actorType: "human" | "agent";
+  harness: string | null;
+  taskId: string | null;
+  turnCount: number | null;
+  lastTurnAt: string | null;
+  status: string | null;
+  /** Display name when the envelope carried one; otherwise null (resolve via roster). */
+  principalDisplay: string | null;
+  note: string | null;
+}
+
 export type SystemEventModel =
   | SystemEventLineModel
   | RunCompleteCardModel
+  | WorkSessionCardModel
   | LifecycleCardModel;
 
-const DEFAULT_TITLES: Record<
-  Exclude<KnownSystemEventType, "run_complete" | "lifecycle_card">,
-  string
-> = {
+const DEFAULT_TITLES: Record<SystemEventLineType | "work_session", string> = {
   run_started: "Run started",
   run_progress: "Run progress",
   pr_opened: "PR opened",
   deploy: "Deployed",
   file_added: "File added",
   work_session: "Work session",
+  work_session_blocked: "Blocked",
+  work_session_task_status: "Task moved",
+  work_session_finished: "Finished",
   member_added: "Added to the channel",
 };
 
@@ -345,6 +379,38 @@ export function parseLifecycleCard(raw: unknown): LifecycleCardModel | null {
     actions,
     viewer: { canAct: viewer.canAct, actorName },
   };
+function asOptionalInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
+  }
+  return null;
+}
+
+function normalizeActorType(value: unknown): "human" | "agent" {
+  const raw = asOptionalString(value)?.toLowerCase();
+  return raw === "agent" ? "agent" : "human";
+}
+
+function parsePrincipal(raw: unknown): {
+  uid: string | null;
+  kind: "human" | "agent";
+  display: string | null;
+} | null {
+  if (!isRecord(raw)) {
+    const asName = asOptionalString(raw);
+    return asName
+      ? { uid: null, kind: "human", display: asName }
+      : null;
+  }
+  const uid = asOptionalString(raw.uid);
+  const kind = normalizeActorType(raw.kind ?? raw.actorType);
+  const display =
+    asOptionalString(raw.displayName) ?? asOptionalString(raw.name);
+  return { uid, kind, display };
 }
 
 const IMAGE_NAME_EXT = new Set([
@@ -451,6 +517,19 @@ export function parseMessageAttachments(raw: {
   return one ? [one] : [];
 }
 
+function discreteLineTitle(
+  type: "work_session_blocked" | "work_session_task_status" | "work_session_finished",
+  raw: Record<string, unknown>,
+  title: string | null,
+  note: string | null,
+  summary: string | null,
+): string {
+  const body = asOptionalString(raw.body);
+  const preferred = title ?? note ?? summary ?? body;
+  if (preferred) return preferred;
+  return DEFAULT_TITLES[type];
+}
+
 /**
  * Parse a systemEvent envelope into a render model.
  *
@@ -458,6 +537,8 @@ export function parseMessageAttachments(raw: {
  * - null/undefined/non-object → null
  * - `v` present and not 1 → null (unknown version)
  * - unknown `type` → null
+ * - work_session → card (additive fields optional; unknown keys ignored)
+ * - discrete work_session_* → line (title prefers note/summary/body)
  * - known non-run_complete types → line model (title falls back to a default)
  * - run_complete → card; missing previewUrl/diffUrl leave those buttons hidden
  * - lifecycle_card → card; invalid shape or unknown version → null
@@ -489,19 +570,55 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
     };
   }
 
-  const lineType = type as Exclude<
-    KnownSystemEventType,
-    "run_complete" | "lifecycle_card"
-  >;
-  const sessionTitle =
-    type === "work_session"
-      ? (note ?? title ?? (status ? `Work session · ${status}` : null))
-      : title;
+  if (type === "work_session") {
+    const principal = parsePrincipal(raw.principal);
+    const actorUid =
+      asOptionalString(raw.actorUid) ?? principal?.uid ?? null;
+    const actorType = normalizeActorType(
+      raw.actorType ?? principal?.kind ?? (actorUid?.startsWith("agt_") ? "agent" : "human"),
+    );
+    const cardTitle =
+      note ??
+      title ??
+      (status ? `Work session · ${status}` : null) ??
+      DEFAULT_TITLES.work_session;
+    return {
+      kind: "work_session_card",
+      type: "work_session",
+      title: cardTitle,
+      summary: summary ?? status,
+      actorUid,
+      actorType,
+      harness: asOptionalString(raw.harness),
+      taskId: asOptionalString(raw.taskId),
+      turnCount: asOptionalInt(raw.turnCount),
+      lastTurnAt: asOptionalString(raw.lastTurnAt),
+      status,
+      principalDisplay:
+        asOptionalString(raw.displayName) ?? principal?.display ?? null,
+      note,
+    };
+  }
+
+  if (
+    type === "work_session_blocked" ||
+    type === "work_session_task_status" ||
+    type === "work_session_finished"
+  ) {
+    return {
+      kind: "line",
+      type,
+      title: discreteLineTitle(type, raw, title, note, summary),
+      summary: null,
+    };
+  }
+
+  const lineType = type as SystemEventLineType;
   return {
     kind: "line",
     type: lineType,
-    title: sessionTitle ?? DEFAULT_TITLES[lineType],
-    summary: summary ?? (type === "work_session" ? status : null),
+    title: title ?? DEFAULT_TITLES[lineType],
+    summary,
   };
 }
 

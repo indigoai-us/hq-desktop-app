@@ -21,6 +21,7 @@
     type Channel,
   } from '../lib/channels';
   import IdentityMark from './messaging/IdentityMark.svelte';
+  import { presenceStatus } from '@hq/ui';
 
   // Source list for the quick communications window. DM/share conversations
   // retain the existing grouped history semantics; channels are an optional
@@ -130,6 +131,24 @@
   function channelTitle(channel: Channel): string {
     const label = channelDisplayName(channel);
     return channel.scope === 'group' ? label : `#${label}`;
+  }
+
+  function actorOnline(
+    companyUid: string | null | undefined,
+    actorUid: string | null | undefined,
+  ): boolean {
+    const company = (companyUid ?? '').trim();
+    const uid = (actorUid ?? '').trim();
+    if (!company || !uid) return false;
+    return presenceStatus(company, uid) === 'online';
+  }
+
+  function conversationActorUid(row: ConversationRow): string {
+    return (
+      row.latest.dm?.fromPersonUid?.trim() ||
+      row.latest.share?.issuerPersonUid?.trim() ||
+      ''
+    );
   }
 
   function channelContext(channel: Channel): string {
@@ -385,7 +404,12 @@
               aria-label={`${row.actor}${row.kind === 'share' ? ', shared files' : ''}${!isSelected && row.unreadCount > 0 ? `, ${row.unreadCount} unread` : ''}`}
               onclick={() => onselect(row.latest, row.ids, row.items)}
             >
-              <IdentityMark kind={row.agent ? 'agent' : 'person'} label={row.actor} size="small" />
+              <IdentityMark
+                kind={row.agent ? 'agent' : 'person'}
+                label={row.actor}
+                size="small"
+                online={actorOnline(null, conversationActorUid(row))}
+              />
               <strong>{row.actor}</strong>
               {#if row.kind === 'share'}
                 <span class="row-kind" title="Shared files" aria-hidden="true">↗</span>
@@ -415,6 +439,9 @@
                 label={channelTitle(channel)}
                 members={(channel.members ?? []).map((member) => member.displayName)}
                 size="small"
+                online={(channel.members ?? []).some((member) =>
+                  actorOnline(channel.companyUid, member.personUid),
+                )}
               />
               <strong>{channelTitle(channel)}</strong>
               {#if !isSelected && (channel.unread ?? 0) > 0}

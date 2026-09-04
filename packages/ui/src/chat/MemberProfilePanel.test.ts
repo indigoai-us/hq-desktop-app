@@ -27,6 +27,7 @@ function row(over: Partial<StatusPersonRow> = {}): StatusPersonRow {
     avatarUrl: null,
     description: null,
     statusIcon: "idle",
+    online: false,
     ...over,
   };
 }

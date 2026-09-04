@@ -27,10 +27,10 @@ const live = {
 };
 
 describe("isMeshCacheReady", () => {
-  it("requires the upgrade marker, helper, and cache directory", () => {
+  it("requires the upgrade marker and cache directory (helper optional)", () => {
     expect(isMeshCacheReady(readyDisk)).toBe(true);
     expect(isMeshCacheReady({ ...readyDisk, hasCache: false })).toBe(false);
-    expect(isMeshCacheReady({ ...readyDisk, hasHelper: false })).toBe(false);
+    expect(isMeshCacheReady({ ...readyDisk, hasHelper: false })).toBe(true);
     expect(isMeshCacheReady({ ...readyDisk, hasUpgradeMarker: false })).toBe(
       false,
     );
@@ -84,12 +84,30 @@ describe("evaluateMeshSetup", () => {
     ).toBe(false);
   });
 
-  it("cannot install when the HQ tree or pack is missing", () => {
+  it("cannot install when the HQ tree is missing", () => {
     const verdict = evaluateMeshSetup(
       { ...missingDisk, hqRootValid: false, hasPack: false },
       live,
     );
     expect(verdict.needed).toBe(true);
     expect(verdict.canInstall).toBe(false);
+  });
+
+  it("fresh-install can proceed without hq-pack-work-mesh present", () => {
+    // Contract from the 2026-08-19 mesh onboarding report: daemon install via
+    // hq-cli must not require the dogfood pack on disk.
+    const verdict = evaluateMeshSetup(
+      {
+        hasUpgradeMarker: false,
+        hasHelper: false,
+        hasPack: false,
+        hasCache: false,
+        hqRootValid: true,
+      },
+      live,
+    );
+    expect(verdict.needed).toBe(true);
+    expect(verdict.canInstall).toBe(true);
+    expect(verdict.reason).toBe("not-installed");
   });
 });

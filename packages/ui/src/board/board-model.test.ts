@@ -41,6 +41,7 @@ function liveSession(
     status: "running",
     tool: "claude",
     model: "opus",
+    serverSessionId: "sess_bound_1",
     ...overrides,
   };
 }
@@ -327,7 +328,7 @@ describe("board-model (US-006 Board tab)", () => {
   });
 
   describe("findLiveSessionForStory", () => {
-    it("matches by session.storyId and by extracted id from cwd", () => {
+    it("matches by explicit storyId or taskId when server-bound", () => {
       expect(
         findLiveSessionForStory(
           "US-006",
@@ -341,13 +342,43 @@ describe("board-model (US-006 Board tab)", () => {
           [
             liveSession({
               storyId: null,
+              taskId: "us-008",
+              serverSessionId: "sess_us008",
               cwd: "/tmp/worktrees/US-008/src",
-              project: "hq-desktop-app",
             }),
           ],
           project,
-        )?.cwd,
-      ).toContain("US-008");
+        )?.taskId,
+      ).toBe("us-008");
+    });
+
+    it("ignores cwd-only matches and unbound local sessions", () => {
+      expect(
+        findLiveSessionForStory(
+          "US-008",
+          [
+            liveSession({
+              storyId: null,
+              taskId: null,
+              cwd: "/tmp/worktrees/US-008/src",
+              serverSessionId: "sess_cwd",
+            }),
+          ],
+          project,
+        ),
+      ).toBeNull();
+      expect(
+        findLiveSessionForStory(
+          "US-006",
+          [
+            liveSession({
+              storyId: "US-006",
+              serverSessionId: null,
+            }),
+          ],
+          project,
+        ),
+      ).toBeNull();
     });
   });
 });

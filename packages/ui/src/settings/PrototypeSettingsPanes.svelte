@@ -1,8 +1,9 @@
 <script lang="ts">
   import { type AdapterResult } from "./update-orchestration";
-  import { appRowStatusLabel } from "./update-presentation";
   import {
     appRowActions,
+    appRowIdleHint,
+    appRowStatusLabel,
   } from "./update-presentation";
   import {
     checkDesktopUpdates,
@@ -59,7 +60,7 @@
   } from "../meetings/meetings-store.svelte";
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
-  import AvatarPackSettings from "../avatars/AvatarPackSettings.svelte";
+
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -122,6 +123,13 @@
   let hqFolder = $state<string | null>(null);
   let customHqRoot = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  // The sync daemon is a separate process that is often still starting when
+  // this component mounts, so a single onMount read can permanently freeze
+  // the panel on a stale "stopped / never synced" snapshot. The component is
+  // also never remounted when the user switches settings sections, so we
+  // re-poll for as long as the sync section is the active one (see the
+  // $effect below) instead of reading once at mount.
+  const LIVE_SYNC_POLL_MS = 5000;
   let dockVisibilityChanged = false;
   let desktopWidgetChanged = false;
   let dockWriteSeq = 0;
@@ -189,6 +197,7 @@
       installPhase: updateStore.installPhase,
     }),
   );
+  const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
   // that release_channel.rs `effective_channel` already resolves.
@@ -656,6 +665,13 @@
     if (res.ok) notifPermission = String(res.value);
   }
 
+  async function refreshLiveSync(): Promise<void> {
+    if (!adapter?.isAvailable("canSync")) return;
+    const next = await readLiveSyncStatus(adapter);
+    liveSync = next;
+    if (next.hqFolderPath && !customHqRoot) hqFolder = next.hqFolderPath;
+  }
+
   function updateOrchAdapter() {
     const updates = adapter!.updates;
     return orchestrationAdapterFrom({
@@ -973,15 +989,22 @@
     if (updateWakeSeq > 0) void refreshVersions();
   });
 
+  $effect(() => {
+    // The sync panel's `liveSync` snapshot can only go stale here: this
+    // component is never remounted when the user switches settings
+    // sections, so onMount alone cannot catch either (a) the daemon
+    // finishing startup after mount, or (b) the user leaving and
+    // returning to "sync" later in the same session. Poll only while the
+    // section is actually visible, and stop the moment it isn't.
+    if (section !== "sync" || !canSync) return;
+    void refreshLiveSync();
+    const handle = setInterval(() => void refreshLiveSync(), LIVE_SYNC_POLL_MS);
+    return () => clearInterval(handle);
+  });
+
   onMount(() => {
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);
-    if (adapter?.isAvailable("canSync")) {
-      void readLiveSyncStatus(adapter).then((next) => {
-        liveSync = next;
-        if (next.hqFolderPath && !customHqRoot) hqFolder = next.hqFolderPath;
-      });
-    }
     if (!adapter) return;
     void refreshNotifPermission();
     // Re-read after returning from System Settings (v1 SettingsPage pattern).
@@ -989,6 +1012,7 @@
       void refreshNotifPermission();
       void refreshNativeSettings();
       void refreshVersions();
+      if (section === "sync") void refreshLiveSync();
     };
     window.addEventListener("focus", onFocus);
     void adapter.meetings.listAccounts().then((res) => {
@@ -1044,7 +1068,7 @@
         <button type="button" class="toggle" class:on={prefs.desktopWidget} role="switch" aria-checked={prefs.desktopWidget} aria-label="Desktop widget" onclick={() => void toggleDesktopWidget()}></button>
       </div>
     {/if}
-    <AvatarPackSettings {storage} />
+
   {:else if section === "appearance"}
     <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
     <div class="set-row">
@@ -1366,6 +1390,11 @@
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.
+          </div>
+        {/if}
+        {#if appIdleHint}
+          <div class="sd" data-testid="settings-app-idle-hint">
+            {appIdleHint}
           </div>
         {/if}
       </div>

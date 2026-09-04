@@ -121,6 +121,13 @@ export interface ConversationMessageWire {
   messageKind?: string | null;
   /** Versioned system-event envelope (run_complete card, deploy/pr lines, …). */
   systemEvent?: unknown;
+  /**
+   * Versioned rich-content envelope (stat tiles, tables, charts). ADDITIVE and
+   * absent-safe: parsed via `parseRichContent`; `body` remains the required
+   * plain-text fallback for old clients and notifications. See
+   * chat/messaging/richMessageContent.ts.
+   */
+  richContent?: unknown;
   /** Cached emoji aggregates — shown before the live GET settles. */
   reactions?: Array<{
     emoji: string;
@@ -428,6 +435,20 @@ export interface ChatWakeEvents {
   };
   /** Run cursor catch-up (directory delta + open timeline `since`). */
   "mesh:catchup": { reason: "connect" | "focus" };
+  /**
+   * Presence store changed (MQTT retained/live or live-read rebuild).
+   * Ids + status only — never prompts or credentials.
+   */
+  "presence:changed": {
+    companyUid: string;
+    actorUid: string;
+    status: "online" | "offline";
+  };
+  /**
+   * Company-wide live read refreshed (`{kind:"live"}` wake). Ids only —
+   * hosts re-read the LiveReadStore; never invent presence from timestamps.
+   */
+  "live:wake": { companyUid: string };
   /**
    * A reply landed (hq-pro `type:"thread"`). Ids only — never a body.
    * Not named `thread:` (that collides with work-mesh).

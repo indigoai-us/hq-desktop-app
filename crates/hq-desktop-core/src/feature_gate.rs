@@ -79,8 +79,9 @@ pub async fn is_indigo_user() -> bool {
 /// returns true whenever a non-empty email claim is present instead of
 /// requiring the `@getindigo.ai` domain.
 ///
-/// `is_indigo_user()` is intentionally kept intact — the updater still uses
-/// it to keep pre-release auto-update channels Indigo-only.
+/// `is_indigo_user()` is intentionally kept intact — Settings still uses
+/// it for the HQ Core staging-channel toggle (builder-only). The updater
+/// no longer consults it; Beta/Alpha are opt-in for every signed-in user.
 ///
 /// Process-lifetime cache (separate from the Indigo cache) — safe because the
 /// email claim is stable across Cognito token rotations. Returns false

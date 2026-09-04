@@ -6,6 +6,19 @@
  * /v1/work-mesh/*, /v1/notify/*) and triggers a cursor-reconciled re-fetch;
  * the REST response is the only source of truth.
  *
+ * ## One exception: presence (work-mesh-live US-014)
+ *
+ * Messages on `hq/{companyUid}/presence/{actorUid}` (any topic whose third
+ * segment is `presence`) are applied directly to the in-memory PresenceStore
+ * and MUST NEVER enter WakeReconciler / trigger a REST reconcile. Presence
+ * is connection truth from retained MQTT; REST (`GET /v1/work-mesh/live`) is
+ * only used to rebuild the store on reconnect. Every other topic keeps the
+ * wake-only contract below.
+ *
+ * Live wakes on `hq/{companyUid}/thread-directory` with `{ kind: "live" }`
+ * also skip WakeReconciler: they trigger a coalesced live-read refresh into
+ * the presence store (one in-flight fetch per company) instead.
+ *
  * hq-pro `type:"thread"` (reply-thread doorbell) is ids-only routing: it
  * selects GET /v1/notify/threads instead of the person DM inbox. The body is
  * never taken from MQTT. This is not a work-mesh `hq/{company}/thread/{id}`
@@ -143,6 +156,10 @@ export function routeForReplyThreadWake(raw: unknown): WakeRoute | null {
  *   (GET /v1/work-mesh/threads requires companyUid and 400s)
  * - hq/{personUid}/notifications  → /v1/notify/notifications
  * - hq/{companyUid}/thread/{id..} → /v1/work-mesh/companies/{companyUid}/threads/{id..}
+ *
+ * Presence (`hq/{companyUid}/presence/{actorUid}`) and live wakes on
+ * `thread-directory` intentionally return null — MeshClient routes those
+ * outside WakeReconciler (see module doc above).
  */
 export function routeForTopic(topic: string): WakeRoute | null {
   const parts = topic.split("/");
@@ -150,6 +167,8 @@ export function routeForTopic(topic: string): WakeRoute | null {
   const uid = parts[1];
   if (!uid) return null;
   const kind = parts[2];
+  // Presence is the wake-only exception — never a REST route.
+  if (kind === "presence") return null;
   if (parts.length === 3) {
     switch (kind) {
       case "dm":
@@ -161,6 +180,9 @@ export function routeForTopic(topic: string): WakeRoute | null {
           resource: `notifications:${uid}`,
           path: "/v1/notify/notifications",
         };
+      // Directory wake topic — live kind handled by MeshClient, not here.
+      case "thread-directory":
+        return null;
       default:
         return null;
     }
@@ -174,6 +196,41 @@ export function routeForTopic(topic: string): WakeRoute | null {
     };
   }
   return null;
+}
+
+/** `hq/{companyUid}/thread-directory` exact topic. */
+export function parseThreadDirectoryTopic(
+  topic: string,
+): { companyUid: string } | null {
+  const parts = topic.split("/");
+  if (parts.length !== 3 || parts[0] !== "hq" || parts[2] !== "thread-directory") {
+    return null;
+  }
+  const companyUid = parts[1];
+  return companyUid ? { companyUid } : null;
+}
+
+/**
+ * Ids-only live wake published after session-event ingest
+ * (`{ v:1, kind:"live", companyUid, sessionIds }`).
+ */
+export function parseLiveWake(
+  raw: unknown,
+): { companyUid: string; sessionIds: string[] } | null {
+  const obj = asRecord(decodeWakePayload(raw) ?? raw);
+  if (!obj) return null;
+  if (obj.kind !== "live") return null;
+  const companyUid = trimmedString(obj.companyUid);
+  if (!companyUid) return null;
+  const sessionIds = Array.isArray(obj.sessionIds)
+    ? obj.sessionIds.filter((id): id is string => typeof id === "string" && id.trim() !== "")
+    : [];
+  return { companyUid, sessionIds };
+}
+
+/** Live-read path for one company (presence store rebuild / refresh). */
+export function liveReadPath(companyUid: string): string {
+  return `/v1/work-mesh/live?companyUid=${encodeURIComponent(companyUid)}`;
 }
 
 /** Result of a cursor-reconciled fetch. */

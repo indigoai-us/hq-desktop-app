@@ -134,6 +134,12 @@ fn setup_notification_producers(app: &tauri::AppHandle) {
     // singleton DM poll path; the interval poll remains the long-stop.
     commands::dm_mqtt::setup_dm_mqtt_receiver(app.clone());
 
+    // US-007: client-health diagnostics MQTT wake — best-effort optimization
+    // only. The authenticated polling fallback that actually guarantees
+    // desired commands run is wired UNCONDITIONALLY for every platform below
+    // (`commands::client_diagnostics::setup_client_diagnostics_poller`).
+    commands::dm_mqtt::setup_client_health_mqtt_receiver(app.clone());
+
     // Post-sync top-up remains additive to the independent interval poll.
     let poll_handle = app.clone();
     app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
@@ -608,6 +614,7 @@ fn main() {
             commands::install_stages::personalize_hq,
             commands::install_stages::import_existing_setup,
             commands::install_stages::install_menubar_app,
+            commands::install_stages::install_work_mesh,
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
@@ -1082,6 +1089,17 @@ fn main() {
             updater::setup_update_checker(app.handle());
             commands::telemetry::setup_daily_active_emit();
             commands::telemetry::setup_version_heartbeat();
+            // Client health (US-002): startup + 5-minute operational health
+            // heartbeat, woken immediately on sync/updater/auth/pause/conflict
+            // state changes. Consent-free operational reporting.
+            commands::client_health::setup_client_health_heartbeat();
+            // US-007: desktop self-diagnostics (CHECK_NOW) execution client.
+            // Authenticated polling fallback — wired UNCONDITIONALLY for
+            // EVERY platform (never gated behind target_os): the MQTT wake
+            // above is macOS/Windows-only optimization, but this poll is the
+            // long-stop that must work everywhere, including Linux dev boxes
+            // with no realtime MQTT stack at all.
+            commands::client_diagnostics::setup_client_diagnostics_poller(app.handle().clone());
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
@@ -1104,6 +1122,8 @@ fn main() {
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
                 #[cfg(target_os = "windows")]
                 commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+                #[cfg(target_os = "windows")]
+                commands::dm_mqtt::setup_client_health_mqtt_receiver(app.handle().clone());
 
                 let poll_handle = app.handle().clone();
                 app.listen(

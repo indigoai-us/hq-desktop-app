@@ -990,7 +990,7 @@
   async function createdChannelAlreadyExists(name: string): Promise<boolean> {
     // Only rows in the create target count: a same-named channel in another
     // workspace is not evidence that THIS create committed.
-    const inTarget = (row: ConversationRow): boolean =>
+    const inTarget = (row: { companyUid?: string | null }): boolean =>
       companyUid ? row.companyUid === companyUid : !row.companyUid;
     if (
       channelExistsWithName(
@@ -1011,14 +1011,28 @@
           companyUid: uid,
           includeCompanyProjects: false,
         });
-        if (channelExistsWithName(name, resp?.channels ?? [])) return true;
+        if (
+          channelExistsWithName(
+            name,
+            (resp?.channels ?? []).filter(inTarget),
+          )
+        ) {
+          return true;
+        }
       } catch {
         // Lookup is best-effort; a failed list must not block a safe retry.
       }
     }
     try {
       const feed = await api.fetchChannelDirectory(null);
-      if (channelExistsWithName(name, directoryRowsFromFeed(feed))) return true;
+      if (
+        channelExistsWithName(
+          name,
+          directoryRowsFromFeed(feed).filter(inTarget),
+        )
+      ) {
+        return true;
+      }
     } catch {
       // Same: directory lookup failure is not proof the create committed.
     }

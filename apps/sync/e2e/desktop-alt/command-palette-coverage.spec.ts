@@ -48,6 +48,12 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 
+  it('keeps Atlas reachable from the palette with g a (US-016)', () => {
+    expect(desktopApp).toContain("id: 'command-go-atlas'");
+    expect(desktopApp).toContain("navigate({ kind: 'atlas' })");
+    expect(desktopApp).toContain("shortcut: 'g a'");
+  });
+
   it('fills the ACTIONS section with the hq-* verbs (deploy / share / run worker)', () => {
     // The palette is the keyboard surface for hq-* actions, not just nav. Each
     // action hands off to the agent through the shared helper; their ids do NOT

@@ -773,6 +773,7 @@
       <NotificationFeed
         bind:this={feedEl}
         showDayLabels={false}
+        sectioned={true}
         includeUpdates={!updateAvailable}
         hideEmptyState={hasSystemNotices}
         onunreadchange={(n) => (unreadCount = n)}
@@ -813,7 +814,11 @@
 
 <style>
   .popover {
-    width: min(100vw, 296px);
+    /* Compact tray popover — intentionally narrower than the in-app Messages
+       panel (364px). Long rows truncate with ellipsis (NotificationRow +
+       .snr-text line-clamp) so a preview or button never forces this wider. */
+    width: min(100vw, 288px);
+    max-width: 288px;
     height: 100vh;
     max-height: 100vh;
     display: flex;
@@ -1001,12 +1006,14 @@
     outline-offset: var(--popover-focus-offset, 2px);
   }
 
+  /* Compact sync-status chip — a single calm line (● All synced · 55m), not a
+     tall header block. Mirrors the desktop Messages panel's quiet header. */
   .mbp-status {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 9px;
-    padding: 12px;
+    gap: 7px;
+    padding: 8px 12px 6px;
   }
 
   .mbp-status .gd {
@@ -1035,7 +1042,7 @@
 
   .mbp-s1 {
     color: var(--pop-text);
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 600;
     white-space: nowrap;
   }

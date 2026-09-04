@@ -196,6 +196,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
         input,
       ),
+    listAvatarPacks: () => this.hqProJson("GET", "/v1/avatar-packs"),
+    getAvatarPack: (packId) =>
+      this.hqProJson(
+        "GET",
+        `/v1/avatar-packs/${encodeURIComponent(packId)}`,
+      ),
+    selectAgentAvatar: (agentUid, input) =>
+      this.hqProJson(
+        "POST",
+        `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+        input,
+      ),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -641,5 +653,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
             `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}`,
           )
         : this.call("read_work_mesh_project", { projectId }),
+    migrateSession: (sessionId, body) =>
+      this.hqProJson(
+        "POST",
+        `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
+        body,
+      ),
   };
 }

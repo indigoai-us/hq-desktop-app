@@ -16,7 +16,29 @@ use reqwest::Client;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-pub const CLIENT_NAME: &str = "hq-sync";
+/// Client attribution name stamped on every outbound request as
+/// `x-hq-client-name` (and as the User-Agent product token).
+///
+/// MUST NOT be `hq-sync`. The hq-cloud sync RUNNER that this app spawns also
+/// stamps `x-hq-client-name: hq-sync` (see hq-pro `sts-vend-gate.ts`
+/// `SYNC_CLIENT_NAME`), and hq-pro's `lastObservedClients` map is keyed by that
+/// raw header with one entry per name, most recent write winning. While the
+/// desktop app also called itself `hq-sync`, the runner's 6.x versions and the
+/// app's 0.10.x versions overwrote each other in that single slot, so the
+/// stored "app version" was usually the runner's — which made the desktop
+/// fleet unmeasurable and hid a below-floor cohort that was not auto-updating.
+///
+/// `hq-desktop-app` is the name GTM already maps to the App surface
+/// (indigo-gtm-hq #142 `APP_MOVER_ALLOWLIST`) and the name the version/health
+/// heartbeats in `commands::telemetry` and `commands::client_health` have
+/// always used. Nothing keys behaviour off this value: the hq-pro version gate
+/// identifies us by the request-body `clientId` (`hq-desktop`), not this
+/// header.
+pub const CLIENT_NAME: &str = "hq-desktop-app";
+
+/// The name the bundled hq-cloud sync runner stamps. Kept here only so the
+/// invariant "the app is not the runner" is test-enforced in one place.
+pub const SYNC_RUNNER_CLIENT_NAME: &str = "hq-sync";
 
 // The user-facing version is injected at startup by the binary (which reads it
 // from `env!("APP_VERSION")`, emitted by its build.rs from package.json), so this
@@ -96,6 +118,41 @@ mod tests {
     use std::time::Instant;
     use wiremock::matchers::any;
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The desktop app must never share its client-attribution name with the
+    /// hq-cloud sync runner it spawns. hq-pro stores ONE `lastObservedClients`
+    /// entry per client name (most recent write wins), so a shared name makes
+    /// the app's version distribution unreadable — the defect this constant
+    /// exists to prevent.
+    #[test]
+    fn client_name_is_distinct_from_the_sync_runner() {
+        assert_eq!(CLIENT_NAME, "hq-desktop-app");
+        assert_ne!(CLIENT_NAME, SYNC_RUNNER_CLIENT_NAME);
+    }
+
+    #[test]
+    fn client_headers_stamp_the_desktop_app_name_not_hq_sync() {
+        set_client_version("0.10.190");
+        let headers = client_headers();
+        assert_eq!(
+            headers
+                .get("x-hq-client-name")
+                .and_then(|v| v.to_str().ok()),
+            Some("hq-desktop-app"),
+        );
+        let user_agent = headers
+            .get(reqwest::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            user_agent.starts_with("hq-desktop-app/"),
+            "user-agent should carry the desktop-app product token, got {user_agent:?}",
+        );
+        assert!(
+            !user_agent.starts_with("hq-sync/"),
+            "user-agent must not impersonate the sync runner",
+        );
+    }
 
     /// Regression test for the 2026-04 hq-pro KMS-IAM 500 outage:
     /// `/v1/calendar/events` returned 500 for hours and the MeetingsWindow

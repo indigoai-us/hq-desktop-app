@@ -64,6 +64,11 @@ export const WEB_PATHS = {
   /** PATCH agent profile (displayName / title / description / avatarBase64). */
   agentProfile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  avatarPacks: "/v1/avatar-packs",
+  avatarPack: (packId: string) =>
+    `/v1/avatar-packs/${encodeURIComponent(packId)}`,
+  agentAvatar: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   cardAction: (channelId: string, cardId: string) =>
@@ -148,6 +153,8 @@ export const WEB_PATHS = {
 
   workMeshProject: (id: string) =>
     `/v1/work-mesh/projects/${encodeURIComponent(id)}`,
+  workMeshSessionMigrate: (sessionId: string) =>
+    `/v1/work-mesh/sessions/${encodeURIComponent(sessionId)}/migrate`,
 
   skillsShelf: (companyUid: string) =>
     `/v1/skills/${encodeURIComponent(companyUid)}/shelf`,
@@ -469,6 +476,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     updateProfile: (input) => this.request("PUT", WEB_PATHS.profile, input),
     updateAgentProfile: (agentUid, input) =>
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), input),
+    listAvatarPacks: () => this.get(WEB_PATHS.avatarPacks),
+    getAvatarPack: (packId) => this.get(WEB_PATHS.avatarPack(packId)),
+    selectAgentAvatar: (agentUid, input) =>
+      this.post(WEB_PATHS.agentAvatar(agentUid), input),
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -1003,5 +1014,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       const qs = company ? `?companyUid=${encodeURIComponent(company)}` : "";
       return this.get(`${WEB_PATHS.workMeshProject(id)}${qs}`);
     },
+    migrateSession: (sessionId, body) =>
+      this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
   };
 }

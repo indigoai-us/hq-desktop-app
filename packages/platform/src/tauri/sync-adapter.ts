@@ -353,6 +353,10 @@ export function createSyncPlatformAdapter(
       updateProfile: (input) => hqProJson('PUT', WEB_PATHS.profile, input),
       updateAgentProfile: (agentUid, input) =>
         hqProJson('PATCH', WEB_PATHS.agentProfile(agentUid), input),
+      listAvatarPacks: () => hqProJson('GET', WEB_PATHS.avatarPacks),
+      getAvatarPack: (packId) => hqProJson('GET', WEB_PATHS.avatarPack(packId)),
+      selectAgentAvatar: (agentUid, input) =>
+        hqProJson('POST', WEB_PATHS.agentAvatar(agentUid), input),
     },
 
     messaging: {
@@ -1060,6 +1064,12 @@ export function createSyncPlatformAdapter(
           withQuery(WEB_PATHS.workMeshProject(projectId.trim()), {
             companyUid: companyUid?.trim() || null,
           }),
+        ),
+      migrateSession: (sessionId, body) =>
+        hqProJson(
+          'POST',
+          WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
+          body,
         ),
     },
   };

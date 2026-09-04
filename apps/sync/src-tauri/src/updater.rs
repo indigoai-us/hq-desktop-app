@@ -1,18 +1,19 @@
 //! Tauri auto-updater nag — soft, user-initiated, channel-aware.
 //!
 //! Three channels (`util::release_channel::ReleaseChannel`):
-//!   - Stable — every user. Polls the static
+//!   - Stable — default for every user. Polls the static
 //!     `releases/latest/download/latest.json` alias that GitHub already
 //!     filters to non-prereleases.
-//!   - Beta   — `@getindigo.ai` users by default. Newer of (stable, beta).
-//!   - Alpha  — `@getindigo.ai` opt-in via Settings. Newest of anything.
+//!   - Beta   — opt-in from Settings for any signed-in user. Newer of
+//!     (stable, beta).
+//!   - Alpha  — opt-in from Settings for any signed-in user. Newest of
+//!     anything.
 //!
-//! Gating is layered:
-//!   1. The Settings UI only renders the channel picker for
-//!      `@getindigo.ai` users (`available_channels` command).
-//!   2. The Rust-side resolver (`effective_channel`) coerces a non-indigo
-//!      preference to Stable regardless of what's in `menubar.json` — a
-//!      hand-edited config can't escape stable.
+//! Resolution:
+//!   1. The Settings UI offers Stable / Beta / Alpha to every signed-in
+//!      user (`available_channels` command).
+//!   2. The Rust-side resolver (`effective_channel`) honours the stored
+//!      preference; unset defaults to Stable.
 //!   3. The endpoint resolver falls back to the static stable alias on
 //!      any GitHub API failure, so prerelease users behind a blocked
 //!      proxy still get stable updates rather than nothing.
@@ -23,9 +24,9 @@
 //! continues to use it via `app.updater()` because hard-yank always pulls
 //! the newest stable, regardless of channel preference.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
@@ -38,9 +39,9 @@ use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 use crate::util::release_channel::{
-    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
-    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel,
-    ResolvedChannelEndpoint, UpdateFeedPolicy,
+    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
+    should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
+    UpdateFeedPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,6 +56,10 @@ pub struct UpdateInfo {
     /// release manifest. A repeated check for the same version preserves the
     /// first timestamp so an old update cannot jump back to the top of Inbox.
     pub detected_at: String,
+    /// Seconds left in the automatic idle-wait window, when a staged package
+    /// is waiting for a sync gap. Omitted for a manual Restart-to-update row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for_idle_secs: Option<u64>,
 }
 
 /// Byte-progress for an in-flight desktop-app download. `percent` is omitted
@@ -79,11 +84,7 @@ pub(crate) fn download_progress_percent(downloaded: u64, total: Option<u64>) -> 
     Some(((downloaded.min(total) * 100) / total) as u32)
 }
 
-pub(crate) fn emit_update_download_progress(
-    app: &AppHandle,
-    downloaded: u64,
-    total: Option<u64>,
-) {
+pub(crate) fn emit_update_download_progress(app: &AppHandle, downloaded: u64, total: Option<u64>) {
     let _ = app.emit(
         "update:progress",
         UpdateProgress {
@@ -110,10 +111,29 @@ pub(crate) fn emit_update_install_failed(app: &AppHandle, version: &str, message
         "update:install-failed",
         UpdateInstallFailed { version, message },
     );
+    // Client health (US-002): persist + report the failed install.
+    crate::commands::client_health::record_updater_install_failed();
 }
 
 fn emit_update_downloaded(app: &AppHandle, version: &str) {
     let _ = app.emit("update:downloaded", UpdateInstallStarted { version });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWaitingForIdle<'a> {
+    version: &'a str,
+    remaining_secs: u64,
+}
+
+fn emit_update_waiting_for_idle(app: &AppHandle, version: &str, remaining: Duration) {
+    let _ = app.emit(
+        "update:waiting-for-idle",
+        UpdateWaitingForIdle {
+            version,
+            remaining_secs: remaining.as_secs(),
+        },
+    );
 }
 
 /// A verified (minisign-checked) update package that has been downloaded but
@@ -125,6 +145,7 @@ pub struct StagedDownload {
     update: tauri_plugin_updater::Update,
     info: UpdateInfo,
     bytes: Vec<u8>,
+    downloaded_at: Instant,
 }
 
 #[derive(Default)]
@@ -145,6 +166,26 @@ impl DownloadedUpdate {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|staged| staged.info.clone())
+    }
+
+    fn peek_version_and_age(&self) -> Option<(String, Instant)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|staged| (staged.info.version.clone(), staged.downloaded_at))
+    }
+
+    fn status_for_hydrate(&self, waiter_active: bool) -> Option<UpdateInfo> {
+        let mut info = self.info()?;
+        if waiter_active {
+            if let Some((_, downloaded_at)) = self.peek_version_and_age() {
+                info.waiting_for_idle_secs = Some(
+                    idle_wait_remaining(downloaded_at.elapsed(), AUTO_INSTALL_DEFER_CAP).as_secs(),
+                );
+            }
+        }
+        Some(info)
     }
 }
 
@@ -207,11 +248,23 @@ struct PendingUpdateTransition {
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static AUTO_INSTALL_WAITER_GENERATION: AtomicU64 = AtomicU64::new(0);
+static AUTO_INSTALL_WAITER_ACTIVE: AtomicBool = AtomicBool::new(false);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 /// Betas iterate multiple times per day, so prerelease channels re-check every
 /// 30 minutes while stable keeps the 6h cadence.
 const PRERELEASE_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(1_800);
 const UPDATE_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the auto-install waiter re-checks for a sync-idle gap.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// After a package is staged, wait this long for a natural idle gap before
+/// pausing new sync cycles and installing anyway. Sync is effectively always
+/// "active" on real installs, so an unbounded deferral leaves users on the
+/// old version forever.
+pub(crate) const AUTO_INSTALL_DEFER_CAP: Duration = Duration::from_secs(10 * 60);
+/// After the cap (or a forced install), wait this long for in-flight
+/// transfers to finish once new cycles are paused.
+pub(crate) const IN_FLIGHT_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const UPDATE_DEFERRED_DURING_SYNC: &str = "Update deferred while a sync is active";
 pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
     "Update deferred while an HQ change is active";
@@ -221,17 +274,239 @@ pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
     Install,
-    DeferForSync,
     Announce,
+}
+
+/// Who asked to install the staged package. Manual (Settings Restart now /
+/// Check Now) is never deferred. Forced (hq-pro `updateRequired`) skips the
+/// 10-minute idle wait but still drains in-flight transfers. Automatic waits
+/// for an idle gap up to [`AUTO_INSTALL_DEFER_CAP`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallTrigger {
+    Automatic,
+    Forced,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeferralDecision {
+    /// No transfers in flight — install immediately.
+    InstallNow,
+    /// Still inside the cap; keep waiting for a sync-idle gap.
+    WaitForIdle,
+    /// Cap reached (or a forced install): pause new cycles, drain, install.
+    PauseThenInstall,
+}
+
+/// Why this installation cannot apply an in-place update, independent of the
+/// updater's own deferral policy.
+///
+/// Field context (the stuck-below-floor cohort): a forced `updateRequired`
+/// install bypasses every deferral, downloads, verifies — and then still leaves
+/// the user on the old build if the running bundle cannot be replaced. Both
+/// causes below are permanent for that installation, so the same user reappears
+/// below the floor after every release. Until this is reported, the server sees
+/// only "still old", never "cannot install".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallBlocker {
+    /// Gatekeeper App Translocation. The bundle is executing from a randomized
+    /// read-only mount because it was launched from a quarantined download
+    /// location instead of being moved to `/Applications`. An in-place update
+    /// either fails outright or writes into a throwaway path, so the next
+    /// launch of the user's original copy is still the old version.
+    Translocated,
+    /// The `.app` bundle directory is not writable by this user (e.g. a
+    /// root-owned copy), so the updater cannot swap the bundle.
+    BundleNotWritable,
+}
+
+impl InstallBlocker {
+    /// Stable, prose-free code for logs. Deliberately not user-facing text.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Translocated => "translocated-bundle",
+            Self::BundleNotWritable => "bundle-not-writable",
+        }
+    }
+}
+
+/// macOS App Translocation mounts the bundle under a path containing this
+/// component. Matching the component (not a prefix) keeps the check correct
+/// across the several private mount roots macOS has used.
+const APP_TRANSLOCATION_PATH_MARKER: &str = "/AppTranslocation/";
+
+/// Pure classifier so the policy is unit-testable without a real bundle.
+/// Translocation is checked first: a translocated mount is read-only, so
+/// reporting "not writable" for it would hide the actionable cause.
+pub(crate) fn classify_install_blocker(
+    executable_path: &str,
+    bundle_is_writable: bool,
+) -> Option<InstallBlocker> {
+    if executable_path.contains(APP_TRANSLOCATION_PATH_MARKER) {
+        return Some(InstallBlocker::Translocated);
+    }
+    if !bundle_is_writable {
+        return Some(InstallBlocker::BundleNotWritable);
+    }
+    None
+}
+
+/// The `.app` bundle directory containing `executable_path`, i.e. three
+/// ancestors up from `<Bundle>.app/Contents/MacOS/<binary>`. `None` when the
+/// executable is not inside a bundle (`cargo run`, tests, CI).
+fn bundle_dir_for_executable(executable_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let bundle = executable_path.ancestors().nth(3)?;
+    if bundle.extension().and_then(|e| e.to_str()) == Some("app") {
+        Some(bundle.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// True when we can create (and remove) a file inside `dir`. A metadata-mode
+/// check is not sufficient: ACLs, read-only mounts, and SIP all deny writes
+/// that permission bits alone would allow.
+fn directory_is_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(".hq-update-write-probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Inspect THIS installation for a permanent install blocker. `None` on
+/// non-macOS (Windows installs via the NSIS helper, which has its own
+/// diagnostics) and whenever the running binary is not inside an `.app`.
+pub(crate) fn install_blocker() -> Option<InstallBlocker> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bundle = bundle_dir_for_executable(&exe)?;
+    classify_install_blocker(&exe.to_string_lossy(), directory_is_writable(&bundle))
+}
+
+/// Report a failed install so it is visible on the SERVER, not only in
+/// `~/.hq/logs/hq-sync.log`.
+///
+/// `record_updater_install_failed` persists `updaterState = "update_failed"`,
+/// which the consent-free client-health heartbeat sends on its next (debounced)
+/// emit — the same presence/diagnostic channel as the version heartbeat. Any
+/// detected [`InstallBlocker`] is appended to the local log line as a stable
+/// code so a support session can name the cause immediately.
+pub(crate) fn report_install_failure(context: &str, message: &str) {
+    match install_blocker() {
+        Some(blocker) => log(
+            context,
+            &format!(
+                "install failed ({message}); install blocker detected: {}",
+                blocker.code()
+            ),
+        ),
+        None => log(context, &format!("install failed ({message})")),
+    }
+    crate::commands::client_health::record_updater_install_failed();
 }
 
 fn install_failure_is_transient_deferral(error: &str) -> bool {
     matches!(
         error,
-        UPDATE_DEFERRED_DURING_SYNC
-            | UPDATE_DEFERRED_DURING_MUTATION
-            | UPDATE_DEFERRED_DURING_PROCESS_EXIT
+        UPDATE_DEFERRED_DURING_MUTATION | UPDATE_DEFERRED_DURING_PROCESS_EXIT
     )
+}
+
+pub(crate) fn deferral_decision(
+    trigger: InstallTrigger,
+    transfers_in_progress: bool,
+    elapsed_since_download: Duration,
+    cap: Duration,
+) -> DeferralDecision {
+    match trigger {
+        InstallTrigger::Manual => DeferralDecision::InstallNow,
+        InstallTrigger::Forced => {
+            if transfers_in_progress {
+                DeferralDecision::PauseThenInstall
+            } else {
+                DeferralDecision::InstallNow
+            }
+        }
+        InstallTrigger::Automatic => {
+            if !transfers_in_progress {
+                DeferralDecision::InstallNow
+            } else if elapsed_since_download < cap {
+                DeferralDecision::WaitForIdle
+            } else {
+                DeferralDecision::PauseThenInstall
+            }
+        }
+    }
+}
+
+pub(crate) fn idle_wait_remaining(elapsed: Duration, cap: Duration) -> Duration {
+    cap.saturating_sub(elapsed)
+}
+
+fn log_deferral_decision(
+    trigger: InstallTrigger,
+    decision: DeferralDecision,
+    version: &str,
+    remaining: Duration,
+) {
+    match (trigger, decision) {
+        (InstallTrigger::Manual, _) => {
+            log(
+                "updater",
+                &format!("manual install of v{version} proceeding without deferral"),
+            );
+        }
+        (InstallTrigger::Forced, DeferralDecision::InstallNow) => {
+            log(
+                "updater",
+                &format!("forced update v{version} installing (sync idle)"),
+            );
+        }
+        (InstallTrigger::Forced, DeferralDecision::PauseThenInstall) => {
+            log(
+                "updater",
+                &format!(
+                    "forced update v{version} bypassing idle wait; pausing new sync cycles then installing"
+                ),
+            );
+        }
+        (InstallTrigger::Automatic, DeferralDecision::InstallNow) => {
+            log(
+                "updater",
+                &format!("automatic update v{version} installing on sync idle gap"),
+            );
+        }
+        (InstallTrigger::Automatic, DeferralDecision::WaitForIdle) => {
+            let remaining_mins = (remaining.as_secs().saturating_add(59) / 60).max(1);
+            log(
+                "updater",
+                &format!(
+                    "automatic update v{version} waiting for sync idle gap; {remaining_mins} min remaining"
+                ),
+            );
+        }
+        (InstallTrigger::Automatic, DeferralDecision::PauseThenInstall) => {
+            log(
+                "updater",
+                &format!(
+                    "automatic update v{version} deferral cap reached; pausing new sync cycles for up to {}s, then installing",
+                    IN_FLIGHT_DRAIN_TIMEOUT.as_secs()
+                ),
+            );
+        }
+        (InstallTrigger::Forced, DeferralDecision::WaitForIdle) => {
+            log(
+                "updater",
+                &format!("forced update v{version} unexpectedly waiting; installing instead"),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,16 +532,12 @@ fn background_check_interval(channel: ReleaseChannel) -> Duration {
 
 fn background_update_action(
     automatic_updates: bool,
-    sync_in_progress: bool,
     silent_install_supported: bool,
 ) -> BackgroundUpdateAction {
-    match (
-        automatic_updates && silent_install_supported,
-        sync_in_progress,
-    ) {
-        (true, false) => BackgroundUpdateAction::Install,
-        (true, true) => BackgroundUpdateAction::DeferForSync,
-        (false, _) => BackgroundUpdateAction::Announce,
+    if automatic_updates && silent_install_supported {
+        BackgroundUpdateAction::Install
+    } else {
+        BackgroundUpdateAction::Announce
     }
 }
 
@@ -307,6 +578,25 @@ impl Drop for UpdateInstallGuard<'_> {
     }
 }
 
+struct AutoInstallWaiterGuard {
+    generation: u64,
+}
+
+impl AutoInstallWaiterGuard {
+    fn arm(generation: u64) -> Self {
+        AUTO_INSTALL_WAITER_ACTIVE.store(true, Ordering::Release);
+        Self { generation }
+    }
+}
+
+impl Drop for AutoInstallWaiterGuard {
+    fn drop(&mut self) {
+        if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) == self.generation {
+            AUTO_INSTALL_WAITER_ACTIVE.store(false, Ordering::Release);
+        }
+    }
+}
+
 fn detection_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -317,6 +607,7 @@ fn discovered_update(version: String, body: Option<String>, date: Option<String>
         body,
         date,
         detected_at: detection_timestamp(),
+        waiting_for_idle_secs: None,
     }
 }
 
@@ -473,6 +764,11 @@ fn apply_absent_and_emit(
     if transition.applied && transition.cleared_pending {
         let _ = app.emit("update:cleared", ());
     }
+    if transition.applied {
+        // Client health (US-002): a successful check confirmed no update —
+        // persist `up_to_date` (distinct from never-checked `unchecked`).
+        crate::commands::client_health::record_updater_status(&transition.status);
+    }
     Ok(transition.status)
 }
 
@@ -484,6 +780,10 @@ async fn record_and_announce_update(
     announcement: UpdateAnnouncement,
 ) -> Result<Option<UpdateInfo>, String> {
     let transition = apply_discovered_to_app(app, ticket, discovered, authoritative)?;
+    if transition.applied {
+        // Client health (US-002): persist + report the updater transition.
+        crate::commands::client_health::record_updater_status(&transition.status);
+    }
     let info = transition.status.pending_info();
     if !transition.applied || !transition.announce_available {
         return Ok(info);
@@ -526,13 +826,12 @@ fn read_stored_release_channel() -> Option<String> {
 }
 
 /// Resolve the per-channel updater endpoint URL the background loop and
-/// on-demand command should poll. Combines the stored preference with
-/// the indigo gate, then resolves to a `latest.json` URL via the
+/// on-demand command should poll. Honours the stored preference (Stable
+/// when unset), then resolves to a `latest.json` URL via the
 /// `release_channel` module.
 async fn resolve_endpoint() -> (ReleaseChannel, ResolvedChannelEndpoint) {
     let stored = read_stored_release_channel();
-    let is_indigo = feature_gate::is_indigo_user().await;
-    let channel: ReleaseChannel = effective_channel(stored.as_deref(), is_indigo);
+    let channel: ReleaseChannel = effective_channel(stored.as_deref());
     let resolved = resolve_channel_endpoint(channel).await;
     log(
         "updater",
@@ -583,12 +882,8 @@ async fn channel_aware_updater_with_mode(
         .endpoints(vec![endpoint])
         .map_err(|e| format!("updater_builder.endpoints: {e}"))?
         .version_comparator(move |current, release| match mode {
-            UpdateOfferMode::Reinstall => {
-                should_reinstall_feed_target(&current, &release.version)
-            }
-            UpdateOfferMode::Standard => {
-                should_offer_update(&current, &release.version, &policy)
-            }
+            UpdateOfferMode::Reinstall => should_reinstall_feed_target(&current, &release.version),
+            UpdateOfferMode::Standard => should_offer_update(&current, &release.version, &policy),
         })
         .build()
         .map_err(|e| format!("updater_builder.build: {e}"))?;
@@ -600,10 +895,7 @@ async fn channel_aware_updater_with_mode(
 }
 
 fn log_feed_policy(policy: &UpdateFeedPolicy, current: &str) {
-    if policy.rollback
-        || !policy.bad_versions.is_empty()
-        || policy.min_supported.is_some()
-    {
+    if policy.rollback || !policy.bad_versions.is_empty() || policy.min_supported.is_some() {
         log(
             "updater",
             &format!(
@@ -748,6 +1040,10 @@ async fn install_verified_update(
         crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
         crate::commands::telemetry::emit_version_heartbeat_after_update(&update.version).await;
+        // Client health (US-002): best-effort heartbeat before restart so the
+        // server sees the post-update state (installed target version +
+        // cleared updater state) without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update(&update.version).await;
         app.restart();
     }
 }
@@ -755,19 +1051,211 @@ async fn install_verified_update(
 /// Install the newest stable release through the same single-flight and
 /// platform-safe lifecycle as the normal updater. The hard version gate uses
 /// this entry point so it cannot drift back to Tauri's abrupt Windows exit.
+/// A `force` result skips the 10-minute idle wait but still pauses new sync
+/// cycles and drains in-flight transfers for up to [`IN_FLIGHT_DRAIN_TIMEOUT`].
 pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
+    AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel);
+    if app.state::<DownloadedUpdate>().info().is_some() {
+        return commit_staged_install_unguarded(app, InstallTrigger::Forced).await;
+    }
     let updater = app.updater().map_err(|error| error.to_string())?;
     match updater.check().await {
-        Ok(Some(update)) => install_verified_update(app, &update).await,
+        Ok(Some(update)) => {
+            let info = discovered_update(
+                update.version.clone(),
+                update.body.clone(),
+                update.date.map(|d| d.to_string()),
+            );
+            stage_plugin_update(app, update, info).await?;
+            commit_staged_install_unguarded(app, InstallTrigger::Forced).await
+        }
         Ok(None) => Err(
             "hq-pro hard-gate fired but tauri-updater sees no release; latest.json may be stale"
                 .to_string(),
         ),
         Err(error) => Err(error.to_string()),
     }
+}
+
+async fn stage_plugin_update(
+    app: &AppHandle,
+    update: tauri_plugin_updater::Update,
+    info: UpdateInfo,
+) -> Result<UpdateInfo, String> {
+    let version = update.version.clone();
+    let mut downloaded = 0_u64;
+    let bytes = match update
+        .download(
+            |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                emit_update_download_progress(app, downloaded, total);
+            },
+            || {},
+        )
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let message = error.to_string();
+            emit_update_install_failed(app, &version, &message);
+            return Err(message);
+        }
+    };
+    emit_update_download_progress(app, downloaded, Some(downloaded));
+    app.state::<DownloadedUpdate>().put(StagedDownload {
+        update,
+        info: info.clone(),
+        bytes,
+        downloaded_at: Instant::now(),
+    });
+    log(
+        "updater",
+        &format!("desktop update v{version} downloaded; waiting for restart"),
+    );
+    emit_update_downloaded(app, &version);
+    Ok(info)
+}
+
+async fn drain_in_flight_transfers(timeout: Duration) {
+    let started = Instant::now();
+    while sync_in_progress() && started.elapsed() < timeout {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if sync_in_progress() {
+        log(
+            "updater",
+            &format!(
+                "in-flight transfers still active after {}s drain; installing anyway",
+                timeout.as_secs()
+            ),
+        );
+    } else {
+        log("updater", "in-flight transfers drained; installing");
+    }
+}
+
+async fn commit_staged_install_unguarded(
+    app: &AppHandle,
+    trigger: InstallTrigger,
+) -> Result<(), String> {
+    let staged = app
+        .state::<DownloadedUpdate>()
+        .take()
+        .ok_or_else(|| "No downloaded update to install".to_string())?;
+    let version = staged.info.version.clone();
+    let elapsed = staged.downloaded_at.elapsed();
+    let decision = deferral_decision(trigger, sync_in_progress(), elapsed, AUTO_INSTALL_DEFER_CAP);
+    log_deferral_decision(
+        trigger,
+        decision,
+        &version,
+        idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP),
+    );
+    if decision == DeferralDecision::WaitForIdle {
+        app.state::<DownloadedUpdate>().put(staged);
+        return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
+    }
+    let _pause = crate::commands::process::pause_new_sync_cycles();
+    if decision == DeferralDecision::PauseThenInstall {
+        drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await;
+    }
+    emit_update_install_started(app, &version);
+    let result = install_staged_update(app, &staged).await;
+    if let Err(message) = &result {
+        emit_update_install_failed(app, &version, message);
+        app.state::<DownloadedUpdate>().put(staged);
+    }
+    result
+}
+
+fn spawn_auto_install_waiter(app: AppHandle) {
+    let Some((version, downloaded_at)) = app.state::<DownloadedUpdate>().peek_version_and_age()
+    else {
+        return;
+    };
+    let generation = AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    tauri::async_runtime::spawn(async move {
+        let _active = AutoInstallWaiterGuard::arm(generation);
+        let mut last_wait_log: Option<Instant> = None;
+        loop {
+            if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) != generation {
+                return;
+            }
+            if app.state::<DownloadedUpdate>().info().is_none() {
+                return;
+            }
+            let elapsed = downloaded_at.elapsed();
+            let remaining = idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP);
+            let decision = deferral_decision(
+                InstallTrigger::Automatic,
+                sync_in_progress(),
+                elapsed,
+                AUTO_INSTALL_DEFER_CAP,
+            );
+            match decision {
+                DeferralDecision::WaitForIdle => {
+                    emit_update_waiting_for_idle(&app, &version, remaining);
+                    let should_log = match last_wait_log {
+                        None => true,
+                        Some(at) => at.elapsed() >= Duration::from_secs(30),
+                    };
+                    if should_log {
+                        log_deferral_decision(
+                            InstallTrigger::Automatic,
+                            decision,
+                            &version,
+                            remaining,
+                        );
+                        last_wait_log = Some(Instant::now());
+                    }
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                }
+                DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
+                    log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
+                    let Some(_install_guard) =
+                        UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+                    else {
+                        log(
+                            "updater",
+                            "automatic install already in progress — waiter exiting",
+                        );
+                        return;
+                    };
+                    match commit_staged_install_unguarded(&app, InstallTrigger::Automatic).await {
+                        Ok(()) => {
+                            log("updater", "automatic update handed off successfully");
+                        }
+                        Err(error) if error == UPDATE_DEFERRED_DURING_SYNC => {
+                            drop(_install_guard);
+                            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                            continue;
+                        }
+                        Err(error) if install_failure_is_transient_deferral(&error) => {
+                            log(
+                                "updater",
+                                "automatic update deferred during install startup; retrying soon",
+                            );
+                            drop(_install_guard);
+                            tokio::time::sleep(UPDATE_SYNC_RETRY_INTERVAL).await;
+                            continue;
+                        }
+                        Err(error) => {
+                            log(
+                                "updater",
+                                &format!(
+                                    "automatic install failed — offering manual recovery: {error}"
+                                ),
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -859,36 +1347,10 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
             )
             .await?
             .unwrap_or(info);
-            let version = update.version.clone();
-            let mut downloaded = 0_u64;
-            let bytes = match update
-                .download(
-                    |chunk, total| {
-                        downloaded = downloaded.saturating_add(chunk as u64);
-                        emit_update_download_progress(&app, downloaded, total);
-                    },
-                    || {},
-                )
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    let message = error.to_string();
-                    emit_update_install_failed(&app, &version, &message);
-                    return Err(message);
-                }
-            };
-            emit_update_download_progress(&app, downloaded, Some(downloaded));
-            app.state::<DownloadedUpdate>().put(StagedDownload {
-                update,
-                info: info.clone(),
-                bytes,
-            });
-            log(
-                "updater",
-                &format!("desktop update v{version} downloaded; waiting for restart"),
-            );
-            emit_update_downloaded(&app, &version);
+            let info = stage_plugin_update(&app, update, info).await?;
+            if hq_desktop_core::hq_cli_update::auto_update_enabled() {
+                spawn_auto_install_waiter(app.clone());
+            }
             Ok(info)
         }
         Ok(None) => {
@@ -902,28 +1364,15 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
 /// Phase two: install the package staged by `download_update` and restart.
 /// Uses the same single-flight lease and platform-safe installer (including
 /// the Windows helper handoff) as the one-shot `install_update` path.
+///
+/// This is the Settings / Core popover "Restart now" path: never blocked by
+/// the automatic sync-idle deferral.
 #[tauri::command]
 pub async fn install_downloaded_update(app: AppHandle) -> Result<(), String> {
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
-    let staged = app
-        .state::<DownloadedUpdate>()
-        .take()
-        .ok_or_else(|| "No downloaded update to install".to_string())?;
-    if sync_in_progress() {
-        app.state::<DownloadedUpdate>().put(staged);
-        return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
-    }
-    let version = staged.info.version.clone();
-    emit_update_install_started(&app, &version);
-    let result = install_staged_update(&app, &staged).await;
-    if let Err(message) = &result {
-        emit_update_install_failed(&app, &version, message);
-        // Keep the verified bytes so "Restart to update" can be retried
-        // without another download.
-        app.state::<DownloadedUpdate>().put(staged);
-    }
-    result
+    AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel);
+    commit_staged_install_unguarded(&app, InstallTrigger::Manual).await
 }
 
 async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Result<(), String> {
@@ -940,8 +1389,11 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         #[cfg(target_os = "macos")]
         crate::commands::autostart::reconcile_launch_agent_after_update();
         crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-        crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.info.version)
-            .await;
+        crate::commands::telemetry::emit_version_heartbeat_after_update(&staged.info.version).await;
+        // Client health (US-002): best-effort heartbeat before restart so the
+        // server sees the post-update state (installed target version +
+        // cleared updater state) without waiting for relaunch.
+        crate::commands::client_health::emit_client_health_after_update(&staged.info.version).await;
         app.restart();
     }
 }
@@ -950,21 +1402,18 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
 /// surfaces hydrate straight into "Restart to update".
 #[tauri::command]
 pub fn get_downloaded_update(app: AppHandle) -> Option<UpdateInfo> {
+    let waiter_active = AUTO_INSTALL_WAITER_ACTIVE.load(Ordering::Acquire);
     app.try_state::<DownloadedUpdate>()
-        .and_then(|state| state.info())
+        .and_then(|state| state.status_for_hydrate(waiter_active))
 }
 
 #[tauri::command]
 pub async fn available_channels() -> Vec<String> {
-    if feature_gate::is_indigo_user().await {
-        vec![
-            ReleaseChannel::Stable.as_str().to_string(),
-            ReleaseChannel::Beta.as_str().to_string(),
-            ReleaseChannel::Alpha.as_str().to_string(),
-        ]
-    } else {
-        vec![ReleaseChannel::Stable.as_str().to_string()]
-    }
+    vec![
+        ReleaseChannel::Stable.as_str().to_string(),
+        ReleaseChannel::Beta.as_str().to_string(),
+        ReleaseChannel::Alpha.as_str().to_string(),
+    ]
 }
 
 /// Tauri command returning `true` iff the signed-in user's email ends in
@@ -992,9 +1441,10 @@ pub async fn is_indigo_user() -> bool {
 /// Automatic updates are installed natively here instead of depending on a
 /// particular WebView to receive `update:available`. That frontend-owned
 /// handshake was lossy: users whose hidden popover had not mounted (or missed
-/// the event) were left with an unexpected manual Install prompt. An active sync
-/// defers the attempt for 30 seconds; an install failure falls back to the
-/// ordinary update notification so the user still has a recovery path.
+/// the event) were left with an unexpected manual Install prompt. After the
+/// package is staged, install waits for a sync-idle gap up to 10 minutes,
+/// then pauses new sync cycles and proceeds; an install failure falls back
+/// to the ordinary update notification so the user still has a recovery path.
 /// Menu-item id for the macOS app-menu "Check for Updates…" entry.
 #[cfg(target_os = "macos")]
 pub const MENU_CHECK_FOR_UPDATES_ID: &str = "app-menu:check-for-updates";
@@ -1012,8 +1462,8 @@ pub const MENU_RECOVERY_ID: &str = "app-menu:recovery";
 pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
-    let check_item = MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…")
-        .build(app)?;
+    let check_item =
+        MenuItemBuilder::with_id(MENU_CHECK_FOR_UPDATES_ID, "Check for Updates…").build(app)?;
     let recovery_item = MenuItemBuilder::with_id(MENU_RECOVERY_ID, "Recovery…").build(app)?;
     let app_menu = SubmenuBuilder::new(app, "HQ")
         .about(Some(AboutMetadata::default()))
@@ -1073,7 +1523,10 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
                 Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
                 Err(e) => {
                     log("updater", &format!("menu check_for_updates failed: {e}"));
-                    notify_manual_check(&handle, "Couldn\u{2019}t check for updates. Try again later.");
+                    notify_manual_check(
+                        &handle,
+                        "Couldn\u{2019}t check for updates. Try again later.",
+                    );
                 }
             }
         });
@@ -1099,14 +1552,11 @@ pub(crate) fn notify_manual_check_up_to_date(app: &AppHandle) {
 #[cfg(target_os = "macos")]
 fn notify_manual_check(app: &AppHandle, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title("HQ")
-        .body(body)
-        .show()
-    {
-        log("updater", &format!("manual update-check notification failed: {e}"));
+    if let Err(e) = app.notification().builder().title("HQ").body(body).show() {
+        log(
+            "updater",
+            &format!("manual update-check notification failed: {e}"),
+        );
     }
 }
 
@@ -1136,85 +1586,86 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     );
                                     match background_update_action(
                                         hq_desktop_core::hq_cli_update::auto_update_enabled(),
-                                        sync_in_progress(),
                                         silent_install_supported(),
                                     ) {
                                         BackgroundUpdateAction::Install => {
-                                            match UpdateInstallGuard::acquire(
-                                                &UPDATE_INSTALL_IN_PROGRESS,
-                                            ) {
-                                                Some(_install_guard) => {
-                                                    log(
-                                                        "updater",
-                                                        &format!(
-                                                            "automatic update enabled — installing {}",
-                                                            info.version
-                                                        ),
-                                                    );
-                                                    #[cfg(not(target_os = "windows"))]
-                                                    crate::commands::hq_work::spawn_maybe_co_install_hq_work();
-                                                    match install_verified_update(&handle, &update)
+                                            let already_staged = handle
+                                                .state::<DownloadedUpdate>()
+                                                .info()
+                                                .is_some_and(|staged| {
+                                                    staged.version == info.version
+                                                });
+                                            if already_staged {
+                                                drop(update);
+                                                log(
+                                                    "updater",
+                                                    &format!(
+                                                        "automatic update v{} already downloaded; waiting for restart",
+                                                        info.version
+                                                    ),
+                                                );
+                                                spawn_auto_install_waiter(handle.clone());
+                                            } else {
+                                                match UpdateInstallGuard::acquire(
+                                                    &UPDATE_INSTALL_IN_PROGRESS,
+                                                ) {
+                                                    Some(_install_guard) => {
+                                                        log(
+                                                            "updater",
+                                                            &format!(
+                                                                "automatic update enabled — downloading {}",
+                                                                info.version
+                                                            ),
+                                                        );
+                                                        match stage_plugin_update(
+                                                            &handle,
+                                                            update,
+                                                            info.clone(),
+                                                        )
                                                         .await
-                                                    {
-                                                        Ok(()) => {
-                                                            log(
-                                                                "updater",
-                                                                "automatic update handed off successfully",
-                                                            );
-                                                        }
-                                                        Err(error)
-                                                            if install_failure_is_transient_deferral(
-                                                                &error,
-                                                            ) =>
                                                         {
-                                                            log(
-                                                                "updater",
-                                                                "automatic update deferred during install startup; retrying soon",
-                                                            );
-                                                            next_check =
-                                                                UPDATE_SYNC_RETRY_INTERVAL;
-                                                        }
-                                                        Err(error) => {
-                                                            log(
-                                                                "updater",
-                                                                &format!(
-                                                                    "automatic install failed — offering manual recovery: {error}"
-                                                                ),
-                                                            );
-                                                            if let Err(record_error) =
-                                                                record_and_announce_update(
-                                                                    &handle,
-                                                                    ticket,
-                                                                    info,
-                                                                    authoritative,
-                                                                    UpdateAnnouncement::PersistentOnly,
-                                                                )
-                                                                .await
-                                                            {
-                                                                eprintln!(
-                                                                    "[updater] failed to store background update: {record_error}"
+                                                            Ok(_) => {
+                                                                drop(_install_guard);
+                                                                spawn_auto_install_waiter(
+                                                                    handle.clone(),
                                                                 );
+                                                            }
+                                                            Err(error) => {
+                                                                log(
+                                                                    "updater",
+                                                                    &format!(
+                                                                        "automatic download failed — offering manual recovery: {error}"
+                                                                    ),
+                                                                );
+                                                                if let Err(record_error) =
+                                                                    record_and_announce_update(
+                                                                        &handle,
+                                                                        ticket,
+                                                                        info,
+                                                                        authoritative,
+                                                                        UpdateAnnouncement::PersistentOnly,
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    eprintln!(
+                                                                        "[updater] failed to store background update: {record_error}"
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                }
-                                                None => {
-                                                    log(
-                                                        "updater",
-                                                        "automatic install already in progress — retrying soon",
-                                                    );
-                                                    next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                                    None => {
+                                                        log(
+                                                            "updater",
+                                                            "automatic install already in progress — retrying soon",
+                                                        );
+                                                        next_check = UPDATE_SYNC_RETRY_INTERVAL;
+                                                    }
                                                 }
                                             }
                                         }
-                                        BackgroundUpdateAction::DeferForSync => {
-                                            log(
-                                                "updater",
-                                                "automatic update deferred while sync is active",
-                                            );
-                                            next_check = UPDATE_SYNC_RETRY_INTERVAL;
-                                        }
                                         BackgroundUpdateAction::Announce => {
+                                            drop(update);
                                             if let Err(e) = record_and_announce_update(
                                                 &handle,
                                                 ticket,
@@ -1275,6 +1726,7 @@ mod tests {
             body: Some(body.to_string()),
             date: Some("2026-07-27T15:00:00Z".to_string()),
             detected_at: detected_at.to_string(),
+            waiting_for_idle_secs: None,
         }
     }
 
@@ -1286,6 +1738,23 @@ mod tests {
         let json = serde_json::to_value(&info).expect("UpdateInfo should serialize");
         assert_eq!(json["detectedAt"], info.detected_at);
         assert!(json.get("detected_at").is_none());
+        assert!(json.get("waitingForIdleSecs").is_none());
+    }
+
+    #[test]
+    fn idle_wait_remaining_counts_down_to_zero() {
+        assert_eq!(
+            idle_wait_remaining(Duration::from_secs(0), AUTO_INSTALL_DEFER_CAP),
+            AUTO_INSTALL_DEFER_CAP
+        );
+        assert_eq!(
+            idle_wait_remaining(Duration::from_secs(120), AUTO_INSTALL_DEFER_CAP).as_secs(),
+            480
+        );
+        assert_eq!(
+            idle_wait_remaining(AUTO_INSTALL_DEFER_CAP, AUTO_INSTALL_DEFER_CAP),
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -1385,6 +1854,120 @@ mod tests {
         assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
     }
 
+    /// The stuck-below-floor cohort's root cause, locked in: an AUTOMATIC
+    /// install waits for a sync-idle gap (and sync is effectively always
+    /// active on a real install), but a FORCED install — the hq-pro
+    /// `updateRequired` gate — must never be parked in `WaitForIdle`, at any
+    /// point in the cap window. Regressing this recreates a fleet that cannot
+    /// install the fix that would let it install.
+    #[test]
+    fn forced_installs_never_wait_for_a_sync_idle_gap() {
+        for elapsed in [
+            Duration::from_secs(0),
+            Duration::from_secs(30),
+            AUTO_INSTALL_DEFER_CAP,
+            AUTO_INSTALL_DEFER_CAP + Duration::from_secs(3_600),
+        ] {
+            assert_eq!(
+                deferral_decision(
+                    InstallTrigger::Forced,
+                    true,
+                    elapsed,
+                    AUTO_INSTALL_DEFER_CAP
+                ),
+                DeferralDecision::PauseThenInstall,
+                "forced install with sync active must pause-then-install at elapsed={elapsed:?}",
+            );
+            assert_eq!(
+                deferral_decision(
+                    InstallTrigger::Forced,
+                    false,
+                    elapsed,
+                    AUTO_INSTALL_DEFER_CAP
+                ),
+                DeferralDecision::InstallNow,
+            );
+        }
+    }
+
+    /// Manual (Settings › Updates) is the escape hatch we hand a stuck user, so
+    /// it must be unconditional too.
+    #[test]
+    fn manual_installs_are_never_deferred() {
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Manual,
+                true,
+                Duration::from_secs(0),
+                AUTO_INSTALL_DEFER_CAP
+            ),
+            DeferralDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn translocated_bundle_is_classified_before_writability() {
+        let translocated = "/private/var/folders/ab/xyz/d/AppTranslocation/\
+                            1A2B-3C4D/d/HQ.app/Contents/MacOS/hq-sync-menubar";
+        // A translocated mount is read-only, so both signals fire at once.
+        // Translocation must win — it is the actionable one.
+        assert_eq!(
+            classify_install_blocker(translocated, false),
+            Some(InstallBlocker::Translocated)
+        );
+        assert_eq!(
+            classify_install_blocker(translocated, true),
+            Some(InstallBlocker::Translocated)
+        );
+    }
+
+    #[test]
+    fn unwritable_bundle_is_classified_as_a_blocker() {
+        assert_eq!(
+            classify_install_blocker("/Applications/HQ.app/Contents/MacOS/hq-sync-menubar", false),
+            Some(InstallBlocker::BundleNotWritable)
+        );
+    }
+
+    #[test]
+    fn a_normal_writable_applications_install_has_no_blocker() {
+        assert_eq!(
+            classify_install_blocker("/Applications/HQ.app/Contents/MacOS/hq-sync-menubar", true),
+            None
+        );
+    }
+
+    #[test]
+    fn install_blocker_codes_are_stable_and_prose_free() {
+        assert_eq!(InstallBlocker::Translocated.code(), "translocated-bundle");
+        assert_eq!(
+            InstallBlocker::BundleNotWritable.code(),
+            "bundle-not-writable"
+        );
+    }
+
+    #[test]
+    fn bundle_dir_is_three_ancestors_above_the_executable() {
+        assert_eq!(
+            bundle_dir_for_executable(std::path::Path::new(
+                "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar"
+            )),
+            Some(std::path::PathBuf::from("/Applications/HQ.app"))
+        );
+        // Not inside a bundle (cargo run / CI) — no blocker can be asserted.
+        assert_eq!(
+            bundle_dir_for_executable(std::path::Path::new("/usr/local/bin/hq-sync-menubar")),
+            None
+        );
+    }
+
+    #[test]
+    fn directory_is_writable_detects_a_writable_and_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(directory_is_writable(dir.path()));
+        assert!(!directory_is_writable(&dir.path().join("does-not-exist")));
+    }
+
     #[test]
     fn background_check_interval_is_shorter_for_prerelease_channels() {
         assert_eq!(
@@ -1404,19 +1987,28 @@ mod tests {
     #[test]
     fn automatic_background_updates_install_without_announcing() {
         assert_eq!(
-            background_update_action(true, false, true),
+            background_update_action(true, true),
             BackgroundUpdateAction::Install
         );
     }
 
     #[test]
     fn automatic_background_updates_defer_during_sync() {
+        // Bounded policy: a busy sync no longer defers forever. Inside the
+        // cap we wait for an idle gap; once the cap is reached we pause new
+        // cycles and install. Mutation/process-exit remain transient.
         assert_eq!(
-            background_update_action(true, true, true),
-            BackgroundUpdateAction::DeferForSync
+            deferral_decision(
+                InstallTrigger::Automatic,
+                true,
+                Duration::from_secs(30),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::WaitForIdle
         );
         assert_eq!(UPDATE_SYNC_RETRY_INTERVAL, Duration::from_secs(30));
-        assert!(install_failure_is_transient_deferral(
+        assert_eq!(AUTO_INSTALL_DEFER_CAP, Duration::from_secs(10 * 60));
+        assert!(!install_failure_is_transient_deferral(
             UPDATE_DEFERRED_DURING_SYNC
         ));
         assert!(install_failure_is_transient_deferral(
@@ -1431,13 +2023,89 @@ mod tests {
     }
 
     #[test]
-    fn opted_out_background_updates_keep_the_manual_notification() {
+    fn automatic_background_updates_install_on_idle_gap() {
         assert_eq!(
-            background_update_action(false, false, true),
-            BackgroundUpdateAction::Announce
+            deferral_decision(
+                InstallTrigger::Automatic,
+                false,
+                Duration::from_secs(5),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn automatic_background_updates_install_when_deferral_cap_reached() {
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Automatic,
+                true,
+                AUTO_INSTALL_DEFER_CAP,
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::PauseThenInstall
         );
         assert_eq!(
-            background_update_action(false, true, true),
+            deferral_decision(
+                InstallTrigger::Automatic,
+                true,
+                AUTO_INSTALL_DEFER_CAP + Duration::from_secs(1),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::PauseThenInstall
+        );
+        assert_eq!(IN_FLIGHT_DRAIN_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn forced_updates_bypass_idle_wait() {
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Forced,
+                true,
+                Duration::from_secs(1),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::PauseThenInstall
+        );
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Forced,
+                false,
+                Duration::from_secs(1),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn manual_install_is_never_deferred() {
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Manual,
+                true,
+                Duration::from_secs(0),
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::InstallNow
+        );
+        assert_eq!(
+            deferral_decision(
+                InstallTrigger::Manual,
+                false,
+                AUTO_INSTALL_DEFER_CAP * 2,
+                AUTO_INSTALL_DEFER_CAP,
+            ),
+            DeferralDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn opted_out_background_updates_keep_the_manual_notification() {
+        assert_eq!(
+            background_update_action(false, true),
             BackgroundUpdateAction::Announce
         );
     }
@@ -1448,15 +2116,11 @@ mod tests {
     #[test]
     fn platforms_without_silent_install_always_announce() {
         assert_eq!(
-            background_update_action(true, false, false),
+            background_update_action(true, false),
             BackgroundUpdateAction::Announce
         );
         assert_eq!(
-            background_update_action(true, true, false),
-            BackgroundUpdateAction::Announce
-        );
-        assert_eq!(
-            background_update_action(false, false, false),
+            background_update_action(false, false),
             BackgroundUpdateAction::Announce
         );
     }

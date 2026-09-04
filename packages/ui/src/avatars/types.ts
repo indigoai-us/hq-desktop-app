@@ -2,8 +2,10 @@
 export interface AvatarPackItem {
   id: string;
   name: string;
-  /** Relative to the pack `baseUrl`, or an absolute http(s) URL. */
+  /** Tile src — a bundled asset, or a presigned marketplace thumb URL. */
   src: string;
+  /** Optional full-size presigned URL (remote packs). */
+  fullUrl?: string;
   tags: string[];
 }
 
@@ -15,6 +17,7 @@ export interface AvatarPack {
   author: string;
   baseUrl: string;
   items: AvatarPackItem[];
+  expiresAt?: number;
 }
 
 export type AvatarSelection =
@@ -32,4 +35,4 @@ export const HQ_AGENT_MASCOTS_AUTHOR = "Lizzy";
 export const HQ_AGENT_MASCOTS_BASE_URL =
   "https://hq-agent-mascots.indigo-hq.com";
 
-export const PACK_REGISTRY_STORAGE_KEY = "hq-avatar-pack-urls";
+export const GALLERY_CACHE_STORAGE_KEY = "hq-avatar-packs-gallery";

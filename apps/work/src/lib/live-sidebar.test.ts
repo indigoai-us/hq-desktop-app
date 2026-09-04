@@ -8,7 +8,6 @@ import {
   mergeWorkProjectsIntoDirectory,
   parseInboxPage,
   parseWorkFeed,
-  workItemsAsChannels,
 } from "./live-sidebar.js";
 
 describe("parseInboxPage", () => {
@@ -128,7 +127,7 @@ describe("mergeWorkProjectsIntoDirectory", () => {
   });
 });
 
-describe("workItemsAsChannels + boardFromWorkItems", () => {
+describe("boardFromWorkItems", () => {
   const items = [
     {
       projectId: "hq-work-mono",
@@ -146,12 +145,6 @@ describe("workItemsAsChannels + boardFromWorkItems", () => {
       threadId: "t2",
     },
   ];
-
-  it("scopes owner browse rows to one company", () => {
-    expect(workItemsAsChannels(items, "cmp_1").map((c) => c.channelId)).toEqual(
-      ["hq-work-mono"],
-    );
-  });
 
   it("builds a board from work-mesh rows", () => {
     const board = boardFromWorkItems("hq-work-mono", items);

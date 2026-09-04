@@ -29,6 +29,7 @@ export type EmbeddedNavigationTarget =
   | { kind: 'messages' }
   | { kind: 'setup-checkout'; companyUid: string; checkout?: string | null }
   | { kind: 'meetings'; meetingId?: string | null }
+  | { kind: 'atlas' }
   | {
       kind: 'library';
       tab: 'skills' | 'workers' | 'installed' | 'marketplace' | 'submit' | 'profile';

@@ -13,11 +13,14 @@
   import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
   import {
     applyAvailableUpdate,
+    applyRecommendBanner,
+    clearRecommendBanner,
     createChatWakeBus,
     dispatchEmbeddedNavigation,
     markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
+    reportIdleWait,
     reportInstallFailed,
     toSelfIdentity,
     workspacesFromMembershipRows,
@@ -35,6 +38,7 @@
     createHqWorkPackagesEvents,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
+  import { startDesktopMeshPresence } from './mesh-presence';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -374,6 +378,17 @@
     };
   });
 
+  // Presence lane (US-014): MeshClient over native hq-pro fetch → chat bus.
+  $effect(() => {
+    const fetchImpl = capabilities?.fetch;
+    if (lifecycle !== 'ready' || !fetchImpl || !self?.uid) return;
+    const handle = startDesktopMeshPresence({
+      wakes,
+      fetchImpl,
+    });
+    return () => handle.stop();
+  });
+
   function setActiveReplyThread(
     active:
       | {
@@ -545,6 +560,24 @@
     const unlistenInstallFailedPromise = listen('update:install-failed', (event) => {
       if (!cancelled) reportInstallFailed(event.payload);
     }).catch(() => () => {});
+    const unlistenIdleWaitPromise = listen('update:waiting-for-idle', (event) => {
+      if (!cancelled) reportIdleWait(event.payload);
+    }).catch(() => () => {});
+    const unlistenRecommendPromise = listen(
+      'version-gate:update-recommended',
+      (event) => {
+        if (!cancelled) applyRecommendBanner(event.payload);
+      },
+    ).catch(() => () => {});
+    const unlistenRecommendClearPromise = listen(
+      'version-gate:current',
+      () => {
+        if (!cancelled) clearRecommendBanner();
+      },
+    ).catch(() => () => {});
+    const unlistenForcePromise = listen('version-gate:update-required', () => {
+      if (!cancelled) clearRecommendBanner();
+    }).catch(() => () => {});
 
     const unlistenAuthSessionPromise = listen<unknown>('auth:session-changed', (event) => {
       if (cancelled) return;
@@ -591,6 +624,10 @@
       void unlistenInstallStartedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenDownloadedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenInstallFailedPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenIdleWaitPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenRecommendPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenRecommendClearPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);

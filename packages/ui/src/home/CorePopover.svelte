@@ -25,6 +25,7 @@
   import { type AdapterResult } from "../settings/update-orchestration.js";
   import {
     appRowActions,
+    appRowIdleHint,
     appRowStatusLabel,
   } from "../settings/update-presentation.js";
   import {
@@ -159,6 +160,7 @@
       installPhase: updateStore.installPhase,
     }),
   );
+  const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
 
   // Core version/drift row. Live data wins; otherwise D-08 injects a healthy
   // "NO DRIFT" core so the popover renders the designed state instead of the
@@ -551,6 +553,7 @@
             appStatusLabel === "INSTALLING" ||
             appStatusLabel.startsWith("DOWNLOADING")}
           class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
+            appStatusLabel === "RESTART TO UPDATE" ||
             appStatusLabel === "CHECK FAILED" ||
             appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"
@@ -596,6 +599,11 @@
         {/if}
       </span>
     </div>
+    {#if appIdleHint}
+      <p class="core-idle-hint" data-testid="core-popover-idle-hint">
+        {appIdleHint}
+      </p>
+    {/if}
 
     <button
       type="button"
@@ -872,6 +880,14 @@
     flex-shrink: 0;
     align-items: center;
     gap: 4px;
+  }
+
+  .core-idle-hint {
+    margin: -4px 0 4px;
+    padding: 0 2px;
+    color: var(--t2);
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   /* Ghost text actions on the row's right side — typography only, no chrome. */

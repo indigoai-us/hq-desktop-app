@@ -9,7 +9,10 @@
 
 import { isAgentUid } from "./agent-thinking.js";
 import { humanizeChannelName } from "./channels.js";
-import type { ChannelDirectoryFeed } from "./channel-directory-reconciler.js";
+import type {
+  ChannelDirectoryFeed,
+  ChannelDirectoryRow,
+} from "./channel-directory-reconciler.js";
 import type { ConversationRow, DmContactInput, ScopeCompany } from "./sidebar-model.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -304,7 +307,7 @@ export function formatChannelCreateFailure(err: unknown): string {
 
 export function directoryRowsFromFeed(
   feed: ChannelDirectoryFeed | null | undefined,
-): Array<{ name?: string | null }> {
+): ChannelDirectoryRow[] {
   if (!feed) return [];
   return [...(feed.rows ?? []), ...(feed.changed ?? [])];
 }
