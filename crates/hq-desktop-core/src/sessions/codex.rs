@@ -99,13 +99,24 @@
 //! classification; the dedicated liveness engine (US-004) adds the process
 //! cross-check and `awaiting_input` detection.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use super::scan_cache::StableCache;
 use super::{AgentOrigin, AgentSession, AgentTool, SessionStatus};
+
+/// Memo for the rollout **head** parse.
+///
+/// The Mission Control poller re-scans every few seconds and used to re-open and
+/// re-parse the head of every rollout on disk — thousands of files on a working
+/// machine, and a large share of the app's idle CPU. A rollout is append-only:
+/// the `session_meta` / `turn_context` records we read live at the *head*, so for
+/// a given path the parse result cannot change. Keyed by path alone, and pruned
+/// each scan to the rollouts that still exist. See `super::scan_cache`.
+static HEAD_CACHE: StableCache<HeadInfo> = StableCache::new();
 
 /// Provenance tag stamped on every record this reader emits (US-001 `source`).
 const SOURCE_TAG: &str = "codex-rollout";
@@ -177,7 +188,7 @@ struct RolloutPayload {
 }
 
 /// Fields recovered from a rollout's head.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct HeadInfo {
     /// `payload.id` from `session_meta` (authoritative id; falls back to the
     /// filename-derived id when absent).
@@ -239,9 +250,18 @@ pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSessio
     // Read the index (best-effort) for last-activity + thread-name, keyed by id.
     let index = read_index(&codex_dir.join("session_index.jsonl"));
 
+    // Prune the head memo to the rollouts that still exist before reading, so a
+    // deleted or archived rollout does not leak an entry for the process lifetime.
+    let seen: HashSet<PathBuf> = rollouts.values().map(|r| r.path.clone()).collect();
+    HEAD_CACHE.retain_paths(&seen);
+
     let mut out: Vec<AgentSession> = Vec::with_capacity(rollouts.len());
     for (file_id, rollout) in &rollouts {
-        let head = read_head_info(&rollout.path);
+        // Memoised: an append-only rollout's head never changes, so this is one
+        // open + parse per rollout for the life of the process, not one per tick.
+        let head = HEAD_CACHE
+            .get_or_compute(&rollout.path, || Some(read_head_info(&rollout.path)))
+            .unwrap_or_default();
 
         // id: prefer the rollout's own `session_meta.payload.id`, else the
         // filename-embedded id (they match in practice, but the payload is
