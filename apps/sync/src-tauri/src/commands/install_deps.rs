@@ -6116,7 +6116,12 @@ mod windows_tests {
             tmp.path(),
         )
         .expect("npm should resolve");
-        assert_eq!(found, tmp.path().join("npm.cmd"));
+        // PATHEXT entries are uppercase, so the resolved path may come back
+        // as `npm.CMD`; compare case-insensitively like the filesystem does.
+        assert_eq!(
+            found.to_string_lossy().to_lowercase(),
+            tmp.path().join("npm.cmd").to_string_lossy().to_lowercase()
+        );
 
         // A lone extensionless file must not resolve at all — it cannot be
         // spawned by CreateProcess.
