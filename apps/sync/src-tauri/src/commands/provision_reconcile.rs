@@ -162,6 +162,22 @@ where
             }
         }
 
+        // Ack only when this pass actually wrote local files. Re-acking an
+        // already-provisioned company on every sync pass hammered
+        // /activate-cloud/ack for the lifetime of the install. (The entity
+        // payload carries no card state, so "server still reports the card
+        // pending" cannot be observed here; wrote_local is the only signal.)
+        if !wrote_local {
+            out.push(ReconciledCompany {
+                slug,
+                uid,
+                bucket_name,
+                wrote_local,
+                acked: false,
+            });
+            continue;
+        }
+
         let acked = match vault.ack_activate_cloud(&uid).await {
             Ok(ActivateCloudAck::Done) => true,
             Ok(ActivateCloudAck::Forbidden) => {
@@ -528,8 +544,13 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert!(!result[0].wrote_local);
-        assert!(result[0].acked);
+        assert!(!result[0].acked, "nothing was written, so nothing is acked");
         assert!(calls.lock().unwrap().is_empty());
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            !reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")),
+            "an already-provisioned company must not be re-acked every pass"
+        );
         assert_eq!(sha256_file(&dir.join("company.yaml")), yaml_sha);
         assert_eq!(sha256_file(&dir.join(".hq").join("config.json")), cfg_sha);
         let yaml = std::fs::read_to_string(dir.join("company.yaml")).unwrap();
