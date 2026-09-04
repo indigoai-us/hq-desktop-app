@@ -33,6 +33,10 @@
     requestDesktopZoom,
   } from '../../lib/desktopZoom';
   import { isMac } from '../lib/platform';
+  import {
+    notificationSurfacePatch,
+    resolveUseSystemBanners,
+  } from '../../lib/notificationSurface';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
@@ -98,6 +102,7 @@
     telemetryEnabled?: boolean | null;
     dockIcon?: boolean | null;
     customBanner?: boolean | null;
+    notificationSurface?: string | null;
     systemNotifications?: boolean | null;
     nativeNotifyDirectMessages?: boolean | null;
     nativeNotifyShares?: boolean | null;
@@ -208,15 +213,17 @@
   let notifications = $state(true);
   let shareNotifications = $state(true);
   let dmNotifications = $state(true);
-  // Notification style — `customBanner` in menubar.json. Default ON (in-app HQ
-  // banner). When the user opts into system notifications we persist
-  // `customBanner: false`, which routes DM/share/meeting events through the
-  // native macOS path (Notification Center, clickable, respects Focus/DND).
-  // `useSystemBanners` is the inverse of `customBanner` for a plain-language UI.
-  let useSystemBanners = $state(false);
+  // Notification style. macOS system notifications are the DEFAULT surface, so
+  // this renders CHECKED on macOS until the user explicitly chooses the in-app
+  // banner. The explicit choice is persisted as `notificationSurface`
+  // ('system' | 'custom'); `customBanner` is written alongside it for the
+  // vendored Windows fork. Resolution mirrors
+  // `hq_desktop_core::banner::custom_banner_enabled_from` in Rust — see
+  // lib/notificationSurface.ts for the shared rules.
+  let useSystemBanners = $state(isMac());
   // Native (OS) notification controls — persisted into menubar.json and read
   // back by the Rust native-send gate (native_notify::should_native_notify).
-  // Only take effect when the notification style is System (customBanner off).
+  // Only take effect when the notification style is System.
   let systemNotifications = $state(true);
   let nativeNotifyDirectMessages = $state(true);
   let nativeNotifyShares = $state(true);
@@ -485,6 +492,7 @@
     let cancelled = false;
     let unlistenUpdate: UnlistenFn | undefined;
     let unlistenUpdateCleared: UnlistenFn | undefined;
+    let unlistenNotifBlocked: UnlistenFn | undefined;
 
     // Register before hydration so a background checker event cannot race
     // get_pending_update while Settings is mounting.
@@ -519,6 +527,19 @@
       }),
       (unlisten) => {
         unlistenUpdate = unlisten;
+      },
+    );
+    // The Rust native-delivery path emits this (at most once per process) when
+    // system notifications are the active surface but macOS authorization is not
+    // granted. Re-read the permission row so its "Open System Settings"
+    // deep-link affordance appears without the user reopening this screen.
+    retainListener(
+      listen('notification:permission-blocked', () => {
+        if (cancelled) return;
+        void loadNotifPermission();
+      }),
+      (unlisten) => {
+        unlistenNotifBlocked = unlisten;
       },
     );
     retainListener(
@@ -569,6 +590,7 @@
       coreInstallGeneration += 1;
       safeUnlisten(unlistenUpdate)();
       safeUnlisten(unlistenUpdateCleared)();
+      safeUnlisten(unlistenNotifBlocked)();
       window.removeEventListener('focus', onFocus);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
       if (coreInstallResultTimeout) clearTimeout(coreInstallResultTimeout);
@@ -609,10 +631,10 @@
     notifications = settings.notifications ?? true;
     shareNotifications = settings.shareNotifications ?? true;
     dmNotifications = settings.dmNotifications ?? true;
-    // customBanner defaults ON (in-app banner) when absent, so system banners
-    // are the explicit opt-in: useSystemBanners is true only when customBanner
-    // is explicitly false.
-    useSystemBanners = settings.customBanner === false;
+    // System notifications are the macOS default: the toggle is ON unless the
+    // user explicitly chose the in-app banner. A legacy `customBanner: true` is
+    // NOT such a choice — every get_settings used to write it unconditionally.
+    useSystemBanners = resolveUseSystemBanners(settings, isMac());
     systemNotifications = settings.systemNotifications ?? true;
     nativeNotifyDirectMessages = settings.nativeNotifyDirectMessages ?? true;
     nativeNotifyShares = settings.nativeNotifyShares ?? true;
@@ -1777,19 +1799,17 @@
             aria-busy={isSettingsControlPending('dm-notifications')}
           />
         </label>
-        <!-- Notification style (customBanner). The single most important control
-             for "I don't get macOS notifications": customBanner defaults ON, so
-             DM/share/meeting events route to HQ's in-app banner and never reach
-             the native OS path. Turning this ON persists customBanner:false,
-             which sends them through Notification Center (clickable, respects
-             Focus/Do Not Disturb). Persisted here so it takes effect without
-             hand-editing menubar.json. -->
+        <!-- Notification style. macOS system notifications are the DEFAULT, so
+             this renders ON for anyone who has never chosen. Turning it OFF is
+             the explicit opt-in to HQ's own in-app banner and persists
+             `notificationSurface: 'custom'` (plus `customBanner: true` for the
+             Windows fork), which the Rust gate honors over the default. -->
         <label class="setting-row">
           <span
             ><strong>macOS system notifications</strong
             ><small
-              >Show real Notification Center banners (clickable, respect Focus / Do Not Disturb).
-              When off, HQ shows its own in-app banner instead.</small
+              >On by default. Real Notification Center banners — clickable, and they respect Focus /
+              Do Not Disturb. Turn this off to use HQ's own in-app banner instead.</small
             ></span
           >
           <input
@@ -1797,9 +1817,10 @@
             data-testid="settings-notification-style"
             bind:checked={useSystemBanners}
             onchange={() =>
-              void persistSettingsControl('notification-style', {
-                customBanner: !useSystemBanners,
-              })}
+              void persistSettingsControl(
+                'notification-style',
+                notificationSurfacePatch(useSystemBanners),
+              )}
             disabled={isSettingsControlPending('notification-style')}
             aria-busy={isSettingsControlPending('notification-style')}
           />
@@ -1890,9 +1911,11 @@
                 {#if notifPermission === 'granted'}
                   System notifications are enabled for HQ
                 {:else if notifPermission === 'denied'}
-                  Blocked by system settings — open notification settings to allow
+                  Blocked in System Settings. HQ still shows a basic banner, but it isn't clickable
+                  and won't land in Notification Center until you allow it.
                 {:else}
-                  Not enabled yet — allow to see sync &amp; share alerts
+                  Not allowed yet — HQ asks once when your first notification arrives, or allow it
+                  here now.
                 {/if}
               </small>
               {#if notifPermissionError}
