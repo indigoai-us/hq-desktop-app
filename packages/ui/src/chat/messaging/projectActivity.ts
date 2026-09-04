@@ -33,6 +33,79 @@ export const BURST_WINDOW_MS = 5 * 60 * 1000;
 /** Synthetic event-id prefix, so activity rows can never collide with chat. */
 export const ACTIVITY_EVENT_PREFIX = "wm:";
 
+/** One page of `GET /v1/work-mesh/threads`. */
+export interface ThreadPage {
+  threads: readonly unknown[];
+  nextCursor?: string | null;
+}
+
+/** Pages to walk when the server has not yet learned the `projectId` filter. */
+export const MAX_THREAD_PAGES = 6;
+
+function threadProjectId(thread: unknown): string | null {
+  if (!thread || typeof thread !== "object") return null;
+  const row = thread as {
+    projectId?: unknown;
+    routing?: { tags?: unknown } | null;
+  };
+  if (typeof row.projectId === "string" && row.projectId.trim()) {
+    return row.projectId.trim();
+  }
+  // Pre-projectId-on-META threads carry `project:{id}` in their routing tags.
+  const tags = row.routing?.tags;
+  if (Array.isArray(tags)) {
+    for (const tag of tags) {
+      if (typeof tag === "string" && tag.startsWith("project:")) {
+        const id = tag.slice("project:".length).trim();
+        if (id) return id;
+      }
+    }
+  }
+  return null;
+}
+
+function threadIdOf(thread: unknown): string | null {
+  if (!thread || typeof thread !== "object") return null;
+  const id = (thread as { threadId?: unknown }).threadId;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+/**
+ * Collect one project's thread ids.
+ *
+ * `GET /v1/work-mesh/threads` gained a server-side `projectId` filter (hq-pro,
+ * additive) but until that is deployed the parameter is IGNORED and the route
+ * returns the paginated company-wide list — mostly `reconciled` work-session
+ * rows with no project at all. So this ALWAYS filters client-side, and pages
+ * (bounded) while a cursor comes back. Once the server filter is live the first
+ * page carries no cursor and the loop exits immediately.
+ */
+export async function collectProjectThreadIds(
+  projectId: string,
+  fetchPage: (cursor?: string) => Promise<ThreadPage | null>,
+  maxThreads: number,
+): Promise<string[]> {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+
+  for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
+    const result = await fetchPage(cursor);
+    if (!result) break;
+    for (const thread of result.threads ?? []) {
+      if (threadProjectId(thread) !== projectId) continue;
+      const id = threadIdOf(thread);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+      if (ids.length >= maxThreads) return ids;
+    }
+    cursor = result.nextCursor?.trim() || undefined;
+    if (!cursor) break;
+  }
+  return ids;
+}
+
 export interface ThreadEventsInput {
   threadId: string;
   events: readonly unknown[];

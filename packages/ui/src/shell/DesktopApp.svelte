@@ -170,6 +170,7 @@
   import { REPLY_OVERLAY_MAX_PX } from "../chat/reply-layout.js";
   import {
     activityTimelineMessages,
+    collectProjectThreadIds,
     groupActivityBursts,
     mergeActivityIntoTimeline,
     projectActivityEntries,
@@ -1062,18 +1063,30 @@
     if (!api?.listProjectThreads || !api?.listThreadEvents) return;
     projectActivityLoading = true;
     try {
-      const threadsRes = await api.listProjectThreads(projectId, companyUid);
-      if (!threadsRes.ok) return;
-      const payload = threadsRes.value as { threads?: unknown } | null;
-      const threadList = Array.isArray(payload?.threads) ? payload.threads : [];
-      const threadIds = threadList
-        .map((t) =>
-          t && typeof t === "object"
-            ? String((t as { threadId?: unknown }).threadId ?? "").trim()
-            : "",
-        )
-        .filter((id) => id.length > 0)
-        .slice(0, PROJECT_ACTIVITY_THREAD_CAP);
+      // The server-side `projectId` filter is additive and may not be deployed
+      // yet, so collectProjectThreadIds filters client-side and pages while a
+      // cursor comes back. Once the filter is live, page one has no cursor.
+      const threadIds = await collectProjectThreadIds(
+        projectId,
+        async (cursor) => {
+          const res = await api.listProjectThreads!(
+            projectId,
+            companyUid,
+            cursor,
+          );
+          if (!res.ok) return null;
+          const payload = res.value as {
+            threads?: unknown;
+            nextCursor?: unknown;
+          } | null;
+          return {
+            threads: Array.isArray(payload?.threads) ? payload.threads : [],
+            nextCursor:
+              typeof payload?.nextCursor === "string" ? payload.nextCursor : null,
+          };
+        },
+        PROJECT_ACTIVITY_THREAD_CAP,
+      );
       const pages = await Promise.all(
         threadIds.map(async (threadId): Promise<ThreadEventsInput> => {
           try {

@@ -1021,9 +1021,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     migrateSession: (sessionId, body) =>
       this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
-    listProjectThreads: (projectId, companyUid) =>
+    listProjectThreads: (projectId, companyUid, cursor) =>
       this.get(
-        `${WEB_PATHS.workMeshThreads}?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}`,
+        `${WEB_PATHS.workMeshThreads}?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
       ),
     listThreadEvents: (threadId, companyUid, since) =>
       this.get(

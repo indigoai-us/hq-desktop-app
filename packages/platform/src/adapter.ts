@@ -1040,6 +1040,7 @@ export interface WorkMeshApi {
   listProjectThreads(
     projectId: string,
     companyUid: string,
+    cursor?: string,
   ): AdapterPromise<Json>;
   /**
    * hq-pro GET /v1/work-mesh/threads/{threadId}/events?companyUid= — the

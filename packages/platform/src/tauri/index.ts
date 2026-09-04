@@ -653,10 +653,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
         body,
       ),
-    listProjectThreads: (projectId, companyUid) =>
+    listProjectThreads: (projectId, companyUid, cursor) =>
       this.hqProJson(
         "GET",
-        `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}`,
+        `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
       ),
     listThreadEvents: (threadId, companyUid, since) =>
       this.hqProJson(

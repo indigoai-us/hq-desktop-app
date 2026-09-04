@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVITY_EVENT_PREFIX,
   activityTimelineMessages,
+  collectProjectThreadIds,
+  MAX_THREAD_PAGES,
   groupActivityBursts,
   isActivityMessage,
   mergeActivityIntoTimeline,
@@ -346,5 +348,121 @@ describe("mergeActivityIntoTimeline", () => {
       ]),
     );
     expect(mergeActivityIntoTimeline(chat, activity)[0].eventId).toBe("m1");
+  });
+});
+
+describe("collectProjectThreadIds", () => {
+  const thread = (id: string, projectId?: string, tags?: string[]) => ({
+    threadId: id,
+    ...(projectId ? { projectId } : {}),
+    routing: { priority: "normal", ...(tags ? { tags } : {}) },
+  });
+
+  it("keeps only this project's threads even when the server ignores the filter", async () => {
+    // Pre-deploy behaviour: GET /v1/work-mesh/threads returns the whole company
+    // page, mostly work-session rows with no project at all.
+    const ids = await collectProjectThreadIds(
+      "hq-desktop-app",
+      async () => ({
+        threads: [
+          thread("t1", "hq-desktop-app"),
+          thread("t2", "free-plan-limits"),
+          thread("t3"),
+        ],
+        nextCursor: null,
+      }),
+      25,
+    );
+    expect(ids).toEqual(["t1"]);
+  });
+
+  it("matches a pre-projectId thread on its routing tag", async () => {
+    const ids = await collectProjectThreadIds(
+      "hq-desktop-app",
+      async () => ({
+        threads: [
+          thread("t1", undefined, ["hq-project", "project:hq-desktop-app"]),
+        ],
+        nextCursor: null,
+      }),
+      25,
+    );
+    expect(ids).toEqual(["t1"]);
+  });
+
+  it("pages while the server returns a cursor", async () => {
+    const pages = [
+      { threads: [thread("t1", "p")], nextCursor: "c1" },
+      { threads: [thread("t2", "p")], nextCursor: "c2" },
+      { threads: [thread("t3", "p")], nextCursor: null },
+    ];
+    const seen: Array<string | undefined> = [];
+    let i = 0;
+    const ids = await collectProjectThreadIds(
+      "p",
+      async (cursor) => {
+        seen.push(cursor);
+        return pages[i++] ?? null;
+      },
+      25,
+    );
+    expect(ids).toEqual(["t1", "t2", "t3"]);
+    expect(seen).toEqual([undefined, "c1", "c2"]);
+  });
+
+  it("stops after one page once the server filter is live", async () => {
+    let calls = 0;
+    await collectProjectThreadIds(
+      "p",
+      async () => {
+        calls += 1;
+        return { threads: [thread("t1", "p")] };
+      },
+      25,
+    );
+    expect(calls).toBe(1);
+  });
+
+  it("never walks more than MAX_THREAD_PAGES", async () => {
+    let calls = 0;
+    await collectProjectThreadIds(
+      "p",
+      async () => {
+        calls += 1;
+        return { threads: [], nextCursor: "more" };
+      },
+      25,
+    );
+    expect(calls).toBe(MAX_THREAD_PAGES);
+  });
+
+  it("stops at the thread cap", async () => {
+    const ids = await collectProjectThreadIds(
+      "p",
+      async () => ({
+        threads: [thread("t1", "p"), thread("t2", "p"), thread("t3", "p")],
+        nextCursor: "more",
+      }),
+      2,
+    );
+    expect(ids).toEqual(["t1", "t2"]);
+  });
+
+  it("dedupes a thread repeated across pages", async () => {
+    let i = 0;
+    const ids = await collectProjectThreadIds(
+      "p",
+      async () =>
+        i++ === 0
+          ? { threads: [thread("t1", "p")], nextCursor: "c1" }
+          : { threads: [thread("t1", "p")], nextCursor: null },
+      25,
+    );
+    expect(ids).toEqual(["t1"]);
+  });
+
+  it("gives up quietly when a page fails", async () => {
+    const ids = await collectProjectThreadIds("p", async () => null, 25);
+    expect(ids).toEqual([]);
   });
 });
