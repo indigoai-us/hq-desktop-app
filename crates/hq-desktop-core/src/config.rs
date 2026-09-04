@@ -137,17 +137,36 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dm_notifications: Option<bool>,
-    /// Notification style. When true (**the default**), DM / share / meeting /
-    /// update events render through HQ's in-app "custom banner" surface. When
-    /// false, they route through the native macOS path (Notification Center),
-    /// which is the only way to get real OS banners (clickable, Focus/DND
-    /// aware). Read untyped by `banner::custom_banner_enabled` on every
-    /// delivery so the toggle takes effect without a restart; this typed field
-    /// exists so the Settings "macOS system notifications" switch round-trips
-    /// cleanly through get/save_settings and isn't wiped on the next save.
-    /// Absent → true (see `banner::custom_banner_enabled` and `get_settings`).
+    /// LEGACY notification-style flag. When true, DM / share / meeting / update
+    /// events render through HQ's in-app "custom banner" surface; when false
+    /// they route through the native OS path (Notification Center).
+    ///
+    /// This key can NOT express "the user made a choice": every `get_settings`
+    /// before the macOS-system-default flip coerced it to `Some(true)`, and the
+    /// frontend round-trips the whole prefs object on every unrelated save, so
+    /// virtually every install on disk carries `customBanner: true` whether or
+    /// not the user ever touched the control. `notification_surface` below is
+    /// therefore the explicit-choice key, and this field is kept only so
+    /// (a) an existing `customBanner: false` (an unambiguous opt-in to system
+    /// banners, since nothing ever wrote `false` by default) keeps working, and
+    /// (b) the Settings round-trip doesn't wipe it for the vendored Windows
+    /// fork, which still reads it. Written alongside `notification_surface` by
+    /// the Settings toggle. Absent → the platform default (macOS: system
+    /// banners; elsewhere: in-app banner). See `banner::custom_banner_enabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_banner: Option<bool>,
+    /// The user's EXPLICIT notification-surface choice: `"system"` (native OS
+    /// banners through Notification Center) or `"custom"` (HQ's in-app banner).
+    ///
+    /// Absent means "never chosen" — the platform default applies, which on
+    /// macOS is system banners. Only the Settings > Notifications control ever
+    /// writes this key, and `get_settings` passes it through untouched (no
+    /// `unwrap_or` coercion), so "unset" stays distinguishable from an explicit
+    /// choice for the lifetime of the install. Read untyped by
+    /// `banner::custom_banner_enabled` on every delivery, so flipping the
+    /// control takes effect on the next event without a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_surface: Option<String>,
     /// Auto-update the globally-installed `hq` CLI: when true (default), the
     /// background update checker, on detecting a newer `@indigoai-us/hq-cli`
     /// on the npm registry, runs `npm install -g …@latest` directly instead of

@@ -51,9 +51,15 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
-            // In-app custom banner is the default surface; system notifications
-            // are the explicit opt-in (customBanner: false).
-            custom_banner: Some(true),
+            // Notification surface: NOTHING is defaulted here. Both keys stay
+            // absent so "never chosen" remains distinguishable from an explicit
+            // choice — `banner::custom_banner_enabled` resolves absent to the
+            // platform default (macOS: system notifications). Writing a value
+            // here would be persisted by the very next unrelated settings save
+            // (the frontend queue round-trips this whole object), permanently
+            // manufacturing a "choice" the user never made.
+            custom_banner: None,
+            notification_surface: None,
             cli_auto_update: Some(true),
             // Master automatic-updates switch defaults ON — a fresh install
             // keeps the app, CLI, and hq-core current silently.
@@ -134,9 +140,16 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // each poll cycle in dm_notify.rs so the toggle takes effect without
         // restart. Mirrors `share_notifications`.
         dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
-        // Custom banner (in-app) defaults ON — re-read untyped by
-        // banner::custom_banner_enabled on each delivery.
-        custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
+        // Notification surface: pass BOTH keys through untouched. Any default
+        // applied here would be re-persisted by the next unrelated save and
+        // become indistinguishable from a deliberate choice — which is exactly
+        // how `customBanner: true` ended up on virtually every install and kept
+        // native notifications from ever firing. Resolution (including the
+        // macOS system-notifications default) lives in
+        // `banner::custom_banner_enabled`, which reads menubar.json untyped on
+        // every delivery.
+        custom_banner: prefs.custom_banner,
+        notification_surface: prefs.notification_surface,
         // CLI auto-update defaults ON — re-read untyped from menubar.json by
         // hq_cli_update.rs on each background check so the toggle takes effect
         // without restart. Mirrors `dm_notifications`.
@@ -291,5 +304,59 @@ mod tests {
         assert!(raw.contains("co_isolated"));
 
         std::fs::remove_dir_all(config).expect("remove isolated config");
+    }
+
+    /// The notification surface must stay tri-state across the whole
+    /// get → save → get round-trip. If `get_settings` defaulted either key, the
+    /// frontend queue (which re-persists the entire prefs object on any
+    /// unrelated toggle) would write it to disk and permanently manufacture a
+    /// "choice" the user never made — exactly the bug that kept macOS system
+    /// notifications from ever firing.
+    #[test]
+    fn an_untouched_notification_surface_is_never_persisted() {
+        let unique = format!(
+            "hq-settings-surface-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config = std::env::temp_dir().join(unique);
+        let path = config.join("menubar.json");
+
+        // Fresh install: neither key is defaulted into existence.
+        let fresh = get_settings_at(&path).expect("fresh defaults");
+        assert_eq!(fresh.custom_banner, None);
+        assert_eq!(fresh.notification_surface, None);
+
+        // Saving an UNRELATED toggle must not invent a surface choice.
+        let mut saved = fresh;
+        saved.auto_update = Some(false);
+        save_settings_at(&path, &saved).expect("save unrelated toggle");
+        let raw = std::fs::read_to_string(&path).expect("persisted menubar.json");
+        assert!(
+            !raw.contains("customBanner"),
+            "unrelated save leaked customBanner: {raw}"
+        );
+        assert!(
+            !raw.contains("notificationSurface"),
+            "unrelated save leaked notificationSurface: {raw}"
+        );
+
+        let reread = get_settings_at(&path).expect("reload");
+        assert_eq!(reread.custom_banner, None);
+        assert_eq!(reread.notification_surface, None);
+
+        // An EXPLICIT choice round-trips and is preserved verbatim.
+        let mut chosen = reread;
+        chosen.notification_surface = Some("custom".to_string());
+        chosen.custom_banner = Some(true);
+        save_settings_at(&path, &chosen).expect("save explicit choice");
+        let chosen_back = get_settings_at(&path).expect("reload explicit choice");
+        assert_eq!(chosen_back.notification_surface.as_deref(), Some("custom"));
+        assert_eq!(chosen_back.custom_banner, Some(true));
+
+        std::fs::remove_dir_all(config).expect("remove surface config");
     }
 }

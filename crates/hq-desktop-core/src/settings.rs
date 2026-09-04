@@ -66,6 +66,7 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             custom_banner: None,
+            notification_surface: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,
@@ -109,7 +110,12 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
-            custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
+            // Notification surface is pass-through, never defaulted — see
+            // `banner::custom_banner_enabled` for the resolution order and
+            // `commands/settings.rs::get_settings_at` for why coercing here
+            // would manufacture a choice the user never made.
+            custom_banner: prefs.custom_banner,
+            notification_surface: prefs.notification_surface,
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
             auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
@@ -217,6 +223,7 @@ mod tests {
             share_notifications: Some(false),
             dm_notifications: Some(false),
             custom_banner: Some(false),
+            notification_surface: Some("system".to_string()),
             cli_auto_update: Some(false),
             auto_update: Some(false),
             staging_channel: Some(false),
@@ -293,6 +300,7 @@ mod tests {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             custom_banner: Some(true),
+            notification_surface: Some("custom".to_string()),
             cli_auto_update: Some(true),
             auto_update: Some(true),
             staging_channel: Some(true),
