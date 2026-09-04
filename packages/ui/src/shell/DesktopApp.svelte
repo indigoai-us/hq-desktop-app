@@ -3415,7 +3415,7 @@
                         ? (sessionId) =>
                             openMigrateSession(
                               sessionId,
-                              selectedRow.companyUid?.trim() ?? "",
+                              selectedRow?.companyUid?.trim() ?? "",
                             )
                         : undefined}
                       migratingSessionId={migratingSessionId}

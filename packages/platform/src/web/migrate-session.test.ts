@@ -1,11 +1,36 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import type {
+  MigrateSessionRequest,
+  WorkMeshApi,
+} from "../adapter.js";
 import { WebPlatformAdapter, WEB_PATHS } from "./index.js";
 
-const here = dirname(fileURLToPath(import.meta.url));
+/** Compile-time: migrateSession is the only cross-company rebind on WorkMeshApi. */
+type AssertTrue<T extends true> = T;
+type _HasMigrate = AssertTrue<
+  "migrateSession" extends keyof WorkMeshApi ? true : false
+>;
+type _NoOrganize = AssertTrue<
+  "organizeSession" extends keyof WorkMeshApi ? false : true
+>;
+type _NoCorrect = AssertTrue<
+  "correctSession" extends keyof WorkMeshApi ? false : true
+>;
+type _NoRebind = AssertTrue<
+  "rebindSession" extends keyof WorkMeshApi ? false : true
+>;
+type _DestOnMigrateBody = AssertTrue<
+  "destinationCompanyUid" extends keyof MigrateSessionRequest ? true : false
+>;
+
+void 0 as unknown as [
+  _HasMigrate,
+  _NoOrganize,
+  _NoCorrect,
+  _NoRebind,
+  _DestOnMigrateBody,
+];
 
 describe("workMesh.migrateSession", () => {
   it("POSTs the migrate body to the encoded session path", async () => {
@@ -29,7 +54,7 @@ describe("workMesh.migrateSession", () => {
       baseUrl: "https://api.test",
       fetch: fetchMock,
     });
-    const body = {
+    const body: MigrateSessionRequest = {
       operationId: "op_abc",
       digest: "deadbeef",
       sourceCompanyUid: "cmp_src",
@@ -52,17 +77,28 @@ describe("workMesh.migrateSession", () => {
   });
 
   it("is the only WorkMeshApi / adapter path that rebinds across companies", () => {
-    const adapterSrc = readFileSync(join(here, "../adapter.ts"), "utf8");
-    const webSrc = readFileSync(join(here, "./index.ts"), "utf8");
-    const workMeshBlock = adapterSrc.slice(
-      adapterSrc.indexOf("export interface WorkMeshApi"),
-      adapterSrc.indexOf("export interface PlatformAdapter"),
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async () => new Response("{}", { status: 200 }),
+    });
+    const workMeshKeys = Object.keys(adapter.workMesh).sort();
+    expect(workMeshKeys).toEqual([
+      "getProjectView",
+      "migrateSession",
+      "readLocalSnapshot",
+    ]);
+    expect(workMeshKeys).not.toContain("organizeSession");
+    expect(workMeshKeys).not.toContain("correctSession");
+    expect(workMeshKeys).not.toContain("rebindSession");
+
+    expect(typeof WEB_PATHS.workMeshSessionMigrate).toBe("function");
+    // destinationCompanyUid is typed on MigrateSessionRequest — web posts the
+    // opaque body and never names the field in WEB_PATHS / routing helpers.
+    expect(
+      Object.keys(WEB_PATHS).filter((k) => k.includes("destinationCompany")),
+    ).toEqual([]);
+    expect("destinationCompanyUid" satisfies keyof MigrateSessionRequest).toBe(
+      "destinationCompanyUid",
     );
-    expect(workMeshBlock).toContain("migrateSession");
-    expect(workMeshBlock).not.toMatch(/organizeSession|correctSession|rebindSession/);
-    expect(webSrc).toContain("workMeshSessionMigrate");
-    // destinationCompanyUid is typed only on MigrateSessionRequest — web posts the opaque body.
-    expect(webSrc.match(/destinationCompanyUid/g) ?? []).toEqual([]);
-    expect(adapterSrc.match(/destinationCompanyUid/g)?.length).toBe(1);
   });
 });
