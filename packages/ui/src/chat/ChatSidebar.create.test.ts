@@ -364,10 +364,11 @@ describe("ChatSidebar create flow", () => {
   });
 
   // Carried over from the retired compose modal (upstream e72454eb): the
-  // synthetic #setup support row is pinned first in the rail, so with an
+  // synthetic #welcome support row is pinned first in the rail, so with an
   // empty query it used to be the FIRST suggestion and a fast type-then-Enter
-  // misrouted the draft to channelId "setup".
-  it("excludes the synthetic #setup channel from create results", async () => {
+  // misrouted the draft to channelId "setup" (the wire id, unchanged by the
+  // 2026-09 display rename).
+  it("excludes the synthetic #welcome channel from create results", async () => {
     component = mount(ChatSidebar, {
       target: host,
       props: {
@@ -384,8 +385,8 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    // The rail itself still pins #setup — only the create flow hides it.
-    expect(host.textContent).toMatch(/setup/i);
+    // The rail itself still pins #welcome — only the create flow hides it.
+    expect(host.textContent).toMatch(/welcome/i);
 
     openModal();
     await tick();
@@ -394,10 +395,10 @@ describe("ChatSidebar create flow", () => {
     );
     expect(results.length).toBeGreaterThan(0);
     for (const node of results) {
-      expect(node.textContent).not.toMatch(/#?\bsetup\b/i);
+      expect(node.textContent).not.toMatch(/#?\bwelcome\b/i);
     }
 
-    type(queryInput(), "setup");
+    type(queryInput(), "welcome");
     await settleQuery();
     expect(
       document.querySelector('[data-testid="chat-create-result"]'),

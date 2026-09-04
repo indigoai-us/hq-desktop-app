@@ -1,5 +1,5 @@
 /**
- * Wallpaper art for the #setup welcome hero.
+ * Wallpaper art for the #welcome hero.
  *
  * Both pieces come from the Indigo brand wallpaper library (the Midjourney
  * "HQ" set at companies/indigo/data/assets/brand/wallpapers), downscaled to

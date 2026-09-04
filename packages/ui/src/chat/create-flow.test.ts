@@ -787,54 +787,60 @@ describe("inviteRequestBody", () => {
 });
 
 // Carried over from the retired compose modal (ChatSidebar.compose.test.ts):
-// the synthetic #setup row never becomes a target, and same-named rows carry a
-// visible disambiguator.
-describe("buildFindResults · setup exclusion and disambiguation", () => {
+// the synthetic support row never becomes a target, and same-named rows carry a
+// visible disambiguator. Post-2026-09 rename the row displays as "welcome"
+// while keeping the "setup" wire id, so the queries below probe the NEW name —
+// querying the old one would pass trivially and prove nothing.
+describe("buildFindResults · welcome-channel exclusion and disambiguation", () => {
   const target: SlugTarget = { scope: "company", companyUid: "cmp_indigo" };
   const setup = row({
     id: "ch:setup",
-    title: "setup",
+    title: "welcome",
     channelId: "setup",
     companyUid: null,
     pinned: true,
   });
 
-  it("never lists the synthetic #setup channel, even for an empty query", () => {
+  it("never lists the synthetic #welcome channel, even for an empty query", () => {
     const rows = [setup, row()];
     const empty = buildFindResults({ rows, query: "", canCreate: true, target });
     expect(empty.rows.map((r) => r.row.channelId)).toEqual(["chn_one"]);
 
     const typed = buildFindResults({
       rows,
-      query: "set",
+      query: "wel",
       canCreate: true,
       target,
     });
     expect(typed.rows).toHaveLength(0);
   });
 
-  it("does not let the synthetic #setup row reserve the slug", () => {
+  it("does not let the synthetic #welcome row reserve the slug", () => {
     // It is injected client-side and is not a channel the server knows about,
-    // so a real #setup can still be created — collision comes from the server.
+    // so a real #welcome can still be created — collision comes from the server.
     const result = buildFindResults({
       rows: [setup],
-      query: "setup",
+      query: "welcome",
       canCreate: true,
       target,
     });
     expect(result.rows).toHaveLength(0);
-    expect(result.createSlug).toBe("setup");
+    expect(result.createSlug).toBe("welcome");
   });
 
-  it("still blocks the slug when a REAL channel named setup exists in scope", () => {
-    const real = row({ id: "ch:chn_setup", title: "setup", channelId: "chn_setup" });
+  it("still blocks the slug when a REAL channel named welcome exists in scope", () => {
+    const real = row({
+      id: "ch:chn_welcome",
+      title: "welcome",
+      channelId: "chn_welcome",
+    });
     const result = buildFindResults({
       rows: [setup, real],
-      query: "setup",
+      query: "welcome",
       canCreate: true,
       target,
     });
-    expect(result.rows.map((r) => r.row.channelId)).toEqual(["chn_setup"]);
+    expect(result.rows.map((r) => r.row.channelId)).toEqual(["chn_welcome"]);
     expect(result.createSlug).toBeNull();
   });
 
