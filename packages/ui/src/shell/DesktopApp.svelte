@@ -169,6 +169,14 @@
   } from "../chat/chat-api.js";
   import { REPLY_OVERLAY_MAX_PX } from "../chat/reply-layout.js";
   import {
+    activityTimelineMessages,
+    collectProjectThreadIds,
+    groupActivityBursts,
+    mergeActivityIntoTimeline,
+    projectActivityEntries,
+    type ThreadEventsInput,
+  } from "../chat/messaging/projectActivity.js";
+  import {
     notificationDestination,
     type NotificationItem,
   } from "../inbox/notifications-model.js";
@@ -783,6 +791,9 @@
     composerPlaceholderFor(selectedRow, headerTitle),
   );
 
+  /** Threads fetched per project channel — bounded so a long-lived project
+   *  cannot fan out into hundreds of event requests on channel open. */
+  const PROJECT_ACTIVITY_THREAD_CAP = 25;
   let liveTimeline = $state<ConversationMessageWire[]>([]);
   let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
@@ -1011,6 +1022,134 @@
         : msg,
     );
   });
+  // ── Project-channel work-mesh activity ───────────────────────────────────
+  //
+  // A project channel's real trail lives in work-mesh threads, not in the chat
+  // table, so the channel used to render empty while a project had a live claim
+  // and a progress log. Fetch that trail for the selected project channel and
+  // fold it into the same timeline. Best-effort by design: any failure leaves
+  // chat-only rendering exactly as before.
+  let projectActivityRows = $state<ConversationMessageWire[]>([]);
+  let projectActivityKey = $state("");
+  let projectActivityLoading = $state(false);
+
+  function activityKeyForRow(row: ConversationRow | null): string {
+    if (!row) return "";
+    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row) || "";
+    const companyUid = (row.companyUid ?? "").trim();
+    return projectId && companyUid ? `${companyUid}/${projectId}` : "";
+  }
+
+  /** Roster-backed actor names so rows never show a raw `prs_…`. */
+  function resolveActivityActor(actorUid: string): string | null {
+    const uid = actorUid.trim();
+    if (!uid) return null;
+    const named = displayNameByUid[uid];
+    if (named?.trim()) return named.trim();
+    const roster = channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    const hit = roster.find((m) => m.personUid === uid);
+    return hit?.displayName?.trim() || null;
+  }
+
+  async function loadProjectActivity(row: ConversationRow): Promise<void> {
+    const key = activityKeyForRow(row);
+    if (!key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      return;
+    }
+    const [companyUid, projectId] = key.split("/");
+    const api = adapter.workMesh;
+    if (!api?.listProjectThreads || !api?.listThreadEvents) return;
+    projectActivityLoading = true;
+    try {
+      // The server-side `projectId` filter is additive and may not be deployed
+      // yet, so collectProjectThreadIds filters client-side and pages while a
+      // cursor comes back. Once the filter is live, page one has no cursor.
+      const threadIds = await collectProjectThreadIds(
+        projectId,
+        async (cursor) => {
+          const res = await api.listProjectThreads!(
+            projectId,
+            companyUid,
+            cursor,
+          );
+          if (!res.ok) return null;
+          const payload = res.value as {
+            threads?: unknown;
+            nextCursor?: unknown;
+          } | null;
+          return {
+            threads: Array.isArray(payload?.threads) ? payload.threads : [],
+            nextCursor:
+              typeof payload?.nextCursor === "string" ? payload.nextCursor : null,
+          };
+        },
+        PROJECT_ACTIVITY_THREAD_CAP,
+      );
+      const pages = await Promise.all(
+        threadIds.map(async (threadId): Promise<ThreadEventsInput> => {
+          try {
+            const res = await api.listThreadEvents!(threadId, companyUid);
+            const body = res.ok
+              ? (res.value as { events?: unknown } | null)
+              : null;
+            return {
+              threadId,
+              events: Array.isArray(body?.events) ? body.events : [],
+            };
+          } catch {
+            return { threadId, events: [] };
+          }
+        }),
+      );
+      if (activityKeyForRow(selectedRow) !== key) return;
+      const entries = groupActivityBursts(
+        projectActivityEntries(pages, { resolveActor: resolveActivityActor }),
+      );
+      projectActivityRows = activityTimelineMessages(entries);
+      projectActivityKey = key;
+    } catch (err) {
+      console.warn("[hq-desktop]", {
+        t: Date.now(),
+        event: "project-activity-error",
+        key,
+        err: String(err),
+      });
+    } finally {
+      if (activityKeyForRow(selectedRow) === key) projectActivityLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const row = selectedRow;
+    const key = activityKeyForRow(row);
+    if (!row || !key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      projectActivityLoading = false;
+      return;
+    }
+    if (projectActivityKey === key) return;
+    projectActivityRows = [];
+    void loadProjectActivity(row);
+  });
+
+  /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
+  const timelineWithActivity = $derived.by(() =>
+    projectActivityRows.length > 0
+      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+      : timeline,
+  );
+
+  /**
+   * A project channel with no chat AND no work-mesh events is empty of
+   * ACTIVITY, not of messages — the label has to say so.
+   */
+  const conversationEmptyLabel = $derived(
+    isProjectChannel ? "No activity yet" : "No messages yet",
+  );
+
   const messageScope = $derived(messageScopeForRow(selectedRow));
   let liveReactions = $state<ReactionMap>({});
   let reactionScope = $state("");
@@ -2344,7 +2483,17 @@
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
         if (row) void catchUpTimeline(row);
+        // Thread events arrive on hq/{companyUid}/thread/# as ids-only wakes,
+        // so a catch-up must re-read the project trail too — otherwise a live
+        // progress event only appears after the user leaves and returns.
+        if (row && activityKeyForRow(row)) void loadProjectActivity(row);
         void catchUpDmInbox();
+      }),
+      bus.on("work-mesh:thread", ({ companyUid }) => {
+        const row = selectedRow;
+        if (!row || !activityKeyForRow(row)) return;
+        if ((row.companyUid ?? "").trim() !== companyUid) return;
+        void loadProjectActivity(row);
       }),
       bus.on("mesh:connection", ({ state }) => {
         meshConnectionState = state;
@@ -3560,7 +3709,8 @@
                   />
                 {/snippet}
                 <ChannelConversation
-                  messages={timeline}
+                  messages={timelineWithActivity}
+                  emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
                   {onopenurl}
@@ -3582,7 +3732,8 @@
                   {avatarByUid}
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
-                  loading={timelineHydrating && timeline.length === 0}
+                  loading={(timelineHydrating || projectActivityLoading) &&
+                    timelineWithActivity.length === 0}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : undefined}

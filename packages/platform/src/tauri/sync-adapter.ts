@@ -1063,6 +1063,24 @@ export function createSyncPlatformAdapter(
           WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
           body,
         ),
+      listProjectThreads: (projectId, companyUid, cursor) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreads, {
+            companyUid: companyUid.trim() || null,
+            projectId: projectId.trim() || null,
+            limit: '100',
+            cursor: cursor?.trim() || null,
+          }),
+        ),
+      listThreadEvents: (threadId, companyUid, since) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreadEvents(threadId.trim()), {
+            companyUid: companyUid.trim() || null,
+            since: since?.trim() || null,
+          }),
+        ),
     },
   };
 
