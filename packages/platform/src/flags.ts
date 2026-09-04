@@ -39,6 +39,11 @@
  * --------------------------------------------------------------
  *   snapshot === null (never loaded: offline, auth failure, service down)
  *     → legacy. Matches today when the registry is unreachable.
+ *     The first resolve consumes `ready()` (one load). A later resolve
+ *     with a still-null snapshot attempts one coalesced `refresh()` so a
+ *     pre-auth / offline first load can self-heal; recovery is
+ *     rate-limited to once per FLAG_REFRESH_INTERVAL_MS. Throws and
+ *     timeouts still fall through.
  *   snapshot loaded but `flags[key]` is not a boolean (key omitted)
  *     → legacy. Matches auto-discovery: an unconfigured row must not
  *       evaluate as false, which would invert meetings GA (true when
@@ -76,6 +81,18 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
 
+/**
+ * FlagClient revalidation cadence for the desktop/web adapters.
+ *
+ * The client default is 10 seconds (`DEFAULT_REFRESH_INTERVAL_MS`), which is
+ * far too chatty for a long-lived desktop process — the app stays open for
+ * days. Five minutes is the staleness window an operator flipping
+ * `desktop.meetings` can live with, without polling `/v1/flags/resolve` on a
+ * tight loop. A failed first load (pre-auth, offline) also self-heals at most
+ * once per this interval so a signed-out renderer cannot hammer the endpoint.
+ */
+export const FLAG_REFRESH_INTERVAL_MS = 300_000;
+
 export type FlagInvokeFn = (
   cmd: string,
   args?: Record<string, unknown>,
@@ -99,6 +116,11 @@ export interface FeatureFlagGateOptions {
    */
   createClient?: (options: FlagClientOptions) => FlagClient;
   onError?: (error: unknown) => void;
+  /**
+   * Clock for recovery rate-limiting. Production uses `Date.now`. Tests inject
+   * a fake so the five-minute window can be crossed without waiting.
+   */
+  now?: () => number;
 }
 
 /**
@@ -161,6 +183,11 @@ export function createFeatureFlagGate(
   options: FeatureFlagGateOptions,
 ): FeatureFlagGate {
   let client: FlagClient | null = null;
+  /** True once the first `ready()` attempt has settled for this gate. */
+  let initialReadySettled = false;
+  let lastRecoveryAtMs: number | null = null;
+  let inFlightRecovery: Promise<void> | null = null;
+  const now = options.now ?? Date.now;
 
   function getClient(): FlagClient {
     if (!client) {
@@ -169,13 +196,42 @@ export function createFeatureFlagGate(
         endpoint: options.endpoint,
         getToken: options.getToken,
         fetch: options.fetch,
-        // hasFeature is pull-based. Do not leave a webview interval behind;
-        // the next call reuses the held snapshot from ready().
-        refreshIntervalMs: 0,
+        refreshIntervalMs: FLAG_REFRESH_INTERVAL_MS,
         onError: options.onError ?? (() => {}),
       });
     }
     return client;
+  }
+
+  /**
+   * One in-flight `refresh()` at a time, at most once per refresh interval.
+   * Always total: a throw or timeout is swallowed so `resolve` can fall back.
+   */
+  function recoverNullSnapshot(flagClient: FlagClient): Promise<void> {
+    if (inFlightRecovery) return inFlightRecovery;
+    const t = now();
+    if (
+      lastRecoveryAtMs !== null &&
+      t - lastRecoveryAtMs < FLAG_REFRESH_INTERVAL_MS
+    ) {
+      return Promise.resolve();
+    }
+    lastRecoveryAtMs = t;
+    let refreshResult: Promise<unknown>;
+    try {
+      refreshResult = Promise.resolve(flagClient.refresh());
+    } catch {
+      return Promise.resolve();
+    }
+    const pending = refreshResult.then(
+      () => undefined,
+      () => undefined,
+    );
+    inFlightRecovery = pending;
+    void pending.finally(() => {
+      if (inFlightRecovery === pending) inFlightRecovery = null;
+    });
+    return pending;
   }
 
   return {
@@ -187,7 +243,16 @@ export function createFeatureFlagGate(
       try {
         const flagClient = getClient();
         await flagClient.ready();
-        const snapshot = flagClient.snapshot();
+        let snapshot = flagClient.snapshot();
+        // ready() already attempted the first load. A second request on this
+        // same resolve would double-hit a still-unauthenticated endpoint.
+        // A later resolve with a still-null snapshot self-heals via refresh().
+        const shouldRecover = snapshot == null && initialReadySettled;
+        initialReadySettled = true;
+        if (shouldRecover) {
+          await recoverNullSnapshot(flagClient);
+          snapshot = flagClient.snapshot();
+        }
         if (snapshotHasConfiguredValue(snapshot, key)) {
           configuredValue = flagClient.isEnabled(key);
         }

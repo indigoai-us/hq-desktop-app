@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
+  FLAG_REFRESH_INTERVAL_MS,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   bearerTokenFromHeaders,
@@ -11,7 +12,8 @@ import {
 } from "./flags.js";
 
 function fakeClient(
-  overrides: Pick<FlagClient, "ready" | "snapshot" | "isEnabled">,
+  overrides: Pick<FlagClient, "ready" | "snapshot" | "isEnabled"> &
+    Partial<Pick<FlagClient, "refresh">>,
 ): FlagClient {
   return {
     explain: () => ({ value: false, source: "fallback" }),
@@ -22,6 +24,17 @@ function fakeClient(
     close: () => {},
     ...overrides,
   };
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 describe("registry key mapping", () => {
@@ -238,6 +251,172 @@ describe("createFeatureFlagGate", () => {
     await gate.resolve("meetings", async () => ok(true));
     await gate.resolve("meetings", async () => ok(true));
     expect(createClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("constructs FlagClient with the five-minute refresh interval", async () => {
+    const createClient = vi.fn(() =>
+      fakeClient({
+        ready: async () => {},
+        snapshot: () => null,
+        isEnabled: () => false,
+      }),
+    );
+    const gate = createFeatureFlagGate({
+      endpoint: "https://api.test",
+      getToken: () => "token",
+      createClient,
+    });
+    await gate.resolve("meetings", async () => ok(true));
+    expect(FLAG_REFRESH_INTERVAL_MS).toBe(300_000);
+    expect(createClient).toHaveBeenCalledWith(
+      expect.objectContaining({ refreshIntervalMs: FLAG_REFRESH_INTERVAL_MS }),
+    );
+  });
+
+  it("first load fails → later resolve recovers once and then returns the registry value", async () => {
+    let snapshot: FlagSnapshot | null = null;
+    const refresh = vi.fn(async () => {
+      snapshot = {
+        version: 2,
+        flags: { "desktop.meetings": true },
+      };
+    });
+    const isEnabled = vi.fn(() => true);
+    const fallback = vi.fn(async () => ok(false));
+    const gate = createFeatureFlagGate({
+      endpoint: "https://api.test",
+      getToken: () => "token",
+      createClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => snapshot,
+          isEnabled,
+          refresh,
+        }),
+    });
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(false));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(isEnabled).not.toHaveBeenCalled();
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(isEnabled).toHaveBeenCalledWith("desktop.meetings");
+    expect(fallback).toHaveBeenCalledTimes(1);
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("concurrent hasFeature calls during a pending recovery share one refresh", async () => {
+    const started = deferred();
+    const finish = deferred();
+    let snapshot: FlagSnapshot | null = null;
+    const refresh = vi.fn(async () => {
+      started.resolve();
+      await finish.promise;
+      snapshot = {
+        version: 1,
+        flags: { "desktop.meetings": true },
+      };
+    });
+    const isEnabled = vi.fn(() => true);
+    const fallback = vi.fn(async () => ok(false));
+    const gate = createFeatureFlagGate({
+      endpoint: "https://api.test",
+      getToken: () => "token",
+      createClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => snapshot,
+          isEnabled,
+          refresh,
+        }),
+    });
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(false));
+    expect(refresh).not.toHaveBeenCalled();
+
+    const pending = [
+      gate.resolve("meetings", fallback),
+      gate.resolve("meetings", fallback),
+      gate.resolve("meetings", fallback),
+    ];
+    await started.promise;
+    expect(refresh).toHaveBeenCalledTimes(1);
+    finish.resolve();
+    await expect(Promise.all(pending)).resolves.toEqual([
+      ok(true),
+      ok(true),
+      ok(true),
+    ]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(isEnabled).toHaveBeenCalledTimes(3);
+  });
+
+  it("rate-limits recovery refresh to once per FLAG_REFRESH_INTERVAL_MS", async () => {
+    let nowMs = 50_000;
+    const refresh = vi.fn(async () => {});
+    const fallback = vi.fn(async () => ok(true));
+    const gate = createFeatureFlagGate({
+      endpoint: "https://api.test",
+      getToken: () => "token",
+      now: () => nowMs,
+      createClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled: () => false,
+          refresh,
+        }),
+    });
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    nowMs += FLAG_REFRESH_INTERVAL_MS - 1;
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    nowMs += 1;
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(fallback).toHaveBeenCalledTimes(6);
+  });
+
+  it("throwing refresh() still yields the legacy answer with no unhandled rejection", async () => {
+    const refresh = vi.fn(async () => {
+      throw new Error("refresh exploded");
+    });
+    const fallback = vi.fn(async () => ok(true));
+    const gate = createFeatureFlagGate({
+      endpoint: "https://api.test",
+      getToken: () => "token",
+      createClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => null,
+          isEnabled: () => {
+            throw new Error("should not isEnabled after failed refresh");
+          },
+          refresh,
+        }),
+    });
+
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fallback).toHaveBeenCalledTimes(2);
+    // Vitest fails the file on an unhandled rejection. Extra ticks give a
+    // leaked rejection a chance to surface before the test ends.
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });
 
