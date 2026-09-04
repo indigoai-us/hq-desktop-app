@@ -15,6 +15,7 @@
   } from "./channel-status-model.js";
   import { projectReposForDisplay } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -234,6 +235,17 @@
 
   <section aria-label="Project">
     <div class="p-sec">PROJECT</div>
+    {#if model.companyLabel}
+      <div class="p-item kv static" data-testid="status-company">
+        <span class="k">Company</span>
+        <span class="status-company-val">
+          <CompanyIcon iconUrl={model.companyIconUrl ?? null} size={16} />
+          <span class="val" data-testid="status-company-name"
+            >{model.companyLabel}</span
+          >
+        </span>
+      </div>
+    {/if}
     <div class="p-item kv static">
       <span class="k">Branch</span>
       {#if currentBranches.length > 1}
@@ -667,6 +679,12 @@
     letter-spacing: 0.9px;
   }
 
+  .status-company-val {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
   .p-item {
     display: flex;
     align-items: center;

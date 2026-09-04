@@ -30,6 +30,11 @@ export interface ConversationRow {
   title: string;
   /** Company scope when known; null for personal / pure DMs / group DMs. */
   companyUid: string | null;
+  /**
+   * Owning company's presigned website favicon, when the server sent one.
+   * Absent → the row draws the building glyph. Company-scoped rows only.
+   */
+  iconUrl?: string | null;
   /** Numeric unread — channels, and DMs when server pairUnreads is present. */
   unreadCount?: number;
   /** Dot indicator for activity (DMs without numeric unread / optional channel activity). */
@@ -75,6 +80,10 @@ export interface ConversationRow {
  */
 const CONVERSATION_ROW_RICHNESS_FIELDS = [
   "companyUid",
+  // Metadata (arrives with the live directory row, absent on a deep-link
+  // stub), so it belongs here — otherwise a stub carrying no icon would look
+  // "not strictly richer" once the real row arrived with one.
+  "iconUrl",
   "projectId",
   "channelId",
   "channelScope",
@@ -119,6 +128,8 @@ export function isStrictlyRicherConversationRow(
 export interface ScopeCompany {
   companyUid: string;
   label: string;
+  /** Presigned company icon, when the membership row carried one. */
+  iconUrl?: string | null;
 }
 
 export type CompanyScope = "all" | "personal" | string;
@@ -533,6 +544,10 @@ export function normalizeChannel(
     members: channel.members,
     channelId: channel.channelId,
     projectId: channel.projectId ?? null,
+    // Only a company-owned row can show a company icon.
+    ...(!isGroup && channel.scope !== "personal" && channel.iconUrl
+      ? { iconUrl: channel.iconUrl }
+      : {}),
     ...(channel.membership != null ? { membership: channel.membership } : {}),
   };
 }
@@ -816,6 +831,14 @@ export function directoryRowToChannel(
     scope: row.scope,
     companyUid: row.companyUid ?? null,
     companyName: prev?.companyName ?? null,
+    // `undefined` on the row means "not served / not sent" — keep whatever we
+    // already had. An explicit `null` means "this company has no icon" and DOES
+    // clear it, so removing a website removes the icon without a reload.
+    ...(row.iconUrl !== undefined
+      ? { iconUrl: row.iconUrl }
+      : prev?.iconUrl != null
+        ? { iconUrl: prev.iconUrl }
+        : {}),
     ...(prev?.postPolicy != null ? { postPolicy: prev.postPolicy } : {}),
     ...(prev?.visibility != null ? { visibility: prev.visibility } : {}),
     ...(prev?.membership != null ? { membership: prev.membership } : {}),
