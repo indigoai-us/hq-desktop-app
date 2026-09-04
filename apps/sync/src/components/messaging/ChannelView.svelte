@@ -318,7 +318,8 @@
       }));
     };
     const controller = new AgentThinkingController(loadMembers);
-    const tasks = new AgentTaskFeedController(loadMembers);
+    // Room-scoped when the server supports it, agent-wide otherwise.
+    const tasks = new AgentTaskFeedController(loadMembers, { channelId: id });
     thinkingCtl = controller;
     taskCtl = tasks;
     return () => {
