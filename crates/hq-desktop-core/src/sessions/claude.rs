@@ -70,6 +70,7 @@
 //! the reader still works — company falls back to empty, project to the cwd's
 //! basename (PRD notes: "HQ-instrumented sessions carry the richest metadata").
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -78,7 +79,23 @@ use serde::Deserialize;
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::paths;
 
+use super::scan_cache::{FileStamp, StableCache, StampCache};
 use super::{AgentOrigin, AgentSession, AgentTool, SessionStatus};
+
+/// Memo for the bounded tail parse, keyed by `(mtime, len)`.
+///
+/// The Mission Control poller re-scans every few seconds; on a working machine
+/// that is thousands of transcripts, and re-reading 64 KiB from each of them plus
+/// parsing it was measured as the single largest source of the app's idle CPU.
+/// A transcript that has not been appended to since the last tick cannot have a
+/// different tail, so the parse is reused. See `super::scan_cache`.
+static TAIL_CACHE: StampCache<TailInfo> = StampCache::new();
+
+/// Memo for `workspace/sessions/<id>/meta.yaml`. HQ writes it once at session
+/// start and never rewrites it, so a successful parse is reusable for the life of
+/// the process. Absence is deliberately **not** cached — a session that gets
+/// instrumented later must still be picked up.
+static META_CACHE: StableCache<SessionMeta> = StableCache::new();
 
 /// Provenance tag stamped on every record this reader emits (US-001 `source`).
 const SOURCE_TAG: &str = "claude-jsonl";
@@ -119,7 +136,7 @@ struct TranscriptMessage {
 }
 
 /// Fields recovered from a transcript's tail.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct TailInfo {
     cwd: Option<String>,
     git_branch: Option<String>,
@@ -136,7 +153,7 @@ struct TailInfo {
 /// The subset of `workspace/sessions/<id>/meta.yaml` we read. HQ writes
 /// `session_id` + `started_at` always; instrumented sessions add
 /// `company_slug`, and sometimes `project` / `repo`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct SessionMeta {
     #[serde(default)]
     company_slug: Option<String>,
@@ -292,6 +309,9 @@ pub fn scan_claude_sessions(
     };
 
     let mut out: Vec<AgentSession> = Vec::new();
+    // Every transcript this scan saw. Used to prune the parse memos so deleted
+    // or rotated transcripts do not leak cache entries for the process lifetime.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
 
     for project_entry in project_entries.flatten() {
         let project_path = project_entry.path();
@@ -311,11 +331,14 @@ pub fn scan_claude_sessions(
             if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
+            seen.insert(file_path.clone());
             if let Some(session) = read_one_transcript(&file_path, hq_root, now) {
                 out.push(session);
             }
         }
     }
+
+    TAIL_CACHE.retain_paths(&seen);
 
     out
 }
@@ -336,8 +359,13 @@ fn read_one_transcript(
     let len = metadata.len();
     let mtime = metadata.modified().ok()?;
 
-    // Bounded tail read — never a full parse (HARD perf contract).
-    let tail = read_tail_info(file_path, len);
+    // Bounded tail read — never a full parse (HARD perf contract) — and memoised
+    // against `(mtime, len)` so an unchanged transcript costs the `stat` above and
+    // nothing more. An appended-to transcript changes both fields and is re-read
+    // on the very next tick, so live sessions stay exactly as fresh as before.
+    let tail = TAIL_CACHE.get_or_compute(file_path, FileStamp::new(mtime, len), || {
+        read_tail_info(file_path, len)
+    });
 
     // cwd: prefer the tail's `cwd`, fall back to decoding the project dir name.
     let cwd = tail.cwd.clone().or_else(|| {
@@ -497,8 +525,10 @@ fn read_session_meta(hq_root: &Path, id: &str) -> Option<SessionMeta> {
         .join("sessions")
         .join(id)
         .join("meta.yaml");
-    let bytes = std::fs::read(&meta_path).ok()?;
-    serde_yaml::from_slice(&bytes).ok()
+    META_CACHE.get_or_compute(&meta_path, || {
+        let bytes = std::fs::read(&meta_path).ok()?;
+        serde_yaml::from_slice(&bytes).ok()
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
