@@ -37,6 +37,9 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
 const openExternal = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: openExternal }));
+vi.mock('@tauri-apps/plugin-http', () => ({
+  fetch: vi.fn(async () => ({ ok: true, status: 200 })),
+}));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
