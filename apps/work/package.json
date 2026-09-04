@@ -37,6 +37,8 @@
     "@hq/platform": "workspace:*",
     "@hq/ui": "workspace:*",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-deep-link": "^2.4.10",
+    "@tauri-apps/plugin-opener": "^2.5.5",
     "jose": "^6.2.8"
   },
   "devDependencies": {

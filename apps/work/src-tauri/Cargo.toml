@@ -29,5 +29,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-http = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-os = "2"
+# Sign-in: the hosted UI opens in the SYSTEM browser (opener), and Cognito
+# returns through the hqmobile:// custom scheme (deep-link). Keeping the
+# hosted UI out of the app webview is what makes the redirect a deep link
+# rather than an in-app navigation the shell would have to intercept.
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

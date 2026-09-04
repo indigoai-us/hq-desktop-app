@@ -192,6 +192,73 @@ and two E2E tests in `e2e/auth.test.ts` — one pinning what the session endpoin
 may return, one asserting a signed-in visit to `/` renders the shell without
 ever requesting `/__data.json`.
 
+### Sign-in on a phone
+
+A phone has no server and no same-origin session, so the web posture above
+(httpOnly cookie + `GET /api/auth/token`) has nothing to read. It runs the
+authorization-code + PKCE flow itself, against the same vault-client Cognito
+app client every other surface uses:
+
+1. The hosted UI opens in the **system browser**, not the app webview, via
+   `tauri-plugin-opener`. Keeping it out of the webview is what makes the
+   return trip a deep link rather than a navigation the shell must intercept.
+2. Cognito redirects to `hqmobile://auth?code=…`, delivered by
+   `tauri-plugin-deep-link`.
+3. Only the **refresh token** is persisted, in the webview's own origin
+   storage. The id token — the bearer on every hq-pro call — stays in memory
+   and is re-minted from the refresh token in one request, so storing it would
+   only widen what a device compromise yields. `MobileAuthStore` is an injected
+   interface so that storage can move behind native secure storage later
+   without touching the flow.
+
+`hqmobile://auth` is not a free choice: it is already a registered callback URL
+on the vault-client app client (`repos/private/hq-pro/infra/cognito.ts`), so no
+Cognito change is needed — but the string now lives in four places that cannot
+import each other (the flow, `Info.plist`, `AndroidManifest.xml`, and Cognito).
+`mobile-deep-link.test.ts` pins the three that are in this repo.
+
+The deep-link plugin's own `tauri.conf.json` config covers **desktop schemes
+and mobile app-links only**, so a mobile custom scheme has to be declared in
+the platform manifests. The two platforms differ in where that declaration can
+safely live:
+
+- **iOS** — `src-tauri/Info.ios.plist`, which Tauri merges into the generated
+  `gen/apple/.../Info.plist`. It must NOT go in the generated file directly:
+  `tauri ios build` regenerates that plist on every run and writes the merged
+  result back over it, so a hand-written key there is discarded before the app
+  is packaged. That happened once; the app built, installed and launched, and
+  simply never received its own callback.
+- **Android** — `gen/android/app/src/main/AndroidManifest.xml` directly, which
+  Tauri regenerates only on `android init`, not per build.
+
+Verify a change to either against the PACKAGED artifact, not the source tree:
+`plutil -extract CFBundleURLTypes json -o - "<built>.app/Info.plist"`.
+`xcrun simctl openurl <device> hqmobile://auth` is the end-to-end check — it
+errors for a scheme no installed app claims.
+
+The layering: `mobile-auth.ts` is the protocol with every platform seam
+injected (browser, `fetch`, store, clock) and is fully tested without a device;
+`mobile-auth-host.ts` is the only module that imports a Tauri plugin;
+`mobile-sign-in.ts` is the four-state machine the root route renders from.
+`checking` is a real state — restoring a stored refresh token is a network
+round trip, and showing the sign-in button during it asks an already-signed-in
+user to sign in again.
+
+### Which transport each target uses
+
+`workRuntimeFor()` in `$lib/work-runtime.ts` decides, and only a real desktop
+host gets the native command bridge. A phone runs a native shell too, but
+`src-tauri` exposes **no commands at all** — so handing it the Sync adapter
+fails every call with `Cannot read properties of undefined (reading 'invoke')`,
+which is exactly what the first mobile build did: a shell that rendered
+correctly and then said "Couldn't load conversations." iOS and Android take the
+same network transport as the browser, which also matches `MOBILE_CAPABILITIES`
+(no local files, no sync daemon, no local work-mesh cache — a phone has no HQ
+checkout).
+
+An embedding host still wins: the Sync desktop app passes `runtimeKind:
+'desktop'` explicitly, and that takes precedence over this ambient detection.
+
 ### Papercut: `tauri ios build` fails after the Xcode build succeeds
 
 `tauri ios build` can end with `failed to rename app … Directory not empty

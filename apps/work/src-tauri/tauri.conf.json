@@ -25,5 +25,14 @@
       "../../sync/src-tauri/icons/icon.icns",
       "../../sync/src-tauri/icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "hqmobile"
+        ]
+      }
+    }
   }
 }
