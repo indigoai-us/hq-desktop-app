@@ -4,7 +4,7 @@
 //! Polls `GET /v1/client-health/commands` (authenticated fallback, EVERY
 //! platform, unconditional — see `main.rs` wiring notes) for unexpired
 //! desired-state commands targeting this installation, executes `CHECK_NOW`
-//! by running the eight bounded read-only probes below, and reports every
+//! by running the nine bounded read-only probes below, and reports every
 //! lifecycle receipt (`queued` is server-only; the client submits
 //! `acknowledged` -> `running` -> `succeeded`/`failed`) through
 //! `POST /v1/client-health/commands/receipt`, using the US-000 contract types
