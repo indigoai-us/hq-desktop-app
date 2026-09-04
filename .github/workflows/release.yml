@@ -33,11 +33,14 @@ jobs:
   # This job is deliberately first and depends on nothing, so it fires for ANY
   # tagger — a maintainer's local cut script, a teammate pushing a tag from the
   # GitHub UI, or a workflow_dispatch re-run. It never gates the release: every
-  # failure path inside it is fail-soft, and `continue-on-error` covers the rest.
+  # failure path inside it is fail-soft: the scripts exit 0 on a missing secret,
+  # an expired token, or an API error, and every `run` here swallows its own
+  # errors. `continue-on-error` is deliberately NOT used — the release workflow
+  # is contract-tested to contain none of it, because build and publish must
+  # fail closed. Nothing depends on this job, so it cannot gate a release.
   announce-build:
     name: Announce the build in #hq-dev
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     env:
@@ -93,18 +96,21 @@ jobs:
           PREV: ${{ steps.tags.outputs.previous }}
           VERSION: ${{ steps.tags.outputs.version }}
         run: |
-          set -euo pipefail
-          node .github/scripts/release-changelog-bullets.mjs \
+          set -uo pipefail
+          if ! node .github/scripts/release-changelog-bullets.mjs \
             --tag "$TAG" \
             --previous "$PREV" \
-            --version "$VERSION" > announcement.txt
+            --version "$VERSION" > announcement.txt; then
+            echo "Changelog build failed; announcing without a change list."
+            echo "HQ desktop v${VERSION} is being built now — public in ~20 min once checks pass." > announcement.txt
+          fi
           echo "--- message ---"
           cat announcement.txt
 
       - name: Post it to #hq-dev
         if: steps.tags.outputs.tag != ''
         shell: bash
-        run: node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body-file announcement.txt
+        run: node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body-file announcement.txt || true
 
   validate:
     name: Validate release tag and version
@@ -1839,7 +1845,6 @@ jobs:
     needs: [validate, macos, windows, publish]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     env:
@@ -1868,7 +1873,7 @@ jobs:
           FALLBACK_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           LABEL="${VERSION:-}"
           if [ -z "$LABEL" ]; then LABEL="${TAG:-$FALLBACK_TAG}"; LABEL="${LABEL#v}"; fi
           if [ "$PUBLISH_RESULT" = "success" ]; then
@@ -1876,4 +1881,4 @@ jobs:
           else
             MESSAGE="v${LABEL} build FAILED — not published. Run: ${RUN_URL}"
           fi
-          node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body "$MESSAGE"
+          node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body "$MESSAGE" || true
