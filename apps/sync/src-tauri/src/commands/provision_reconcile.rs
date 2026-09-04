@@ -162,12 +162,14 @@ where
             }
         }
 
-        // Ack only when this pass actually wrote local files. Re-acking an
-        // already-provisioned company on every sync pass hammered
-        // /activate-cloud/ack for the lifetime of the install. (The entity
-        // payload carries no card state, so "server still reports the card
-        // pending" cannot be observed here; wrote_local is the only signal.)
-        if !wrote_local {
+        // Ack when this pass wrote local files, or when an earlier pass wrote
+        // them but its ack never reached the server (marker left behind).
+        // Re-acking an already-provisioned company on every sync pass
+        // hammered /activate-cloud/ack for the lifetime of the install, and
+        // the entity payload carries no card state, so the marker is the only
+        // durable "server card may still be pending" signal.
+        let ack_pending = ack_pending_marker_exists(hq_root, &slug);
+        if !wrote_local && !ack_pending {
             out.push(ReconciledCompany {
                 slug,
                 uid,
@@ -177,10 +179,22 @@ where
             });
             continue;
         }
+        if ack_pending {
+            log(
+                "provision-reconcile",
+                &format!("retrying pending ack for '{slug}' ({uid})"),
+            );
+        }
 
         let acked = match vault.ack_activate_cloud(&uid).await {
-            Ok(ActivateCloudAck::Done) => true,
+            Ok(ActivateCloudAck::Done) => {
+                clear_ack_pending_marker(hq_root, &slug);
+                true
+            }
             Ok(ActivateCloudAck::Forbidden) => {
+                // Terminal server answer: this machine is not the owner.
+                // Retrying every pass would only repeat the 403.
+                clear_ack_pending_marker(hq_root, &slug);
                 log(
                     "provision-reconcile",
                     &format!("ack {uid} forbidden (not owner on this machine)"),
@@ -188,6 +202,8 @@ where
                 false
             }
             Ok(ActivateCloudAck::NotFound) => {
+                // Terminal: no pending card to ack.
+                clear_ack_pending_marker(hq_root, &slug);
                 log(
                     "provision-reconcile",
                     &format!("ack {uid} not found"),
@@ -195,10 +211,19 @@ where
                 false
             }
             Err(e) => {
-                log(
-                    "provision-reconcile",
-                    &format!("ack {uid} failed: {e}"),
-                );
+                // Transport / 5xx: local files exist but the server card is
+                // still pending. Persist that so the next pass retries.
+                if let Err(marker_err) = write_ack_pending_marker(hq_root, &slug) {
+                    log(
+                        "provision-reconcile",
+                        &format!("ack {uid} failed: {e}; could not persist marker: {marker_err}"),
+                    );
+                } else {
+                    log(
+                        "provision-reconcile",
+                        &format!("ack {uid} failed (will retry next pass): {e}"),
+                    );
+                }
                 false
             }
         };
@@ -213,6 +238,44 @@ where
     }
 
     Ok(out)
+}
+
+/// Sibling of `.hq/config.json`; present while a server-side activate_cloud
+/// ack is owed for a company whose local files were already written.
+const ACK_PENDING_FILE: &str = "activate-ack.pending";
+
+fn ack_pending_marker_path(hq_root: &Path, slug: &str) -> PathBuf {
+    hq_root
+        .join("companies")
+        .join(slug)
+        .join(".hq")
+        .join(ACK_PENDING_FILE)
+}
+
+fn ack_pending_marker_exists(hq_root: &Path, slug: &str) -> bool {
+    ack_pending_marker_path(hq_root, slug).is_file()
+}
+
+fn write_ack_pending_marker(hq_root: &Path, slug: &str) -> Result<(), String> {
+    let path = ack_pending_marker_path(hq_root, slug);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, b"activate-cloud ack pending\n")
+        .map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn clear_ack_pending_marker(hq_root: &Path, slug: &str) {
+    let path = ack_pending_marker_path(hq_root, slug);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log(
+            "provision-reconcile",
+            &format!("remove {}: {e}", path.display()),
+        ),
+    }
 }
 
 fn should_reconcile(entity: &EntityInfo) -> bool {
@@ -666,6 +729,129 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Lays down a fully provisioned company (cloud: true + config.json) and
+    /// returns its folder.
+    fn write_provisioned_company(root: &Path, slug: &str, uid: &str) -> PathBuf {
+        let dir = root.join("companies").join(slug);
+        std::fs::create_dir_all(dir.join(".hq")).unwrap();
+        std::fs::write(dir.join("company.yaml"), "cloud: true\nname: Acme\n").unwrap();
+        let cfg = CompanyConfig {
+            company_uid: uid.to_string(),
+            company_slug: slug.to_string(),
+            bucket_name: "hq-vault-cmp-acme".to_string(),
+            vault_api_url: VAULT_URL.to_string(),
+        };
+        std::fs::write(
+            dir.join(".hq").join("config.json"),
+            serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn ack_transport_failure_leaves_marker_and_next_pass_retries_and_clears_it() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let uid = "cmp_acme";
+        write_manifest(tmp.path(), slug);
+
+        // Pass 1: ack answers 500.
+        let failing = MockServer::start().await;
+        mount_owner_company(&failing, uid, slug, Some("hq-vault-cmp-acme"), true, 500).await;
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&failing),
+            VAULT_URL,
+            |s, _n, _r| async move { Ok(mock_cli_result(&s, "cmp_acme", "hq-vault-cmp-acme")) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].wrote_local);
+        assert!(!result[0].acked);
+        assert!(
+            ack_pending_marker_exists(tmp.path(), slug),
+            "failed ack must leave the pending marker"
+        );
+        assert!(local_already_provisioned(tmp.path(), slug));
+
+        // Pass 2: local files exist, so nothing is rewritten, but the marker
+        // forces a retry; the ack succeeds and the marker is cleared.
+        let healthy = MockServer::start().await;
+        mount_owner_company(&healthy, uid, slug, Some("hq-vault-cmp-acme"), true, 200).await;
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls_clone = calls.clone();
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&healthy),
+            VAULT_URL,
+            move |s, _n, _r| {
+                calls_clone.lock().unwrap().push(s);
+                async move { Ok(mock_cli_result("acme", "cmp_acme", "hq-vault-cmp-acme")) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].wrote_local);
+        assert!(result[0].acked, "pending marker must trigger a retry ack");
+        assert!(calls.lock().unwrap().is_empty(), "no re-provision on retry");
+        assert!(
+            !ack_pending_marker_exists(tmp.path(), slug),
+            "successful ack must clear the marker"
+        );
+        let reqs = healthy.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.iter()
+                .filter(|r| r.url.path() == "/v1/companies/cmp_acme/activate-cloud/ack")
+                .count(),
+            1
+        );
+
+        // Pass 3: no marker, already provisioned -> no ack at all.
+        let quiet = MockServer::start().await;
+        mount_owner_company(&quiet, uid, slug, Some("hq-vault-cmp-acme"), true, 200).await;
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&quiet),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("provisioner must not run") },
+        )
+        .await
+        .unwrap();
+        assert!(!result[0].acked);
+        let reqs = quiet.received_requests().await.unwrap();
+        assert!(!reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")));
+    }
+
+    #[tokio::test]
+    async fn pending_marker_retry_that_fails_again_keeps_marker() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let uid = "cmp_acme";
+        write_manifest(tmp.path(), slug);
+        write_provisioned_company(tmp.path(), slug, uid);
+        write_ack_pending_marker(tmp.path(), slug).unwrap();
+
+        let failing = MockServer::start().await;
+        mount_owner_company(&failing, uid, slug, Some("hq-vault-cmp-acme"), true, 503).await;
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&failing),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("provisioner must not run") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].wrote_local);
+        assert!(!result[0].acked);
+        assert!(ack_pending_marker_exists(tmp.path(), slug));
+        let reqs = failing.received_requests().await.unwrap();
+        assert!(reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")));
+    }
+
     #[tokio::test]
     async fn ack_forbidden_does_not_fail_the_pass() {
         let tmp = TempDir::new().unwrap();
@@ -692,5 +878,9 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result[0].wrote_local);
         assert!(!result[0].acked);
+        assert!(
+            !ack_pending_marker_exists(tmp.path(), slug),
+            "403 is terminal; it must not schedule a retry"
+        );
     }
 }
