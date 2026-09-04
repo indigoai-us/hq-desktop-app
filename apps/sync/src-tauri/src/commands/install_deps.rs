@@ -2895,6 +2895,15 @@ pub fn clear_unusable_npm_bin(prefix: &std::path::Path, bin: &str) -> bool {
     unusable
 }
 
+/// Only registry/network-shaped npm failures justify retrying against the
+/// public registry; EACCES, ENOSPC, or a broken node must surface as-is.
+pub fn looks_like_registry_failure(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    ["enotfound", "eai_again", "econnrefused", "econnreset", "etimedout", "e404", "e403", "e401", "e502", "e503", "eproto", "cert", "registry", "proxy", "fetch failed", "network"]
+        .iter()
+        .any(|k| e.contains(k))
+}
+
 /// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
 /// first, then retrying with the public registry forced if that fails.
 ///
@@ -2914,6 +2923,7 @@ async fn npm_install_global_managed(
 ) -> Result<String, String> {
     match run_streaming(app, npm, &["install", "-g", "--prefix", prefix, spec]).await {
         Ok(out) => Ok(out),
+        Err(first) if !looks_like_registry_failure(&first) => Err(first),
         Err(first) => {
             emit_preflight_line(
                 app,
@@ -7314,5 +7324,18 @@ mod foreign_copy_rejection_tests {
             let ok = DepStatus { installed: true, version: Some("5.107.1".into()), path: Some(managed) };
             assert!(dep_status_satisfies(hq, &ok));
         }
+    }
+}
+
+#[cfg(test)]
+mod registry_failure_classifier_tests {
+    use super::*;
+    #[test]
+    fn classifies_registry_vs_local_failures() {
+        assert!(looks_like_registry_failure("npm error code ENOTFOUND\nnpm error network request to https://npm.corp.invalid/@tobilu%2fqmd failed"));
+        assert!(looks_like_registry_failure("npm error code E404 Not Found - GET https://npm.corp/..."));
+        assert!(looks_like_registry_failure("npm error network In most cases you are behind a proxy"));
+        assert!(!looks_like_registry_failure("npm error code EACCES permission denied, mkdir '/usr/local/lib/node_modules'"));
+        assert!(!looks_like_registry_failure("npm error code ENOSPC no space left on device"));
     }
 }

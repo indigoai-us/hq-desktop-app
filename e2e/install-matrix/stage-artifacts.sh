@@ -50,8 +50,16 @@ fi
 if [[ "$WITH_TOKENS" == 1 ]]; then
   CLIENT_ID="${HQ_MATRIX_COGNITO_CLIENT_ID:-7acei2c8v870enheptb1j5foln}"
   USER="${HQ_MATRIX_E2E_USER:-alice-e2e@getindigo.ai}"
-  PASS="${HQ_MATRIX_E2E_PASSWORD:-E2eTest!Alice$(date +%Y)}"
-  if aws cognito-idp initiate-auth --no-sign-request --region us-east-1 --client-id "$CLIENT_ID" --auth-flow USER_PASSWORD_AUTH        --auth-parameters "USERNAME=$USER,PASSWORD=$PASS" 2>/dev/null | python3 -c "
+  # The E2E user's password is a secret: it lives in the HQ vault, never in
+  # this file. Supply it via `hq secrets --personal set HQ_MATRIX_E2E_PASSWORD`
+  # and run through `hq secrets exec`, or export it in the environment.
+  PASS="${HQ_MATRIX_E2E_PASSWORD:-}"
+  if [[ -z "$PASS" ]] && command -v hq >/dev/null 2>&1; then
+    PASS="$(hq secrets --personal exec --only HQ_MATRIX_E2E_PASSWORD -- sh -c 'printf %s "${HQ_MATRIX_E2E_PASSWORD:-}"' 2>/dev/null || true)"
+  fi
+  if [[ -z "$PASS" ]]; then
+    log "WARN: HQ_MATRIX_E2E_PASSWORD not set (vault key HQ_MATRIX_E2E_PASSWORD); headed wizard journeys will fail closed"
+  elif aws cognito-idp initiate-auth --no-sign-request --region us-east-1 --client-id "$CLIENT_ID" --auth-flow USER_PASSWORD_AUTH        --auth-parameters "USERNAME=$USER,PASSWORD=$PASS" 2>/dev/null | python3 -c "
 import sys,json,time; r=json.load(sys.stdin)['AuthenticationResult']
 print(json.dumps({'accessToken':r['AccessToken'],'idToken':r['IdToken'],'refreshToken':r['RefreshToken'],'expiresAt':int((time.time()+r['ExpiresIn']-60)*1000)}))" >"$A/cognito-tokens.json.tmp" 2>/dev/null && [[ -s "$A/cognito-tokens.json.tmp" ]]; then
     mv "$A/cognito-tokens.json.tmp" "$A/cognito-tokens.json"; chmod 600 "$A/cognito-tokens.json"; log "staged E2E session for $USER (1h)"
