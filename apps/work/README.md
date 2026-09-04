@@ -162,17 +162,48 @@ carries a bare `"tauri": "tauri"` passthrough. Nothing invokes that script by
 hand; deleting it fails the APK assembly with only `Process 'command 'npm''
 finished with non-zero exit value 1`, so `mobile-shell-config.test.ts` pins it.
 
-### Known gap: the shell runs, the app does not render
+### The root route has no server load, and that is load-bearing
 
-Both mobile targets build, install and launch, but the root route does not
-paint. `+layout.server.ts` and `+page.server.ts` are **server** loads, so the
-client router requests `/__data.json` at startup, and a static bundle with no
-server answers 404 — SvelteKit then renders its own 404 page. Reproducible off
--device by serving `apps/work/build` over plain HTTP.
+Desktop and mobile ship the adapter-static bundle: the SPA fallback document
+and assets, no server routes. A `+page.server.ts` or `+layout.server.ts` on the
+root route makes SvelteKit's client router fetch `/__data.json` on the first
+navigation, a static bundle answers 404, and the router renders its own 404
+page. Both mobile targets shipped that way once — they built, installed,
+launched, and showed a blank screen, with nothing wrong in any native log,
+because nothing native had failed.
 
-Making mobile functional therefore means moving the root route's session data
-off a server load (universal load + a native-auth branch), not fixing anything
-in the native shell. Treat "it built" and "it works" as separate claims here.
+So the root route's data comes from universal loads (`+layout.ts`, `+page.ts`)
+that branch on `isStaticBuild()` in `$lib/static-build.ts`:
+
+- **Web** asks `/api/auth/session` for the signed-in identity, because the
+  session cookie is httpOnly and a universal load cannot read `locals`.
+- **Static** reports no web user; the native shell supplies identity to
+  `WorkShell` directly.
+
+`isStaticBuild()` reads the `TAURI` build flag rather than probing for a native
+runtime, and the two are deliberately different questions — the Sync desktop
+app embeds `WorkShell` into a webview served by the *hosted* build, so a
+runtime probe would answer the wrong one. Because it is a build flag, each
+bundle keeps only its own branch.
+
+Three guards hold this, and each has been seen to fail with the contract
+broken: `root-route-is-static-safe.test.ts` (no server load in this directory),
+and two E2E tests in `e2e/auth.test.ts` — one pinning what the session endpoint
+may return, one asserting a signed-in visit to `/` renders the shell without
+ever requesting `/__data.json`.
+
+### Papercut: `tauri ios build` fails after the Xcode build succeeds
+
+`tauri ios build` can end with `failed to rename app … Directory not empty
+(os error 66)` *after* `** BUILD SUCCEEDED **`. The archive export step trips
+over a previous `gen/apple/build/*.xcarchive`; deleting it is not always
+enough. The simulator bundle is still produced — it is in DerivedData
+(`Build/Products/debug-iphonesimulator/HQ Work.app`), not in
+`gen/apple/build/arm64-sim`, which keeps the stale copy from the last run that
+got that far. Install from DerivedData, and check the app you installed is the
+one you just built: the frontend is embedded in `HQ Work.debug.dylib`, so
+`grep -a` for the `immutable/entry/start.*.js` name in `build/index.html`
+should match there and nowhere else in the bundle.
 
 Mobile capabilities are deliberately narrow (`MOBILE_CAPABILITIES` in
 `packages/platform/src/capabilities.ts`): notifications and HTTP only. Every

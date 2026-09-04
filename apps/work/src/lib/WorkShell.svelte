@@ -106,7 +106,7 @@
       item: ChannelFileItemModel,
       selectedCompanyUid: string | null,
     ) => Promise<ChannelFilePreview>;
-    /** Mirrors the safe user shape supplied by +layout.server on the web. */
+    /** Mirrors the safe user shape supplied by the root +layout on the web. */
     hostIdentity?: WorkShellHostIdentity | null;
     /** Native host-owned storage partition for the authenticated account. */
     hostTenantAccountId?: string | null;
