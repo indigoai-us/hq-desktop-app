@@ -93,6 +93,27 @@ describe("PrototypeSettingsPanes live sync status refresh", () => {
     expect(daemonLabel()).toBe("RUNNING");
   });
 
+  it("clears the polling interval on unmount", async () => {
+    vi.useFakeTimers();
+    const getSyncStatus = vi.fn(async () => daemonStatus(true));
+    const adapter = syncAdapter(getSyncStatus);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "sync", adapter },
+    });
+
+    await vi.waitFor(() => expect(getSyncStatus).toHaveBeenCalledTimes(1));
+
+    await unmount(component);
+    component = null;
+
+    // Give the (now-torn-down) interval every chance to fire if it leaked.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(getSyncStatus).toHaveBeenCalledTimes(1);
+  });
+
   it("stops polling once the section is no longer sync", async () => {
     vi.useFakeTimers();
     const getSyncStatus = vi.fn(async () => daemonStatus(true));
