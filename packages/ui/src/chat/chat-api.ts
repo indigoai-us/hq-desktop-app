@@ -194,6 +194,13 @@ export interface ChannelDetailResponse {
 export interface DmThreadResponse {
   messages: ConversationMessageWire[];
   nextCursor?: string | null;
+  /** Present only when the peer is an automated HQ system sender. */
+  peer?: {
+    personUid: string;
+    displayName: string;
+    isSystem: true;
+    kind?: string;
+  };
 }
 
 /** Reply-thread partition. Distinct from GET /v1/notify/thread (1:1 DM list). */

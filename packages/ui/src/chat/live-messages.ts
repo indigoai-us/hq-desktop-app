@@ -142,6 +142,16 @@ export interface TimelineMessagePage {
 }
 
 /** Pull `{ messages, nextCursor }` out of an hq-pro / adapter payload. */
+/**
+ * Server-driven "this peer is an automated system sender" flag from a
+ * GET /v1/notify/thread payload (`peer.isSystem`). Absent/malformed → false.
+ */
+export function peerIsSystemFromPayload(raw: unknown): boolean {
+  const rec = asRecord(raw);
+  const peer = rec ? asRecord(rec.peer) : null;
+  return peer?.isSystem === true;
+}
+
 export function timelinePageFromPayload(raw: unknown): TimelineMessagePage {
   const rec = asRecord(raw);
   if (!rec) return { messages: raw, nextCursor: null };
