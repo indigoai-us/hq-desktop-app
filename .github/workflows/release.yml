@@ -28,6 +28,90 @@ env:
   UNVERIFIED_RELEASE: ${{ vars.RELEASE_UNVERIFIED || 'true' }}
 
 jobs:
+  # Tell #hq-dev a release is on the way, before anything is built.
+  #
+  # This job is deliberately first and depends on nothing, so it fires for ANY
+  # tagger — a maintainer's local cut script, a teammate pushing a tag from the
+  # GitHub UI, or a workflow_dispatch re-run. It never gates the release: every
+  # failure path inside it is fail-soft: the scripts exit 0 on a missing secret,
+  # an expired token, or an API error, and every `run` here swallows its own
+  # errors. `continue-on-error` is deliberately NOT used — the release workflow
+  # is contract-tested to contain none of it, because build and publish must
+  # fail closed. Nothing depends on this job, so it cannot gate a release.
+  announce-build:
+    name: Announce the build in #hq-dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      HQ_DM_ANNOUNCE_USERNAME: ${{ secrets.HQ_DM_ANNOUNCE_USERNAME }}
+      HQ_DM_ANNOUNCE_SECRET: ${{ secrets.HQ_DM_ANNOUNCE_SECRET }}
+      HQ_DM_ANNOUNCE_REFRESH_TOKEN: ${{ secrets.HQ_DM_ANNOUNCE_REFRESH_TOKEN }}
+
+    steps:
+      - name: Checkout at the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve this tag and the previous one
+        id: tags
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No tag to announce; nothing to do."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "tag=$TAG"
+            echo "previous=$PREV"
+            echo "version=${TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Announcing $TAG (previous: ${PREV:-none})"
+
+      - name: Build the announcement message
+        if: steps.tags.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tags.outputs.tag }}
+          PREV: ${{ steps.tags.outputs.previous }}
+          VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          set -uo pipefail
+          if ! node .github/scripts/release-changelog-bullets.mjs \
+            --tag "$TAG" \
+            --previous "$PREV" \
+            --version "$VERSION" > announcement.txt; then
+            echo "Changelog build failed; announcing without a change list."
+            echo "HQ desktop v${VERSION} is being built now — public in ~20 min once checks pass." > announcement.txt
+          fi
+          echo "--- message ---"
+          cat announcement.txt
+
+      - name: Post it to #hq-dev
+        if: steps.tags.outputs.tag != ''
+        shell: bash
+        run: node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body-file announcement.txt || true
+
   validate:
     name: Validate release tag and version
     runs-on: ubuntu-latest
@@ -1753,3 +1837,48 @@ jobs:
             echo "::error::Released ${RELEASE_TAG} successfully, but could not sync the version commit to main. The GitHub Release and updater artifacts are live and correct; only main is behind. Check that the hq-audit-bot App is installed on this repository and is still a bypass actor on the 'main' ruleset, then run: pnpm run version:app --set-version ${RELEASE_VERSION} && git commit -am 'chore(release): bump app to ${RELEASE_TAG}' && git push origin main"
             exit 1
           fi
+
+  # Close the loop in #hq-dev: shipped, or did not ship. Runs whatever happened
+  # upstream (except a cancellation) so a failed build is reported, not silent.
+  announce-result:
+    name: Announce the outcome in #hq-dev
+    needs: [validate, macos, windows, publish]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      HQ_DM_ANNOUNCE_USERNAME: ${{ secrets.HQ_DM_ANNOUNCE_USERNAME }}
+      HQ_DM_ANNOUNCE_SECRET: ${{ secrets.HQ_DM_ANNOUNCE_SECRET }}
+      HQ_DM_ANNOUNCE_REFRESH_TOKEN: ${{ secrets.HQ_DM_ANNOUNCE_REFRESH_TOKEN }}
+
+    steps:
+      - name: Checkout announcement scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Post the outcome
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          # validate can fail before it produces outputs, so fall back to the ref
+          # that triggered the run rather than announcing a versionless failure.
+          FALLBACK_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          LABEL="${VERSION:-}"
+          if [ -z "$LABEL" ]; then LABEL="${TAG:-$FALLBACK_TAG}"; LABEL="${LABEL#v}"; fi
+          if [ "$PUBLISH_RESULT" = "success" ]; then
+            MESSAGE="HQ desktop v${LABEL} is live"
+          else
+            MESSAGE="v${LABEL} build FAILED — not published. Run: ${RUN_URL}"
+          fi
+          node .github/scripts/hq-dm-announce.mjs --channel hq-dev --body "$MESSAGE" || true
