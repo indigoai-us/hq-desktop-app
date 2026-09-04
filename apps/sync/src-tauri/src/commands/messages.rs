@@ -1050,10 +1050,13 @@ async fn reconcile_after_card_action(base: &str, token: &str) {
     )
     .await
     {
-        Ok(rows) => log(
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::Ran(rows)) => log(
             LOG_TAG,
             &format!("MESSAGES_ACTIVATE_RECONCILE_OK n={}", rows.len()),
         ),
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::SkippedInFlight) => {
+            log(LOG_TAG, "MESSAGES_ACTIVATE_RECONCILE_SKIPPED in_flight")
+        }
         Err(e) => log(LOG_TAG, &format!("MESSAGES_ACTIVATE_RECONCILE_ERR {e}")),
     }
 }

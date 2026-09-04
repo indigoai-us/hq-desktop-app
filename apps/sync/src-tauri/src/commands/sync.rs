@@ -2472,13 +2472,17 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     )
     .await
     {
-        Ok(rows) => log(
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::Ran(rows)) => log(
             "sync",
             &format!(
                 "reconciled {} server-activated companies: {:?}",
                 rows.len(),
                 rows.iter().map(|r| &r.slug).collect::<Vec<_>>()
             ),
+        ),
+        Ok(crate::commands::provision_reconcile::ReconcileOutcome::SkippedInFlight) => log(
+            "sync",
+            "reconcile_server_activated_companies skipped: another pass in flight",
         ),
         Err(e) => log(
             "sync",

@@ -11,6 +11,7 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::commands::provision::{write_company_config, CompanyConfig};
 use crate::commands::run_cli_provision::{
@@ -32,13 +33,44 @@ pub struct ReconciledCompany {
     pub acked: bool,
 }
 
-/// Production wrapper: Path C / initial sync goes through `hq cloud provision company`.
+/// Result of a single-flight reconcile call.
+#[derive(Debug, Clone)]
+pub enum ReconcileOutcome {
+    /// This call held the single-flight slot and ran the pass.
+    Ran(Vec<ReconciledCompany>),
+    /// Another pass was already in flight (from `start_sync` or a card
+    /// action); this call did nothing.
+    SkippedInFlight,
+}
+
+/// Process-wide single-flight flag. `run_card_action` and `start_sync` both
+/// trigger the pass and can overlap; an overlapping pass must skip rather
+/// than write the same company twice or run two initial syncs.
+static RECONCILE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct InFlightGuard;
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        RECONCILE_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+fn try_enter_single_flight() -> Option<InFlightGuard> {
+    RECONCILE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| InFlightGuard)
+}
+
+/// Production wrapper: single-flight; Path C / initial sync goes through
+/// `hq cloud provision company`.
 pub async fn reconcile_server_activated_companies(
     hq_root: &Path,
     vault: &VaultClient,
     vault_api_url: &str,
-) -> Result<Vec<ReconciledCompany>, String> {
-    reconcile_server_activated_companies_with_provisioner(
+) -> Result<ReconcileOutcome, String> {
+    reconcile_single_flight_with_provisioner(
         hq_root,
         vault,
         vault_api_url,
@@ -47,8 +79,36 @@ pub async fn reconcile_server_activated_companies(
     .await
 }
 
-/// Test seam. `provisioner` is invoked only when local files must be created
-/// (server-activated, no local `cloud: true` + config yet).
+/// Single-flight wrapper over the provisioner seam. Returns
+/// `SkippedInFlight` immediately when another pass holds the slot; the slot
+/// is released when the running pass finishes, errors, panics, or is
+/// cancelled.
+pub async fn reconcile_single_flight_with_provisioner<F, Fut>(
+    hq_root: &Path,
+    vault: &VaultClient,
+    vault_api_url: &str,
+    provisioner: F,
+) -> Result<ReconcileOutcome, String>
+where
+    F: Fn(String, Option<String>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<CliProvisionResult, CliProvisionError>>,
+{
+    let Some(_guard) = try_enter_single_flight() else {
+        log(
+            "provision-reconcile",
+            "skipped: another reconcile pass is in flight",
+        );
+        return Ok(ReconcileOutcome::SkippedInFlight);
+    };
+    let rows =
+        reconcile_server_activated_companies_with_provisioner(hq_root, vault, vault_api_url, provisioner)
+            .await?;
+    Ok(ReconcileOutcome::Ran(rows))
+}
+
+/// Unguarded pass (no single-flight). `provisioner` is invoked only when
+/// local files must be created (server-activated, no local `cloud: true` +
+/// config yet). Production goes through `reconcile_server_activated_companies`.
 pub async fn reconcile_server_activated_companies_with_provisioner<F, Fut>(
     hq_root: &Path,
     vault: &VaultClient,
@@ -850,6 +910,87 @@ mod tests {
         assert!(ack_pending_marker_exists(tmp.path(), slug));
         let reqs = failing.received_requests().await.unwrap();
         assert!(reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")));
+    }
+
+    #[tokio::test]
+    async fn concurrent_second_call_is_skipped_while_first_is_in_flight() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let uid = "cmp_acme";
+        write_manifest(tmp.path(), slug);
+        let server = MockServer::start().await;
+        mount_owner_company(&server, uid, slug, Some("hq-vault-cmp-acme"), true, 200).await;
+
+        // The first pass parks inside the provisioner until we release it.
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
+        let release_rx = Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+        let root = tmp.path().to_path_buf();
+        let base = server.uri();
+        let first = tokio::spawn({
+            let entered_tx = entered_tx.clone();
+            let release_rx = release_rx.clone();
+            async move {
+                let vault = VaultClient::new(base, "test-jwt");
+                reconcile_single_flight_with_provisioner(&root, &vault, VAULT_URL, move |s, _n, _r| {
+                    let entered_tx = entered_tx.clone();
+                    let release_rx = release_rx.clone();
+                    async move {
+                        if let Some(tx) = entered_tx.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                        if let Some(rx) = release_rx.lock().await.take() {
+                            let _ = rx.await;
+                        }
+                        Ok(mock_cli_result(&s, "cmp_acme", "hq-vault-cmp-acme"))
+                    }
+                })
+                .await
+            }
+        });
+        entered_rx.await.expect("first pass must reach the provisioner");
+
+        // Second call while the first is parked: returns immediately, skipped.
+        let started = std::time::Instant::now();
+        let second = reconcile_single_flight_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("second pass must not provision") },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(second, ReconcileOutcome::SkippedInFlight));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        release_tx.send(()).unwrap();
+        let first = first.await.unwrap().unwrap();
+        match first {
+            ReconcileOutcome::Ran(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].wrote_local);
+                assert!(rows[0].acked);
+            }
+            other => panic!("first pass must run, got {other:?}"),
+        }
+
+        // Slot released: a fresh call runs again (already provisioned, no ack).
+        let third = reconcile_single_flight_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("provisioner must not run") },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(third, ReconcileOutcome::Ran(_)));
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.iter().filter(|r| r.url.path().ends_with("/activate-cloud/ack")).count(),
+            1,
+            "only the pass that wrote local files acks"
+        );
     }
 
     #[tokio::test]
