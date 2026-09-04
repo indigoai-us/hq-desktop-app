@@ -25,7 +25,18 @@ const HUMAN_ROW = {
   personUid: "prs_someone",
 } as ConversationRow;
 
-function adapter(): PlatformAdapter {
+function adapter(overrides: {
+  selectAgentAvatar?: PlatformAdapter["identity"]["selectAgentAvatar"];
+  listContacts?: PlatformAdapter["messaging"]["listContacts"];
+} = {}): PlatformAdapter {
+  const selectAgentAvatar =
+    overrides.selectAgentAvatar ??
+    (async () =>
+      ok({
+        uid: "agt_izzy",
+        avatarUrl:
+          "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/agents/agt_izzy/hash.png",
+      }));
   return {
     kind: "web",
     isAvailable: () => false,
@@ -38,6 +49,40 @@ function adapter(): PlatformAdapter {
           profile: { avatarBase64: "cHJldmlldw==" },
           slackUpdated: false,
         }),
+      listAvatarPacks: async () =>
+        ok({
+          packs: [
+            {
+              id: "animals",
+              name: "Animals",
+              version: "1.0.0",
+              author: { handle: "lizzy", displayName: "Lizzy" },
+              count: 1,
+            },
+          ],
+          expiresAt: Date.now() + 60_000,
+        }),
+      getAvatarPack: async () =>
+        ok({
+          id: "animals",
+          name: "Animals",
+          version: "1.0.0",
+          author: { handle: "lizzy", displayName: "Lizzy" },
+          count: 1,
+          items: [
+            {
+              id: "v2-dot",
+              name: "Dot",
+              tags: ["rabbit"],
+              thumbUrl:
+                "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/avatar-packs/animals/thumbs/v2-dot.png",
+              fullUrl:
+                "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/avatar-packs/animals/items/v2-dot.png",
+            },
+          ],
+          expiresAt: Date.now() + 60_000,
+        }),
+      selectAgentAvatar,
     },
     agents: {
       getStatus: async () =>
@@ -62,7 +107,8 @@ function adapter(): PlatformAdapter {
       getCompanyTelemetry: async () => ok({ perMember: [] }),
     },
     messaging: {
-      listContacts: async () => ok({ contacts: [] }),
+      listContacts:
+        overrides.listContacts ?? (async () => ok({ contacts: [] })),
       listChannelMembers: async () => ok({ members: [] }),
       fetchDmThread: async () => ok({ messages: [] }),
       sendDm: async () =>
@@ -166,5 +212,38 @@ describe("DesktopApp agent avatar picker", () => {
     expect(host.querySelector('[data-testid="avatar-pack-picker"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="avatar-use-generated"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="avatar-pack-save"]')).not.toBeNull();
+  });
+
+  it("selects a pack item through the adapter and refreshes contacts", async () => {
+    const selectAgentAvatar = vi.fn(async () =>
+      ok({
+        uid: "agt_izzy",
+        avatarUrl:
+          "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/agents/agt_izzy/hash.png",
+      }),
+    );
+    const listContacts = vi.fn(async () => ok([]));
+    await mountApp({ adapter: adapter({ selectAgentAvatar, listContacts }) });
+    (
+      host.querySelector(
+        '[data-testid="agent-edit-profile"]',
+      ) as HTMLButtonElement
+    ).click();
+    await settle(20);
+    const tile = host.querySelector(
+      '[data-item="v2-dot"]',
+    ) as HTMLButtonElement | null;
+    expect(tile).not.toBeNull();
+    tile?.click();
+    await settle();
+    (
+      host.querySelector('[data-testid="avatar-pack-save"]') as HTMLButtonElement
+    ).click();
+    await settle(20);
+    expect(selectAgentAvatar).toHaveBeenCalledWith("agt_izzy", {
+      packId: "animals",
+      itemId: "v2-dot",
+    });
+    expect(listContacts).toHaveBeenCalled();
   });
 });

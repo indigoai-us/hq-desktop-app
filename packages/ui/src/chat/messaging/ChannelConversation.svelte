@@ -20,7 +20,8 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import PromptAttachment from "./PromptAttachment.svelte";
+  import ArtifactCard from "./ArtifactCard.svelte";
+  import type { ChatArtifact } from "./artifact-model.js";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -31,6 +32,8 @@
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
+  import { authorAvatarUrl } from "./agent-avatars";
+  import { presenceStatus } from "../presence-store.svelte.js";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
@@ -47,7 +50,10 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import RichMessageContent from "./RichMessageContent.svelte";
+  import { richContentForMessage } from "./richMessageContent";
   import {
     handleLinkActivate,
     type LinkMenuAnchor,
@@ -113,8 +119,12 @@
     ) => void;
     /** Releases host-created object URLs when an attachment consumer closes. */
     onreleaseurl?: (url: string) => void;
+    /** Host opens a long artifact (details/prompt) in the side pane. */
+    onopenartifact?: (artifact: ChatArtifact) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
+    /** Company scope for presence lookups on message avatars (US-015). */
+    companyUid?: string | null;
     /**
      * Last-reply preview from a prior ReplyPanel fetch. Never required from
      * the list API — omit unless the host already knows author + time.
@@ -187,8 +197,10 @@
     mentionCandidates = [],
     onreply,
     onopenattachment,
+    onopenartifact,
     onreleaseurl,
     vaultCompanyUid = null,
+    companyUid = null,
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
@@ -204,10 +216,12 @@
     draftStorage = null,
   }: Props = $props();
 
-  /** Real avatar for a message's author, when the roster carried one. */
-  function avatarFor(msg: ConversationMessageWire): string | null {
-    const uid = (msg.fromPersonUid ?? "").trim();
-    return (uid && avatarByUid[uid]) || null;
+  /** Presence-store online flag for an actor in this conversation's company. */
+  function actorOnline(actorUid: string | null | undefined): boolean {
+    const uid = (actorUid ?? "").trim();
+    const company = (companyUid ?? vaultCompanyUid ?? "").trim();
+    if (!uid || !company) return false;
+    return presenceStatus(company, uid) === "online";
   }
 
   /** Emit an author-profile-open when we have a personUid to resolve. */
@@ -971,10 +985,23 @@
               <span>{formatDateSeparator(msg.createdAt)}</span>
             </div>
           {/if}
-          {#if systemModel?.kind === "line"}
+          {#if systemModel?.kind === "work_session_card"}
+            <WorkMeshActivityRow
+              card={systemModel}
+              actorLabel={resolveWorkActor(
+                systemModel.principalDisplay ??
+                  systemModel.actorUid ??
+                  messageAuthor(msg),
+                msg,
+              )}
+            />
+          {:else if systemModel?.kind === "line"}
             <SystemEventLine
               model={systemModel}
-              who={systemModel.type === "member_added"
+              who={systemModel.type === "member_added" ||
+              systemModel.type === "work_session_blocked" ||
+              systemModel.type === "work_session_task_status" ||
+              systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
             />
@@ -987,8 +1014,10 @@
                 <IdentityMark
                   kind="agent"
                   label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
                   size="regular"
+                  online={actorOnline(msg.fromPersonUid)}
                 />
               </span>
               <div class="dm-msg-column">
@@ -1017,6 +1046,7 @@
               time={formatTime(msg.createdAt)}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
+            {@const rich = richContentForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -1031,16 +1061,18 @@
                     <IdentityMark
                       kind="agent"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       agentUid={msg.fromPersonUid}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {:else}
                     <IdentityMark
                       kind="person"
                       label={messageAuthor(msg)}
-                      avatarUrl={avatarFor(msg)}
+                      avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {/if}
                 </span>
@@ -1071,10 +1103,11 @@
                   </div>
                 {/if}
                 <div class="dm-bubble">
-                  {#if msg.body?.trim()}
+                  {#if rich.text.trim()}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="dm-bubble-body selectable-text msg-body"
+                      class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
                       onclick={(e) => {
                         if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
@@ -1086,30 +1119,35 @@
                         }
                       }}
                     >
-                      {#if isHeavyMessageBody(msg.body ?? "")}
+                      {#if isHeavyMessageBody(rich.text)}
                         <pre class="dm-plain">{clipMessageBodyForDisplay(
-                            msg.body ?? "",
+                            rich.text,
                           )}</pre>
                       {:else}
                         {@html applyMentionMarkup(
-                          renderMessageBodyMarkdown(msg.body ?? ""),
+                          renderMessageBodyMarkdown(rich.text),
                           storedMentions(msg),
                         )}
                       {/if}
                     </div>
                   {/if}
+                  {#if rich.rich}
+                    <RichMessageContent content={rich.rich} />
+                  {/if}
                   {#if msg.details?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="details"
                       text={msg.details}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   {#if msg.prompt?.trim()}
-                    <PromptAttachment
+                    <ArtifactCard
                       kind="prompt"
                       text={msg.prompt}
                       eventId={msg.eventId}
+                      onopen={onopenartifact}
                     />
                   {/if}
                   <MessageAttachments
@@ -1138,10 +1176,13 @@
                             <IdentityMark
                               kind={a.agent ? "agent" : "person"}
                               label={a.displayName}
-                              avatarUrl={(a.personUid && avatarByUid[a.personUid]) ||
-                                null}
+                              avatarUrl={authorAvatarUrl(
+                                a.personUid,
+                                avatarByUid,
+                              )}
                               agentUid={a.personUid}
                               size="small"
+                              online={actorOnline(a.personUid)}
                             />
                           </span>
                         {/each}
@@ -1601,8 +1642,8 @@
     gap: 8px;
     width: 100%;
     max-width: none;
-    margin-top: 2px;
-    padding: 5px 8px;
+    margin-top: 0;
+    padding: var(--msg-row-pad-y, 1px) 8px;
     border-radius: 6px;
   }
 
@@ -1612,7 +1653,7 @@
   }
 
   .dm-msg-group-start {
-    margin-top: 10px;
+    margin-top: var(--msg-group-gap, 8px);
     padding-top: 2px;
   }
 

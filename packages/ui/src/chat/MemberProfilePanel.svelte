@@ -8,6 +8,7 @@
    * the monogram to a photo when available.
    */
   import type { StatusPersonRow } from "./channel-status-model.js";
+  import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
   import AvatarPackPicker from "../avatars/AvatarPackPicker.svelte";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
@@ -22,6 +23,7 @@
     /** Owner/admin of this agent: show the pack picker. */
     editable?: boolean;
     packs?: AvatarPack[] | null;
+    loadPacks?: () => Promise<AvatarPack[]>;
     saving?: boolean;
     saveError?: string | null;
     onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
@@ -34,6 +36,7 @@
     avatarUrl = null,
     editable = false,
     packs = null,
+    loadPacks,
     saving = false,
     saveError = null,
     onsaveavatar,
@@ -42,7 +45,9 @@
 
   const you = $derived(isSelf(member.personUid, self));
   // Prefer an explicitly-passed photo, else the member row's own avatar.
-  const photo = $derived(avatarUrl || member.avatarUrl || null);
+  const photo = $derived(
+    paintableAvatarSrc(avatarUrl || member.avatarUrl || null),
+  );
   let photoBroken = $state(false);
   const initial = $derived(
     (member.displayName ?? "").trim()
@@ -112,6 +117,7 @@
             agentUid={member.personUid}
             currentSrc={photo}
             {packs}
+            {loadPacks}
             {saving}
             error={saveError}
             onsave={onsaveavatar}

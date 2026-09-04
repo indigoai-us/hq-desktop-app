@@ -7,10 +7,30 @@
  * dropping more `agent-NN.png` files in widens the pool without code changes.
  *
  * Resolution order (applied inside IdentityMark):
- *   1. assigned photo (`avatarUrl` from the roster's avatarByUid map)
- *   2. generated avatar (`agentAvatarFor(agentUid)`)
- *   3. existing ✦ agent-glyph fallback
+ *   1. assigned photo (`authorAvatarUrl` / `avatarByUid` from roster,
+ *      contacts, or the signed-in profile) — only CSP-paintable URLs
+ *      (bundled/local/blob/data, or hq-pro `/members` photos on the
+ *      marketplace assets host). Arbitrary http(s) is dropped.
+ *   2. generated avatar (`agentAvatarFor(agentUid)`) — agents only
+ *   3. initials (humans) / ✦ glyph (agents)
  */
+
+import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
+
+/**
+ * Presigned photo for a message author (human or agent), when the host map
+ * has one AND the packaged CSP can paint it. Call this from the template
+ * with `avatarByUid` so rows re-render when the roster/contacts/self
+ * profile land after first paint.
+ */
+export function authorAvatarUrl(
+  uid: string | null | undefined,
+  avatarByUid?: Record<string, string> | null,
+): string | null {
+  const id = (uid ?? "").trim();
+  if (!id) return null;
+  return paintableAvatarSrc(avatarByUid?.[id]);
+}
 
 // `import.meta.glob` is a Vite compile-time construct. It is typed by
 // vite/client where those types are loaded (apps/sync); packages/ui's own
@@ -19,9 +39,12 @@
 // Call it unconditionally: a `typeof` guard on the glob
 // survives Vite's rewrite (Vite only rewrites the *call*) and evaluates to
 // false in the browser, so the production bundle would ship an empty set.
+// Keep these at 512px JPEG: Vite dist is embedded in each macOS universal
+// slice, and the previous 1536px PNGs were ~12 MB on disk (~24 MB in the
+// fat binary) on their own.
 const modules: Record<string, unknown> =
   // @ts-ignore -- vite/client typing not loaded in @hq/ui's typecheck
-  import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg}", {
+  import.meta.glob("../../assets/agent-avatars/agent-*.{png,svg,jpg,jpeg}", {
     eager: true,
     query: "?url",
     import: "default",

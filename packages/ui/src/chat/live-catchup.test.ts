@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  channelActivityFromTimeline,
   dmActivityFromInboxPage,
   dmActivityFromThreadsPage,
   isMissingEndpointFailure,
@@ -252,6 +253,90 @@ describe("dmActivityFromTimeline", () => {
       ]),
     ).toBeNull();
     expect(dmActivityFromTimeline("", [{ createdAt: "2026-09-01T21:38:07.000Z" }])).toBeNull();
+  });
+});
+
+describe("channelActivityFromTimeline", () => {
+  it("keeps the newest createdAt across mixed inbound and outbound messages", () => {
+    expect(
+      channelActivityFromTimeline("chn_hq_dev", [
+        {
+          createdAt: "2026-08-18T16:09:15.946Z",
+          fromPersonUid: "prs_other",
+          eventId: "evt_old",
+        },
+        {
+          createdAt: "2026-09-02T03:19:00.000Z",
+          fromPersonUid: "prs_me",
+          eventId: "evt_own",
+          body: "Fleet agents incident update",
+        },
+        {
+          createdAt: "2026-09-01T21:38:07.000Z",
+          fromPersonUid: "prs_other",
+          eventId: "evt_in",
+        },
+      ]),
+    ).toEqual({
+      channelId: "chn_hq_dev",
+      lastMessageAt: "2026-09-02T03:19:00.000Z",
+      fromPersonUid: "prs_me",
+      eventId: "evt_own",
+    });
+  });
+
+  it("counts a message with an empty body", () => {
+    expect(
+      channelActivityFromTimeline("chn_proj", [
+        {
+          createdAt: "2026-08-18T12:00:00.000Z",
+          fromPersonUid: "prs_other",
+          eventId: "evt_old",
+          body: "Hey",
+        },
+        {
+          createdAt: "2026-09-02T15:00:00.000Z",
+          fromPersonUid: "prs_me",
+          eventId: "evt_card",
+          body: "",
+        },
+      ]),
+    ).toEqual({
+      channelId: "chn_proj",
+      lastMessageAt: "2026-09-02T15:00:00.000Z",
+      fromPersonUid: "prs_me",
+      eventId: "evt_card",
+    });
+  });
+
+  it("ignores messages whose createdAt is not a non-empty string", () => {
+    expect(
+      channelActivityFromTimeline("chn_hq_dev", [
+        { createdAt: 1_725_000_000_000 },
+        { createdAt: "" },
+        { createdAt: null },
+        {},
+        { createdAt: "2026-09-02T03:19:00.000Z", fromPersonUid: "prs_me" },
+      ]),
+    ).toEqual({
+      channelId: "chn_hq_dev",
+      lastMessageAt: "2026-09-02T03:19:00.000Z",
+      fromPersonUid: "prs_me",
+    });
+  });
+
+  it("returns null for an empty list or a blank channel id", () => {
+    expect(channelActivityFromTimeline("chn_hq_dev", [])).toBeNull();
+    expect(
+      channelActivityFromTimeline("  ", [
+        { createdAt: "2026-09-02T03:19:00.000Z" },
+      ]),
+    ).toBeNull();
+    expect(
+      channelActivityFromTimeline("", [
+        { createdAt: "2026-09-02T03:19:00.000Z" },
+      ]),
+    ).toBeNull();
   });
 });
 

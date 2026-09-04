@@ -65,6 +65,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
+            custom_banner: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,
@@ -80,6 +81,11 @@ mod tests {
             widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
+            system_notifications: None,
+            native_notify_direct_messages: None,
+            native_notify_shares: None,
+            native_notify_meetings: None,
+            native_notify_only_when_unfocused: None,
         }
     }
 
@@ -103,6 +109,7 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+            custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
             auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
@@ -128,6 +135,15 @@ mod tests {
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
             // Retired. Always None so Settings cannot resurrect the classic shell.
             hq_work_handoff: None,
+            system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
+            native_notify_direct_messages: Some(
+                prefs.native_notify_direct_messages.unwrap_or(true),
+            ),
+            native_notify_shares: Some(prefs.native_notify_shares.unwrap_or(true)),
+            native_notify_meetings: Some(prefs.native_notify_meetings.unwrap_or(true)),
+            native_notify_only_when_unfocused: Some(
+                prefs.native_notify_only_when_unfocused.unwrap_or(true),
+            ),
         }
     }
 
@@ -200,6 +216,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(false),
             dm_notifications: Some(false),
+            custom_banner: Some(false),
             cli_auto_update: Some(false),
             auto_update: Some(false),
             staging_channel: Some(false),
@@ -215,6 +232,11 @@ mod tests {
             widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
+            system_notifications: Some(true),
+            native_notify_direct_messages: Some(false),
+            native_notify_shares: Some(false),
+            native_notify_meetings: Some(true),
+            native_notify_only_when_unfocused: Some(false),
         };
 
         let result = apply_defaults(prefs);
@@ -239,7 +261,7 @@ mod tests {
         );
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
-        // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
+        // `util::release_channel::tests::non_indigo_beta_pref_is_honored`.
         assert_eq!(result.release_channel, Some("alpha".to_string()));
         // explicit widget_enabled false + display pass through
         assert_eq!(result.widget_enabled, Some(false));
@@ -270,6 +292,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            custom_banner: Some(true),
             cli_auto_update: Some(true),
             auto_update: Some(true),
             staging_channel: Some(true),
@@ -285,6 +308,11 @@ mod tests {
             widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
+            system_notifications: Some(false),
+            native_notify_direct_messages: Some(true),
+            native_notify_shares: Some(true),
+            native_notify_meetings: Some(false),
+            native_notify_only_when_unfocused: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

@@ -708,3 +708,126 @@ describe("ChatSidebar resolves a name for a bare-uid DM peer", () => {
     expect(asked).toEqual(["prs_ghost"]);
   });
 });
+
+describe("ChatSidebar channel rail stamp on the owner's own send", () => {
+  /** A channel last active 10 days ago is folded away under "Last week". */
+  const staleRow: ChannelDirectoryRow = {
+    channelId: "chn_hq_dev",
+    type: "company",
+    scope: "company",
+    companyUid: "cmp_indigo",
+    name: "hq-dev",
+    lastActivityAt: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+  };
+
+  function sectionLabelFor(id: string): string {
+    const row = host.querySelector(`[data-conversation-id="${id}"]`);
+    const list = row?.closest(".chat-list");
+    const label = list?.previousElementSibling;
+    return label?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  }
+
+  async function mountStale(): Promise<ReturnType<typeof createChatWakeBus>> {
+    const wakes = createChatWakeBus();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_1",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: [staleRow],
+          }),
+        }),
+        seedDirectory: [staleRow],
+        selectedId: "ch:chn_hq_dev",
+        wakes,
+        self: { uid: "prs_stefan" },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-last-week"]')).toBeTruthy();
+    });
+    // The bug: the channel is folded away, not under TODAY.
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_hq_dev"]'),
+    ).toBeNull();
+    return wakes;
+  }
+
+  it("the owner's own send moves the channel to TODAY with no unread badge", async () => {
+    const wakes = await mountStale();
+
+    wakes.emit("channel:new-message", {
+      channelId: "chn_hq_dev",
+      eventId: "evt_own",
+      createdAt: new Date().toISOString(),
+      fromPersonUid: "prs_stefan",
+    });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_hq_dev"]'),
+      ).toBeTruthy();
+    });
+    expect(sectionLabelFor("ch:chn_hq_dev")).toMatch(/^TODAY/);
+    expect(host.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+  });
+
+  it("an inbound message moves the channel to TODAY with an unread badge", async () => {
+    const wakes = await mountStale();
+
+    // Another row is selected, so the inbound wake is allowed to bump unread.
+    wakes.emit("channel:new-message", {
+      channelId: "chn_hq_dev",
+      eventId: "evt_in",
+      createdAt: new Date().toISOString(),
+      fromPersonUid: "prs_jacob",
+      unread: 1,
+      absoluteUnread: true,
+    });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_hq_dev"]'),
+      ).toBeTruthy();
+    });
+    expect(sectionLabelFor("ch:chn_hq_dev")).toMatch(/^TODAY/);
+    expect(
+      host
+        .querySelector('[data-testid="chat-unread-badge"]')
+        ?.textContent?.trim(),
+    ).toBe("1");
+  });
+
+  it("a stale directory snapshot cannot rewind the channel back out of TODAY", async () => {
+    const wakes = await mountStale();
+
+    wakes.emit("channel:new-message", {
+      channelId: "chn_hq_dev",
+      eventId: "evt_own",
+      createdAt: new Date().toISOString(),
+      fromPersonUid: "prs_stefan",
+    });
+    await tick();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_hq_dev"]'),
+      ).toBeTruthy();
+    });
+
+    // The directory still carries the 10-day-old stamp.
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    await tick();
+    await tick();
+
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_hq_dev"]'),
+      "the locally observed stamp wins over the older snapshot",
+    ).toBeTruthy();
+    expect(sectionLabelFor("ch:chn_hq_dev")).toMatch(/^TODAY/);
+  });
+});

@@ -56,8 +56,28 @@ describe('DESKTOP-009: team activity and access', () => {
     // Pass through real role when present; never invent admin/owner/live status.
     expect(adapter).toContain('role?: string');
     expect(adapter).toContain("typeof r.role === 'string'");
+    // Team panel must not invent presence chrome; chat presence-store wiring
+    // (presenceStatus / presence-store / PresenceStore) is permitted in chat
+    // packages, not on this panel.
     expect(panel).not.toMatch(/\bisOnline\b|\blastSeen\b|\bpresence\b|\bonline\b/i);
-    expect(adapter).not.toMatch(/\bisOnline\b|\blastSeen\b|\bpresence\b|\bonline\b/i);
+    // Adapter TeamMember shape still forbids invented presence field names.
+    expect(adapter).not.toMatch(/\bisOnline\s*[?:]/);
+    expect(adapter).not.toMatch(/\blastSeen\s*[?:]/);
+    expect(adapter).not.toMatch(/\bonline\s*[?:]/);
+    expect(adapter).not.toMatch(/\bpresence\s*[?:]/);
+  });
+
+  it('forbids inventing presence from timestamps or session/event counts', () => {
+    // lastActivityAt / events / sessions must not be mapped into online flags.
+    expect(adapter).not.toMatch(/lastActivityAt[\s\S]{0,80}\bonline\b/i);
+    expect(adapter).not.toMatch(/\bonline\b[\s\S]{0,80}lastActivityAt/i);
+    expect(adapter).not.toMatch(
+      /\bonline\b\s*[:=][^=]*\b(events|sessions|distinctSessions|lastActivityAt|lastSeen)\b/i,
+    );
+    expect(adapter).not.toMatch(
+      /\b(events|sessions|distinctSessions|lastActivityAt|lastSeen)\b[^=]{0,40}[:=][^=]*\bonline\b/i,
+    );
+    expect(adapter).toMatch(/Never invent live status|never derived from timestamps/i);
   });
 
   it('shows top skills and active projects when present', () => {

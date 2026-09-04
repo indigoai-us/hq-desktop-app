@@ -11,7 +11,7 @@
 
 import {
   isPortfolioLiveStatus,
-  sessionMatchesProject,
+  sessionHasServerBinding,
   type PortfolioSessionRef,
 } from "../chat/portfolio-session";
 import { extractStoryId } from "../chat/channel-status-model";
@@ -196,42 +196,27 @@ export function boardCardLabel(story: BoardStoryInput): string {
 /**
  * Whether a live session is matched to a specific story.
  *
- * Match when:
- * - `session.storyId` equals the story id, or
- * - a story id extracted from session fields equals the story id, and
- *   (when a project is provided) `sessionMatchesProject` holds — project match
- *   is skipped for an explicit `storyId` hit so cross-cwd signals still count.
+ * US-015: match only by explicit `storyId` / `taskId` (normalized). Never
+ * grep cwd. Local Sessions-app rows also require a server binding.
+ * `project` is accepted for call-site compatibility and ignored.
  */
 export function sessionMatchesStory(
   session: BoardSessionInput,
   storyId: string,
-  project?: BoardProjectInput | null,
+  _project?: BoardProjectInput | null,
 ): boolean {
   if (!isPortfolioLiveStatus(session.status)) return false;
+  if (!sessionHasServerBinding(session)) return false;
   const target = normalizeBoardStoryId(storyId);
   if (!target) return false;
 
-  const explicit = normalizeBoardStoryId(session.storyId);
-  if (explicit && explicit === target) return true;
+  const explicitStory = normalizeBoardStoryId(session.storyId);
+  if (explicitStory && explicitStory === target) return true;
 
-  const extracted = extractStoryId(
-    session.storyId,
-    session.project,
-    session.cwd,
-    session.source,
-  );
-  if (!extracted || extracted !== target) return false;
+  const explicitTask = normalizeBoardStoryId(session.taskId);
+  if (explicitTask && explicitTask === target) return true;
 
-  if (project) {
-    return sessionMatchesProject(session, {
-      id: project.id,
-      name: project.name ?? project.title ?? project.id,
-      title: project.title ?? project.name ?? project.id,
-      prdPath: project.prdPath ?? "",
-      company: project.company ?? "",
-    });
-  }
-  return true;
+  return false;
 }
 
 /** First live session matched to a story, preferring `running` over awaiting. */

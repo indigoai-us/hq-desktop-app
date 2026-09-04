@@ -1,4 +1,5 @@
 import type {
+  MeshBoardStoryPanel,
   MeshBoardTab,
   MeshCachedChannel,
   MeshCachedMessage,
@@ -103,7 +104,125 @@ function criteriaOf(story: MeshStory): { text: string; done: boolean }[] {
   });
 }
 
-export function projectViewToBoard(project: MeshProjectView): MeshBoardTab {
+/** Live-read session row used when projecting Board activity (US-015). */
+export interface BoardLiveSessionActivity {
+  sessionId: string;
+  actorUid?: string;
+  displayName?: string;
+  harness?: string | null;
+  taskId?: string | null;
+  turnCount?: number | null;
+  lastTurnAt?: string | null;
+  actorType?: string | null;
+}
+
+/** Pre-formatted task_status change for a story panel activity list. */
+export interface BoardTaskStatusChange {
+  id: string;
+  taskId: string;
+  at: string;
+  /** Already formatted, e.g. "Corey moved US-015 to in_progress". */
+  text: string;
+}
+
+export interface ProjectViewToBoardOptions {
+  liveSessions?: BoardLiveSessionActivity[];
+  taskStatusChanges?: BoardTaskStatusChange[];
+  /** Injectable clock; reserved for relative formatting callers. */
+  nowMs?: number;
+}
+
+function normalizeActivityTaskId(raw: string | null | undefined): string {
+  return (raw ?? "").trim().toUpperCase();
+}
+
+/** HH:MM from an ISO timestamp, else the raw string, else "". */
+function activityAtLabel(iso: string | null | undefined): string {
+  const t = (iso ?? "").trim();
+  if (!t) return "";
+  if (t.includes("T") && t.length >= 16) {
+    const slice = t.slice(11, 16);
+    if (slice) return slice;
+  }
+  return t;
+}
+
+function formatLiveSessionActivityText(
+  session: BoardLiveSessionActivity,
+): string {
+  const who =
+    (session.displayName ?? "").trim() || (session.actorUid ?? "").trim();
+  const harness = (session.harness ?? "").trim();
+  const turns =
+    typeof session.turnCount === "number" && Number.isFinite(session.turnCount)
+      ? `${Math.max(0, Math.floor(session.turnCount))} turns`
+      : "";
+  return [who, harness, turns].filter(Boolean).join(" · ");
+}
+
+/**
+ * Build story-panel activity from live-read sessions + task_status rows.
+ * Falls back to a single "Updated" stub only when neither source has rows
+ * for the story and `updatedAt` is present (preserves prior callers).
+ */
+export function boardActivityFromLive(
+  storyId: string,
+  options?: ProjectViewToBoardOptions | null,
+  updatedAt?: string | null,
+): MeshBoardStoryPanel["activity"] {
+  const target = normalizeActivityTaskId(storyId);
+  const rows: Array<
+    MeshBoardStoryPanel["activity"][number] & { sortAt: number }
+  > = [];
+
+  for (const session of options?.liveSessions ?? []) {
+    if (!target || normalizeActivityTaskId(session.taskId) !== target) {
+      continue;
+    }
+    const text = formatLiveSessionActivityText(session);
+    if (!text) continue;
+    const atRaw = (session.lastTurnAt ?? "").trim();
+    rows.push({
+      id: session.sessionId,
+      at: activityAtLabel(atRaw) || atRaw,
+      text,
+      sortAt: Date.parse(atRaw) || 0,
+    });
+  }
+
+  for (const change of options?.taskStatusChanges ?? []) {
+    if (!target || normalizeActivityTaskId(change.taskId) !== target) {
+      continue;
+    }
+    const atRaw = (change.at ?? "").trim();
+    rows.push({
+      id: change.id,
+      at: activityAtLabel(atRaw) || atRaw,
+      text: change.text,
+      sortAt: Date.parse(atRaw) || 0,
+    });
+  }
+
+  if (rows.length === 0) {
+    const stamp = (updatedAt ?? "").trim();
+    if (!stamp) return [];
+    return [
+      {
+        id: "updated",
+        at: stamp.slice(11, 16) || stamp,
+        text: "Updated",
+      },
+    ];
+  }
+
+  rows.sort((a, b) => a.sortAt - b.sortAt);
+  return rows.map(({ id, at, text }) => ({ id, at, text }));
+}
+
+export function projectViewToBoard(
+  project: MeshProjectView,
+  options?: ProjectViewToBoardOptions,
+): MeshBoardTab {
   const columns = MESH_STORY_STAGES.map((id) => ({
     id,
     title: COLUMN_TITLES[id],
@@ -135,15 +254,11 @@ export function projectViewToBoard(project: MeshProjectView): MeshBoardTab {
       },
       acceptanceCriteria: ac,
       acCountLabel: ac.length ? `${doneCount} / ${ac.length}` : "",
-      activity: project.updatedAt
-        ? [
-            {
-              id: "updated",
-              at: project.updatedAt.slice(11, 16) || project.updatedAt,
-              text: "Updated",
-            },
-          ]
-        : [],
+      activity: boardActivityFromLive(
+        story.id,
+        options,
+        project.updatedAt ?? null,
+      ),
     };
   }
 

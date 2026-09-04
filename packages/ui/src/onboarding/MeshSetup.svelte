@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * Shared Install + Sync card (desktop MeshUpgrade + web first-access).
-   * Platform-pure: the host owns apply.sh / doctor and feeds progress in.
+   * Platform-pure: the host owns `hq mesh daemon install` and feeds progress in.
    */
   import {
     MESH_BODY,

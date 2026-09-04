@@ -267,6 +267,10 @@ function mergeDuplicateMember(
  * labels and top skills. Production uses `members` with top-level `skills`,
  * `events`, and `distinctSessions`; the legacy console/harness shape used
  * `perMember` with a nested `totals` object.
+ *
+ * Presence is never derived here: `online` / `isOnline` / `lastSeen` / presence
+ * from timestamps or event counts belong to the presence store (US-015), not
+ * team telemetry.
  */
 export function normalizeCompanyTeamTelemetry(
   payload: unknown,

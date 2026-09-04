@@ -7,7 +7,7 @@
 
 import {
   isPortfolioLiveStatus,
-  sessionMatchesProject,
+  sessionHasServerBinding,
   type PortfolioSessionRef,
 } from "./portfolio-session";
 
@@ -74,6 +74,35 @@ export interface StatusSessionInput extends PortfolioSessionRef {
 }
 
 /**
+ * Presence snapshot entry for one actor (from PresenceStore / live read).
+ * Online is never inferred from timestamps — only from this map.
+ */
+export interface StatusPresenceInput {
+  actorUid: string;
+  status: "online" | "offline";
+  actorType?: "human" | "agent";
+}
+
+/**
+ * One live-read session row (GET /v1/work-mesh/live) scoped to the channel's
+ * project. Prefer this over local Sessions-app observations.
+ */
+export interface LiveReadSessionInput {
+  sessionId: string;
+  actorUid: string;
+  actorType?: "human" | "agent" | string | null;
+  displayName?: string | null;
+  harness?: string | null;
+  taskId?: string | null;
+  turnCount?: number | null;
+  status?: string | null;
+  lastTurnAt?: string | null;
+  startedAt?: string | null;
+  progressPercent?: number | null;
+  blockedReason?: string | null;
+}
+
+/**
  * One server work-session summary row (US-010), as returned by
  * `GET /v1/work-mesh/work-sessions?companyUid=&projectId=` (hq-pro US-006).
  * Sessions NEVER auto-expire server-side — `active` is the honest "who is (or
@@ -99,11 +128,25 @@ export interface ServerWorkSessionInput {
 export interface BuildChannelStatusInput {
   project: StatusProjectInput;
   prd?: StatusPrdInput | null;
+  /**
+   * Local Sessions-app observations. US-015: only rows with a server binding
+   * (`serverSessionId`) are shown — never cwd-matched guesses.
+   */
   sessions?: readonly StatusSessionInput[];
   members?: readonly StatusMemberInput[];
   companyLabel?: string | null;
-  /** Server-truth active sessions for the popover (US-010). */
+  /** Server-truth active sessions for the popover (US-010 / legacy work-sessions). */
   serverSessions?: readonly ServerWorkSessionInput[];
+  /**
+   * Live-read sessions already filtered to this project's projectId (US-015).
+   * Preferred source for active session cards and live participants.
+   */
+  liveSessions?: readonly LiveReadSessionInput[];
+  /**
+   * Presence store snapshot for the company (US-014/015). Drives online dots;
+   * never invent presence from last-activity timestamps.
+   */
+  presence?: readonly StatusPresenceInput[];
   /** Clock for relative last-activity labels; injectable for tests. */
   nowMs?: number;
 }
@@ -165,19 +208,24 @@ export interface StatusPersonRow {
   role: string | null;
   /** For AGENTS list: running | idle (collapsed from live taxonomy). */
   statusIcon: "running" | "idle";
+  /**
+   * Connection presence from the presence store only (US-015). Never derived
+   * from last-activity timestamps.
+   */
+  online: boolean;
 }
 
 /**
- * One rendered active-session row for the status popover (US-010):
- * principal, story/context, optional progress percent, and an honest
- * relative last-event timestamp ("last activity 42m ago").
+ * One rendered active-session row for the status popover (US-010 / US-015):
+ * principal, story/context, harness, turn count, and an honest relative
+ * last-event timestamp ("last activity 42m ago").
  */
 export interface ActiveSessionRow {
   id: string;
-  /** Principal display: the owning prs_* / agt_* uid. */
+  /** Principal display: the owning prs_* / agt_* uid or display name. */
   principal: string;
   principalKind: "human" | "agent";
-  /** Story/context: extracted US-xxx id, else harness, else summary. */
+  /** Story/context: taskId / extracted US-xxx id, else harness, else summary. */
   context: string | null;
   /** Clamped integer 0–100, or null when the session reported none. */
   percent: number | null;
@@ -185,6 +233,11 @@ export interface ActiveSessionRow {
    * signal that keeps a quiet open session reading honestly. */
   lastActivityLabel: string;
   blockedReason: string | null;
+  harness: string | null;
+  taskId: string | null;
+  turnCount: number | null;
+  /** Presence-store online flag for the owning actor (never from timestamps). */
+  online: boolean;
 }
 
 export interface ChannelStatusModel {
@@ -389,13 +442,10 @@ export function liveAgentRowFromSession(
   firstOpenStoryId: string | null,
 ): LiveAgentStatusRow {
   const status = normalizeAgentStatus(session.status);
+  // US-015: never grep cwd for US-\d+ — only explicit story/task ids + project.
   const storyId =
-    extractStoryId(
-      session.storyId,
-      session.project,
-      session.cwd,
-      session.source,
-    ) || firstOpenStoryId;
+    extractStoryId(session.storyId, session.taskId, session.project) ||
+    firstOpenStoryId;
   const progress =
     typeof session.progressPercent === "number" &&
     Number.isFinite(session.progressPercent)
@@ -415,8 +465,11 @@ export function liveAgentRowFromSession(
     [session.tool, session.model].filter(Boolean).join(" · ") ||
     session.project ||
     "Agent";
+  const boundId = (session.serverSessionId ?? "").trim();
   return {
-    id: `${session.tool || "agent"}:${session.cwd || session.project || displayName}:${session.startedAt || ""}`,
+    id:
+      boundId ||
+      `${session.tool || "agent"}:${session.project || displayName}:${session.startedAt || ""}`,
     label,
     storyId,
     progressPercent: progress,
@@ -424,6 +477,76 @@ export function liveAgentRowFromSession(
     tool: session.tool ?? null,
     displayName,
   };
+}
+
+function liveAgentRowFromLiveSession(
+  session: LiveReadSessionInput,
+  rollup: StoryRollup,
+  firstOpen: string | null,
+): LiveAgentStatusRow {
+  const raw = (session.status ?? "").toLowerCase();
+  const status: AgentLiveStatus =
+    raw === "active" || raw === "open" || raw === "running"
+      ? "running"
+      : raw === "idle"
+        ? "idle"
+        : raw === "ended" || raw === "done"
+          ? "ended"
+          : "awaiting_input";
+  const storyId =
+    extractStoryId(session.taskId) || firstOpen;
+  const progress =
+    typeof session.progressPercent === "number" &&
+    Number.isFinite(session.progressPercent)
+      ? Math.max(0, Math.min(100, Math.round(session.progressPercent)))
+      : rollup.percent;
+  const verb =
+    status === "running"
+      ? "running"
+      : status === "awaiting_input"
+        ? "awaiting input"
+        : status === "ended"
+          ? "ended"
+          : "idle";
+  const storyPart = storyId ? ` · ${storyId}` : "";
+  const displayName =
+    optionalString(session.displayName) ||
+    optionalString(session.harness) ||
+    optionalString(session.actorUid) ||
+    "Agent";
+  return {
+    id: session.sessionId,
+    label: `Agent ${verb}${storyPart} · ${progress}%`,
+    storyId,
+    progressPercent: progress,
+    status,
+    tool: optionalString(session.harness),
+    displayName,
+  };
+}
+
+/** Lookup presence status; absent actors are offline (fail closed). */
+export function presenceOnlineFor(
+  presence: readonly StatusPresenceInput[] | null | undefined,
+  actorUid: string | null | undefined,
+): boolean {
+  const uid = (actorUid ?? "").trim();
+  if (!uid || !presence?.length) return false;
+  const hit = presence.find((p) => p.actorUid === uid);
+  return hit?.status === "online";
+}
+
+/** True when any presence entry for the given actor set is online. */
+export function anyParticipantOnline(
+  presence: readonly StatusPresenceInput[] | null | undefined,
+  actorUids: readonly string[],
+): boolean {
+  if (!presence?.length || actorUids.length === 0) return false;
+  const wanted = new Set(actorUids.map((u) => u.trim()).filter(Boolean));
+  for (const entry of presence) {
+    if (wanted.has(entry.actorUid) && entry.status === "online") return true;
+  }
+  return false;
 }
 
 /** First non-passing story id from the PRD (for labeling live agents). */
@@ -481,6 +604,7 @@ function serverPrincipalKind(
 export function buildActiveSessionRows(
   sessions: readonly ServerWorkSessionInput[] | null | undefined,
   nowMs: number = Date.now(),
+  presence?: readonly StatusPresenceInput[] | null,
 ): ActiveSessionRow[] {
   return (sessions ?? []).map((s, index) => {
     const principal = optionalString(s.ownerUid) ?? "Unknown";
@@ -505,12 +629,72 @@ export function buildActiveSessionRows(
       percent,
       lastActivityLabel: formatLastActivity(s.lastActivityAt, nowMs),
       blockedReason: optionalString(s.blockedReason),
+      harness: optionalString(s.harness),
+      taskId: extractStoryId(summary),
+      turnCount: null,
+      online: presenceOnlineFor(presence, s.ownerUid),
+    };
+  });
+}
+
+function livePrincipalKind(
+  session: LiveReadSessionInput,
+): "human" | "agent" {
+  const declared = (session.actorType ?? "").trim().toLowerCase();
+  if (declared === "agent") return "agent";
+  if (declared === "human" || declared === "person") return "human";
+  const uid = (session.actorUid ?? "").trim().toLowerCase();
+  return uid.startsWith("agt_") || uid.startsWith("agent:") ? "agent" : "human";
+}
+
+/**
+ * Map live-read sessions into popover rows (US-015). Prefer these over legacy
+ * work-sessions and local Sessions-app observations.
+ */
+export function buildLiveReadSessionRows(
+  sessions: readonly LiveReadSessionInput[] | null | undefined,
+  nowMs: number = Date.now(),
+  presence?: readonly StatusPresenceInput[] | null,
+): ActiveSessionRow[] {
+  return (sessions ?? []).map((s, index) => {
+    const principal =
+      optionalString(s.displayName) ??
+      optionalString(s.actorUid) ??
+      "Unknown";
+    const taskId = optionalString(s.taskId);
+    const harness = optionalString(s.harness);
+    const context = taskId ?? harness;
+    const rawPercent = s.progressPercent;
+    const percent =
+      typeof rawPercent === "number" && Number.isFinite(rawPercent)
+        ? Math.max(0, Math.min(100, Math.round(rawPercent)))
+        : null;
+    const turns =
+      typeof s.turnCount === "number" && Number.isFinite(s.turnCount)
+        ? Math.max(0, Math.floor(s.turnCount))
+        : null;
+    return {
+      id: optionalString(s.sessionId) ?? `live-session-${index}`,
+      principal,
+      principalKind: livePrincipalKind(s),
+      context,
+      percent,
+      lastActivityLabel: formatLastActivity(s.lastTurnAt ?? s.startedAt, nowMs),
+      blockedReason: optionalString(s.blockedReason),
+      harness,
+      taskId,
+      turnCount: turns,
+      online: presenceOnlineFor(presence, s.actorUid),
     };
   });
 }
 
 /**
  * Build the full status popover model.
+ *
+ * US-015: live participants come from the presence store + live-read sessions
+ * for the channel's project. Local Sessions-app rows appear only when they
+ * carry a server binding. Cwd substring matching is gone.
  */
 export function buildChannelStatusModel(
   input: BuildChannelStatusInput,
@@ -518,33 +702,45 @@ export function buildChannelStatusModel(
   const prd = input.prd ?? null;
   const rollup = computeStoryRollup(input.project, prd);
   const openStory = firstOpenStoryId(prd);
+  const presence = input.presence ?? [];
 
-  const matchedSessions = (input.sessions ?? []).filter((session) =>
-    sessionMatchesProject(session, {
-      id: input.project.id,
-      name: input.project.name ?? input.project.title ?? input.project.id,
-      title: input.project.title ?? input.project.name ?? input.project.id,
-      prdPath: input.project.prdPath ?? prd?.prdPath ?? "",
-      company: input.project.company ?? "",
-    }),
+  const liveReadSessions = input.liveSessions ?? [];
+  const boundLocalSessions = (input.sessions ?? []).filter((session) =>
+    sessionHasServerBinding(session),
   );
 
-  const liveAgents = matchedSessions
+  const liveAgentsFromLive = liveReadSessions
+    .filter((s) => {
+      const st = (s.status ?? "").toLowerCase();
+      return st === "active" || st === "open" || st === "running" || st === "idle";
+    })
+    .filter((s) => {
+      const kind = livePrincipalKind(s);
+      return kind === "agent";
+    })
+    .map((s) => liveAgentRowFromLiveSession(s, rollup, openStory));
+
+  const liveAgentsFromLocal = boundLocalSessions
     .filter((s) => isPortfolioLiveStatus(s.status))
     .map((s) => liveAgentRowFromSession(s, rollup, openStory));
 
-  // Status map for agent roster rows (running if any live session matches name/uid).
+  // Prefer live-read agent cards; fall back to bound local sessions.
+  const liveAgents =
+    liveAgentsFromLive.length > 0 ? liveAgentsFromLive : liveAgentsFromLocal;
+
   const liveByKey = new Set<string>();
-  for (const s of matchedSessions) {
+  for (const s of liveReadSessions) {
+    if (s.actorUid) liveByKey.add(s.actorUid);
+  }
+  for (const s of boundLocalSessions) {
     if (!isPortfolioLiveStatus(s.status)) continue;
     if (s.personUid) liveByKey.add(s.personUid);
-    liveByKey.add((s.tool || "").toLowerCase());
-    liveByKey.add((s.project || "").toLowerCase());
   }
 
   const humans: StatusPersonRow[] = [];
   const agents: StatusPersonRow[] = [];
   for (const m of input.members ?? []) {
+    const online = presenceOnlineFor(presence, m.personUid);
     const row: StatusPersonRow = {
       personUid: m.personUid,
       displayName: memberDisplayName(m),
@@ -553,11 +749,10 @@ export function buildChannelStatusModel(
       description: m.description?.trim() || null,
       role: m.role?.trim() || null,
       statusIcon: "idle",
+      online,
     };
     if (isAgentMember(m)) {
-      const running =
-        liveByKey.has(m.personUid) ||
-        liveByKey.has(memberDisplayName(m).toLowerCase());
+      const running = liveByKey.has(m.personUid);
       row.statusIcon = running ? "running" : "idle";
       agents.push(row);
     } else {
@@ -565,9 +760,38 @@ export function buildChannelStatusModel(
     }
   }
 
-  // Agents present only as live sessions (not yet in roster) still appear under AGENTS.
+  // Actors present only via live read (not yet in roster) still appear.
+  for (const session of liveReadSessions) {
+    const uid = (session.actorUid ?? "").trim();
+    if (!uid) continue;
+    const kind = livePrincipalKind(session);
+    const list = kind === "agent" ? agents : humans;
+    if (list.some((a) => a.personUid === uid)) continue;
+    const online = presenceOnlineFor(presence, uid);
+    list.push({
+      personUid: uid,
+      displayName:
+        optionalString(session.displayName) ||
+        optionalString(session.harness) ||
+        uid,
+      email: null,
+      avatarUrl: null,
+      description: null,
+      role: kind === "agent" ? "agent" : "member",
+      statusIcon:
+        kind === "agent" &&
+        ["active", "open", "running"].includes(
+          (session.status ?? "").toLowerCase(),
+        )
+          ? "running"
+          : "idle",
+      online,
+    });
+  }
+
   for (const live of liveAgents) {
     if (agents.some((a) => a.displayName === live.displayName)) continue;
+    if (agents.some((a) => a.personUid === live.id)) continue;
     agents.push({
       personUid: live.id,
       displayName: live.displayName,
@@ -579,6 +803,7 @@ export function buildChannelStatusModel(
         live.status === "running" || live.status === "awaiting_input"
           ? "running"
           : "idle",
+      online: false,
     });
   }
 
@@ -590,9 +815,19 @@ export function buildChannelStatusModel(
       ? input.members!.length
       : humans.length + agents.length;
 
+  const activeFromLive = buildLiveReadSessionRows(
+    liveReadSessions,
+    input.nowMs,
+    presence,
+  );
+  const activeSessions =
+    activeFromLive.length > 0
+      ? activeFromLive
+      : buildActiveSessionRows(input.serverSessions, input.nowMs, presence);
+
   return {
     liveAgents,
-    activeSessions: buildActiveSessionRows(input.serverSessions, input.nowMs),
+    activeSessions,
     stories: rollup,
     project: (() => {
       const repos = resolveProjectRepos(prd);

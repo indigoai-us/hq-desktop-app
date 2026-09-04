@@ -2580,6 +2580,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         );
     }
 
+    // Client health (US-002): a runner is about to spawn — persist the
+    // ATTEMPT timestamp (distinct from completion/success) and heartbeat.
+    crate::commands::client_health::record_sync_attempt_started();
+
     let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
     log(
         "sync",
@@ -2821,6 +2825,19 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             );
                         }
                     }
+                    // Client health (US-002): one terminal seam for BOTH exit
+                    // branches — read the final RunTotals (including a
+                    // synthetic AllComplete's effects) and record whether this
+                    // run was a genuine success. lastSyncSuccessAt advances
+                    // only on clean completions (including no-change runs);
+                    // everything else maps to a closed reason code and
+                    // triggers an immediate heartbeat.
+                    let final_totals =
+                        totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    crate::commands::client_health::record_sync_run_ended(
+                        success,
+                        &final_totals,
+                    );
                 }
             },
         );
@@ -2833,6 +2850,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             let (path, message) = if e.is_spawn() {
                 let message = e.to_string();
                 capture_sync_error(None, "(spawn)", &message);
+                // No child existed, so no Exit event will close this run for
+                // client health — record the failed attempt here.
+                crate::commands::client_health::record_sync_run_ended(
+                    false,
+                    &RunTotals::default(),
+                );
                 ("(spawn)", message)
             } else {
                 // Preserve the existing user-visible error text. The typed

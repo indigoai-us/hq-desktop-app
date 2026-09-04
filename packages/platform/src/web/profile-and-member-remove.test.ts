@@ -144,4 +144,23 @@ describe("WebPlatformAdapter profile", () => {
       body: { avatarBase64: "QUJD" },
     });
   });
+
+  it("GETs /v1/avatar-packs and POSTs /v1/agents/{uid}/avatar", async () => {
+    const { adapter, calls } = makeAdapter({
+      packs: [],
+      expiresAt: 1,
+    });
+    await adapter.identity.listAvatarPacks();
+    await adapter.identity.getAvatarPack("animals");
+    await adapter.identity.selectAgentAvatar("agt_scout", {
+      packId: "animals",
+      itemId: "v2-dot",
+    });
+    expect(calls.map((row) => `${row.method} ${row.path}`)).toEqual([
+      "GET /v1/avatar-packs",
+      "GET /v1/avatar-packs/animals",
+      "POST /v1/agents/agt_scout/avatar",
+    ]);
+    expect(calls[2]?.body).toEqual({ packId: "animals", itemId: "v2-dot" });
+  });
 });

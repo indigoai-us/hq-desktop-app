@@ -53,6 +53,12 @@
     | 'sync-notifications'
     | 'share-notifications'
     | 'dm-notifications'
+    | 'notification-style'
+    | 'system-notifications'
+    | 'native-notify-dm'
+    | 'native-notify-shares'
+    | 'native-notify-meetings'
+    | 'native-notify-only-unfocused'
     | 'auto-update'
     | 'staging-channel'
     | 'release-channel'
@@ -91,6 +97,12 @@
     defaultRecordingCompanyUid?: string | null;
     telemetryEnabled?: boolean | null;
     dockIcon?: boolean | null;
+    customBanner?: boolean | null;
+    systemNotifications?: boolean | null;
+    nativeNotifyDirectMessages?: boolean | null;
+    nativeNotifyShares?: boolean | null;
+    nativeNotifyMeetings?: boolean | null;
+    nativeNotifyOnlyWhenUnfocused?: boolean | null;
   }
 
   interface UpdateInfo {
@@ -196,6 +208,25 @@
   let notifications = $state(true);
   let shareNotifications = $state(true);
   let dmNotifications = $state(true);
+  // Notification style — `customBanner` in menubar.json. Default ON (in-app HQ
+  // banner). When the user opts into system notifications we persist
+  // `customBanner: false`, which routes DM/share/meeting events through the
+  // native macOS path (Notification Center, clickable, respects Focus/DND).
+  // `useSystemBanners` is the inverse of `customBanner` for a plain-language UI.
+  let useSystemBanners = $state(false);
+  // Native (OS) notification controls — persisted into menubar.json and read
+  // back by the Rust native-send gate (native_notify::should_native_notify).
+  // Only take effect when the notification style is System (customBanner off).
+  let systemNotifications = $state(true);
+  let nativeNotifyDirectMessages = $state(true);
+  let nativeNotifyShares = $state(true);
+  let nativeNotifyMeetings = $state(true);
+  let nativeNotifyOnlyWhenUnfocused = $state(true);
+  // The system-notification detail controls only bite when the style is System
+  // (customBanner off). Mute the master row while in-app style is selected, and
+  // mute the per-event rows while either the style is in-app or the master is off.
+  const systemMasterMuted = $derived(!useSystemBanners);
+  const systemDetailMuted = $derived(!useSystemBanners || !systemNotifications);
   let cliAutoUpdate = $state(true);
   // Master automatic-updates switch — one toggle governs silent install of the
   // app, CLI, and hq-core. Default ON. Read fresh by the Rust auto-installers
@@ -339,9 +370,7 @@
     windowOpacityFromTransparency(appearance.windowTransparency),
   );
 
-  const displayedChannel = $derived<Channel>(
-    releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
-  );
+  const displayedChannel = $derived<Channel>(releaseChannel ?? 'stable');
   const hqPathLabel = $derived(hqPath ? formatHqFolderMeta(hqPath) : 'HQ folder not set');
   const coreHasDrift = $derived((coreState?.driftReport.count ?? 0) > 0);
   const coreChannelPending = $derived(
@@ -580,6 +609,15 @@
     notifications = settings.notifications ?? true;
     shareNotifications = settings.shareNotifications ?? true;
     dmNotifications = settings.dmNotifications ?? true;
+    // customBanner defaults ON (in-app banner) when absent, so system banners
+    // are the explicit opt-in: useSystemBanners is true only when customBanner
+    // is explicitly false.
+    useSystemBanners = settings.customBanner === false;
+    systemNotifications = settings.systemNotifications ?? true;
+    nativeNotifyDirectMessages = settings.nativeNotifyDirectMessages ?? true;
+    nativeNotifyShares = settings.nativeNotifyShares ?? true;
+    nativeNotifyMeetings = settings.nativeNotifyMeetings ?? true;
+    nativeNotifyOnlyWhenUnfocused = settings.nativeNotifyOnlyWhenUnfocused ?? true;
     cliAutoUpdate = settings.cliAutoUpdate ?? true;
     autoUpdate = settings.autoUpdate ?? true;
     stagingChannel = settings.stagingChannel ?? true;
@@ -1093,7 +1131,12 @@
     // System Settings > Notifications instead.
     try {
       if (notifPermission === 'denied') {
-        await openUrl('x-apple.systempreferences:com.apple.preference.notifications');
+        // Deep-link to System Settings › Notifications through the Rust
+        // command (NSWorkspace `open` of
+        // `x-apple.systempreferences:com.apple.preference.notifications`).
+        // The frontend never carries the platform URI, so this can't be
+        // pointed at the wrong OS surface.
+        await invoke('notification_open_settings');
         return;
       }
       notifPermission = await invoke<'granted' | 'denied' | 'prompt'>(
@@ -1734,6 +1777,109 @@
             aria-busy={isSettingsControlPending('dm-notifications')}
           />
         </label>
+        <!-- Notification style (customBanner). The single most important control
+             for "I don't get macOS notifications": customBanner defaults ON, so
+             DM/share/meeting events route to HQ's in-app banner and never reach
+             the native OS path. Turning this ON persists customBanner:false,
+             which sends them through Notification Center (clickable, respects
+             Focus/Do Not Disturb). Persisted here so it takes effect without
+             hand-editing menubar.json. -->
+        <label class="setting-row">
+          <span
+            ><strong>macOS system notifications</strong
+            ><small
+              >Show real Notification Center banners (clickable, respect Focus / Do Not Disturb).
+              When off, HQ shows its own in-app banner instead.</small
+            ></span
+          >
+          <input
+            type="checkbox"
+            data-testid="settings-notification-style"
+            bind:checked={useSystemBanners}
+            onchange={() =>
+              void persistSettingsControl('notification-style', {
+                customBanner: !useSystemBanners,
+              })}
+            disabled={isSettingsControlPending('notification-style')}
+            aria-busy={isSettingsControlPending('notification-style')}
+          />
+        </label>
+        <!-- Native (OS) banner controls. Persisted into menubar.json and read
+             back by the Rust native-send gate so they actually take effect on
+             the next event (no restart). Only apply when the style above is
+             System; the in-app notification panel is unaffected. -->
+        <label class="setting-row setting-row-sub" class:setting-row-muted={systemMasterMuted}>
+          <span
+            ><strong>Enable system banners</strong
+            ><small>Master switch for the macOS banners below. The in-app notification panel is unaffected.</small></span
+          >
+          <input
+            type="checkbox"
+            data-testid="settings-system-notifications"
+            bind:checked={systemNotifications}
+            onchange={() =>
+              void persistSettingsControl('system-notifications', { systemNotifications })}
+            disabled={systemMasterMuted || isSettingsControlPending('system-notifications')}
+            aria-busy={isSettingsControlPending('system-notifications')}
+          />
+        </label>
+        <label class="setting-row setting-row-sub" class:setting-row-muted={systemDetailMuted}>
+          <span><strong>Direct messages</strong><small>Banner when a teammate DMs you.</small></span>
+          <input
+            type="checkbox"
+            data-testid="settings-native-notify-dm"
+            bind:checked={nativeNotifyDirectMessages}
+            onchange={() =>
+              void persistSettingsControl('native-notify-dm', { nativeNotifyDirectMessages })}
+            disabled={systemDetailMuted || isSettingsControlPending('native-notify-dm')}
+            aria-busy={isSettingsControlPending('native-notify-dm')}
+          />
+        </label>
+        <label class="setting-row setting-row-sub" class:setting-row-muted={systemDetailMuted}>
+          <span><strong>File shares</strong><small>Banner when a teammate shares a file with you.</small></span>
+          <input
+            type="checkbox"
+            data-testid="settings-native-notify-shares"
+            bind:checked={nativeNotifyShares}
+            onchange={() =>
+              void persistSettingsControl('native-notify-shares', { nativeNotifyShares })}
+            disabled={systemDetailMuted || isSettingsControlPending('native-notify-shares')}
+            aria-busy={isSettingsControlPending('native-notify-shares')}
+          />
+        </label>
+        <label class="setting-row setting-row-sub" class:setting-row-muted={systemDetailMuted}>
+          <span
+            ><strong>Meetings &amp; recaps</strong
+            ><small>Banner when a meeting is detected or a recap is ready.</small></span
+          >
+          <input
+            type="checkbox"
+            data-testid="settings-native-notify-meetings"
+            bind:checked={nativeNotifyMeetings}
+            onchange={() =>
+              void persistSettingsControl('native-notify-meetings', { nativeNotifyMeetings })}
+            disabled={systemDetailMuted || isSettingsControlPending('native-notify-meetings')}
+            aria-busy={isSettingsControlPending('native-notify-meetings')}
+          />
+        </label>
+        <label class="setting-row setting-row-sub" class:setting-row-muted={systemDetailMuted}>
+          <span
+            ><strong>Only when the app is not focused</strong
+            ><small>Skip banners while you're already looking at an HQ window.</small></span
+          >
+          <input
+            type="checkbox"
+            data-testid="settings-native-notify-only-unfocused"
+            bind:checked={nativeNotifyOnlyWhenUnfocused}
+            onchange={() =>
+              void persistSettingsControl('native-notify-only-unfocused', {
+                nativeNotifyOnlyWhenUnfocused,
+              })}
+            disabled={systemDetailMuted ||
+              isSettingsControlPending('native-notify-only-unfocused')}
+            aria-busy={isSettingsControlPending('native-notify-only-unfocused')}
+          />
+        </label>
         <!-- macOS permission monitor — OS authorization, separate from the
              in-app toggles above. Hidden until the first state read resolves. -->
         {#if notifPermission !== 'unknown'}
@@ -1772,7 +1918,7 @@
                 {:else if notifPermissionError}
                   Try again
                 {:else if notifPermission === 'denied'}
-                  Open Settings
+                  Open System Settings
                 {:else}
                   Enable
                 {/if}
@@ -1820,8 +1966,8 @@
           />
           <em>Gated</em>
         </label>
-        <label class="setting-row gated-row">
-          <span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span>
+        <label class="setting-row">
+          <span><strong>Release channel</strong><small>Stable is the default. Opt into Beta for pre-release builds.</small></span>
           <select
             disabled={isSettingsControlPending('release-channel') || availableChannels.length <= 1 || coreInstalling}
             aria-busy={isSettingsControlPending('release-channel') || coreInstalling}
@@ -1833,7 +1979,6 @@
               <option value={channel}>{channel}</option>
             {/each}
           </select>
-          <em>Gated</em>
         </label>
         <div class="setting-row">
           <span>
@@ -2470,6 +2615,19 @@
 
   .setting-row:first-child {
     border-top: 0;
+  }
+
+  /* Sub-options nested under a master toggle (native per-event banners). A
+     hairline indent + slightly recessed leading edge signals hierarchy without
+     a heavier container. */
+  .setting-row-sub > span:first-child {
+    padding-left: 14px;
+    border-left: 1px solid var(--v4-rowline);
+  }
+
+  /* Dim the sub-options while the master switch is off — they're inert. */
+  .setting-row-muted {
+    opacity: 0.5;
   }
 
   .setting-row > span:first-child,

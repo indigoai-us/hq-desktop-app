@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,12 +11,16 @@ import {
   DEFAULT_TIMEOUT_MS,
   SMOKE_TOKEN_SECRET,
   evaluateSmokeResult,
+  isSmokeTempDir,
+  launchAndWait,
   parseBootLog,
   readBundleVersion,
+  removeSmokeHome,
   requireNonIndigoRefreshToken,
   runArtifactSmoke,
   runCli,
   smokeError,
+  stopChild,
   tagLatestJsonUrl,
   verifyPublishedLatestJson,
   writeSmokeHome,
@@ -244,6 +249,8 @@ describe("launch smoke", () => {
     expect(spawned[0].args).toEqual([DEEP_LINK]);
     expect(spawned[0].env.HQ_DESKTOP_WATCHDOG_SECS).toBe("25");
     expect(spawned[0].env.HOME).toMatch(/hq-release-smoke-/);
+    expect(spawned[0].env.TMPDIR).toBe(spawned[0].env.HOME);
+    expect(spawned[0].env.NPM_CONFIG_CACHE).toBe(join(spawned[0].env.HOME, ".npm"));
     expect(spawned[0].cmd).toContain("hq-sync-menubar");
   });
 
@@ -257,6 +264,269 @@ describe("launch smoke", () => {
         launch: true,
       }),
     ).rejects.toThrow(/HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO is missing/);
+  });
+
+  it("still reports smoke success when temp cleanup throws ENOTEMPTY", async () => {
+    const app = await fakeApp("0.10.179");
+    const fakeChild = new EventEmitter() as EventEmitter & {
+      pid: number;
+      killed: boolean;
+      kill: () => boolean;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    fakeChild.pid = 7;
+    fakeChild.killed = false;
+    fakeChild.kill = () => {
+      fakeChild.killed = true;
+      return true;
+    };
+    fakeChild.stdout = new EventEmitter();
+    fakeChild.stderr = new EventEmitter();
+
+    const warnings: string[] = [];
+    const result = await runArtifactSmoke({
+      appPath: app,
+      expectedVersion: "0.10.179",
+      timeoutMs: 1_000,
+      env: { [SMOKE_TOKEN_SECRET]: "rt-non-indigo" },
+      launch: true,
+      spawnImpl: (() => fakeChild) as typeof import("node:child_process").spawn,
+      sleep: async () => {
+        fakeChild.stderr.emit("data", Buffer.from("[boot] shell_ready from UI\n"));
+      },
+      removeHomeImpl: () => {
+        throw Object.assign(
+          new Error(
+            "ENOTEMPTY: directory not empty, rmdir '/tmp/hq-release-smoke-x/.npm/_cacache/index-v5'",
+          ),
+          { code: "ENOTEMPTY" },
+        );
+      },
+      warn: (message) => warnings.push(String(message)),
+    });
+
+    expect(result).toEqual({ ok: true, version: "0.10.179" });
+    expect(warnings.join("\n")).toMatch(/^::warning::/);
+    expect(warnings.join("\n")).toMatch(/ENOTEMPTY/);
+  });
+
+  it("preserves a smoke failure when temp cleanup also throws", async () => {
+    const app = await fakeApp("0.10.179");
+    const fakeChild = new EventEmitter() as EventEmitter & {
+      pid: number;
+      killed: boolean;
+      kill: () => boolean;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    fakeChild.pid = 8;
+    fakeChild.killed = false;
+    fakeChild.kill = () => {
+      fakeChild.killed = true;
+      return true;
+    };
+    fakeChild.stdout = new EventEmitter();
+    fakeChild.stderr = new EventEmitter();
+
+    let t = 0;
+    await expect(
+      runArtifactSmoke({
+        appPath: app,
+        expectedVersion: "0.10.179",
+        timeoutMs: 5,
+        env: { [SMOKE_TOKEN_SECRET]: "rt-non-indigo" },
+        launch: true,
+        spawnImpl: (() => fakeChild) as typeof import("node:child_process").spawn,
+        now: () => t,
+        sleep: async () => {
+          t += 10;
+        },
+        removeHomeImpl: () => {
+          throw Object.assign(new Error("ENOTEMPTY: directory not empty, rmdir 'x'"), {
+            code: "ENOTEMPTY",
+          });
+        },
+        warn: () => {},
+      }),
+    ).rejects.toThrow(/shell_ready did not fire/);
+  });
+});
+
+// Far above /proc/sys/kernel/pid_max, so a `process.kill(-pid, ...)` that
+// escapes an injected killGroup can only ever raise ESRCH.
+const UNREACHABLE_PID = 2_147_483_646;
+
+type FakeChild = EventEmitter & {
+  pid: number;
+  exitCode: number | null;
+  signalCode: string | null;
+  kill: (signal?: string) => boolean;
+  stdout?: EventEmitter;
+  stderr?: EventEmitter;
+};
+
+function fakeChild(pid = UNREACHABLE_PID): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => true;
+  return child;
+}
+
+describe("stopChild reaps the whole process tree", () => {
+  it("still SIGKILLs the group when the leader exits on SIGTERM", async () => {
+    // The leader exiting is not proof the tree is reaped: the npx/_cacache
+    // writers that broke four releases outlive it and keep writing into the
+    // sandbox HOME while teardown walks it.
+    const child = fakeChild();
+    const groupSignals: Array<[number, string]> = [];
+
+    const stopped = await stopChild(child, {
+      waitMs: 5,
+      sleep: async () => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      },
+      killGroup: (pid: number, signal: string) => {
+        groupSignals.push([pid, signal]);
+      },
+    });
+
+    expect(stopped).toEqual({ exited: true, escalated: false });
+    expect(groupSignals).toEqual([
+      [UNREACHABLE_PID, "SIGTERM"],
+      [UNREACHABLE_PID, "SIGKILL"],
+    ]);
+  });
+
+  it("observes an exit that races the subscribe instead of waiting it out", async () => {
+    // Checking the exit state before subscribing leaves a TOCTOU gap: the
+    // event fires in between, reaches no listener, and never arrives again.
+    const child = fakeChild();
+    let observations = 0;
+    Object.defineProperty(child, "exitCode", {
+      get() {
+        observations += 1;
+        if (observations === 1) {
+          // The process exits in the gap right after this observation.
+          child.emit("exit", 0, null);
+          return null;
+        }
+        return 0;
+      },
+    });
+
+    let sleeps = 0;
+    const stopped = await stopChild(child, {
+      waitMs: 10,
+      sleep: async () => {
+        sleeps += 1;
+      },
+      killGroup: () => {},
+    });
+
+    expect(stopped).toEqual({ exited: true, escalated: false });
+    expect(sleeps).toBe(1);
+  });
+
+  it("warns out loud when the tree never confirms exit after escalation", async () => {
+    const app = await fakeApp("0.10.179");
+    const child = fakeChild();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const warnings: string[] = [];
+
+    const result = await launchAndWait({
+      appPath: app,
+      home: join(tmpdir(), "hq-release-smoke-warn"),
+      logPath: join(tmpdir(), "hq-release-smoke-warn", "hq-sync.log"),
+      timeoutMs: 1_000,
+      spawnImpl: (() => child) as unknown as typeof import("node:child_process").spawn,
+      readLog: async () => "",
+      sleep: async () => {
+        child.stderr?.emit("data", Buffer.from("[boot] shell_ready from UI\n"));
+      },
+      killGroup: () => {},
+      warn: (message: string) => warnings.push(String(message)),
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(
+      new RegExp(`^::warning::macos-artifact-smoke: smoke app \\(pid ${UNREACHABLE_PID}\\)`),
+    );
+    expect(warnings[0]).toMatch(/did not confirm exit after SIGKILL/);
+  });
+});
+
+describe("smoke temp cleanup", () => {
+  it("treats mkdtemp hq-release-smoke dirs as removable and refuses /", () => {
+    expect(isSmokeTempDir(join(tmpdir(), "hq-release-smoke-fqTFZB"))).toBe(true);
+    expect(isSmokeTempDir("/")).toBe(false);
+    expect(isSmokeTempDir("/var/folders/tmp")).toBe(false);
+    expect(isSmokeTempDir("")).toBe(false);
+  });
+
+  it("recursively force-removes a temp dir npm populated with a cache", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hq-release-smoke-"));
+    await mkdir(join(dir, ".npm", "_cacache", "index-v5"), { recursive: true });
+    await mkdir(join(dir, ".npm", "_cacache", "content-v2", "ab"), { recursive: true });
+    await writeFile(join(dir, ".npm", "_cacache", "index-v5", "entry"), "cached");
+    await writeFile(join(dir, ".npm", "_cacache", "content-v2", "ab", "cd"), "blob");
+    expect(removeSmokeHome(dir)).toEqual({ ok: true });
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("uses rmSync recursive+force, then rm -rf, and warns instead of throwing on ENOTEMPTY", () => {
+    const dir = join(tmpdir(), "hq-release-smoke-fqTFZB");
+    const warnings: string[] = [];
+    const rmCalls: Array<{ path: string; opts: object }> = [];
+    const error = Object.assign(
+      new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}/.npm/_cacache/index-v5'`),
+      { code: "ENOTEMPTY" },
+    );
+
+    const result = removeSmokeHome(dir, {
+      rmSyncImpl: ((path, opts) => {
+        rmCalls.push({ path: String(path), opts: opts as object });
+        throw error;
+      }) as typeof import("node:fs").rmSync,
+      spawnSyncImpl: (() => ({
+        status: 1,
+        stderr: "rm: Directory not empty",
+        error: undefined,
+      })) as typeof import("node:child_process").spawnSync,
+      warn: (message) => warnings.push(String(message)),
+    });
+
+    expect(rmCalls).toEqual([{ path: dir, opts: { recursive: true, force: true } }]);
+    expect(result.ok).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^::warning::macos-artifact-smoke: failed to remove temp dir /);
+    expect(warnings[0]).toMatch(/ENOTEMPTY/);
+  });
+
+  it("falls back to rm -rf when rmSync hits ENOTEMPTY", () => {
+    const dir = join(tmpdir(), "hq-release-smoke-fallback");
+    const rmArgs: string[][] = [];
+    const result = removeSmokeHome(dir, {
+      rmSyncImpl: () => {
+        throw Object.assign(new Error("ENOTEMPTY: directory not empty, rmdir 'index-v5'"), {
+          code: "ENOTEMPTY",
+        });
+      },
+      spawnSyncImpl: ((cmd, args) => {
+        rmArgs.push([String(cmd), ...(args as string[])]);
+        return { status: 0, stderr: "", error: undefined };
+      }) as typeof import("node:child_process").spawnSync,
+      warn: () => {
+        throw new Error("must not warn when rm -rf succeeds");
+      },
+    });
+    expect(result).toEqual({ ok: true, usedFallback: true });
+    expect(rmArgs).toEqual([["/bin/rm", "-rf", "--", dir]]);
   });
 });
 

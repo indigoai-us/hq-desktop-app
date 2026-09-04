@@ -6,7 +6,9 @@ import {
   MeshClient,
   backoffDelayMs,
   chunkSubscribeTopics,
+  companyTopicsForUid,
   IOT_SUBSCRIBE_BATCH_SIZE,
+  LiveReadCoalescer,
   topicsForBundle,
   type MqttConnectFn,
   type VisibilityHost,
@@ -19,7 +21,13 @@ import {
   type TimerHost,
 } from "./credentials.js";
 import type { SigV4Crypto } from "./presign.js";
-import { WakeReconciler, routeForTopic } from "./reconcile.js";
+import { PresenceStore } from "./presence-store.js";
+import {
+  WakeReconciler,
+  liveReadPath,
+  parseLiveWake,
+  routeForTopic,
+} from "./reconcile.js";
 
 /**
  * Synchronous SigV4 crypto (node:crypto) whose promises resolve as plain
@@ -151,6 +159,7 @@ interface Harness {
   fetchCalls: string[];
   vendCount: () => number;
   events: Record<string, unknown[][]>;
+  presenceStore: PresenceStore;
 }
 
 function makeHarness(
@@ -189,17 +198,26 @@ function makeHarness(
   const events: Record<string, unknown[][]> = {
     wake: [],
     reconciled: [],
+    presence: [],
     droppedCompanies: [],
     connectionState: [],
     catchup: [],
     error: [],
   };
+  const presenceStore = new PresenceStore();
   const client = new MeshClient({
     credentialProvider: provider,
     fetcher: (route) => {
       fetchCalls.push(route.path);
+      if (route.path.startsWith("/v1/work-mesh/live")) {
+        return Promise.resolve({
+          state: { contractVersion: 1, participants: [] },
+          cursor: undefined,
+        });
+      }
       return Promise.resolve({ state: { path: route.path }, cursor: "c1" });
     },
+    presenceStore,
     mqttConnect,
     timers,
     sigv4Crypto: syncSigV4Crypto,
@@ -219,13 +237,15 @@ function makeHarness(
     fetchCalls,
     vendCount: () => vends,
     events,
+    presenceStore,
   };
 }
 
 async function settle(): Promise<void> {
-  // Real macrotask hops so async presign (WebCrypto) chains fully resolve.
-  await new Promise((r) => setTimeout(r, 0));
-  await new Promise((r) => setTimeout(r, 0));
+  // Real macrotask hops so async presign (WebCrypto) + live rebuild resolve.
+  for (let i = 0; i < 6; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,17 +265,34 @@ describe("routeForTopic", () => {
     expect(routeForTopic("hq/cmp_x/bogus")).toBeNull();
     expect(routeForTopic("nope/x/dm")).toBeNull();
   });
+
+  it("never routes presence or thread-directory to WakeReconciler REST", () => {
+    expect(routeForTopic("hq/cmp_x/presence/prs_a")).toBeNull();
+    expect(routeForTopic("hq/cmp_x/thread-directory")).toBeNull();
+  });
 });
 
-describe("topicsForBundle", () => {
-  it("includes person topics plus one thread wildcard per company", () => {
+describe("companyTopicsForUid / topicsForBundle", () => {
+  it("derives presence/# per company so subscribe count rises from 1 to 2", () => {
+    expect(companyTopicsForUid("cmp_acme")).toEqual([
+      "hq/cmp_acme/thread/#",
+      "hq/cmp_acme/presence/#",
+    ]);
+    expect(companyTopicsForUid("cmp_acme")).toHaveLength(2);
+  });
+
+  it("includes person topics plus thread/#, presence/#, and thread-directory", () => {
     expect(topicsForBundle(bundle({ companyTopics: ["c1", "c2"] }))).toEqual([
       "hq/prs_alice/dm",
       "hq/prs_alice/work",
       "hq/prs_alice/notifications",
       "hq/prs_alice/work-session/#",
       "hq/c1/thread/#",
+      "hq/c1/presence/#",
+      "hq/c1/thread-directory",
       "hq/c2/thread/#",
+      "hq/c2/presence/#",
+      "hq/c2/thread-directory",
     ]);
   });
 });
@@ -482,6 +519,8 @@ describe("MeshClient", () => {
       "hq/prs_alice/notifications",
       "hq/prs_alice/work-session/#",
       "hq/cmp_acme/thread/#",
+      "hq/cmp_acme/presence/#",
+      "hq/cmp_acme/thread-directory",
     ]);
     expect(
       h.mqttClients[0].subscribed.every(
@@ -490,6 +529,7 @@ describe("MeshClient", () => {
     ).toBe(true);
     expect(h.fetchCalls).toEqual(
       expect.arrayContaining([
+        liveReadPath("cmp_acme"),
         "/v1/notify/inbox",
         "/v1/work-mesh/work",
         "/v1/notify/notifications",
@@ -510,7 +550,12 @@ describe("MeshClient", () => {
     await settle();
     const packets = h.mqttClients[0].subscribed;
     const topics = topicsForBundle(bundle({ companyTopics: companies }));
-    expect(topics).toHaveLength(9);
+    // 4 person + 5×(thread/# + presence/# + thread-directory) = 19
+    expect(topics).toHaveLength(19);
+    // AC1: per-company wake/presence pair is exactly 2
+    expect(companies.every((c) => companyTopicsForUid(c).length === 2)).toBe(
+      true,
+    );
     expect(packets.length).toBeGreaterThan(1);
     expect(
       packets.every((batch) => batch.length <= IOT_SUBSCRIBE_BATCH_SIZE),
@@ -955,5 +1000,227 @@ describe("MeshClient", () => {
     await settle();
     expect(h.mqttClients).toHaveLength(1);
     expect(h.mqttClients[0].ended).toBeGreaterThan(0);
+  });
+
+  it("seeds the presence store from retained MQTT without REST reconcile", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.events.reconciled.length = 0;
+    const payload = JSON.stringify({
+      v: 1,
+      status: "online",
+      actorUid: "prs_bob",
+      actorType: "human",
+      at: "2026-09-03T12:00:00.000Z",
+    });
+    h.mqttClients[0].fire(
+      "message",
+      "hq/cmp_acme/presence/prs_bob",
+      new TextEncoder().encode(payload),
+    );
+    await settle();
+    expect(h.presenceStore.get("cmp_acme", "prs_bob")?.status).toBe("online");
+    expect(h.events.presence).toEqual([
+      [{ companyUid: "cmp_acme", actorUid: "prs_bob", status: "online" }],
+    ]);
+    // Presence never reaches WakeReconciler / REST.
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.events.reconciled).toEqual([]);
+    expect(h.events.wake).toEqual([]);
+  });
+
+  it("flips an actor offline on the server-published offline payload without REST", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.mqttClients[0].fire("message", "hq/cmp_acme/presence/prs_bob", {
+      v: 1,
+      status: "online",
+      actorUid: "prs_bob",
+      actorType: "human",
+      at: "2026-09-03T12:00:00.000Z",
+    });
+    await settle();
+    h.fetchCalls.length = 0;
+    h.mqttClients[0].fire("message", "hq/cmp_acme/presence/prs_bob", {
+      v: 1,
+      status: "offline",
+      actorUid: "prs_bob",
+      actorType: "human",
+      at: "2026-09-03T12:00:30.000Z",
+    });
+    await settle();
+    expect(h.presenceStore.get("cmp_acme", "prs_bob")?.status).toBe("offline");
+    expect(h.fetchCalls).toEqual([]);
+  });
+
+  it("rebuilds the presence store from GET /v1/work-mesh/live before subscribe", async () => {
+    const liveCalls: string[] = [];
+    const presenceStore = new PresenceStore();
+    // Seed a stale row that reconnect rebuild must replace.
+    presenceStore.applyMqtt("hq/cmp_acme/presence/prs_stale", {
+      v: 1,
+      status: "online",
+      actorUid: "prs_stale",
+      actorType: "human",
+      at: "2026-09-03T10:00:00.000Z",
+    });
+    const timers = new FakeTimers();
+    const mqttClients: FakeMqttClient[] = [];
+    const client = new MeshClient({
+      credentialProvider: {
+        fetchCredentials: () => Promise.resolve(bundle()),
+      },
+      fetcher: (route) => {
+        liveCalls.push(route.path);
+        if (route.path.startsWith("/v1/work-mesh/live")) {
+          return Promise.resolve({
+            state: {
+              participants: [
+                {
+                  actorUid: "prs_fresh",
+                  actorType: "human",
+                  presence: "online",
+                  lastSeenAt: "2026-09-03T12:00:00.000Z",
+                },
+              ],
+            },
+          });
+        }
+        return Promise.resolve({ state: {} });
+      },
+      presenceStore,
+      mqttConnect: () => {
+        const c = new FakeMqttClient();
+        mqttClients.push(c);
+        return c;
+      },
+      timers,
+      sigv4Crypto: syncSigV4Crypto,
+      random: () => 1,
+      visibilityHost: null,
+    });
+    await client.start();
+    await settle();
+    mqttClients[0].fire("connect");
+    await settle();
+    expect(liveCalls.some((p) => p.startsWith("/v1/work-mesh/live"))).toBe(
+      true,
+    );
+    expect(presenceStore.get("cmp_acme", "prs_fresh")?.status).toBe("online");
+    expect(presenceStore.get("cmp_acme", "prs_stale")).toBeUndefined();
+    expect(mqttClients[0].subscribed.length).toBeGreaterThan(0);
+    client.stop();
+  });
+
+  it("coalesces live wakes on thread-directory into one in-flight live read", async () => {
+    let resolvers: Array<(v: { participants: [] }) => void> = [];
+    let fetches = 0;
+    const coalescer = new LiveReadCoalescer(
+      () => {
+        fetches++;
+        return new Promise((res) => resolvers.push(res));
+      },
+      () => {},
+    );
+    coalescer.refresh("cmp_acme");
+    coalescer.refresh("cmp_acme");
+    coalescer.refresh("cmp_acme");
+    expect(fetches).toBe(1);
+    resolvers.shift()!({ participants: [] });
+    await settle();
+    expect(fetches).toBe(2);
+    resolvers.shift()!({ participants: [] });
+    await settle();
+    expect(fetches).toBe(2);
+  });
+
+  it("live wake on thread-directory refreshes live read and skips WakeReconciler", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.events.reconciled.length = 0;
+    h.mqttClients[0].fire(
+      "message",
+      "hq/cmp_acme/thread-directory",
+      new TextEncoder().encode(
+        JSON.stringify({
+          v: 1,
+          kind: "live",
+          companyUid: "cmp_acme",
+          sessionIds: ["ses_1"],
+        }),
+      ),
+    );
+    await settle();
+    expect(h.fetchCalls).toEqual([liveReadPath("cmp_acme")]);
+    expect(h.events.reconciled).toEqual([]);
+    expect(h.events.wake[0]?.[0]).toBe("hq/cmp_acme/thread-directory");
+  });
+
+  it("existing thread lane still connects and reconciles", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.mqttClients[0].fire(
+      "message",
+      "hq/cmp_acme/thread/t42",
+      new TextEncoder().encode("{}"),
+    );
+    await settle();
+    expect(h.fetchCalls).toContain(
+      "/v1/work-mesh/companies/cmp_acme/threads/t42",
+    );
+    expect(h.mqttClients[0].subscribed.flat()).toContain(
+      "hq/cmp_acme/thread/#",
+    );
+  });
+});
+
+describe("parseLiveWake", () => {
+  it("parses ids-only kind:live payloads", () => {
+    expect(
+      parseLiveWake({
+        v: 1,
+        kind: "live",
+        companyUid: "cmp_x",
+        sessionIds: ["ses_1"],
+      }),
+    ).toEqual({ companyUid: "cmp_x", sessionIds: ["ses_1"] });
+    expect(parseLiveWake({ type: "channel", channelId: "chn" })).toBeNull();
+  });
+});
+
+describe("WakeReconciler presence isolation", () => {
+  it("a presence payload never reaches WakeReconciler", async () => {
+    const fetches: string[] = [];
+    const reconciler = new WakeReconciler(
+      (route) => {
+        fetches.push(route.path);
+        return Promise.resolve({ state: {} });
+      },
+      () => {},
+    );
+    expect(reconciler.wake("hq/cmp_x/presence/prs_a", {
+      v: 1,
+      status: "online",
+      actorUid: "prs_a",
+      actorType: "human",
+      at: "2026-09-03T12:00:00.000Z",
+    })).toBe(false);
+    await settle();
+    expect(fetches).toEqual([]);
   });
 });

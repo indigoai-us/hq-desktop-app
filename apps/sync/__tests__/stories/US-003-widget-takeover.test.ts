@@ -295,7 +295,14 @@ describe('US-003: Notification takeover with queue-on-occlusion', () => {
         )?.[0] ?? '';
       expect(nativeFallback).toContain('with_current_notification_mutation(app, auth');
       expect(nativeFallback).toContain('tokio::task::spawn_blocking');
-      expect(nativeFallback).toContain('.asynchronous(true)');
+      // Native delivery goes through UNUserNotificationCenter (with an
+      // osascript fallback), NOT the legacy NSUserNotification path: the
+      // process becomes a UN "modern client" at launch, after which macOS
+      // permanently denies every mac_notification_sys deliver — so that path
+      // produced no OS banner at all.
+      expect(nativeFallback).toContain('un_notify::deliver_message');
+      expect(nativeFallback).not.toContain('mac_notification_sys::Notification');
+      // Fire-and-forget: never block an account transition awaiting a click.
       expect(nativeFallback).not.toContain('wait_for_click(true)');
 
       const nonMacFallback =

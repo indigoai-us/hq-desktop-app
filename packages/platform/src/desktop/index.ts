@@ -80,10 +80,11 @@ export function createDesktopAdapter(
     packages: tauri.packages,
     sessions: tauri.sessions,
     settings: tauri.settings,
-    // Local cache is desktop-only; cloud GET is available on web too.
+    // Local cache is desktop-only; cloud GET/migrate are available on web too.
     workMesh: {
       readLocalSnapshot: tauri.workMesh.readLocalSnapshot,
       getProjectView: web.workMesh.getProjectView,
+      migrateSession: web.workMesh.migrateSession,
     },
   };
 }

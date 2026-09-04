@@ -25,7 +25,18 @@ const stories: Record<string, BoardStoryPanelModel> = {
     fields: { status: "Done", assignee: "", project: "demo", branch: "" },
     acceptanceCriteria: [],
     acCountLabel: "0 / 0",
-    activity: [],
+    activity: [
+      {
+        id: "sess_corey",
+        at: "11:58",
+        text: "Corey · claude-code · 12 turns",
+      },
+      {
+        id: "tsc_1",
+        at: "11:50",
+        text: "Corey moved US-001 to done",
+      },
+    ],
   },
 };
 
@@ -57,6 +68,20 @@ describe("BoardTab column filter", () => {
 
     expect(root.querySelector('[data-testid="board-story-panel"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="board-view-changes"]')).toBeNull();
+  });
+
+  it("renders live session rows in the story activity list", () => {
+    const root = renderBoard();
+    flushSync(() =>
+      root.querySelector<HTMLButtonElement>('[data-testid="board-card"]')?.click(),
+    );
+
+    const list = root.querySelector('[data-testid="board-story-activity"]');
+    expect(list).not.toBeNull();
+    const text = list?.textContent ?? "";
+    expect(text).toContain("Corey · claude-code · 12 turns");
+    expect(text).toContain("Corey moved US-001 to done");
+    expect(text).toContain("11:58");
   });
 
   it("shows To do, Doing, and Done by default even when empty", () => {

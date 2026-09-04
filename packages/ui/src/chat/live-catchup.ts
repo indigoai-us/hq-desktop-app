@@ -110,6 +110,56 @@ export function dmActivityFromTimeline<T extends { createdAt?: unknown }>(
   return { personUid: uid, lastMessageAt };
 }
 
+/** Newest timeline stamp for a channel / group row — any direction counts. */
+export interface ChannelRailActivity {
+  channelId: string;
+  lastMessageAt: string;
+  fromPersonUid?: string;
+  eventId?: string;
+}
+
+/**
+ * Newest `createdAt` across a channel timeline, regardless of direction,
+ * sender, or empty body. Own sends and loaded history both count so the rail
+ * can regroup the channel under the day of that stamp.
+ */
+export function channelActivityFromTimeline<
+  T extends {
+    createdAt?: unknown;
+    fromPersonUid?: unknown;
+    eventId?: unknown;
+  },
+>(
+  channelId: string,
+  messages: ReadonlyArray<T | null | undefined>,
+): ChannelRailActivity | null {
+  const id = channelId.trim();
+  if (!id) return null;
+  let lastMessageAt: string | null = null;
+  let fromPersonUid: string | undefined;
+  let eventId: string | undefined;
+  for (const item of messages) {
+    if (!item || typeof item !== "object") continue;
+    const createdAt = (item as { createdAt?: unknown }).createdAt;
+    if (typeof createdAt !== "string" || !createdAt) continue;
+    if (lastMessageAt && createdAt <= lastMessageAt) continue;
+    lastMessageAt = createdAt;
+    const from = (item as { fromPersonUid?: unknown }).fromPersonUid;
+    fromPersonUid =
+      typeof from === "string" && from.trim() ? from.trim() : undefined;
+    const event = (item as { eventId?: unknown }).eventId;
+    eventId =
+      typeof event === "string" && event.trim() ? event.trim() : undefined;
+  }
+  if (!lastMessageAt) return null;
+  return {
+    channelId: id,
+    lastMessageAt,
+    ...(fromPersonUid ? { fromPersonUid } : {}),
+    ...(eventId ? { eventId } : {}),
+  };
+}
+
 /**
  * GET /v1/notify/dm-threads page → rail activity, one entry per peer. Unlike
  * the inbox this index is written for BOTH directions of every DM, so a pair

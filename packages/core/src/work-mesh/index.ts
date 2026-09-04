@@ -34,6 +34,7 @@ export {
 
 export {
   MESH_STORY_STAGES,
+  boardActivityFromLive,
   normalizeStoryStage,
   overlayFromSnapshot,
   projectFilesToItems,
@@ -41,7 +42,10 @@ export {
   projectViewToBoard,
   reposToFiles,
   statusLineFor,
+  type BoardLiveSessionActivity,
+  type BoardTaskStatusChange,
   type MeshStoryStage,
+  type ProjectViewToBoardOptions,
 } from "./map.js";
 
 export {
@@ -67,3 +71,28 @@ export {
   isProjectArtifactPath,
   vaultKeyForProjectFile,
 } from "./project-files.js";
+
+export {
+  LIVE_READ_FIXTURE,
+  fetchLiveRead,
+  liveSessionsForProject,
+  parseLiveReadResponse,
+  workMeshLivePath,
+  type LiveActorType,
+  type LiveContextStatus,
+  type LiveHarness,
+  type LiveParticipant,
+  type LivePresence,
+  type LiveReadResponse,
+  type LiveSession,
+  type LiveSessionSource,
+  type LiveSessionStatus,
+} from "./live.js";
+
+export {
+  LiveReadStore,
+  presenceRowsFromLive,
+  type LiveReadListener,
+  type LiveReadSnapshot,
+  type LiveReadSnapshotListener,
+} from "./live-store.js";

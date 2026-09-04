@@ -153,11 +153,25 @@ describe('desktop-alt Board surface (US-007)', () => {
 
     // Route kind union no longer carries 'board' (the US-008 IA is Inbox /
     // Meetings / Marketplace / Library plus settings, the palette-only
-    // home / mission-control / moderation surfaces, and per-company routes
-    // — see route.ts).
-    expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
-    );
+    // home / mission-control / atlas / moderation surfaces, and per-company
+    // routes — see route.ts). Assert members individually so later union
+    // additions (e.g. atlas) do not brittle-match a single literal.
+    const desktopRouteBlock =
+      route.match(/export type DesktopRoute\s*=\s*([\s\S]*?);/)?.[1] ?? '';
+    expect(desktopRouteBlock.length).toBeGreaterThan(0);
+    expect(desktopRouteBlock).not.toMatch(/'board'/);
+    for (const member of [
+      'home',
+      'mission-control',
+      'atlas',
+      'inbox',
+      'messages',
+      'meetings',
+      'marketplace',
+      'moderation',
+    ]) {
+      expect(desktopRouteBlock).toContain(`'${member}'`);
+    }
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");

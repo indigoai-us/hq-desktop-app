@@ -1,7 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { isWindowsRelevant } from "./windows-check-relevant.mjs";
 
@@ -15,6 +17,7 @@ let versionsToml = "";
 let syncCargoToml = "";
 let releaseDocs = "";
 let requiredSurfaces = "";
+let releasePolicyWorkdir = "";
 
 beforeAll(async () => {
   [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml, syncCargoToml, releaseDocs, requiredSurfaces] = await Promise.all([
@@ -27,6 +30,14 @@ beforeAll(async () => {
     readFile(resolve(rootDir, "docs/RELEASE.md"), "utf8"),
     readFile(resolve(rootDir, "scripts/release-required-surfaces.txt"), "utf8"),
   ]);
+});
+
+beforeAll(async () => {
+  releasePolicyWorkdir = await mkdtemp(join(tmpdir(), "hq-release-policy-"));
+});
+
+afterAll(async () => {
+  await rm(releasePolicyWorkdir, { recursive: true, force: true });
 });
 
 /**
@@ -65,6 +76,152 @@ function stepBody(job: string, name: string): string {
   }
 
   return match[1];
+}
+
+/** Extract the Bash source from the workflow step rather than duplicating it. */
+function stepScript(job: string, name: string): string {
+  const step = stepBody(job, name);
+  const marker = "\n        run: |\n";
+  const start = step.indexOf(marker);
+
+  if (start === -1) {
+    throw new Error(`release workflow step ${name} is missing its shell script`);
+  }
+
+  return step
+    .slice(start + marker.length)
+    .split("\n")
+    .map((line) => (line === "" ? "" : line.replace(/^ {10}/, "")))
+    .join("\n");
+}
+
+interface CommandResult {
+  code: number;
+  output: string;
+}
+
+function runCommand(
+  cwd: string,
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+): Promise<CommandResult> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      command,
+      args,
+      { cwd, encoding: "utf8", env: { ...process.env, ...env } },
+      (error, stdout, stderr) => {
+        if (error && typeof error.code !== "number") {
+          reject(error);
+          return;
+        }
+
+        resolvePromise({
+          code: typeof error?.code === "number" ? error.code : 0,
+          output: `${stdout}${stderr}`,
+        });
+      },
+    );
+  });
+}
+
+async function git(cwd: string, ...args: string[]): Promise<void> {
+  const result = await runCommand(cwd, "git", args);
+
+  if (result.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed:\n${result.output}`);
+  }
+}
+
+interface ReleasePolicyCase {
+  advanceMainAfterReleaseBranch?: boolean;
+  branch: string;
+  expectedCode: number;
+  expectedOutput: string;
+  name: string;
+  prerelease: boolean;
+  releaseBranch?: string;
+  tagAtForkPoint?: boolean;
+}
+
+async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
+  runner: string;
+  tag: string;
+}> {
+  const repoRoot = await mkdtemp(join(releasePolicyWorkdir, "case-"));
+  const origin = join(repoRoot, "origin.git");
+  const source = join(repoRoot, "source");
+  const runner = join(repoRoot, "runner");
+  const tag = testCase.prerelease ? "v0.11.0-beta.1" : "v0.11.0";
+
+  await git(repoRoot, "init", "--bare", "--quiet", origin);
+  await git(repoRoot, "init", "--initial-branch=main", "--quiet", source);
+  await git(source, "config", "user.email", "release-test@example.com");
+  await git(source, "config", "user.name", "Release policy test");
+  await writeFile(join(source, "release.txt"), "main\n");
+  await git(source, "add", "release.txt");
+  await git(source, "commit", "--quiet", "-m", "main");
+  await git(source, "remote", "add", "origin", origin);
+  await git(source, "push", "--quiet", "origin", "main");
+
+  let tagPushed = false;
+  if (testCase.tagAtForkPoint) {
+    await git(source, "tag", "-a", tag, "-m", tag);
+    await git(source, "push", "--quiet", "origin", `refs/tags/${tag}`);
+    tagPushed = true;
+  }
+
+  if (testCase.releaseBranch) {
+    await git(source, "switch", "--quiet", "-c", testCase.releaseBranch);
+    await writeFile(join(source, "release.txt"), `${testCase.releaseBranch}\n`);
+    await git(source, "add", "release.txt");
+    await git(source, "commit", "--quiet", "-m", testCase.releaseBranch);
+    await git(source, "push", "--quiet", "origin", `HEAD:refs/heads/${testCase.releaseBranch}`);
+    await git(source, "switch", "--quiet", "main");
+
+    if (testCase.advanceMainAfterReleaseBranch) {
+      await writeFile(join(source, "release.txt"), "main after release branch\n");
+      await git(source, "add", "release.txt");
+      await git(source, "commit", "--quiet", "-m", "main after release branch");
+      await git(source, "push", "--quiet", "origin", "main");
+    }
+  }
+
+  if (testCase.branch !== "main" && testCase.branch !== testCase.releaseBranch) {
+    await git(source, "switch", "--quiet", "-c", testCase.branch);
+    await writeFile(join(source, "release.txt"), `${testCase.branch}\n`);
+    await git(source, "add", "release.txt");
+    await git(source, "commit", "--quiet", "-m", testCase.branch);
+    await git(source, "push", "--quiet", "origin", `HEAD:refs/heads/${testCase.branch}`);
+  }
+
+  if (!tagPushed) {
+    await git(source, "tag", "-a", tag, "-m", tag);
+    await git(source, "push", "--quiet", "origin", `refs/tags/${tag}`);
+  }
+
+  // This deliberately has only the tag ref before the extracted workflow
+  // script runs, matching a fresh checkout of a pushed tag. Its own fetch
+  // must populate main and release/* before it can decide anything.
+  await git(repoRoot, "init", "--quiet", runner);
+  await git(runner, "remote", "add", "origin", origin);
+  await git(runner, "fetch", "--quiet", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`);
+  await git(runner, "checkout", "--quiet", "--detach", tag);
+
+  return { runner, tag };
+}
+
+async function invokeReleasePolicy(testCase: ReleasePolicyCase): Promise<CommandResult> {
+  const { runner, tag } = await releasePolicyRepository(testCase);
+  const script = stepScript(jobBody("validate"), "Enforce release branch policy");
+
+  return runCommand(runner, "bash", ["-c", script], {
+    GITHUB_WORKSPACE: runner,
+    TAG: tag,
+    CHANNEL: testCase.prerelease ? "beta" : "stable",
+    PRERELEASE: String(testCase.prerelease),
+  });
 }
 
 function uploadArtifactStepBodies(job: string): string[] {
@@ -141,32 +298,125 @@ describe("release workflow channel contract", () => {
     expect(clientClassifier).toContain('pre_ids[1].parse::<u64>()');
   });
 
-  it("requires stable on main and rejects alpha/beta prereleases on main", () => {
+  it("requires stable on main and alpha/beta prereleases on release branches", () => {
     const validate = jobBody("validate");
 
-    // Shared ancestry probe: is the tag commit contained in origin/main?
+    // The policy fetches the only refs it trusts, so a tag checkout cannot
+    // accidentally pass simply because its remote tracking refs are absent.
     expect(validate).toContain(
       'git -C "$GITHUB_WORKSPACE" fetch --no-tags origin',
+    );
+    expect(validate).toContain(
+      '"+refs/heads/release/*:refs/remotes/origin/release/*"',
     );
     expect(validate).toContain(
       '"${TAG}^{commit}" refs/remotes/origin/main',
     );
 
     // The branch rule splits by channel, keyed off the classified prerelease
-    // flag: stable must ship from main; alpha/beta must NOT be on main.
+    // flag: stable must ship from main; alpha/beta need release/* containment.
     expect(validate).toContain('if [ "$PRERELEASE" = "true" ]; then');
+    expect(validate).toContain('if [ "$ON_MAIN" = "true" ]; then');
+    expect(validate).toMatch(/for-each-ref\s+\\\n\s+--format=.*\n\s+--contains=/);
     expect(validate).toContain(
       "Stable release tag $TAG is not contained in origin/main",
     );
     expect(validate).toContain(
-      "alpha and beta releases may only be cut from non-main branches",
+      "alpha and beta prereleases must not be cut from main",
     );
+    expect(validate).toContain(
+      "promote this commit as a stable vX.Y.Z release instead",
+    );
+    expect(validate).toContain(
+      "alpha and beta releases may only be cut from a release/* branch",
+    );
+    expect(validate).toContain("Release Managers team");
 
     // The check runs only on a fresh tag push. A workflow_dispatch retry of an
     // existing, immutable tag must not be re-gated by the branch policy.
     expect(validate).toMatch(
       /- name: Enforce release branch policy\n {8}if: \$\{\{ github\.event_name == 'push' \}\}/,
     );
+  });
+
+  describe("release branch policy behaviour", () => {
+    const cases: ReleasePolicyCase[] = [
+      {
+        name: "accepts a prerelease tag that exists only on origin/release/0.11 after the fork",
+        branch: "release/0.11",
+        prerelease: true,
+        expectedCode: 0,
+        expectedOutput:
+          "beta prerelease v0.11.0-beta.1 is contained in origin/release/* — allowed.",
+      },
+      {
+        name: "rejects a prerelease tag contained only in origin/chore/release-0.10.85",
+        branch: "chore/release-0.10.85",
+        prerelease: true,
+        expectedCode: 1,
+        expectedOutput:
+          "alpha and beta releases may only be cut from a release/* branch",
+      },
+      {
+        name: "rejects a prerelease tag contained only in a personal feature branch",
+        branch: "agent/personal-feature",
+        prerelease: true,
+        expectedCode: 1,
+        expectedOutput:
+          "alpha and beta releases may only be cut from a release/* branch",
+      },
+      {
+        name: "rejects a prerelease tag on main when origin/release/1.0 descends from it",
+        branch: "main",
+        prerelease: true,
+        expectedCode: 1,
+        expectedOutput:
+          "alpha and beta prereleases must not be cut from main",
+        releaseBranch: "release/1.0",
+        tagAtForkPoint: true,
+      },
+      {
+        name: "rejects a prerelease tag at the main and release/1.0 fork point",
+        branch: "main",
+        prerelease: true,
+        expectedCode: 1,
+        expectedOutput:
+          "alpha and beta prereleases must not be cut from main",
+        advanceMainAfterReleaseBranch: true,
+        releaseBranch: "release/1.0",
+        tagAtForkPoint: true,
+      },
+      {
+        name: "accepts a stable tag contained in origin/main",
+        branch: "main",
+        prerelease: false,
+        expectedCode: 0,
+        expectedOutput: "Stable release v0.11.0 is on main — allowed.",
+      },
+      {
+        name: "rejects a stable tag not contained in origin/main",
+        branch: "agent/personal-feature",
+        prerelease: false,
+        expectedCode: 1,
+        expectedOutput:
+          "Stable release tag v0.11.0 is not contained in origin/main",
+      },
+    ];
+
+    for (const testCase of cases) {
+      it(testCase.name, async () => {
+        const result = await invokeReleasePolicy(testCase);
+
+        expect(
+          result.code,
+          `${testCase.name}: expected exit ${testCase.expectedCode}, got ${result.code}; output:\n${result.output}`,
+        ).toBe(testCase.expectedCode);
+        expect(
+          result.output,
+          `${testCase.name}: expected output to contain ${JSON.stringify(testCase.expectedOutput)}`,
+        ).toContain(testCase.expectedOutput);
+      });
+    }
   });
 
   it("refuses to release a tag whose tree carries the V2 chat shell", () => {
@@ -391,7 +641,7 @@ describe("release workflow channel contract", () => {
     // blocks or masks a shipped release.
     expect(sync).toContain("needs: [validate, publish]");
     expect(sync).toContain("needs.publish.result == 'success'");
-    // alpha/beta prereleases are cut from non-main branches, so their version
+    // alpha/beta prereleases are cut from release/* branches, so their version
     // is never stamped onto main — sync-back is gated to stable releases only.
     expect(sync).toContain("needs.validate.outputs.prerelease != 'true'");
     expect(sync).toContain("ref: main");

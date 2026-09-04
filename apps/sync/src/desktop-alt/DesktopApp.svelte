@@ -29,9 +29,11 @@
   import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
   import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
+  import AtlasPage from './pages/AtlasPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
+  import { createGoChord } from '@hq/ui';
   import InboxPage from './pages/InboxPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
@@ -427,6 +429,13 @@
       label: 'Go to Mission Control',
       detail: 'Live + historical view of running agent sessions',
       action: () => navigate({ kind: 'mission-control' }),
+    },
+    {
+      id: 'command-go-atlas',
+      label: 'Go to Atlas',
+      detail: 'People and agents on projects, live',
+      shortcut: 'g a',
+      action: () => navigate({ kind: 'atlas' }),
     },
     {
       id: 'command-go-inbox',
@@ -1208,14 +1217,27 @@
     );
   }
 
+  // US-016: Slack-style `g a` opens Atlas (armed by createGoChord).
+  const goChord = createGoChord((letter) => {
+    if (letter !== 'a') return false;
+    navigate({ kind: 'atlas' });
+    return true;
+  });
+
   function handleKeydown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       commandPaletteOpen = true;
+      goChord.reset();
       return;
     }
 
     if (commandPaletteOpen) return;
+
+    if (goChord.handleKeydown(event)) {
+      event.preventDefault();
+      return;
+    }
 
     const nextRoute = getDesktopHotkeyRoute(event, shellCompanies);
     if (!nextRoute) return;
@@ -1798,6 +1820,13 @@
           {:else if route.kind === 'mission-control'}
             <div class="page">
               <MissionControlPage />
+            </div>
+          {:else if route.kind === 'atlas'}
+            <div class="page">
+              <AtlasPage
+                companyUid={activeCompany?.cloudUid ?? ''}
+                companyLabel={activeCompany?.displayName ?? null}
+              />
             </div>
           {:else if route.kind === 'meetings'}
             <div class="page">

@@ -314,6 +314,19 @@ pub async fn install_menubar_app() -> Result<(), String> {
     Ok(())
 }
 
+/// Argv for the Work Mesh Live daemon install (hq-cli). Not the retired pack listen path.
+pub const MESH_DAEMON_INSTALL_ARGS: &[&str] = &["mesh", "daemon", "install"];
+
+/// Install the Work Mesh Live daemon (`hq mesh daemon install`).
+///
+/// Replaces the retired pack listen installer and its LaunchAgent.
+/// Fresh installs do not require the pack to be present on disk.
+#[tauri::command]
+pub async fn install_work_mesh() -> Result<(), String> {
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+    run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root).await
+}
+
 /// Start the first personal-vault cloud sync in the background.
 ///
 /// Setup only needs to provision and kick off the initial push; the long-lived
@@ -349,5 +362,23 @@ mod tests {
         git_init_path(dir.path(), None, None).unwrap();
 
         assert!(dir.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn install_work_mesh_invokes_hq_mesh_daemon_install() {
+        assert_eq!(MESH_DAEMON_INSTALL_ARGS, &["mesh", "daemon", "install"]);
+        // Onboarding must call hq-cli, not the retired pack listen installer.
+        // Needles are built at runtime so this source file does not embed them
+        // (the guard reads this file via include_str!).
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/install_stages.rs"
+        ));
+        assert!(src.contains("MESH_DAEMON_INSTALL_ARGS"));
+        assert!(src.contains("pub async fn install_work_mesh"));
+        let retired_sh = format!("{}-listen.sh", "install");
+        let retired_mjs = format!("{}.mjs listen", "work-mesh");
+        assert!(!src.contains(&retired_sh));
+        assert!(!src.contains(&retired_mjs));
     }
 }

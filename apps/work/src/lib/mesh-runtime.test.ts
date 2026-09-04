@@ -215,12 +215,28 @@ describe("startWebMesh wake-bus contract", () => {
     expect(src).toContain("routeMeshWake(payloadText, opts.wakes)");
     expect(src).toContain("[hq-web-mesh]");
   });
+
+  it("wires the presence store onto the chat bus and runes snapshot", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./mesh-runtime.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain("wirePresenceStoreToChatBus");
+    expect(src).toContain("bindPresenceStore");
+    expect(src).toContain("presenceStore");
+    expect(src).toContain("PresenceStore");
+  });
 });
 
 describe("browser mesh target gate", () => {
   it("starts the browser mesh for web and never for desktop", () => {
     const wakes = createChatWakeBus();
-    const mesh = { stop: vi.fn() };
+    const mesh = {
+      stop: vi.fn(),
+      presenceStore: {} as never,
+      presenceSnapshot: () => new Map(),
+      liveReadStore: {} as never,
+    };
     const start = vi.fn(() => mesh);
     const opts = { wakes, fetchImpl: vi.fn() as unknown as typeof fetch };
 

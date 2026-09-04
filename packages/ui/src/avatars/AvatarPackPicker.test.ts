@@ -5,22 +5,13 @@ import { mount, tick, unmount } from "svelte";
 
 import AvatarPackPicker from "./AvatarPackPicker.svelte";
 import { generatedMarksPack } from "./generated-marks.js";
-import { cspSafeAvatarSrc } from "./parse-pack.js";
-import { HQ_AGENT_MASCOTS_SNAPSHOT } from "./snapshots.js";
+import { MARKETPLACE_COVER_HOST } from "./csp-image-src.js";
 import type { AvatarPack, AvatarSelection } from "./types.js";
 import {
   GENERATED_MARKS_AUTHOR,
   HQ_AGENT_MASCOTS_AUTHOR,
   HQ_AGENT_MASCOTS_PACK_NAME,
 } from "./types.js";
-
-function isResolvableTileSrc(src: string): boolean {
-  if (!src) return false;
-  if (src.startsWith("blob:")) return true;
-  if (/^data:image\//i.test(src)) return true;
-  if (/^https?:/i.test(src) || src.startsWith("builtin:")) return false;
-  return Boolean(cspSafeAvatarSrc(src));
-}
 
 const packs: AvatarPack[] = [
   {
@@ -156,8 +147,23 @@ describe("AvatarPackPicker", () => {
     expect(selected?.dataset.item).toBe("agent-02");
   });
 
-  it("renders Animals / Default headings and a resolvable <img> on every tile", async () => {
-    const live = [generatedMarksPack(), HQ_AGENT_MASCOTS_SNAPSHOT];
+  it("renders Animals / Default headings and lazy-loads marketplace thumbs", async () => {
+    const animals: AvatarPack = {
+      id: "animals",
+      name: HQ_AGENT_MASCOTS_PACK_NAME,
+      version: "1.0.0",
+      author: HQ_AGENT_MASCOTS_AUTHOR,
+      baseUrl: "",
+      items: [
+        {
+          id: "v2-dot",
+          name: "Dot · simplified",
+          src: `https://${MARKETPLACE_COVER_HOST}/avatar-packs/animals/thumbs/v2-dot.png?X-Amz-Signature=mock`,
+          tags: ["v2"],
+        },
+      ],
+    };
+    const live = [generatedMarksPack(["/assets/agent-01.png"]), animals];
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(AvatarPackPicker, {
@@ -172,18 +178,35 @@ describe("AvatarPackPicker", () => {
     expect(host.textContent).not.toContain("HQ agent mascots");
     expect(host.textContent).not.toContain("HQ · 1.0.0");
 
-    const tiles = [
-      ...host.querySelectorAll('[data-testid="avatar-pack-item"]'),
-    ] as HTMLButtonElement[];
-    expect(tiles.length).toBe(
-      live.reduce((sum, pack) => sum + pack.items.length, 0),
-    );
-    for (const tile of tiles) {
-      const img = tile.querySelector("img");
-      expect(img, tile.dataset.item).not.toBeNull();
-      const src = img?.getAttribute("src") ?? "";
-      expect(isResolvableTileSrc(src), src).toBe(true);
-    }
+    const remoteImg = host.querySelector(
+      '[data-item="v2-dot"] img',
+    ) as HTMLImageElement;
+    expect(remoteImg).not.toBeNull();
+    expect(remoteImg.getAttribute("loading")).toBe("lazy");
+    expect(remoteImg.getAttribute("src")).toContain("/avatar-packs/");
+  });
+
+  it("shows a skeleton while the gallery is loading", async () => {
+    let resolvePacks: (packs: AvatarPack[]) => void = () => {};
+    const pending = new Promise<AvatarPack[]>((resolve) => {
+      resolvePacks = resolve;
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AvatarPackPicker, {
+      target: host,
+      props: {
+        agentUid: "agt_scout",
+        loadPacks: () => pending,
+      },
+    });
+    await tick();
+    expect(host.querySelector('[data-testid="avatar-pack-skeleton"]')).not.toBeNull();
+    resolvePacks(packs);
+    await tick();
+    await tick();
+    expect(host.querySelector('[data-testid="avatar-pack-skeleton"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="avatar-pack-item"]').length).toBeGreaterThan(0);
   });
 
   it("shows a visible fallback mark when a tile image fails to load", async () => {

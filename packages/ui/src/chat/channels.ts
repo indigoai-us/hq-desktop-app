@@ -87,6 +87,8 @@ export interface ChannelMember {
   displayName: string;
   /** "owner" | "member" — owners can remove members + invite. */
   role: "owner" | "member" | string;
+  /** Presigned avatar GET URL when hq-pro included it on the roster. */
+  avatarUrl?: string | null;
 }
 
 /** File attachment on a channel message (hq-pro chat wire, camelCase). */

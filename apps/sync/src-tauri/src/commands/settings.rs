@@ -21,9 +21,8 @@ const fn default_widget_enabled() -> bool {
 /// `available_channels`; resolution-for-the-updater lives in
 /// `updater::read_stored_release_channel` + `effective_channel` so this
 /// boundary stays a pure pass-through. Persisting the resolved value
-/// here would lock indigo users into "beta" the first time they touch
-/// any unrelated toggle, defeating the "no preference" state the
-/// effective_channel gate is designed to honor (Codex P1 review on #120).
+/// here would lock users into a channel the first time they touch any
+/// unrelated toggle, defeating the "no preference → Stable" default.
 #[tauri::command]
 pub async fn get_settings() -> Result<MenubarPrefs, String> {
     let path = paths::menubar_json_path()?;
@@ -52,6 +51,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            // In-app custom banner is the default surface; system notifications
+            // are the explicit opt-in (customBanner: false).
+            custom_banner: Some(true),
             cli_auto_update: Some(true),
             // Master automatic-updates switch defaults ON — a fresh install
             // keeps the app, CLI, and hq-core current silently.
@@ -81,6 +83,15 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             dock_icon: Some(true),
             // Retired. The desktop workspace is the only UI.
             hq_work_handoff: None,
+            // Native-notification controls. Master + per-event banners default
+            // ON, and OS banners are suppressed while HQ is focused by default
+            // (`only_when_unfocused` ON). Read untyped on each native delivery
+            // by `native_notify::should_native_notify`.
+            system_notifications: Some(true),
+            native_notify_direct_messages: Some(true),
+            native_notify_shares: Some(true),
+            native_notify_meetings: Some(true),
+            native_notify_only_when_unfocused: Some(true),
         });
     }
 
@@ -123,6 +134,9 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // each poll cycle in dm_notify.rs so the toggle takes effect without
         // restart. Mirrors `share_notifications`.
         dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+        // Custom banner (in-app) defaults ON — re-read untyped by
+        // banner::custom_banner_enabled on each delivery.
+        custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
         // CLI auto-update defaults ON — re-read untyped from menubar.json by
         // hq_cli_update.rs on each background check so the toggle takes effect
         // without restart. Mirrors `dm_notifications`.
@@ -183,6 +197,17 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // Retired. Ignore any leftover hqWorkHandoff so Settings cannot
         // resurrect the classic shell.
         hq_work_handoff: None,
+        // Native-notification controls default ON (banners) with focus
+        // suppression ON. Re-read untyped on each native delivery in
+        // `native_notify::should_native_notify`, so a toggle takes effect
+        // without a restart; this branch only keeps the round-trip honest.
+        system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
+        native_notify_direct_messages: Some(prefs.native_notify_direct_messages.unwrap_or(true)),
+        native_notify_shares: Some(prefs.native_notify_shares.unwrap_or(true)),
+        native_notify_meetings: Some(prefs.native_notify_meetings.unwrap_or(true)),
+        native_notify_only_when_unfocused: Some(
+            prefs.native_notify_only_when_unfocused.unwrap_or(true),
+        ),
     })
 }
 
@@ -200,7 +225,11 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
 #[tauri::command]
 pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
-    save_settings_at(&path, &prefs)
+    save_settings_at(&path, &prefs)?;
+    // Client health (US-002): cloudPaused / realtimeSync / instantSync live in
+    // these prefs — report the new pause state immediately.
+    crate::commands::client_health::notify_client_health_state_changed();
+    Ok(())
 }
 
 /// The command's durable write seam. A new caller/repository that reads this

@@ -37,8 +37,8 @@ export function normalizeChannel(value: unknown): ReleaseChannelId | null {
 
 /**
  * Options to render. `available` comes from the native `available_channels`
- * command, which gates prerelease channels to eligible users; an empty or
- * unreadable list falls back to Stable only, matching the native coercion.
+ * command (Stable / Beta / Alpha for every signed-in user). An empty or
+ * unreadable list falls back to Stable only.
  */
 export function channelOptions(available: unknown): ReleaseChannelOption[] {
   const ids = Array.isArray(available)
@@ -53,8 +53,8 @@ export function channelOptions(available: unknown): ReleaseChannelOption[] {
 
 /**
  * Which option is selected. `null` stored pref means "never chosen" — the
- * native side derives a default (indigo users start on Beta), so reflect the
- * channel the host reports as effective rather than forcing Stable in the UI.
+ * native side defaults to Stable, and the host-reported effective channel
+ * is the fallback when the stored pref is empty.
  */
 export function selectedChannel(
   storedPref: unknown,

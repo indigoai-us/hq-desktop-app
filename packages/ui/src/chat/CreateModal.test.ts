@@ -530,7 +530,13 @@ describe("CreateModal submit", () => {
     // server committed before answering) — retry would create a duplicate.
     const listChannels = vi.fn(async () => ({
       channels: [
-        { channelId: "chn_growth", id: "chn_growth", name: "Growth", scope: "company" as const },
+        {
+          channelId: "chn_growth",
+          id: "chn_growth",
+          name: "Growth",
+          scope: "company" as const,
+          companyUid: "cmp_indigo",
+        },
       ],
     }));
     open({ api: stubApi({ createChannel, listChannels }) });
@@ -551,6 +557,102 @@ describe("CreateModal submit", () => {
     button.click();
     await tick();
     expect(createChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not lock retry from remote channels in a different workspace", async () => {
+    const createChannel = vi.fn(async () => {
+      throw new Error("upstream timeout");
+    });
+    const listChannels = vi.fn(async () => ({
+      channels: [
+        {
+          channelId: "chn_other",
+          name: "Growth",
+          scope: "company" as const,
+          companyUid: "cmp_other",
+        },
+      ],
+    }));
+    const fetchChannelDirectory = vi.fn(async () => ({
+      snapshot: true,
+      cursor: "createmodalcursor000000000000000000",
+      cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      rows: [
+        {
+          channelId: "chn_other",
+          name: "Growth",
+          scope: "company",
+          companyUid: "cmp_other",
+          lastActivityAt: null,
+        },
+      ],
+    }));
+    open({
+      api: stubApi({ createChannel, listChannels, fetchChannelDirectory }),
+    });
+    await tick();
+    await gotoCreate("Growth");
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')?.textContent).toContain(
+        "you can try again",
+      );
+    });
+    expect(fetchChannelDirectory).toHaveBeenCalledWith(null);
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.disabled,
+    ).toBe(false);
+  });
+
+  it("does not lock a personal retry from remote company channels", async () => {
+    const createChannel = vi.fn(async () => {
+      throw new Error("upstream timeout");
+    });
+    const listChannels = vi.fn(async () => ({
+      channels: [
+        {
+          channelId: "chn_company",
+          name: "Growth",
+          scope: "company" as const,
+          companyUid: "cmp_indigo",
+        },
+      ],
+    }));
+    const fetchChannelDirectory = vi.fn(async () => ({
+      snapshot: true,
+      cursor: "createmodalcursor000000000000000000",
+      cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      rows: [
+        {
+          channelId: "chn_company",
+          name: "Growth",
+          scope: "company",
+          companyUid: "cmp_indigo",
+          lastActivityAt: null,
+        },
+      ],
+    }));
+    open({
+      api: stubApi({ createChannel, listChannels, fetchChannelDirectory }),
+      activeScope: "personal",
+    });
+    await tick();
+    await gotoCreate("Growth");
+    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+      "",
+    );
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')?.textContent).toContain(
+        "you can try again",
+      );
+    });
+    expect(fetchChannelDirectory).toHaveBeenCalledWith(null);
+    expect(
+      $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.disabled,
+    ).toBe(false);
   });
 
   it("reports the name that was actually submitted when Enter fires before slug blur", async () => {

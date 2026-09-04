@@ -261,32 +261,6 @@ export function mergeWorkProjectsIntoDirectory(
   return applyHonestDirectoryActivity(rows, items, rows);
 }
 
-export function workItemsAsChannels(
-  items: readonly WorkFeedItem[],
-  companyUid: string,
-): Channel[] {
-  const latest = new Map<string, WorkFeedItem>();
-  for (const item of items) {
-    if (item.companyUid && item.companyUid !== companyUid) continue;
-    const prev = latest.get(item.projectId);
-    if (
-      !prev ||
-      String(item.lastActivityAt ?? "") > String(prev.lastActivityAt ?? "")
-    ) {
-      latest.set(item.projectId, item);
-    }
-  }
-  return [...latest.values()].map((item) => ({
-    channelId: item.projectId,
-    name: item.projectId,
-    scope: "project",
-    companyUid: item.companyUid,
-    projectId: item.projectId,
-    lastActivityAt: item.lastActivityAt,
-    unread: 0,
-  }));
-}
-
 const BOARD_COLUMNS = [
   {
     id: "in_progress",

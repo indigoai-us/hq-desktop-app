@@ -40,7 +40,7 @@ export const STAGE_LABELS: Record<StageId, string> = {
   import: "Importing existing setup",
   indexing: "Registering for search",
   menubar: "Finishing up",
-  mesh: "Syncing projects to the mesh",
+  mesh: "Installing daemon",
 };
 
 export type StageStatus = "pending" | "running" | "ok" | "failed";

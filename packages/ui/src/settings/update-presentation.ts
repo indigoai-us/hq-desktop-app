@@ -86,6 +86,58 @@ export function isInstallAlreadyInProgress(message?: string | null): boolean {
   return (message ?? "").toLowerCase().includes("already in progress");
 }
 
+/** Hint under RESTART TO UPDATE while auto-install waits for a sync-idle gap. */
+export function appRowIdleHint(remainingSecs: number | null): string | null {
+  if (remainingSecs == null || remainingSecs < 0) return null;
+  if (remainingSecs === 0) {
+    return "Auto-install is pausing sync, then restarting";
+  }
+  const mins = Math.max(1, Math.ceil(remainingSecs / 60));
+  return mins === 1
+    ? "Auto-install waits for a sync gap · 1 min left"
+    : `Auto-install waits for a sync gap · ${mins} min left`;
+}
+
+export function remainingSecsFromPayload(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const rec = payload as {
+    remainingSecs?: unknown;
+    remaining_secs?: unknown;
+    waitingForIdleSecs?: unknown;
+    waiting_for_idle_secs?: unknown;
+  };
+  const raw =
+    rec.remainingSecs ??
+    rec.remaining_secs ??
+    rec.waitingForIdleSecs ??
+    rec.waiting_for_idle_secs;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  return Math.max(0, Math.round(raw));
+}
+
+export interface RecommendBanner {
+  version: string;
+  message: string | null;
+}
+
+export function recommendBannerFromPayload(payload: unknown): RecommendBanner | null {
+  if (!payload || typeof payload !== "object") return null;
+  const rec = payload as {
+    latestVersion?: unknown;
+    latest_version?: unknown;
+    message?: unknown;
+  };
+  const versionRaw = rec.latestVersion ?? rec.latest_version;
+  const version =
+    typeof versionRaw === "string" && versionRaw.trim() ? versionRaw.trim() : null;
+  if (!version) return null;
+  const message =
+    typeof rec.message === "string" && rec.message.trim()
+      ? rec.message.trim()
+      : null;
+  return { version, message };
+}
+
 export function progressPercentFrom(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const rec = payload as { percent?: unknown; downloaded?: unknown; total?: unknown };

@@ -5,10 +5,13 @@
 
 import {
   isProjectArtifactPath,
+  liveSessionsForProject,
+  parseLiveReadResponse,
   parseMeshProjectView,
   projectFilesToItems,
   projectToStatus,
   projectViewToBoard,
+  workMeshLivePath,
   type MeshProjectFile,
   type MeshProjectView,
 } from "@hq/core";
@@ -21,8 +24,10 @@ import {
   type ChannelFilePreview,
   type ChannelStatusModel,
   type ConversationRow,
+  type LiveReadSessionInput,
   type ServerWorkSessionInput,
   type StatusMemberInput,
+  type StatusPresenceInput,
   type VaultFilePreviewRequest,
 } from "@hq/ui";
 import { hqProFetch, type HqProFetch } from "./hq-pro-client.js";
@@ -202,13 +207,63 @@ export function parseWorkSessions(raw: unknown): ServerWorkSessionInput[] {
   return out;
 }
 
+/** Map a company live-read onto project-scoped session + presence inputs. */
+export function liveInputsForProject(
+  liveRaw: unknown,
+  projectId: string,
+): {
+  liveSessions: LiveReadSessionInput[];
+  presence: StatusPresenceInput[];
+} {
+  const parsed = parseLiveReadResponse(liveRaw);
+  const presence: StatusPresenceInput[] = (parsed?.participants ?? []).map(
+    (p) => ({
+      actorUid: p.actorUid,
+      status: p.presence,
+      actorType: p.actorType,
+    }),
+  );
+  const liveSessions: LiveReadSessionInput[] = liveSessionsForProject(
+    parsed,
+    projectId,
+  ).map((s) => ({
+    sessionId: s.sessionId,
+    actorUid: s.actorUid,
+    actorType: s.actorType,
+    displayName: s.displayName,
+    harness: s.harness,
+    taskId: s.taskId ?? null,
+    turnCount: s.turnCount,
+    status: s.status,
+    lastTurnAt: s.lastTurnAt,
+    startedAt: s.startedAt,
+  }));
+  return { liveSessions, presence };
+}
+
 export function metaFromProjectView(
   view: MeshProjectView,
   members: StatusMemberInput[],
   sessions: ServerWorkSessionInput[],
   companyLabel?: string | null,
+  live?: {
+    liveSessions?: LiveReadSessionInput[];
+    presence?: StatusPresenceInput[];
+  },
 ): LiveProjectMeta {
-  const board = projectViewToBoard(view) as BoardTabData;
+  const liveSessions = live?.liveSessions ?? [];
+  const board = projectViewToBoard(view, {
+    liveSessions: liveSessions.map((s) => ({
+      sessionId: s.sessionId,
+      actorUid: s.actorUid,
+      displayName: s.displayName ?? undefined,
+      harness: s.harness,
+      taskId: s.taskId,
+      turnCount: s.turnCount,
+      lastTurnAt: s.lastTurnAt,
+      actorType: s.actorType,
+    })),
+  }) as BoardTabData;
   const files = projectFilesToItems(
     view.files,
     view.companyUid,
@@ -233,6 +288,8 @@ export function metaFromProjectView(
     },
     members,
     serverSessions: sessions,
+    liveSessions,
+    presence: live?.presence,
     companyLabel,
   });
   return { board, files, status };
@@ -254,7 +311,7 @@ export async function loadLiveProjectMeta(
   }
 
   const fetchImpl = deps.fetch ?? hqProFetch;
-  const [viewRaw, membersRaw, sessionsRaw] = await Promise.all([
+  const [viewRaw, membersRaw, sessionsRaw, liveRaw] = await Promise.all([
     projectId && companyUid
       ? fetchJson(
           `/v1/work-mesh/projects/${encodeURIComponent(projectId)}?companyUid=${encodeURIComponent(companyUid)}`,
@@ -273,30 +330,46 @@ export async function loadLiveProjectMeta(
           fetchImpl,
         )
       : Promise.resolve({ kind: "not-found", value: null } as const),
+    companyUid
+      ? fetchJson(workMeshLivePath(companyUid), fetchImpl)
+      : Promise.resolve({ kind: "not-found", value: null } as const),
   ]);
 
   const view = parseMeshProjectView(viewRaw.value);
   const members = parseChannelMembers(membersRaw.value);
   const sessions = parseWorkSessions(sessionsRaw.value);
+  const live = liveInputsForProject(liveRaw.value, projectId);
   if (view) {
-    const meta = metaFromProjectView(view, members, sessions, companyLabel);
+    const meta = metaFromProjectView(
+      view,
+      members,
+      sessions,
+      companyLabel,
+      live,
+    );
     if (meta.files.length > 0) return { meta, definitiveMiss: false };
     const vaultFiles = await listVaultProjectFiles(companyUid, projectId, {
       fetch: fetchImpl,
     });
     return { meta: { ...meta, files: vaultFiles }, definitiveMiss: false };
   }
-  if (members.length === 0 && sessions.length === 0) {
+  if (
+    members.length === 0 &&
+    sessions.length === 0 &&
+    live.liveSessions.length === 0
+  ) {
     return {
       meta: null,
       definitiveMiss:
         viewRaw.kind === "not-found" &&
         membersRaw.kind === "not-found" &&
-        sessionsRaw.kind === "not-found",
+        sessionsRaw.kind === "not-found" &&
+        liveRaw.kind === "not-found",
       retryable:
         viewRaw.kind === "error" ||
         membersRaw.kind === "error" ||
-        sessionsRaw.kind === "error",
+        sessionsRaw.kind === "error" ||
+        liveRaw.kind === "error",
     };
   }
   return {
@@ -307,6 +380,8 @@ export async function loadLiveProjectMeta(
         project: { id: projectId, title: row.title },
         members,
         serverSessions: sessions,
+        liveSessions: live.liveSessions,
+        presence: live.presence,
         companyLabel,
       }),
     },

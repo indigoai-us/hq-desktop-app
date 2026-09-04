@@ -657,10 +657,22 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
         tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
     };
     let win_w = size.width as f64;
+    // Only used on the macOS clamped-positioning path below.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let win_h = size.height as f64;
+    // Only used on the macOS anchor-lookup path below.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let tray_center_x = tray_x + tray_w / 2.0;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let tray_center_y = tray_y + tray_h / 2.0;
 
+    // `tray_anchor_monitor` (multi-monitor anchor lookup) and the `Monitor`
+    // type it returns are only defined on macOS. This whole function is
+    // compiled for every non-Windows target (currently macOS and Linux), so
+    // on Linux there is no anchor lookup to call — skip it entirely and go
+    // straight to the same fallback `compute_popover_position` call used
+    // below when the macOS lookup itself fails to resolve a monitor.
+    #[cfg(target_os = "macos")]
     let (pop_x, pop_y) = window
         .available_monitors()
         .ok()
@@ -691,6 +703,16 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
                 POPOVER_GAP_PX,
             )
         });
+
+    #[cfg(not(target_os = "macos"))]
+    let (pop_x, pop_y) = hq_platform::tray_geometry::compute_popover_position(
+        tray_x,
+        tray_y,
+        tray_w,
+        tray_h,
+        win_w,
+        POPOVER_GAP_PX,
+    );
 
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }

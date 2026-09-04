@@ -77,6 +77,7 @@ pub struct VersionCheckResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionGateEvent {
     pub current_version: String,
     pub latest_version: String,
@@ -173,8 +174,15 @@ async fn react_to_decision(app: &AppHandle, decision: &VersionCheckResponse) {
                 decision.current_version, decision.min_version, decision.latest_version
             ),
         );
+        // Force installs through the bounded updater: skip the 10-minute idle
+        // wait, pause new sync cycles, drain in-flight transfers, then install.
+        // A forced install that fails is the ONLY reason a client stays below
+        // the floor once the gate fires, so it must reach the server. Before
+        // this, the failure lived only in `~/.hq/logs/hq-sync.log`, which is
+        // why a stuck cohort was visible as "still old" but never as "cannot
+        // install".
         if let Err(e) = crate::updater::install_stable_update(app).await {
-            log("version-gate", &format!("safe install failed: {e}"));
+            crate::updater::report_install_failure("version-gate", &e);
         }
         return;
     }
@@ -353,5 +361,19 @@ mod tests {
 
         let result = fetch_decision(&server.uri(), "0.1.107").await.unwrap();
         assert!(result.is_some(), "matcher should have accepted the body");
+    }
+
+    #[test]
+    fn version_gate_event_serializes_camel_case_for_the_shell_banner() {
+        let event = VersionGateEvent {
+            current_version: "0.10.184".into(),
+            latest_version: "0.10.185".into(),
+            min_version: "0.10.100".into(),
+            message: Some("Please update".into()),
+        };
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(json["latestVersion"], "0.10.185");
+        assert_eq!(json["currentVersion"], "0.10.184");
+        assert!(json.get("latest_version").is_none());
     }
 }

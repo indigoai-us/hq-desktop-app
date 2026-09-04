@@ -254,10 +254,49 @@ static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// snapshot, so a watcher cannot slip into the install window after the
 /// snapshot but before the app exits.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Blocks new `hq-sync` passes while an automatic/forced desktop update is
+/// waiting for in-flight transfers to drain, then installing. Distinct from
+/// full process quiescence: the watch daemon stays up; only new sync cycles
+/// are refused.
+static SYNC_CYCLE_PAUSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Direct `hq` mutations that are intentionally awaited outside the streamed
 /// process registry. The updater closes their admission gate before reading
 /// this count, so it can defer instead of orphaning an in-flight mutation.
 static UPDATE_SENSITIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+const SYNC_PROCESS_HANDLE: &str = "hq-sync";
+
+/// Whether a new process registration should be refused because an update is
+/// pausing fresh sync cycles. Only the sync pass itself is gated; the watch
+/// daemon and other HQ children keep running.
+pub(crate) fn sync_cycle_registration_allowed(handle: &str, pause_requested: bool) -> bool {
+    !pause_requested || handle != SYNC_PROCESS_HANDLE
+}
+
+/// RAII lease that refuses new `hq-sync` registrations so an in-flight pass
+/// can finish and a new one cannot start before the updater restarts.
+pub struct SyncCyclePauseGuard {
+    released: bool,
+}
+
+impl SyncCyclePauseGuard {
+    fn new() -> Self {
+        SYNC_CYCLE_PAUSE_REQUESTED.store(true, Ordering::SeqCst);
+        Self { released: false }
+    }
+}
+
+impl Drop for SyncCyclePauseGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            SYNC_CYCLE_PAUSE_REQUESTED.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn pause_new_sync_cycles() -> SyncCyclePauseGuard {
+    SyncCyclePauseGuard::new()
+}
 
 pub struct UpdateSensitiveOperationGuard<'a> {
     active: &'a AtomicUsize,
@@ -309,6 +348,19 @@ mod update_sensitive_operation_tests {
 
         drop(guard);
         assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod sync_cycle_pause_tests {
+    use super::*;
+
+    #[test]
+    fn pause_refuses_only_new_sync_passes() {
+        assert!(sync_cycle_registration_allowed("hq-sync", false));
+        assert!(!sync_cycle_registration_allowed("hq-sync", true));
+        assert!(sync_cycle_registration_allowed("hq-sync-daemon", true));
+        assert!(sync_cycle_registration_allowed("hq-work", true));
     }
 }
 
@@ -532,6 +584,12 @@ pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
+        return None;
+    }
+    if !sync_cycle_registration_allowed(
+        handle,
+        SYNC_CYCLE_PAUSE_REQUESTED.load(Ordering::Acquire),
+    ) {
         return None;
     }
     match reg.active.entry(handle.to_string()) {
@@ -3474,11 +3532,16 @@ pub fn quiesce_for_update(timeout: Duration) -> Result<UpdateQuiescenceGuard, St
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map_err(|_| "update process quiescence is already in progress".to_string())?;
     let guard = UpdateQuiescenceGuard { committed: false };
-    // The gate is already closed, so this check is race-free: a manual sync
-    // that registered first wins and defers the update; a later registration
-    // observes UPDATE_QUIESCE_REQUESTED and cannot enter the install window.
-    if is_registered("hq-sync") {
-        return Err(crate::updater::UPDATE_DEFERRED_DURING_SYNC.to_string());
+    // The gate is already closed, so a later registration observes
+    // UPDATE_QUIESCE_REQUESTED and cannot enter the install window. An
+    // in-flight `hq-sync` is cancelled below rather than deferring forever —
+    // the updater only reaches this path after a bounded idle wait (or a
+    // manual/forced install that must not be blocked).
+    if is_registered(SYNC_PROCESS_HANDLE) {
+        log(
+            "updater",
+            "quiescing in-flight sync so the desktop update can proceed",
+        );
     }
     if UPDATE_SENSITIVE_OPERATIONS.load(Ordering::SeqCst) != 0 {
         return Err(crate::updater::UPDATE_DEFERRED_DURING_MUTATION.to_string());

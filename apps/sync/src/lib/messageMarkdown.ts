@@ -1,4 +1,5 @@
 import { renderMarkdown, safeHref } from './markdown';
+import { replaceEmojiShortcodesInHtml } from './emojiShortcodes';
 
 function trimBlankBoundaryLines(lines: string[]): string[] {
   let start = 0;
@@ -315,5 +316,10 @@ export function autolinkMessageUrls(html: string): string {
 
 export function renderMessageBodyMarkdown(body: string): string {
   const markdown = applyChatLineBreaks(normalizeMessageMarkdown(body));
-  return wrapMessageMentions(autolinkMessageUrls(renderMarkdown(markdown)));
+  // Emoji conversion runs on already-escaped HTML after autolinking + mention
+  // wrapping, so <a>/<code>/<pre> contents (URLs, code spans, fences) and the
+  // tags themselves are never rewritten.
+  return replaceEmojiShortcodesInHtml(
+    wrapMessageMentions(autolinkMessageUrls(renderMarkdown(markdown))),
+  );
 }

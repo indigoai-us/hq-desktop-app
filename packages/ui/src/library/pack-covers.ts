@@ -15,6 +15,7 @@
  */
 
 import type { MarketplaceListing } from "../marketplace/marketplace.js";
+import { marketplaceCoverSrc } from "../avatars/csp-image-src.js";
 import { safeLocalImageSrc } from "../common/local-image-src.js";
 // Vite resolves each import to a hashed asset URL string at build time.
 import engineeringCover from "./assets/pack-covers/engineering.jpg";
@@ -23,13 +24,12 @@ import pocockCover from "./assets/pack-covers/pocock-skills.jpg";
 import impeccableCover from "./assets/pack-covers/impeccable.jpg";
 import magicpathCover from "./assets/pack-covers/magicpath-agent-skills.jpg";
 
-/**
- * Virtual-hosted S3 origin hq-pro mints cover presigned URLs against in
- * production (`hq-marketplace-assets-${stage}` with stage `hq-prod`). Keep in
- * lockstep with `apps/sync/src-tauri/tauri.conf.json` `img-src`.
- */
-export const MARKETPLACE_COVER_HOST =
-  "hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com";
+export {
+  MARKETPLACE_COVER_HOST,
+  marketplaceAvatarSrc,
+  marketplaceCoverSrc,
+  paintableAvatarSrc,
+} from "../avatars/csp-image-src.js";
 
 /**
  * Bundled cover art, keyed by pack slug. Add an entry here (and the asset under
@@ -44,57 +44,6 @@ export const BUNDLED_PACK_COVERS: Readonly<Record<string, string>> = {
   impeccable: impeccableCover,
   "magicpath-agent-skills": magicpathCover,
 };
-
-/**
- * Accept a hq-pro-minted marketplace cover URL, or `null` when the value is not
- * a https URL on the allowlisted assets host. Tracking-pixel hosts, http, and
- * credentialed URLs are rejected so a listing cannot load arbitrary images.
- */
-export function marketplaceCoverSrc(
-  raw: string | null | undefined,
-): string | null {
-  const src = raw?.trim() ?? "";
-  if (src === "" || /[\u0000-\u001f\u007f]/.test(src)) return null;
-  let url: URL;
-  try {
-    url = new URL(src);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:") return null;
-  if (url.username !== "" || url.password !== "") return null;
-  if (url.hostname !== MARKETPLACE_COVER_HOST) return null;
-  if (!url.pathname.startsWith("/listings/")) return null;
-  return src;
-}
-
-/**
- * Accept a hq-pro-minted person/creator avatar URL on the same marketplace
- * assets host. Paths are `/members/…` (HQ profile photos) or `/creators/…`
- * (creator-directory avatars). Arbitrary hosts stay blocked.
- */
-export function marketplaceAvatarSrc(
-  raw: string | null | undefined,
-): string | null {
-  const src = raw?.trim() ?? "";
-  if (src === "" || /[\u0000-\u001f\u007f]/.test(src)) return null;
-  let url: URL;
-  try {
-    url = new URL(src);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:") return null;
-  if (url.username !== "" || url.password !== "") return null;
-  if (url.hostname !== MARKETPLACE_COVER_HOST) return null;
-  if (
-    !url.pathname.startsWith("/members/") &&
-    !url.pathname.startsWith("/creators/")
-  ) {
-    return null;
-  }
-  return src;
-}
 
 /**
  * Resolve the cover-art URL for a listing, or `null` when none is available.

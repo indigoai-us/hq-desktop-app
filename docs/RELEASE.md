@@ -14,6 +14,30 @@ The updater manifests point at version-pinned GitHub Release assets. Stable,
 beta, and alpha share one trust root and artifact contract, but their release
 selection is isolated so a prerelease cannot replace stable latest.
 
+## PR checks and stacked PRs
+
+`ci.yml` and `windows-check.yml` run on **every** pull request base, not just
+`main`, and both list `edited` in their `pull_request` `types:`. If you are
+stacking PRs (feature branch on feature branch), you do not need to retarget
+onto `main` to get CI, and retargeting a stacked PR later starts a fresh run on
+its own instead of needing a throwaway commit to unstick it.
+
+Two things this protects against, both previously hit:
+
+- A `branches: [main]` filter meant a PR against a non-main base matched no
+  trigger. Its required contexts then never reported at all, which GitHub shows
+  as "waiting for status to be reported" forever rather than as "not run" — the
+  PR looks blocked with nothing to click.
+- Changing a PR's base fires only `pull_request.edited`, so without that type in
+  the list a retarget still started nothing.
+
+`edited` also fires on title and body edits, and those redundant runs are
+accepted deliberately. Gating the jobs on `github.event.changes.base` would be
+cheaper but unsound: a job skipped by a job-level `if:` reports **Success** to
+the branch protection rules, so editing the title of a PR with a red suite would
+overwrite every required check with green. `scripts/ci-cost-contract.test.ts`
+pins all of the above.
+
 ## macOS bundle identity (do not rename)
 
 The shipped macOS bundle name is `HQ.app` — `productName` `"HQ"` in
@@ -155,9 +179,11 @@ Where you tag depends on the channel:
 - **Stable** (`vX.Y.Z`) must be cut from `main` — its commit has to be merged
   before you tag it.
 - **beta / alpha** (`-beta.N` / `-alpha.N`) are testing builds and may **only**
-  be cut from a non-`main` branch. Tagging a prerelease on a commit that is
-  already merged into `main` is rejected; promote it to a stable `vX.Y.Z` tag
-  instead. Prerelease releases never stamp their version back to `main`.
+  be cut from a `release/*` branch. Their tag commit must be off `main` and
+  contained in at least one `release/*` branch; creating those branches is
+  restricted to the Release Managers team. A prerelease tag that is on `main`
+  or not contained in a `release/*` branch is rejected. Prerelease releases
+  never stamp their version back to `main`.
 
 There is no version bump to make first and no release pull request. The tag is
 the single source of truth for the version: the `validate` job stamps
@@ -180,11 +206,11 @@ Two consequences worth knowing:
   never run the sync at all, so they never touch `main`.
 
 For a **stable** release the workflow requires the tag commit to be contained in
-`main`; a **prerelease** requires the opposite — its commit must not be on
-`main`. This branch check runs only when a tag is first pushed, so a
-`workflow_dispatch` retry of an existing tag is never re-gated. Never move a
-pushed tag after a failed release; fix the release path and cut a fresh SemVer
-tag.
+`main`; a **prerelease** requires its tag commit to be off `main` and contained
+in at least one `release/*` branch. This branch check runs only when a tag is
+first pushed, so a `workflow_dispatch` retry of an existing tag is never
+re-gated. Never move a pushed tag after a failed release; fix the release path
+and cut a fresh SemVer tag.
 
 ## Desktop shell guard
 
@@ -334,20 +360,49 @@ member with conversations. The macOS release job now launches the signed
 run. The secret is **fail-closed**: if it is missing, the release job fails
 and nothing is published. There is no `continue-on-error`.
 
-Provision it like this:
+The dedicated identity (provisioned 2026-09-03, no browser):
 
-1. Create (or reuse) a Cognito user in the HQ prod pool who is **not** an
-   Indigo member. The account must have an empty conversation directory —
-   only the synthetic `#setup` channel. A personal-scope-only user also
-   works. Do **not** use an `@getindigo.ai` employee account.
-2. Sign in to HQ once on a throwaway machine / profile so
-   `~/.hq/cognito-tokens.json` is written.
-3. Copy the `refreshToken` field (never commit it, never paste it into a
-   ticket). Store it as the repository Actions secret
-   `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`.
-4. Confirm the user still has an empty inbox before each release train;
-   if it accumulates conversations, the smoke no longer represents the
-   v0.10.178 failure mode.
+| Field | Value |
+| --- | --- |
+| Email | `release-smoke+non-indigo@hqforwork.com` |
+| Cognito pool | `vault-users-hq-prod` (us-east-1, account `804849608251`) |
+| App client | `7acei2c8v870enheptb1j5foln` (desktop `COGNITO_CLIENT_ID`) |
+| Auth flow | `USER_PASSWORD_AUTH` via `initiate-auth`. `ADMIN_USER_PASSWORD_AUTH` is **not** enabled on this client — do not flip it on as a drive-by client update. |
+| API | `https://hqapi.hq.computer` |
+| Company | **Release Smoke Co** (`release-smoke-co`, `cmp_01M1JD586GZ76W7JQHNPB124EQ`) — owner, not Indigo |
+| Person | `prs_01M1JD567NMK52BB6HRKEE40HX` |
+| Inbox | server directory is only the built-in virtual `#setup` channel |
+| GitHub secret | `HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO` on `indigoai-us/hq-desktop-app` |
+| Vault (Indigo) | `RELEASE_SMOKE_NON_INDIGO_EMAIL`, `RELEASE_SMOKE_NON_INDIGO_PASSWORD` |
+
+Refresh tokens from this client last **30 days**. Re-mint before expiry, or as soon as the macOS release job fails closed on a Cognito `NotAuthorizedException`. Do **not** chat in other channels on this account; extra conversations would stop the smoke from representing the v0.10.178 empty-inbox failure.
+
+Re-mint (never prints the token; pipes Cognito stdout into `gh secret set`):
+
+```bash
+hq secrets exec --company indigo --only \
+  AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID,AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY,AWS_INDIGO_ALT_AWS_DEFAULT_REGION,RELEASE_SMOKE_NON_INDIGO_EMAIL,RELEASE_SMOKE_NON_INDIGO_PASSWORD,INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN \
+  -- sh -c '
+    set -euo pipefail
+    export AWS_ACCESS_KEY_ID="$AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID"
+    export AWS_SECRET_ACCESS_KEY="$AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY"
+    unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE AWS_PAGER
+    export AWS_DEFAULT_REGION="${AWS_INDIGO_ALT_AWS_DEFAULT_REGION:-us-east-1}"
+    export AWS_REGION="$AWS_DEFAULT_REGION"
+    export GH_TOKEN="$INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN"
+    aws cognito-idp initiate-auth \
+      --region "$AWS_REGION" \
+      --client-id 7acei2c8v870enheptb1j5foln \
+      --auth-flow USER_PASSWORD_AUTH \
+      --auth-parameters "USERNAME=${RELEASE_SMOKE_NON_INDIGO_EMAIL},PASSWORD=${RELEASE_SMOKE_NON_INDIGO_PASSWORD}" \
+      --query AuthenticationResult.RefreshToken \
+      --output text \
+    | gh secret set HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO \
+        -R indigoai-us/hq-desktop-app --app actions
+  '
+```
+
+If the password itself needs rotating, `admin-set-user-password --permanent` against `vault-users-hq-prod`, then `hq secrets set RELEASE_SMOKE_NON_INDIGO_PASSWORD --company indigo --from-stdin`, then re-mint. Confirm `GET https://hqapi.hq.computer/v1/notify/channels` still returns only `setup` before the next release train.
 
 The smoke script is `scripts/macos-artifact-smoke.mjs`. It writes an isolated
 `HOME` with that refresh token, launches `HQ.app` with

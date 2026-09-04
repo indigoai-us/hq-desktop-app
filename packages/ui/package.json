@@ -9,7 +9,11 @@
       "svelte": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./board/thread-model": "./src/board/thread-model.ts"
+    "./board/thread-model": "./src/board/thread-model.ts",
+    "./emoji-shortcodes": {
+      "svelte": "./src/common/emojiShortcodes.ts",
+      "default": "./src/common/emojiShortcodes.ts"
+    }
   },
   "scripts": {
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",

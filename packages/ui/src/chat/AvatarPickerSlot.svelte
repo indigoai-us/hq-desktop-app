@@ -12,6 +12,7 @@
     avatarUrl?: string | null;
     disabled?: boolean;
     packs?: AvatarPack[] | null;
+    loadPacks?: () => Promise<AvatarPack[]>;
     saving?: boolean;
     error?: string | null;
     onsave?: (selection: AvatarSelection) => void | Promise<void>;
@@ -23,6 +24,7 @@
     avatarUrl = null,
     disabled = false,
     packs = null,
+    loadPacks,
     saving = false,
     error = null,
     onsave,
@@ -51,6 +53,7 @@
       {agentUid}
       currentSrc={avatarUrl}
       {packs}
+      {loadPacks}
       {saving}
       {error}
       {onsave}

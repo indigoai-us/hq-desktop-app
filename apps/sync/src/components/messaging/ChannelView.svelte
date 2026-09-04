@@ -406,6 +406,7 @@
     placeholder=""
     readonly={true}
     onsend={() => {}}
+    companyUid={current.companyUid}
   />
   <div class="join-cta">
     <p class="join-text">
@@ -443,6 +444,7 @@
     {activeRootEventId}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    companyUid={current.companyUid}
   >
     {#snippet belowMessages()}
       <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />

@@ -22,6 +22,20 @@ function webAdapter(): PlatformAdapter {
     kind: "web",
     isAvailable: () => false,
     capabilities: {},
+    identity: {
+      listAvatarPacks: async () => ok({ packs: [], expiresAt: Date.now() + 60_000 }),
+      getAvatarPack: async () =>
+        ok({
+          id: "animals",
+          name: "Animals",
+          version: "1.0.0",
+          author: { handle: "lizzy", displayName: "Lizzy" },
+          count: 0,
+          items: [],
+          expiresAt: Date.now() + 60_000,
+        }),
+      selectAgentAvatar: async () => ok({ uid: AGENT_UID }),
+    },
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
