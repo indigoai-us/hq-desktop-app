@@ -1863,10 +1863,14 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           TAG: ${{ needs.validate.outputs.tag }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
+          # validate can fail before it produces outputs, so fall back to the ref
+          # that triggered the run rather than announcing a versionless failure.
+          FALLBACK_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          LABEL="${VERSION:-${TAG#v}}"
+          LABEL="${VERSION:-}"
+          if [ -z "$LABEL" ]; then LABEL="${TAG:-$FALLBACK_TAG}"; LABEL="${LABEL#v}"; fi
           if [ "$PUBLISH_RESULT" = "success" ]; then
             MESSAGE="HQ desktop v${LABEL} is live"
           else
