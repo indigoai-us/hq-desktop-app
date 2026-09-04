@@ -95,7 +95,16 @@ where
         let mut wrote_local = false;
 
         if !already_local {
-            write_yaml_cloud_true(hq_root, &slug, name.as_deref())?;
+            // A company.yaml we cannot parse (or that is not a mapping) is
+            // left untouched; that company is skipped this pass rather than
+            // having its file replaced with a bare `cloud: true`.
+            if let Err(e) = write_yaml_cloud_true(hq_root, &slug, name.as_deref()) {
+                log(
+                    "provision-reconcile",
+                    &format!("skip '{slug}': {e}"),
+                );
+                continue;
+            }
             if bucket_name.is_empty() {
                 match provisioner(slug.clone(), name.clone(), hq_root.to_path_buf()).await {
                     Ok(cli) => {
@@ -226,31 +235,31 @@ fn yaml_cloud_true(path: &Path) -> bool {
 }
 
 /// Ensure `companies/{slug}/company.yaml` has `cloud: true` without clobbering
-/// unrelated keys. Creates the file when missing.
+/// unrelated keys. Creates the file when missing. An existing file that does
+/// not parse as a YAML mapping is never rewritten: this returns `Err` and the
+/// caller skips the company, so a hand-edited or corrupted config is preserved
+/// byte-for-byte for the user to fix.
 fn write_yaml_cloud_true(hq_root: &Path, slug: &str, name: Option<&str>) -> Result<(), String> {
     let dir = hq_root.join("companies").join(slug);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all {}: {e}", dir.display()))?;
     let path = dir.join("company.yaml");
     let mut value: serde_yaml::Value = if path.exists() {
         let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        serde_yaml::from_slice(&bytes).unwrap_or_else(|_| {
-            let mut m = serde_yaml::Mapping::new();
-            m.insert(
-                serde_yaml::Value::String("cloud".into()),
-                serde_yaml::Value::Bool(true),
-            );
-            serde_yaml::Value::Mapping(m)
-        })
+        serde_yaml::from_slice(&bytes)
+            .map_err(|e| format!("parse {}: {e} (left unchanged)", path.display()))?
     } else {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     };
-    let mapping = match value.as_mapping_mut() {
-        Some(m) => m,
-        None => {
-            value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-            value.as_mapping_mut().expect("just created mapping")
-        }
-    };
+    if value.is_null() {
+        // An empty file parses as null; treat it as an empty mapping.
+        value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    let mapping = value.as_mapping_mut().ok_or_else(|| {
+        format!(
+            "{} is not a YAML mapping (left unchanged)",
+            path.display()
+        )
+    })?;
     mapping.insert(
         serde_yaml::Value::String("cloud".into()),
         serde_yaml::Value::Bool(true),
@@ -525,6 +534,98 @@ mod tests {
         assert_eq!(sha256_file(&dir.join(".hq").join("config.json")), cfg_sha);
         let yaml = std::fs::read_to_string(dir.join("company.yaml")).unwrap();
         assert!(yaml.contains("extra: keep-me"));
+    }
+
+    #[tokio::test]
+    async fn malformed_company_yaml_is_left_intact_and_company_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let uid = "cmp_acme";
+        write_manifest(tmp.path(), slug);
+        let dir = tmp.path().join("companies").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Unbalanced bracket: not parseable as YAML.
+        let malformed = "name: Acme\ncloud: [true\n  extra: keep-me\n";
+        std::fs::write(dir.join("company.yaml"), malformed).unwrap();
+        let yaml_sha = sha256_file(&dir.join("company.yaml"));
+
+        let server = MockServer::start().await;
+        mount_owner_company(
+            &server,
+            uid,
+            slug,
+            Some("hq-vault-cmp-acme"),
+            true,
+            200,
+        )
+        .await;
+
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("provisioner must not run for a skipped company") },
+        )
+        .await
+        .expect("a malformed company.yaml must not fail the whole pass");
+
+        assert!(result.is_empty(), "skipped company must not be reported");
+        assert_eq!(sha256_file(&dir.join("company.yaml")), yaml_sha);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("company.yaml")).unwrap(),
+            malformed
+        );
+        assert!(!dir.join(".hq").join("config.json").exists());
+        assert!(!dir.join("company.yaml.tmp").exists());
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            !reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")),
+            "a skipped company must not be acked"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_mapping_company_yaml_is_left_intact_and_company_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        write_manifest(tmp.path(), slug);
+        let dir = tmp.path().join("companies").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Valid YAML, but a sequence rather than a mapping.
+        let seq = "- cloud\n- true\n";
+        std::fs::write(dir.join("company.yaml"), seq).unwrap();
+
+        let server = MockServer::start().await;
+        mount_owner_company(&server, "cmp_acme", slug, Some("b"), true, 200).await;
+
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            |_s, _n, _r| async { panic!("provisioner must not run") },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("company.yaml")).unwrap(), seq);
+    }
+
+    #[test]
+    fn write_yaml_cloud_true_preserves_unrelated_keys_and_creates_when_missing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("companies").join("acme");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("company.yaml"), "name: Acme\nextra: keep-me\n").unwrap();
+        write_yaml_cloud_true(tmp.path(), "acme", Some("Acme")).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("company.yaml")).unwrap();
+        assert!(yaml.contains("extra: keep-me"));
+        assert!(yaml_cloud_true(&dir.join("company.yaml")));
+
+        write_yaml_cloud_true(tmp.path(), "fresh", Some("Fresh")).unwrap();
+        let fresh = tmp.path().join("companies").join("fresh").join("company.yaml");
+        assert!(yaml_cloud_true(&fresh));
+        assert!(std::fs::read_to_string(&fresh).unwrap().contains("name: Fresh"));
     }
 
     #[tokio::test]
