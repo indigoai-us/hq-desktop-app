@@ -91,6 +91,35 @@ describe("AtlasPage screenshot states", () => {
     ).toBe("1 person offline");
   });
 
+  it("offers Move to another company when canMigrate is set", () => {
+    const seen: string[] = [];
+    const root = render({
+      live: ATLAS_ONE_ACTOR_LIVE,
+      canMigrate: true,
+      migrateDestinations: [{ uid: "cmp_other", label: "Other" }],
+      onmigratesession: (sessionId: string) => {
+        seen.push(sessionId);
+      },
+    });
+    const btn = root.querySelector<HTMLButtonElement>(
+      '[data-testid="atlas-session-migrate"]',
+    );
+    expect(btn).toBeTruthy();
+    btn!.click();
+    flushSync();
+    expect(seen).toEqual(["sess_corey_1"]);
+  });
+
+  it("hides Move when canMigrate is false", () => {
+    const root = render({
+      live: ATLAS_ONE_ACTOR_LIVE,
+      canMigrate: false,
+      migrateDestinations: [{ uid: "cmp_other", label: "Other" }],
+      onmigratesession: () => {},
+    });
+    expect(root.querySelector('[data-testid="atlas-session-migrate"]')).toBeNull();
+  });
+
   it("drops a stopped actor when presence store reports offline", () => {
     const presenceByActor = new Map([["prs_stefan", "offline" as const]]);
     const root = render({ live: ATLAS_MIXED_LIVE, presenceByActor });

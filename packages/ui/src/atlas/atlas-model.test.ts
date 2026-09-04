@@ -3,6 +3,7 @@ import {
   ATLAS_EMPTY_LIVE,
   ATLAS_MIXED_LIVE,
   ATLAS_ONE_ACTOR_LIVE,
+  atlasCanMigrateSessions,
   buildAtlasView,
 } from "./atlas-model.js";
 
@@ -57,6 +58,36 @@ describe("buildAtlasView", () => {
         harness: "hq-sessions",
       }),
     ]);
+  });
+
+  it("gates Move on company owner/admin plus at least one destination", () => {
+    expect(
+      atlasCanMigrateSessions({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "admin" },
+          { slug: "acme", cloudUid: "cmp_acme", role: "member" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      atlasCanMigrateSessions({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "member" },
+          { slug: "acme", cloudUid: "cmp_acme", role: "admin" },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      atlasCanMigrateSessions({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "admin" },
+        ],
+        destinations: [],
+      }),
+    ).toBe(false);
   });
 
   it("removes a stopped actor from online when the store reports offline (not timestamps)", () => {

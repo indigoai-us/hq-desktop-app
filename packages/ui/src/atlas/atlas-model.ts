@@ -1,9 +1,12 @@
 /**
- * Atlas v0 projection (work-mesh-live US-016).
+ * Atlas v0 projection (work-mesh-live US-016 / US-017B).
  *
  * Company roster × active projects from GET /v1/work-mesh/live, with presence
  * overridden by the in-memory PresenceStore (retained MQTT). Online/offline is
  * never derived from timestamps alone.
+ *
+ * Cross-company session move uses WorkMeshApi.migrateSession only — Atlas never
+ * rewrites companyUid locally.
  */
 
 import type {
@@ -12,6 +15,33 @@ import type {
   LiveReadResponse,
   LiveSession,
 } from "@hq/core";
+import {
+  canMigrateCompanySession,
+  migrateDestinationCompanies,
+  type MigrateCompanyOption,
+} from "../chat/session-migrate.js";
+
+export {
+  canMigrateCompanySession,
+  migrateDestinationCompanies,
+  type MigrateCompanyOption,
+};
+
+/** Whether Atlas should offer Move for sessions in this company. */
+export function atlasCanMigrateSessions(input: {
+  companyUid?: string | null;
+  companies?: Parameters<typeof canMigrateCompanySession>[0]["companies"];
+  destinations?: readonly MigrateCompanyOption[];
+}): boolean {
+  if (!canMigrateCompanySession(input)) return false;
+  if (input.destinations) return input.destinations.length > 0;
+  return (
+    migrateDestinationCompanies(
+      input.companies as Parameters<typeof migrateDestinationCompanies>[0],
+      input.companyUid ?? "",
+    ).length > 0
+  );
+}
 
 const UNASSIGNED_CONTEXT = new Set([
   "unresolved",

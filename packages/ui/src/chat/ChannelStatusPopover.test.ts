@@ -771,3 +771,64 @@ describe("ChannelStatusPopover — delete channel (owner-only trash)", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("ChannelStatusPopover — migrate session (US-017B)", () => {
+  function sessionsModel(): ChannelStatusModel {
+    const m = model();
+    m.activeSessions = [
+      {
+        id: "sess_corey",
+        principal: "Corey",
+        principalKind: "human",
+        context: "US-017B",
+        percent: null,
+        lastActivityLabel: "last activity just now",
+        blockedReason: null,
+        harness: "claude-code",
+        taskId: "US-017B",
+        turnCount: 1,
+        online: true,
+      },
+    ];
+    return m;
+  }
+
+  it("shows Move when onmigratesession is provided (shell owns role gate)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const seen: string[] = [];
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: sessionsModel(),
+        onmigratesession: (sessionId) => {
+          seen.push(sessionId);
+        },
+      },
+    });
+    await tick();
+    const btn = host.querySelector<HTMLButtonElement>(
+      '[data-testid="status-session-migrate"]',
+    );
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("aria-label")).toBe("Move to another company");
+    btn!.click();
+    await tick();
+    expect(seen).toEqual(["sess_corey"]);
+    expect(document.querySelector('[data-testid="migrate-session-dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeNull();
+  });
+
+  it("hides Move when no migrate callback is provided", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: { model: sessionsModel() },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="status-session-migrate"]'),
+    ).toBeNull();
+  });
+});

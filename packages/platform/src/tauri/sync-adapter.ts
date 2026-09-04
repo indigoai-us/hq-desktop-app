@@ -1046,6 +1046,12 @@ export function createSyncPlatformAdapter(
             companyUid: companyUid?.trim() || null,
           }),
         ),
+      migrateSession: (sessionId, body) =>
+        hqProJson(
+          'POST',
+          WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
+          body,
+        ),
     },
   };
 

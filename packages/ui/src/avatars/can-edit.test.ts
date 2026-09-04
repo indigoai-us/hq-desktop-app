@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { canEditAgentProfile } from "./can-edit.js";
+import { canEditAgentProfile, canMigrateCompanySession } from "./can-edit.js";
 
 describe("canEditAgentProfile", () => {
   it("is false for humans and for agents when the caller is not admin", () => {
@@ -38,5 +38,50 @@ describe("canEditAgentProfile", () => {
         ],
       }),
     ).toBe(false);
+  });
+});
+
+describe("canMigrateCompanySession", () => {
+  it("requires an active owner/admin membership on the source company", () => {
+    expect(
+      canMigrateCompanySession({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "admin" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canMigrateCompanySession({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "owner" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canMigrateCompanySession({
+        companyUid: "cmp_indigo",
+        companies: [
+          { slug: "indigo", cloudUid: "cmp_indigo", role: "member" },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canMigrateCompanySession({
+        companyUid: "cmp_indigo",
+        companies: [
+          {
+            slug: "indigo",
+            cloudUid: "cmp_indigo",
+            role: "admin",
+            membershipStatus: "pending",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(canMigrateCompanySession({ companyUid: "cmp_missing" })).toBe(
+      false,
+    );
   });
 });

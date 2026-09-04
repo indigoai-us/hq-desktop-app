@@ -42,6 +42,13 @@
     ondeletechannel?: () => void;
     /** Delete in flight — disables the trash control + shows "…". */
     deleting?: boolean;
+    /**
+     * Move a live session to another company (company owner/admin). Shell owns
+     * the destination picker + confirm; popover only raises sessionId.
+     */
+    onmigratesession?: (sessionId: string) => void;
+    /** Migrate in flight for a session id — disables that row's control. */
+    migratingSessionId?: string | null;
   }
 
   let {
@@ -54,6 +61,8 @@
     removingUid = null,
     ondeletechannel,
     deleting = false,
+    onmigratesession,
+    migratingSessionId = null,
   }: Props = $props();
 
   /** The signed-in member's role in this channel — gates removing others. */
@@ -330,6 +339,7 @@
         <div
           class="p-item static session-row"
           data-testid="status-active-session"
+          data-session-id={s.id}
         >
           <span
             class="m-ava"
@@ -360,6 +370,23 @@
             {/if}
             <span class="m-email">{s.lastActivityLabel}</span>
           </span>
+          {#if onmigratesession}
+            <button
+              type="button"
+              class="m-remove session-migrate"
+              data-testid="status-session-migrate"
+              aria-label="Move to another company"
+              title="Move to another company"
+              disabled={migratingSessionId === s.id}
+              onclick={() => onmigratesession?.(s.id)}
+            >
+              {#if migratingSessionId === s.id}
+                …
+              {:else}
+                Move
+              {/if}
+            </button>
+          {/if}
         </div>
       {/each}
     </section>
@@ -880,6 +907,13 @@
 
   .p-delete svg {
     display: block;
+  }
+
+  .session-migrate {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 6px;
+    font-size: 11px;
   }
 
   .member-open:focus-visible,

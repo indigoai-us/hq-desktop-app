@@ -20,6 +20,7 @@
     type AtlasViewModel,
   } from "./atlas-model.js";
   import { requestLiveRefresh } from "./live-refresh.js";
+  import type { MigrateCompanyOption } from "../chat/session-migrate.js";
   import "../home/tokens.css";
 
   interface Props {
@@ -41,6 +42,14 @@
     onback?: () => void;
     /** Header variant for shell vs classic desktop-alt chrome. */
     headerVariant?: "window" | "embedded";
+    /**
+     * Company owner/admin + at least one destination (US-017B). Shell owns the
+     * confirm dialog; Atlas only raises sessionId.
+     */
+    canMigrate?: boolean;
+    migrateDestinations?: readonly MigrateCompanyOption[];
+    onmigratesession?: (sessionId: string) => void;
+    migratingSessionId?: string | null;
   }
 
   let {
@@ -53,7 +62,15 @@
     projectLabels = null,
     onback,
     headerVariant = "embedded",
+    canMigrate = false,
+    migrateDestinations = [],
+    onmigratesession,
+    migratingSessionId = null,
   }: Props = $props();
+
+  const showMigrate = $derived(
+    Boolean(canMigrate && onmigratesession && migrateDestinations.length > 0),
+  );
 
   let fetchedLive = $state<LiveReadResponse | null>(null);
   let loadError = $state<string | null>(null);
@@ -214,6 +231,7 @@
                 data-testid="atlas-actor"
                 data-actor-uid={actor.actorUid}
                 data-actor-type={actor.actorType}
+                data-session-id={actor.sessionId}
                 data-online="true"
               >
                 <span
@@ -228,6 +246,19 @@
                   {/if}
                   <span class="atlas-harness" data-testid="atlas-harness">{actor.harness}</span>
                 </span>
+                {#if showMigrate}
+                  <button
+                    type="button"
+                    class="atlas-migrate"
+                    data-testid="atlas-session-migrate"
+                    aria-label="Move to another company"
+                    title="Move to another company"
+                    disabled={migratingSessionId === actor.sessionId}
+                    onclick={() => onmigratesession?.(actor.sessionId)}
+                  >
+                    {#if migratingSessionId === actor.sessionId}…{:else}Move{/if}
+                  </button>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -249,6 +280,7 @@
                 data-testid="atlas-actor"
                 data-actor-uid={actor.actorUid}
                 data-actor-type={actor.actorType}
+                data-session-id={actor.sessionId}
                 data-online="true"
                 data-unassigned="true"
               >
@@ -261,6 +293,19 @@
                 <span class="atlas-actor-meta">
                   <span class="atlas-harness" data-testid="atlas-harness">{actor.harness}</span>
                 </span>
+                {#if showMigrate}
+                  <button
+                    type="button"
+                    class="atlas-migrate"
+                    data-testid="atlas-session-migrate"
+                    aria-label="Move to another company"
+                    title="Move to another company"
+                    disabled={migratingSessionId === actor.sessionId}
+                    onclick={() => onmigratesession?.(actor.sessionId)}
+                  >
+                    {#if migratingSessionId === actor.sessionId}…{:else}Move{/if}
+                  </button>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -425,6 +470,31 @@
 
   .atlas-harness {
     text-transform: lowercase;
+  }
+
+  .atlas-migrate {
+    flex: 0 0 auto;
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 2px 6px;
+    border: 1px solid var(--v4-hairline, rgb(0 0 0 / 0.12));
+    border-radius: 6px;
+    background: transparent;
+    color: var(--v4-text-2, #666);
+    font: 500 11px/1.2 var(--font-sans, system-ui, sans-serif);
+    cursor: pointer;
+  }
+
+  .atlas-migrate:hover:not(:disabled),
+  .atlas-migrate:focus-visible:not(:disabled) {
+    color: var(--v4-text-1, #111);
+    border-color: var(--v4-text-3, #888);
+    outline: none;
+  }
+
+  .atlas-migrate:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .atlas-unassigned .atlas-project-title {

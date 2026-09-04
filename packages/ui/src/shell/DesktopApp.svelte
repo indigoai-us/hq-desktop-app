@@ -61,6 +61,14 @@
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import MigrateSessionDialog from "../common/MigrateSessionDialog.svelte";
+  import { canMigrateCompanySession } from "../avatars/can-edit.js";
+  import {
+    digestMigratePayload,
+    migrateDestinationCompanies,
+    newMigrateOperationId,
+    normalizeMigrateDestination,
+  } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
@@ -1025,6 +1033,16 @@
    */
   let deleteChannelConfirmOpen = $state(false);
   let deletingChannel = $state(false);
+  /**
+   * Company owner/admin "Move to another company" (US-017B). Shell owns the
+   * destination picker + confirm — same outside-mousedown reason as delete.
+   */
+  let migrateSessionTarget = $state<{
+    sessionId: string;
+    sourceCompanyUid: string;
+  } | null>(null);
+  let migratingSessionId = $state<string | null>(null);
+  let migrateSessionError = $state<string | null>(null);
   /** Last channel-level action failure — rendered under the header, never console-only. */
   let channelActionError = $state<string | null>(null);
 
@@ -1068,6 +1086,28 @@
         companies,
         isAdmin,
       }),
+  );
+
+  const canMigrateSelectedChannelSessions = $derived(
+    canMigrateCompanySession({
+      companyUid: selectedRow?.companyUid,
+      companies,
+    }),
+  );
+  const migrateDestinationsForSelected = $derived(
+    migrateDestinationCompanies(
+      companies,
+      selectedRow?.companyUid?.trim() ?? "",
+    ),
+  );
+  const canMigrateAtlasSessions = $derived(
+    canMigrateCompanySession({
+      companyUid: atlasCompanyUid,
+      companies,
+    }),
+  );
+  const migrateDestinationsForAtlas = $derived(
+    migrateDestinationCompanies(companies, atlasCompanyUid),
   );
 
   /** personUid → live display name from the channel roster (the profile
@@ -1260,6 +1300,81 @@
       }
     } finally {
       removingMemberUid = null;
+    }
+  }
+
+  function openMigrateSession(sessionId: string, sourceCompanyUid: string): void {
+    const sid = sessionId.trim();
+    const source = sourceCompanyUid.trim();
+    if (!sid || !source) return;
+    const destinations = migrateDestinationCompanies(companies, source);
+    if (destinations.length === 0) {
+      channelActionError =
+        "No other company is available to move this session into.";
+      return;
+    }
+    if (
+      !canMigrateCompanySession({
+        companyUid: source,
+        companies,
+      })
+    ) {
+      return;
+    }
+    membersOpen = false;
+    migrateSessionError = null;
+    migrateSessionTarget = { sessionId: sid, sourceCompanyUid: source };
+  }
+
+  async function confirmMigrateSession(
+    destinationCompanyUid: string,
+  ): Promise<void> {
+    const target = migrateSessionTarget;
+    const sessionId = target?.sessionId?.trim() ?? "";
+    const sourceCompanyUid = target?.sourceCompanyUid?.trim() ?? "";
+    const dest = destinationCompanyUid.trim();
+    if (!sessionId || !sourceCompanyUid || !dest || migratingSessionId) return;
+    if (sourceCompanyUid === dest) return;
+    if (
+      !canMigrateCompanySession({
+        companyUid: sourceCompanyUid,
+        companies,
+      })
+    ) {
+      return;
+    }
+    migratingSessionId = sessionId;
+    migrateSessionError = null;
+    channelActionError = null;
+    try {
+      const destination = normalizeMigrateDestination({});
+      const expectedVersion = 0;
+      const operationId = newMigrateOperationId();
+      const digest = await digestMigratePayload({
+        sessionId,
+        sourceCompanyUid,
+        destinationCompanyUid: dest,
+        destination,
+        expectedVersion,
+      });
+      const res = await adapter.workMesh.migrateSession(sessionId, {
+        operationId,
+        digest,
+        sourceCompanyUid,
+        destinationCompanyUid: dest,
+        destination,
+        expectedVersion,
+      });
+      if (!res.ok) {
+        migrateSessionError =
+          res.message?.trim() || "Couldn't move the session to that company.";
+        return;
+      }
+      migrateSessionTarget = null;
+    } catch (err) {
+      migrateSessionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      migratingSessionId = null;
     }
   }
 
@@ -2860,6 +2975,29 @@
     onconfirm={() => void deleteSelectedChannel()}
   />
 
+  <MigrateSessionDialog
+    open={migrateSessionTarget != null}
+    sessionId={migrateSessionTarget?.sessionId ?? ""}
+    sourceLabel={companyDisplayName(
+      migrateSessionTarget?.sourceCompanyUid ?? null,
+      companyNames,
+    )}
+    destinations={migrateDestinationCompanies(
+      companies,
+      migrateSessionTarget?.sourceCompanyUid ?? "",
+    )}
+    submitting={migratingSessionId != null}
+    error={migrateSessionError}
+    oncancel={() => {
+      if (!migratingSessionId) {
+        migrateSessionTarget = null;
+        migrateSessionError = null;
+      }
+    }}
+    onconfirm={(destinationCompanyUid) =>
+      void confirmMigrateSession(destinationCompanyUid)}
+  />
+
   {#if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
@@ -2967,6 +3105,12 @@
             companyLabel={atlasCompanyLabel}
             featureEnabled={true}
             headerVariant="embedded"
+            canMigrate={canMigrateAtlasSessions &&
+              migrateDestinationsForAtlas.length > 0}
+            migrateDestinations={migrateDestinationsForAtlas}
+            onmigratesession={(sessionId) =>
+              openMigrateSession(sessionId, atlasCompanyUid)}
+            migratingSessionId={migratingSessionId}
             onback={() => {
               view = "conversation";
               meetingFocusRequest = null;
@@ -3266,6 +3410,15 @@
                         deleteChannelConfirmOpen = true;
                       }}
                       deleting={deletingChannel}
+                      onmigratesession={canMigrateSelectedChannelSessions &&
+                      migrateDestinationsForSelected.length > 0
+                        ? (sessionId) =>
+                            openMigrateSession(
+                              sessionId,
+                              selectedRow.companyUid?.trim() ?? "",
+                            )
+                        : undefined}
+                      migratingSessionId={migratingSessionId}
                     />
                   {/if}
                 </div>
