@@ -712,6 +712,8 @@
         Boolean(projectIdForRow(selectedRow))),
   );
   let agentSurface = $state<AgentChannelTab>("chat");
+  let liveTimeline = $state<ConversationMessageWire[]>([]);
+  let liveTimelineId = $state<string | null>(null);
   const provisioning = $derived(provisioningFromMessages(liveTimeline));
   const isAgentChannel = $derived(
     isAgentConversationRow(selectedRow) ||
@@ -754,8 +756,6 @@
     companyWallpaper = "aurora";
   });
 
-  let liveTimeline = $state<ConversationMessageWire[]>([]);
-  let liveTimelineId = $state<string | null>(null);
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
@@ -3367,7 +3367,7 @@
                 {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
                   <TeamTab data={companyTabData!} onaction={handleTeamAction} />
                 {:else}
-                  {companyTab[0]!.toUpperCase() + companyTab.slice(1)}
+                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
                 {/if}
               </div>
             {/if}
