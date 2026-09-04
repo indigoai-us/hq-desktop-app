@@ -100,6 +100,11 @@
     }
   }
 
+  /** Without a host-provided opener, only web URLs may leave the card. */
+  function isHttpUrl(href: string): boolean {
+    return /^https?:\/\//i.test(href);
+  }
+
   function openUrl(url: string | null): void {
     const href = url?.trim();
     if (!href) return;
@@ -107,6 +112,7 @@
       onopenurl(href);
       return;
     }
+    if (!isHttpUrl(href)) return;
     if (typeof window !== "undefined") {
       window.open(href, "_blank", "noopener,noreferrer");
     }

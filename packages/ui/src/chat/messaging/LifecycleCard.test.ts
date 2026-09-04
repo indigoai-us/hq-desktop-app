@@ -241,6 +241,62 @@ describe("LifecycleCard controls and states", () => {
     expect(onopenurl).toHaveBeenCalledWith("https://hqforwork.com/enterprise");
   });
 
+  it("without onopenurl, only http(s) link hrefs fall back to window.open", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      const root = mountCard(
+        card({
+          kind: "upgrade_plan",
+          companyUid: "cmp_acme",
+          actions: [
+            {
+              id: "evil",
+              label: "Run",
+              style: "link",
+              href: "javascript:alert(1)",
+            },
+            {
+              id: "file",
+              label: "Open file",
+              style: "link",
+              href: "file:///etc/passwd",
+            },
+            {
+              id: "site",
+              label: "Talk to us",
+              style: "link",
+              href: "https://hqforwork.com/enterprise",
+            },
+          ],
+        }),
+      );
+      for (const id of ["evil", "file"]) {
+        (
+          root.querySelector(
+            `[data-testid="lifecycle-action-${id}"]`,
+          ) as HTMLButtonElement
+        ).click();
+        await tick();
+      }
+      expect(open).not.toHaveBeenCalled();
+
+      (
+        root.querySelector(
+          '[data-testid="lifecycle-action-site"]',
+        ) as HTMLButtonElement
+      ).click();
+      await tick();
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledWith(
+        "https://hqforwork.com/enterprise",
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it("fires oncardaction and shows pending until the next model refresh", async () => {
     const oncardaction = vi.fn();
     const model = card({
