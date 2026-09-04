@@ -340,16 +340,81 @@ async fn latest_release(
         .await
         .map_err(|e| format!("network error listing releases: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!(
+        let api_err = format!(
             "GitHub API error {} listing releases for {repo}",
             resp.status()
-        ));
+        );
+        // The anonymous REST API allows 60 calls/hour PER IP. A team behind
+        // one office NAT (or several installs in a row from one machine)
+        // exhausts that quickly and every fresh install then fails at the
+        // very first stage with 403 — the headed install matrix hit exactly
+        // this on 2026-09-03. The web redirect + codeload archive are not
+        // subject to the API limit, so fall back to them.
+        if matches!(resp.status().as_u16(), 403 | 429) {
+            match latest_release_via_redirect(repo).await {
+                Ok(Some(release)) => return Ok(Some(release)),
+                Ok(None) => {}
+                Err(e) => return Err(format!("{api_err}; API-free fallback also failed: {e}")),
+            }
+        }
+        return Err(api_err);
     }
     let releases: Vec<ReleaseInfo> = resp
         .json()
         .await
         .map_err(|e| format!("failed to parse releases response: {e}"))?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
+}
+
+/// Resolve the latest stable release WITHOUT the REST API:
+/// `https://github.com/{repo}/releases/latest` 302-redirects to
+/// `/releases/tag/<tag>` (drafts and prereleases are never "latest"), and the
+/// source archive is served by codeload at a stable URL. Neither counts
+/// against the 60/hour anonymous API quota.
+async fn latest_release_via_redirect(repo: &str) -> Result<Option<ReleaseInfo>, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("hq-desktop-app")
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let url = format!("https://github.com/{repo}/releases/latest");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("network error resolving {url}: {e}"))?;
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let Some(tag) = location.as_deref().and_then(|l| tag_from_release_redirect(l, repo)) else {
+        return Ok(None);
+    };
+    Ok(Some(ReleaseInfo {
+        tarball_url: codeload_tarball_url(repo, &tag),
+        tag_name: tag,
+        prerelease: false,
+        draft: false,
+    }))
+}
+
+/// `https://github.com/{repo}/releases/tag/<tag>` → `<tag>`. Pure; unit-tested.
+fn tag_from_release_redirect(location: &str, repo: &str) -> Option<String> {
+    let needle = format!("/{repo}/releases/tag/");
+    let idx = location.find(&needle)?;
+    let tag = &location[idx + needle.len()..];
+    let tag = tag.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
+    if tag.is_empty() || tag.contains('/') {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
+/// API-free source archive for a tag (codeload, not rate limited like the API).
+fn codeload_tarball_url(repo: &str, tag: &str) -> String {
+    format!("https://github.com/{repo}/archive/refs/tags/{tag}.tar.gz")
 }
 
 const GH_FALLBACK_PATHS: &[&str] = &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
@@ -1536,5 +1601,32 @@ mod windows_junction_tests {
         assert!(meta.file_type().is_symlink());
         fs::write(link.join("probe.txt"), b"ok").expect("write through junction");
         assert!(target.join("probe.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod api_free_release_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn parses_tag_from_release_redirect() {
+        assert_eq!(
+            tag_from_release_redirect("https://github.com/indigoai-us/hq-core/releases/tag/v15.0.120", "indigoai-us/hq-core").as_deref(),
+            Some("v15.0.120")
+        );
+        assert_eq!(
+            tag_from_release_redirect("/indigoai-us/hq-core/releases/tag/v1.2.3?x=1", "indigoai-us/hq-core").as_deref(),
+            Some("v1.2.3")
+        );
+        // no releases → redirect goes to /releases (no tag)
+        assert_eq!(tag_from_release_redirect("https://github.com/indigoai-us/hq-core/releases", "indigoai-us/hq-core"), None);
+        assert_eq!(tag_from_release_redirect("https://github.com/other/repo/releases/tag/v1", "indigoai-us/hq-core"), None);
+    }
+
+    #[test]
+    fn codeload_url_is_api_free() {
+        let u = codeload_tarball_url("indigoai-us/hq-core", "v15.0.120");
+        assert_eq!(u, "https://github.com/indigoai-us/hq-core/archive/refs/tags/v15.0.120.tar.gz");
+        assert!(!u.contains("api.github.com"));
     }
 }

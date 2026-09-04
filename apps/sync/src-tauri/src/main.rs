@@ -867,6 +867,12 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Unattended dependency-install mode for the VM install matrix.
+            // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
+            // real `install_deps` orchestrator, writes a JSON result, exits.
+            if commands::headless_install::maybe_run(app.handle()) {
+                return Ok(());
+            }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.

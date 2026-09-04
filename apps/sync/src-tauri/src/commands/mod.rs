@@ -31,6 +31,7 @@ pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod hq_pro;
 pub mod hq_work;
+pub mod headless_install;
 pub mod install_deps;
 pub mod install_directory;
 pub mod install_manifest;
