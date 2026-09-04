@@ -5605,6 +5605,17 @@ mod install_deps_planner_tests {
         }
     }
 
+    /// Wave-1 required deps. `jq` is required on macOS (setup.sh/hooks need
+    /// it; Sonoma ships none) but optional on Windows, where it is not
+    /// provisioned yet — so it only appears in the required wave off-Windows.
+    fn wave1_required() -> Vec<&'static str> {
+        let mut w = vec!["node", "yq", "git"];
+        if cfg!(not(windows)) {
+            w.push("jq");
+        }
+        w
+    }
+
     #[test]
     fn planner_gates_qmd_and_hq_cli_on_node() {
         let deps = dependency_defs();
@@ -5613,7 +5624,7 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             ids(ready_required_deps(deps, &result_by_id, &ok_set)),
-            vec!["node", "yq", "git", "jq"]
+            wave1_required()
         );
 
         for dep_id in ["node", "yq", "git", "jq"] {
@@ -5677,7 +5688,7 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             waves,
-            vec![vec!["node", "yq", "git", "jq"], vec!["qmd", "hq-cli"]]
+            vec![wave1_required(), vec!["qmd", "hq-cli"]]
         );
     }
 }
