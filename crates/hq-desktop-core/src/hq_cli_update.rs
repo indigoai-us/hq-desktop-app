@@ -14178,11 +14178,16 @@ mod tests {
             ),
             "ENOTDIR:mkdir:global-lib-node-modules"
         );
-        // A fully shapeless failure still mints NO repeat-guard key.
+        // A GENUINELY shapeless failure — an EMPTY stderr, npm structured nothing —
+        // still mints NO repeat-guard key. (HQ-DESKTOP-56 now attributes a NON-EMPTY
+        // markerless stderr as `unattributed:<origin>:<shape>` and bounds its paging;
+        // only the empty case stays genuinely shapeless and unbounded, per commit
+        // e24e7a45. The attribution of non-empty markerless failures is covered by the
+        // dedicated HQ-DESKTOP-56 tests.)
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
-                "some unstructured failure with no npm markers",
+                "",
                 None,
                 false,
                 "0.10.157",
