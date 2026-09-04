@@ -11,7 +11,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # Default: the checkout this harness lives in (it is versioned inside hq-desktop-app).
-WT="${HQ_DESKTOP_WORKTREE:-$(cd "$MATRIX_DIR/../.." && pwd -P)}"; SKIP_BUILD=0; WITH_APP=1; WITH_TOKENS=1
+WT="${HQ_DESKTOP_WORKTREE:-$(cd "$(cd "$MATRIX_DIR" && pwd -P)/../.." && pwd -P)}"; SKIP_BUILD=0; WITH_APP=1; WITH_TOKENS=1
 while [[ $# -gt 0 ]]; do case "$1" in --desktop-worktree) WT="$2"; shift 2;; --skip-build) SKIP_BUILD=1; shift;; --no-app) WITH_APP=0; shift;; --no-tokens) WITH_TOKENS=0; shift;; *) shift;; esac; done
 A="$MATRIX_DIR/artifacts"; mkdir -p "$A"
 
