@@ -1845,6 +1845,11 @@
         state: typeof raw?.state === "string" ? raw.state : "",
         fields: raw?.fields,
         replayed: raw?.replayed === true,
+        // US-006/011: create_agent accept mints the agent channel; keep the
+        // ids so handleCardAction can select it (they were dropped here).
+        agentChannelId:
+          typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
+        agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
       };
     },
     getCompanyTab: adapter.messaging.getCompanyTab
