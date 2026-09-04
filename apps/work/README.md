@@ -98,6 +98,7 @@ iOS or Android.
 
 | Command | What it does |
 | --- | --- |
+| `pnpm --dir apps/work icons` | Regenerate every icon set from the source image. |
 | `pnpm --dir apps/work ios:init` | Generate the Xcode project (`src-tauri/gen/apple`). |
 | `pnpm --dir apps/work ios:dev` | Run on a simulator or device. |
 | `pnpm --dir apps/work ios:build` | Build the iOS app. |
@@ -114,6 +115,24 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 rustup target add aarch64-linux-android armv7-linux-androideabi \
   i686-linux-android x86_64-linux-android
 ```
+
+### Icons
+
+Icon sets are generated, not committed. `pnpm icons` renders every desktop,
+Android and iOS size from the single source image
+(`apps/sync/src-tauri/icons/app-icon.png`) into `src-tauri/icons` and
+`src-tauri/gen/apple/Assets.xcassets`, both of which are gitignored. Every
+`ios:*` and `android:*` script runs it first, so the normal build path needs no
+extra step.
+
+They are generated because `tauri ios init` seeds the icon set with Tauri's own
+placeholder logo, and a committed placeholder is indistinguishable from a real
+icon in review — this repo shipped one that way once. Regenerating makes the
+source image the only thing that can be wrong.
+
+The cost: a fresh checkout has no `AppIcon-*.png` until `pnpm icons` runs, so
+**opening `src-tauri/gen/apple` in Xcode directly fails asset-catalog
+compilation** until you run it. `pnpm --dir apps/work icons` fixes that.
 
 **Android additionally needs the Android SDK and NDK**, with `ANDROID_HOME` and
 `NDK_HOME` exported. Neither is installed on every dev machine, so the Android
