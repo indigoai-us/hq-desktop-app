@@ -132,21 +132,23 @@
                 {/if}
               {/each}
             </div>
-            <div class="team-right">
-              {#each row.actions as action (action.id)}
-                <button
-                  type="button"
-                  class="team-btn"
-                  class:primary={action.style === "primary"}
-                  class:confirm={confirmingCardId === row.cardId &&
-                    confirmingActionId === action.id}
-                  data-testid={"team-action-" + row.cardId + "-" + action.id}
-                  onclick={() => act(row, action.id)}
-                >
-                  {actionLabel(row, action.id, action.label)}
-                </button>
-              {/each}
-            </div>
+            {#if row.viewer.canAct}
+              <div class="team-right">
+                {#each row.actions as action (action.id)}
+                  <button
+                    type="button"
+                    class="team-btn"
+                    class:primary={action.style === "primary"}
+                    class:confirm={confirmingCardId === row.cardId &&
+                      confirmingActionId === action.id}
+                    data-testid={"team-action-" + row.cardId + "-" + action.id}
+                    onclick={() => act(row, action.id)}
+                  >
+                    {actionLabel(row, action.id, action.label)}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/each}
       </div>

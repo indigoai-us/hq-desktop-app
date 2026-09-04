@@ -183,6 +183,31 @@ function memberTab(): CompanyTabModel {
           },
         ],
       },
+      {
+        id: "agents",
+        title: "Agents · 1",
+        rows: [
+          {
+            v: 1,
+            type: "lifecycle_card",
+            cardId: "team:agent:agt_polar",
+            kind: "tab_row",
+            companyUid: "cmp_acme",
+            state: "open",
+            fields: [
+              { id: "name", label: "Name", control: "readonly", value: "Polar" },
+              { id: "size", label: "Size", control: "readonly", value: "small" },
+            ],
+            // The server may still describe the actions; a viewer who cannot
+            // act must not see them rendered.
+            actions: [
+              { id: "remove", label: "Remove", style: "secondary" },
+              { id: "save", label: "Save", style: "primary" },
+            ],
+            viewer: { canAct: false },
+          },
+        ],
+      },
     ],
   });
   if (!parsed) throw new Error("fixture");
@@ -245,6 +270,25 @@ describe("TeamTab sections", () => {
     expect(host.querySelector('[data-testid="team-row-team:invite"]')).toBeNull();
     expect(host.querySelector("select")).toBeNull();
     expect(host.querySelector('[data-testid="team-action-team:invite-invite"]')).toBeNull();
+  });
+
+  it("renders no row action buttons when the viewer cannot act", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(TeamTab, { target: host, props: { data: memberTab() } });
+    const rows = [...host.querySelectorAll('[data-testid^="team-row-"]')];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.getAttribute("data-can-act")).toBe("false");
+      expect([...row.querySelectorAll('button, [role="button"]')]).toEqual([]);
+    }
+    // Values stay visible even though the actions are gone.
+    expect(
+      host.querySelector('[data-testid="team-row-team:agent:agt_polar"]')?.textContent,
+    ).toContain("Polar");
+    expect(
+      host.querySelector('[data-testid="team-action-team:agent:agt_polar-remove"]'),
+    ).toBeNull();
   });
 
   it("requires a second click to remove an agent", () => {
