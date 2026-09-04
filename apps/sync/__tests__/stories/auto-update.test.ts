@@ -125,9 +125,21 @@ describe('master automatic-updates switch', () => {
 
   it('the CLI background auto-installer gates on the master switch', () => {
     // The Rust CLI checker now installs when the master `autoUpdate` is on
-    // (default), superseding the old `cliAutoUpdate`-only gate.
-    expect(cliUpdate).toContain('if auto_update_enabled() {');
-    expect(cliUpdate).toContain('auto_update_enabled');
+    // (default), superseding the old `cliAutoUpdate`-only gate. The switch is
+    // read once per check cycle and fed to a single pure gate.
+    expect(cliUpdate).toContain('let auto_update = auto_update_enabled();');
+    expect(cliUpdate).toContain('if auto_install_allowed(auto_update, floor_repair) {');
+    // The only pass that may install past the opt-out is the launch-time
+    // version-floor repair (installed CLI below HQ_CLI_MIN_VERSION), which
+    // mirrors hq-core's ensure-hq-cli hook — that hook has no opt-out either.
+    // The scheduled loop never takes it.
+    expect(normalize(cliUpdateCore)).toContain(
+      'pub fn auto_install_allowed(auto_update_enabled: bool, floor_repair: bool) -> bool { auto_update_enabled || floor_repair }',
+    );
+    expect(cliUpdate).toContain('run_check_cycle(&handle, /* floor_repair */ true).await;');
+    const scheduledLoop = cliUpdate.slice(cliUpdate.indexOf('tokio::time::sleep(INITIAL_DELAY).await;'));
+    expect(scheduledLoop).toContain('run_check_cycle(&handle, /* floor_repair */ false).await;');
+    expect(scheduledLoop).not.toContain('/* floor_repair */ true');
     // The pref defaults ON in both get_settings branches.
     expect(settingsRs).toContain('auto_update: Some(true)');
     expect(settingsRs).toContain('auto_update: Some(prefs.auto_update.unwrap_or(true))');
@@ -172,7 +184,7 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('NonConvergenceKind::ForeignManaged');
     // 3. ...and the background loop consults that record before reinstalling.
     expect(normalize(cliUpdate)).toContain(
-      'if should_auto_install( &info.latest, non_convergent_cli_version().as_deref(), )',
+      'if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {',
     );
     // A convergent install must clear the block so a later version is never
     // gated by a condition the user has since fixed.
