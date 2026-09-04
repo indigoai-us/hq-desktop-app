@@ -26,7 +26,8 @@
     "ios:build": "tauri ios build",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build"
+    "android:build": "tauri android build",
+    "dev:mobile": "TAURI=1 vite dev"
   },
   "dependencies": {
     "@hq/auth": "workspace:*",
