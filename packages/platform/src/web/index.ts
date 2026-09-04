@@ -33,11 +33,21 @@ import {
   skillDetailFromShelf,
   type LibrarySkillWire,
 } from "../library-shelf.js";
+import {
+  bearerTokenFromHeaders,
+  createFeatureFlagGate,
+  type FeatureFlagGate,
+} from "../flags.js";
 
 /** Provisional hq-pro REST paths, centralized so they are easy to correct. */
 export const WEB_PATHS = {
   whoami: "/v1/identity/whoami",
   isAdmin: "/v1/identity/is-admin",
+  /**
+   * Dead route — hq-pro has no GET /v1/identity/features/{flag}. Kept for
+   * unmapped flags' byte-for-byte legacy fallback. `meetings` no longer uses
+   * it (registry-first, then a deliberate `ok(false)`).
+   */
   hasFeature: (flag: string) =>
     `/v1/identity/features/${encodeURIComponent(flag)}`,
 
@@ -374,6 +384,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
+  private readonly flags: FeatureFlagGate;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -385,6 +396,25 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.fetchFn = f;
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
+    this.flags = createFeatureFlagGate({
+      endpoint: this.baseUrl,
+      getToken: () => bearerTokenFromHeaders(this.headers),
+      fetch: this.fetchFn,
+    });
+  }
+
+  /**
+   * Legacy `hasFeature` for this adapter. The identity/features route 404s
+   * on hq-pro. `meetings` (the only mapped flag) therefore falls back to a
+   * deliberate `ok(false)` — same user-visible answer the Settings UI already
+   * derived from `!ok`, without an unhandled rejection. Unmapped flags keep
+   * the previous GET so their AdapterResult shape stays byte-for-byte.
+   */
+  private legacyHasFeature(flag: string): AdapterPromise<boolean> {
+    if (flag === "meetings") {
+      return Promise.resolve(ok(false));
+    }
+    return this.get(WEB_PATHS.hasFeature(flag));
   }
 
   isAvailable(cap: Capability): boolean {
@@ -460,7 +490,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
-    hasFeature: (flag) => this.get(WEB_PATHS.hasFeature(flag)),
+    hasFeature: (flag) =>
+      this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;
