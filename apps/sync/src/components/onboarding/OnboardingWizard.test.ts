@@ -13,9 +13,19 @@ const tauri = vi.hoisted(() => ({
   open: vi.fn(),
 }));
 
+const httpFetch = vi.hoisted(() =>
+  vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => '',
+  })),
+);
+
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
+vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
@@ -23,6 +33,7 @@ import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
 import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
+import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
 
@@ -104,6 +115,14 @@ beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.open.mockReset();
   tauri.open.mockResolvedValue(undefined);
+  httpFetch.mockReset();
+  httpFetch.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => '',
+  });
+  __resetInstallerStepTelemetryForTests();
   localStorage.clear();
 });
 
@@ -515,5 +534,119 @@ describe('onboarding connector telemetry', () => {
         .filter((event) => event.properties.step === 'connector-import')
         .map((event) => event.properties.action),
     ).toEqual([]);
+  });
+});
+
+describe('anonymous installer step pings', () => {
+  function stubOnboardingInvoke(
+    extras: Record<string, (args?: Record<string, unknown>) => unknown> = {},
+  ) {
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command in extras) return extras[command]!(args);
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'device_fingerprint':
+          return 'hashed-mac-test';
+        case 'get_auth_state':
+          return { authenticated: false };
+        case 'is_first_run':
+          return false;
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+  }
+
+  it('posts /v1/installer/step with no auth and the same sessionId as desktop_onboarding_step', async () => {
+    stubOnboardingInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+
+    const call = httpFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const [url, init] = call;
+    expect(url).toBe('https://telemetry.hq.computer/v1/installer/step');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(
+      (init.headers as Record<string, string> | undefined)?.Authorization,
+    ).toBeUndefined();
+
+    const body = JSON.parse(String(init.body)) as {
+      installSessionId: string;
+      step: string;
+      personUid?: string;
+      deviceId?: string;
+    };
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      sessionId?: string;
+    };
+    expect(body.installSessionId).toBe(stored.sessionId);
+    expect(typeof body.installSessionId).toBe('string');
+    expect(body.installSessionId.length).toBeGreaterThan(0);
+    expect(body.personUid).toBeUndefined();
+    expect(body.deviceId).toBe('hashed-mac-test');
+
+    const operational = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'emit_desktop_operational_telemetry',
+    );
+    expect(operational.length).toBeGreaterThan(0);
+    const envelope = operational[0]![1] as {
+      eventName: string;
+      sessionId: string;
+      properties: { step: string; action: string };
+    };
+    expect(envelope.eventName).toBe('desktop_onboarding_step');
+    expect(envelope.sessionId).toBe(body.installSessionId);
+    expect(envelope.properties.step).toBe('welcome-signin');
+    expect(envelope.properties.action).toBe('entered');
+  });
+
+  it('leaves the wizard usable when the ping network call fails', async () => {
+    httpFetch.mockRejectedValue(new Error('network down'));
+    stubOnboardingInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+    await flush();
+    await flush();
+    expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
+    expect(host.textContent).not.toContain('network down');
+  });
+
+  it('leaves the wizard usable when device_fingerprint throws', async () => {
+    stubOnboardingInvoke({
+      device_fingerprint: () => {
+        throw new Error('no fingerprint');
+      },
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init.body)) as {
+      deviceId?: string;
+    };
+    expect(body.deviceId).toBeUndefined();
+    expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
+    expect(host.textContent).not.toContain('no fingerprint');
+  });
+
+  it('threads whoami personUid into later pings after sign-in succeeds', async () => {
+    expect(wizardSource).toContain('resolveInstallerPersonUid');
+    expect(wizardSource).toContain("invokeCommand<{ personUid?: string | null }>('whoami')");
+    expect(wizardSource).toContain('onboardingTelemetry.setPersonUid(uid)');
+    expect(wizardSource).toContain('void resolveInstallerPersonUid()');
   });
 });

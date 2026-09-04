@@ -1,7 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@tauri-apps/plugin-http', () => ({
+  fetch: vi.fn(async () => ({ ok: true, status: 200 })),
+}));
+
 import {
   __INTERNALS__,
   createOnboardingStepTelemetry,
+  type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
 
@@ -22,11 +28,28 @@ function memoryStorage(): Storage {
 describe('onboarding step telemetry', () => {
   let storage: Storage;
   let emitted: OnboardingStepEvent[];
+  let pings: InstallerStepPingPayload[];
 
   beforeEach(() => {
     storage = memoryStorage();
     emitted = [];
+    pings = [];
   });
+
+  function createTelemetry(
+    overrides: Parameters<typeof createOnboardingStepTelemetry>[0] = {},
+  ) {
+    return createOnboardingStepTelemetry({
+      storage,
+      emit: async (event) => {
+        emitted.push(event);
+      },
+      pingInstallerStep: (payload) => {
+        pings.push(payload);
+      },
+      ...overrides,
+    });
+  }
 
   it('emits setup transitions immediately, before a consent choice exists', async () => {
     const telemetry = createOnboardingStepTelemetry({
@@ -206,5 +229,151 @@ describe('onboarding step telemetry', () => {
       },
     ]);
     expect(emitted).toHaveLength(1);
+  });
+
+  it('sends the anonymous installer ping even when authenticated emit has no token', async () => {
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      emit: async () => {
+        throw new Error('no token');
+      },
+      pingInstallerStep: (payload) => {
+        pings.push(payload);
+      },
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toEqual([]);
+    expect(pings.map((ping) => ping.step)).toEqual(['welcome', 'signin']);
+    expect(pings.every((ping) => ping.installSessionId === telemetry.sessionId)).toBe(true);
+    expect(pings.every((ping) => ping.personUid === undefined)).toBe(true);
+  });
+
+  it('sends the anonymous installer ping with the same sessionId as desktop_onboarding_step', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    telemetry.record({
+      properties: { step: 'directory', action: 'entered', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        properties: { step: 'directory', action: 'entered' },
+      },
+    ]);
+    expect(pings).toEqual([
+      {
+        installSessionId: '11111111-1111-4111-8111-111111111111',
+        step: 'install',
+        personUid: undefined,
+      },
+    ]);
+    expect(pings[0]?.installSessionId).toBe(emitted[0]?.sessionId);
+  });
+
+  it('omits personUid before sign-in and includes it on later pings', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
+    });
+    telemetry.setPersonUid('prs_ada');
+    telemetry.record({
+      properties: { step: 'directory', action: 'completed' },
+    });
+    await Promise.resolve();
+
+    expect(pings[0]?.personUid).toBeUndefined();
+    expect(pings.some((ping) => ping.step === 'welcome' && ping.personUid === undefined)).toBe(
+      true,
+    );
+    expect(pings.some((ping) => ping.step === 'signin' && ping.personUid === undefined)).toBe(
+      true,
+    );
+    expect(pings.at(-1)).toEqual({
+      installSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      step: 'install',
+      personUid: 'prs_ada',
+    });
+  });
+
+  it('ignores a non-prs identity so the server regex is never violated', async () => {
+    const telemetry = createTelemetry();
+    telemetry.setPersonUid('cognito-sub-ada');
+    telemetry.record({
+      properties: { step: 'setup', action: 'entered' },
+    });
+    await Promise.resolve();
+    expect(pings[0]?.personUid).toBeUndefined();
+  });
+
+  it('still emits authenticated desktop_onboarding_step events when the anonymous ping throws', async () => {
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      emit: async (event) => {
+        emitted.push(event);
+      },
+      pingInstallerStep: () => {
+        throw new Error('network down');
+      },
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'started', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        properties: { step: 'welcome-signin', action: 'started', surface: 'desktop_installer' },
+      },
+    ]);
+  });
+
+  it('does not change the authenticated emit payload when the anonymous ping also fires', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        outcome: 'stage_command_failed',
+        component: 'deps',
+      },
+      occurredAt: '2026-09-04T10:00:00.000Z',
+    });
+    await Promise.resolve();
+
+    expect(emitted).toEqual([
+      {
+        sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        occurredAt: '2026-09-04T10:00:00.000Z',
+        properties: {
+          step: 'setup',
+          action: 'failed',
+          outcome: 'stage_command_failed',
+          component: 'deps',
+          surface: 'desktop_installer',
+          platform: expect.any(String),
+        },
+      },
+    ]);
+    expect(pings).toEqual([
+      {
+        installSessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        step: 'setup',
+        personUid: undefined,
+      },
+    ]);
   });
 });

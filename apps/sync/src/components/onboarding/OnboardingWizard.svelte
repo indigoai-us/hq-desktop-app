@@ -264,6 +264,21 @@
     });
   }
 
+  /**
+   * Best-effort: `whoami` is the first place a `prs_*` person uid exists after
+   * token exchange. Never awaited by the wizard; a miss is retried after setup
+   * provisions the person entity.
+   */
+  async function resolveInstallerPersonUid(): Promise<void> {
+    try {
+      const identity = await invokeCommand<{ personUid?: string | null }>('whoami');
+      const uid = typeof identity?.personUid === 'string' ? identity.personUid.trim() : '';
+      if (uid) onboardingTelemetry.setPersonUid(uid);
+    } catch {
+      // Person entity may not exist until setup / ensure_person_entity.
+    }
+  }
+
   const displayPath = $derived(
     resolvedPath ? friendlyPath(resolvedPath, homeDir) : 'Resolving ~/hq...',
   );
@@ -392,7 +407,10 @@
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
         .then((auth) => {
-          if (auth?.authenticated) return onboardingTelemetry.flush();
+          if (auth?.authenticated) {
+            void resolveInstallerPersonUid();
+            return onboardingTelemetry.flush();
+          }
         })
         .catch(() => {});
     }
@@ -525,6 +543,8 @@
         // The token is now available, so release operational records that were
         // buffered solely while the OAuth flow was unauthenticated.
         void onboardingTelemetry.flush().catch(() => {});
+        // Person entity may not exist yet; later pings retry after setup.
+        void resolveInstallerPersonUid();
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         // The consent question is asked later as its own step after setup.
@@ -914,6 +934,8 @@
         eventName: 'desktop_setup_completed',
         properties: { ...setupCompletionMetrics },
       });
+      // Setup is what provisions the person entity; stitch the install session.
+      void resolveInstallerPersonUid();
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
         failedStageCount: setupFailures.length,
@@ -970,6 +992,7 @@
       // HQ), so this is a fast confirmation, not a bootstrap.
       try {
         await invokeCommand<boolean>('ensure_person_entity');
+        void resolveInstallerPersonUid();
       } catch (err) {
         // Could not confirm the entity (no token / vault unreachable). Fall
         // through to postOptIn: the local cache still records the answer, and

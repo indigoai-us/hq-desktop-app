@@ -1131,6 +1131,75 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
     }
 }
 
+/// Minimum `@indigoai-us/hq-cli` version the desktop app accepts as current
+/// enough to leave alone until the next *scheduled* check.
+///
+/// Mirrors the `MIN_VERSION` floor in hq-core's
+/// `core/hooks/UserPromptSubmit/30-ensure-hq-cli.sh`, which treats an installed
+/// CLI below this version as missing and reinstalls it on the next prompt. Keep
+/// the two in sync: a CLI hq-core refuses to run with is one the desktop app
+/// should not sit on for the updater's launch stagger or its 6h interval either.
+pub const HQ_CLI_MIN_VERSION: &str = "5.103.26";
+
+/// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
+///
+/// `None` — no CLI, or a present-but-unreadable binary — is NOT below the
+/// floor. Those arms keep their existing handling (`cli_install_needed`,
+/// `should_report_unreadable_version`) and the scheduled cadence; the floor
+/// only accelerates the case where the app can *see* an old version.
+pub fn cli_below_floor(local: Option<&str>) -> bool {
+    cli_below_floor_of(local, HQ_CLI_MIN_VERSION)
+}
+
+/// [`cli_below_floor`] against an explicit floor, so the comparison is testable
+/// independently of the shipped constant.
+pub fn cli_below_floor_of(local: Option<&str>, floor: &str) -> bool {
+    local.is_some_and(|installed| cmp_semver(installed, floor) == std::cmp::Ordering::Less)
+}
+
+/// What the background CLI checker does at launch, before its scheduled
+/// stagger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchCliCheck {
+    /// The installed CLI reads below [`HQ_CLI_MIN_VERSION`]: run the check and
+    /// the install immediately instead of waiting out the launch stagger.
+    RepairNow {
+        /// The below-floor version that was read, for the log line.
+        local: String,
+    },
+    /// Current, missing, or unreadable: nothing to accelerate — wait for the
+    /// scheduled cadence exactly as before.
+    Scheduled,
+}
+
+/// Decide the launch behaviour from the network-free local version probe.
+pub fn launch_cli_check(local: Option<&str>) -> LaunchCliCheck {
+    launch_cli_check_with_floor(local, HQ_CLI_MIN_VERSION)
+}
+
+/// [`launch_cli_check`] against an explicit floor.
+pub fn launch_cli_check_with_floor(local: Option<&str>, floor: &str) -> LaunchCliCheck {
+    match local {
+        Some(installed) if cli_below_floor_of(Some(installed), floor) => {
+            LaunchCliCheck::RepairNow {
+                local: installed.to_string(),
+            }
+        }
+        _ => LaunchCliCheck::Scheduled,
+    }
+}
+
+/// May the background loop install right now?
+///
+/// The user's `autoUpdate` opt-out is honoured for an ordinary "a newer version
+/// exists" upgrade. A floor repair is not an upgrade in that sense: below
+/// [`HQ_CLI_MIN_VERSION`] the CLI cannot serve the hq-core contract, so — like
+/// the hq-core hook, which has no opt-out — the repair runs regardless of the
+/// toggle. The non-convergent marker is still consulted by the caller.
+pub fn auto_install_allowed(auto_update_enabled: bool, floor_repair: bool) -> bool {
+    auto_update_enabled || floor_repair
+}
+
 /// An unreadable version is actionable only when the hq resolver found a
 /// binary. A missing hq remains a deliberate quiet no-op.
 pub fn should_report_unreadable_version(result: &LocalVersionProbeResult) -> bool {
@@ -14174,5 +14243,92 @@ mod tests {
         let env = InstallEnvironment::default().with_pinned_target_version("5.103.27");
         assert_eq!(env.target_version.as_deref(), Some("5.103.27"));
         assert_eq!(env.requested_spec_kind, RequestedSpecKind::PinnedVersion);
+    }
+
+    /// The floor accelerates only a version the app can actually read. A
+    /// missing CLI and an unreadable binary keep their existing arms and the
+    /// scheduled cadence — the floor must never turn them into a launch-time
+    /// install storm.
+    #[test]
+    fn floor_only_applies_to_a_readable_version() {
+        assert!(cli_below_floor_of(Some("5.103.25"), "5.103.26"));
+        assert!(!cli_below_floor_of(Some("5.103.26"), "5.103.26"));
+        assert!(!cli_below_floor_of(Some("5.108.2"), "5.103.26"));
+        assert!(!cli_below_floor_of(None, "5.103.26"));
+    }
+
+    #[test]
+    fn floor_compares_numerically_not_lexically() {
+        // "5.9.0" > "5.10.0" as strings; the floor must not be fooled either.
+        assert!(cli_below_floor_of(Some("5.9.0"), "5.10.0"));
+        assert!(!cli_below_floor_of(Some("5.10.0"), "5.9.0"));
+        // A pre-release of the floor version compares as its core triple.
+        assert!(!cli_below_floor_of(Some("5.103.26-beta.1"), "5.103.26"));
+    }
+
+    #[test]
+    fn launch_check_repairs_now_only_below_the_floor() {
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.100.0"), "5.103.26"),
+            LaunchCliCheck::RepairNow {
+                local: "5.100.0".to_string()
+            }
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.103.26"), "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.110.0"), "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(None, "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+    }
+
+    #[test]
+    fn launch_check_uses_the_shipped_floor() {
+        assert_eq!(
+            launch_cli_check(Some("0.0.1")),
+            LaunchCliCheck::RepairNow {
+                local: "0.0.1".to_string()
+            }
+        );
+        assert_eq!(
+            launch_cli_check(Some(HQ_CLI_MIN_VERSION)),
+            LaunchCliCheck::Scheduled
+        );
+        assert!(cli_below_floor(Some("0.0.1")));
+        assert!(!cli_below_floor(Some(HQ_CLI_MIN_VERSION)));
+    }
+
+    /// An ordinary upgrade honours the opt-out; a floor repair does not.
+    #[test]
+    fn floor_repair_bypasses_the_auto_update_opt_out() {
+        assert!(auto_install_allowed(true, false));
+        assert!(!auto_install_allowed(false, false));
+        assert!(auto_install_allowed(false, true));
+        assert!(auto_install_allowed(true, true));
+    }
+
+    /// The shipped floor must be a plain `MAJOR.MINOR.PATCH` (the hq-core hook
+    /// parses it the same way) and must not sit below the npx self-heal range
+    /// the resolver pins — otherwise a CLI the resolver already accepts could
+    /// be flagged for repair, or vice versa.
+    #[test]
+    fn shipped_floor_is_a_plain_triple_at_or_above_the_resolver_range() {
+        let parts: Vec<&str> = HQ_CLI_MIN_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "floor must be MAJOR.MINOR.PATCH");
+        assert!(parts.iter().all(|p| p.parse::<u64>().is_ok()));
+        let resolver_floor = crate::hq_resolver::HQ_CLI_NPM_RANGE
+            .trim_start_matches('^')
+            .trim_start_matches('~');
+        assert_ne!(
+            cmp_semver(HQ_CLI_MIN_VERSION, resolver_floor),
+            std::cmp::Ordering::Less,
+            "HQ_CLI_MIN_VERSION ({HQ_CLI_MIN_VERSION}) is below the resolver's npx range floor ({resolver_floor})"
+        );
     }
 }

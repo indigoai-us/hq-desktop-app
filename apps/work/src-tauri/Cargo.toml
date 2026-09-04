@@ -1,0 +1,33 @@
+# Native shell for HQ Work on iOS and Android.
+#
+# This crate is a WRAPPER, not an app. All application code lives in the one
+# shared Svelte source at apps/work/src (plus packages/*), which web, desktop
+# and mobile all render. Nothing with product behaviour belongs here.
+#
+# Excluded from the root workspace for the same reason apps/sync/src-tauri is:
+# these Tauri crates pin their own dependency graphs and are built standalone.
+[package]
+name = "hq-work-mobile"
+version = "0.10.192"
+edition = "2021"
+license = "UNLICENSED"
+description = "HQ Work mobile shell"
+# `staticlib` + `cdylib` are what the generated Xcode and Gradle projects link
+# against; `rlib` keeps `cargo test` and the desktop-style binary working.
+[lib]
+name = "hq_work_mobile_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Deliberately NO tray-icon, window-vibrancy, global-shortcut, single-instance
+# or macos-private-api: none of them build for iOS/Android, and a phone has no
+# tray or window chrome to drive them anyway.
+tauri = { version = "2", features = [] }
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-os = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

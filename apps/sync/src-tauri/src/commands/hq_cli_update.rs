@@ -22,13 +22,21 @@
 //!   3. GET https://registry.npmjs.org/@indigoai-us/hq-cli/latest and
 //!      pull the `version` field.
 //!   4. Compare numerically. If latest > local, emit
-//!      `hq-cli-update:available` with both versions. When `cliAutoUpdate`
+//!      `hq-cli-update:available` with both versions. When `autoUpdate`
 //!      is on (default), the background checker also installs it directly.
 //!
-//! A background task fires the check 15s after launch (offset from the
-//! app updater's 10s so they don't both spike CPU at the same moment),
-//! then every 6h. The result is also exposed as the `check_hq_cli_update`
-//! Tauri command for on-demand polls.
+//! A background task fires the check 4 minutes after launch (staggered
+//! against the other launch-time checkers so they don't spike CPU and network
+//! in lockstep), then every 6h. The result is also exposed as the
+//! `check_hq_cli_update` Tauri command for on-demand polls.
+//!
+//! **Version floor.** Before that stagger the task runs a network-free probe
+//! of the installed CLI's version. If it reads below
+//! `hq_desktop_core::hq_cli_update::HQ_CLI_MIN_VERSION` — the same floor
+//! hq-core's `30-ensure-hq-cli.sh` hook enforces on every prompt — the check
+//! and install run immediately, and (like that hook, which has no opt-out)
+//! the install ignores the `autoUpdate` toggle. Only a *readable* old version
+//! triggers this: a missing or unreadable CLI keeps the scheduled cadence.
 //!
 //! The `install_hq_cli_update` command runs the upgrade directly by
 //! spawning `npm install -g --prefix <resolved-hq-prefix>
@@ -74,7 +82,9 @@ use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, auto_update_enabled, classify_install_failure,
+    apply_post_install_effects, auto_install_allowed, auto_update_enabled,
+    classify_install_failure, cli_below_floor, cli_below_floor_of, launch_cli_check,
+    launch_cli_check_with_floor, LaunchCliCheck, HQ_CLI_MIN_VERSION,
     bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt,
     cli_auto_update_enabled, cli_install_needed, cmp_semver,
@@ -3074,74 +3084,119 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             );
             clear_non_convergent_version();
         }
+        // Version floor: a readable installed version below HQ_CLI_MIN_VERSION
+        // is repaired NOW rather than after the launch stagger. The probe is
+        // network-free (anchored package.json / `hq --version`) and runs off
+        // the async runtime.
+        let launch = tauri::async_runtime::spawn_blocking(|| {
+            launch_cli_check(get_local_version().as_deref())
+        })
+        .await
+        .unwrap_or_else(|error| {
+            log(
+                "hq-cli-update",
+                &format!("launch floor probe task failed; keeping the scheduled cadence: {error}"),
+            );
+            LaunchCliCheck::Scheduled
+        });
+        if let LaunchCliCheck::RepairNow { local } = launch {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "installed hq CLI {local} is below the required minimum \
+                     {HQ_CLI_MIN_VERSION}; checking and installing now instead of \
+                     waiting {}s for the launch stagger",
+                    INITIAL_DELAY.as_secs()
+                ),
+            );
+            run_check_cycle(&handle, /* floor_repair */ true).await;
+        }
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            match check_once(&handle).await {
-                Ok(Some(info)) => {
-                    // Gate on the master `autoUpdate` switch (default ON). The
-                    // legacy `cliAutoUpdate` key is superseded — one toggle now
-                    // governs the app, CLI, and core auto-installers.
-                    if auto_update_enabled() {
-                        if should_auto_install(
-                            &info.latest,
-                            non_convergent_cli_version().as_deref(),
-                        ) {
-                            log("hq-cli-update", "auto-update enabled — installing");
-                            match install_hq_cli_update(handle.clone()).await {
-                                Ok(_) => log("hq-cli-update", "auto-update succeeded"),
-                                Err(e) => log(
-                                    "hq-cli-update",
-                                    &format!("auto-update failed, banner remains: {e}"),
-                                ),
-                            }
-                        } else {
-                            // The durable marker blocks the install. A machine
-                            // already wedged by HQ-DESKTOP-46 carries that marker
-                            // from the OLD foreign-managed classification, so the
-                            // install-time repair can never run. Attempt the
-                            // filesystem-only shadow heal directly; on success it
-                            // clears the marker and re-enables auto-update without
-                            // waiting for the next CLI publish. Anything that is
-                            // not a provable same-root shadow is left untouched and
-                            // the banner stays up for the manual fix.
-                            let latest = info.latest.clone();
-                            let healed = tauri::async_runtime::spawn_blocking(move || {
-                                heal_blocked_managed_shadow(&latest)
-                            })
-                            .await
-                            .ok()
-                            .flatten();
-                            if let Some(healed) = healed {
-                                let _ = handle.emit("hq-cli-update:cleared", &healed);
-                                log(
-                                    "hq-cli-update",
-                                    "healed a wedged managed-toolchain CLI shadow; \
-                                     auto-update re-enabled",
-                                );
-                            } else {
-                                // This exact version already installed cleanly
-                                // without moving the detected CLI, so repeating it
-                                // cannot help. Stop here instead of reinstalling on
-                                // every launch and every 6h; the banner stays up
-                                // for the manual fix.
-                                log(
-                                    "hq-cli-update",
-                                    &format!(
-                                        "auto-update skipped for {}: an earlier install completed \
-                                         without changing the detected version",
-                                        info.latest
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
-            }
+            run_check_cycle(&handle, /* floor_repair */ false).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
+}
+
+/// One background check, plus the install it calls for. `floor_repair` marks
+/// the launch-time pass taken because the installed CLI read below
+/// [`HQ_CLI_MIN_VERSION`]; it is the only pass allowed to install past the
+/// user's `autoUpdate` opt-out (see [`auto_install_allowed`]).
+async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
+    match check_once(handle).await {
+        Ok(Some(info)) => {
+            // Gate on the master `autoUpdate` switch (default ON). The
+            // legacy `cliAutoUpdate` key is superseded — one toggle now
+            // governs the app, CLI, and core auto-installers. A floor
+            // repair is exempt: below the floor the CLI cannot serve the
+            // hq-core contract, so it is repaired like a missing one.
+            let auto_update = auto_update_enabled();
+            if auto_install_allowed(auto_update, floor_repair) {
+                if floor_repair && !auto_update {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "autoUpdate is off, but installed hq CLI {} is below the \
+                             required minimum {HQ_CLI_MIN_VERSION}; repairing anyway",
+                            info.local.as_deref().unwrap_or("(unreadable)")
+                        ),
+                    );
+                }
+                if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {
+                    log("hq-cli-update", "auto-update enabled — installing");
+                    match install_hq_cli_update(handle.clone()).await {
+                        Ok(_) => log("hq-cli-update", "auto-update succeeded"),
+                        Err(e) => log(
+                            "hq-cli-update",
+                            &format!("auto-update failed, banner remains: {e}"),
+                        ),
+                    }
+                } else {
+                    // The durable marker blocks the install. A machine
+                    // already wedged by HQ-DESKTOP-46 carries that marker
+                    // from the OLD foreign-managed classification, so the
+                    // install-time repair can never run. Attempt the
+                    // filesystem-only shadow heal directly; on success it
+                    // clears the marker and re-enables auto-update without
+                    // waiting for the next CLI publish. Anything that is
+                    // not a provable same-root shadow is left untouched and
+                    // the banner stays up for the manual fix.
+                    let latest = info.latest.clone();
+                    let healed = tauri::async_runtime::spawn_blocking(move || {
+                        heal_blocked_managed_shadow(&latest)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(healed) = healed {
+                        let _ = handle.emit("hq-cli-update:cleared", &healed);
+                        log(
+                            "hq-cli-update",
+                            "healed a wedged managed-toolchain CLI shadow; \
+                             auto-update re-enabled",
+                        );
+                    } else {
+                        // This exact version already installed cleanly
+                        // without moving the detected CLI, so repeating it
+                        // cannot help. Stop here instead of reinstalling on
+                        // every launch and every 6h; the banner stays up
+                        // for the manual fix.
+                        log(
+                            "hq-cli-update",
+                            &format!(
+                                "auto-update skipped for {}: an earlier install completed \
+                                 without changing the detected version",
+                                info.latest
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
+    }
 }
 
 #[cfg(test)]
