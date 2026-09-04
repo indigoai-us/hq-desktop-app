@@ -26,6 +26,9 @@ right-click / Opt+Shift+H), not a second chat app.
 | Company secondary nav | Overview · Goals · Projects · Skills · Workers · Knowledge (→ files mode) · Team · Activity · Deployments · Secrets · Settings |
 | Company panels | `src/desktop-alt/panels/CompanyBoardPanel.svelte`, `ActivityPanel.svelte`, `DeploymentsPanel.svelte`, `SecretsPanel.svelte`, `CompanyLibraryPanel.svelte` (Skills/Workers), `TeamPanel.svelte` |
 | Global command surface | `src/desktop-alt/components/CommandPalette.svelte`, opened by command-K and grouped into actions/navigation rows |
+| Company channel tabs | `packages/ui/src/chat/CompanyTabs.svelte`, `CompanyHero.svelte`, `tabs/tab-model.ts` (`COMPANY_CHANNEL_TABS` — Chat · Atlas · Team · Integrations · Settings), `tabs/atlas-model.ts`, `tabs/{AtlasTab,TeamTab,IntegrationsTab,SettingsTab}.svelte` |
+| Lifecycle cards | `packages/ui/src/chat/messaging/LifecycleCard.svelte`, `chat/card-action.ts` (idempotency-key store + `submitLifecycleCardAction`), `messaging/channelMessageModels.ts` (`lifecycle_card` systemEvent envelope) |
+| Agent channel | `packages/ui/src/chat/agent-channel.ts` — `isAgentUid`, `provisioningFromMessages` (`pending` / `done` / `blocked`), `agentComposerPlaceholder`; the composer stays locked until the status card flips to `done` |
 
 ## Tauri Commands
 
@@ -43,6 +46,9 @@ All commands are registered in `src-tauri/src/main.rs`.
 | `get_company_secrets` | Reads hq-pro secrets metadata from `/secrets/{companyUid}` and returns grouped key metadata only. |
 | `get_local_company_goals`, `get_local_projects`, `get_local_project_prd`, `get_local_project_readme` | Read local HQ work-system data for V4 goals, projects, tasks, and detail views. |
 | `set_local_project_status`, `set_local_story_passes` | Write V4 project and story status changes back to local project files. |
+| `run_card_action` | Submits a lifecycle-card action: POST `/v1/notify/channels/{id}/cards/{cardId}/actions` with a client-generated `idempotencyKey`. A 409 replay counts as success; a 403 renders its reason on the card. Each 2xx also runs the activate-cloud reconcile pass. |
+| `get_company_tab`, `run_company_tab_action` | Company channel tabs: GET `/v1/companies/{uid}/tabs/{tab}` and POST a `tab_row` action for the Team / Integrations / Settings tabs. |
+| `take_pending_setup_target` | Drains a stashed `hq-desktop://setup?checkout=done&company={uid}` deep link (cold-start path; see `src-tauri/src/deep_link.rs`). |
 
 Company slugs are normalized in Rust, resolved through `list_syncable_workspaces`, and mapped to cloud company UIDs before vault API calls. A broken manifest UID can still resolve if the workspace row exposes the live cloud UID in its broken reason.
 
@@ -53,6 +59,8 @@ Company slugs are normalized in Rust, resolved through `list_syncable_workspaces
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.
 - The desktop-alt capability grants only `core:default`, `core:event:default`, and `shell:allow-open`.
+- Lifecycle-card links are host-opened. Without an `onopenurl` host, `LifecycleCard.svelte` falls back to `window.open` **only for `http(s)` hrefs** — a server-supplied `javascript:` / `file:` href is ignored.
+- `hq-desktop://` is a low-trust input. Only `setup` with a `^cmp_[A-Za-z0-9_-]+$` company uid is forwarded to the shell; anything else is dropped inert.
 
 ## Window Appearance
 
