@@ -99,7 +99,50 @@
           stroke-linecap="round"
         />
       </svg>
-    {:else if model.type === "work_session"}
+    {:else if model.type === "work_session_blocked"}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 16 16"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M8 2.75 14.2 13.4H1.8L8 2.75Z"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M8 6.7v3.1"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+        <path
+          d="M8 11.65h.01"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+      </svg>
+    {:else if model.type === "work_session_finished"}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 16 16"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M3 8.5 6.5 12 13 4.5"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    {:else if model.type === "work_session_task_status"}
       <svg
         width="14"
         height="14"
@@ -122,7 +165,7 @@
         />
       </svg>
     {:else}
-      <!-- file_added -->
+      <!-- file_added / member_added -->
       <svg
         width="14"
         height="14"

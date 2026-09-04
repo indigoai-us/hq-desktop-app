@@ -50,6 +50,11 @@ export interface BoardWakeEvents {
   "work:reconciled": { state: unknown };
   /** A work-session wake was observed (US-009 flip signal). */
   "work-session:wake": undefined;
+  /**
+   * A company-wide live wake (`{kind:"live"}` on thread-directory) — same
+   * flip signal as work-session wakes for the session feed (US-015).
+   */
+  "live:wake": undefined;
   /** Latest STS-vend droppedCompanies emission (may be empty). */
   "dropped-companies": string[];
 }

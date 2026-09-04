@@ -28,6 +28,7 @@ export type EmbeddedNavigationTarget =
   | { kind: 'inbox' }
   | { kind: 'messages' }
   | { kind: 'meetings'; meetingId?: string | null }
+  | { kind: 'atlas' }
   | {
       kind: 'library';
       tab: 'skills' | 'workers' | 'installed' | 'marketplace' | 'submit' | 'profile';

@@ -991,6 +991,28 @@ export interface SettingsApi {
 }
 
 /**
+ * Optional destination binding for cross-company session migrate (US-017B).
+ * Empty `{}` leaves project/task unset on the destination copy.
+ */
+export interface MigrateSessionDestination {
+  projectId?: string;
+  taskId?: string;
+}
+
+/**
+ * Body for POST /v1/work-mesh/sessions/{sessionId}/migrate.
+ * This is the only desktop client path that rebinds a session across companies.
+ */
+export interface MigrateSessionRequest {
+  operationId: string;
+  digest: string;
+  sourceCompanyUid: string;
+  destinationCompanyUid: string;
+  destination: MigrateSessionDestination;
+  expectedVersion: number;
+}
+
+/**
  * Work-mesh PROJECT_VIEW + local machine cache.
  *
  * Desktop `readLocalSnapshot` returns the on-disk cache
@@ -1002,6 +1024,14 @@ export interface WorkMeshApi {
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
+  /**
+   * Cross-company session migrate (US-017A/B).
+   * POST /v1/work-mesh/sessions/{sessionId}/migrate — only rebind path.
+   */
+  migrateSession(
+    sessionId: string,
+    body: MigrateSessionRequest,
+  ): AdapterPromise<Json>;
 }
 
 // ---------------------------------------------------------------------------

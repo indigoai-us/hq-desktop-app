@@ -17,6 +17,7 @@
   import {
     LinkContextMenu,
     handleLinkActivate,
+    presenceStatus,
     type LinkMenuAnchor,
   } from '@hq/ui';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
@@ -106,6 +107,8 @@
     // Optional slot rendered after the message list, inside the scrollable
     // region — used for the agent-thinking indicator (status, not a message).
     belowMessages?: import('svelte').Snippet;
+    /** Company scope for presence lookups on message avatars (US-015). */
+    companyUid?: string | null;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -128,6 +131,7 @@
     readonly = false,
     composer = true,
     belowMessages,
+    companyUid = null,
   }: Props = $props();
 
   const messageAuthor = (msg: ConversationMessage) =>
@@ -135,6 +139,13 @@
 
   function isAgentUid(uid: string | null | undefined): boolean {
     return (uid ?? '').startsWith('agt_');
+  }
+
+  function actorOnline(actorUid: string | null | undefined): boolean {
+    const uid = (actorUid ?? '').trim();
+    const company = (companyUid ?? '').trim();
+    if (!uid || !company) return false;
+    return presenceStatus(company, uid) === 'online';
   }
 
   let linkMenu = $state<LinkMenuAnchor | null>(null);
@@ -481,6 +492,7 @@
             label={messageAuthor(msg)}
             agentUid={msg.fromPersonUid}
             size="regular"
+            online={actorOnline(msg.fromPersonUid)}
           />
         </span>
       {:else}
@@ -653,6 +665,7 @@
                     label={a.displayName}
                     agentUid={a.personUid}
                     size="small"
+                    online={actorOnline(a.personUid)}
                   />
                 </span>
               {/each}

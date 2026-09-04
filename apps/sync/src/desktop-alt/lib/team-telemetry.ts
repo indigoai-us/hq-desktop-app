@@ -4,6 +4,8 @@
  *
  * DESKTOP-009: mixed humans + agents in one scan-friendly list; kind labels are
  * honest type markers (Human / Agent). Never invent live status or activity.
+ * Connection presence is never derived from timestamps or event counts — that
+ * belongs to the presence store (US-015).
  */
 
 export type TeamMemberKind = 'human' | 'agent';

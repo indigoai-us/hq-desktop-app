@@ -19,8 +19,11 @@ import {
 import {
   buildChannelStatusModel,
   type ChannelStatusModel,
+  type LiveReadSessionInput,
   type StatusMemberInput,
+  type StatusPresenceInput,
 } from "../chat/channel-status-model.js";
+import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
 import type {
   BoardTabData,
   ChannelFileItemModel,
@@ -82,6 +85,10 @@ export function tabsFromProjectView(
   raw: unknown,
   members: StatusMemberInput[],
   companyLabel?: string | null,
+  live?: {
+    liveSessions?: LiveReadSessionInput[];
+    presence?: StatusPresenceInput[];
+  },
 ): LiveChannelTabs | null {
   const envelope = rec(raw);
   const view =
@@ -89,7 +96,19 @@ export function tabsFromProjectView(
     parseMeshProjectView(envelope?.project) ??
     parseMeshProjectView(envelope?.view);
   if (!view) return null;
-  const board = projectViewToBoard(view) as BoardTabData;
+  const liveSessions = live?.liveSessions ?? [];
+  const board = projectViewToBoard(view, {
+    liveSessions: liveSessions.map((s) => ({
+      sessionId: s.sessionId,
+      actorUid: s.actorUid,
+      displayName: s.displayName ?? undefined,
+      harness: s.harness,
+      taskId: s.taskId,
+      turnCount: s.turnCount,
+      lastTurnAt: s.lastTurnAt,
+      actorType: s.actorType,
+    })),
+  }) as BoardTabData;
   const files = projectFilesToItems(
     view.files,
     view.companyUid,
@@ -113,6 +132,8 @@ export function tabsFromProjectView(
       })),
     },
     members,
+    liveSessions,
+    presence: live?.presence,
     companyLabel: companyLabel ?? mesh.companyLabel,
   });
   return { board, files, status };
@@ -243,7 +264,8 @@ export async function loadLiveChannelTabs(opts: {
     } catch {
       raw = null;
     }
-    tabs = tabsFromProjectView(raw, members, opts.companyLabel);
+    const projectLive = liveInputsForCompanyProject(companyUid, projectId);
+    tabs = tabsFromProjectView(raw, members, opts.companyLabel, projectLive);
     const boardEmpty = !tabs?.board?.columns.some(
       (column) => column.cards.length > 0,
     );
@@ -273,7 +295,12 @@ export async function loadLiveChannelTabs(opts: {
           },
           stories,
         );
-        tabs = tabsFromProjectView(view, members, opts.companyLabel);
+        tabs = tabsFromProjectView(
+          view,
+          members,
+          opts.companyLabel,
+          projectLive,
+        );
       }
     }
     if (tabs?.board?.columns.some((column) => column.cards.length > 0)) {
@@ -315,6 +342,7 @@ export async function loadLiveChannelTabs(opts: {
           },
           members,
           opts.companyLabel,
+          liveInputsForCompanyProject(companyUid, matched),
         );
         resolvedId = matched;
       }

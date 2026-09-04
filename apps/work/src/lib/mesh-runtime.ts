@@ -5,11 +5,29 @@
  * (POST /v1/realtime/credentials). The in-memory browser token is attached
  * by hq-pro-client. Failures are absent-safe — REST still works if the socket
  * never comes up.
+ *
+ * Presence (US-014): MeshClient owns the in-memory PresenceStore; changes are
+ * fanned onto the chat bus as `presence:changed` and mirrored into the Svelte
+ * runes snapshot for UI reads.
  */
 
-import { MeshClient, createWebCredentialProvider } from "@hq/core";
+import {
+  LiveReadStore,
+  MeshClient,
+  PresenceStore,
+  createWebCredentialProvider,
+  type PresenceSnapshot,
+} from "@hq/core";
 import type { PlatformAdapter } from "@hq/platform";
-import { createChatWakeBus, routeMeshReconcile, routeMeshWake } from "@hq/ui";
+import {
+  bindLiveReadStore,
+  bindLiveRefresh,
+  bindPresenceStore,
+  createChatWakeBus,
+  routeMeshReconcile,
+  routeMeshWake,
+  wirePresenceStoreToChatBus,
+} from "@hq/ui";
 import { hqProFetch } from "./hq-pro-client.js";
 
 export { routeMeshReconcile, routeMeshWake };
@@ -46,14 +64,31 @@ export function startWebMesh(opts: {
   wakes: WebWakeBus;
   onNotifications?: () => void;
   fetchImpl?: typeof fetch;
-}): { stop: () => void } {
+  presenceStore?: PresenceStore;
+  liveReadStore?: LiveReadStore;
+}): {
+  stop: () => void;
+  presenceStore: PresenceStore;
+  presenceSnapshot: () => PresenceSnapshot;
+  liveReadStore: LiveReadStore;
+} {
   const fetchImpl = opts.fetchImpl ?? hqProFetch;
+  const presenceStore = opts.presenceStore ?? new PresenceStore();
+  const liveReadStore = opts.liveReadStore ?? new LiveReadStore();
   const client = new MeshClient({
     credentialProvider: createWebCredentialProvider({
       url: "/v1/realtime/credentials",
       fetchImpl: fetchImpl as never,
     }),
     fetcher: createHqReconcileFetcher(fetchImpl),
+    presenceStore,
+    liveReadStore,
+  });
+  const unwirePresence = wirePresenceStoreToChatBus(presenceStore, opts.wakes);
+  const unbindRunes = bindPresenceStore(presenceStore);
+  const unbindLive = bindLiveReadStore(liveReadStore);
+  const unbindRefresh = bindLiveRefresh((companyUid) => {
+    client.refreshLive(companyUid);
   });
   client.on("wake", (topic, payloadText) => {
     console.info("[hq-web-mesh]", {
@@ -62,6 +97,18 @@ export function startWebMesh(opts: {
       bytes: payloadText?.length ?? 0,
     });
     routeMeshWake(payloadText, opts.wakes);
+  });
+  client.on("presence", (change) => {
+    console.info("[hq-web-mesh]", {
+      event: "presence",
+      companyUid: change.companyUid,
+      actorUid: change.actorUid,
+      status: change.status,
+    });
+  });
+  client.on("live", (companyUid) => {
+    console.info("[hq-web-mesh]", { event: "live", companyUid });
+    opts.wakes.emit("live:wake", { companyUid });
   });
   client.on("catchup", (reason) => {
     console.info("[hq-web-mesh]", { event: "catchup", reason });
@@ -83,7 +130,16 @@ export function startWebMesh(opts: {
     console.warn("web-mesh: MQTT not connected; REST still live", err);
   });
   return {
-    stop: () => client.stop(),
+    stop: () => {
+      unwirePresence();
+      unbindRunes();
+      unbindLive();
+      unbindRefresh();
+      client.stop();
+    },
+    presenceStore,
+    presenceSnapshot: () => presenceStore.snapshot(),
+    liveReadStore,
   };
 }
 

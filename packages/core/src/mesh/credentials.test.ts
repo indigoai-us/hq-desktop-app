@@ -43,7 +43,13 @@ describe("normalizeBundle", () => {
       "hq/prs_01KQ2RY9VB1S105X2GZ2EPHKWY/notifications",
       "hq/prs_01KQ2RY9VB1S105X2GZ2EPHKWY/work-session/#",
       "hq/cmp_01KSR2D0Y920PD7NK0Z232DEK2/thread/#",
+      "hq/cmp_01KSR2D0Y920PD7NK0Z232DEK2/presence/#",
+      "hq/cmp_01KSR2D0Y920PD7NK0Z232DEK2/thread-directory",
     ]);
+    // Contract-1 presenceTopic (exact, no actor) is dropped — filter is derived.
+    expect(topicsForBundle(bundle)).not.toContain(
+      "hq/cmp_01KSR2D0Y920PD7NK0Z232DEK2/presence",
+    );
     expect(topicsForBundle(bundle).every((t) => !t.includes("hq//"))).toBe(
       true,
     );

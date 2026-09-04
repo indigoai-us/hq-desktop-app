@@ -44,6 +44,19 @@ function company(overrides: Partial<Workspace>): Workspace {
   };
 }
 
+describe('US-016 Atlas route', () => {
+  it('resolves atlas pending routes and keys the surface', () => {
+    expect(resolvePendingDesktopRoute('atlas')).toEqual({ kind: 'atlas' });
+    expect(getDesktopRouteKey({ kind: 'atlas' })).toBe('atlas');
+    expect(
+      isDesktopRouteActive({ kind: 'atlas' }, { kind: 'atlas' }),
+    ).toBe(true);
+    expect(
+      isDesktopRouteActive({ kind: 'atlas' }, { kind: 'home' }),
+    ).toBe(false);
+  });
+});
+
 describe('US-002 V4 desktop routes', () => {
   it('lands on the last-visited company, falling back to the first sidebar company row (US-007)', () => {
     const workspaces = [

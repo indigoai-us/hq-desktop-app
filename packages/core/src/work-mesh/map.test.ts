@@ -6,6 +6,7 @@ import {
   parseWorkMeshSnapshot,
 } from "./parse.js";
 import {
+  boardActivityFromLive,
   normalizeStoryStage,
   overlayFromSnapshot,
   projectViewToBoard,
@@ -193,6 +194,85 @@ describe("work-mesh snapshot overlay", () => {
       ["review", 0],
       ["done", 0],
     ]);
+  });
+
+  it("falls back to Updated activity when no live/task rows are passed", () => {
+    const board = projectViewToBoard({
+      companyUid: "cmp_x",
+      projectId: "p",
+      stories: [{ id: "US-015", title: "Live", status: "in_progress" }],
+      repos: [],
+      updatedAt: "2026-09-04T11:58:00.000Z",
+    });
+    expect(board.stories["US-015"]?.activity).toEqual([
+      { id: "updated", at: "11:58", text: "Updated" },
+    ]);
+  });
+
+  it("builds live session + task_status activity per story (case-insensitive)", () => {
+    const board = projectViewToBoard(
+      {
+        companyUid: "cmp_x",
+        projectId: "work-mesh-live",
+        stories: [
+          { id: "US-015", title: "Live read", status: "in_progress" },
+          { id: "US-016", title: "Other", status: "queued" },
+        ],
+        repos: [],
+        updatedAt: "2026-09-04T12:00:00.000Z",
+      },
+      {
+        liveSessions: [
+          {
+            sessionId: "sess_corey",
+            actorUid: "prs_corey",
+            displayName: "Corey",
+            harness: "claude-code",
+            taskId: "us-015",
+            turnCount: 12,
+            lastTurnAt: "2026-09-04T11:58:00.000Z",
+          },
+          {
+            sessionId: "sess_other",
+            displayName: "Other",
+            harness: "codex",
+            taskId: "US-016",
+            turnCount: 1,
+            lastTurnAt: "2026-09-04T11:00:00.000Z",
+          },
+        ],
+        taskStatusChanges: [
+          {
+            id: "tsc_1",
+            taskId: "US-015",
+            at: "2026-09-04T11:50:00.000Z",
+            text: "Corey moved US-015 to in_progress",
+          },
+        ],
+      },
+    );
+    expect(board.stories["US-015"]?.activity).toEqual([
+      {
+        id: "tsc_1",
+        at: "11:50",
+        text: "Corey moved US-015 to in_progress",
+      },
+      {
+        id: "sess_corey",
+        at: "11:58",
+        text: "Corey · claude-code · 12 turns",
+      },
+    ]);
+    expect(board.stories["US-016"]?.activity).toEqual([
+      {
+        id: "sess_other",
+        at: "11:00",
+        text: "Other · codex · 1 turns",
+      },
+    ]);
+    expect(boardActivityFromLive("US-015", undefined, "2026-09-04T09:00:00Z")).toEqual(
+      [{ id: "updated", at: "09:00", text: "Updated" }],
+    );
   });
 
   it("maps official and alias statuses onto the four stages", () => {

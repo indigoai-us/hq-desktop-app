@@ -70,6 +70,18 @@ export {
   submitAnswer,
   type AgencyApi,
 } from "./chat/agency-store.svelte.js";
+export {
+  bindPresenceStore,
+  presenceEntry,
+  presenceSnapshot,
+  presenceStatus,
+} from "./chat/presence-store.svelte.js";
+export {
+  bindLiveReadStore,
+  liveInputsForCompanyProject,
+  liveReadFor,
+  liveReadSnapshot,
+} from "./chat/live-read-store.svelte.js";
 
 // Work-mesh Board + project/thread views (US-008, ported from desktop-alt)
 export { default as BoardView } from "./board/BoardView.svelte";
@@ -160,6 +172,27 @@ export * as common from "./common/index.js";
 export * as settingsArea from "./settings/index.js";
 export * as meetings from "./meetings/index.js";
 export * as company from "./company/index.js";
+
+// Atlas v0 (work-mesh-live US-016) — company roster × live projects.
+export {
+  AtlasPage,
+  ATLAS_EMPTY_LIVE,
+  ATLAS_MIXED_LIVE,
+  ATLAS_ONE_ACTOR_LIVE,
+  bindLiveRefresh,
+  buildAtlasView,
+  createGoChord,
+  GO_CHORD_MS,
+  requestLiveRefresh,
+  type AtlasActorType,
+  type AtlasOnlineActor,
+  type AtlasProjectCard,
+  type AtlasViewModel,
+  type BuildAtlasViewOptions,
+  type GoChordController,
+  type GoChordHandler,
+} from "./atlas/index.js";
+export * as atlas from "./atlas/index.js";
 export {
   buildCompanyDisplayMap,
   companyDisplayName,

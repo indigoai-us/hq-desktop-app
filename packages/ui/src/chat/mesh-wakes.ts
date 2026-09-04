@@ -7,6 +7,9 @@ import {
   mqttPayloadToText,
   parseDmDeliveredWake,
   parseReplyThreadWake,
+  type PresenceChange,
+  type PresenceSnapshot,
+  type PresenceStore,
   type ReconcileResult,
   type ReplyThreadWakeIds,
 } from "@hq/core";
@@ -14,6 +17,28 @@ import {
 import { createChatWakeBus, type ReplyNewWake } from "./chat-api.js";
 
 export type ChatMeshWakeBus = ReturnType<typeof createChatWakeBus>;
+
+/**
+ * Bridge PresenceStore changes onto the chat bus as `presence:changed`.
+ * Returns unsubscribe. Hosts also keep `store.snapshot()` for readable reads.
+ */
+export function wirePresenceStoreToChatBus(
+  store: PresenceStore,
+  wakes: ChatMeshWakeBus,
+): () => void {
+  return store.subscribe((change: PresenceChange) => {
+    wakes.emit("presence:changed", {
+      companyUid: change.companyUid,
+      actorUid: change.actorUid,
+      status: change.status,
+    });
+  });
+}
+
+/** Readable snapshot helper for hosts that expose the store beside the bus. */
+export function presenceSnapshotOf(store: PresenceStore): PresenceSnapshot {
+  return store.snapshot();
+}
 
 export function toReplyNewWake(ids: ReplyThreadWakeIds): ReplyNewWake {
   return {

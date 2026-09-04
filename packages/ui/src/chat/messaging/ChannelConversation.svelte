@@ -33,6 +33,7 @@
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
+  import { presenceStatus } from "../presence-store.svelte.js";
   import {
     CHAT_ATTACHMENT_ACCEPT,
     MAX_CHAT_ATTACHMENTS,
@@ -122,6 +123,8 @@
     onopenartifact?: (artifact: ChatArtifact) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
+    /** Company scope for presence lookups on message avatars (US-015). */
+    companyUid?: string | null;
     /**
      * Last-reply preview from a prior ReplyPanel fetch. Never required from
      * the list API — omit unless the host already knows author + time.
@@ -197,6 +200,7 @@
     onopenartifact,
     onreleaseurl,
     vaultCompanyUid = null,
+    companyUid = null,
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
@@ -211,6 +215,14 @@
     draftKey = null,
     draftStorage = null,
   }: Props = $props();
+
+  /** Presence-store online flag for an actor in this conversation's company. */
+  function actorOnline(actorUid: string | null | undefined): boolean {
+    const uid = (actorUid ?? "").trim();
+    const company = (companyUid ?? vaultCompanyUid ?? "").trim();
+    if (!uid || !company) return false;
+    return presenceStatus(company, uid) === "online";
+  }
 
   /** Emit an author-profile-open when we have a personUid to resolve. */
   function openAuthorProfile(msg: ConversationMessageWire): void {
@@ -973,10 +985,23 @@
               <span>{formatDateSeparator(msg.createdAt)}</span>
             </div>
           {/if}
-          {#if systemModel?.kind === "line"}
+          {#if systemModel?.kind === "work_session_card"}
+            <WorkMeshActivityRow
+              card={systemModel}
+              actorLabel={resolveWorkActor(
+                systemModel.principalDisplay ??
+                  systemModel.actorUid ??
+                  messageAuthor(msg),
+                msg,
+              )}
+            />
+          {:else if systemModel?.kind === "line"}
             <SystemEventLine
               model={systemModel}
-              who={systemModel.type === "member_added"
+              who={systemModel.type === "member_added" ||
+              systemModel.type === "work_session_blocked" ||
+              systemModel.type === "work_session_task_status" ||
+              systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
             />
@@ -992,6 +1017,7 @@
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
                   size="regular"
+                  online={actorOnline(msg.fromPersonUid)}
                 />
               </span>
               <div class="dm-msg-column">
@@ -1038,6 +1064,7 @@
                       avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       agentUid={msg.fromPersonUid}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {:else}
                     <IdentityMark
@@ -1045,6 +1072,7 @@
                       label={messageAuthor(msg)}
                       avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                       size="regular"
+                      online={actorOnline(msg.fromPersonUid)}
                     />
                   {/if}
                 </span>
@@ -1154,6 +1182,7 @@
                               )}
                               agentUid={a.personUid}
                               size="small"
+                              online={actorOnline(a.personUid)}
                             />
                           </span>
                         {/each}

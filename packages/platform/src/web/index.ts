@@ -147,6 +147,8 @@ export const WEB_PATHS = {
 
   workMeshProject: (id: string) =>
     `/v1/work-mesh/projects/${encodeURIComponent(id)}`,
+  workMeshSessionMigrate: (sessionId: string) =>
+    `/v1/work-mesh/sessions/${encodeURIComponent(sessionId)}/migrate`,
 
   skillsShelf: (companyUid: string) =>
     `/v1/skills/${encodeURIComponent(companyUid)}/shelf`,
@@ -983,5 +985,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       const qs = company ? `?companyUid=${encodeURIComponent(company)}` : "";
       return this.get(`${WEB_PATHS.workMeshProject(id)}${qs}`);
     },
+    migrateSession: (sessionId, body) =>
+      this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
   };
 }

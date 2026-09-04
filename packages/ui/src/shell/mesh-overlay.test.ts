@@ -105,6 +105,7 @@ describe("statusForRow mesh repos", () => {
           avatarUrl: null,
           description: null,
           statusIcon: "idle" as const,
+          online: false,
         },
       ],
       agents: [],
@@ -151,6 +152,7 @@ describe("statusForRow mesh repos", () => {
           avatarUrl: null,
           description: null,
           statusIcon: "idle",
+          online: false,
         },
       ],
       agents: [
@@ -162,6 +164,7 @@ describe("statusForRow mesh repos", () => {
           avatarUrl: null,
           description: null,
           statusIcon: "running",
+          online: false,
         },
       ],
       memberCount: 1,
