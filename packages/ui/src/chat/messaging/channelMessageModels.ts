@@ -379,6 +379,7 @@ export function parseLifecycleCard(raw: unknown): LifecycleCardModel | null {
     actions,
     viewer: { canAct: viewer.canAct, actorName },
   };
+}
 function asOptionalInt(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.max(0, Math.floor(value));
