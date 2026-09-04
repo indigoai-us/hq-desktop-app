@@ -16,6 +16,8 @@
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
   import AgentThinkingRow from './AgentThinkingRow.svelte';
+  import AgentTaskStrip from './AgentTaskStrip.svelte';
+  import { AgentTaskFeedController } from '../../lib/agentTaskFeedController.svelte';
   import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import {
     type Channel,
@@ -95,6 +97,9 @@
   // reactions surface).
   let reactionsCtl = $state<ReactionController | null>(null);
   let thinkingCtl = $state<AgentThinkingController | null>(null);
+  // Live background-task strip for the agents on this channel's roster.
+  // Built and disposed alongside thinkingCtl — same roster, same lifetime.
+  let taskCtl = $state<AgentTaskFeedController | null>(null);
 
   const title = $derived(channelDisplayName(current));
   const chip = $derived(scopeChipLabel(current));
@@ -297,9 +302,12 @@
     if (!id) {
       thinkingCtl?.dispose();
       thinkingCtl = null;
+      taskCtl?.dispose();
+      taskCtl = null;
       return;
     }
-    const controller = new AgentThinkingController(async () => {
+    // One roster loader shared by both controllers; each caches its own copy.
+    const loadMembers = async () => {
       const resp = await invoke<{ members: Array<{ personUid: string; displayName: string }> }>(
         'list_channel_members',
         { channelId: id },
@@ -308,9 +316,15 @@
         personUid: m.personUid,
         displayName: m.displayName,
       }));
-    });
+    };
+    const controller = new AgentThinkingController(loadMembers);
+    const tasks = new AgentTaskFeedController(loadMembers);
     thinkingCtl = controller;
-    return () => controller.dispose();
+    taskCtl = tasks;
+    return () => {
+      controller.dispose();
+      tasks.dispose();
+    };
   });
 
   // Keep the active-conversation registration + loaded reactions in step with the
@@ -448,6 +462,7 @@
   >
     {#snippet belowMessages()}
       <AgentThinkingRow entries={thinkingCtl?.entries ?? []} />
+      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
     {/snippet}
   </Conversation>
 {/if}
