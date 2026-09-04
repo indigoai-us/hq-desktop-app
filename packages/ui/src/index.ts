@@ -145,6 +145,7 @@ export {
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";
+export * from "./shell/palette-rows.js";
 export {
   FIXTURE_COMPANIES,
   FIXTURE_INITIAL_ROW,
