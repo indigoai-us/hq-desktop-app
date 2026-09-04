@@ -286,6 +286,69 @@ fn retry_transient_io<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io:
     }
 }
 
+/// Marks an `io::Error` as having come from the probe HARNESS -- our own
+/// tempfile, `dup`, `wait` or output-read plumbing -- rather than from the
+/// child's `exec`.
+///
+/// Without this tag every failure inside [`output_with_timeout`] reached
+/// [`classify_spawn_error`], which reads the errno as a statement ABOUT THE
+/// CHILD. A `dup` that failed with `EMFILE` was therefore reported as
+/// `ProcessSpawnFailed` even though no spawn verdict existed, and -- worse -- a
+/// plumbing errno that happens to collide with `ENOEXEC`/`ERROR_BAD_EXE_FORMAT`
+/// would have been reported as "the program is not an executable image", a
+/// claim the probe never established.
+#[derive(Debug)]
+struct ProbeHarnessIoError(std::io::Error);
+
+impl std::fmt::Display for ProbeHarnessIoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "version probe harness I/O failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for ProbeHarnessIoError {}
+
+/// Tag a harness-stage failure so it can never be read as the child's spawn
+/// errno. The `kind` is preserved so the transient-retry predicate still works.
+fn harness_io(error: std::io::Error) -> std::io::Error {
+    let kind = error.kind();
+    std::io::Error::new(kind, ProbeHarnessIoError(error))
+}
+
+fn is_probe_harness_io_error(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ProbeHarnessIoError>())
+}
+
+/// Classify an [`output_with_timeout`] failure. Only a genuine spawn failure is
+/// allowed to reach [`classify_spawn_error`]; a harness failure keeps the
+/// undifferentiated residual bucket, because the child never got a verdict.
+pub fn classify_probe_error(error: &std::io::Error) -> VersionProbeOutcome {
+    if is_probe_harness_io_error(error) {
+        return VersionProbeOutcome::ProcessSpawnFailed;
+    }
+    classify_spawn_error(error)
+}
+
+/// Poll a `try_wait`-shaped operation, absorbing `EINTR` in place.
+///
+/// `EINTR` here means "a signal arrived while we asked about an ALREADY RUNNING
+/// child", which says nothing about the child. Retrying the whole probe would
+/// leak that child's process group, so the interrupt is absorbed at the poll
+/// itself and the surrounding deadline loop keeps its own bound.
+fn poll_child_status<F>(mut op: F) -> std::io::Result<Option<std::process::ExitStatus>>
+where
+    F: FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
+{
+    loop {
+        match op() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+}
+
 /// Run a tiny version command with a hard process boundary. `Command::output`
 /// has no timeout and can strand both the process and its blocking worker; this
 /// helper kills and reaps the child before returning `None` on timeout.
@@ -297,10 +360,15 @@ pub(crate) fn output_with_timeout(
     // lifetime. A background process may inherit the handles, but unlike a
     // pipe an open regular file still returns EOF at its current length. The
     // byte cap also bounds a descendant that continuously writes.
-    let stdout = retry_transient_io(tempfile::tempfile)?;
-    let stderr = retry_transient_io(tempfile::tempfile)?;
-    cmd.stdout(Stdio::from(stdout.try_clone()?))
-        .stderr(Stdio::from(stderr.try_clone()?));
+    let stdout = retry_transient_io(tempfile::tempfile).map_err(harness_io)?;
+    let stderr = retry_transient_io(tempfile::tempfile).map_err(harness_io)?;
+    // `dup` is as fd-pressure-sensitive as the tempfile creation above it, so it
+    // gets the same transient retry. Unretried, an `EMFILE` here surfaced as a
+    // spawn verdict for a child that was never spawned.
+    let child_stdout = retry_transient_io(|| stdout.try_clone()).map_err(harness_io)?;
+    let child_stderr = retry_transient_io(|| stderr.try_clone()).map_err(harness_io)?;
+    cmd.stdout(Stdio::from(child_stdout))
+        .stderr(Stdio::from(child_stderr));
     VersionProbeContainment::prepare(cmd);
     let mut child = retry_transient_io(|| cmd.spawn())?;
     let mut containment = match VersionProbeContainment::establish(&child) {
@@ -308,12 +376,21 @@ pub(crate) fn output_with_timeout(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error);
+            return Err(harness_io(error));
         }
     };
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        let polled = match poll_child_status(|| child.try_wait()) {
+            Ok(polled) => polled,
+            Err(error) => {
+                containment.terminate();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(harness_io(error));
+            }
+        };
+        if let Some(status) = polled {
             containment.terminate();
             break Some(status);
         }
@@ -326,8 +403,11 @@ pub(crate) fn output_with_timeout(
         std::thread::sleep(VERSION_PROCESS_POLL_INTERVAL);
     };
 
-    let stdout = read_probe_output(stdout)?;
-    let stderr = read_probe_output(stderr)?;
+    // Re-reads from offset 0 on every attempt, so the retry is idempotent.
+    let stdout =
+        retry_transient_io(|| read_probe_output(stdout.try_clone()?)).map_err(harness_io)?;
+    let stderr =
+        retry_transient_io(|| read_probe_output(stderr.try_clone()?)).map_err(harness_io)?;
 
     Ok(status.map(|status| Output {
         status,
@@ -665,7 +745,7 @@ fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionPr
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -788,7 +868,7 @@ fn hq_version_via_node(
     let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -6763,7 +6843,7 @@ fn read_installed_version_probe(
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -12587,8 +12667,10 @@ mod tests {
         let not_executable = tmp.path().join("not-executable-hq");
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
         assert_eq!(
-            hq_version_string_probe(&not_executable, "").1,
-            enoexec_fixture_outcome()
+            settled_probe_outcome(|| hq_version_string_probe(&not_executable, "").1),
+            enoexec_fixture_outcome(),
+            "{}",
+            direct_spawn_errno(&not_executable.to_string_lossy())
         );
 
         // Present, but this process may not execute it.
@@ -12956,9 +13038,12 @@ mod tests {
 
         let not_executable = tmp.path().join("not-executable-npm");
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
+        let not_executable = not_executable.to_str().unwrap();
         assert_eq!(
-            read_installed_version_probe(not_executable.to_str().unwrap(), "").1,
-            enoexec_fixture_outcome()
+            settled_probe_outcome(|| read_installed_version_probe(not_executable, "").1),
+            enoexec_fixture_outcome(),
+            "{}",
+            direct_spawn_errno(not_executable)
         );
 
         let nonzero = tmp.path().join("nonzero-npm");
@@ -13149,6 +13234,55 @@ mod tests {
     /// nonzero instead. The fixture is therefore platform-dependent; the
     /// 193/`ENOEXEC` mapping itself is pinned platform-independently by
     /// `classify_spawn_error_splits_the_process_spawn_failed_bucket`.
+    /// Re-run a version probe until it stops reporting the undifferentiated
+    /// `ProcessSpawnFailed` residual, then hand back what it settled on.
+    ///
+    /// `ProcessSpawnFailed` is the bucket the probe uses for "something in the
+    /// harness broke and the child never got a verdict" -- an `EMFILE` on the
+    /// stdio `dup`, an interrupted status poll, a short output read. Those are
+    /// resource transients produced by whatever else is running on the host, not
+    /// statements about the fixture, and on a loaded CI runner they turned these
+    /// classification tests red. Retrying past the residual keeps the assertion
+    /// exactly as strict -- the expected outcome must still be OBSERVED -- while
+    /// refusing to let unrelated host pressure speak for the fixture.
+    ///
+    /// A genuine regression that pins the outcome to `ProcessSpawnFailed` still
+    /// fails: the retries are bounded and the residual is then asserted against.
+    #[cfg(unix)]
+    fn settled_probe_outcome(
+        mut probe: impl FnMut() -> VersionProbeOutcome,
+    ) -> VersionProbeOutcome {
+        let mut outcome = probe();
+        for attempt in 1..8 {
+            if outcome != VersionProbeOutcome::ProcessSpawnFailed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20 * attempt));
+            outcome = probe();
+        }
+        outcome
+    }
+
+    /// The raw errno a direct spawn of `program` reports right now, for failure
+    /// messages: when one of these classification assertions does trip, the log
+    /// should name the errno instead of leaving the next reader to guess.
+    #[cfg(unix)]
+    fn direct_spawn_errno(program: &str) -> String {
+        let mut cmd = paths::spawn_command(program, &[]);
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let status = child.wait();
+                format!("direct spawn succeeded, status={status:?}")
+            }
+            Err(error) => format!(
+                "direct spawn failed, raw_os_error={:?} kind={:?} ({error})",
+                error.raw_os_error(),
+                error.kind()
+            ),
+        }
+    }
+
     #[cfg(unix)]
     fn enoexec_fixture_outcome() -> VersionProbeOutcome {
         if cfg!(target_os = "linux") {
@@ -13156,6 +13290,99 @@ mod tests {
         } else {
             VersionProbeOutcome::NonzeroExit
         }
+    }
+
+    /// The probe harness's OWN I/O failure is not evidence about the child.
+    ///
+    /// Every fallible stage of `output_with_timeout` -- tempfile creation, the
+    /// `dup` for the child's stdio, the status poll, the output read -- used to
+    /// return a bare `io::Error` that the callers handed to
+    /// `classify_spawn_error`, a function whose whole contract is to read an
+    /// errno as a statement about the child's `exec`. So a plumbing failure was
+    /// reported as a spawn verdict, and a plumbing errno that collided with
+    /// `ENOEXEC` (8) or `ERROR_BAD_EXE_FORMAT` (193) would have been reported as
+    /// "the program is present but is not an executable image" -- a claim the
+    /// probe never established. That conflation is also how a loaded CI runner
+    /// turned this module's probe tests red: a transient harness errno arrived
+    /// where only a spawn errno was expected.
+    #[test]
+    fn a_harness_io_failure_is_never_read_as_the_childs_spawn_errno() {
+        use std::io::{Error, ErrorKind};
+
+        // The two errnos that DO mean "not an executable image" -- when they come
+        // from the spawn. From the harness they must stay in the residual bucket.
+        for raw in [193, 8] {
+            let harness = harness_io(Error::from_raw_os_error(raw));
+            assert_eq!(
+                classify_probe_error(&harness),
+                VersionProbeOutcome::ProcessSpawnFailed,
+                "harness errno {raw} must not be reported as a spawn verdict"
+            );
+        }
+
+        // Absent/denied are equally claims about the child, so a harness
+        // ENOENT/EACCES must not be reported as either.
+        for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+            assert_eq!(
+                classify_probe_error(&harness_io(Error::from(kind))),
+                VersionProbeOutcome::ProcessSpawnFailed,
+                "harness {kind:?} must not be reported as a spawn verdict"
+            );
+        }
+
+        // An untagged error is a genuine spawn failure and still classifies in
+        // full -- the split must not blunt the real diagnostics.
+        assert_eq!(
+            classify_probe_error(&Error::from_raw_os_error(193)),
+            VersionProbeOutcome::SpawnNotExecutable
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            classify_probe_error(&Error::from_raw_os_error(8)),
+            VersionProbeOutcome::SpawnNotExecutable
+        );
+        assert_eq!(
+            classify_probe_error(&Error::from(ErrorKind::NotFound)),
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+        assert_eq!(
+            classify_probe_error(&Error::from(ErrorKind::PermissionDenied)),
+            VersionProbeOutcome::SpawnAccessDenied
+        );
+    }
+
+    /// `EINTR` from the status poll means a signal arrived while we asked about
+    /// an ALREADY RUNNING child, so it says nothing about the child. It used to
+    /// propagate out of the probe and land in the residual spawn bucket, because
+    /// the whole-probe retry deliberately excludes `Interrupted` (retrying the
+    /// probe would leak the running child's process group). Absorbing it at the
+    /// poll keeps that leak impossible AND stops the bogus verdict.
+    #[test]
+    fn an_interrupted_status_poll_is_absorbed_rather_than_becoming_a_spawn_verdict() {
+        use std::io::{Error, ErrorKind};
+
+        let mut polls = 0;
+        let status = poll_child_status(|| {
+            polls += 1;
+            if polls < 4 {
+                Err(Error::from(ErrorKind::Interrupted))
+            } else {
+                Ok(None)
+            }
+        })
+        .expect("an interrupted poll must not fail the probe");
+        assert_eq!(status, None, "the child is still running");
+        assert_eq!(polls, 4, "every interrupt is retried in place");
+
+        // A non-EINTR error is still surfaced -- the absorption is narrow.
+        let mut polls = 0;
+        let error = poll_child_status(|| {
+            polls += 1;
+            Err::<Option<std::process::ExitStatus>, _>(Error::from(ErrorKind::OutOfMemory))
+        })
+        .expect_err("a real poll failure must still surface");
+        assert_eq!(error.kind(), ErrorKind::OutOfMemory);
+        assert_eq!(polls, 1, "a non-interrupt is not retried in place");
     }
 
     // ── HQ-DESKTOP-3P: a Windows resolution that exists but cannot be spawned ──
