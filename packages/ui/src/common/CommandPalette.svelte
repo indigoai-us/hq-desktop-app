@@ -12,6 +12,12 @@
      * recency instead of the generic command fuzzy filter alone.
      */
     lastActivityAt?: number;
+    /**
+     * Raw identifiers (channel id, person uid, company uid, project id, email)
+     * that are NOT rendered but ARE matched. Labels are human names, so this is
+     * what lets someone paste a `chn_…` / `agt_…` id and still find the row.
+     */
+    keywords?: string;
   }
 
   interface Props {
@@ -72,6 +78,9 @@
     if (title.startsWith(q)) return 3;
     if (title.includes(q)) return 2;
     if (command.detail.toLowerCase().includes(q)) return 1;
+    // Ids are never displayed, so they rank last — but pasting one must still
+    // find the row.
+    if ((command.keywords ?? "").toLowerCase().includes(q)) return 1;
     return 0;
   }
 
@@ -83,7 +92,7 @@
 
     const filteredActionNav = actionNav.filter((command) =>
       fuzzyMatch(
-        `${command.label} ${command.detail} ${command.shortcut ?? ""}`,
+        `${command.label} ${command.detail} ${command.shortcut ?? ""} ${command.keywords ?? ""}`,
         query,
       ),
     );

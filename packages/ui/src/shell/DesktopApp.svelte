@@ -287,6 +287,10 @@
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
   import type { ChannelDirectoryRow } from "../chat/channel-directory-reconciler.js";
+  import {
+    mergePaletteRows,
+    paletteConversationItems,
+  } from "./palette-rows.js";
   import type { Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
@@ -699,18 +703,31 @@
   /** Channel-header info control → project description dialog. */
   let projectAboutOpen = $state(false);
 
-  const searchKindLabel: Record<ChannelTab | string, string> = {
-    channel: "Channel",
-    dm: "Direct message",
-    group: "Group",
-  };
-
   /**
    * Command-palette items: NAVIGATE actions (Notifications, Settings) plus one
-   * CONVERSATION row per injected search row (ranked by recency in the
-   * palette). Selecting a conversation opens it in the shell.
+   * CONVERSATION row per indexed conversation — the live rail rows unioned with
+   * the host's cached search rows, ranked by match then recency in the palette.
+   * Selecting a conversation opens it in the shell.
    */
   const isWeb = $derived(adapter.kind === "web");
+
+  /** Company uid → NAME so palette details never render a `cmp_…` uid. */
+  const paletteCompanies = $derived(
+    (companies ?? [])
+      .filter((w) => (w.cloudUid ?? "").trim())
+      .map((w) => ({
+        companyUid: (w.cloudUid as string).trim(),
+        label: w.displayName?.trim() || w.slug,
+      })),
+  );
+
+  /**
+   * The palette indexes the LIVE rail rows unioned with the host's cached
+   * `searchRows`. Indexing only the cache let the persisted rail drop a channel
+   * the sidebar was still showing (and vice versa) — a conversation could be in
+   * one surface and missing from the other.
+   */
+  const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
 
   const paletteCommands = $derived.by((): CommandPaletteItem[] => {
     const nav: CommandPaletteItem[] = [
@@ -761,15 +778,21 @@
         action: () => openLibrary("marketplace"),
       });
     }
-    const conversations: CommandPaletteItem[] = searchRows.map((row) => ({
-      id: `conversation-${row.id}`,
-      label: row.title,
-      detail:
-        row.kind === "channel"
-          ? (row.companyUid ?? "channel")
-          : (searchKindLabel[row.kind] ?? "Conversation"),
-      lastActivityAt: row.lastActivityAt,
-      action: () => handleSelect(row),
+    // Human labels only. `paletteConversationItems` resolves the channel
+    // display name / person name / project title for the primary line and the
+    // company name + kind for the secondary line — the old mapping rendered
+    // `row.companyUid`, i.e. a raw `cmp_…` uid, as the detail. Raw ids move to
+    // `keywords` so they stay searchable without being shown.
+    const conversations: CommandPaletteItem[] = paletteConversationItems(
+      paletteRows,
+      { companies: paletteCompanies },
+    ).map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.detail,
+      keywords: item.keywords,
+      lastActivityAt: item.lastActivityAt,
+      action: () => handleSelect(item.row),
     }));
     return [...nav, ...conversations];
   });
