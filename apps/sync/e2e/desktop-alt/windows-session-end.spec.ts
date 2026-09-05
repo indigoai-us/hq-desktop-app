@@ -34,6 +34,7 @@ import {
   parseSessionEndOwnershipReport,
   resolveSessionEndLiveMode,
 } from './windows-reliability-harness';
+import { readRepoFile } from './harness';
 
 const live = resolveSessionEndLiveMode();
 
@@ -273,5 +274,278 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     // one that would have exited anyway.
     expect(observed.exitedWithinDeadline, diagnostics).toBe(true);
     expect(observed.exitCode, diagnostics).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HQ-DESKTOP-5J — a Windows sign-out reported as a watcher failure
+// ---------------------------------------------------------------------------
+//
+// The bug: an ordinary Windows sign-out kills the auto-sync watcher child with
+// DBG_TERMINATE_PROCESS (0x40010004). The three positive-evidence sources — the
+// message observer, the durable latch, and the pull-based teardown probe — are
+// each structurally incapable of confirming a user LOGOFF (the observer gets no
+// window message on a forced end-session; the latch is fed by that same message;
+// the probe's providers are shutdown/restart-only), so the deferral resolved to
+// Capture and the supervisor sent an ERROR-level alert ("auto-sync watcher exited
+// unexpectedly (with Windows status 0x40010004 (session terminate)), consecutive
+// failure #1") for a benign sign-out.
+//
+// The fix moves the reporting boundary: an UNCONFIRMED session-terminate exit is
+// DROPPED on its first per-run occurrence (the sign-out signature), and only a
+// SECOND within the same app run ESCALATES to a capture on a DISTINCT fingerprint
+// — so a real external killer still surfaces while an ordinary logoff never does.
+//
+// Two layers run on Linux/macOS CI (no Windows host required): source contracts
+// over the shipping Rust, and a bidirectional envelope simulator.
+
+const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
+const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
+const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
+
+describe('Windows session-end reporting boundary — source contracts (HQ-DESKTOP-5J)', () => {
+  it('gives deferred_session_end_outcome a per-run count and a default-drop arm', () => {
+    // The pure decision now takes the per-run unconfirmed count and drops by
+    // default; deleting the count param or the escalation gate fails here.
+    expect(coreSource).toContain('pub fn deferred_session_end_outcome(');
+    expect(coreSource).toContain('unconfirmed_run_count: u32,');
+    // The confirmed-session-end predicate is factored out and reused.
+    expect(coreSource).toContain('pub fn deferred_session_end_confirmed(');
+  });
+
+  it('has a pure, bounded per-run escalation predicate (silent first, then milestones)', () => {
+    expect(coreSource).toContain(
+      'pub fn unconfirmed_session_terminate_escalates(run_count: u32) -> bool {',
+    );
+    // First per run is silent; a repeat escalates, bounded by the milestone limiter.
+    expect(coreSource).toContain('run_count >= 2 && is_capture_milestone(run_count)');
+  });
+
+  it('advances the per-run counter only at resolution and resets it on a crash', () => {
+    expect(daemonSource).toContain('session_terminate_unconfirmed_run: u32,');
+    expect(daemonSource).toContain('fn bump_session_terminate_unconfirmed_run() -> u32 {');
+    expect(daemonSource).toContain('fn reset_session_terminate_unconfirmed_run() {');
+    // An ordinary crash breaks the run (reset lives inside note_watcher_crashed).
+    const crashFnIdx = daemonSource.indexOf('fn note_watcher_crashed() -> u32 {');
+    expect(crashFnIdx).toBeGreaterThan(0);
+    expect(daemonSource.indexOf('st.session_terminate_unconfirmed_run = 0;')).toBeGreaterThan(
+      crashFnIdx,
+    );
+  });
+
+  it('does not advance the consecutive-failure streak for a deferred session-terminate', () => {
+    // The defer branch returns BEFORE note_watcher_crashed, so an OS-supplied
+    // termination never advances the streak or arms respawn backoff.
+    const deferIdx = daemonSource.indexOf(
+      'if capture_policy == WatcherExitCapturePolicy::DeferSessionEndDecision {',
+    );
+    const crashIdx = daemonSource.indexOf('let consecutive = effects.note_watcher_crashed();');
+    expect(deferIdx).toBeGreaterThan(0);
+    expect(crashIdx).toBeGreaterThan(deferIdx);
+    // The benign deferral reports a clean stop, not a crash the user never had.
+    expect(daemonSource).toContain(
+      'effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);',
+    );
+  });
+
+  it('escalates onto a NEW fingerprint, never the benign session-terminate one', () => {
+    expect(daemonSource).toContain('fn escalated_session_terminate_payload(');
+    expect(daemonSource).toContain('"windows:session-terminate-external-killer"');
+    // The escalation reuses ONLY already-allow-listed teardown/latch tokens, so no
+    // new telemetry vocabulary is introduced and nothing degrades to [Filtered].
+    for (const token of [
+      'windows_teardown_probe_verdict',
+      'windows_teardown_probe_shuttingdown',
+      'windows_teardown_probe_log',
+      'session_end_latch',
+    ]) {
+      expect(telemetrySource).toContain(`"${token}"`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact-level envelope model (both directions)
+// ---------------------------------------------------------------------------
+
+type Policy = 'pre-fix' | 'post-fix';
+
+interface SentryEnvelope {
+  message: string;
+  fingerprint: string[];
+  tags: Record<string, string>;
+  level: 'error' | 'info';
+  /** Whether an error-level Sentry event is actually sent (vs. local-log only). */
+  sent: boolean;
+}
+
+interface Scenario {
+  /** Positive OS session-end evidence at resolution (observer/latch/probe). */
+  positiveEvidence: boolean;
+  /** Count of unconfirmed session-terminate exits this app run, INCLUDING this. */
+  unconfirmedRunCount: number;
+}
+
+/** Mirror of `is_capture_milestone`: the first, then powers of two. */
+function isCaptureMilestone(n: number): boolean {
+  return n <= 1 || (n > 0 && (n & (n - 1)) === 0);
+}
+
+/** Mirror of `unconfirmed_session_terminate_escalates`. */
+function escalates(runCount: number): boolean {
+  return runCount >= 2 && isCaptureMilestone(runCount);
+}
+
+/**
+ * The fixed part of the envelope the supervisor builds for the reported
+ * HQ-DESKTOP-5J 0.10.108 shape, before the reporting-boundary decision. Matches
+ * the shipped fingerprint/message/tags so the both-directions comparison proves
+ * ONLY the send decision (and, on escalation, the fingerprint/title) differs.
+ */
+function baseSessionTerminateEnvelope(): SentryEnvelope {
+  return {
+    message:
+      'auto-sync watcher exited unexpectedly (with Windows status 0x40010004 ' +
+      '(session terminate)), consecutive failure #1',
+    fingerprint: [
+      'sync',
+      'auto-sync-watcher-termination',
+      'windows:session-terminate',
+      'none',
+      'none',
+      'none',
+    ],
+    tags: {
+      windows_exit_status: '0x40010004',
+      windows_exit_class: 'session_terminate',
+      windows_terminator: 'unattributed_no_signal',
+      sync_route: 'watcher',
+      path: '(auto-sync)',
+      watcher_child_kind: 'cmd_shim',
+      runner_fatal_class: 'none',
+    },
+    level: 'error',
+    sent: true,
+  };
+}
+
+/**
+ * Render the emitted envelope under a policy. The ONLY differences between the
+ * two policies are (a) whether an unconfirmed exit is sent at all and (b), on the
+ * post-fix escalation, the distinct fingerprint + re-titled message.
+ */
+function renderEnvelope(scenario: Scenario, policy: Policy): SentryEnvelope {
+  const env = baseSessionTerminateEnvelope();
+
+  // Positive evidence suppresses under BOTH policies (unchanged behaviour).
+  if (scenario.positiveEvidence) {
+    env.sent = false;
+    env.level = 'info';
+    env.tags.windows_terminator = 'session_end_probed';
+    return env;
+  }
+
+  if (policy === 'pre-fix') {
+    // The reported defect: every unconfirmed session-terminate is captured and
+    // sent at error level, tagged with the confident-sounding no-teardown verdict.
+    env.sent = true;
+    env.level = 'error';
+    env.tags.windows_terminator = 'unattributed_no_teardown';
+    return env;
+  }
+
+  // post-fix: the first unconfirmed exit per run is a sign-out — dropped.
+  if (!escalates(scenario.unconfirmedRunCount)) {
+    env.sent = false;
+    env.level = 'info';
+    env.tags.windows_terminator = 'unattributed_no_teardown';
+    return env;
+  }
+
+  // A repeat within the run: escalate onto a DISTINCT fingerprint with a re-titled
+  // message; the teardown diagnostics ride along as already-allow-listed tokens.
+  env.sent = true;
+  env.level = 'error';
+  env.fingerprint = [...env.fingerprint];
+  env.fingerprint[2] = 'windows:session-terminate-external-killer';
+  env.message =
+    'auto-sync watcher externally terminated (Windows status 0x40010004 ' +
+    `(session terminate)) ${scenario.unconfirmedRunCount} times in one app run ` +
+    'with no confirmed Windows session end — not a sign-out';
+  env.tags.windows_teardown_probe_verdict = 'teardown_absent';
+  env.tags.windows_teardown_probe_shuttingdown = 'no';
+  env.tags.windows_teardown_probe_log = 'none';
+  env.tags.session_end_latch = 'absent';
+  return env;
+}
+
+describe('Windows session-end reporting boundary — envelope simulator (HQ-DESKTOP-5J)', () => {
+  const signOut: Scenario = { positiveEvidence: false, unconfirmedRunCount: 1 };
+  const repeatKiller: Scenario = { positiveEvidence: false, unconfirmedRunCount: 2 };
+  const realSessionEnd: Scenario = { positiveEvidence: true, unconfirmedRunCount: 1 };
+
+  it('pre-fix reproduces the observed HQ-DESKTOP-5J error alert for a sign-out', () => {
+    const env = renderEnvelope(signOut, 'pre-fix');
+    expect(env.sent).toBe(true);
+    expect(env.level).toBe('error');
+    expect(env.tags.windows_exit_status).toBe('0x40010004');
+    expect(env.tags.windows_exit_class).toBe('session_terminate');
+    expect(env.tags.sync_route).toBe('watcher');
+    expect(env.tags.watcher_child_kind).toBe('cmd_shim');
+    expect(env.tags.runner_fatal_class).toBe('none');
+    expect(env.message).toContain('consecutive failure #1');
+    expect(env.fingerprint[2]).toBe('windows:session-terminate');
+  });
+
+  it('post-fix renders the same sign-out as local-log-only with no error event', () => {
+    const env = renderEnvelope(signOut, 'post-fix');
+    expect(env.sent).toBe(false);
+    expect(env.level).not.toBe('error');
+    // Grouping continuity: the benign fingerprint is untouched (it just no longer
+    // sends), so existing saved searches and alert rules do not move.
+    expect(env.fingerprint[2]).toBe('windows:session-terminate');
+  });
+
+  it('post-fix escalates a SECOND unconfirmed exit onto a distinct fingerprint', () => {
+    const env = renderEnvelope(repeatKiller, 'post-fix');
+    expect(env.sent).toBe(true);
+    expect(env.level).toBe('error');
+    // A NEW fingerprint, never a reuse of the benign sign-out one.
+    expect(env.fingerprint[2]).toBe('windows:session-terminate-external-killer');
+    expect(env.fingerprint[2]).not.toBe('windows:session-terminate');
+    expect(env.message).toContain('not a sign-out');
+    expect(env.message).not.toContain('consecutive failure');
+    // The escalation carries the teardown diagnostics for the next investigation.
+    expect(env.tags.windows_teardown_probe_verdict).toBe('teardown_absent');
+    expect(env.tags.session_end_latch).toBe('absent');
+  });
+
+  it('keeps a real session end quiet under both policies', () => {
+    for (const policy of ['pre-fix', 'post-fix'] as const) {
+      const env = renderEnvelope(realSessionEnd, policy);
+      expect(env.sent, policy).toBe(false);
+    }
+  });
+
+  it('every modelled envelope is fixed vocabulary — no path, host, user, or slug', () => {
+    const scenarios: Array<[Scenario, Policy]> = [
+      [signOut, 'pre-fix'],
+      [signOut, 'post-fix'],
+      [repeatKiller, 'post-fix'],
+      [realSessionEnd, 'post-fix'],
+    ];
+    const safeToken = /^[a-z0-9_:().# -]*$/i;
+    // A hostile machine/user/company marker that must never appear on the wire.
+    const forbidden = [/C:\\/i, /DESKTOP-[A-Z0-9]/, /@getindigo\.ai/, /\/Users\//, /\bcmp_/];
+    for (const [scenario, policy] of scenarios) {
+      const env = renderEnvelope(scenario, policy);
+      for (const [key, value] of Object.entries(env.tags)) {
+        expect(safeToken.test(value), `${policy} tag ${key}=${value}`).toBe(true);
+      }
+      const serialized = `${env.message} ${JSON.stringify(env.tags)} ${env.fingerprint.join(',')}`;
+      for (const pattern of forbidden) {
+        expect(pattern.test(serialized), `${policy}: ${pattern} in ${serialized}`).toBe(false);
+      }
+    }
   });
 });

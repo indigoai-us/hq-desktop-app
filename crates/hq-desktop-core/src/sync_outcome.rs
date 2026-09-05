@@ -2932,15 +2932,20 @@ impl WindowsTeardownVerdict {
 ///   (User32 1074) does NOT confirm on its own: a shutdown can be initiated and
 ///   then aborted, so it is the log-side query phase and must not suppress a real
 ///   watcher crash that merely coincides with it.
-/// - `Absent` requires positive negative evidence from *every* source: both
-///   flags read `No` AND the channel opened and held no bracketing record at all
-///   — not even an initiation. Only then can the probe assert the OS was
-///   verifiably not tearing down.
+/// - `Absent` — "the OS was verifiably not tearing down" — may rest ONLY on the
+///   one source that can actually observe a user sign-out: `SM_SHUTTINGDOWN`.
+///   BOTH samples must be an explicit `No`; an `Unavailable` sample means "could
+///   not ask" and is never a negative. The empty System channel is a SUPPORTING
+///   condition, not the load-bearing one — its query covers shutdown/restart
+///   providers only (User32 1074 / Kernel-General 13 / Kernel-Power 109) and a
+///   logoff writes none of them, so an empty channel is not itself evidence that
+///   no session ended. This is why `Absent` alone no longer silences anything:
+///   it only makes the honest `UnattributedNoTeardown` tag accurate, while the
+///   per-run reporting boundary decides whether to send.
 /// - Anything else — an unreadable channel, an unavailable flag, a bracketing
-///   *initiation-only* record, any mix short of unanimous negatives — is
-///   `Unknown`, which the caller must treat exactly like today's behaviour and
-///   send. The record class is still stamped on the diagnostics for the next
-///   round.
+///   *initiation-only* record, any mix short of two explicit `No` flags — is
+///   `Unknown`, which the caller treats exactly like today's behaviour. The
+///   record class is still stamped on the diagnostics for the next round.
 pub fn windows_teardown_verdict(reading: WindowsTeardownProbeReading) -> WindowsTeardownVerdict {
     let committed_teardown_record = matches!(
         reading.log,
@@ -2952,10 +2957,11 @@ pub fn windows_teardown_verdict(reading: WindowsTeardownProbeReading) -> Windows
     {
         return WindowsTeardownVerdict::Confirmed;
     }
-    if reading.shuttingdown_at_exit == TeardownShuttingDown::No
-        && reading.shuttingdown_at_resolve == TeardownShuttingDown::No
-        && reading.log == TeardownLogReading::None
-    {
+    // The load-bearing negative: only the sign-out-capable flag counts, and only
+    // when BOTH samples explicitly read `No` (never `Unavailable`).
+    let both_flags_explicit_no = reading.shuttingdown_at_exit == TeardownShuttingDown::No
+        && reading.shuttingdown_at_resolve == TeardownShuttingDown::No;
+    if both_flags_explicit_no && reading.log == TeardownLogReading::None {
         return WindowsTeardownVerdict::Absent;
     }
     WindowsTeardownVerdict::Unknown
@@ -3063,12 +3069,9 @@ pub enum DeferredSessionEndOutcome {
     Capture,
 }
 
-/// Resolve a deferred session-end capture against the re-read attribution, the
-/// pull-based teardown verdict, and the durable session-end latch.
-///
-/// Fail-closed: ONLY positive OS session-end evidence drops a held alert, and
-/// there are exactly three independent positive sources, any one of which
-/// suffices —
+/// Whether a deferred session-terminate exit carried POSITIVE OS session-end
+/// evidence at resolution. There are exactly three independent positive sources,
+/// any one of which suffices —
 ///
 /// 1. the observer saw the committed session-end message (`SessionEndObserved`);
 /// 2. a durable latch was set contemporaneously from a committed
@@ -3076,22 +3079,69 @@ pub enum DeferredSessionEndOutcome {
 ///    branch ([`SessionEndLatchReading::suppresses`]); or
 /// 3. the pull-based probe caught the OS mid-teardown (`Confirmed`).
 ///
-/// The r3 change is that (2) and (3) now drop for the observer-fault readings
-/// too, not only the unattributed family: a failed observer paired with a
-/// confirmed teardown or a contemporaneous latch is a false alarm, not a crash.
-/// Everything else — `Absent`, `Unknown`, an absent/expired latch, an unread
-/// probe — captures verbatim.
+/// This is the confirmed-session-end predicate the resolution and the per-run
+/// escalation counter both key off, kept in one place so "was this a real
+/// session end" has a single definition.
+pub fn deferred_session_end_confirmed(
+    attribution: WindowsTerminatorAttribution,
+    verdict: WindowsTeardownVerdict,
+    latch: SessionEndLatchReading,
+) -> bool {
+    attribution == WindowsTerminatorAttribution::SessionEndObserved
+        || latch.suppresses()
+        || verdict == WindowsTeardownVerdict::Confirmed
+}
+
+/// Whether an UNCONFIRMED session-terminate watcher exit should escalate to a
+/// Sentry capture, given how many such exits (INCLUDING this one, 1-based) have
+/// resolved in a row within the current app run without any confirmed session
+/// end or intervening ordinary exit.
+///
+/// `0x40010004` (`DBG_TERMINATE_PROCESS`) is an externally-supplied exit code the
+/// child cannot produce itself, so the FIRST unconfirmed session-terminate exit
+/// per app run is the benign Windows sign-out signature — every reported event in
+/// this cluster carries `consecutive failure #1`, i.e. exactly one per run — and
+/// stays silent. A SECOND one within the same run cannot be a session end (the
+/// app is demonstrably still alive to observe it), so it escalates on its own
+/// fingerprint. The threshold reuses [`is_capture_milestone`] beyond the second
+/// so a genuinely repeating external killer alerts on the 2nd, 4th, 8th … rather
+/// than on every single repeat — a bounded capture, never a capture loop.
+pub fn unconfirmed_session_terminate_escalates(run_count: u32) -> bool {
+    run_count >= 2 && is_capture_milestone(run_count)
+}
+
+/// Resolve a deferred session-end capture against the re-read attribution, the
+/// pull-based teardown verdict, the durable session-end latch, and the count of
+/// unconfirmed session-terminate exits in this app run (INCLUDING this one).
+///
+/// Fail-closed and, by construction, quiet on the benign case:
+///
+/// - positive OS session-end evidence ([`deferred_session_end_confirmed`]) always
+///   DROPS the held alert — a confirmed sign-out/shutdown is not a watcher fault;
+/// - otherwise the exit is UNCONFIRMED. The default resolution is now `Drop`,
+///   because a single externally-supplied `DBG_TERMINATE_PROCESS` per app run is
+///   the ordinary sign-out shape and the alert's own claim ("exited unexpectedly
+///   … consecutive failure #N") is never true of it. Only a repeat within the
+///   same run ([`unconfirmed_session_terminate_escalates`]) captures, so a real
+///   external killer still surfaces while an ordinary logoff never does.
+///
+/// The local log, breadcrumb, and every tag/extra are still produced for a
+/// dropped exit (the caller records them); only the Sentry error-level send is
+/// withheld, and only until a second unconfirmed exit proves the first was not a
+/// session end.
 pub fn deferred_session_end_outcome(
     attribution: WindowsTerminatorAttribution,
     verdict: WindowsTeardownVerdict,
     latch: SessionEndLatchReading,
+    unconfirmed_run_count: u32,
 ) -> DeferredSessionEndOutcome {
-    let observed = attribution == WindowsTerminatorAttribution::SessionEndObserved;
-    let confirmed = verdict == WindowsTeardownVerdict::Confirmed;
-    if observed || latch.suppresses() || confirmed {
-        DeferredSessionEndOutcome::Drop
-    } else {
+    if deferred_session_end_confirmed(attribution, verdict, latch) {
+        return DeferredSessionEndOutcome::Drop;
+    }
+    if unconfirmed_session_terminate_escalates(unconfirmed_run_count) {
         DeferredSessionEndOutcome::Capture
+    } else {
+        DeferredSessionEndOutcome::Drop
     }
 }
 
@@ -6858,34 +6908,48 @@ mod tests {
     ];
 
     #[test]
-    fn a_deferral_drops_only_on_positive_os_evidence() {
+    fn a_deferral_drops_the_first_unconfirmed_and_escalates_a_repeat() {
         // Exhaustive over {every attribution} x {every verdict} x {every latch
-        // reading}. A held alert drops if and only if at least one of the three
-        // positive sources fired: an observed message, a contemporaneous latch,
-        // or a probe-confirmed teardown. Everything else fails closed to a send.
+        // reading}. Positive OS evidence (an observed message, a contemporaneous
+        // latch, or a probe-confirmed teardown) ALWAYS drops the held alert. With
+        // no positive evidence the exit is UNCONFIRMED: the FIRST such exit per app
+        // run (count == 1) is the benign sign-out shape and also drops; only a
+        // repeat within the same run (count == 2, a capture milestone) escalates.
         for attribution in ALL_TERMINATOR_ATTRIBUTIONS {
             for verdict in ALL_TEARDOWN_VERDICTS {
                 for latch in ALL_LATCH_READINGS {
-                    let observed =
-                        attribution == WindowsTerminatorAttribution::SessionEndObserved;
-                    let confirmed = verdict == WindowsTeardownVerdict::Confirmed;
-                    let expected = if observed || latch.suppresses() || confirmed {
+                    let confirmed_evidence =
+                        deferred_session_end_confirmed(attribution, verdict, latch);
+
+                    // The first unconfirmed exit per run never sends, and positive
+                    // evidence never sends — so count == 1 always drops.
+                    assert_eq!(
+                        deferred_session_end_outcome(attribution, verdict, latch, 1),
+                        DeferredSessionEndOutcome::Drop,
+                        "first unconfirmed / confirmed must drop: \
+                         {attribution:?} + {verdict:?} + {latch:?}"
+                    );
+
+                    // A second unconfirmed exit in the same run escalates; a second
+                    // exit that DID carry positive evidence still drops (it is a
+                    // real session end, no matter how many preceded it).
+                    let expected_second = if confirmed_evidence {
                         DeferredSessionEndOutcome::Drop
                     } else {
                         DeferredSessionEndOutcome::Capture
                     };
                     assert_eq!(
-                        deferred_session_end_outcome(attribution, verdict, latch),
-                        expected,
+                        deferred_session_end_outcome(attribution, verdict, latch, 2),
+                        expected_second,
                         "{attribution:?} + {verdict:?} + {latch:?}"
                     );
 
-                    // Lockstep: the resolved tag suppresses exactly when the
-                    // outcome drops, and sends exactly when it captures. Only the
-                    // RAW readings are ever fed back at resolution in production
-                    // (an observed message or a deferrable observer reading); a
-                    // terminal resolution state is what a re-read *produces*, never
-                    // an input, so the invariant is asserted over exactly those.
+                    // Lockstep: the resolved tag suppresses exactly when a repeat
+                    // would drop (i.e. positive evidence), and sends exactly when a
+                    // repeat would escalate. Only the RAW readings are ever fed back
+                    // at resolution in production (an observed message or a
+                    // deferrable observer reading); a terminal resolution state is
+                    // what a re-read *produces*, never an input.
                     let is_raw_reading = attribution
                         == WindowsTerminatorAttribution::SessionEndObserved
                         || attribution.is_deferrable_observer_reading();
@@ -6900,13 +6964,38 @@ mod tests {
                         );
                         assert_eq!(
                             tag_suppresses,
-                            expected == DeferredSessionEndOutcome::Drop,
-                            "tag {resolved:?} disagrees with outcome for \
+                            expected_second == DeferredSessionEndOutcome::Drop,
+                            "tag {resolved:?} disagrees with escalation outcome for \
                              {attribution:?} + {verdict:?} + {latch:?}"
                         );
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_unconfirmed_session_terminate_run_counter_is_silent_then_escalates() {
+        // The pure per-run escalation predicate: the first unconfirmed exit is
+        // silent, a repeat escalates, and beyond the second it re-uses the
+        // crash-loop milestone so a repeating external killer alerts on 2, 4, 8 …
+        // rather than on every single repeat.
+        assert!(!unconfirmed_session_terminate_escalates(0));
+        assert!(!unconfirmed_session_terminate_escalates(1));
+        assert!(unconfirmed_session_terminate_escalates(2));
+        assert!(!unconfirmed_session_terminate_escalates(3));
+        assert!(unconfirmed_session_terminate_escalates(4));
+        assert!(!unconfirmed_session_terminate_escalates(5));
+        assert!(!unconfirmed_session_terminate_escalates(7));
+        assert!(unconfirmed_session_terminate_escalates(8));
+        // And it is exactly `is_capture_milestone` past the first, so it can never
+        // become an unbounded capture loop.
+        for count in 2..=64u32 {
+            assert_eq!(
+                unconfirmed_session_terminate_escalates(count),
+                is_capture_milestone(count),
+                "escalation past the first must track the milestone limiter (count={count})"
+            );
         }
     }
 
@@ -6927,7 +7016,10 @@ mod tests {
                     deferred_session_end_outcome(
                         attribution,
                         verdict,
-                        SessionEndLatchReading::Latched
+                        SessionEndLatchReading::Latched,
+                        // A contemporaneous latch is positive evidence, so it drops
+                        // no matter how many session-terminate exits preceded it.
+                        2
                     ),
                     DeferredSessionEndOutcome::Drop,
                     "{attribution:?} + {verdict:?} + latch must drop"
@@ -6944,16 +7036,28 @@ mod tests {
             }
         }
         // An absent or unavailable latch is not evidence: with an Unknown probe
-        // and no message, the observer-fault readings still SEND.
+        // and no message, a REPEAT observer-fault reading still SENDS (the first
+        // per run is the benign sign-out shape and drops; a second escalates).
         for latch in [SessionEndLatchReading::Absent, SessionEndLatchReading::Unavailable] {
             assert_eq!(
                 deferred_session_end_outcome(
                     WindowsTerminatorAttribution::ObserverFailed,
                     WindowsTeardownVerdict::Unknown,
-                    latch
+                    latch,
+                    1
+                ),
+                DeferredSessionEndOutcome::Drop,
+                "observer_failed + Unknown + {latch:?}: the first per run is silent"
+            );
+            assert_eq!(
+                deferred_session_end_outcome(
+                    WindowsTerminatorAttribution::ObserverFailed,
+                    WindowsTeardownVerdict::Unknown,
+                    latch,
+                    2
                 ),
                 DeferredSessionEndOutcome::Capture,
-                "observer_failed + Unknown + {latch:?} must still send"
+                "observer_failed + Unknown + {latch:?}: a repeat must still send"
             );
         }
     }
@@ -7014,20 +7118,34 @@ mod tests {
                 deferred_session_end_outcome(
                     attribution,
                     WindowsTeardownVerdict::Confirmed,
-                    SessionEndLatchReading::Absent
+                    SessionEndLatchReading::Absent,
+                    2
                 ),
                 DeferredSessionEndOutcome::Drop,
-                "{attribution:?} + a confirmed teardown must suppress"
+                "{attribution:?} + a confirmed teardown must suppress even on a repeat"
             );
             for verdict in [WindowsTeardownVerdict::Absent, WindowsTeardownVerdict::Unknown] {
+                // The first unconfirmed exit per run is silent; a repeat fails
+                // closed to a send.
                 assert_eq!(
                     deferred_session_end_outcome(
                         attribution,
                         verdict,
-                        SessionEndLatchReading::Absent
+                        SessionEndLatchReading::Absent,
+                        1
+                    ),
+                    DeferredSessionEndOutcome::Drop,
+                    "{attribution:?} + {verdict:?} + no latch: the first per run is silent"
+                );
+                assert_eq!(
+                    deferred_session_end_outcome(
+                        attribution,
+                        verdict,
+                        SessionEndLatchReading::Absent,
+                        2
                     ),
                     DeferredSessionEndOutcome::Capture,
-                    "{attribution:?} + {verdict:?} + no latch must still send (fail closed)"
+                    "{attribution:?} + {verdict:?} + no latch: a repeat must send (fail closed)"
                 );
             }
         }
@@ -7162,12 +7280,15 @@ mod tests {
                 attribution
             );
             // A suppressing rename must coincide with a Drop outcome, and a
-            // sending rename with a Capture outcome — the tag never lies.
+            // sending rename with an escalating Capture outcome — the tag never
+            // lies. Evaluated at a repeat (count == 2) so the sending case is
+            // reachable; the first per run drops regardless of the tag.
             assert_eq!(
                 deferred_session_end_outcome(
                     attribution,
                     WindowsTeardownVerdict::Confirmed,
-                    no_latch
+                    no_latch,
+                    2
                 ),
                 DeferredSessionEndOutcome::Drop
             );
@@ -7175,7 +7296,8 @@ mod tests {
                 deferred_session_end_outcome(
                     attribution,
                     WindowsTeardownVerdict::Absent,
-                    no_latch
+                    no_latch,
+                    2
                 ),
                 DeferredSessionEndOutcome::Capture
             );
