@@ -5,10 +5,9 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
-    ExecutedCopyAim, InstallExecutor,
-    InterpreterRecovery, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
+    LocalVersionProbeResult, ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind,
+    NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
     PostInstallCoreEffects, ResolutionSource, ResolvedProgramKind, VersionProbeOutcome,
     NON_CONVERGENT_ERROR_PREFIX,
 };
@@ -911,6 +910,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
         managed_runtime: ManagedRuntimeState::NotProvisioned,
         interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
         resolution_source: ResolutionSource::SettingsPath,
+        hq_backing: HqBacking::UnbackedForeign,
     };
 
     let events = captured_events(|| report_unreadable_version("5.88.3", &probes));
@@ -950,6 +950,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
                 "managed_runtime": "not_provisioned",
                 "interpreter_recovery": "managed_node_absent",
                 "resolution_source": "settings_path",
+                "hq_backing": "unbacked_foreign",
             })
             .as_object()
             .unwrap()
@@ -985,6 +986,7 @@ fn unreadable_version_capture_carries_the_recovery_diagnostics_and_keeps_groupin
         managed_runtime: ManagedRuntimeState::NotProvisioned,
         interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
         resolution_source: ResolutionSource::SettingsPath,
+        hq_backing: HqBacking::UnbackedManaged,
     };
 
     let events = captured_events(|| report_unreadable_version("5.99.0", &probes));
@@ -1006,6 +1008,12 @@ fn unreadable_version_capture_carries_the_recovery_diagnostics_and_keeps_groupin
     assert_eq!(
         recorded.get("resolution_source"),
         Some(&Value::String("settings_path".into()))
+    );
+    // The additive backing sub-case names the population without splitting the
+    // cluster: HQ's own orphaned managed-toolchain shim.
+    assert_eq!(
+        recorded.get("hq_backing"),
+        Some(&Value::String("unbacked_managed".into()))
     );
     // The original fields keep their names and values.
     assert_eq!(
@@ -1046,6 +1054,7 @@ fn a_recovered_probe_emits_no_unreadable_event() {
             managed_runtime: ManagedRuntimeState::Present,
             interpreter_recovery: InterpreterRecovery::RecoveredWithManagedNode,
             resolution_source: ResolutionSource::SettingsPath,
+            hq_backing: HqBacking::Backed,
         },
     };
 
@@ -1073,6 +1082,7 @@ fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
         managed_runtime: ManagedRuntimeState::NotProbed,
         interpreter_recovery: InterpreterRecovery::NotNeeded,
         resolution_source: ResolutionSource::SystemPrefix,
+        hq_backing: HqBacking::UnbackedForeign,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -1140,6 +1150,7 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
         managed_runtime: ManagedRuntimeState::NotProbed,
         interpreter_recovery: InterpreterRecovery::NotNeeded,
         resolution_source: ResolutionSource::SystemPrefix,
+        hq_backing: HqBacking::UnbackedForeign,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -1154,6 +1165,73 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
         events[0].tags.get("hq_cli_update_kind").map(String::as_str),
         Some("version-unreadable")
     );
+}
+
+/// HQ-DESKTOP-3P: once the resolver selects the BACKED candidate the version
+/// reads, so `should_report_unreadable_version` is false and the self-heal is
+/// SILENT — zero events. The foreign-unbacked counterpart still reports exactly
+/// one honest event that NAMES its sub-case, so a genuinely broken third-party
+/// CLI stays visible.
+#[test]
+fn backed_selection_is_silent_and_foreign_unbacked_reports_once_named() {
+    let backed = LocalVersionProbeResult {
+        local: Some("5.103.30".to_string()),
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::Succeeded,
+            npm_root: VersionProbeOutcome::NotAttempted,
+            hq_version: VersionProbeOutcome::NotAttempted,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::CmdOrBat,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::UserPrefix,
+            hq_backing: HqBacking::Backed,
+        },
+    };
+    assert!(!should_report_unreadable_version(&backed));
+    let events = captured_events(|| {
+        if should_report_unreadable_version(&backed) {
+            report_unreadable_version("5.103.30", &backed.probes);
+        }
+    });
+    assert!(
+        events.is_empty(),
+        "a backed, readable selection must emit nothing"
+    );
+
+    let foreign = LocalVersionProbeResult {
+        local: None,
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::PackageNotFound,
+            npm_root: VersionProbeOutcome::PackageNotFound,
+            hq_version: VersionProbeOutcome::NonzeroExit,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::CmdOrBat,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::UserPrefix,
+            hq_backing: HqBacking::UnbackedForeign,
+        },
+    };
+    assert!(should_report_unreadable_version(&foreign));
+    let events = captured_events(|| report_unreadable_version("5.103.30", &foreign.probes));
+    assert_eq!(
+        events.len(),
+        1,
+        "an installed-but-unreadable CLI still reports"
+    );
+    let Some(Value::Object(recorded)) = events[0].extra.get("hq_cli_version_probes") else {
+        panic!("probe diagnostics must be an object: {:?}", events[0].extra);
+    };
+    assert_eq!(
+        recorded.get("hq_backing"),
+        Some(&Value::String("unbacked_foreign".into())),
+        "the honest event names the foreign sub-case"
+    );
+    // Additive field, unchanged grouping: the cluster does not split.
+    assert_eq!(fingerprint(&events[0]), ["{{ default }}"]);
 }
 
 #[test]
