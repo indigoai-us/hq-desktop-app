@@ -8,14 +8,15 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
-// Regression for the room-scoped task chips (v0.10.195 → v0.10.200): the
-// strip was wired into views the desktop Messages window never renders. This
-// mounts the REAL shell the window uses and asserts the chips appear beneath
-// the conversation for a channel with an agent on its roster, and for a DM
-// with an agent — using the exact payload shapes production returns.
+// Task chips in the REAL desktop shell (the surface the Messages window
+// renders). Rooms: chips live only inside the thread they were spawned from;
+// the main pane carries none. DMs with an agent: the agent-wide view renders
+// beneath the conversation. Payload shapes are what production returns.
 
 const DEACON = "agt_01KTX6WQ6SYH3TZGF3DSDRPGGD";
 const ROOM = "chn_01M0VBWPD2SQ41EQV2SACNQ23J";
+const ROOT_A = "evt_root_a";
+const ROOT_B = "evt_root_b";
 const ROOM_PAYLOAD = {
   agentUid: DEACON,
   channelId: ROOM,
@@ -24,14 +25,14 @@ const ROOM_PAYLOAD = {
       taskId: "t20260905T013151Z-4c14affa",
       title: "Room inventory sweep",
       status: "working",
-      originMessageId: "3fddab28",
+      originMessageId: ROOT_A,
       lastEventAt: "2026-09-05T01:31:51Z",
     },
     {
       taskId: "t20260904T232556Z-628c6c6a",
       title: "Recent project files",
       status: "done",
-      originMessageId: "a1b2c3",
+      originMessageId: ROOT_B,
       lastEventAt: "2026-09-04T23:27:17Z",
     },
   ],
@@ -42,6 +43,26 @@ const AGENT_PAYLOAD = {
   queued: { count: 0, tasks: [] },
   recentTerminal: [],
 };
+const ROOT_MESSAGES = [
+  {
+    eventId: ROOT_A,
+    body: "@Deacon sweep the room",
+    fromPersonUid: "prs_me",
+    fromDisplayName: "Corey",
+    createdAt: "2026-09-05T01:30:00Z",
+    direction: "out",
+    replyCount: 1,
+  },
+  {
+    eventId: ROOT_B,
+    body: "@Deacon recent files please",
+    fromPersonUid: "prs_me",
+    fromDisplayName: "Corey",
+    createdAt: "2026-09-04T23:20:00Z",
+    direction: "out",
+    replyCount: 1,
+  },
+];
 
 interface Fx {
   listChannelAgentTasks?: ReturnType<typeof vi.fn>;
@@ -62,7 +83,8 @@ function adapter(fx: Fx): PlatformAdapter {
             { channelId: ROOM, personUid: "prs_me", displayName: "Corey", role: "owner" },
           ],
         }),
-      fetchChannel: async () => ok({ messages: [] }),
+      fetchChannel: async () => ok({ messages: [...ROOT_MESSAGES].reverse() }),
+      fetchReplyThread: async () => ok({ messages: [] }),
       fetchDmThread: async () => ok({ messages: [] }),
       sendChannelMessage: async () => ok({ eventId: "evt_1", createdAt: new Date().toISOString() }),
       ...(fx.listChannelAgentTasks ? { listChannelAgentTasks: fx.listChannelAgentTasks } : {}),
@@ -126,23 +148,36 @@ async function mountApp(fx: Fx, initialRow: ConversationRow) {
   await settle();
 }
 
+function chipsIn(root: Element | Document): string[] {
+  return [...root.querySelectorAll('[data-testid="task-chip"]')].map(
+    (el) => el.getAttribute("aria-label") ?? "",
+  );
+}
+
 describe("DesktopApp task chips", () => {
-  it("renders room-scoped chips beneath a channel conversation with an agent on the roster", async () => {
+  it("keeps the main room pane clean and shows a thread's own chips when that thread is opened", async () => {
     const listChannelAgentTasks = vi.fn(async () => ok(ROOM_PAYLOAD));
     const listAgentTasks = vi.fn(async () => ok(AGENT_PAYLOAD));
     await mountApp({ listChannelAgentTasks, listAgentTasks }, CHANNEL_ROW);
     expect(listChannelAgentTasks).toHaveBeenCalledWith(DEACON, ROOM);
     expect(listAgentTasks).not.toHaveBeenCalled();
-    const strip = host.querySelector('[data-testid="agent-task-strip"]');
-    expect(strip, "strip renders beneath the conversation").not.toBeNull();
-    const chips = strip!.querySelectorAll('[data-testid="task-chip"]');
-    expect(chips.length).toBe(2);
-    expect(chips[0].getAttribute("aria-label")).toMatch(/^Room inventory sweep, Working/);
-    // Same placement contract as the thinking row: inside the conversation,
-    // after the messages, before the composer.
-    const composer = host.querySelector('[data-testid="conversation-composer"]');
-    expect(composer, "composer renders").not.toBeNull();
-    expect(strip!.compareDocumentPosition(composer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Main pane: no strip — a room-wide strip would mix every thread's work.
+    expect(host.querySelector('[data-testid="agent-task-strip"]')).toBeNull();
+
+    // Open the thread of ROOT_A via its replies affordance.
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="message-replies"]')];
+    expect(buttons.length, "reply affordances render for both roots").toBe(2);
+    const rootA = host.querySelector(`[data-event-id="${ROOT_A}"]`) ?? buttons[1].closest("[data-event-id]");
+    const openA = (rootA?.querySelector('[data-testid="message-replies"]') as HTMLButtonElement | null) ?? buttons[1];
+    openA.click();
+    await settle(16);
+    const panel = host.querySelector('[data-testid="reply-panel"]');
+    expect(panel, "thread panel opens").not.toBeNull();
+    const inThread = chipsIn(panel!);
+    expect(inThread.length, "only the task spawned from this root").toBe(1);
+    expect(inThread[0]).toMatch(/^(Room inventory sweep|Recent project files), /);
+    // Still nothing in the main pane.
+    expect(host.querySelectorAll('[data-testid="agent-task-strip"]').length).toBe(1);
   });
 
   it("shows chips in a DM with an agent from the agent-wide view", async () => {
@@ -150,6 +185,10 @@ describe("DesktopApp task chips", () => {
     await mountApp({ listAgentTasks }, DM_ROW);
     expect(listAgentTasks).toHaveBeenCalledWith(DEACON);
     expect(host.querySelectorAll('[data-testid="task-chip"]').length).toBe(1);
+    // Hover card carries the detail the chip alone does not.
+    const card = host.querySelector('[data-testid="task-chip-card"]');
+    expect(card?.textContent).toContain("Slow inventory sweep");
+    expect(card?.textContent).toContain("Working in the background");
   });
 
   it("polls nothing and renders nothing when the host has no task views", async () => {

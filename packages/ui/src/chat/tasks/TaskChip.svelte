@@ -23,6 +23,22 @@
   const tone = $derived(agentTaskTone(task.status));
   const statusLabel = $derived(AGENT_TASK_STATUS_LABEL[task.status]);
   const interactive = $derived(onselect !== undefined);
+
+  /** "3m ago" / "2h ago" — coarse on purpose; the card is a glance, not a log. */
+  export function relativeAge(iso: string | undefined, now: number = Date.now()): string | null {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return null;
+    const s = Math.max(0, Math.round((now - t) / 1000));
+    if (s < 60) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    if (h < 48) return `${h}h ago`;
+    return `${Math.round(h / 24)}d ago`;
+  }
+  const updated = $derived(relativeAge(task.lastEventAt));
+  const cardId = $derived(`task-chip-card-${task.id}`);
 </script>
 
 <span class="task-chip-row">
@@ -32,8 +48,8 @@
     class:is-interactive={interactive}
     type={interactive ? 'button' : undefined}
     data-testid="task-chip"
-    title={`${task.title} — ${statusLabel}`}
     aria-label={`${task.title}, ${statusLabel}`}
+    aria-describedby={cardId}
     onclick={interactive ? () => onselect?.(task) : undefined}
   >
     <!-- Decorative, and safe to inline: the markup is generated wholly by
@@ -47,10 +63,26 @@
   <span class="status" data-tone={tone}>
     <span class="dot"></span>{statusLabel}
   </span>
+
+  <!-- Hover / focus card: the detail a glance at the chip does not carry.
+       Plain text only — every field is either our own label or a
+       control-stripped, bounded title. -->
+  <span class="card" role="tooltip" id={cardId} data-testid="task-chip-card">
+    <span class="card-title">{task.title}</span>
+    <span class="card-row"><span class="dot" data-tone={tone}></span>{statusLabel}</span>
+    {#if updated}
+      <span class="card-row card-muted">Updated {updated}</span>
+    {/if}
+    {#if task.originMessageId}
+      <span class="card-row card-muted">From a message in this thread</span>
+    {/if}
+    <span class="card-row card-muted card-id">{task.id}</span>
+  </span>
 </span>
 
 <style>
   .task-chip-row {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -130,5 +162,58 @@
   }
   .status[data-tone="unread"] .dot {
     background: var(--v4-unread, var(--v4-brand-accent));
+  }
+
+  .card {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 6px);
+    z-index: 20;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 200px;
+    max-width: 320px;
+    padding: 8px 10px;
+    border: 1px solid var(--pop-border, var(--line));
+    border-radius: var(--v4-radius-popover, 10px);
+    background: var(--pop-bg, var(--elevated));
+    color: var(--pop-text, var(--t1));
+    box-shadow: var(--pop-shadow, var(--v4-shadow-popover));
+    font-size: var(--type-metadata, 13px);
+    line-height: 16px;
+    white-space: normal;
+    pointer-events: none;
+  }
+  .task-chip-row:hover .card,
+  .task-chip-row:focus-within .card {
+    display: flex;
+  }
+  .card-title {
+    font-weight: 600;
+  }
+  .card-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .card-row .dot[data-tone="ok"] {
+    background: var(--v4-ok, var(--ok));
+  }
+  .card-row .dot[data-tone="warn"] {
+    background: var(--v4-warn, var(--warn));
+  }
+  .card-row .dot[data-tone="error"] {
+    background: var(--v4-error, var(--warn-ink));
+  }
+  .card-row .dot[data-tone="unread"] {
+    background: var(--v4-unread, var(--v4-brand-accent));
+  }
+  .card-muted {
+    color: var(--pop-muted, var(--t2));
+  }
+  .card-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
 </style>
