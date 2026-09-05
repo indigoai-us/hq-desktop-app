@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
  * from the shared label map rather than written inline.
  */
 const source = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/TaskChip.svelte'),
+  resolve(process.cwd(), 'src/chat/tasks/TaskChip.svelte'),
   'utf8',
 );
 

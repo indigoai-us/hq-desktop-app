@@ -340,6 +340,13 @@ export interface ConversationApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): Promise<CardActionResult>;
+  /**
+   * Room-scoped agent tasks (hq-pro #3035). Optional: absent on hosts that
+   * have no telescope routes; the task strip then stays hidden.
+   */
+  listChannelAgentTasks?(args: { agentUid: string; channelId: string }): Promise<unknown>;
+  /** Agent-wide heartbeat task view — the DM / fallback source. */
+  listAgentTasks?(args: { agentUid: string }): Promise<unknown>;
 }
 
 /** Wire result of `run_card_action` / the cards actions route. */

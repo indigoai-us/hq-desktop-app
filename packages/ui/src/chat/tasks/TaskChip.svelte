@@ -4,7 +4,7 @@
     agentTaskTone,
     taskMark,
     type AgentTask,
-  } from '../lib/agent-tasks';
+  } from "./agent-tasks";
 
   interface Props {
     /** The background task to represent. */
@@ -65,12 +65,12 @@
     min-width: 0;
     max-width: 100%;
     padding: 4px 11px 4px 5px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: var(--v4-radius-pill, 980px);
-    background: var(--row-hover);
-    color: var(--fg);
+    background: var(--hover);
+    color: var(--t1);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
     font-weight: 550;
     line-height: 18px;
     text-align: left;
@@ -81,7 +81,7 @@
   }
 
   .task-chip.is-interactive:hover {
-    border-color: var(--border-strong);
+    border-color: var(--line2);
   }
 
   .task-chip:focus-visible {
@@ -108,19 +108,27 @@
     align-items: center;
     gap: 6px;
     flex: none;
-    color: var(--muted);
-    font-size: var(--text-base);
+    color: var(--t2);
+    font-size: var(--type-body, 13px);
   }
 
   .dot {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--v4-idle);
+    background: var(--v4-idle, var(--t3));
   }
 
-  .status[data-tone='ok'] .dot { background: var(--v4-ok); }
-  .status[data-tone='warn'] .dot { background: var(--v4-warn); }
-  .status[data-tone='error'] .dot { background: var(--v4-error); }
-  .status[data-tone='unread'] .dot { background: var(--v4-unread); }
+  .status[data-tone="ok"] .dot {
+    background: var(--v4-ok, var(--ok));
+  }
+  .status[data-tone="warn"] .dot {
+    background: var(--v4-warn, var(--warn));
+  }
+  .status[data-tone="error"] .dot {
+    background: var(--v4-error, var(--warn-ink));
+  }
+  .status[data-tone="unread"] .dot {
+    background: var(--v4-unread, var(--v4-brand-accent));
+  }
 </style>

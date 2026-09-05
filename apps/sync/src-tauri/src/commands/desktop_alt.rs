@@ -64,6 +64,9 @@ pub use hq_desktop_core::desktop_alt::{
 use hq_desktop_core::workspaces::Workspace;
 
 use crate::commands::cognito;
+use crate::util::logfile::log;
+
+const LOG_TAG: &str = "desktop-alt";
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
@@ -383,6 +386,7 @@ pub async fn get_company_team_telemetry(
 #[tauri::command]
 pub async fn list_agent_tasks(agent_uid: String) -> Result<serde_json::Value, String> {
     let agent_uid = agent_uid.trim().to_string();
+    log(LOG_TAG, &format!("AGENT_TASKS_INVOKE agent={agent_uid}"));
     if agent_uid.is_empty() {
         return Err("agent uid is required".to_string());
     }
@@ -410,10 +414,9 @@ pub async fn list_agent_tasks(agent_uid: String) -> Result<serde_json::Value, St
         .text()
         .await
         .map_err(|e| format!("agent tasks read: {e}"))?;
-    eprintln!(
-        "[desktop-alt] agent tasks GET {url} -> HTTP {} ({} bytes)",
-        status,
-        text.len()
+    log(
+        LOG_TAG,
+        &format!("AGENT_TASKS_HTTP agent={agent_uid} status={} bytes={}", status, text.len()),
     );
     if status.as_u16() == 401 {
         return Err(format!("auth: unauthorized 401 — {text}"));
@@ -452,6 +455,7 @@ pub async fn list_channel_agent_tasks(
 ) -> Result<serde_json::Value, String> {
     let agent_uid = agent_uid.trim().to_string();
     let channel_id = channel_id.trim().to_string();
+    log(LOG_TAG, &format!("ROOM_TASKS_INVOKE agent={agent_uid} channel={channel_id}"));
     if agent_uid.is_empty() || channel_id.is_empty() {
         return Err("agent uid and channel id are required".to_string());
     }
@@ -483,10 +487,9 @@ pub async fn list_channel_agent_tasks(
         .text()
         .await
         .map_err(|e| format!("room tasks read: {e}"))?;
-    eprintln!(
-        "[desktop-alt] room tasks GET {url} -> HTTP {} ({} bytes)",
-        status,
-        text.len()
+    log(
+        LOG_TAG,
+        &format!("ROOM_TASKS_HTTP agent={agent_uid} channel={channel_id} status={} bytes={}", status, text.len()),
     );
     if status.as_u16() == 401 {
         return Err(format!("auth: unauthorized 401 — {text}"));

@@ -460,6 +460,9 @@ export function createSyncPlatformAdapter(
       },
       listChannelMembers: (channelId) =>
         call('list_channel_members', { channelId }),
+      listChannelAgentTasks: (agentUid, channelId) =>
+        call('list_channel_agent_tasks', { agentUid, channelId }),
+      listAgentTasks: (agentUid) => call('list_agent_tasks', { agentUid }),
       sendChannelMessage: (channelId, body, extras) => {
         const mentions = extras?.mentions;
         const attachments = extras?.attachments;
