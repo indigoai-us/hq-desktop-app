@@ -322,9 +322,20 @@ pub struct ClientHealthHeartbeat {
     /// Last time a sync RUN started — distinct from success.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sync_attempt_at: Option<String>,
-    /// Advances only on genuine success (including no-change runs).
+    /// Advances only on a genuine COMPLETED run (including no-change runs).
+    /// Never the engine watermark.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sync_success_at: Option<String>,
+    /// Sync-engine per-file journal high-water mark (hq-cloud `journal.lastSync`).
+    /// Advances whenever ANY file moves — including on a run that later FAILS —
+    /// so it is NOT proof a run completed and must never be read as a completed
+    /// success. Distinct from `last_sync_success_at`, and never folded into it.
+    /// The desktop client has no local sync engine of its own and does not emit
+    /// this field; it is carried so the shared contract stays in agreement and
+    /// round-trips CLI-sourced snapshots. Absence means "unknown", not "no
+    /// activity" (US-019).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_engine_watermark_at: Option<String>,
     pub consecutive_failures: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_count: Option<u64>,
@@ -634,6 +645,7 @@ pub fn parse_client_health_heartbeat(
         sync_state: ClientHealthSyncState::parse_field("syncState", raw.get("syncState"))?,
         last_sync_attempt_at: None,
         last_sync_success_at: None,
+        sync_engine_watermark_at: None,
         consecutive_failures: assert_bounded_int(
             "consecutiveFailures",
             raw.get("consecutiveFailures"),
@@ -648,6 +660,10 @@ pub fn parse_client_health_heartbeat(
     }
     if let Some(entry) = raw.get("lastSyncSuccessAt") {
         heartbeat.last_sync_success_at = Some(assert_iso_utc("lastSyncSuccessAt", Some(entry))?);
+    }
+    if let Some(entry) = raw.get("syncEngineWatermarkAt") {
+        heartbeat.sync_engine_watermark_at =
+            Some(assert_iso_utc("syncEngineWatermarkAt", Some(entry))?);
     }
     if let Some(entry) = raw.get("conflictCount") {
         heartbeat.conflict_count = Some(assert_bounded_int(
@@ -903,6 +919,25 @@ mod tests {
         "failureReason": "HEARTBEAT_STALE"
     }"#;
 
+    /// US-019: a CLI install whose sync engine advanced its per-file journal
+    /// watermark (a file moved) but which never completed a run. The watermark
+    /// rides its own field; there is no `lastSyncSuccessAt`.
+    const HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN: &str = r#"{
+        "contractVersion": 1,
+        "installationId": "inst-a2c7f0e91d4b",
+        "source": "cli",
+        "platform": "linux",
+        "arch": "x64",
+        "sentAt": "2026-09-03T17:05:00.000Z",
+        "sequence": 806,
+        "versions": { "cli": "5.108.4", "core": "3.18.0" },
+        "syncState": "error",
+        "lastSyncAttemptAt": "2026-09-03T16:40:00.000Z",
+        "syncEngineWatermarkAt": "2026-09-03T16:41:00.000Z",
+        "consecutiveFailures": 6,
+        "failureReason": "RUNNER_FAILED"
+    }"#;
+
     const RECEIPT_REPAIR_SUCCEEDED: &str = r#"{
         "contractVersion": 1,
         "commandId": "cmd-8c2f51ab90aa",
@@ -1109,10 +1144,31 @@ mod tests {
             ("updateFailed", HEARTBEAT_UPDATE_FAILED),
             ("runnerFailed", HEARTBEAT_RUNNER_FAILED),
             ("heartbeatStale", HEARTBEAT_STALE),
+            ("cliWatermarkNoCompletedRun", HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN),
         ] {
             let parsed = parse_client_health_heartbeat(&value(raw));
             assert!(parsed.is_ok(), "canonical heartbeat {name} must parse: {parsed:?}");
         }
+    }
+
+    #[test]
+    fn sync_engine_watermark_rides_its_own_field_never_success() {
+        // US-019: the engine journal watermark parses onto its own field and
+        // survives the wire byte-for-byte, and is NEVER read as a completed
+        // success (there is no lastSyncSuccessAt on this snapshot).
+        let input = value(HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN);
+        let parsed = parse_client_health_heartbeat(&input).expect("watermark heartbeat parses");
+        assert_eq!(
+            parsed.sync_engine_watermark_at.as_deref(),
+            Some("2026-09-03T16:41:00.000Z")
+        );
+        assert_eq!(parsed.last_sync_success_at, None);
+        let wire = serde_json::to_value(&parsed).expect("serializes");
+        assert_eq!(wire, input, "wire field names/values must survive round-trip");
+        assert!(
+            wire.get("lastSyncSuccessAt").is_none(),
+            "the watermark must never masquerade as a completed success"
+        );
     }
 
     #[test]
