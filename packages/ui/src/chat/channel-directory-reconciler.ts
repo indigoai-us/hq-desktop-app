@@ -39,6 +39,8 @@ export interface ChannelDirectoryRow {
   /** "personal" | "company" | "group" | "project". */
   scope: string;
   companyUid?: string | null;
+  /** Company display name, when the directory carries it (company channels). */
+  companyName?: string | null;
   /** Bound work-mesh / board project when the server sent one. */
   projectId?: string | null;
   /** Display name ("" for participant-keyed group DMs). */

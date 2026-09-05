@@ -878,6 +878,17 @@ pub struct CardActionResult {
     pub navigate_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_card_id: Option<String>,
+    /// Channel that received the card an entry-point action posted
+    /// (`companies_summary/create_company` → `setup`; `team:spend/add_agent`
+    /// → the company channel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// Server reason when `state` is `blocked`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// URL the shell should open (pending checkout `retry_checkout`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardActionResult {
@@ -917,6 +928,18 @@ fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardAction
             .map(|s| s.to_string()),
         focus_card_id: body
             .get("focusCardId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        channel_id: body
+            .get("channelId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        reason: body
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        url: body
+            .get("url")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
     }
@@ -1813,5 +1836,35 @@ mod tests {
             err.contains("Viewer cannot act on this card"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn card_action_from_body_keeps_entry_point_fields() {
+        let body = serde_json::json!({
+            "cardId": "card_create_company_2",
+            "actionId": "create_company",
+            "state": "open",
+            "channelId": "setup",
+        });
+        let out = card_action_from_body(&body, false);
+        assert_eq!(out.card_id, "card_create_company_2");
+        assert_eq!(out.channel_id.as_deref(), Some("setup"));
+        assert!(out.reason.is_none());
+        assert!(out.url.is_none());
+
+        let blocked = serde_json::json!({
+            "cardId": "team:spend",
+            "actionId": "add_agent",
+            "state": "blocked",
+            "reason": "Only owners can add agents",
+            "url": "https://checkout.example/session",
+        });
+        let out = card_action_from_body(&blocked, false);
+        assert_eq!(out.reason.as_deref(), Some("Only owners can add agents"));
+        assert_eq!(out.url.as_deref(), Some("https://checkout.example/session"));
+        assert!(out.channel_id.is_none());
+        let json = serde_json::to_value(&out).expect("serialises");
+        assert_eq!(json["reason"], "Only owners can add agents");
+        assert!(json.get("channelId").is_none());
     }
 }

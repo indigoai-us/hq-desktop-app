@@ -99,6 +99,10 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       asString(
         rec.companyUid ?? rec.company_uid ?? rec.cloudUid ?? nested?.companyUid,
       ) || null,
+    companyName:
+      asString(
+        rec.companyName ?? rec.company_name ?? nested?.companyName,
+      ) || null,
     projectId,
     name,
     subtitle: asString(rec.subtitle) || asString(nested?.subtitle) || undefined,

@@ -15,6 +15,7 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
+  import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -92,6 +93,15 @@
     ) => void;
     onpick: (row: ConversationRow) => void;
     oncreated: (channel: Channel) => void | Promise<void>;
+    /**
+     * Lifecycle entry points (optional — hosts without the card seams omit
+     * them and the rows are hidden). The host runs the server action and
+     * navigates; the modal only closes on success or shows the reason inline.
+     */
+    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    /** Companies an agent can be added to (cloud companies the user is in). */
+    agentCompanies?: ScopeCompany[] | null;
   }
 
   let {
@@ -105,7 +115,81 @@
     onclose,
     onpick,
     oncreated,
+    oncreatecompany = null,
+    oncreateagent = null,
+    agentCompanies = null,
   }: Props = $props();
+
+  // ── lifecycle entry points (New company / New agent) ─────────────────────
+  const agentTargets = $derived<ScopeCompany[]>(
+    (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
+  );
+  const showEntryPoints = $derived(
+    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
+  );
+  let entryBusy = $state<"company" | "agent" | null>(null);
+  let entryError = $state<string | null>(null);
+  let agentPickerOpen = $state(false);
+
+  async function runEntry(
+    kind: "company" | "agent",
+    run: () => Promise<EntryPointResult>,
+  ): Promise<void> {
+    if (entryBusy) return;
+    entryBusy = kind;
+    entryError = null;
+    try {
+      const result = await run();
+      if (result.ok) {
+        agentPickerOpen = false;
+        onclose();
+        return;
+      }
+      entryError = result.reason;
+    } catch (err) {
+      entryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      entryBusy = null;
+    }
+  }
+
+  function newCompany(): void {
+    if (!oncreatecompany) return;
+    void runEntry("company", oncreatecompany);
+  }
+
+  /** One company: go straight to it. Several: open the inline picker. */
+  function newAgent(): void {
+    if (!oncreateagent) return;
+    if (agentTargets.length === 1) {
+      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
+      return;
+    }
+    entryError = null;
+    agentPickerOpen = !agentPickerOpen;
+  }
+
+  function newAgentFor(companyUid: string): void {
+    if (!oncreateagent) return;
+    void runEntry("agent", () => oncreateagent!(companyUid));
+  }
+
+  function onEntryPickerKey(event: KeyboardEvent): void {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const buttons = Array.from(
+      (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>(
+        "button:not([disabled])",
+      ),
+    );
+    if (buttons.length === 0) return;
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === "ArrowDown"
+        ? buttons[(at + 1) % buttons.length]
+        : buttons[(at - 1 + buttons.length) % buttons.length];
+    event.preventDefault();
+    next?.focus();
+  }
 
   type Step = "find" | "create" | "summary";
 
@@ -1476,6 +1560,121 @@
           {queryDebounced.trim() ? "No matches" : "No conversations"}
         </p>
       {/if}
+      {#if showEntryPoints}
+        <!-- Lifecycle entry points sit under the results, outside the listbox:
+             plain rows, one control scale, no nested card. -->
+        <div
+          class="create-entry"
+          role="group"
+          aria-label="Create"
+          data-testid="chat-create-entry-points"
+          inert={confirmSubject !== null}
+        >
+          <div class="create-group" role="presentation">Create</div>
+          {#if oncreatecompany}
+            <button
+              type="button"
+              class="create-row create-entry-row"
+              data-testid="chat-create-new-company"
+              aria-busy={entryBusy === "company" ? "true" : undefined}
+              disabled={entryBusy !== null}
+              onclick={newCompany}
+            >
+              <span class="create-entry-ic" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M3 13.5V4.5l5-2 5 2v9M6 7h1M9 7h1M6 9.5h1M9 9.5h1M6.5 13.5v-2h3v2"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </span>
+              <span class="create-entry-label">New company</span>
+              <span class="create-entry-hint">Opens the setup step in #setup</span>
+            </button>
+          {/if}
+          {#if oncreateagent && agentTargets.length > 0}
+            <button
+              type="button"
+              class="create-row create-entry-row"
+              data-testid="chat-create-new-agent"
+              aria-busy={entryBusy === "agent" ? "true" : undefined}
+              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
+              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
+              aria-controls={agentTargets.length > 1
+                ? "create-agent-company-picker"
+                : undefined}
+              disabled={entryBusy !== null}
+              onclick={newAgent}
+            >
+              <span class="create-entry-ic" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <rect
+                    x="3"
+                    y="5"
+                    width="10"
+                    height="8"
+                    rx="1.5"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                  />
+                  <path
+                    d="M8 2.5V5M6 8.5h.5M9.5 8.5h.5M6 11h4"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </span>
+              <span class="create-entry-label">New agent</span>
+              <span class="create-entry-hint">
+                {agentTargets.length === 1
+                  ? `In ${agentTargets[0]?.label}`
+                  : "Pick a company"}
+              </span>
+            </button>
+            {#if agentPickerOpen && agentTargets.length > 1}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <div
+                id="create-agent-company-picker"
+                class="create-entry-picker"
+                role="listbox"
+                aria-label="Add an agent to which company?"
+                data-testid="chat-create-agent-picker"
+                onkeydown={onEntryPickerKey}
+              >
+                {#each agentTargets as company (company.companyUid)}
+                  <button
+                    type="button"
+                    class="create-row create-entry-sub"
+                    role="option"
+                    aria-selected="false"
+                    data-testid="chat-create-agent-company"
+                    data-company={company.companyUid}
+                    disabled={entryBusy !== null}
+                    onclick={() => newAgentFor(company.companyUid)}
+                  >
+                    <span class="create-entry-tile" aria-hidden="true">
+                      {company.label.trim().slice(0, 1).toUpperCase()}
+                    </span>
+                    <span class="create-entry-label">{company.label}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          {#if entryError}
+            <p
+              class="create-note create-entry-error"
+              role="alert"
+              data-testid="chat-create-entry-error"
+            >
+              {entryError}
+            </p>
+          {/if}
+        </div>
+      {/if}
     {:else if step === "create"}
       <div class="create-body" inert={confirmSubject !== null}>
         <div class="create-field">
@@ -2081,6 +2280,90 @@
     padding: 14px 12px;
     color: var(--t2);
     font-size: 13px;
+  }
+
+  /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
+  .create-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px 6px 6px;
+    border-top: 1px solid var(--line, var(--panel-border));
+  }
+
+  .create-entry-row {
+    min-height: 32px;
+  }
+
+  .create-entry-row:disabled,
+  .create-entry-sub:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .create-entry-row:focus-visible,
+  .create-entry-sub:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: -2px;
+  }
+
+  .create-entry-ic {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: var(--t2);
+    flex: 0 0 auto;
+  }
+
+  .create-entry-ic svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .create-entry-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .create-entry-hint {
+    flex: 0 0 auto;
+    color: var(--t3);
+    font-size: 11px;
+  }
+
+  .create-entry-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding-left: 24px;
+  }
+
+  .create-entry-sub {
+    min-height: 28px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .create-entry-tile {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: var(--raised);
+    color: var(--t2);
+    font: 600 10px/1 var(--font-ui);
+    flex: 0 0 auto;
+  }
+
+  .create-entry-error {
+    padding: 6px 10px 2px;
+    color: var(--danger, #e5484d);
+    font-size: 12px;
   }
 
   .create-field {

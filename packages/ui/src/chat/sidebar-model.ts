@@ -815,7 +815,7 @@ export function directoryRowToChannel(
     name: row.name || prev?.name || "",
     scope: row.scope,
     companyUid: row.companyUid ?? null,
-    companyName: prev?.companyName ?? null,
+    companyName: row.companyName ?? prev?.companyName ?? null,
     ...(prev?.postPolicy != null ? { postPolicy: prev.postPolicy } : {}),
     ...(prev?.visibility != null ? { visibility: prev.visibility } : {}),
     ...(prev?.membership != null ? { membership: prev.membership } : {}),

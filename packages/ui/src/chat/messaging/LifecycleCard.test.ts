@@ -449,3 +449,89 @@ describe("LifecycleCard readonly timestamps", () => {
     expect(el.textContent).toContain("plan");
   });
 });
+
+describe("LifecycleCard pending actions", () => {
+  it("renders secondary actions while pending, hides the primary, keeps the spinner", () => {
+    const events: LifecycleCardActionEvent[] = [];
+    const root = mountCard(
+      card({
+        cardId: "card_upgrade_plan",
+        kind: "upgrade_plan",
+        companyUid: "cmp_ramen_bae",
+        state: "pending",
+        statusLabel: "Waiting for checkout",
+        fields: [
+          {
+            id: "plan",
+            label: "Plan",
+            control: "radio",
+            value: "workforce",
+            options: [{ id: "workforce", label: "Workforce" }],
+          },
+        ],
+        actions: [
+          { id: "checkout", label: "Continue to checkout", style: "primary" },
+          { id: "retry_checkout", label: "Open checkout again", style: "secondary" },
+          { id: "cancel_checkout", label: "Cancel", style: "secondary" },
+        ],
+      }),
+      { oncardaction: (event: LifecycleCardActionEvent) => events.push(event) },
+    );
+    const article = root.querySelector('[data-testid="lifecycle-card"]');
+    expect(article?.getAttribute("data-state")).toBe("pending");
+    expect(article?.getAttribute("aria-busy")).toBe("true");
+    expect(root.querySelector(".lc-spin")).toBeTruthy();
+    expect(
+      root.querySelector('[data-testid="lifecycle-card-status"]')?.textContent,
+    ).toContain("Waiting for checkout");
+    expect(root.querySelector('[data-testid="lifecycle-action-checkout"]')).toBeNull();
+    const retry = root.querySelector<HTMLButtonElement>(
+      '[data-testid="lifecycle-action-retry_checkout"]',
+    );
+    const cancel = root.querySelector<HTMLButtonElement>(
+      '[data-testid="lifecycle-action-cancel_checkout"]',
+    );
+    expect(retry).toBeTruthy();
+    expect(cancel).toBeTruthy();
+    expect(retry?.disabled).toBe(false);
+    expect(cancel?.disabled).toBe(false);
+    // Fields stay read-only while pending.
+    expect(root.querySelector("input:not([disabled])")).toBeNull();
+
+    retry!.click();
+    cancel!.click();
+    flushSync();
+    expect(events.map((e) => e.actionId)).toEqual([
+      "retry_checkout",
+      "cancel_checkout",
+    ]);
+    expect(events[0]?.cardId).toBe("card_upgrade_plan");
+  });
+
+  it("renders no action row on a pending card without actions", () => {
+    const root = mountCard(
+      card({
+        state: "pending",
+        statusLabel: "Provisioning",
+        actions: [],
+      }),
+    );
+    expect(root.querySelector(".lc-acts")).toBeNull();
+    expect(root.querySelectorAll("[data-testid^=\"lifecycle-action-\"]")).toHaveLength(0);
+    expect(root.querySelector(".lc-spin")).toBeTruthy();
+  });
+
+  it("hides pending actions from a viewer who cannot act", () => {
+    const root = mountCard(
+      card({
+        state: "pending",
+        viewer: { canAct: false, actorName: "Corey Epstein" },
+        actions: [
+          { id: "cancel_checkout", label: "Cancel", style: "secondary" },
+        ],
+      }),
+    );
+    expect(root.querySelector('[data-testid="lifecycle-action-cancel_checkout"]')).toBeNull();
+    expect(root.querySelector('[data-testid="lifecycle-card-ask"]')?.textContent).toContain("Corey");
+  });
+});
