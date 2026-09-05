@@ -1165,6 +1165,10 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::VaultClient
         | RunnerErrorCause::VaultConflict
         | RunnerErrorCause::VaultNotFound
+        // … the ~6.16.11 pin's addition — truncated write-credential scope is
+        // a policy/issuance fault with no unambiguous class analogue, so the
+        // keyword fallback stays authoritative …
+        | RunnerErrorCause::VaultCredentialScope
         | RunnerErrorCause::RateLimited
         | RunnerErrorCause::PresignPreconditionMissing
         | RunnerErrorCause::OutpostHttp
