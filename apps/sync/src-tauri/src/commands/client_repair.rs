@@ -135,6 +135,12 @@ pub(crate) async fn execute_repair(
     })
     .await;
 
+    // ONLY `Done` — a terminal receipt THIS client durably flushed — may arm a
+    // process-restarting post-action. `Superseded` (a 409 on our terminal
+    // receipt, then the command gone from desired-state: admin cancel / newer
+    // revision raced us) marks the command complete but leaves NO accepted
+    // receipt behind, so restarting/installing on it would both defy the
+    // admin's cancel and restart without a flushed receipt (US-010 AC).
     if let ExecutionOutcome::Done = outcome {
         match PostAction::from_u8(post_action.load(Ordering::SeqCst)) {
             PostAction::Restart => spawn_restart_after_flush(RESTART_COUNTDOWN_SECONDS),

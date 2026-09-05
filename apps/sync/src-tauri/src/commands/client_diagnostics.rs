@@ -491,11 +491,19 @@ async fn run_all_probes() -> Vec<ClientHealthCheckResult> {
 /// poll. Whether the local ledger may mark the command `complete` hinges
 /// entirely on this — never on "the POST chain didn't return an `Err`."
 pub(crate) enum ExecutionOutcome {
-    /// A genuinely accepted terminal receipt was posted (succeeded/failed),
-    /// OR the server confirmed (via a fresh GET) that the command is already
-    /// in a terminal state / no longer in the active desired-state list.
-    /// Safe to mark complete locally.
+    /// THIS client drove the chain to a genuinely accepted terminal receipt
+    /// (succeeded/failed), or resumed onto a command the server already
+    /// reports terminal at entry. Safe to mark complete locally, and the only
+    /// outcome that may license a process-restarting post-action — the
+    /// terminal receipt is durably flushed.
     Done,
+    /// The command left the active desired-state list mid-flight (a 409 on our
+    /// terminal receipt, then a resync GET that no longer lists it): the
+    /// server superseded/expired/canceled it out from under us, so OUR
+    /// terminal receipt was NOT accepted. Safe to mark complete locally (never
+    /// re-drive), but a post-action (restart/install) MUST NOT run — there is
+    /// no durably-flushed receipt to stand behind it.
+    Superseded,
     /// A transport failure occurred somewhere in the chain, or the command
     /// could not be resynced after repeated 409s. The command MUST stay
     /// `in_flight` and out of `completed_ids` so the NEXT poll retries it —
@@ -578,10 +586,13 @@ where
                             Some(refreshed) => current = refreshed,
                             None => {
                                 // No longer in the active desired-state list —
-                                // the server considers it superseded/expired.
-                                // Safe to stop locally without a further
-                                // attempt.
-                                return ExecutionOutcome::Done;
+                                // the server superseded/expired/canceled it out
+                                // from under us AFTER 409ing our terminal
+                                // receipt, so OUR receipt was never accepted.
+                                // Safe to stop locally (never re-drive), but
+                                // this is NOT a durably-flushed terminal: a
+                                // restart/install post-action must NOT ride it.
+                                return ExecutionOutcome::Superseded;
                             }
                         }
                     }
@@ -647,9 +658,14 @@ where
         ClientHealthCommandState::Succeeded
             | ClientHealthCommandState::Failed
             | ClientHealthCommandState::Expired
+            | ClientHealthCommandState::Canceled
     ) {
-        // Already terminal server-side (e.g. another client raced us, or it
-        // expired) — nothing left to submit.
+        // Already terminal server-side (another client raced us, it expired, or
+        // an admin canceled it) — nothing left to submit and, crucially, no
+        // per-kind action to run: a `canceled` command must never be
+        // acknowledged, executed, or allowed to arm a restart/install. Being
+        // terminal, it is only ever seen here when the server's own
+        // desired-state read is momentarily inconsistent, so fail closed on it.
         return StepOutcome::Done;
     }
 
@@ -812,13 +828,16 @@ async fn poll_once_inner() -> Result<(), String> {
             .await
         };
         match outcome {
-            ExecutionOutcome::Done => {
+            ExecutionOutcome::Done | ExecutionOutcome::Superseded => {
                 with_state(|state| state.complete(&command.command_id))?;
                 // Post-repair proving heartbeat (US-010 AC #6): after every
                 // terminal REPAIR receipt, ask the heartbeat loop to emit a
                 // fresh snapshot immediately (debounced) so GTM reflects the
                 // recovered status without a manual refresh. CHECK_NOW is
                 // read-only and changes no health state, so it is exempt.
+                // (`Superseded` still marks complete — the command is terminal
+                // server-side — but any restart/install post-action was already
+                // gated out in `execute_repair`, which fires only on `Done`.)
                 if command.kind != ClientHealthRepairKind::CheckNow {
                     crate::commands::client_health::notify_client_health_state_changed();
                 }
@@ -1761,5 +1780,126 @@ mod tests {
         std::env::remove_var("HQ_TEST_REPAIR_DESKTOP_VERSION");
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// A repair command that the desired-state read reports already `canceled`
+    /// (admin cancel racing the poll) is TERMINAL server-side: the client must
+    /// never acknowledge it, never run its repair action, and never post a
+    /// receipt for it — yet still mark it complete locally so it is not
+    /// re-driven. Regression for the fail-closed-cancel gap where `canceled`
+    /// fell through the terminal short-circuit into `produce_terminal` and a
+    /// terminal receipt (US-010).
+    #[tokio::test]
+    async fn canceled_repair_command_is_never_acknowledged_run_or_receipted() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        let cmd = json!({
+            "commandId": "cmd-canceled-01",
+            "kind": "RETRY_SYNC",
+            "state": "canceled",
+            "revision": 7,
+            "createdAt": "2026-09-05T12:00:00.000Z",
+            "expiresAt": "2026-09-05T13:00:00.000Z"
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "commands": [cmd] })))
+            .mount(&server)
+            .await;
+        // Any receipt POST at all is a failure for this test — a canceled
+        // command must produce none. (Echo mount so an escaping POST is
+        // recorded rather than hanging.)
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-canceled-00001");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            receipt_states(&requests).is_empty(),
+            "a canceled command must post NO receipts (no ack/running/terminal), got {:?}",
+            receipt_states(&requests)
+        );
+        // Terminal server-side → marked complete so a later poll never re-drives it.
+        assert!(
+            with_state(|s| s.is_completed("cmd-canceled-01")).unwrap(),
+            "canceled command should be recorded complete, not left in-flight"
+        );
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// If our terminal receipt 409s and the command has then left the
+    /// desired-state list (admin cancel / newer revision raced us mid-flight),
+    /// the lifecycle resolves to `Superseded`, NOT `Done`. This is the guard
+    /// that keeps a RESTART_APP / APPLY_DESKTOP_UPDATE post-action from firing
+    /// on a receipt the server never accepted — `execute_repair` arms the
+    /// restart/install only on `Done` (US-010: flush the receipt before
+    /// restarting).
+    #[tokio::test]
+    async fn terminal_conflict_then_gone_is_superseded_not_done() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        // Receipts: ack + running are accepted; the terminal (succeeded/failed)
+        // receipt is rejected with a 409 — the server moved on.
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let state = body["state"].as_str().unwrap_or_default();
+                if state == "succeeded" || state == "failed" {
+                    return ResponseTemplate::new(409);
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+        // Resync GET after the 409: the command is gone from desired-state.
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "commands": [] })))
+            .mount(&server)
+            .await;
+
+        let command = ClientHealthDesiredCommand {
+            command_id: "cmd-superseded-01".to_string(),
+            kind: ClientHealthRepairKind::RestartApp,
+            state: ClientHealthCommandState::Queued,
+            revision: 0,
+            created_at: "2026-09-05T12:00:00.000Z".to_string(),
+            expires_at: "2026-09-05T13:00:00.000Z".to_string(),
+            required_confirmation: Some(
+                hq_desktop_core::client_health::ClientHealthConfirmationLevel::Consequence,
+            ),
+            args: None,
+        };
+
+        // Stand-in terminal action that (like RESTART_APP) resolves to
+        // `succeeded`; the point is what the lifecycle returns when THAT
+        // receipt is 409'd and the command has vanished.
+        let outcome = execute_command_lifecycle(&server.uri(), "test-jwt", "inst-superseded", &command, || async {
+            TerminalReceiptContent {
+                state: ClientHealthCommandState::Succeeded,
+                checks: None,
+                failure_reason: None,
+                postcondition: None,
+                manual_action_required: None,
+            }
+        })
+        .await;
+
+        assert!(
+            matches!(outcome, ExecutionOutcome::Superseded),
+            "a 409'd terminal receipt followed by the command leaving desired-state must be Superseded (so no restart/install post-action rides an unaccepted receipt), not Done"
+        );
     }
 }
