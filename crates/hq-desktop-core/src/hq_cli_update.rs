@@ -517,6 +517,29 @@ pub enum InterpreterRecovery {
     StillUnreadable,
 }
 
+/// Whether the resolved `hq` is backed by a reachable `@indigoai-us/hq-cli`
+/// package manifest — the sub-case that distinguishes the populations of an
+/// unreadable-version occurrence. Closed and path-free for telemetry, and
+/// ADDITIVE beside the existing probe fields: the event's message and grouping
+/// are unchanged, so this cluster's regression watermark stays comparable.
+///
+/// `NotProbed` is the default the paths that never classify keep — no `hq`
+/// resolved, or a manifest read that was INDETERMINATE (a permission/AV hold)
+/// rather than a definitive absence. `Backed` means an hq-cli manifest was
+/// reachable. `UnbackedManaged`/`UnbackedForeign` mean the manifest was
+/// DEFINITIVELY absent, split by whether the shim sits inside one of HQ's own
+/// managed-toolchain roots (HQ's orphaned shim, the largest reported population)
+/// or outside them (an unrelated program named `hq`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HqBacking {
+    #[default]
+    NotProbed,
+    Backed,
+    UnbackedManaged,
+    UnbackedForeign,
+}
+
 /// The three ordered probes used to discover an installed hq CLI version.
 /// The shape remains fixed even when a successful earlier probe means a later
 /// one must not execute.
@@ -539,6 +562,11 @@ pub struct LocalVersionProbeDiagnostics {
     /// Which resolution lane produced the `hq` binary (settings PATH, managed
     /// toolchain, a user/system prefix, or the login-shell fallback).
     pub resolution_source: ResolutionSource,
+    /// Whether the resolved `hq` is backed by a reachable `@indigoai-us/hq-cli`
+    /// manifest, and if not, whether it is HQ's own managed-toolchain orphan or
+    /// an unrelated foreign program. Additive: names the sub-case of a recurrence
+    /// without changing any existing field's name, position, or value.
+    pub hq_backing: HqBacking,
 }
 
 impl LocalVersionProbeDiagnostics {
@@ -552,6 +580,7 @@ impl LocalVersionProbeDiagnostics {
             managed_runtime: ManagedRuntimeState::NotProbed,
             interpreter_recovery: InterpreterRecovery::NotNeeded,
             resolution_source: ResolutionSource::NotResolved,
+            hq_backing: HqBacking::NotProbed,
         }
     }
 }
@@ -725,6 +754,53 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
         VersionProbeOutcome::PackageNotFound
     };
     (None, outcome)
+}
+
+/// Whether an `@indigoai-us/hq-cli` package manifest is reachable from a resolved
+/// `hq` binary — the resolver's "is this a real hq-cli install, not a foreign or
+/// orphaned program named `hq`" question. It reuses the EXACT layout walk the
+/// version probe uses ([`version_from_hq_binary_probe`]), so a candidate
+/// classified [`CandidateBacking::Backed`] here is precisely one the version
+/// probe can read a version from — backing and version-reading can never
+/// disagree. Bounded filesystem reads only: no child process, no network.
+///
+/// [`CandidateBacking::AbsentDefinitive`] requires a definitive "package is not
+/// here" answer from every reachable location. A manifest that could not be READ
+/// or parsed (a permission lock, an antivirus hold) or a binary that could not be
+/// canonicalized is [`CandidateBacking::Indeterminate`] — the resolver must never
+/// reject or demote on that, or a transient blip turns a working machine into a
+/// reinstall. This is the same `Ok(None)`-vs-`Err(())` distinction
+/// [`read_hq_cli_package_version`] already draws.
+pub fn hq_cli_backing(hq_bin: &Path) -> paths::CandidateBacking {
+    match version_from_hq_binary_probe(hq_bin).1 {
+        VersionProbeOutcome::Succeeded => paths::CandidateBacking::Backed,
+        VersionProbeOutcome::PackageNotFound => paths::CandidateBacking::AbsentDefinitive,
+        _ => paths::CandidateBacking::Indeterminate,
+    }
+}
+
+/// Map an already-computed binary-anchor outcome for a resolved `hq` into the
+/// closed telemetry backing token — with NO second filesystem walk, since the
+/// anchor probe already answered the reachability question. `Backed` on a
+/// manifest read, `Unbacked{Managed,Foreign}` on a DEFINITIVE absence (split by
+/// managed-toolchain provenance), `NotProbed` for no `hq` or an indeterminate
+/// read. Mirrors [`hq_cli_backing`]'s mapping so the resolver's decision and the
+/// reported sub-case can never disagree.
+fn classify_hq_backing(hq: Option<&Path>, binary_anchor: VersionProbeOutcome) -> HqBacking {
+    let Some(hq) = hq else {
+        return HqBacking::NotProbed;
+    };
+    match binary_anchor {
+        VersionProbeOutcome::Succeeded => HqBacking::Backed,
+        VersionProbeOutcome::PackageNotFound => {
+            if paths::hq_bin_in_managed_root(hq) {
+                HqBacking::UnbackedManaged
+            } else {
+                HqBacking::UnbackedForeign
+            }
+        }
+        _ => HqBacking::NotProbed,
+    }
 }
 
 /// Parse `hq --version` output into a bare version string. Last-resort only:
@@ -1028,6 +1104,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
                     binary_anchor,
                     binary_anchor_shape,
                     resolved_program_kind: hq.kind,
+                    hq_backing: classify_hq_backing(Some(hq_path), binary_anchor),
                     ..LocalVersionProbeDiagnostics::not_attempted()
                 },
             }
@@ -1123,6 +1200,7 @@ fn probe_local_version_with_managed(
                 binary_anchor,
                 binary_anchor_shape,
                 resolved_program_kind,
+                hq_backing: classify_hq_backing(hq, binary_anchor),
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
@@ -1148,6 +1226,9 @@ fn probe_local_version_after_binary(
     path: &str,
 ) -> LocalVersionProbeResult {
     let hq_installed = hq.is_some();
+    // The backing sub-case is derived from the binary-anchor outcome already in
+    // hand (no extra filesystem walk); it names why a resolved `hq` is unreadable.
+    let hq_backing = classify_hq_backing(hq, binary_anchor);
     let (npm_local, npm_root) = match npm {
         Some(npm) => read_installed_version_probe(npm, path),
         None => (None, VersionProbeOutcome::NotAttempted),
@@ -1162,6 +1243,7 @@ fn probe_local_version_after_binary(
                 hq_version: VersionProbeOutcome::NotAttempted,
                 binary_anchor_shape,
                 resolved_program_kind,
+                hq_backing,
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
@@ -1181,6 +1263,7 @@ fn probe_local_version_after_binary(
             managed_runtime,
             interpreter_recovery,
             resolution_source: ResolutionSource::NotResolved,
+            hq_backing,
         },
     }
 }
@@ -3291,6 +3374,7 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
                     "managed_runtime": probes.managed_runtime,
                     "interpreter_recovery": probes.interpreter_recovery,
                     "resolution_source": probes.resolution_source,
+                    "hq_backing": probes.hq_backing,
                 })
                 .into(),
             );
@@ -13196,6 +13280,84 @@ mod tests {
             legacy_local_version(Some(&failing_hq), Some(failing_npm_bin), ""),
             all_fail.local,
             "all probes fail"
+        );
+    }
+
+    // ---- HQ-DESKTOP-3P: hq-cli backing oracle + telemetry sub-case. ----
+
+    #[test]
+    fn hq_cli_backing_classifies_backed_absent_and_indeterminate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Backed: a shim whose @indigoai-us/hq-cli manifest is reachable from the
+        // derived prefix.
+        let prefix = tmp.path().join("npm");
+        std::fs::create_dir_all(prefix.join("node_modules/@indigoai-us/hq-cli")).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            prefix.join("node_modules/@indigoai-us/hq-cli/package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.103.30"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_backing(&prefix.join("hq.cmd")),
+            paths::CandidateBacking::Backed
+        );
+
+        // Definitively absent: the same shim shape with the package gone.
+        let orphan = tmp.path().join("toolchain");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("hq.cmd"), "@echo off\n").unwrap();
+        assert_eq!(
+            hq_cli_backing(&orphan.join("hq.cmd")),
+            paths::CandidateBacking::AbsentDefinitive
+        );
+
+        // Indeterminate: the manifest path exists but cannot be READ (a directory
+        // here, standing in for a permission/AV lock).
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir_all(locked.join("node_modules/@indigoai-us/hq-cli/package.json"))
+            .unwrap();
+        std::fs::write(locked.join("hq.cmd"), "@echo off\n").unwrap();
+        assert_eq!(
+            hq_cli_backing(&locked.join("hq.cmd")),
+            paths::CandidateBacking::Indeterminate
+        );
+    }
+
+    #[test]
+    fn classify_hq_backing_names_the_unreadable_subcase_from_the_anchor_outcome() {
+        let foreign = std::path::Path::new("/tmp/hq-fixture-foreign/hq.cmd");
+        // No hq resolved → not probed.
+        assert_eq!(
+            classify_hq_backing(None, VersionProbeOutcome::PackageNotFound),
+            HqBacking::NotProbed
+        );
+        // A version read (fast path) → backed.
+        assert_eq!(
+            classify_hq_backing(Some(foreign), VersionProbeOutcome::Succeeded),
+            HqBacking::Backed
+        );
+        // Definitive absence OUTSIDE a managed root → foreign.
+        assert_eq!(
+            classify_hq_backing(Some(foreign), VersionProbeOutcome::PackageNotFound),
+            HqBacking::UnbackedForeign
+        );
+        // Definitive absence INSIDE a managed root → managed (HQ's own orphan).
+        if let Some(root) = paths::managed_toolchain_roots().first() {
+            let managed = root.join("npm-prefix").join("hq.cmd");
+            assert_eq!(
+                classify_hq_backing(Some(&managed), VersionProbeOutcome::PackageNotFound),
+                HqBacking::UnbackedManaged
+            );
+        }
+        // An indeterminate read is never a false "unbacked".
+        assert_eq!(
+            classify_hq_backing(
+                Some(foreign),
+                VersionProbeOutcome::ManifestReadOrParseFailed
+            ),
+            HqBacking::NotProbed
         );
     }
 

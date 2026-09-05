@@ -4426,6 +4426,7 @@ exit 0
             managed_runtime: hq_desktop_core::hq_cli_update::ManagedRuntimeState::NotProbed,
             interpreter_recovery: hq_desktop_core::hq_cli_update::InterpreterRecovery::NotNeeded,
             resolution_source: hq_desktop_core::hq_cli_update::ResolutionSource::NotResolved,
+            hq_backing: hq_desktop_core::hq_cli_update::HqBacking::UnbackedForeign,
         };
         let events = sentry::test::with_captured_events(|| {
             sentry::configure_scope(|scope| {
@@ -4459,6 +4460,7 @@ exit 0
                 "managed_runtime": "not_probed",
                 "interpreter_recovery": "not_needed",
                 "resolution_source": "not_resolved",
+                "hq_backing": "unbacked_foreign",
             })
         );
         assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
