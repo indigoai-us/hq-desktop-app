@@ -1342,19 +1342,195 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
     }));
     assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    // The stderr is NON-EMPTY and markerless (a Node parse error, no `npm error`
+    // line), so it now groups under the attributed signature instead of the empty
+    // `none:unknown:none` bucket (HQ-DESKTOP-56): a `non-npm` origin whose dominant
+    // structural shape is the JS stack frame.
     assert_eq!(
         event.message.as_deref(),
-        Some("[hq-cli-update] install failed (none:unknown:none)")
+        Some("[hq-cli-update] install failed (unattributed:non-npm:stack_frame)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected",
+            "unattributed:non-npm:stack_frame"
+        ]
     );
     for (key, value) in [
         ("node_version", "22.17.0"),
         ("node_abi", "127"),
         ("npm_toolchain_source", "managed"),
         ("npm_managed_toolchain_retry", "true"),
+        // The new attribution tags, present for this subclass; the shapes render is
+        // counts-only (never in the fingerprint).
+        ("npm_stderr_origin", "non-npm"),
     ] {
         assert_eq!(tag(&event, key), Some(value), "tag {key}");
     }
+    assert!(
+        tag(&event, "npm_stderr_shapes")
+            .is_some_and(|shapes| shapes.contains("stack_frame:")),
+        "shapes tag must carry the bounded stack-frame count: {:?}",
+        tag(&event, "npm_stderr_shapes")
+    );
     assert_path_safe(&event, &["/usr/local", "SyntaxError", "Arborist", "vm.js"]);
+}
+
+/// HQ-DESKTOP-56 reopen. The reported Windows occurrence: a machine on a SUPPORTED
+/// Node 26.3.0 whose npm exited 1 with a short (149-byte) stderr that carried NONE of
+/// npm's structured markers — npm's own logger produced nothing, so the bytes are the
+/// user's npm/shim, not npm. CRLF-delimited and carrying Windows drive paths, as
+/// Windows emits. Before this fix it re-entered the empty `none:unknown:none` issue at
+/// Error and re-paged on every ~6h check.
+const WINDOWS_MARKERLESS_STDERR: &str = "& : File C:\\Users\\me\\AppData\\Roaming\\npm\\hq.ps1 cannot be loaded;\r\nand, C:\\ProgramData\\hq is not writable; please contact your administrator to help.";
+
+fn reopen_windows_env() -> InstallEnvironment {
+    InstallEnvironment {
+        node_version: Some("26.3.0".to_string()),
+        node_abi: Some("147".to_string()),
+        npm_version: Some("11.16.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn reported_windows_markerless_occurrence_groups_attributed_and_path_safe() {
+    // Exactly the reported length, and genuinely markerless.
+    assert_eq!(WINDOWS_MARKERLESS_STDERR.len(), 149);
+    let env = reopen_windows_env();
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), WINDOWS_MARKERLESS_STDERR, None, false, &env)
+    }));
+    // Still an unexplained updater failure — stays Error, NOT downgraded.
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    // It leaves the empty bucket for a bounded, attributed group: non-npm origin
+    // (npm's logger emitted nothing) with a path_like dominant shape.
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (unattributed:non-npm:path_like)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected",
+            "unattributed:non-npm:path_like"
+        ]
+    );
+    assert_eq!(tag(&event, "npm_stderr_origin"), Some("non-npm"));
+    assert_eq!(tag(&event, "npm_stderr_shapes"), Some("path_like:2"));
+    assert_eq!(tag(&event, "npm_stderr_len"), Some("149"));
+    assert_eq!(tag(&event, "node_version"), Some("26.3.0"));
+    assert_eq!(tag(&event, "npm_toolchain_source"), Some("user-path"));
+    // The diagnostics extra carries the origin/shapes attribution as a fixed-shape
+    // suffix, and NEVER the raw stderr.
+    assert!(event
+        .extra
+        .get("npm_diagnostics")
+        .and_then(|value| value.as_str())
+        .is_some_and(|summary| summary
+            .contains("stderr_origin=non-npm stderr_shapes=path_like:2")));
+    assert!(
+        !event.extra.contains_key("npm_stderr"),
+        "raw npm stderr must never reach Sentry"
+    );
+    // Not one raw stderr byte, drive path, or home path reaches Sentry.
+    assert_path_safe(
+        &event,
+        &[
+            "C:\\",
+            "/Users/",
+            "ProgramData",
+            "AppData",
+            "hq.ps1",
+            "administrator",
+            "npm error",
+        ],
+    );
+}
+
+#[test]
+fn unattributed_markerless_failure_pages_once_per_published_version() {
+    let env = reopen_windows_env();
+    let run = |reported: &[String], latest: &str| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
+                Some(1),
+                WINDOWS_MARKERLESS_STDERR,
+                None,
+                false,
+                &env,
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::SuppressedRepeat => {}
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        });
+        (events.len(), updated)
+    };
+    // First occurrence under 5.103.23 pages and persists the attributed key.
+    let (n, persisted) = run(&[], "5.103.23");
+    assert_eq!(n, 1, "the first markerless occurrence must page");
+    assert_eq!(
+        persisted,
+        vec!["5.103.23|unattributed|non-npm|path_like".to_string()]
+    );
+    // The immediately-following identical occurrence emits NO envelope — the ~6h
+    // re-paging the reopen suffered from is now bounded.
+    let (n, _persisted) = run(&persisted, "5.103.23");
+    assert_eq!(
+        n, 0,
+        "an identical occurrence in the same published version is suppressed"
+    );
+    // A newly published CLI version pages a first occurrence again.
+    let (n, persisted) = run(&persisted, "5.103.24");
+    assert_eq!(n, 1, "a newer published version must page again");
+    assert_eq!(
+        persisted,
+        vec!["5.103.24|unattributed|non-npm|path_like".to_string()]
+    );
+}
+
+#[test]
+fn npm_logger_markerless_failure_is_a_distinct_attributed_subclass() {
+    // npm printed marker lines but structured no code/syscall/path — an `npm-logger`
+    // origin. It is attributed and episode-bounded like the non-npm case, but stays a
+    // DISTINCT group so the two subclasses remain separable on the wire.
+    let npm_logger = "npm error Unexpected end of JSON input while parsing near '...'\n\
+                      npm error A complete log of this run can be found above.";
+    let env = InstallEnvironment {
+        node_version: Some("22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), npm_logger, None, false, &env)
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(tag(&event, "npm_stderr_origin"), Some("npm-logger"));
+    assert!(
+        fingerprint(&event)
+            .last()
+            .is_some_and(|sig| sig.starts_with("unattributed:npm-logger:")),
+        "npm-logger origin must group under its own attributed signature: {:?}",
+        fingerprint(&event)
+    );
+    assert_path_safe(&event, &["npm error", "JSON input"]);
 }
 
 /// HQ-DESKTOP-4S, node-llama-cpp's cmake-js build failing because the compiler

@@ -370,6 +370,139 @@ pub async fn get_company_team_telemetry(
     serde_json::from_str(&text).map_err(|e| format!("team telemetry parse: {e}"))
 }
 
+/// Background tasks for one agent — backs the task chips in the agent surface.
+/// Proxies `GET /v1/agent-telescope/agents/{agentUid}/tasks` on the vault/hq-pro
+/// base. Returns the raw JSON object for the frontend normalizer
+/// (`desktop-alt/lib/agent-task-feed.ts`), same split as team telemetry.
+///
+/// Two limits of the upstream payload, both deliberate and both handled by the
+/// normalizer rather than papered over here: it is agent-scoped (no conversation
+/// key exists anywhere in it), and terminal tasks survive only as the single
+/// `recentTerminal` entry the heartbeat carries — everything else that finishes
+/// simply drops out of the next beat.
+#[tauri::command]
+pub async fn list_agent_tasks(agent_uid: String) -> Result<serde_json::Value, String> {
+    let agent_uid = agent_uid.trim().to_string();
+    if agent_uid.is_empty() {
+        return Err("agent uid is required".to_string());
+    }
+    if !is_url_safe_id(&agent_uid) {
+        return Err(format!("agent uid has invalid characters: {agent_uid:?}"));
+    }
+    let base = vault_base()?;
+    let url = format!(
+        "{}/v1/agent-telescope/agents/{}/tasks",
+        base.trim_end_matches('/'),
+        urlencoding_encode(&agent_uid),
+    );
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("agent tasks fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("agent tasks read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] agent tasks GET {url} -> HTTP {} ({} bytes)",
+        status,
+        text.len()
+    );
+    if status.as_u16() == 401 {
+        return Err(format!("auth: unauthorized 401 — {text}"));
+    }
+    if status.as_u16() == 403 {
+        return Err(format!("forbidden 403 — {text}"));
+    }
+    // Upstream returns a byte-identical 404 for an unknown agent, a
+    // cross-company probe, and a caller who is not owner/admin — they are
+    // deliberately indistinguishable so the route cannot be used to enumerate
+    // another tenant. Keep them indistinguishable here too.
+    if status.as_u16() == 404 {
+        return Err("not available for this agent".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("agent tasks HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("agent tasks parse: {e}"))
+}
+
+/// Room-scoped background tasks — the tasks one agent spawned from messages in
+/// ONE HQ room. Proxies
+/// `GET /v1/agent-telescope/agents/{agentUid}/channels/{channelId}/tasks`.
+/// Returns the raw JSON object for the frontend normalizer
+/// (`desktop-alt/lib/room-task-feed.ts`).
+///
+/// Unlike the per-agent heartbeat view this is sourced from the interaction
+/// trace, so it retains terminal states for the retention window. A 404 is
+/// deliberately indistinguishable upstream across unknown agent, cross-company
+/// probe, insufficient role, AND a server that has not yet deployed the route;
+/// the controller treats it as "fall back to the agent-wide feed".
+#[tauri::command]
+pub async fn list_channel_agent_tasks(
+    agent_uid: String,
+    channel_id: String,
+) -> Result<serde_json::Value, String> {
+    let agent_uid = agent_uid.trim().to_string();
+    let channel_id = channel_id.trim().to_string();
+    if agent_uid.is_empty() || channel_id.is_empty() {
+        return Err("agent uid and channel id are required".to_string());
+    }
+    if !is_url_safe_id(&agent_uid) {
+        return Err(format!("agent uid has invalid characters: {agent_uid:?}"));
+    }
+    if !is_url_safe_id(&channel_id) {
+        return Err(format!("channel id has invalid characters: {channel_id:?}"));
+    }
+    let base = vault_base()?;
+    let url = format!(
+        "{}/v1/agent-telescope/agents/{}/channels/{}/tasks",
+        base.trim_end_matches('/'),
+        urlencoding_encode(&agent_uid),
+        urlencoding_encode(&channel_id),
+    );
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("room tasks fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("room tasks read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] room tasks GET {url} -> HTTP {} ({} bytes)",
+        status,
+        text.len()
+    );
+    if status.as_u16() == 401 {
+        return Err(format!("auth: unauthorized 401 — {text}"));
+    }
+    if status.as_u16() == 403 {
+        return Err(format!("forbidden 403 — {text}"));
+    }
+    if status.as_u16() == 404 {
+        return Err("not available for this room".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("room tasks HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("room tasks parse: {e}"))
+}
+
 /// Minimal query-value encoder (uid/date are already constrained).
 fn urlencoding_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

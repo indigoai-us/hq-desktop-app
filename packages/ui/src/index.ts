@@ -17,6 +17,7 @@ export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 // — composed as a fixture-driven, ZERO-NETWORK ChannelConversation).
 export * from "./chat/messaging/index.js";
 export * from "./chat/chat-api.js";
+export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
 export * from "./chat/live-directory.js";
 export * from "./chat/live-messages.js";
@@ -145,6 +146,7 @@ export {
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";
+export * from "./shell/palette-rows.js";
 export {
   FIXTURE_COMPANIES,
   FIXTURE_INITIAL_ROW,

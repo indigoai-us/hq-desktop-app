@@ -1,13 +1,17 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Capability set for the HQ Work mobile webview. Deliberately narrow: it grants exactly the three native capabilities the mobile row of packages/platform/src/capabilities.ts claims — OS identification for platform resolution, notifications, and HTTP. No filesystem, shell, tray or window-management permissions, because MOBILE_CAPABILITIES declares all of those false.",
-  "windows": ["main"],
+  "description": "Capability set for the HQ Work mobile webview. Deliberately narrow: OS identification for platform resolution, notifications, HTTP, and the two permissions sign-in needs (opening the Cognito hosted UI in the system browser, and receiving the hqmobile:// callback). No filesystem, shell, tray or window-management permissions, because MOBILE_CAPABILITIES declares all of those false.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
     "os:default",
     "notification:default",
-    "http:default"
+    "http:default",
+    "deep-link:default",
+    "opener:allow-open-url"
   ]
 }

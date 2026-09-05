@@ -293,6 +293,25 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         mentions: extras?.mentions ?? null,
         attachments: extras?.attachments ?? null,
       }),
+    runCardAction: (args) =>
+      this.call("run_card_action", {
+        channelId: args.channelId,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
+      }),
+    getCompanyTab: (companyUid, tab) =>
+      this.call("get_company_tab", { companyUid, tab }),
+    runCompanyTabAction: (args) =>
+      this.call("run_company_tab_action", {
+        companyUid: args.companyUid,
+        tab: args.tab,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
+      }),
     fetchDmThread: ({ withPersonUid, limit, since }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,
@@ -652,6 +671,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "POST",
         `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
         body,
+      ),
+    listProjectThreads: (projectId, companyUid, cursor) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads/${encodeURIComponent(threadId.trim())}/events?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
       ),
   };
 }

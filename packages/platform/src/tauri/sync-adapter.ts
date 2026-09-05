@@ -475,6 +475,25 @@ export function createSyncPlatformAdapter(
         }
         return call('send_channel_message', { channelId, body });
       },
+      runCardAction: (args) =>
+        call('run_card_action', {
+          channelId: args.channelId,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
+      getCompanyTab: (companyUid, tab) =>
+        call('get_company_tab', { companyUid, tab }),
+      runCompanyTabAction: (args) =>
+        call('run_company_tab_action', {
+          companyUid: args.companyUid,
+          tab: args.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
       fetchDmThread: ({ withPersonUid, limit, since }) => {
         if (since) {
           return hqProJson(
@@ -1062,6 +1081,24 @@ export function createSyncPlatformAdapter(
           'POST',
           WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
           body,
+        ),
+      listProjectThreads: (projectId, companyUid, cursor) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreads, {
+            companyUid: companyUid.trim() || null,
+            projectId: projectId.trim() || null,
+            limit: '100',
+            cursor: cursor?.trim() || null,
+          }),
+        ),
+      listThreadEvents: (threadId, companyUid, since) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreadEvents(threadId.trim()), {
+            companyUid: companyUid.trim() || null,
+            since: since?.trim() || null,
+          }),
         ),
     },
   };

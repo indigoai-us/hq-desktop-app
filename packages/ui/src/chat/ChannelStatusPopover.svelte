@@ -404,7 +404,17 @@
           onclick={() => onopenprofile?.(m)}
         >
           <span class="m-ava" aria-hidden="true">
-            {initialOf(m.displayName)}
+            {#if m.avatarUrl}
+              <img
+                class="m-ava-img"
+                data-testid="status-member-avatar"
+                src={m.avatarUrl}
+                alt=""
+                loading="lazy"
+              />
+            {:else}
+              {initialOf(m.displayName)}
+            {/if}
             {#if m.online}
               <span
                 class="presence-dot"
@@ -791,6 +801,15 @@
     color: var(--t1);
     font-size: 9px;
     font-weight: 600;
+  }
+
+  /* Real profile photo fills the same 20px well the initial uses. */
+  .m-ava-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
   }
 
   .presence-dot {

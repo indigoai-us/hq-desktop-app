@@ -81,6 +81,12 @@ export const WEB_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
+  cardAction: (channelId: string, cardId: string) =>
+    `/v1/notify/channels/${encodeURIComponent(channelId)}/cards/${encodeURIComponent(cardId)}/actions`,
+  companyTab: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}`,
+  companyTabAction: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}/actions`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
   replyThreads: "/v1/notify/threads",
   /** POST body `{ toPersonUid, body }` — hq-pro has no POST /v1/notify/dm/{uid}. */
@@ -159,6 +165,9 @@ export const WEB_PATHS = {
     `/v1/work-mesh/projects/${encodeURIComponent(id)}`,
   workMeshSessionMigrate: (sessionId: string) =>
     `/v1/work-mesh/sessions/${encodeURIComponent(sessionId)}/migrate`,
+  workMeshThreads: "/v1/work-mesh/threads",
+  workMeshThreadEvents: (threadId: string) =>
+    `/v1/work-mesh/threads/${encodeURIComponent(threadId)}/events`,
 
   skillsShelf: (companyUid: string) =>
     `/v1/skills/${encodeURIComponent(companyUid)}/shelf`,
@@ -591,6 +600,29 @@ export class WebPlatformAdapter implements PlatformAdapter {
           ? { attachments: extras.attachments }
           : {}),
       }),
+    runCardAction: (args) =>
+      this.post(WEB_PATHS.cardAction(args.channelId, args.cardId), {
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `card-${Date.now()}`),
+      }),
+    getCompanyTab: (companyUid, tab) =>
+      this.get(WEB_PATHS.companyTab(companyUid, tab)),
+    runCompanyTabAction: (args) =>
+      this.post(WEB_PATHS.companyTabAction(args.companyUid, args.tab), {
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `tab-${Date.now()}`),
+      }),
     fetchDmThread: ({ withPersonUid, limit, since }) => {
       const params = new URLSearchParams({ withPersonUid });
       if (limit != null) params.set("limit", String(limit));
@@ -1018,5 +1050,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     migrateSession: (sessionId, body) =>
       this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
+    listProjectThreads: (projectId, companyUid, cursor) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreads}?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreadEvents(threadId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
+      ),
   };
 }

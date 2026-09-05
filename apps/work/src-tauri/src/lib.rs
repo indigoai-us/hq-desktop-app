@@ -44,6 +44,13 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
+        // Sign-in, and nothing else: `opener` hands the Cognito hosted UI to
+        // the system browser, `deep-link` receives the hqmobile:// callback it
+        // redirects to. The scheme itself is registered in the platform
+        // manifests (Info.plist / AndroidManifest), which is where iOS and
+        // Android read it from -- the plugin's own config covers desktop only.
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             let script = os_handshake_script();
             #[allow(unused_variables)]

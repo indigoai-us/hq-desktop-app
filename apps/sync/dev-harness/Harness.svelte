@@ -8,6 +8,7 @@
   import SessionsPage from '../src/desktop-alt/pages/SessionsPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
+  import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
@@ -225,6 +226,8 @@
   //   ?view=settings|popover|signin|banner|shell   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   lifecycle view (channel-native company lifecycle, stateful mock) takes
+  //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
   // For the popover view, size the browser viewport to ~320x440 (the real
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
@@ -274,7 +277,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions' || view === 'shell'
+      : view === 'company' || view === 'desktop' || view === 'home' || view === 'sessions' || view === 'shell' || view === 'lifecycle'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -297,6 +300,12 @@
             : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
+
+  // Stateful lifecycle backend — created once per page load so clicks persist.
+  const lifecycleInvoke =
+    view === 'lifecycle'
+      ? createLifecycleInvoke(resolveLifecycleOptions(window.location.search)).invokeFn
+      : null;
 
   if (view === 'banner') {
     const payload = bannerFixtures[bannerKind] ?? bannerFixtures.share;
@@ -384,6 +393,12 @@
        ?persona=empty-inbox|personal-only|multi-company|indigo so the mocked
        adapter is the same matrix CI mounts. -->
   <HqWorkWorkShell />
+{:else if view === 'lifecycle' && lifecycleInvoke}
+  <!-- Channel-native company lifecycle against an in-memory backend
+       (dev-harness/lifecycle-scenario.ts). Start in #setup, create the
+       company, walk cloud → plan → agent, then click the company tabs.
+       Resize the viewport to ~1180x760. -->
+  <HqWorkWorkShell invokeFn={lifecycleInvoke} />
 {:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->

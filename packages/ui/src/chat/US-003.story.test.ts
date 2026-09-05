@@ -124,6 +124,11 @@ function conversationApi(options: {
       sendCalls.push(args.body);
       if (options.sendReply) await options.sendReply(args.body);
     },
+    runCardAction: async () => ({
+      cardId: "",
+      actionId: "",
+      state: "pending",
+    }),
   };
   return api;
 }

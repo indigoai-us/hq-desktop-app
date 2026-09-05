@@ -17,6 +17,7 @@
   import IdentityMark from "./IdentityMark.svelte";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
+  import LifecycleCard from "./LifecycleCard.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -29,6 +30,7 @@
     parseMessageAttachments,
     systemModelForMessage,
     type FileAttachmentModel,
+    type LifecycleCardActionEvent,
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
@@ -95,6 +97,13 @@
     placeholder?: string;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /**
+     * Channel this timeline belongs to. Required so lifecycle card actions
+     * can bubble `{channelId, cardId, actionId, values}` with no network.
+     */
+    channelId?: string | null;
+    /** Bubbled lifecycle-card action (host posts). */
+    oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Bubbled reaction toggle (host reconciles). */
     ontogglereaction?: (messageId: string, emoji: string) => void;
     /** Bubbled send (host persists). Optional — the composer works standalone. */
@@ -147,6 +156,11 @@
     activeRootEventId?: string | null;
     /** Host is fetching history — do not flash “No messages yet”. */
     loading?: boolean;
+    /**
+     * Empty-state copy. A project channel with zero chat AND zero work-mesh
+     * events is empty of ACTIVITY, so the host passes "No activity yet" there.
+     */
+    emptyLabel?: string;
     /** Signed-in display name so optimistic sends are not labelled "You". */
     selfDisplayName?: string | null;
     selfPersonUid?: string | null;
@@ -184,6 +198,8 @@
     draftKey?: string | null;
     /** Tenant-scoped storage for `draftKey`. Omit to disable drafts. */
     draftStorage?: DraftStorage | null;
+    /** US-011: lock the composer while an agent box is still provisioning. */
+    composerLocked?: boolean;
   }
 
   let {
@@ -191,6 +207,8 @@
     reactions = {},
     placeholder = "Reply…",
     onopenurl,
+    channelId = null,
+    oncardaction,
     ontogglereaction,
     onsend,
     onpresign,
@@ -204,6 +222,7 @@
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
+    emptyLabel = "No messages yet",
     selfDisplayName = null,
     selfPersonUid = null,
     onopenprofile,
@@ -214,6 +233,7 @@
     belowMessages,
     draftKey = null,
     draftStorage = null,
+    composerLocked = false,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -469,8 +489,9 @@
   });
 
   const canSend = $derived(
-    (replyText.trim().length > 0 && replyText.trim() !== "/") ||
-      pendingFiles.length > 0,
+    !composerLocked &&
+      ((replyText.trim().length > 0 && replyText.trim() !== "/") ||
+        pendingFiles.length > 0),
   );
   const showAgentMenu = $derived(replyText.trimStart().startsWith("/"));
   const mentionQuery = $derived(activeMentionQuery(replyText));
@@ -958,7 +979,7 @@
             data-testid="conversation-empty"
             role="status"
           >
-            No messages yet
+            {emptyLabel}
           </div>
         {/if}
         {#if windowed.hidden > 0}
@@ -1004,6 +1025,7 @@
               systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
+              time={formatTime(msg.createdAt)}
             />
           {:else if systemModel?.kind === "run_complete"}
             <div
@@ -1028,6 +1050,43 @@
                   >
                 </div>
                 <RunCompleteCard model={systemModel} {onopenurl} />
+                {#if reactionsFor(msg.eventId).length > 0}
+                  <ReactionBar
+                    messageId={msg.eventId}
+                    reactions={reactionsFor(msg.eventId)}
+                    ontoggle={toggle}
+                  />
+                {/if}
+              </div>
+            </div>
+          {:else if systemModel?.kind === "lifecycle_card"}
+            <div
+              class="dm-msg dm-msg-in dm-msg-group-start"
+              data-testid="lifecycle-card-row"
+              data-event-id={msg.eventId}
+            >
+              <span class="dm-msg-avatar">
+                <IdentityMark
+                  kind="agent"
+                  label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                  agentUid={msg.fromPersonUid}
+                  size="regular"
+                />
+              </span>
+              <div class="dm-msg-column">
+                <div class="dm-msg-meta">
+                  <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  <span class="dm-msg-header-time"
+                    >{formatTime(msg.createdAt)}</span
+                  >
+                </div>
+                <LifecycleCard
+                  model={systemModel}
+                  channelId={channelId ?? ""}
+                  {onopenurl}
+                  {oncardaction}
+                />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     messageId={msg.eventId}
@@ -1275,7 +1334,7 @@
     </div>
   </div>
 
-  <div class="dm-reply">
+  <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -1332,6 +1391,7 @@
           rows="3"
           aria-label="Reply message"
           data-testid="conversation-composer"
+          disabled={composerLocked}
           autocomplete="off"
           data-gramm="false"
           data-gramm_editor="false"
@@ -2190,6 +2250,11 @@
     border: 1px solid var(--line2, var(--pop-border));
     border-radius: 8px;
     transition: border-color 0.12s;
+  }
+
+  .dm-reply.is-locked {
+    border-style: dashed;
+    opacity: 0.85;
   }
 
   .dm-reply:focus-within {

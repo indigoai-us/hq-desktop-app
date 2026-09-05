@@ -489,6 +489,7 @@ mod tests {
             status: "active".to_string(),
             created_at: created_at.to_string(),
             deleted: false,
+            cloud_activated_at: None,
         }
     }
 

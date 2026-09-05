@@ -103,6 +103,16 @@ export function routeMeshReconcile(
     wakes.emit("dm:pair-unreads", (result.state ?? {}) as never);
     return "dm";
   }
+  // A work-mesh thread reconcile is also project activity. Emit the dedicated
+  // wake BEFORE the directory nudge so the open project channel refreshes its
+  // activity trail, then fall through to the unread path unchanged.
+  if (result.resource.startsWith("thread:")) {
+    const [, companyUid = "", ...rest] = result.resource.split(":");
+    const threadId = rest.join(":");
+    if (companyUid && threadId) {
+      wakes.emit("work-mesh:thread", { companyUid, threadId });
+    }
+  }
   wakes.emit("channel:unread-changed", undefined);
   return "directory";
 }

@@ -76,6 +76,8 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
       - name: Release workflow contract tests
         run: pnpm test:scripts
+      - name: Release announcement changelog tests
+        run: node --test .github/scripts/release-changelog-bullets.test.mjs
       - name: App version lockstep
         run: pnpm version:check
       - name: UI package checks (attachment components)

@@ -12,6 +12,7 @@
 //!      `.hq/config.json` write, AND triggers an initial sync via `share()`.
 //!
 //! `company.yaml` is NEVER written back — the file is read-only from this module.
+//! Server-first activation writes `cloud: true` in `provision_reconcile.rs` only.
 //!
 //! ## Why Paths A + B stay inline (not CLI)
 //!
@@ -79,7 +80,7 @@ struct CompanyYaml {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Atomic write: serialize `config` → temp file → rename.
-fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<(), String> {
+pub(crate) fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<(), String> {
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;

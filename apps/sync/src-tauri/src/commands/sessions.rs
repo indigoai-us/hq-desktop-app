@@ -11,9 +11,9 @@
 //! stories (US-002+) populate these records from on-disk Claude/Codex artifacts;
 //! this module owns only the type definitions and the status taxonomy.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::util::logfile::log;
 
@@ -51,7 +51,8 @@ pub mod history;
 pub mod outpost;
 
 pub use hq_desktop_core::sessions::{
-    merge_sessions, resolve_poll_interval, AgentOrigin, AgentSession, AgentTool, SessionStatus,
+    merge_sessions, plan_poll, resolve_poll_interval, AgentOrigin, AgentSession, AgentTool,
+    SessionStatus,
 };
 
 pub type MissionControlSnapshot =
@@ -150,6 +151,19 @@ pub async fn list_agent_sessions() -> Result<MissionControlSnapshot, String> {
 /// The cadence is configurable via `HQ_SYNC_SESSIONS_POLL_SECS`
 /// (see [`resolve_poll_interval`]); the outpost emitter (US-009) is documented to
 /// match it.
+///
+/// ## Visibility gating (idle-energy fix)
+///
+/// A snapshot is not cheap: it `stat`s every local Claude transcript and Codex
+/// rollout (thousands of files on a working machine) and forks `pgrep`. Running
+/// that on the interactive cadence while every window is hidden was measured as
+/// the dominant contributor to the app's Activity Monitor energy impact, and all
+/// of it was wasted — the snapshot is emitted to a frontend nobody can see.
+///
+/// So the loop asks [`plan_poll`] what to do on each wake-up: the interactive
+/// cadence while a window is visible, a slow heartbeat while everything is hidden,
+/// and an immediate catch-up emit the moment a window becomes visible. Freshness
+/// while the user is looking is unchanged.
 pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
     let interval =
         resolve_poll_interval(std::env::var("HQ_SYNC_SESSIONS_POLL_SECS").ok().as_deref());
@@ -159,15 +173,32 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
         tokio::time::sleep(Duration::from_secs(3)).await;
         emit_snapshot(&app).await;
 
-        let mut ticker = tokio::time::interval(interval);
-        // The first tick fires immediately; consume it so the launch emit above
-        // isn't double-counted, then emit once per interval thereafter.
-        ticker.tick().await;
+        let mut last_emit = Instant::now();
+        let mut was_visible = any_window_visible(&app);
         loop {
-            ticker.tick().await;
-            emit_snapshot(&app).await;
+            let visible = any_window_visible(&app);
+            let plan = plan_poll(visible, was_visible, last_emit.elapsed(), interval);
+            was_visible = visible;
+
+            if plan.emit {
+                emit_snapshot(&app).await;
+                last_emit = Instant::now();
+            }
+            tokio::time::sleep(plan.sleep).await;
         }
     });
+}
+
+/// Is any app window currently visible?
+///
+/// A full snapshot is thousands of `stat`s plus a `pgrep` fork; doing that on the
+/// interactive cadence while every window is hidden was the app's largest source
+/// of idle CPU. This reads Tauri's in-memory window state only — no I/O — so it is
+/// safe to call on every wake-up. A window we cannot query counts as hidden.
+fn any_window_visible<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.webview_windows()
+        .values()
+        .any(|window| window.is_visible().unwrap_or(false))
 }
 
 /// Assemble one snapshot and emit it to the frontend as [`EVENT_SESSIONS_UPDATED`].
