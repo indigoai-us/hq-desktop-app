@@ -54,6 +54,12 @@ export interface PaletteConversationItem {
   /** Raw identifiers, space-joined, for id-based matching (not displayed). */
   keywords: string;
   lastActivityAt: number;
+  /**
+   * Presigned company icon for the row's owning company, or null. Company
+   * channels resolve it; every other row kind stays null so the palette does
+   * not imply a company mark for a DM or a personal channel.
+   */
+  iconUrl: string | null;
   row: ConversationRow;
 }
 
@@ -110,6 +116,23 @@ function companyName(
   context: PaletteRowContext,
 ): string | null {
   return resolveRailCompanyName(row.companyUid, context.companies ?? []);
+}
+
+/**
+ * The company icon to show beside a palette row: the row's own icon first
+ * (server-stamped), then the company roster. Company-scoped channels only.
+ */
+export function paletteRowIconUrl(
+  row: ConversationRow,
+  context: PaletteRowContext = {},
+): string | null {
+  if (row.kind !== "channel") return null;
+  if ((row.channelScope ?? "").trim() !== "company") return null;
+  if (row.iconUrl) return row.iconUrl;
+  const uid = (row.companyUid ?? "").trim();
+  if (!uid) return null;
+  const hit = (context.companies ?? []).find((c) => c.companyUid === uid);
+  return hit?.iconUrl ?? null;
 }
 
 function projectTitle(
@@ -253,6 +276,7 @@ export function paletteConversationItems(
     rowId: row.id,
     label: paletteRowLabel(row, context),
     detail: paletteRowDetail(row, context),
+    iconUrl: paletteRowIconUrl(row, context),
     keywords: paletteRowKeywords(row),
     lastActivityAt: row.lastActivityAt,
     row,

@@ -117,6 +117,7 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
   import { focusOnMount, menuPortal, portal } from "./portal.js";
   import {
     FILTER_POPOVER_MAX_PX,
@@ -417,8 +418,37 @@
       .map((w) => ({
         companyUid: w.cloudUid as string,
         label: w.displayName?.trim() || w.slug,
+        // Every-plan company icon (NOT gated on brandingEnabled).
+        iconUrl: w.iconUrl ?? null,
       })),
   );
+
+  /** companyUid → presigned icon, for rows that only carry a uid. */
+  const companyIcons = $derived(
+    new Map(
+      scopeCompanies
+        .filter((c) => Boolean(c.iconUrl))
+        .map((c) => [c.companyUid, c.iconUrl as string]),
+    ),
+  );
+
+  /**
+   * The icon for a rail row: the server's per-row icon first, then the
+   * company roster. Company-scoped channels ONLY — a project or personal
+   * channel keeps the generic `#`, which is still the right mark for it.
+   */
+  function rowCompanyIcon(row: ConversationRow): string | null {
+    if (row.kind !== "channel") return null;
+    if ((row.channelScope ?? "").trim() !== "company") return null;
+    return row.iconUrl ?? companyIcons.get(row.companyUid ?? "") ?? null;
+  }
+
+  /** True when a rail row should show a company mark instead of `#`. */
+  function isCompanyScopedRow(row: ConversationRow): boolean {
+    return (
+      row.kind === "channel" && (row.channelScope ?? "").trim() === "company"
+    );
+  }
 
   /**
    * Create targets. `scopeCompanies` above is the BROWSE list and keeps
@@ -740,6 +770,12 @@
     if (optionId === "personal") return "⌘P";
     if (companyIndex >= 0 && companyIndex < 5) return `⌘${companyIndex + 1}`;
     return "";
+  }
+
+  /** Presigned icon for a scope-menu option, or null (all/personal/no icon). */
+  function scopeOptionIcon(optionId: string): string | null {
+    if (optionId === "all" || optionId === "personal") return null;
+    return companyIcons.get(optionId) ?? null;
   }
 
   function scopeAvatarLabel(option: { id: string; label: string }): string {
@@ -1593,12 +1629,17 @@
               data-scope={option.id}
               onclick={() => selectScope(option.id)}
             >
-              <span
-                class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
-                aria-hidden="true"
-              >
-                {scopeAvatarLabel(option)}
-              </span>
+              {#if scopeOptionIcon(option.id)}
+                <!-- Real company favicon in place of the initials tile. -->
+                <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
+              {:else}
+                <span
+                  class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
+                  aria-hidden="true"
+                >
+                  {scopeAvatarLabel(option)}
+                </span>
+              {/if}
               <span class="chat-scope-row-label">
                 {option.id === "all" ? "All companies" : option.label}
               </span>
@@ -2357,7 +2398,14 @@
     >
       {#if row.kind === "channel"}
         <span class="chat-glyph-wrap" aria-hidden="true">
-          <span class="chat-glyph">#</span>
+          {#if isCompanyScopedRow(row)}
+            <!-- A company channel is identified by its company, not by a
+                 generic `#`. Favicon when hq-pro resolved one, building glyph
+                 otherwise. Project/personal channels keep `#`. -->
+            <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
+          {:else}
+            <span class="chat-glyph">#</span>
+          {/if}
           {#if showProjectPresence}
             <span
               class="chat-presence-dot"

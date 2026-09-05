@@ -39,6 +39,13 @@ export interface ChannelDirectoryRow {
   /** "personal" | "company" | "group" | "project". */
   scope: string;
   companyUid?: string | null;
+  /**
+   * Owning company's website favicon, presigned by hq-pro on the assets host
+   * (CSP-safe to paint). `null` = the company has no icon; ABSENT = the field
+   * is not served (older server) — both fall back to the building glyph, so a
+   * client never needs to tell them apart.
+   */
+  iconUrl?: string | null;
   /** Bound work-mesh / board project when the server sent one. */
   projectId?: string | null;
   /** Display name ("" for participant-keyed group DMs). */
