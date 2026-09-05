@@ -13,6 +13,19 @@
  *   ?view=lifecycle&role=member    every card / tab row has viewer.canAct=false
  *   ?view=lifecycle&state=blocked  handle taken · provisioning failed · needs Workforce
  *
+ * Entry points (sidebar "+" → New company / New agent, company switcher →
+ * New company, company header → Add agent, #setup summary → Create another
+ * company) run the same server actions the real backend exposes:
+ *   run_card_action        setup / companies_summary / create_company
+ *                          → posts a fresh create_company card, answers
+ *                            { cardId, channelId: 'setup' } (404 before any
+ *                            company exists — the seeded card is already there)
+ *   run_company_tab_action team / team:spend / add_agent
+ *                          → posts (or resurfaces) create_agent on Workforce,
+ *                            the upgrade card on Starter, answers
+ *                            { channelId, cardId }; members get state: blocked
+ * The plan step's pending (checkout) state carries retry_checkout / cancel_checkout.
+ *
  * Wire shapes follow `parseLifecycleCard` / `parseCompanyTab` exactly; an
  * unknown shape renders nothing, so every envelope here is round-tripped by
  * `lifecycle-scenario.test.ts`.
@@ -130,6 +143,12 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
   ];
   let agentCreated = false;
   let agentSize: 'basic' | 'power' | 'dev' = 'basic';
+  /** Companies created from the #setup summary ("Create another company"). */
+  const extraCompanies: Array<{ uid: string; channelId: string; name: string; slug: string }> = [];
+  let createCardSeq = 1;
+  /** Bumped by cancel_checkout so an abandoned checkout never flips to done. */
+  let checkoutToken = 0;
+  const CHECKOUT_URL = 'https://checkout.stripe.com/c/pay/demo_ramen_bae';
   const agentDraft = { name: 'Polar', handle: 'polar', runtime: 'codex' };
   const integrations = {
     connected: [
@@ -414,6 +433,39 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     });
   };
 
+  const PENDING_CHECKOUT_ACTIONS: Json[] = [
+    { id: 'retry_checkout', label: 'Open checkout again', style: 'secondary' },
+    { id: 'cancel_checkout', label: 'Cancel', style: 'secondary' },
+  ];
+
+  const companyExists = () => channels.some((c) => c.channelId === COMPANY_CHANNEL_ID);
+
+  /** #setup "Your companies" summary: one readonly row per company + create. */
+  const companiesSummaryCard = (): Json =>
+    card('companies_summary', 'companies_summary', null, 'open', {
+      title: 'Your companies',
+      summary: 'Each company is a channel. Create another to add one.',
+      fields: [
+        { id: 'ramen-bae', label: companyName, control: 'readonly', value: planLabel(plan) },
+        ...extraCompanies.map((c) => ({ id: c.slug, label: c.name, control: 'readonly', value: 'Starter' })),
+      ],
+      actions: [{ id: 'create_company', label: 'Create another company', style: 'primary' }],
+    });
+
+  function planLabel(id: typeof plan): string {
+    return id === 'enterprise' ? 'Enterprise' : id === 'workforce' ? 'Workforce' : 'Starter';
+  }
+
+  /** Post the summary once; afterwards rewrite it in place (same eventId). */
+  async function upsertCompaniesSummary(): Promise<void> {
+    const existing = list(SETUP_CHANNEL_ID).find((m) => m.systemEvent?.cardId === 'companies_summary');
+    if (existing) {
+      await patchCard(SETUP_CHANNEL_ID, 'companies_summary', companiesSummaryCard());
+      return;
+    }
+    await postCard(SETUP_CHANNEL_ID, companiesSummaryCard());
+  }
+
   const agentStatusCard = (state: string, extra: Json = {}) =>
     card('status', 'card_polar_status', COMPANY_UID, state, {
       title: 'Polar is setting up',
@@ -525,6 +577,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       systemEvent: activateCloudCard('pending', { statusLabel: 'Provisioning' }),
     });
     await emit('channel:unread-changed', { source: 'lifecycle-scenario' });
+    await upsertCompaniesSummary();
     void (async () => {
       // Let the sidebar reconcile the directory (400ms debounce) so the open
       // resolves to the real company row (scope → hero + tabs), not a stub.
@@ -546,11 +599,143 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     };
   }
 
+  /** "Create another company": post a fresh create_company card into #setup. */
+  async function runCreateAnotherCompany(): Promise<Json> {
+    if (!companyExists()) {
+      // No companies yet → no summary card on the server (404). The seeded
+      // create_company card already sits in #setup.
+      throw new Error('[not_found] Request failed (status 404)');
+    }
+    createCardSeq += 1;
+    const cardId = `card_create_company_${createCardSeq}`;
+    const slug = `new-co-${createCardSeq}`;
+    await postCard(
+      SETUP_CHANNEL_ID,
+      createCompanyCard('open', {
+        cardId,
+        stepLabel: 'New company',
+        fields: [
+          { id: 'name', label: 'Company name', control: 'text', required: true, value: '' },
+          { id: 'slug', label: 'Handle', control: 'text', required: true, value: slug, hint: `${slug} is available` },
+        ],
+      }),
+    );
+    return { cardId, actionId: 'create_company', state: 'open', channelId: SETUP_CHANNEL_ID };
+  }
+
+  /** Submit on a summary-posted create card: mint a small second company. */
+  async function runCreateExtraCompany(cardId: string, values: Record<string, string>): Promise<Json> {
+    const name = (values.name ?? '').trim() || 'New company';
+    const slug = ((values.slug ?? '').trim().toLowerCase() || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).replace(/^-|-$/g, '');
+    const uid = `cmp_${slug.replace(/-/g, '_')}`;
+    const channelId = `chn_${slug.replace(/-/g, '_')}`;
+    await patchCard(SETUP_CHANNEL_ID, cardId, {
+      state: 'done',
+      statusLabel: `Created ${name}`,
+      fields: [
+        { id: 'name', label: 'Company name', control: 'readonly', value: name },
+        { id: 'slug', label: 'Handle', control: 'readonly', value: slug },
+      ],
+    });
+    if (!channels.some((c) => c.channelId === channelId)) {
+      extraCompanies.push({ uid, channelId, name, slug });
+      channels.unshift({
+        channelId,
+        name: slug,
+        scope: 'company',
+        companyUid: uid,
+        companyName: name,
+        visibility: 'company',
+        membership: 'joined',
+        unread: 0,
+        memberCount: 1,
+        lastActivityAt: nowIso(),
+      });
+      workspaces.push({
+        slug,
+        displayName: name,
+        kind: 'company',
+        state: 'cloud',
+        cloudUid: uid,
+        bucketName: `hq-vault-${slug}`,
+        hasLocalFolder: false,
+        localPath: null,
+        membershipStatus: 'active',
+        role,
+        lastSyncedAt: nowIso(),
+        brokenReason: null,
+        invitedBy: null,
+        invitedAt: null,
+      });
+      list(channelId).push(textMessage(null, 'HQ', `Welcome to #${slug}. This channel is the company.`));
+      await emit('channel:unread-changed', { source: 'lifecycle-scenario' });
+    }
+    await upsertCompaniesSummary();
+    return { cardId, actionId: 'submit', state: 'done', companyUid: uid };
+  }
+
+  /** Team tab "Add agent": post or resurface the next card in the company channel. */
+  async function runAddAgent(): Promise<Json> {
+    if (!canAct) {
+      return {
+        cardId: 'team:spend',
+        actionId: 'add_agent',
+        state: 'blocked',
+        reason: `Only owners can add agents to ${companyName}.`,
+      };
+    }
+    const live = (m: Message) => {
+      const st = m.systemEvent?.state;
+      return st === 'open' || st === 'pending' || st === 'blocked';
+    };
+    if (plan === 'starter') {
+      const existing = list(COMPANY_CHANNEL_ID).find(
+        (m) => m.systemEvent?.kind === 'upgrade_plan' && live(m),
+      );
+      const cardId = existing?.systemEvent?.cardId
+        ? String(existing.systemEvent.cardId)
+        : `card_upgrade_plan_${++createCardSeq}`;
+      if (!existing) await postCard(COMPANY_CHANNEL_ID, upgradePlanCard('open', { cardId }));
+      return { cardId, actionId: 'add_agent', state: 'open', channelId: COMPANY_CHANNEL_ID };
+    }
+    const existing = list(COMPANY_CHANNEL_ID).find(
+      (m) => m.systemEvent?.kind === 'create_agent' && live(m),
+    );
+    if (existing?.systemEvent?.cardId) {
+      return {
+        cardId: String(existing.systemEvent.cardId),
+        actionId: 'add_agent',
+        state: 'open',
+        channelId: COMPANY_CHANNEL_ID,
+      };
+    }
+    const suffix = agentCreated || list(COMPANY_CHANNEL_ID).some((m) => m.systemEvent?.cardId === 'card_create_agent_1')
+      ? `_${++createCardSeq}`
+      : '';
+    const cardId = `card_create_agent_1${suffix}`;
+    await postCard(COMPANY_CHANNEL_ID, createAgentCard(1, 'open', { cardId }));
+    return { cardId, actionId: 'add_agent', state: 'open', channelId: COMPANY_CHANNEL_ID };
+  }
+
   async function runUpgradePlan(
     cardId: string,
     actionId: string,
     values: Record<string, string>,
   ): Promise<Json> {
+    if (actionId === 'retry_checkout') {
+      // Same session; the shell opens the url.
+      return { cardId, actionId, state: 'pending', url: CHECKOUT_URL };
+    }
+    if (actionId === 'cancel_checkout') {
+      checkoutToken += 1;
+      await patchCard(COMPANY_CHANNEL_ID, cardId, {
+        state: 'open',
+        statusLabel: null,
+        summary: upgradePlanCard('open').summary,
+        actions: upgradePlanCard('open').actions,
+      });
+      return { cardId, actionId, state: 'open' };
+    }
     if (actionId === 'stay') {
       plan = 'starter';
       await patchCard(COMPANY_CHANNEL_ID, cardId, {
@@ -571,27 +756,37 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       return { cardId, actionId, state: 'skipped' };
     }
     const chosen = values.plan === 'enterprise' ? 'enterprise' : 'workforce';
-    plan = chosen;
+    const token = ++checkoutToken;
     await patchCard(COMPANY_CHANNEL_ID, cardId, {
       state: 'pending',
       statusLabel: 'Waiting for checkout',
       summary: 'Complete checkout in the browser. This card updates when Stripe confirms.',
+      // Pending keeps the spinner and read-only fields but still offers a
+      // way back in (or out) if the checkout tab was closed.
+      actions: PENDING_CHECKOUT_ACTIONS,
     });
     void (async () => {
       await wait(1500);
+      if (checkoutToken !== token) return;
+      plan = chosen;
       await patchCard(COMPANY_CHANNEL_ID, cardId, {
         state: 'done',
         statusLabel: chosen === 'enterprise' ? 'Enterprise active' : 'Workforce active',
         summary: null,
+        actions: upgradePlanCard('open').actions,
       });
+      await upsertCompaniesSummary();
       await wait(400);
       await postCard(COMPANY_CHANNEL_ID, createAgentCard(1, 'open'));
     })();
-    return { cardId, actionId, state: 'pending' };
+    return { cardId, actionId, state: 'pending', url: CHECKOUT_URL };
   }
 
   async function runCreateAgent(cardId: string, values: Record<string, string>): Promise<Json> {
-    if (cardId === 'card_create_agent_1') {
+    // Cards posted by "Add agent" after the first run carry a suffix
+    // (card_create_agent_1_7); the next turns keep it so ids stay unique.
+    const turnSuffix = cardId.replace(/^card_create_agent_[123]/, '');
+    if (cardId.startsWith('card_create_agent_1')) {
       const handle = (values.handle ?? '').trim().replace(/^@/, '').toLowerCase();
       if (handle === 'indigo' || handle === 'hq') {
         await patchCard(COMPANY_CHANNEL_ID, cardId, {
@@ -609,17 +804,17 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         statusLabel: `@${agentDraft.handle}`,
       });
       await wait(300);
-      await postCard(COMPANY_CHANNEL_ID, createAgentCard(2, 'open'));
+      await postCard(COMPANY_CHANNEL_ID, createAgentCard(2, 'open', { cardId: `card_create_agent_2${turnSuffix}` }));
       return { cardId, actionId: 'next', state: 'done' };
     }
-    if (cardId === 'card_create_agent_2') {
+    if (cardId.startsWith('card_create_agent_2')) {
       agentDraft.runtime = values.runtime || agentDraft.runtime;
       await patchCard(COMPANY_CHANNEL_ID, cardId, {
         state: 'done',
         statusLabel: runtimeLabel(agentDraft.runtime),
       });
       await wait(300);
-      await postCard(COMPANY_CHANNEL_ID, createAgentCard(3, 'open'));
+      await postCard(COMPANY_CHANNEL_ID, createAgentCard(3, 'open', { cardId: `card_create_agent_3${turnSuffix}` }));
       return { cardId, actionId: 'next', state: 'done' };
     }
     agentSize = (values.size as typeof agentSize) || agentSize;
@@ -769,7 +964,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
             value: agentRows.length ? sizeLabel(agentSize).split(' · ')[1] ?? '$100/mo' : '$0/mo',
           },
         ],
-        [],
+        canAct ? [{ id: 'add_agent', label: 'Add agent', style: 'primary' }] : [],
       ),
     );
     return {
@@ -1012,6 +1207,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         }),
       ));
       mintCompanyChannel();
+      list(SETUP_CHANNEL_ID).push(systemMessage(companiesSummaryCard()));
       list(COMPANY_CHANNEL_ID).push(
         textMessage(null, 'HQ', `Welcome to #ramen-bae. This channel is the company: setup, team, and agents all live here.`),
         systemMessage(activateCloudCard('done', { statusLabel: 'Cloud sync on' })),
@@ -1148,6 +1344,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
             scope: c.scope,
             type: 'chat',
             companyUid: c.companyUid ?? null,
+            companyName: c.companyName ?? null,
             lastActivityAt: c.lastActivityAt,
             unreadCount: c.unread,
             memberCount: c.memberCount,
@@ -1201,6 +1398,12 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         const cardId = String(a.cardId ?? '');
         const actionId = String(a.actionId ?? '');
         const values = (a.values ?? {}) as Record<string, string>;
+        if (cardId === 'companies_summary' && actionId === 'create_company') {
+          return runCreateAnotherCompany();
+        }
+        if (/^card_create_company_\d+$/.test(cardId)) {
+          return runCreateExtraCompany(cardId, values);
+        }
         if (cardId === 'card_create_company') {
           if (actionId === 'retry') {
             await patchCard(SETUP_CHANNEL_ID, cardId, {
@@ -1260,10 +1463,11 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         return settingsTab();
       }
       case 'run_company_tab_action': {
-        if (!canAct) throw new Error('[forbidden] Only owners can change this');
         const cardId = String(a.cardId ?? '');
         const actionId = String(a.actionId ?? '');
         const values = (a.values ?? {}) as Record<string, string>;
+        if (cardId === 'team:spend' && actionId === 'add_agent') return runAddAgent();
+        if (!canAct) throw new Error('[forbidden] Only owners can change this');
         if (cardId === 'team:invite' && actionId === 'invite' && values.email?.trim()) {
           const email = values.email.trim();
           humans.push({ uid: `prs_${email.split('@')[0]}`, name: email, email, role: values.role || 'member' });

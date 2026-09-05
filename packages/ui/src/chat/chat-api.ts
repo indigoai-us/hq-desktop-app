@@ -355,6 +355,16 @@ export interface CardActionResult {
   agentUid?: string;
   navigateTo?: "chat";
   focusCardId?: string;
+  /**
+   * Channel that received the card this action posted or resurfaced
+   * (entry-point actions: `companies_summary/create_company` answers
+   * `setup`; `team:spend/add_agent` answers the company channel).
+   */
+  channelId?: string;
+  /** Server reason when `state` is `blocked` (permission, plan). */
+  reason?: string;
+  /** URL the host should open (pending checkout: `retry_checkout`). */
+  url?: string;
 }
 
 /** Backend seam for the notifications feed (replaces invoke calls). */

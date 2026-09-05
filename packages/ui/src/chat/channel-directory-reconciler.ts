@@ -39,6 +39,8 @@ export interface ChannelDirectoryRow {
   /** "personal" | "company" | "group" | "project". */
   scope: string;
   companyUid?: string | null;
+  /** Company display name, when the directory carries it (company channels). */
+  companyName?: string | null;
   /**
    * Owning company's website favicon, presigned by hq-pro on the assets host
    * (CSP-safe to paint). `null` = the company has no icon; ABSENT = the field

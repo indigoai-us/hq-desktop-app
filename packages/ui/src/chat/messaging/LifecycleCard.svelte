@@ -44,6 +44,17 @@
     (model.viewer.canAct && displayState === "open" && !localPending) ||
       canRetry,
   );
+  /**
+   * Actions shown for the current state. A pending card keeps its spinner and
+   * read-only fields but still renders the secondary/link actions the server
+   * sends (`retry_checkout`, `cancel_checkout`) — otherwise an abandoned
+   * Stripe checkout leaves the plan step dead. The primary stays hidden.
+   */
+  const visibleActions = $derived(
+    displayState === "pending"
+      ? model.actions.filter((action) => action.style !== "primary")
+      : model.actions,
+  );
   const liveStep = $derived(
     displayState === "open" ||
       displayState === "pending" ||
@@ -128,6 +139,13 @@
     if (action.style === "link") {
       if (action.href) openUrl(action.href);
       else emitAction(action.id);
+      return;
+    }
+    if (displayState === "pending") {
+      // Secondary actions on a pending card (retry / cancel checkout) need no
+      // field validation and must not wait for `canEdit`.
+      if (action.style === "primary" || !model.viewer.canAct) return;
+      emitAction(action.id);
       return;
     }
     if (!canEdit) return;
@@ -406,9 +424,9 @@
       </div>
     {/if}
 
-    {#if model.viewer.canAct && model.actions.length > 0 && displayState !== "pending"}
+    {#if model.viewer.canAct && visibleActions.length > 0}
       <div class="lc-acts">
-        {#each model.actions as action (action.id)}
+        {#each visibleActions as action (action.id)}
           <button
             type="button"
             class="lc-btn"
@@ -419,6 +437,7 @@
             data-size={action.style === "link" ? "28" : "32"}
             data-testid={`lifecycle-action-${action.id}`}
             disabled={action.style !== "link" &&
+              displayState !== "pending" &&
               (displayState === "blocked" || !canEdit)}
             onclick={() => submitAction(action)}
           >

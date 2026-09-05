@@ -62,6 +62,9 @@ function asCardAction(
     state: typeof rec.state === 'string' ? rec.state : '',
     fields: rec.fields,
     replayed: rec.replayed === true,
+    channelId: typeof rec.channelId === 'string' ? rec.channelId : undefined,
+    reason: typeof rec.reason === 'string' ? rec.reason : undefined,
+    url: typeof rec.url === 'string' ? rec.url : undefined,
   };
 }
 

@@ -830,7 +830,7 @@ export function directoryRowToChannel(
     name: row.name || prev?.name || "",
     scope: row.scope,
     companyUid: row.companyUid ?? null,
-    companyName: prev?.companyName ?? null,
+    companyName: row.companyName ?? prev?.companyName ?? null,
     // `undefined` on the row means "not served / not sent" — keep whatever we
     // already had. An explicit `null` means "this company has no icon" and DOES
     // clear it, so removing a website removes the icon without a reload.
