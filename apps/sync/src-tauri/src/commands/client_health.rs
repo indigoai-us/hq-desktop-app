@@ -577,6 +577,12 @@ fn build_heartbeat_payload(
         sync_state,
         last_sync_attempt_at: state.last_sync_attempt_at.clone(),
         last_sync_success_at: state.last_sync_success_at.clone(),
+        // The desktop client drives sync directly and reports its own genuine
+        // completed-run success in `last_sync_success_at`; it has no separate
+        // sync-engine journal watermark to disambiguate, so it never emits
+        // `sync_engine_watermark_at` (US-019). The field exists on the shared
+        // contract only for CLI-sourced snapshots.
+        sync_engine_watermark_at: None,
         consecutive_failures: state
             .consecutive_failures
             .min(CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES),
