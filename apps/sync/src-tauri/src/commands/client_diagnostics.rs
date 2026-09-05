@@ -54,9 +54,10 @@ use hq_desktop_core::client_diagnostics::{
     CLIENT_HEALTH_RECEIPT_PATH, DIAGNOSTICS_POLL_INTERVAL_SECS, DIAGNOSTICS_PROBE_TIMEOUT_SECS,
 };
 use hq_desktop_core::client_health::{
-    ClientHealthCheckResult, ClientHealthCheckStatus, ClientHealthCommandReceipt,
-    ClientHealthCommandState, ClientHealthDiagnosticCheck, ClientHealthFailureReason,
-    ClientHealthRepairKind, ClientHealthSyncState, CLIENT_HEALTH_CONTRACT_VERSION,
+    ClientHealthCheckResult, ClientHealthCheckStatus, ClientHealthCommandPostcondition,
+    ClientHealthCommandReceipt, ClientHealthCommandState, ClientHealthDiagnosticCheck,
+    ClientHealthFailureReason, ClientHealthRepairKind, ClientHealthSyncState,
+    CLIENT_HEALTH_CONTRACT_VERSION,
 };
 
 use crate::commands::sync::resolve_vault_api_url;
@@ -116,6 +117,18 @@ fn with_state<T>(mutate: impl FnOnce(&mut DiagnosticsExecutionState) -> T) -> Re
 /// execution at a time — the server-side conditional writes are the real
 /// safety net, but this avoids two racing local runs of the same command.
 static POLL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// AppHandle captured at poller setup, used by the US-010 repair dispatcher to
+/// emit customer notices, drive `start_sync`, and `app.restart()` from a
+/// background poll that has no per-call handle. Absent in unit tests (no Tauri
+/// app), where the dispatcher's effectful primitives are gated off.
+static REPAIR_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// The AppHandle the repair dispatcher acts through, if the poller has been set
+/// up (always true in production; never in unit tests).
+pub(crate) fn repair_app_handle() -> Option<tauri::AppHandle> {
+    REPAIR_APP_HANDLE.get().cloned()
+}
 
 // ─── Wire: GET desired state ─────────────────────────────────────────────────
 
@@ -217,25 +230,44 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn build_receipt(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_receipt(
     installation_id: &str,
     command_id: &str,
     revision: u64,
+    kind: ClientHealthRepairKind,
     state: ClientHealthCommandState,
     checks: Option<Vec<ClientHealthCheckResult>>,
     failure_reason: Option<ClientHealthFailureReason>,
+    postcondition: Option<ClientHealthCommandPostcondition>,
+    manual_action_required: Option<bool>,
 ) -> ClientHealthCommandReceipt {
     ClientHealthCommandReceipt {
         contract_version: CLIENT_HEALTH_CONTRACT_VERSION,
         command_id: command_id.to_string(),
         installation_id: installation_id.to_string(),
-        kind: ClientHealthRepairKind::CheckNow,
+        kind,
         state,
         revision,
         occurred_at: now_iso(),
         checks,
         failure_reason,
+        postcondition,
+        manual_action_required,
     }
+}
+
+/// The closed content of a terminal receipt, produced by a per-kind action.
+/// The lifecycle driver ([`execute_command_lifecycle`]) owns the
+/// `acknowledged -> running` legs and the 409-resync/restart-resume harness;
+/// the action only decides the terminal outcome (state + closed proof), so
+/// CHECK_NOW (probes) and every US-010 repair kind share ONE lifecycle.
+pub(crate) struct TerminalReceiptContent {
+    pub state: ClientHealthCommandState,
+    pub checks: Option<Vec<ClientHealthCheckResult>>,
+    pub failure_reason: Option<ClientHealthFailureReason>,
+    pub postcondition: Option<ClientHealthCommandPostcondition>,
+    pub manual_action_required: Option<bool>,
 }
 
 // ─── Probe execution (bounded, panic-isolated, redacted) ────────────────────
@@ -458,12 +490,20 @@ async fn run_all_probes() -> Vec<ClientHealthCheckResult> {
 /// Result of attempting to drive one desired command to completion this
 /// poll. Whether the local ledger may mark the command `complete` hinges
 /// entirely on this — never on "the POST chain didn't return an `Err`."
-enum ExecutionOutcome {
-    /// A genuinely accepted terminal receipt was posted (succeeded/failed),
-    /// OR the server confirmed (via a fresh GET) that the command is already
-    /// in a terminal state / no longer in the active desired-state list.
-    /// Safe to mark complete locally.
+pub(crate) enum ExecutionOutcome {
+    /// THIS client drove the chain to a genuinely accepted terminal receipt
+    /// (succeeded/failed), or resumed onto a command the server already
+    /// reports terminal at entry. Safe to mark complete locally, and the only
+    /// outcome that may license a process-restarting post-action — the
+    /// terminal receipt is durably flushed.
     Done,
+    /// The command left the active desired-state list mid-flight (a 409 on our
+    /// terminal receipt, then a resync GET that no longer lists it): the
+    /// server superseded/expired/canceled it out from under us, so OUR
+    /// terminal receipt was NOT accepted. Safe to mark complete locally (never
+    /// re-drive), but a post-action (restart/install) MUST NOT run — there is
+    /// no durably-flushed receipt to stand behind it.
+    Superseded,
     /// A transport failure occurred somewhere in the chain, or the command
     /// could not be resynced after repeated 409s. The command MUST stay
     /// `in_flight` and out of `completed_ids` so the NEXT poll retries it —
@@ -501,16 +541,31 @@ const MAX_RESYNC_ATTEMPTS: u32 = 3;
 /// returns the command's true current state, and this function starts from
 /// there rather than blindly replaying `acknowledged` again (which would be
 /// an illegal transition once the server is already past it).
-async fn execute_check_now(
+/// Generic lifecycle driver shared by CHECK_NOW (US-007) and every US-010
+/// repair kind. Owns the entire `acknowledged -> running -> terminal` chain,
+/// the bounded 409-resync loop, and restart-resume (branching on the ACTUAL
+/// server-reported state). The only per-kind variation is `produce_terminal`:
+/// an async action that, AFTER `running` is accepted, decides the terminal
+/// outcome (state + closed proof). `produce_terminal` is a `Fn` because the
+/// resync loop may re-enter the terminal step after a 409; keep it idempotent
+/// (probes re-run; repair actions read-back rather than blindly re-apply).
+pub(crate) async fn execute_command_lifecycle<P, Fut>(
     api_url: &str,
     jwt: &str,
     installation_id: &str,
     command: &ClientHealthDesiredCommand,
-) -> ExecutionOutcome {
+    produce_terminal: P,
+) -> ExecutionOutcome
+where
+    P: Fn() -> Fut,
+    Fut: std::future::Future<Output = TerminalReceiptContent>,
+{
     let mut current = command.clone();
     let mut resync_attempts = 0u32;
     loop {
-        match execute_from_current_state(api_url, jwt, installation_id, &current).await {
+        match execute_from_current_state(api_url, jwt, installation_id, &current, &produce_terminal)
+            .await
+        {
             StepOutcome::Done => return ExecutionOutcome::Done,
             StepOutcome::Retry => return ExecutionOutcome::Retry,
             StepOutcome::Conflict => {
@@ -528,13 +583,39 @@ async fn execute_check_now(
                 match fetch_desired_commands(api_url, jwt, installation_id).await {
                     Ok(commands) => {
                         match commands.into_iter().find(|c| c.command_id == current.command_id) {
+                            Some(refreshed)
+                                if matches!(
+                                    refreshed.state,
+                                    ClientHealthCommandState::Succeeded
+                                        | ClientHealthCommandState::Failed
+                                        | ClientHealthCommandState::Expired
+                                        | ClientHealthCommandState::Canceled
+                                ) =>
+                            {
+                                // Still listed, but the server has ALREADY moved
+                                // it to a terminal state (admin cancel, expiry,
+                                // or another client raced us to a terminal
+                                // receipt) AFTER 409ing ours. Exactly like the
+                                // gone case below: OUR terminal receipt was never
+                                // accepted, so this is NOT a durably-flushed
+                                // terminal. Re-entering execute_from_current_state
+                                // would short-circuit to Done and let a
+                                // restart/install post-action ride an unaccepted
+                                // receipt (and defy an admin cancel). Fail closed
+                                // to Superseded: mark complete, never re-drive,
+                                // never arm a post-action.
+                                return ExecutionOutcome::Superseded;
+                            }
                             Some(refreshed) => current = refreshed,
                             None => {
                                 // No longer in the active desired-state list —
-                                // the server considers it superseded/expired.
-                                // Safe to stop locally without a further
-                                // attempt.
-                                return ExecutionOutcome::Done;
+                                // the server superseded/expired/canceled it out
+                                // from under us AFTER 409ing our terminal
+                                // receipt, so OUR receipt was never accepted.
+                                // Safe to stop locally (never re-drive), but
+                                // this is NOT a durably-flushed terminal: a
+                                // restart/install post-action must NOT ride it.
+                                return ExecutionOutcome::Superseded;
                             }
                         }
                     }
@@ -551,20 +632,63 @@ async fn execute_check_now(
     }
 }
 
-async fn execute_from_current_state(
+/// CHECK_NOW (US-007): the terminal action runs the eight bounded, redacted,
+/// panic-isolated probes and derives the terminal state from them. A thin
+/// wrapper over the shared [`execute_command_lifecycle`].
+async fn execute_check_now(
     api_url: &str,
     jwt: &str,
     installation_id: &str,
     command: &ClientHealthDesiredCommand,
-) -> StepOutcome {
+) -> ExecutionOutcome {
+    execute_command_lifecycle(api_url, jwt, installation_id, command, || async {
+        // Probes never mutate sync/updater/auth state and never propagate a
+        // panic — every failure funnels into a closed check result (AC #5).
+        let checks = run_all_probes().await;
+        let any_failed = checks
+            .iter()
+            .any(|c| c.status == ClientHealthCheckStatus::Fail);
+        let state = if any_failed {
+            ClientHealthCommandState::Failed
+        } else {
+            ClientHealthCommandState::Succeeded
+        };
+        let failure_reason = checks.iter().find_map(|c| c.reason);
+        TerminalReceiptContent {
+            state,
+            checks: Some(checks),
+            failure_reason,
+            postcondition: None,
+            manual_action_required: None,
+        }
+    })
+    .await
+}
+
+async fn execute_from_current_state<P, Fut>(
+    api_url: &str,
+    jwt: &str,
+    installation_id: &str,
+    command: &ClientHealthDesiredCommand,
+    produce_terminal: &P,
+) -> StepOutcome
+where
+    P: Fn() -> Fut,
+    Fut: std::future::Future<Output = TerminalReceiptContent>,
+{
     if matches!(
         command.state,
         ClientHealthCommandState::Succeeded
             | ClientHealthCommandState::Failed
             | ClientHealthCommandState::Expired
+            | ClientHealthCommandState::Canceled
     ) {
-        // Already terminal server-side (e.g. another client raced us, or it
-        // expired) — nothing left to submit.
+        // Already terminal server-side (another client raced us, it expired, or
+        // an admin canceled it) — nothing left to submit and, crucially, no
+        // per-kind action to run: a `canceled` command must never be
+        // acknowledged, executed, or allowed to arm a restart/install. Being
+        // terminal, it is only ever seen here when the server's own
+        // desired-state read is momentarily inconsistent, so fail closed on it.
         return StepOutcome::Done;
     }
 
@@ -576,7 +700,10 @@ async fn execute_from_current_state(
             installation_id,
             &command.command_id,
             revision,
+            command.kind,
             ClientHealthCommandState::Acknowledged,
+            None,
+            None,
             None,
             None,
         );
@@ -609,7 +736,10 @@ async fn execute_from_current_state(
             installation_id,
             &command.command_id,
             revision,
+            command.kind,
             ClientHealthCommandState::Running,
+            None,
+            None,
             None,
             None,
         );
@@ -634,29 +764,22 @@ async fn execute_from_current_state(
     }
 
     // Every reachable path here (queued, acknowledged, running) still needs
-    // the terminal receipt submitted.
-    //
-    // Probes never mutate sync/updater/auth state and never propagate a
-    // panic — every failure funnels into a closed check result (AC #5).
-    let checks = run_all_probes().await;
-    let any_failed = checks
-        .iter()
-        .any(|c| c.status == ClientHealthCheckStatus::Fail);
-    let terminal_state = if any_failed {
-        ClientHealthCommandState::Failed
-    } else {
-        ClientHealthCommandState::Succeeded
-    };
-    let overall_reason = checks.iter().find_map(|c| c.reason);
+    // the terminal receipt submitted. The per-kind action decides the outcome;
+    // for CHECK_NOW it runs the probes, for a repair it performs the mapped
+    // local repair and reads back the proving postcondition.
+    let content = produce_terminal().await;
 
     revision += 1;
     let terminal = build_receipt(
         installation_id,
         &command.command_id,
         revision,
-        terminal_state,
-        Some(checks),
-        overall_reason,
+        command.kind,
+        content.state,
+        content.checks,
+        content.failure_reason,
+        content.postcondition,
+        content.manual_action_required,
     );
     match post_receipt(api_url, jwt, &terminal).await {
         Ok(ReceiptOutcome::Applied(_)) => StepOutcome::Done,
@@ -676,9 +799,11 @@ async fn execute_from_current_state(
 
 // ─── One poll cycle ───────────────────────────────────────────────────────────
 
-/// Fetch desired-state commands and execute every eligible `CHECK_NOW`.
-/// Non-`CHECK_NOW` kinds (future US-009 repair intents) are skipped — this
-/// story implements diagnostics only, never a remote-repair action.
+/// Fetch desired-state commands and execute every eligible command. `CHECK_NOW`
+/// runs the US-007 diagnostics probes; every other (US-009 repair) kind is
+/// dispatched to the US-010 [`crate::commands::client_repair`] dispatcher,
+/// which maps the closed kind to a pre-existing local repair implementation —
+/// server text is NEVER executed.
 pub(crate) async fn poll_once() {
     if POLL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         // Another poll (interval tick or MQTT wake) is already running.
@@ -701,9 +826,6 @@ async fn poll_once_inner() -> Result<(), String> {
     let commands = fetch_desired_commands(&api_url, &access_token, &installation_id).await?;
 
     for command in commands {
-        if command.kind != ClientHealthRepairKind::CheckNow {
-            continue;
-        }
         let eligible = with_state(|state| should_execute(state, &command.command_id))?;
         if !eligible {
             continue;
@@ -717,9 +839,31 @@ async fn poll_once_inner() -> Result<(), String> {
         // desired-state list, reads its ACTUAL server-reported state, and
         // resumes from there — never re-executes from scratch, and never
         // permanently drops it.
-        match execute_check_now(&api_url, &access_token, &installation_id, &command).await {
-            ExecutionOutcome::Done => {
+        let outcome = if command.kind == ClientHealthRepairKind::CheckNow {
+            execute_check_now(&api_url, &access_token, &installation_id, &command).await
+        } else {
+            crate::commands::client_repair::execute_repair(
+                &api_url,
+                &access_token,
+                &installation_id,
+                &command,
+            )
+            .await
+        };
+        match outcome {
+            ExecutionOutcome::Done | ExecutionOutcome::Superseded => {
                 with_state(|state| state.complete(&command.command_id))?;
+                // Post-repair proving heartbeat (US-010 AC #6): after every
+                // terminal REPAIR receipt, ask the heartbeat loop to emit a
+                // fresh snapshot immediately (debounced) so GTM reflects the
+                // recovered status without a manual refresh. CHECK_NOW is
+                // read-only and changes no health state, so it is exempt.
+                // (`Superseded` still marks complete — the command is terminal
+                // server-side — but any restart/install post-action was already
+                // gated out in `execute_repair`, which fires only on `Done`.)
+                if command.kind != ClientHealthRepairKind::CheckNow {
+                    crate::commands::client_health::notify_client_health_state_changed();
+                }
             }
             ExecutionOutcome::Retry => {
                 log(
@@ -742,7 +886,12 @@ async fn poll_once_inner() -> Result<(), String> {
 /// `dm_mqtt.rs`) is an optimization layered on top via
 /// [`notify_client_diagnostics_wake`], never a substitute.
 pub fn setup_client_diagnostics_poller(app: tauri::AppHandle) {
-    let _ = app; // Reserved for a future UI surface (not required by US-007).
+    // US-010: the repair dispatcher needs an AppHandle to emit customer
+    // notices (RESUME_SYNC / RESTART_APP), drive `start_sync`, and
+    // `app.restart()`. Background poll cycles have no per-call AppHandle, so we
+    // stash the one handed to the poller here (same OnceLock pattern
+    // `un_notify.rs` uses for its delegate handle).
+    let _ = REPAIR_APP_HANDLE.set(app.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             poll_once().await;
@@ -1409,5 +1558,460 @@ mod tests {
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    // ── US-010 repair dispatch (per-kind mock-server lifecycle) ─────────────
+
+    /// Mount a receipt endpoint that echoes state/revision back (accepts every
+    /// receipt), the shape the repair-lifecycle tests assert against.
+    async fn mount_echo_receipt(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(server)
+            .await;
+    }
+
+    /// Mount a single queued repair command of `kind` with the given optional
+    /// `requiredConfirmation`.
+    async fn mount_repair_command(server: &MockServer, command_id: &str, kind: &str, confirmation: Option<&str>) {
+        let mut cmd = json!({
+            "commandId": command_id,
+            "kind": kind,
+            "state": "queued",
+            "revision": 0,
+            "createdAt": "2026-09-05T12:00:00.000Z",
+            "expiresAt": "2026-09-05T13:00:00.000Z"
+        });
+        if let Some(level) = confirmation {
+            cmd["requiredConfirmation"] = json!(level);
+        }
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "commands": [cmd] })))
+            .mount(server)
+            .await;
+    }
+
+    fn prepare_home(machine_id: &str) -> TempDir {
+        let home = setup_home();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            format!(r#"{{"machineId":"{machine_id}"}}"#),
+        )
+        .unwrap();
+        write_valid_access_token(home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        home
+    }
+
+    fn terminal_receipt_body(requests: &[wiremock::Request]) -> serde_json::Value {
+        let receipts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/commands/receipt")
+            .collect();
+        serde_json::from_slice(receipts.last().expect("a terminal receipt was posted").body.as_slice())
+            .unwrap()
+    }
+
+    fn receipt_states(requests: &[wiremock::Request]) -> Vec<String> {
+        requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/client-health/commands/receipt")
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["state"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// Conflict-blocked RETRY_SYNC must NEVER force a sync: it fails closed with
+    /// CONFLICT_BLOCKED and (in production) surfaces the user-owned workflow.
+    #[tokio::test]
+    async fn retry_sync_conflict_blocked_fails_closed_and_never_force_syncs() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-retry-conflict", "RETRY_SYNC", None).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-retry-conflict-01");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        // Inject a conflict-blocked snapshot with outstanding conflicts.
+        std::env::set_var("HQ_TEST_REPAIR_SYNC", "conflict_blocked:3");
+        // If the code ever tried to sync, this would force it — the test proves
+        // it does NOT (the terminal outcome is CONFLICT_BLOCKED).
+        std::env::set_var("HQ_TEST_REPAIR_SYNC_RESULT", "ok");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(receipt_states(&requests), vec!["acknowledged", "running", "failed"]);
+        let terminal = terminal_receipt_body(&requests);
+        assert_eq!(terminal["kind"], "RETRY_SYNC");
+        assert_eq!(terminal["failureReason"], "CONFLICT_BLOCKED");
+        assert!(terminal.get("postcondition").is_none(), "a fail-closed conflict must carry no success proof");
+
+        std::env::remove_var("HQ_TEST_REPAIR_SYNC");
+        std::env::remove_var("HQ_TEST_REPAIR_SYNC_RESULT");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// REPAIR_CLI reports `succeeded` only after the installed version reads
+    /// back (matching/advancing), and the read-back rides the postcondition.
+    #[tokio::test]
+    async fn repair_cli_succeeds_only_after_version_read_back() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-repair-cli", "REPAIR_CLI", None).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-repair-cli-0001");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        // Version reads back present (and, with no baseline injected, a
+        // readable installed version is proof enough).
+        std::env::set_var("HQ_TEST_REPAIR_CLI_VERSION", "5.107.0");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(receipt_states(&requests), vec!["acknowledged", "running", "succeeded"]);
+        let terminal = terminal_receipt_body(&requests);
+        assert_eq!(terminal["kind"], "REPAIR_CLI");
+        assert_eq!(terminal["postcondition"]["verified"], true);
+        assert_eq!(terminal["postcondition"]["versions"]["cli"], "5.107.0");
+        // Scrub: no path/log anywhere in the receipt.
+        assert!(!terminal.to_string().contains('/'), "receipt leaked a path: {terminal}");
+
+        std::env::remove_var("HQ_TEST_REPAIR_CLI_VERSION");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// REPAIR_CLI whose version does NOT read back must not report success.
+    #[tokio::test]
+    async fn repair_cli_unreadable_version_never_reports_success() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-repair-cli-bad", "REPAIR_CLI", None).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-repair-cli-bad01");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        // "none" injects an absent post-install version → not verified.
+        std::env::set_var("HQ_TEST_REPAIR_CLI_VERSION", "none");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let terminal = terminal_receipt_body(&server.received_requests().await.unwrap());
+        assert_eq!(terminal["state"], "failed");
+        assert_eq!(terminal["failureReason"], "CLI_OUTDATED");
+        assert!(terminal.get("postcondition").is_none());
+
+        std::env::remove_var("HQ_TEST_REPAIR_CLI_VERSION");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// RESUME_SYNC without the server-derived consequence confirmation fails
+    /// closed (defense in depth) — it never flips the pause.
+    #[tokio::test]
+    async fn resume_sync_without_consequence_fails_closed() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-resume-noconf", "RESUME_SYNC", None).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-resume-noconf01");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        std::env::set_var("HQ_TEST_REPAIR_SYNC", "paused:0");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let terminal = terminal_receipt_body(&server.received_requests().await.unwrap());
+        assert_eq!(terminal["state"], "failed");
+        assert!(terminal.get("postcondition").is_none());
+
+        std::env::remove_var("HQ_TEST_REPAIR_SYNC");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// RESUME_SYNC WITH consequence confirmation resumes and reports the
+    /// observed sync state as the verified postcondition.
+    #[tokio::test]
+    async fn resume_sync_with_consequence_reports_observed_sync_state() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-resume-ok", "RESUME_SYNC", Some("consequence")).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-resume-ok-0001");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        // After resume the observed state reads idle (injected).
+        std::env::set_var("HQ_TEST_REPAIR_SYNC", "idle:0");
+        std::env::set_var("HQ_TEST_REPAIR_SYNC_RESULT", "ok");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let terminal = terminal_receipt_body(&server.received_requests().await.unwrap());
+        assert_eq!(terminal["kind"], "RESUME_SYNC");
+        assert_eq!(terminal["state"], "succeeded");
+        assert_eq!(terminal["postcondition"]["verified"], true);
+        assert_eq!(terminal["postcondition"]["syncState"], "idle");
+
+        std::env::remove_var("HQ_TEST_REPAIR_SYNC");
+        std::env::remove_var("HQ_TEST_REPAIR_SYNC_RESULT");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// APPLY_DESKTOP_UPDATE on a non-Windows build with no pending update
+    /// reports `succeeded` (already current) — the platform-updater path. The
+    /// Windows manual-action gate is covered by the pure `plan_desktop_update`
+    /// unit test (it cannot be forced on a non-Windows CI runner).
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn apply_desktop_update_already_current_succeeds() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        mount_repair_command(&server, "cmd-desktop-current", "APPLY_DESKTOP_UPDATE", None).await;
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-desktop-cur-01");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        std::env::set_var("HQ_TEST_REPAIR_DESKTOP_UPDATE", "none");
+        std::env::set_var("HQ_TEST_REPAIR_DESKTOP_VERSION", "0.10.195");
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let terminal = terminal_receipt_body(&server.received_requests().await.unwrap());
+        assert_eq!(terminal["kind"], "APPLY_DESKTOP_UPDATE");
+        assert_eq!(terminal["state"], "succeeded");
+        assert!(terminal.get("manualActionRequired").is_none());
+        assert_eq!(terminal["postcondition"]["versions"]["desktop"], "0.10.195");
+
+        std::env::remove_var("HQ_TEST_REPAIR_DESKTOP_UPDATE");
+        std::env::remove_var("HQ_TEST_REPAIR_DESKTOP_VERSION");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// A repair command that the desired-state read reports already `canceled`
+    /// (admin cancel racing the poll) is TERMINAL server-side: the client must
+    /// never acknowledge it, never run its repair action, and never post a
+    /// receipt for it — yet still mark it complete locally so it is not
+    /// re-driven. Regression for the fail-closed-cancel gap where `canceled`
+    /// fell through the terminal short-circuit into `produce_terminal` and a
+    /// terminal receipt (US-010).
+    #[tokio::test]
+    async fn canceled_repair_command_is_never_acknowledged_run_or_receipted() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        let cmd = json!({
+            "commandId": "cmd-canceled-01",
+            "kind": "RETRY_SYNC",
+            "state": "canceled",
+            "revision": 7,
+            "createdAt": "2026-09-05T12:00:00.000Z",
+            "expiresAt": "2026-09-05T13:00:00.000Z"
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "commands": [cmd] })))
+            .mount(&server)
+            .await;
+        // Any receipt POST at all is a failure for this test — a canceled
+        // command must produce none. (Echo mount so an escaping POST is
+        // recorded rather than hanging.)
+        mount_echo_receipt(&server).await;
+
+        let _home = prepare_home("inst-canceled-00001");
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        poll_once_inner().await.expect("poll succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            receipt_states(&requests).is_empty(),
+            "a canceled command must post NO receipts (no ack/running/terminal), got {:?}",
+            receipt_states(&requests)
+        );
+        // Terminal server-side → marked complete so a later poll never re-drives it.
+        assert!(
+            with_state(|s| s.is_completed("cmd-canceled-01")).unwrap(),
+            "canceled command should be recorded complete, not left in-flight"
+        );
+
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    /// If our terminal receipt 409s and the command has then left the
+    /// desired-state list (admin cancel / newer revision raced us mid-flight),
+    /// the lifecycle resolves to `Superseded`, NOT `Done`. This is the guard
+    /// that keeps a RESTART_APP / APPLY_DESKTOP_UPDATE post-action from firing
+    /// on a receipt the server never accepted — `execute_repair` arms the
+    /// restart/install only on `Done` (US-010: flush the receipt before
+    /// restarting).
+    #[tokio::test]
+    async fn terminal_conflict_then_gone_is_superseded_not_done() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        // Receipts: ack + running are accepted; the terminal (succeeded/failed)
+        // receipt is rejected with a 409 — the server moved on.
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let state = body["state"].as_str().unwrap_or_default();
+                if state == "succeeded" || state == "failed" {
+                    return ResponseTemplate::new(409);
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+        // Resync GET after the 409: the command is gone from desired-state.
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({ "commands": [] })))
+            .mount(&server)
+            .await;
+
+        let command = ClientHealthDesiredCommand {
+            command_id: "cmd-superseded-01".to_string(),
+            kind: ClientHealthRepairKind::RestartApp,
+            state: ClientHealthCommandState::Queued,
+            revision: 0,
+            created_at: "2026-09-05T12:00:00.000Z".to_string(),
+            expires_at: "2026-09-05T13:00:00.000Z".to_string(),
+            required_confirmation: Some(
+                hq_desktop_core::client_health::ClientHealthConfirmationLevel::Consequence,
+            ),
+            args: None,
+        };
+
+        // Stand-in terminal action that (like RESTART_APP) resolves to
+        // `succeeded`; the point is what the lifecycle returns when THAT
+        // receipt is 409'd and the command has vanished.
+        let outcome = execute_command_lifecycle(&server.uri(), "test-jwt", "inst-superseded", &command, || async {
+            TerminalReceiptContent {
+                state: ClientHealthCommandState::Succeeded,
+                checks: None,
+                failure_reason: None,
+                postcondition: None,
+                manual_action_required: None,
+            }
+        })
+        .await;
+
+        assert!(
+            matches!(outcome, ExecutionOutcome::Superseded),
+            "a 409'd terminal receipt followed by the command leaving desired-state must be Superseded (so no restart/install post-action rides an unaccepted receipt), not Done"
+        );
+    }
+
+    /// The residual sibling of the gone-after-409 case: our terminal receipt
+    /// 409s, and the resync GET STILL lists the command but now in a terminal
+    /// state (an admin canceled it mid-flight, or another actor raced us to a
+    /// terminal receipt). Our receipt was NOT accepted, so — exactly like the
+    /// gone case — the lifecycle must resolve to `Superseded`, never `Done`.
+    /// Otherwise re-entering the terminal short-circuit would return `Done` and
+    /// let `execute_repair` arm a restart/install on an unaccepted receipt (and
+    /// in defiance of the admin's cancel). US-010 invariants 3/4/5.
+    #[tokio::test]
+    async fn terminal_conflict_then_still_listed_terminal_is_superseded_not_done() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        // ack + running accepted; the terminal receipt is 409'd — the server
+        // moved the command to a terminal state out from under us.
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let state = body["state"].as_str().unwrap_or_default();
+                if state == "succeeded" || state == "failed" {
+                    return ResponseTemplate::new(409);
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+        // Resync GET after the 409: the command is STILL listed, but now
+        // `canceled` (admin cancel raced our terminal receipt).
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "commands": [{
+                    "commandId": "cmd-superseded-terminal-01",
+                    "kind": "RESTART_APP",
+                    "state": "canceled",
+                    "revision": 9,
+                    "createdAt": "2026-09-05T12:00:00.000Z",
+                    "expiresAt": "2026-09-05T13:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let command = ClientHealthDesiredCommand {
+            command_id: "cmd-superseded-terminal-01".to_string(),
+            kind: ClientHealthRepairKind::RestartApp,
+            state: ClientHealthCommandState::Queued,
+            revision: 0,
+            created_at: "2026-09-05T12:00:00.000Z".to_string(),
+            expires_at: "2026-09-05T13:00:00.000Z".to_string(),
+            required_confirmation: Some(
+                hq_desktop_core::client_health::ClientHealthConfirmationLevel::Consequence,
+            ),
+            args: None,
+        };
+
+        // A stand-in RESTART_APP-shaped terminal action that resolves to
+        // `succeeded` (and, in production, would arm PostAction::Restart). The
+        // point is that a 409 + still-listed-terminal resync must NOT surface as
+        // a durably-flushed `Done`.
+        let outcome = execute_command_lifecycle(
+            &server.uri(),
+            "test-jwt",
+            "inst-superseded-term",
+            &command,
+            || async {
+                TerminalReceiptContent {
+                    state: ClientHealthCommandState::Succeeded,
+                    checks: None,
+                    failure_reason: None,
+                    postcondition: None,
+                    manual_action_required: None,
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ExecutionOutcome::Superseded),
+            "a 409'd terminal receipt followed by the command still listed in a terminal state must be Superseded (never Done), so no restart/install rides an unaccepted receipt or defies an admin cancel"
+        );
     }
 }

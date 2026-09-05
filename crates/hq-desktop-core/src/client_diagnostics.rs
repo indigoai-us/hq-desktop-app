@@ -43,7 +43,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client_health::{
-    ClientHealthCommandState, ClientHealthFailureReason, ClientHealthRepairKind,
+    parse_client_health_repair_args, ClientHealthCommandState, ClientHealthConfirmationLevel,
+    ClientHealthFailureReason, ClientHealthRepairArgs, ClientHealthRepairKind,
 };
 
 // ─── Wire endpoints (US-006/US-007 desired-state + receipt routes) ──────────
@@ -80,6 +81,18 @@ pub struct ClientHealthDesiredCommand {
     pub revision: u64,
     pub created_at: String,
     pub expires_at: String,
+    /// Server-derived confirmation requirement (US-009). Absent on older
+    /// servers / CHECK_NOW; `Consequence` for the disruptive repair kinds. The
+    /// desktop dispatcher REQUIRES `Consequence` before acting on the
+    /// customer-visible repairs (RESUME_SYNC / RESTART_APP), and the server is
+    /// the sole authority that sets it — the client never derives or upgrades
+    /// it locally.
+    pub required_confirmation: Option<ClientHealthConfirmationLevel>,
+    /// Closed per-kind repair args (US-009). Present only for the
+    /// version-moving kinds and, per decision ledger #5, currently always
+    /// empty ("latest-in-channel"). Parsed through the fail-closed contract
+    /// parser so no free-form steering value can reach the dispatcher.
+    pub args: Option<ClientHealthRepairArgs>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,12 +131,32 @@ fn parse_repair_kind(wire: &str) -> Option<ClientHealthRepairKind> {
 
 fn parse_command_state(wire: &str) -> Option<ClientHealthCommandState> {
     use ClientHealthCommandState::*;
-    for state in [Queued, Acknowledged, Running, Succeeded, Failed, Expired] {
+    for state in [
+        Queued,
+        Acknowledged,
+        Running,
+        Succeeded,
+        Failed,
+        Expired,
+        Canceled,
+    ] {
         if state.wire_value() == wire {
             return Some(state);
         }
     }
     None
+}
+
+/// Reverse-lookup of a confirmation-level wire string (US-009). Tolerant: an
+/// unrecognized value reads as `None` (absent) rather than breaking the poll.
+fn parse_confirmation_level(wire: &str) -> Option<ClientHealthConfirmationLevel> {
+    use ClientHealthConfirmationLevel::*;
+    for level in [None, Consequence] {
+        if level.wire_value() == wire {
+            return Some(level);
+        }
+    }
+    Option::None
 }
 
 /// Parse the body of `GET /v1/client-health/commands` (`{"commands": [...]}`).
@@ -184,6 +217,24 @@ pub fn parse_desired_commands(
             .and_then(Value::as_str)
             .ok_or(DesiredCommandsParseError::InvalidField)?
             .to_string();
+        // `requiredConfirmation` (US-009): tolerant — an absent or
+        // unrecognized value reads as `None`, never breaking the batch.
+        let required_confirmation = obj
+            .get("requiredConfirmation")
+            .and_then(Value::as_str)
+            .and_then(parse_confirmation_level);
+        // `args` (US-009): defense-in-depth — even though this is a trusted,
+        // authenticated server payload, the args object flows into a repair
+        // dispatcher, so it passes the SAME fail-closed contract parser the
+        // server applied at creation. A malformed args object skips JUST this
+        // command (like an unknown kind), never the whole poll.
+        let args = match obj.get("args") {
+            None | Some(Value::Null) => None,
+            Some(value) => match parse_client_health_repair_args("args", value) {
+                Ok(parsed) => Some(parsed),
+                Err(_) => continue,
+            },
+        };
         commands.push(ClientHealthDesiredCommand {
             command_id,
             kind,
@@ -191,6 +242,8 @@ pub fn parse_desired_commands(
             revision,
             created_at,
             expires_at,
+            required_confirmation,
+            args,
         });
     }
     Ok(commands)
@@ -431,6 +484,77 @@ mod tests {
         let parsed = parse_desired_commands(&body).expect("parses despite one unknown state");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].command_id, "cmd-01f7ee3b2c9d");
+    }
+
+    #[test]
+    fn parses_repair_command_with_confirmation_and_empty_args() {
+        let body = json!({
+            "commands": [{
+                "commandId": "cmd-resume-7d3e91af22bc",
+                "kind": "RESUME_SYNC",
+                "state": "queued",
+                "revision": 0,
+                "createdAt": "2026-09-05T12:00:00.000Z",
+                "expiresAt": "2026-09-05T13:00:00.000Z",
+                "requiredConfirmation": "consequence",
+                "args": {}
+            }]
+        });
+        let parsed = parse_desired_commands(&body).expect("parses");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].kind, ClientHealthRepairKind::ResumeSync);
+        assert_eq!(
+            parsed[0].required_confirmation,
+            Some(ClientHealthConfirmationLevel::Consequence)
+        );
+        assert_eq!(parsed[0].args.as_ref().unwrap().target_version, None);
+    }
+
+    #[test]
+    fn missing_confirmation_and_args_read_as_none() {
+        let body = json!({
+            "commands": [{
+                "commandId": "cmd-01f7ee3b2c9d",
+                "kind": "CHECK_NOW",
+                "state": "queued",
+                "revision": 0,
+                "createdAt": "2026-09-03T17:00:00.000Z",
+                "expiresAt": "2026-09-03T18:00:00.000Z"
+            }]
+        });
+        let parsed = parse_desired_commands(&body).expect("parses");
+        assert_eq!(parsed[0].required_confirmation, None);
+        assert_eq!(parsed[0].args, None);
+    }
+
+    #[test]
+    fn command_with_poisoned_args_is_skipped_not_fatal() {
+        // A steering value smuggled into args must not break the whole poll —
+        // the offending command is skipped, the healthy one still parses.
+        let body = json!({
+            "commands": [
+                {
+                    "commandId": "cmd-poison",
+                    "kind": "REPAIR_CLI",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-05T12:00:00.000Z",
+                    "expiresAt": "2026-09-05T13:00:00.000Z",
+                    "args": { "resolve": "local" }
+                },
+                {
+                    "commandId": "cmd-ok",
+                    "kind": "CHECK_NOW",
+                    "state": "queued",
+                    "revision": 0,
+                    "createdAt": "2026-09-05T12:00:00.000Z",
+                    "expiresAt": "2026-09-05T13:00:00.000Z"
+                }
+            ]
+        });
+        let parsed = parse_desired_commands(&body).expect("parses despite one poisoned args");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].command_id, "cmd-ok");
     }
 
     // ── Idempotency / execution ledger (AC #4, e2eTest #1, #4) ──────────────
