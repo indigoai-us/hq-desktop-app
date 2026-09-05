@@ -17,6 +17,10 @@ name: CI
 # Also blocking:
 #   - e2e-desktop-alt: the desktop-alt source-contract suite (mirrors hq-sync's
 #     desktop-alt-e2e.yml). Windows compile stays in windows-check.yml.
+#   - workspace-packages: the vitest suites owned by packages/{auth,core,platform,ui}.
+#     Every other test step in this file sets `working-directory: apps/sync`, so
+#     before this job existed a failing packages/* test could not fail any job —
+#     PR #687 landed a broken @hq/platform test on fully green CI.
 # Non-blocking (continue-on-error) informational steps, flipping to required
 # after a dedicated cleanup pass:
 #   - cargo fmt --check (rust-linux) + cargo clippy -D warnings (rust-macos;
@@ -131,6 +135,37 @@ jobs:
               echo "_(no coverage/coverage-summary.json produced)_"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  workspace-packages:
+    name: Workspace packages (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      # BLOCKING. packages/{auth,core,platform,ui} are real workspace members
+      # with their own `test` script (vitest run), but no other job in this file
+      # ever invoked them: the frontend job runs `pnpm coverage` inside
+      # apps/sync, and the root `pnpm test` (turbo run test) is never called.
+      # `--force` bypasses the turbo cache for these test tasks so a cache
+      # replay can never re-report a stale PASS for changed sources.
+      #
+      # apps/work is deliberately NOT in this filter yet: it is skipped by the
+      # same gap but currently has 21 pre-existing failures (3 files where the
+      # `// @vitest-environment happy-dom` docblock is not applied under Vitest
+      # 4, so localStorage/document are undefined). It gets its own fix + gate.
+      - name: Package tests (@hq/auth, @hq/core, @hq/platform, @hq/ui)
+        run: >-
+          pnpm turbo run test --force
+          --filter=@hq/auth
+          --filter=@hq/core
+          --filter=@hq/platform
+          --filter=@hq/ui
 
   rust-macos:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
