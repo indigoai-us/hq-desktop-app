@@ -447,7 +447,38 @@
 /// sync is push-only for `workspace/.session-logs/` and whose reindex prunes
 /// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
 /// cache key.
+///
+/// **US-004 (sync-reconciliation-audit) — pin NOT moved here, deliberately.**
+/// The post-sync manifest-upload pass lands in hq-cloud's
+/// `src/bin/sync-runner-manifest.ts` and is UNPUBLISHED at the time of writing.
+/// Per the cache-key convention above, semver admission is not enough: even a
+/// manifest release that satisfies `~6.16.11` would not reach existing
+/// desktops, because npm keys `_npx` entries by the requested spec string and
+/// would keep serving the cached 6.16.11 runner. So the floor MUST be moved
+/// once the manifest runner publishes — but moving it now would pin a version
+/// npm cannot resolve, breaking `npx` for every install. Record the published
+/// version in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`] and bump this pin in a dedicated
+/// `fix(sync): bump hq-cloud runner pin ...` commit, matching the convention.
+///
+/// Nothing else on the desktop side is required in the meantime: the manifest
+/// outcome arrives as an additive ndjson event that `events::parse_sync_line`
+/// already skips safely on both consumer paths, and its
+/// `HQ_SYNC_MANIFEST_DISABLED` kill switch reaches the runner by plain
+/// environment inheritance (see `commands::process::child_env_tests`).
 pub const HQ_CLOUD_VERSION: &str = "~6.16.11";
+
+/// First `@indigoai-us/hq-cloud` version that ships the post-sync
+/// manifest-upload pass (US-004, sync-reconciliation-audit).
+///
+/// `None` while that release is unpublished, which is the current state and
+/// the reason [`HQ_CLOUD_VERSION`] has not been bumped. **Release checklist:**
+/// when hq-cloud publishes the manifest runner, set this to the published
+/// version (e.g. `Some("6.16.12")`) and bump `HQ_CLOUD_VERSION` to
+/// `~<that version>` in the same commit. The
+/// `manifest_upload_floor_is_recorded_once_published` test below turns into a
+/// real floor guard the moment this is filled in, and until then names the
+/// outstanding bump in every test run.
+pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = None;
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -516,6 +547,37 @@ mod tests {
     #[test]
     fn version_pin_is_exactly_current() {
         assert_eq!(HQ_CLOUD_VERSION, "~6.16.11");
+    }
+
+    /// Manifest-upload floor (US-004, sync-reconciliation-audit).
+    ///
+    /// While `MANIFEST_UPLOAD_MIN_HQ_CLOUD` is `None` the manifest runner is
+    /// unpublished and the pin is deliberately unmoved; this asserts the pin is
+    /// still the pre-manifest one, so the outstanding bump stays visible rather
+    /// than being silently forgotten. Filling the constant in flips this into a
+    /// real guard that the pin floors at (not merely admits) the manifest
+    /// release — semver admission alone would leave desktops on a cached npx
+    /// entry that predates it.
+    #[test]
+    fn manifest_upload_floor_is_recorded_once_published() {
+        match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
+            None => assert_eq!(
+                HQ_CLOUD_VERSION, "~6.16.11",
+                "manifest runner is still unpublished; when it ships, set \
+                 MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
+            ),
+            Some(published) => {
+                let floor = semver::Version::parse(published)
+                    .expect("MANIFEST_UPLOAD_MIN_HQ_CLOUD must be an exact semver version");
+                assert!(
+                    pin_lower_bound() >= floor,
+                    "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+                     manifest-upload release {floor}; bump the pin so the npx cache key \
+                     moves, not merely so semver admits it",
+                    pin_lower_bound()
+                );
+            }
+        }
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
