@@ -7979,6 +7979,58 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn posix_watcher_code_one_after_effective_app_cancellation_is_attributed_to_app_teardown() {
+        // HQ-DESKTOP-5Z blast radius. The watcher boundary projects the SAME
+        // classifier as the manual route, so a watcher torn down by the app whose
+        // child collapsed our SIGTERM into exit 1 is now attributed to the app
+        // (the silent teardown path at `handle_watcher_exit_with_effects`), exactly
+        // when the manual route suppresses it — an app-owned cause, an observed
+        // effective termination, and no alertable runner error. This is the same
+        // correct intent, kept from drifting from the manual boundary.
+        let effective = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: true,
+            saw_alertable_error: false,
+            ..Default::default()
+        };
+        assert!(
+            effective.attributed_to_app_teardown(Some(1), None),
+            "an effective app cancellation whose child exited code 1 is a silent teardown"
+        );
+
+        // Strip the effectiveness gate: an external kill / lost publication of the
+        // identical code-1 shape must stay alertable — the invariant that keeps
+        // external kills loud, unchanged by this fix.
+        let ineffective = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: false,
+            saw_alertable_error: false,
+            ..Default::default()
+        };
+        assert!(
+            !ineffective.attributed_to_app_teardown(Some(1), None),
+            "termination_effected=false keeps a code-1 watcher exit alertable"
+        );
+
+        // A concurrent alertable runner fault also wins over attribution (gate 4),
+        // preserving the cancelled-with-alertable-error class.
+        let with_alertable = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: true,
+            saw_alertable_error: true,
+            ..Default::default()
+        };
+        assert!(
+            !with_alertable.attributed_to_app_teardown(Some(1), None),
+            "a concurrent alertable runner fault keeps a code-1 watcher exit alertable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cancelled_sigkill_skips_capture_but_uncancelled_sigkill_still_captures() {
         let mut deliberate_stop = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
