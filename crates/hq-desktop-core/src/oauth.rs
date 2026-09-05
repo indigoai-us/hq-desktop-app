@@ -2,35 +2,97 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
-// hq-prod stack (canonical post-2026-04-25 cutover). MUST stay in sync with
-// cognito.rs's COGNITO_CLIENT_ID — drift between the two breaks token refresh
-// (sign-in succeeds against one client but refresh hits InvalidClient).
-pub const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
-pub const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 pub const REDIRECT_URI: &str = "http://localhost:53682/callback";
+const COGNITO_CLIENT_ID_MAX_LEN: usize = 128;
+const COGNITO_DOMAIN_PREFIX_MAX_LEN: usize = 63;
+
+fn resolve_cognito_client_id(override_value: Option<&str>) -> Result<&str, String> {
+    let Some(raw_value) = override_value else {
+        return Err("HQ_COGNITO_CLIENT_ID is required for this non-production release".to_string());
+    };
+    let value = raw_value.trim();
+    if value.is_empty() {
+        return Err("HQ_COGNITO_CLIENT_ID is set but empty".to_string());
+    }
+    if value.len() > COGNITO_CLIENT_ID_MAX_LEN
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+'))
+    {
+        return Err(
+            "HQ_COGNITO_CLIENT_ID must be 1-128 ASCII letters, digits, underscores, or plus signs"
+                .to_string(),
+        );
+    }
+    Ok(value)
+}
+
+/// Cognito app client used by authorization, code exchange, and token refresh.
+///
+/// Non-production runs must set `HQ_COGNITO_CLIENT_ID` before the process starts.
+/// Keeping resolution here prevents the OAuth and refresh paths from drifting
+/// onto different clients.
+pub fn cognito_client_id() -> Result<String, String> {
+    match std::env::var("HQ_COGNITO_CLIENT_ID") {
+        Ok(override_value) => resolve_cognito_client_id(Some(&override_value)).map(str::to_owned),
+        Err(std::env::VarError::NotPresent) => resolve_cognito_client_id(None).map(str::to_owned),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("HQ_COGNITO_CLIENT_ID must contain valid UTF-8".to_string())
+        }
+    }
+}
 
 /// Cognito hosted-UI domain prefix.
 ///
-/// Resolves to `$HQ_COGNITO_DOMAIN` if set, else the canonical
-/// `vault-indigo-hq-prod` prefix shared with `@indigoai-us/hq-cli` and
-/// `hq-installer`. Always in the
-/// `us-east-1.amazoncognito.com` namespace — custom domains not yet supported.
-pub fn cognito_domain_prefix() -> String {
-    std::env::var("HQ_COGNITO_DOMAIN").unwrap_or_else(|_| DEFAULT_COGNITO_DOMAIN_PREFIX.to_string())
+/// This non-production release intentionally has no production fallback.
+/// Always in the `us-east-1.amazoncognito.com` namespace — custom domains are
+/// not yet supported.
+pub fn cognito_domain_prefix() -> Result<String, String> {
+    match std::env::var("HQ_COGNITO_DOMAIN") {
+        Ok(value) => resolve_cognito_domain_prefix(Some(&value)).map(str::to_owned),
+        Err(std::env::VarError::NotPresent) => {
+            resolve_cognito_domain_prefix(None).map(str::to_owned)
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("HQ_COGNITO_DOMAIN must contain valid UTF-8".to_string())
+        }
+    }
 }
 
-pub fn cognito_authorize_url() -> String {
-    format!(
+fn resolve_cognito_domain_prefix(override_value: Option<&str>) -> Result<&str, String> {
+    let Some(raw_value) = override_value else {
+        return Err("HQ_COGNITO_DOMAIN is required for this non-production release".to_string());
+    };
+    let value = raw_value.trim();
+    if value.is_empty() {
+        return Err("HQ_COGNITO_DOMAIN is set but empty".to_string());
+    }
+    if value.len() > COGNITO_DOMAIN_PREFIX_MAX_LEN
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(
+            "HQ_COGNITO_DOMAIN must be a valid lowercase Cognito domain prefix".to_string(),
+        );
+    }
+    Ok(value)
+}
+
+pub fn cognito_authorize_url() -> Result<String, String> {
+    Ok(format!(
         "https://{}.auth.us-east-1.amazoncognito.com/oauth2/authorize",
-        cognito_domain_prefix()
-    )
+        cognito_domain_prefix()?
+    ))
 }
 
-pub fn cognito_token_url() -> String {
-    format!(
+pub fn cognito_token_url() -> Result<String, String> {
+    Ok(format!(
         "https://{}.auth.us-east-1.amazoncognito.com/oauth2/token",
-        cognito_domain_prefix()
-    )
+        cognito_domain_prefix()?
+    ))
 }
 
 pub fn cognito_identity_provider(provider: &str) -> Result<&'static str, String> {
@@ -41,7 +103,27 @@ pub fn cognito_identity_provider(provider: &str) -> Result<&'static str, String>
     }
 }
 
-pub fn build_authorize_url(state: &str, challenge: &str, identity_provider: &str) -> String {
+pub fn build_authorize_url(
+    state: &str,
+    challenge: &str,
+    identity_provider: &str,
+) -> Result<String, String> {
+    Ok(build_authorize_url_for_client(
+        state,
+        challenge,
+        identity_provider,
+        &cognito_client_id()?,
+        &cognito_authorize_url()?,
+    ))
+}
+
+fn build_authorize_url_for_client(
+    state: &str,
+    challenge: &str,
+    identity_provider: &str,
+    client_id: &str,
+    authorize_url: &str,
+) -> String {
     format!(
         "{base}?response_type=code\
          &client_id={client_id}\
@@ -51,8 +133,8 @@ pub fn build_authorize_url(state: &str, challenge: &str, identity_provider: &str
          &state={state}\
          &code_challenge={challenge}\
          &code_challenge_method=S256",
-        base = cognito_authorize_url(),
-        client_id = COGNITO_CLIENT_ID,
+        base = authorize_url,
+        client_id = client_id,
         redirect_uri = REDIRECT_URI,
         identity_provider = identity_provider,
         state = state,
@@ -224,11 +306,19 @@ mod tests {
         let verifier = generate_code_verifier();
         let challenge = compute_code_challenge(&verifier);
 
-        let url = build_authorize_url(state, &challenge, "Google");
+        let url = build_authorize_url_for_client(
+            state,
+            &challenge,
+            "Google",
+            "nonproductionclient",
+            "https://nonproduction.auth.us-east-1.amazoncognito.com/oauth2/authorize",
+        );
 
-        assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
+        assert!(url.starts_with(
+            "https://nonproduction.auth.us-east-1.amazoncognito.com/oauth2/authorize?"
+        ));
         assert!(url.contains("response_type=code"));
-        assert!(url.contains("client_id=7acei2c8v870enheptb1j5foln"));
+        assert!(url.contains("client_id=nonproductionclient"));
         assert!(
             url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback")
                 || url.contains("redirect_uri=http://localhost:53682/callback")
@@ -238,6 +328,51 @@ mod tests {
         assert!(url.contains(&format!("state={state}")));
         assert!(url.contains(&format!("code_challenge={challenge}")));
         assert!(url.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn cognito_client_override_is_trimmed_and_used_in_authorize_url() {
+        assert_eq!(
+            resolve_cognito_client_id(Some("  nonproductionclient  ")).unwrap(),
+            "nonproductionclient"
+        );
+        assert!(resolve_cognito_client_id(None).is_err());
+
+        let url = build_authorize_url_for_client(
+            "state-123",
+            "challenge-123",
+            "Google",
+            "nonproductionclient",
+            "https://nonproduction.auth.us-east-1.amazoncognito.com/oauth2/authorize",
+        );
+        assert!(url.contains("client_id=nonproductionclient"));
+    }
+
+    #[test]
+    fn cognito_domain_override_is_required_and_validated() {
+        assert!(resolve_cognito_domain_prefix(None).is_err());
+        assert_eq!(
+            resolve_cognito_domain_prefix(Some("  nonproduction-auth  ")).unwrap(),
+            "nonproduction-auth"
+        );
+        for invalid in ["", "UPPERCASE", "-leading", "trailing-", "has.dot"] {
+            assert!(
+                resolve_cognito_domain_prefix(Some(invalid)).is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn cognito_client_override_rejects_empty_or_malformed_values() {
+        assert!(resolve_cognito_client_id(Some("  ")).is_err());
+        assert!(resolve_cognito_client_id(Some("client-id")).is_err());
+        assert!(resolve_cognito_client_id(Some("client/id")).is_err());
+        assert!(resolve_cognito_client_id(Some(&"a".repeat(129))).is_err());
+        assert_eq!(
+            resolve_cognito_client_id(Some("client_ID+1")).unwrap(),
+            "client_ID+1"
+        );
     }
 
     #[test]
@@ -252,7 +387,13 @@ mod tests {
 
     #[test]
     fn authorize_url_supports_microsoft_provider() {
-        let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal");
+        let url = build_authorize_url_for_client(
+            "state-123",
+            "challenge-123",
+            "MicrosoftPersonal",
+            "nonproductionclient",
+            "https://nonproduction.auth.us-east-1.amazoncognito.com/oauth2/authorize",
+        );
         assert!(url.contains("identity_provider=MicrosoftPersonal"));
         assert!(url.contains("state=state-123"));
         assert!(url.contains("code_challenge=challenge-123"));

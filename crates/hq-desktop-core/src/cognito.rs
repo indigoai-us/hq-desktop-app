@@ -42,10 +42,6 @@ fn cache() -> &'static Mutex<Option<CachedTokens>> {
     TOKEN_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-// hq-prod stack (canonical post-2026-04-25 cutover). MUST stay in sync with
-// oauth.rs's COGNITO_CLIENT_ID — drift between the two breaks token refresh
-// (sign-in succeeds against one client but refresh hits InvalidClient).
-const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
@@ -751,10 +747,15 @@ pub async fn refresh_access_token_classified(
     refresh_token: &str,
 ) -> Result<CognitoTokens, CognitoRefreshError> {
     let client = crate::client_info::build_client();
+    let client_id = crate::oauth::cognito_client_id().map_err(|message| CognitoRefreshError {
+        message,
+        requires_reauth: false,
+        status_code: None,
+    })?;
 
     let body = serde_json::json!({
         "AuthFlow": "REFRESH_TOKEN_AUTH",
-        "ClientId": COGNITO_CLIENT_ID,
+        "ClientId": client_id,
         "AuthParameters": {
             "REFRESH_TOKEN": refresh_token
         }
