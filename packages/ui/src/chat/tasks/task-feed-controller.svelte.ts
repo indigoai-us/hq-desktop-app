@@ -58,10 +58,31 @@ export class TaskFeedController {
     this.timer = setInterval(() => void this.tick(), pollMs);
   }
 
-  /** Every task across every agent in the conversation. */
+  /**
+   * Every task across every agent in the conversation, each task ONCE.
+   *
+   * The strip renders this as a keyed list — `{#each tasks as task (task.id)}`
+   * — so a repeated id is not a cosmetic double row, it takes the whole shell
+   * down with Svelte's `each_key_duplicate`. Each per-agent feed already
+   * dedupes itself, but a channel polls every agent on the roster and the
+   * room-scoped route reads the room's SHARED interaction trace, so one task
+   * comes back under every agent that touched it. Fold those copies here.
+   *
+   * Iterating `this.agents` rather than `this.feeds` also pins the order:
+   * `feeds` is populated by `Promise.all` callbacks, so its insertion order is
+   * whichever request settled first and would reshuffle the chips every poll.
+   * Roster order is stable, and the first agent holding a task wins it.
+   */
   get tasks(): AgentTask[] {
+    const seen = new Set<string>();
     const out: AgentTask[] = [];
-    for (const feed of this.feeds.values()) out.push(...feed.tasks);
+    for (const uid of this.agents) {
+      for (const task of this.feeds.get(uid)?.tasks ?? []) {
+        if (seen.has(task.id)) continue;
+        seen.add(task.id);
+        out.push(task);
+      }
+    }
     return out;
   }
 

@@ -1233,9 +1233,21 @@ export function takeDirectorySeed<
     lastActivityAt?: string | number | null;
   },
 >(rows: readonly T[], limit: number = DIRECTORY_SEED_LIMIT): T[] {
-  if (rows.length <= limit) return rows.slice();
-  const unread = rows.filter((row) => (row.unreadCount ?? 0) > 0);
-  const rest = rows
+  // Dedupe by channel id FIRST, at every size. This seed becomes the persisted
+  // rail, the ⌘K index and the first-paint channel list, all of which render
+  // keyed by channel id — one repeated id is an `each_key_duplicate` crash that
+  // takes the whole shell down, not a harmless double row. Order is preserved,
+  // so a list that already fits still comes back in server order.
+  const deduped: T[] = [];
+  const byId = new Set<string>();
+  for (const row of rows) {
+    if (byId.has(row.channelId)) continue;
+    byId.add(row.channelId);
+    deduped.push(row);
+  }
+  if (deduped.length <= limit) return deduped;
+  const unread = deduped.filter((row) => (row.unreadCount ?? 0) > 0);
+  const rest = deduped
     .filter((row) => (row.unreadCount ?? 0) <= 0)
     .slice()
     .sort((a, b) => {
@@ -1243,12 +1255,9 @@ export function takeDirectorySeed<
       const right = String(a.lastActivityAt ?? "");
       return left.localeCompare(right);
     });
-  const seen = new Set(unread.map((row) => row.channelId));
   const extra: T[] = [];
   for (const row of rest) {
     if (unread.length + extra.length >= limit) break;
-    if (seen.has(row.channelId)) continue;
-    seen.add(row.channelId);
     extra.push(row);
   }
   return [...unread, ...extra];
