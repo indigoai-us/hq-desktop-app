@@ -511,24 +511,73 @@ pub enum FootprintCeilingDecision {
     Preempt,
 }
 
-/// Pure supervisor decision: given a fresh scoped footprint sample and the
-/// running over-ceiling streak, return the UPDATED streak and whether to
-/// pre-empt. A comparable (whole-tree / job) sample at or above the hard safety
-/// threshold pre-empts immediately. Otherwise, ONLY a comparable sample at or
-/// above the ordinary ceiling advances the streak; a withheld/shim sample, a
-/// missing sample, or one below the ceiling resets it to zero. Pre-empt the
-/// ordinary backstop only once the streak reaches the required consecutive count
-/// — never on a single spike, never on an unsampled or withheld footprint.
+/// The PRIOR comparable footprint sample carried into the pure supervisor
+/// decision so the hard-ceiling trigger can PROJECT growth one supervisor
+/// interval ahead instead of assuming a fixed runaway rate. The
+/// [`WATCHER_FOOTPRINT_HARD_CEILING_MB`] doc derives its 5,120 MB from an
+/// ASSUMED 20 MB/s runaway; production runs 2.3x–11.4x faster, so the first
+/// comparable sample the app sees is already far above the hard ceiling. Measuring
+/// the rate per-episode restores the margin without re-deriving a constant.
+///
+/// `prev_sample_kb` is `None` whenever there is no usable prior comparable (Tree)
+/// sample — the first tick after a spawn, or a prior tick that degraded to a
+/// non-comparable / withheld / missing sample — in which case the projection is
+/// skipped and the decision is byte-identical to the pre-projection behaviour.
+/// `gap_secs` is the age between the prior comparable sample and this one;
+/// `cadence_secs` is the look-ahead horizon (one supervisor interval).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FootprintProjection {
+    pub prev_sample_kb: Option<u64>,
+    pub gap_secs: u64,
+    pub cadence_secs: u64,
+}
+
+/// Pure supervisor decision: given a fresh scoped footprint sample, the running
+/// over-ceiling streak, and the prior comparable sample, return the UPDATED
+/// streak and whether to pre-empt.
+///
+/// A comparable (whole-tree / job) sample at or above the hard safety threshold
+/// pre-empts immediately (today's absolute trigger, unchanged). In ADDITION, when
+/// a measurable positive growth rate — derived from the prior comparable sample
+/// and its age — would carry the comparable footprint to or past the hard ceiling
+/// within one supervisor interval, pre-empt now rather than waiting for the raw
+/// sample to cross it. That projection may only ever ADVANCE a pre-empt, never
+/// delay or suppress one: it requires a comparable current sample, a usable prior
+/// comparable sample, a strictly positive delta, and a positive gap and cadence,
+/// and falls back to exactly the behaviour below on any unmeasurable input.
+///
+/// Otherwise, ONLY a comparable sample at or above the ordinary ceiling advances
+/// the streak; a withheld/shim sample, a missing sample, or one below the ceiling
+/// resets it to zero. Pre-empt the ordinary backstop only once the streak reaches
+/// the required consecutive count — never on a single spike, never on an unsampled
+/// or withheld footprint.
 pub fn footprint_ceiling_step(
     sample_kb: Option<u64>,
     scope_comparable: bool,
     ceiling_kb: u64,
     prior_streak: u32,
     required_consecutive: u32,
+    projection: FootprintProjection,
 ) -> (u32, FootprintCeilingDecision) {
     let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    // Absolute trigger: one comparable sample at or above the hard ceiling.
     if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
         return (0, FootprintCeilingDecision::Preempt);
+    }
+    // Rate-aware projection: pre-empt one interval early when the measured growth
+    // would reach the hard ceiling. Guarded so it never fires on unmeasurable data
+    // and can only advance (never delay) a pre-empt relative to the rule below.
+    if scope_comparable {
+        if let (Some(cur), Some(prev)) = (sample_kb, projection.prev_sample_kb) {
+            if projection.gap_secs > 0 && projection.cadence_secs > 0 && cur > prev {
+                let growth_kb = (cur - prev)
+                    .saturating_mul(projection.cadence_secs)
+                    / projection.gap_secs;
+                if cur.saturating_add(growth_kb) >= hard_ceiling_kb {
+                    return (0, FootprintCeilingDecision::Preempt);
+                }
+            }
+        }
     }
     let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
     if !over {
@@ -541,6 +590,22 @@ pub fn footprint_ceiling_step(
         FootprintCeilingDecision::KeepRunning
     };
     (streak, decision)
+}
+
+/// Fixed-vocabulary bucket for the measured whole-tree footprint growth rate
+/// (MB/s) behind a supervisor pre-empt. Mirrors [`runner_heap_peak_used_bucket`]:
+/// the exact rate is not shipped (it is derivable from the prior-sample and
+/// sample-gap extras and would be high-cardinality); this bounded token makes
+/// "how fast was it growing" queryable and content-safe. The caller maps an
+/// unmeasurable rate (no prior comparable sample, non-positive delta) to its own
+/// `unknown` sentinel rather than a bucket.
+pub fn footprint_growth_bucket_mb_per_sec(rate_mb_per_sec: u64) -> &'static str {
+    match rate_mb_per_sec {
+        0..=19 => "under_20mbs",
+        20..=49 => "20_to_50mbs",
+        50..=119 => "50_to_120mbs",
+        _ => "over_120mbs",
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1620,30 +1685,47 @@ mod tests {
         let required = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
         assert!(required >= 2, "a single spike must not pre-empt");
 
+        // No prior comparable sample → the projection is inert and behaviour is
+        // byte-identical to the pre-projection rule for every case below.
+        let no_projection = FootprintProjection::default();
+
         // A below-ceiling comparable sample never advances the streak.
         assert_eq!(
-            footprint_ceiling_step(Some(ceiling_kb - 1), true, ceiling_kb, 5, required),
+            footprint_ceiling_step(Some(ceiling_kb - 1), true, ceiling_kb, 5, required, no_projection),
             (0, FootprintCeilingDecision::KeepRunning)
         );
         // A single over-ceiling sample advances but does not pre-empt.
         let (streak, decision) =
-            footprint_ceiling_step(Some(ceiling_kb), true, ceiling_kb, 0, required);
+            footprint_ceiling_step(Some(ceiling_kb), true, ceiling_kb, 0, required, no_projection);
         assert_eq!(streak, 1);
         assert_eq!(decision, FootprintCeilingDecision::KeepRunning);
         // Reaching the required consecutive count pre-empts.
-        let (streak, decision) =
-            footprint_ceiling_step(Some(ceiling_kb + 1), true, ceiling_kb, required - 1, required);
+        let (streak, decision) = footprint_ceiling_step(
+            Some(ceiling_kb + 1),
+            true,
+            ceiling_kb,
+            required - 1,
+            required,
+            no_projection,
+        );
         assert_eq!(streak, required);
         assert_eq!(decision, FootprintCeilingDecision::Preempt);
         // A non-comparable (shim/withheld) sample resets the streak even when huge —
         // a launcher/shim footprint must never pre-empt the runner.
         assert_eq!(
-            footprint_ceiling_step(Some(ceiling_kb * 4), false, ceiling_kb, required - 1, required),
+            footprint_ceiling_step(
+                Some(ceiling_kb * 4),
+                false,
+                ceiling_kb,
+                required - 1,
+                required,
+                no_projection,
+            ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
         // A missing (unsampled) tick resets the streak too.
         assert_eq!(
-            footprint_ceiling_step(None, true, ceiling_kb, required - 1, required),
+            footprint_ceiling_step(None, true, ceiling_kb, required - 1, required, no_projection),
             (0, FootprintCeilingDecision::KeepRunning)
         );
     }
@@ -1662,9 +1744,204 @@ mod tests {
                 ordinary_ceiling_kb,
                 0,
                 WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                FootprintProjection::default(),
             ),
             (0, FootprintCeilingDecision::Preempt)
         );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_preempts_one_interval_early_on_measured_rate() {
+        // The ordinary ceiling (5,632 MB default-derived) is far above the sample
+        // used here, so ONLY the projection can pre-empt — never the streak.
+        let ordinary_ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let hard_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+        let mb = |m: u64| m * 1024;
+
+        // Prior comparable sample 4,000 MB; the next comparable sample 30s later is
+        // 5,000 MB — still BELOW the 5,120 MB hard ceiling, so today's absolute rule
+        // keeps it running. Measured growth is (5,000-4,000)/30s ≈ 33 MB/s, above the
+        // 20 MB/s the hard ceiling was sized for (production ran ≥46 MB/s and
+        // ≥228 MB/s). Projected one 30s interval ahead: 5,000 + 1,000 = 6,000 MB ≥
+        // 5,120 → pre-empt now, one full interval before the raw sample would cross.
+        let cur = mb(5000);
+        assert!(cur < hard_kb, "current sample is below the absolute hard ceiling");
+        let projection = FootprintProjection {
+            prev_sample_kb: Some(mb(4000)),
+            gap_secs: 30,
+            cadence_secs: 30,
+        };
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ordinary_ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            (0, FootprintCeilingDecision::Preempt),
+            "a measured runaway rate must pre-empt one interval before the raw sample crosses the hard ceiling"
+        );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_falls_back_to_base_without_a_usable_prior() {
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        // Below both the hard (5,120) and ordinary (5,632) ceilings, so the ONLY
+        // thing that could change the decision is the projection.
+        let cur = mb(5000);
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+
+        // No prior sample at all → no projection → keep running (today's behaviour).
+        assert_eq!(
+            footprint_ceiling_step(Some(cur), true, ceiling_kb, 0, base, FootprintProjection::default()),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A prior sample but a zero gap is unmeasurable → no projection.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 0, cadence_secs: 30 },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A non-positive delta (flat or shrinking footprint) yields no rate.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(cur), gap_secs: 30, cadence_secs: 30 },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A non-comparable current sample never projects, even with a huge prior delta.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                false,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 30, cadence_secs: 30 },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_never_preempts_a_healthy_ramp_below_ceiling() {
+        // The healthy-large-sync guard: a first sync of a big vault that ramps then
+        // decelerates and plateaus BELOW the hard ceiling must never be pre-empted.
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        let cadence = 30;
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+        let ramp = [
+            (3000u64, 3800u64),
+            (3800, 4300),
+            (4300, 4600),
+            (4600, 4750),
+            (4750, 4800),
+        ];
+        let mut streak = 0u32;
+        for (prev, cur) in ramp {
+            let (next, decision) = footprint_ceiling_step(
+                Some(mb(cur)),
+                true,
+                ceiling_kb,
+                streak,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(prev)), gap_secs: cadence, cadence_secs: cadence },
+            );
+            assert_eq!(
+                decision,
+                FootprintCeilingDecision::KeepRunning,
+                "a healthy ramp {prev}->{cur} MB that stays below the ceiling must not pre-empt"
+            );
+            streak = next;
+        }
+        // A decreasing footprint yields no rate and stays below the ceiling.
+        let (_, decision) = footprint_ceiling_step(
+            Some(mb(4000)),
+            true,
+            ceiling_kb,
+            0,
+            base,
+            FootprintProjection { prev_sample_kb: Some(mb(4800)), gap_secs: cadence, cadence_secs: cadence },
+        );
+        assert_eq!(decision, FootprintCeilingDecision::KeepRunning);
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_is_saturating_and_panic_free() {
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+        let hard_minus_one = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024 - 1;
+
+        // An absurd current sample already at/above the hard ceiling is caught by the
+        // absolute rule before the projection — no overflow.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(u64::MAX),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: 30 },
+            ),
+            (0, FootprintCeilingDecision::Preempt)
+        );
+        // A huge cadence saturates the growth term without panicking; the projected
+        // total saturates to u64::MAX and pre-empts.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_minus_one),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: u64::MAX },
+            ),
+            (0, FootprintCeilingDecision::Preempt)
+        );
+        // A u64::MAX gap drives the measured rate to ~0, so a below-hard sample is not
+        // projected over the ceiling — it falls through to today's streak logic.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_minus_one),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: u64::MAX, cadence_secs: 30 },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_footprint_growth_bucket_is_fixed_vocabulary() {
+        assert_eq!(footprint_growth_bucket_mb_per_sec(0), "under_20mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(19), "under_20mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(20), "20_to_50mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(49), "20_to_50mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(50), "50_to_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(119), "50_to_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(120), "over_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(10_000), "over_120mbs");
     }
 
     #[test]

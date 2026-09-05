@@ -168,7 +168,7 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
       'supervisor pre-empt block',
     );
     // record_supervisor_memory_preempt is invoked BEFORE the terminate call.
-    expect(preempt).toContain('record_supervisor_memory_preempt(kb)');
+    expect(preempt).toContain('record_supervisor_memory_preempt(');
     const recorder = sliceBetween(
       appDaemonSource,
       'fn record_supervisor_memory_preempt(',
@@ -181,6 +181,83 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(recorder).toContain('supervisor_preempt: true');
     expect(recorder).toContain('.capture(');
     expect(recorder).toContain('watcher_termination_fingerprint_token(');
+  });
+
+  // ── Footprint growth-rate projection + pre-empt decomposition (this fix) ──
+
+  it('projects growth from the prior comparable sample into the hard-ceiling decision', () => {
+    // The pure decision gains a prior-sample projection input, so the hard ceiling
+    // is rate-aware rather than assuming a fixed 20 MB/s runaway.
+    expect(coreDaemonSource).toContain('pub struct FootprintProjection');
+    const step = sliceBetween(
+      coreDaemonSource,
+      'pub fn footprint_ceiling_step(',
+      ') -> (u32, FootprintCeilingDecision)',
+      'footprint_ceiling_step signature',
+    );
+    expect(step).toContain('FootprintProjection');
+    // The supervisor carries the PRIOR comparable sample + its age into the pure
+    // decision, read from crash-state BEFORE this tick's sample overwrites it…
+    const decide = sliceBetween(
+      appDaemonSource,
+      'fn note_watcher_footprint_and_decide(',
+      '\n}\n',
+      'note_watcher_footprint_and_decide',
+    );
+    expect(decide).toContain('FootprintProjection');
+    expect(decide).toContain('last_rss_kb');
+    expect(decide).toContain('last_rss_at');
+    // …and the supervisor tick decides BEFORE recording this sample, or the
+    // projection would measure this sample against itself and never fire.
+    const tick = sliceBetween(
+      appDaemonSource,
+      'if let Some(sample) = sample_watcher_rss_scoped(pid)',
+      'terminate_daemon_generation_once(',
+      'supervisor sample tick',
+    );
+    expect(tick.indexOf('note_watcher_footprint_and_decide(')).toBeLessThan(
+      tick.indexOf('note_watcher_rss('),
+    );
+  });
+
+  it('emits the bounded footprint decomposition on the pre-empt capture', () => {
+    // A later refactor that drops the wiring must fail loudly here rather than
+    // silently ship an empty envelope again.
+    const recorder = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '\n}\n',
+      'record_supervisor_memory_preempt',
+    );
+    for (const field of [
+      'watcher_tree_rss_mb',
+      'watcher_tree_largest_member_mb',
+      'watcher_tree_non_heap_mb',
+      'watcher_footprint_prev_sample_mb',
+      'watcher_footprint_sample_gap_secs',
+      'watcher_tree_process_count',
+      'watcher_footprint_growth_bucket',
+    ]) {
+      expect(recorder).toContain(field);
+    }
+    // The message, the converged fingerprint token, and the three original channels
+    // are untouched — only bounded extras and tags are added.
+    expect(recorder).toContain('runner memory exhausted');
+    expect(recorder).toContain('watcher_termination_fingerprint_token(');
+    expect(recorder).toContain('"rss_scope"');
+    expect(recorder).toContain('"runner_heap_ceiling_mb"');
+  });
+
+  it('registers the footprint-decomposition vocabulary at the telemetry egress boundary', () => {
+    // Each new field must be allow-listed or it degrades to [Filtered] on egress —
+    // shipping instrumentation that silently carries nothing.
+    expect(telemetrySource).toContain('"watcher_tree_rss_mb"');
+    expect(telemetrySource).toContain(
+      '"watcher_tree_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok())',
+    );
+    expect(telemetrySource).toContain(
+      '"under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"',
+    );
   });
 
   it('parses a quoted --max-old-space-size so a user value is never dropped', () => {
@@ -455,5 +532,155 @@ describe('watcher memory-ceiling attribution — shipped Sentry envelopes', () =
     expect(pre.fingerprint[2]).toBe('signal:11');
     expect(post.fingerprint[2]).toBe('signal:11');
     expect(post.fingerprint).toEqual(pre.fingerprint);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Supervisor pre-empt decomposition (auto-sync watcher footprint growth-rate
+// cluster: HQ-DESKTOP-60). The three shipped pre-empt events carried only the
+// tree total + the declared heap ceiling, so the ~2.9 GB of growth above
+// --max-old-space-size could not be attributed. This models the real 2026-09-04
+// event (86778aa3): tree 6,506 MB, heap ceiling 3,584 MB (declared_default),
+// rss_scope=tree. A supervisor pre-empt is ALWAYS memory-attributed
+// (supervisor_preempt=true), so both directions converge on the memory token; the
+// difference is the bounded decomposition, absent before the fix.
+// ---------------------------------------------------------------------------
+
+interface SupervisorPreempt {
+  footprintMb: number;
+  heapCeilingMb: number;
+  treePidCount: number;
+  treeLargestMemberMb: number;
+  prevSampleMb: number;
+  sampleGapSecs: number;
+}
+
+/** Mirror of `hq_desktop_core::daemon::footprint_growth_bucket_mb_per_sec`. */
+function footprintGrowthBucket(prevMb: number, curMb: number, gapSecs: number): string {
+  if (gapSecs <= 0 || curMb <= prevMb) return 'unknown';
+  const rate = Math.floor((curMb - prevMb) / gapSecs);
+  if (rate < 20) return 'under_20mbs';
+  if (rate < 50) return '20_to_50mbs';
+  if (rate < 120) return '50_to_120mbs';
+  return 'over_120mbs';
+}
+
+/** Model the supervisor pre-empt envelope in each direction (mirror of
+ * `record_supervisor_memory_preempt`). `pre-fix` carries the tree total + ceiling
+ * only; `post-fix` adds the bounded decomposition. */
+function simulateSupervisorPreempt(p: SupervisorPreempt, policy: Policy): SentryEnvelopeEvent {
+  const tags: Record<string, string> = {
+    sync_route: 'watcher',
+    rss_scope: 'tree',
+    runner_heap_ceiling_source: 'declared_default',
+  };
+  const extras: Record<string, string | number> = {
+    runner_heap_ceiling_mb: p.heapCeilingMb,
+  };
+  if (policy === 'post-fix') {
+    extras.watcher_tree_rss_mb = p.footprintMb;
+    extras.watcher_tree_largest_member_mb = p.treeLargestMemberMb;
+    // The non-heap excess --max-old-space-size cannot bound, saturating at 0.
+    extras.watcher_tree_non_heap_mb = Math.max(0, p.footprintMb - p.heapCeilingMb);
+    extras.watcher_footprint_prev_sample_mb = p.prevSampleMb;
+    extras.watcher_footprint_sample_gap_secs = p.sampleGapSecs;
+    tags.watcher_tree_process_count = String(p.treePidCount);
+    tags.watcher_footprint_growth_bucket = footprintGrowthBucket(
+      p.prevSampleMb,
+      p.footprintMb,
+      p.sampleGapSecs,
+    );
+  }
+  return {
+    message:
+      `auto-sync watcher pre-empted at declared footprint ceiling ` +
+      `(runner memory exhausted), consecutive failure #1 [footprint ${p.footprintMb}MB]`,
+    fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
+    tags,
+    extras,
+  };
+}
+
+const SUPERVISOR_PREEMPT_2026_09_04: SupervisorPreempt = {
+  footprintMb: 6506,
+  heapCeilingMb: RUNNER_HEAP_CEILING_DEFAULT_MB, // 3584 declared default
+  treePidCount: 12,
+  treeLargestMemberMb: 4800,
+  prevSampleMb: 4600,
+  sampleGapSecs: 30,
+};
+
+const PREEMPT_DECOMPOSITION_EXTRAS = [
+  'watcher_tree_rss_mb',
+  'watcher_tree_largest_member_mb',
+  'watcher_tree_non_heap_mb',
+  'watcher_footprint_prev_sample_mb',
+  'watcher_footprint_sample_gap_secs',
+] as const;
+
+describe('watcher memory-ceiling attribution — supervisor pre-empt decomposition', () => {
+  it('pre-fix: reproduces the shipped 6,506MB pre-empt envelope with NO decomposition (non-vacuity guard)', () => {
+    const ev = simulateSupervisorPreempt(SUPERVISOR_PREEMPT_2026_09_04, 'pre-fix');
+    expect(ev.message).toBe(
+      'auto-sync watcher pre-empted at declared footprint ceiling (runner memory exhausted), consecutive failure #1 [footprint 6506MB]',
+    );
+    expect(ev.fingerprint).toEqual([
+      'sync',
+      'auto-sync-watcher-termination',
+      MEMORY_TOKEN,
+      'none',
+      'none',
+    ]);
+    expect(ev.tags.sync_route).toBe('watcher');
+    expect(ev.tags.rss_scope).toBe('tree');
+    expect(ev.tags.runner_heap_ceiling_source).toBe('declared_default');
+    expect(ev.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
+    // The defect: no decomposition, so the ~2.9GB above the declared heap cap could
+    // not be attributed after the fact.
+    for (const field of PREEMPT_DECOMPOSITION_EXTRAS) {
+      expect(ev.extras[field]).toBeUndefined();
+    }
+    expect(ev.tags.watcher_tree_process_count).toBeUndefined();
+    expect(ev.tags.watcher_footprint_growth_bucket).toBeUndefined();
+    assertContentSafeDiagnostics(ev);
+  });
+
+  it('post-fix: the same pre-empt now carries the full bounded decomposition', () => {
+    const ev = simulateSupervisorPreempt(SUPERVISOR_PREEMPT_2026_09_04, 'post-fix');
+    // Grouping, message and the original channels are byte-identical to pre-fix.
+    expect(ev.fingerprint).toEqual([
+      'sync',
+      'auto-sync-watcher-termination',
+      MEMORY_TOKEN,
+      'none',
+      'none',
+    ]);
+    expect(ev.tags.rss_scope).toBe('tree');
+    expect(ev.extras.runner_heap_ceiling_mb).toBe(RUNNER_HEAP_CEILING_DEFAULT_MB);
+    // Tree total, largest single member, and the non-heap excess above the declared
+    // old-space cap (6506 - 3584 = 2922 MB) — the number --max-old-space-size cannot
+    // bound, and the exact 'runner non-heap growth is unaccounted for' condition.
+    expect(ev.extras.watcher_tree_rss_mb).toBe(6506);
+    expect(ev.extras.watcher_tree_largest_member_mb).toBe(4800);
+    expect(ev.extras.watcher_tree_non_heap_mb).toBe(6506 - RUNNER_HEAP_CEILING_DEFAULT_MB);
+    expect(ev.extras.watcher_tree_non_heap_mb).toBe(2922);
+    // The prior sample + its age reconstruct the growth rate the pre-empt fired on.
+    expect(ev.extras.watcher_footprint_prev_sample_mb).toBe(4600);
+    expect(ev.extras.watcher_footprint_sample_gap_secs).toBe(30);
+    expect(ev.tags.watcher_tree_process_count).toBe('12');
+    // (6506 - 4600) / 30s ≈ 63 MB/s → 50_to_120mbs.
+    expect(ev.tags.watcher_footprint_growth_bucket).toBe('50_to_120mbs');
+    assertContentSafeDiagnostics(ev);
+  });
+
+  it('growth bucket keys on the measured rate and degrades to unknown when unmeasurable', () => {
+    // A first-sync pre-empt with no prior comparable sample carries no rate.
+    expect(footprintGrowthBucket(0, 6506, 0)).toBe('unknown');
+    expect(footprintGrowthBucket(6506, 6000, 30)).toBe('unknown'); // shrinking → no rate
+    // The band boundaries mirror the Rust vocabulary.
+    expect(footprintGrowthBucket(1000, 1000 + 19 * 30, 30)).toBe('under_20mbs');
+    expect(footprintGrowthBucket(1000, 1000 + 20 * 30, 30)).toBe('20_to_50mbs');
+    expect(footprintGrowthBucket(1000, 1000 + 50 * 30, 30)).toBe('50_to_120mbs');
+    expect(footprintGrowthBucket(1000, 1000 + 200 * 30, 30)).toBe('over_120mbs');
   });
 });
