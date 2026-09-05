@@ -3,19 +3,18 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Source contract for the task strip and its wiring into ChannelView. No
+ * Source contract for the task strip and its wiring into ConversationView. No
  * component-render harness exists, so — like story-card.test.ts — we pin the
  * things a regression would silently break: the strip renders nothing when
- * empty, it is a status region, it is mounted in the same `belowMessages`
- * slot as the agent-thinking row, and its controller is disposed with the
- * channel it belongs to.
+ * empty, it is a status region, it is mounted between the message list and
+ * the composer, and its controller is disposed with the conversation.
  */
 const strip = readFileSync(
-  resolve(process.cwd(), 'src/components/messaging/AgentTaskStrip.svelte'),
+  resolve(process.cwd(), 'src/chat/tasks/AgentTaskStrip.svelte'),
   'utf8',
 );
 const channelView = readFileSync(
-  resolve(process.cwd(), 'src/components/messaging/ChannelView.svelte'),
+  resolve(process.cwd(), 'src/chat/ConversationView.svelte'),
   'utf8',
 );
 
@@ -43,22 +42,23 @@ describe('AgentTaskStrip source contract', () => {
   });
 });
 
-describe('ChannelView wiring', () => {
-  it('mounts the strip in the belowMessages slot beside the thinking row', () => {
-    const slot = channelView.slice(channelView.indexOf('{#snippet belowMessages()}'));
-    const end = slot.indexOf('{/snippet}');
-    const body = slot.slice(0, end);
-    expect(body).toContain('<AgentThinkingRow');
-    expect(body).toContain('<AgentTaskStrip');
+describe('ConversationView wiring', () => {
+  it('mounts the strip between the message list and the composer', () => {
+    const strip = channelView.indexOf('<AgentTaskStrip');
+    const composer = channelView.indexOf('<div class="conv-composer">');
+    expect(strip).toBeGreaterThan(-1);
+    expect(composer).toBeGreaterThan(strip);
   });
 
-  it('feeds the strip from the controller, never from the command directly', () => {
+  it('feeds the strip from the controller, never from a command directly', () => {
     expect(channelView).toContain('tasks={taskCtl?.tasks ?? []}');
-    expect(channelView).not.toContain("invoke<unknown>('list_agent_tasks'");
+    expect(channelView).not.toContain('invoke(');
+    expect(channelView).toContain('api.listChannelAgentTasks');
+    expect(channelView).toContain('api.listAgentTasks');
   });
 
-  it('disposes the task controller with the channel, like the thinking controller', () => {
-    expect(channelView).toContain('taskCtl?.dispose()');
-    expect(channelView).toContain('new AgentTaskFeedController(');
+  it('disposes the task controller with the conversation', () => {
+    expect(channelView).toContain('ctl.dispose()');
+    expect(channelView).toContain('new TaskFeedController(');
   });
 });

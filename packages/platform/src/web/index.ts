@@ -67,6 +67,10 @@ export const WEB_PATHS = {
   channel: (id: string) => `/v1/notify/channels/${encodeURIComponent(id)}`,
   channelMembers: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/members`,
+  agentTasks: (agentUid: string) =>
+    `/v1/agent-telescope/agents/${encodeURIComponent(agentUid)}/tasks`,
+  channelAgentTasks: (agentUid: string, channelId: string) =>
+    `/v1/agent-telescope/agents/${encodeURIComponent(agentUid)}/channels/${encodeURIComponent(channelId)}/tasks`,
   channelMember: (id: string, personUid: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(personUid)}`,
   /** GET/PUT the caller's editable global member profile. */
@@ -604,6 +608,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     listChannelMembers: (channelId) =>
       this.get(WEB_PATHS.channelMembers(channelId)),
+    listChannelAgentTasks: (agentUid, channelId) =>
+      this.get(WEB_PATHS.channelAgentTasks(agentUid, channelId)),
+    listAgentTasks: (agentUid) => this.get(WEB_PATHS.agentTasks(agentUid)),
     sendChannelMessage: (channelId, body, extras) =>
       this.post(WEB_PATHS.channelMessages(channelId), {
         body,

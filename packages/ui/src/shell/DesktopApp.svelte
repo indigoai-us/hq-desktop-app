@@ -2059,6 +2059,15 @@
     sendReply: async (args) => {
       unwrapAdapter(await adapter.messaging.sendReply(args));
     },
+    listChannelAgentTasks: adapter.messaging.listChannelAgentTasks
+      ? async (args) =>
+          unwrapAdapter(
+            await adapter.messaging.listChannelAgentTasks!(args.agentUid, args.channelId),
+          )
+      : undefined,
+    listAgentTasks: adapter.messaging.listAgentTasks
+      ? async (args) => unwrapAdapter(await adapter.messaging.listAgentTasks!(args.agentUid))
+      : undefined,
     runCardAction: async (args) => {
       const raw = unwrapAdapter(
         await adapter.messaging.runCardAction(args),

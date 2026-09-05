@@ -1,14 +1,13 @@
 <script lang="ts">
-  // Live strip of an agent's background tasks, rendered under the last message
-  // through Conversation's `belowMessages` slot — the same "status, not a
-  // message" slot the agent-thinking row uses. Each task is a TaskChip.
+  // Live strip of an agent's background tasks, rendered between the message
+  // list and the composer — "status, not a message". Each task is a TaskChip.
   //
   // Renders NOTHING when there are no tasks: a status affordance must not
   // occupy space just to say it has nothing to say. Errors are likewise
   // silent here — a regular member polling an owner/admin-only route would
-  // otherwise see a permanent error under every agent channel.
-  import TaskChip from '../../desktop-alt/components/TaskChip.svelte';
-  import type { AgentTask } from '../../desktop-alt/lib/agent-tasks';
+  // otherwise see a permanent error under every agent conversation.
+  import TaskChip from "./TaskChip.svelte";
+  import type { AgentTask } from "./agent-tasks";
 
   interface Props {
     tasks: AgentTask[];
@@ -30,6 +29,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem 0.75rem;
-    margin-top: 0.5rem;
+    padding: 0 2px;
   }
 </style>
