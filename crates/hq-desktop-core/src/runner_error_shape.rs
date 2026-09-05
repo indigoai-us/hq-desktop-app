@@ -88,7 +88,12 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// their 50 distinct `this.name` identities and `sync-runner-events.ts`
 /// `ERROR_TYPES` (`error`, `auth-error`) are unchanged, so no
 /// [`RunnerErrorCause`] vocabulary change is needed.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.6";
+///
+/// The `~6.16.6` -> `~6.16.11` bump was re-derived from both hq-cloud tags:
+/// 50 → 51 distinct `this.name` identities (`VaultCredentialScopeError` is
+/// the one new class) and `sync-runner-events.ts` `ERROR_TYPES` (`error`,
+/// `auth-error`) are unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.11";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -974,6 +979,11 @@ pub enum RunnerErrorCause {
     VaultConflict,
     VaultNotFound,
     VaultPermissionDenied,
+    // Added when the runner pin moved to ~6.16.11 — hq-cloud 6.16.8 introduced
+    // `VaultCredentialScopeError` (src/credential-scope-error.ts), thrown
+    // before an upload when vault credentials silently omit granted write
+    // prefixes (`code = POLICY_WRITE_SCOPE_TRUNCATED`).
+    VaultCredentialScope,
     VendDenied,
     RateLimited,
     PresignPreconditionMissing,
@@ -1084,7 +1094,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 97] = [
+    pub const ALL: [RunnerErrorCause; 98] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1119,6 +1129,7 @@ impl RunnerErrorCause {
         Self::VaultConflict,
         Self::VaultNotFound,
         Self::VaultPermissionDenied,
+        Self::VaultCredentialScope,
         Self::VendDenied,
         Self::RateLimited,
         Self::PresignPreconditionMissing,
@@ -1221,6 +1232,10 @@ impl RunnerErrorCause {
             Self::VaultConflict => "vault_conflict",
             Self::VaultNotFound => "vault_not_found",
             Self::VaultPermissionDenied => "vault_permission_denied",
+            // Scrubber-safe spelling (the vault_identity / terminal_plugin_launch
+            // precedent): the class name's middle word is a Sentry default-scrubber
+            // denylist substring, so the emitted value is vault_write_scope.
+            Self::VaultCredentialScope => "vault_write_scope",
             Self::VendDenied => "vend_denied",
             Self::RateLimited => "rate_limited",
             Self::PresignPreconditionMissing => "presign_precondition_missing",
@@ -1340,6 +1355,10 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "VaultConflictError" => RunnerErrorCause::VaultConflict,
         "VaultNotFoundError" => RunnerErrorCause::VaultNotFound,
         "VaultPermissionDeniedError" => RunnerErrorCause::VaultPermissionDenied,
+        // Added at the ~6.16.11 pin: vault credentials that silently omit
+        // granted write prefixes (src/credential-scope-error.ts,
+        // POLICY_WRITE_SCOPE_TRUNCATED).
+        "VaultCredentialScopeError" => RunnerErrorCause::VaultCredentialScope,
         "VendDeniedError" => RunnerErrorCause::VendDenied,
         "RateLimited" => RunnerErrorCause::RateLimited,
         "PresignPreconditionMissing" => RunnerErrorCause::PresignPreconditionMissing,
@@ -2210,6 +2229,7 @@ mod tests {
             ("VaultAuthError session is not valid", VaultIdentity),
             // Newly covered identities — the classes the prior sample missed.
             ("VaultNotFoundError vault entry not found for company", VaultNotFound),
+            ("VaultCredentialScopeError write prefixes omitted", VaultCredentialScope),
             ("StateStoreCorruptionError reducer state is corrupt", StateStoreCorruption),
             ("RateLimited too many requests", RateLimited),
             ("CognitoAuthError identity could not be established", CognitoIdentity),
@@ -2469,6 +2489,7 @@ mod tests {
         "VaultAuthError",
         "VaultClientError",
         "VaultConflictError",
+        "VaultCredentialScopeError",
         "VaultNotFoundError",
         "VaultPermissionDeniedError",
         "VendDeniedError",
@@ -2480,15 +2501,16 @@ mod tests {
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
         // Completeness over the FULL derived identity set (not a sample): every
         // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 50 identities must map to 50 DISTINCT tokens — the exact property
+        // the 51 identities must map to 51 DISTINCT tokens — the exact property
         // the prior 16-name sample violated, collapsing every out-of-sample
         // company fault to the flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
-        // ChildProcessSyncWorkerError), and from 46 to 50 at ~6.16.0 (added
+        // ChildProcessSyncWorkerError), from 46 to 50 at ~6.16.0 (added
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
         // outposts terminal classes SessionManagerPluginLaunchError +
-        // TerminalSessionTimeoutError).
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 50);
+        // TerminalSessionTimeoutError), and from 50 to 51 at ~6.16.11 (added
+        // VaultCredentialScopeError).
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 51);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -2514,7 +2536,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 50, "expected 50 distinct cause tokens");
+        assert_eq!(tokens.len(), 51, "expected 51 distinct cause tokens");
     }
 
     #[test]
