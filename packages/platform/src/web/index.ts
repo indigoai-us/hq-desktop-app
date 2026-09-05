@@ -45,8 +45,8 @@ export const WEB_PATHS = {
   isAdmin: "/v1/identity/is-admin",
   /**
    * Dead route — hq-pro has no GET /v1/identity/features/{flag}. Kept for
-   * unmapped flags' byte-for-byte legacy fallback. `meetings` no longer uses
-   * it (registry-first, then a deliberate `ok(false)`).
+   * unmapped flags' byte-for-byte legacy fallback. `meetings` does not use
+   * it: web returns a deliberate `ok(false)` without consulting the registry.
    */
   hasFeature: (flag: string) =>
     `/v1/identity/features/${encodeURIComponent(flag)}`,
@@ -207,6 +207,17 @@ function defaultOnUnauthorized(): void {
   if (path.startsWith("/auth/")) return;
   window.location.assign("/auth/signin");
 }
+
+/**
+ * Flags that must not consult the registry on web.
+ *
+ * `meetings` maps to `desktop.meetings` (defaultValue: true) for the
+ * sync/desktop path. That value is wrong for web: the web legacy answer is a
+ * deliberate `ok(false)` because GET /v1/identity/features/{flag} does not
+ * exist on hq-pro, and Settings treats `!ok` as false. One registry key
+ * cannot serve both adapters, so web bypasses the gate for this flag only.
+ */
+const WEB_REGISTRY_EXCLUDED_FLAGS: ReadonlySet<string> = new Set(["meetings"]);
 
 const DESKTOP_ONLY: AdapterFailure = unavailable(
   "desktop-only",
@@ -414,10 +425,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   /**
    * Legacy `hasFeature` for this adapter. The identity/features route 404s
-   * on hq-pro. `meetings` (the only mapped flag) therefore falls back to a
-   * deliberate `ok(false)` — same user-visible answer the Settings UI already
-   * derived from `!ok`, without an unhandled rejection. Unmapped flags keep
-   * the previous GET so their AdapterResult shape stays byte-for-byte.
+   * on hq-pro. `meetings` is excluded from the registry on web and therefore
+   * returns a deliberate `ok(false)` — same user-visible answer the Settings
+   * UI already derived from `!ok`, without an unhandled rejection. Unmapped
+   * flags keep the previous GET so their AdapterResult shape stays
+   * byte-for-byte.
    */
   private legacyHasFeature(flag: string): AdapterPromise<boolean> {
     if (flag === "meetings") {
@@ -500,7 +512,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
     hasFeature: (flag) =>
-      this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
+        ? this.legacyHasFeature(flag)
+        : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;
