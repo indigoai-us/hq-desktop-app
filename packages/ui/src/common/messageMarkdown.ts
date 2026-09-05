@@ -235,7 +235,9 @@ export function renderMessageBodyMarkdown(body: string): string {
     autolinkMessageUrls(
       isHeavyMessageBody(body)
         ? renderPlainMessageBody(body)
-        : renderMarkdown(normalizeMessageMarkdown(body)),
+        : // Chat bodies keep single newlines as line breaks (one line per idea),
+          // unlike CommonMark's soft-break-as-space used for knowledge docs.
+          renderMarkdown(normalizeMessageMarkdown(body), { softBreak: "br" }),
     ),
   );
   if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) {

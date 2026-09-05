@@ -311,6 +311,61 @@ describe("callout block", () => {
     ).toBeNull();
   });
 
+  it("accepts a `text` alias for `body` (emitter used the markdown field name)", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "callout", tone: "success", title: "Runtime", text: "v2.17" }],
+    });
+    expect(model?.blocks[0]).toEqual({
+      kind: "callout",
+      tone: "success",
+      title: "Runtime",
+      body: "v2.17",
+    });
+  });
+
+  it("prefers `body` over `text` when both are present", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "callout", tone: "info", body: "canonical", text: "alias" }],
+    });
+    expect(model?.blocks[0]).toMatchObject({ kind: "callout", body: "canonical" });
+  });
+
+  it("still rejects a callout with neither body nor text", () => {
+    expect(
+      parseRichContent({
+        v: 1,
+        blocks: [{ kind: "callout", tone: "info", title: "t", extra: "x" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("still rejects a callout whose text alias is an empty string", () => {
+    expect(
+      parseRichContent({ v: 1, blocks: [{ kind: "callout", tone: "info", text: "" }] }),
+    ).toBeNull();
+  });
+
+  it("the `text` alias is sanitized through the same renderer path", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [
+        {
+          kind: "callout",
+          tone: "danger",
+          text: "<script>alert(1)</script> [x](javascript:alert(1))",
+          onClick: "doEvil()",
+        },
+      ],
+    });
+    const block = model?.blocks[0];
+    if (block?.kind !== "callout") throw new Error("expected callout");
+    // Only typed fields survive; alias carries no extra markup path.
+    expect(Object.keys(block).sort()).toEqual(["body", "kind", "tone"]);
+    expect(JSON.stringify(model)).not.toContain("onClick");
+  });
+
   it("body stays inert markdown text — no handler/script survives as a field", () => {
     const model = parseRichContent({
       v: 1,
@@ -332,6 +387,28 @@ describe("callout block", () => {
     expect(Object.keys(block).sort()).toEqual(["body", "kind", "title", "tone"]);
     expect(JSON.stringify(model)).not.toContain("onClick");
     expect(JSON.stringify(model)).not.toContain("<iframe");
+  });
+});
+
+describe("markdown block", () => {
+  it("accepts a `body` alias for `text` (symmetric with callout)", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "markdown", body: "aliased prose" }],
+    });
+    expect(model?.blocks[0]).toEqual({ kind: "markdown", text: "aliased prose" });
+  });
+
+  it("prefers `text` over `body` when both are present", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "markdown", text: "canonical", body: "alias" }],
+    });
+    expect(model?.blocks[0]).toMatchObject({ kind: "markdown", text: "canonical" });
+  });
+
+  it("still rejects a markdown block with neither text nor body", () => {
+    expect(parseRichContent({ v: 1, blocks: [{ kind: "markdown" }] })).toBeNull();
   });
 });
 

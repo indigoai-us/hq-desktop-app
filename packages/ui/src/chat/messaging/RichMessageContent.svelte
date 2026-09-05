@@ -11,7 +11,11 @@
    * labels (--t2/--t3), a single violet accent (--vio-ink). Scoped to
    * `.chat-shell` tokens so it inherits light + dark for free.
    */
-  import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import {
+    isHeavyMessageBody,
+    renderMessageBodyMarkdown,
+  } from "../../common/messageMarkdown.js";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import type {
     BadgeTone,
     CalloutTone,
@@ -251,8 +255,14 @@
     {:else if block.kind === "markdown"}
       <div class="rich-markdown msg-body">
         <!-- Routed through the CSP-safe message renderer (no raw HTML, no
-             scripts, validated hrefs). Same trust level as every message body. -->
-        {@html renderMessageBodyMarkdown(block.text)}
+             scripts, validated hrefs). Same trust level as every message body.
+             A heavy block body degrades to the expandable plain-text renderer
+             so it is never silently truncated. -->
+        {#if isHeavyMessageBody(block.text)}
+          <PlainMessageBody body={block.text} />
+        {:else}
+          {@html renderMessageBodyMarkdown(block.text)}
+        {/if}
       </div>
     {:else if block.kind === "badge"}
       <div class="rich-badge-row" data-testid="rich-badge">

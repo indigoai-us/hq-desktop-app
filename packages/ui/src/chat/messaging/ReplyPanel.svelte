@@ -54,8 +54,12 @@
     type ReactionAggregate,
     type ReactionMap,
   } from "./reactions";
-  import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import {
+    isHeavyMessageBody,
+    renderMessageBodyMarkdown,
+  } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
@@ -782,10 +786,14 @@
                 }
               }}
             >
-              {@html applyMentionMarkup(
-                renderMessageBodyMarkdown(rootRich.text),
-                storedMentions(root),
-              )}
+              {#if isHeavyMessageBody(rootRich.text)}
+                <PlainMessageBody body={rootRich.text} />
+              {:else}
+                {@html applyMentionMarkup(
+                  renderMessageBodyMarkdown(rootRich.text),
+                  storedMentions(root),
+                )}
+              {/if}
             </div>
           {/if}
           {#if rootRich.rich}
@@ -932,10 +940,14 @@
                     }
                   }}
                 >
-                  {@html applyMentionMarkup(
-                    renderMessageBodyMarkdown(replyRich.text),
-                    storedMentions(msg),
-                  )}
+                  {#if isHeavyMessageBody(replyRich.text)}
+                    <PlainMessageBody body={replyRich.text} />
+                  {:else}
+                    {@html applyMentionMarkup(
+                      renderMessageBodyMarkdown(replyRich.text),
+                      storedMentions(msg),
+                    )}
+                  {/if}
                 </div>
               {/if}
               {#if replyRich.rich}
