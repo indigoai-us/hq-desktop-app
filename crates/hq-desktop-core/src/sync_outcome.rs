@@ -4,9 +4,12 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    classify_runner_error_cause, classify_runner_error_site, RunnerErrorCause,
+    classify_runner_error_cause, classify_runner_error_site, PreRunnerCause,
+    PreRunnerCauseRollup, PreRunnerSite, PreRunnerSiteRollup, RunnerErrorCause,
     RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, RunnerErrorSite, RunnerErrorSiteRollup,
+    RunnerErrorHttpStatus, RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup,
+    RunnerErrorShapeRollup, RunnerErrorSite, RunnerErrorSiteRollup,
+    RunnerErrorUnknownProfileRollup,
 };
 use sha2::{Digest, Sha256};
 
@@ -134,6 +137,21 @@ pub struct RunTotals {
     /// class name is added to the vocabulary — the drift-resilience this reopen
     /// adds. Never a runner byte: only a gated identifier is hashed.
     pub runner_error_cause_signature: RunnerErrorCauseSignatureRollup,
+    /// Content-safe STRUCTURAL profile counts of the `unknown_unnamed` cause residual
+    /// (HQ-DESKTOP-61/62): the message that carried no leading identity to name and
+    /// no `runner_error_cause_signature`, previously a dead end. Records only what the
+    /// unmatched message structurally was (`key_value_led`/`lower_prose`/…) — a
+    /// compile-time token, never a runner byte. Fed ONLY from the `UnknownUnnamed`
+    /// branch of `record_error`; a DEDICATED, non-fingerprint rollup.
+    pub runner_error_unknown_profiles: RunnerErrorUnknownProfileRollup,
+    /// Content-safe correlator for the `unknown_unnamed` cause residual
+    /// (HQ-DESKTOP-61/62): the SHA-256 hex12 of a gated, machine-decodable signing
+    /// input an unnamed residual can still carry (an unlisted `code=`/`cause=`/
+    /// `syscall=` identifier, else a >=2-word ASCII skeleton). The sibling to
+    /// `runner_error_cause_signature` — it correlates the residual that axis leaves
+    /// blank, without widening it. Never a runner byte; fed ONLY from the
+    /// `UnknownUnnamed` branch of `record_error`; a DEDICATED, non-fingerprint rollup.
+    pub runner_error_residual_signature: RunnerErrorResidualSignatureRollup,
     /// Content-safe per-site counts of the runner error events seen this pass —
     /// the closed `RunnerErrorSite` vocabulary (`company`/`discovery`/`local_state`/
     /// `runner`/`scope`/`auth`/`file`). This is the single source of truth for BOTH
@@ -142,6 +160,19 @@ pub struct RunTotals {
     /// runner failure site produced the exit — the axis every one of the six
     /// HQ-DESKTOP-5M events lacked. Every token is chosen in code, never a path byte.
     pub runner_error_sites: RunnerErrorSiteRollup,
+    /// Content-safe per-run counts of PRE-RUNNER (first-push phase) failure SITES
+    /// (HQ-DESKTOP-64) — a fault the desktop observed BEFORE the runner spawned,
+    /// which never reaches the runner-output writers above. This is a DEDICATED
+    /// rollup, deliberately NOT a fingerprint input, so recording pre-runner
+    /// evidence never regroups a runner-termination issue. Written ONLY by
+    /// `record_pre_runner_failure`.
+    pub pre_runner_failures: PreRunnerSiteRollup,
+    /// Content-safe per-run counts of PRE-RUNNER failure CAUSES (HQ-DESKTOP-64), the
+    /// companion to `pre_runner_failures`. Also a DEDICATED, non-fingerprint rollup;
+    /// the typed HTTP status a pre-runner failure carried is folded into the shared,
+    /// fingerprint-safe `runner_error_http` rollup instead. Written ONLY by
+    /// `record_pre_runner_failure`.
+    pub pre_runner_causes: PreRunnerCauseRollup,
     /// Shape of the Node stack carried INSIDE a `(runner)` error record's message
     /// (an `err.stack` an uncaught rejection ships), computed by `runner_stack_shape`
     /// over the message's own lines. Stored ONLY when it recognised frames, so the
@@ -245,6 +276,20 @@ impl RunTotals {
         // `unknown_named` fault is correlatable across machines. Records nothing
         // for a matched cause or an `unknown_unnamed` residual.
         self.runner_error_cause_signature.record(&err.message);
+        // Structural profile + residual signature for an `unknown_unnamed` residual
+        // ONLY (HQ-DESKTOP-61/62): the residual the two axes above leave a dead end —
+        // classified `unknown_unnamed`, so no cause name and no cause-signature. These
+        // two DEDICATED rollups make the next such exit self-describing (structure +
+        // an offline-decodable correlator). Gated on the SAME classifier the cause
+        // axis uses, appended AFTER the existing feeds. This block writes NEITHER
+        // runner_error_rollup / runner_error_causes / runner_error_sites (the three
+        // exit-fingerprint rollups, elements 4/5/6) NOR any saw_* disposition flag, so
+        // for an otherwise-identical run the exit fingerprint AND disposition are equal
+        // with and without residual evidence recorded (both pinned by regression tests).
+        if classify_runner_error_cause(&err.message) == RunnerErrorCause::UnknownUnnamed {
+            self.runner_error_unknown_profiles.record(&err.message);
+            self.runner_error_residual_signature.record(&err.message);
+        }
         // Route by failure SITE (HQ-DESKTOP-5M). A genuine file path feeds the
         // per-file path-root rollup; every non-file sentinel — company, discovery,
         // local_state, runner, scope, auth — is counted by the site rollup ONLY, so
@@ -263,6 +308,39 @@ impl RunTotals {
         }
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
+        }
+    }
+
+    /// Record a PRE-RUNNER (first-push phase) failure the desktop observed BEFORE
+    /// the runner spawned (HQ-DESKTOP-64). Such a fault — e.g. a first-push
+    /// `/sts/vend-child` HTTP 403 — is captured as its own Sentry event and never
+    /// reaches `RunTotals` through the runner-output writers, so an exit it preceded
+    /// shipped with no pre-runner evidence and no attribution.
+    ///
+    /// This writes ONLY:
+    ///   * the two DEDICATED pre-runner rollups (`pre_runner_failures`,
+    ///     `pre_runner_causes`), which are NOT fingerprint inputs, and
+    ///   * the shared, fingerprint-safe `runner_error_http` rollup — via the typed
+    ///     [`RunnerErrorHttpRollup::record_status`] entry point, bypassing the
+    ///     untrusted-prose classifier — when a typed status is present.
+    ///
+    /// It deliberately never touches `saw_error` / `saw_alertable_error` /
+    /// `saw_node_too_old`, so the exit disposition is unchanged, and never touches
+    /// `runner_error_rollup` / `runner_error_causes` / `runner_error_sites` (the
+    /// three rollups the exit fingerprint reads, elements 4/5/6), so for an
+    /// otherwise-identical run the exit fingerprint is equal with and without
+    /// pre-runner evidence recorded. Both invariants are pinned by regression tests.
+    pub fn record_pre_runner_failure(
+        &mut self,
+        site: PreRunnerSite,
+        status: Option<u16>,
+        cause: PreRunnerCause,
+    ) {
+        self.pre_runner_failures.record(site);
+        self.pre_runner_causes.record(cause);
+        if let Some(status) = status {
+            self.runner_error_http
+                .record_status(RunnerErrorHttpStatus::from_status(status));
         }
     }
 
@@ -9077,5 +9155,365 @@ mod tests {
             totals.runner_error_scope().as_deref(),
             Some("company:0,file:0,identity:1")
         );
+    }
+
+    // ── pre-runner (first-push phase) attribution (HQ-DESKTOP-64) ────────────────
+
+    #[test]
+    fn record_pre_runner_failure_feeds_only_dedicated_rollups_and_http() {
+        let mut totals = RunTotals::default();
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // The two DEDICATED axes carry the evidence...
+        assert_eq!(totals.pre_runner_failures.tag_value().as_deref(), Some("first_push:1"));
+        assert_eq!(
+            totals.pre_runner_causes.tag_value().as_deref(),
+            Some("scope_exceeds_parent:1")
+        );
+        // ...and the typed status folds into the shared, fingerprint-SAFE http axis.
+        assert_eq!(totals.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+
+        // It must NOT flip any disposition flag (so the exit disposition is unchanged).
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+        assert!(!totals.saw_node_too_old);
+        assert!(!totals.saw_genuine_crash_fatal);
+
+        // It must NOT write any of the three exit-FINGERPRINT rollups (elements 4/5/6),
+        // so they stay at their empty `none`/absent state. This is the review blocker's
+        // ground truth, enforced here.
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_causes.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_sites.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_rollup.tag_value(), None);
+        assert_eq!(totals.runner_error_causes.tag_value(), None);
+        assert_eq!(totals.runner_error_sites.tag_value(), None);
+    }
+
+    #[test]
+    fn record_pre_runner_failure_never_moves_the_exit_fingerprint_inputs() {
+        // A run that ALSO saw a genuine runner error, so the three fingerprint tokens
+        // are non-trivial — the case where accidental interference would actually
+        // regroup an issue.
+        let mut base = RunTotals::default();
+        base.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "AccessDenied code=AccessDenied http=403 denied".to_string(),
+        });
+
+        let mut with_pre = base.clone();
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // The exit fingerprint reads exactly these three tokens (elements 4/5/6). They
+        // must be byte-identical with and without pre-runner evidence, so the exit's
+        // six-element fingerprint is equal for an otherwise-identical run.
+        assert_eq!(
+            base.runner_error_rollup.fingerprint_token(),
+            with_pre.runner_error_rollup.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_causes.fingerprint_token(),
+            with_pre.runner_error_causes.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_sites.fingerprint_token(),
+            with_pre.runner_error_sites.fingerprint_token()
+        );
+        // The disposition flags are equally untouched.
+        assert_eq!(base.saw_error, with_pre.saw_error);
+        assert_eq!(base.saw_alertable_error, with_pre.saw_alertable_error);
+        assert_eq!(base.saw_node_too_old, with_pre.saw_node_too_old);
+    }
+
+    #[test]
+    fn record_pre_runner_failure_leaves_exit_disposition_unchanged() {
+        let base = RunTotals::default();
+        let mut with_pre = RunTotals::default();
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // Drive the full code/signal/cancellation lattice through BOTH the
+        // cancellation- and fault-aware classifiers (the fault seam sync.rs actually
+        // calls), asserting an identical verdict with and without pre-runner evidence.
+        for &code in &[None, Some(0), Some(1), Some(2), Some(17), Some(75)] {
+            for &signal in &[None, Some(15), Some(9), Some(11), Some(6)] {
+                for &cause in &[
+                    None,
+                    Some(SyncCancelCause::UserStop),
+                    Some(SyncCancelCause::TimeoutWatchdog),
+                ] {
+                    for &effected in &[false, true] {
+                        let base_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            base.saw_error,
+                            base.saw_alertable_error,
+                            base.saw_node_too_old,
+                        );
+                        let pre_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_pre.saw_error,
+                            with_pre.saw_alertable_error,
+                            with_pre.saw_node_too_old,
+                        );
+                        assert_eq!(base_c, pre_c, "cancellation verdict changed at {code:?}/{signal:?}");
+
+                        let base_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            base.saw_error,
+                            base.saw_alertable_error,
+                            base.saw_node_too_old,
+                            base.saw_genuine_crash_fatal,
+                            &base.runner_error_rollup,
+                        );
+                        let pre_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_pre.saw_error,
+                            with_pre.saw_alertable_error,
+                            with_pre.saw_node_too_old,
+                            with_pre.saw_genuine_crash_fatal,
+                            &with_pre.runner_error_rollup,
+                        );
+                        assert_eq!(base_f, pre_f, "fault verdict changed at {code:?}/{signal:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pre_runner_typed_http_status_matches_the_prose_path() {
+        // A typed 403 recorded through record_status(from_status(..)) renders the SAME
+        // token and count as the prose classifier parsing a `describeError` ` http=403`.
+        let mut typed = RunTotals::default();
+        typed.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::VendHttp);
+
+        let mut prose = RunTotals::default();
+        prose.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "SomeError code=Foo http=403 denied".to_string(),
+        });
+
+        assert_eq!(typed.runner_error_http.tag_value(), prose.runner_error_http.tag_value());
+        assert_eq!(typed.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+
+        // A None status records nothing on the http axis (absent axis stays absent).
+        let mut no_status = RunTotals::default();
+        no_status.record_pre_runner_failure(
+            PreRunnerSite::FirstPushPersonal,
+            None,
+            PreRunnerCause::Unknown,
+        );
+        assert_eq!(no_status.runner_error_http.tag_value(), None);
+        assert_eq!(
+            no_status.pre_runner_failures.tag_value().as_deref(),
+            Some("first_push_personal:1")
+        );
+        assert_eq!(no_status.pre_runner_causes.tag_value().as_deref(), Some("unknown:1"));
+    }
+
+    #[test]
+    fn pre_runner_rollups_render_bounded_and_ordered() {
+        let mut totals = RunTotals::default();
+        // Two first_push failures, one personal — dominant-by-count ordering, `token:count`.
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::ScopeExceedsParent);
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(500), PreRunnerCause::VendHttp);
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPushPersonal, None, PreRunnerCause::Unknown);
+
+        assert_eq!(
+            totals.pre_runner_failures.tag_value().as_deref(),
+            Some("first_push:2,first_push_personal:1")
+        );
+        assert_eq!(totals.pre_runner_failures.count(PreRunnerSite::FirstPush), 2);
+        assert_eq!(totals.pre_runner_causes.count(PreRunnerCause::ScopeExceedsParent), 1);
+        // Empty rollups render nothing, so a clean run stays byte-identical.
+        assert_eq!(PreRunnerSiteRollup::default().tag_value(), None);
+        assert_eq!(PreRunnerCauseRollup::default().tag_value(), None);
+    }
+
+    // ── unknown_unnamed residual instrumentation (HQ-DESKTOP-61/62) ──────────────
+
+    #[test]
+    fn record_error_feeds_residual_axes_only_for_unknown_unnamed() {
+        // An UnknownUnnamed residual (leading key=value, unlisted errno) feeds BOTH
+        // dedicated residual rollups from the SAME message.
+        let mut unnamed = RunTotals::default();
+        unnamed.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "code=EWEIRD syscall=open unrecognised errno".to_string(),
+        });
+        assert_eq!(
+            unnamed.runner_error_unknown_profiles.tag_value().as_deref(),
+            Some("key_value_led:1")
+        );
+        assert_eq!(
+            unnamed.runner_error_residual_signature.tag_value().as_deref(),
+            Some("ea4e65576be5:1")
+        );
+        // The residual feed did NOT perturb the cause axis: it still reads
+        // `unknown_unnamed` and carries no cause-signature — the dead end this closes.
+        assert_eq!(
+            unnamed.runner_error_causes.tag_value().as_deref(),
+            Some("unknown_unnamed:1")
+        );
+        assert_eq!(unnamed.runner_error_cause_signature.tag_value(), None);
+
+        // A vocabulary-MATCHED cause and an UnknownNamed residual feed NEITHER new axis.
+        for message in [
+            "AccessDenied code=AccessDenied http=403 denied", // matched cause
+            "MysteryFleetError boom on the company leg",       // unknown_NAMED (has identity)
+        ] {
+            let mut other = RunTotals::default();
+            other.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: "(company)".to_string(),
+                message: message.to_string(),
+            });
+            assert_eq!(
+                other.runner_error_unknown_profiles.tag_value(),
+                None,
+                "profile axis must stay empty for {message:?}"
+            );
+            assert_eq!(
+                other.runner_error_residual_signature.tag_value(),
+                None,
+                "residual signature must stay empty for {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn residual_evidence_never_moves_the_exit_fingerprint_or_disposition() {
+        // A run that saw a genuine UnknownUnnamed runner error, so the residual axes
+        // ARE populated and the three fingerprint tokens are non-trivial.
+        let mut with_residual = RunTotals::default();
+        with_residual.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "code=EWEIRD syscall=open unrecognised errno".to_string(),
+        });
+        assert!(with_residual
+            .runner_error_unknown_profiles
+            .tag_value()
+            .is_some());
+        assert!(with_residual
+            .runner_error_residual_signature
+            .tag_value()
+            .is_some());
+
+        // A control identical EXCEPT the residual rollups are cleared. The exit
+        // fingerprint (elements 4/5/6) and every disposition flag must be byte-identical
+        // to it, proving the residual rollups are neither fingerprint nor disposition
+        // inputs — the same invariance the pre-runner axes already satisfy.
+        let mut without_residual = with_residual.clone();
+        without_residual.runner_error_unknown_profiles = RunnerErrorUnknownProfileRollup::default();
+        without_residual.runner_error_residual_signature =
+            RunnerErrorResidualSignatureRollup::default();
+
+        assert_eq!(
+            with_residual.runner_error_rollup.fingerprint_token(),
+            without_residual.runner_error_rollup.fingerprint_token()
+        );
+        assert_eq!(
+            with_residual.runner_error_causes.fingerprint_token(),
+            without_residual.runner_error_causes.fingerprint_token()
+        );
+        assert_eq!(
+            with_residual.runner_error_sites.fingerprint_token(),
+            without_residual.runner_error_sites.fingerprint_token()
+        );
+        assert_eq!(with_residual.saw_error, without_residual.saw_error);
+        assert_eq!(
+            with_residual.saw_alertable_error,
+            without_residual.saw_alertable_error
+        );
+        assert_eq!(with_residual.saw_node_too_old, without_residual.saw_node_too_old);
+        assert_eq!(
+            with_residual.saw_genuine_crash_fatal,
+            without_residual.saw_genuine_crash_fatal
+        );
+
+        // Drive the full disposition lattice through BOTH the cancellation- and
+        // fault-aware classifiers with and without residual evidence; identical verdict.
+        for &code in &[None, Some(0), Some(1), Some(2), Some(17)] {
+            for &signal in &[None, Some(15), Some(9), Some(11), Some(6)] {
+                for &cause in &[
+                    None,
+                    Some(SyncCancelCause::UserStop),
+                    Some(SyncCancelCause::TimeoutWatchdog),
+                ] {
+                    for &effected in &[false, true] {
+                        let base_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            without_residual.saw_error,
+                            without_residual.saw_alertable_error,
+                            without_residual.saw_node_too_old,
+                        );
+                        let res_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_residual.saw_error,
+                            with_residual.saw_alertable_error,
+                            with_residual.saw_node_too_old,
+                        );
+                        assert_eq!(base_c, res_c, "cancellation verdict changed at {code:?}/{signal:?}");
+
+                        let base_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            without_residual.saw_error,
+                            without_residual.saw_alertable_error,
+                            without_residual.saw_node_too_old,
+                            without_residual.saw_genuine_crash_fatal,
+                            &without_residual.runner_error_rollup,
+                        );
+                        let res_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_residual.saw_error,
+                            with_residual.saw_alertable_error,
+                            with_residual.saw_node_too_old,
+                            with_residual.saw_genuine_crash_fatal,
+                            &with_residual.runner_error_rollup,
+                        );
+                        assert_eq!(base_f, res_f, "fault verdict changed at {code:?}/{signal:?}");
+                    }
+                }
+            }
+        }
     }
 }
