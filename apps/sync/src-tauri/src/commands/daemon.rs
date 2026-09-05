@@ -4170,6 +4170,22 @@ enum RssSampleKind {
     Single,
 }
 
+/// A scoped RSS sample plus, for a comparable whole-tree (`Tree`) sample, the
+/// bounded decomposition a supervisor pre-empt attributes with: how many
+/// processes summed into the total and the largest single member. Both are `None`
+/// for a `Single`-PID fallback (and on the Windows job path, which cannot cheaply
+/// decompose its working-set sum) so a withheld number is never dressed up as a
+/// decomposed tree. The tree RSS sum is an upper bound (shared pages counted per
+/// PID), so the largest-member and PID-count fields are what let a single large
+/// runner be told apart from many processes summing to the same total.
+#[derive(Debug, Clone, Copy)]
+struct ScopedRssSample {
+    kb: u64,
+    kind: RssSampleKind,
+    tree_pid_count: Option<u32>,
+    tree_largest_member_kb: Option<u64>,
+}
+
 /// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
 /// handler, and the supervisor.
 #[derive(Default)]
@@ -4353,10 +4369,16 @@ fn note_watcher_rss(kb: u64, kind: RssSampleKind) {
 /// sample resets the streak so a single spike never pre-empts (HQ-DESKTOP
 /// watcher-memory cluster). Best-effort: never changes whether a crash is
 /// captured.
-fn note_watcher_footprint_and_decide(
-    kb: u64,
-    kind: RssSampleKind,
-) -> hq_desktop_core::daemon::FootprintCeilingDecision {
+/// The outcome of feeding a supervisor footprint sample into the pure decision:
+/// whether to pre-empt, plus the PRIOR comparable sample (KB) and its age (secs)
+/// so a pre-empt capture can attribute the measured growth that drove it.
+struct FootprintDecisionOutcome {
+    decision: hq_desktop_core::daemon::FootprintCeilingDecision,
+    prev_comparable_sample_kb: Option<u64>,
+    sample_gap_secs: Option<u64>,
+}
+
+fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisionOutcome {
     // The footprint backstop must sit above the runner's declared heap ceiling, so
     // a raised heap override (HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB or a user
     // --max-old-space-size above the default) is never throttled below the heap it
@@ -4365,17 +4387,50 @@ fn note_watcher_footprint_and_decide(
     let ceiling_kb = u64::from(
         hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
     ) * 1024;
-    let comparable = kind == RssSampleKind::Tree;
+    let comparable = sample.kind == RssSampleKind::Tree;
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    // Read the PRIOR sample BEFORE note_watcher_rss overwrites last_rss_* for this
+    // tick, so the projection measures the growth from the previous comparable
+    // sample to this one. Only a prior COMPARABLE (Tree) sample can seed the rate;
+    // a prior Single/withheld sample is not comparable, so it seeds no projection.
+    let prev_comparable_sample_kb = match st.last_rss_kind {
+        Some(RssSampleKind::Tree) => st.last_rss_kb,
+        _ => None,
+    };
+    let sample_gap_secs = st.last_rss_at.map(|t| t.elapsed().as_secs());
+    let projection = hq_desktop_core::daemon::FootprintProjection {
+        prev_sample_kb: prev_comparable_sample_kb,
+        gap_secs: sample_gap_secs.unwrap_or(0),
+        cadence_secs: SUPERVISOR_INTERVAL.as_secs(),
+    };
     let (streak, decision) = hq_desktop_core::daemon::footprint_ceiling_step(
-        Some(kb),
+        Some(sample.kb),
         comparable,
         ceiling_kb,
         st.footprint_over_ceiling_streak,
         hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+        projection,
     );
     st.footprint_over_ceiling_streak = streak;
-    decision
+    FootprintDecisionOutcome {
+        decision,
+        prev_comparable_sample_kb,
+        // Report a gap only when there was a usable prior comparable sample.
+        sample_gap_secs: prev_comparable_sample_kb.and(sample_gap_secs),
+    }
+}
+
+/// Bounded evidence a supervisor pre-empt attributes with: the current whole-tree
+/// footprint, its decomposition (PID count + largest member, when the sample was a
+/// comparable tree), and the prior comparable sample + its age so the growth rate
+/// that drove the pre-empt can be reconstructed. Every field is a bounded integer;
+/// `None` degrades to a content-safe `unknown`/empty sentinel, never a guess.
+struct SupervisorPreemptEvidence {
+    footprint_kb: u64,
+    tree_pid_count: Option<u32>,
+    tree_largest_member_kb: Option<u64>,
+    prev_sample_kb: Option<u64>,
+    gap_secs: Option<u64>,
 }
 
 /// Record a supervisor footprint pre-empt as an attributed memory-exhaustion
@@ -4389,7 +4444,7 @@ fn note_watcher_footprint_and_decide(
 /// OS-kill. Content-safe: message is static, the fingerprint is the converged
 /// token, and every tag/extra is a bounded value the reactive emit path already
 /// sends (no command bytes, paths, or stderr).
-fn record_supervisor_memory_preempt(footprint_kb: u64) {
+fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     let mut effects = ProductionWatcherProcessEffects;
     // Count the crash episode and set the respawn backoff exactly as an ordinary
     // crash exit would — the suppressed pre-empt exit never will.
@@ -4413,8 +4468,38 @@ fn record_supervisor_memory_preempt(footprint_kb: u64) {
         "auto-sync watcher pre-empted at declared footprint ceiling \
          (runner memory exhausted), consecutive failure #{consecutive} \
          [footprint {}MB]",
-        footprint_kb / 1024
+        evidence.footprint_kb / 1024
     );
+    // Bounded decomposition (auto-sync watcher footprint growth-rate cluster): the
+    // tree total is an upper bound, so ship the largest single member and the PID
+    // count beside it; the non-heap delta is the tree total minus the declared heap
+    // cap (saturating at 0), which is the ~2.9 GB `--max-old-space-size` cannot
+    // bound; the prior sample, its age, and the growth bucket reconstruct the rate
+    // the pre-empt fired on. Every field is a bounded integer or a fixed token.
+    let footprint_mb = evidence.footprint_kb / 1024;
+    let non_heap_mb = footprint_mb.saturating_sub(u64::from(heap_ceiling.mb));
+    let growth_bucket = match (evidence.prev_sample_kb, evidence.gap_secs) {
+        (Some(prev), Some(gap)) if gap > 0 && evidence.footprint_kb > prev => {
+            let rate_mb_per_sec = ((evidence.footprint_kb - prev) / 1024) / gap;
+            hq_desktop_core::daemon::footprint_growth_bucket_mb_per_sec(rate_mb_per_sec).to_string()
+        }
+        _ => "unknown".to_string(),
+    };
+    let process_count = evidence
+        .tree_pid_count
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let num = |v: u64| sentry::protocol::Value::Number(v.into());
+    // A bounded MB extra from an optional KB sample: an unmeasured value ships as
+    // an empty string (the closed telemetry allow-list accepts `""`), never a guess.
+    let opt_mb = |kb: Option<u64>| match kb {
+        Some(kb) => sentry::protocol::Value::Number((kb / 1024).into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
+    let opt_secs = |v: Option<u64>| match v {
+        Some(v) => sentry::protocol::Value::Number(v.into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
     let tags = [
         ("sync_route", "watcher".to_string()),
         ("rss_scope", "tree".to_string()),
@@ -4422,11 +4507,26 @@ fn record_supervisor_memory_preempt(footprint_kb: u64) {
             "runner_heap_ceiling_source",
             heap_ceiling.source.as_str().to_string(),
         ),
+        ("watcher_tree_process_count", process_count),
+        ("watcher_footprint_growth_bucket", growth_bucket),
     ];
-    let extras = [(
-        "runner_heap_ceiling_mb",
-        sentry::protocol::Value::Number(heap_ceiling.mb.into()),
-    )];
+    let extras = [
+        ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
+        ("watcher_tree_rss_mb", num(footprint_mb)),
+        (
+            "watcher_tree_largest_member_mb",
+            opt_mb(evidence.tree_largest_member_kb),
+        ),
+        ("watcher_tree_non_heap_mb", num(non_heap_mb)),
+        (
+            "watcher_footprint_prev_sample_mb",
+            opt_mb(evidence.prev_sample_kb),
+        ),
+        (
+            "watcher_footprint_sample_gap_secs",
+            opt_secs(evidence.gap_secs),
+        ),
+    ];
     // The RunnerMemory lifecycle transition (which retains the category so the app
     // can state background sync stopped and why) is owned by the terminate call
     // that immediately follows this — set here it would only double the breadcrumb.
@@ -4508,15 +4608,25 @@ fn reset_crash_state_if_recovered() {
 /// job query plus the job's live-PID count of working-set reads per supervisor
 /// tick.
 #[cfg(not(target_os = "windows"))]
-fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
     match sample_pid_tree_rss_kb(pid) {
-        Some(sum) => Some((sum, RssSampleKind::Tree)),
-        None => sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single)),
+        Some(tree) => Some(ScopedRssSample {
+            kb: tree.total_kb,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(tree.pid_count),
+            tree_largest_member_kb: Some(tree.largest_member_kb),
+        }),
+        None => sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
+            kb,
+            kind: RssSampleKind::Single,
+            tree_pid_count: None,
+            tree_largest_member_kb: None,
+        }),
     }
 }
 
 #[cfg(target_os = "windows")]
-fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
     // Prefer the runner-inclusive job-object working-set sum for the CURRENT
     // generation. `sum_job_working_set_kb` requires the observed `pid` to be
     // present in the job's live-PID list, so a racing generation handoff can never
@@ -4528,14 +4638,29 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
         })
         .and_then(|samples| sum_job_working_set_kb(&samples, pid))
     {
-        return Some((sum, RssSampleKind::Tree));
+        // The Windows job working-set sum double-counts pages shared across the
+        // shim/node/worker processes more heavily than the Unix `ps` RSS sum, so
+        // the tree decomposition is WITHHELD (`None`) rather than estimated — a
+        // supervisor pre-empt on Windows carries `unknown` for the per-member
+        // breakdown instead of a misleading number.
+        return Some(ScopedRssSample {
+            kb: sum,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: None,
+            tree_largest_member_kb: None,
+        });
     }
     // ANY failure — no generation, no job handle, query failure, the observed root
     // PID absent from the live list, an empty sample, or ONLY the shim readable
     // (every descendant raced out of its per-PID read) — falls back to today's
     // exact single-PID sample so a shim footprint stays WITHHELD as
     // `unattributed:shim`, never reported as the runner's.
-    sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))
+    sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
+        kb,
+        kind: RssSampleKind::Single,
+        tree_pid_count: None,
+        tree_largest_member_kb: None,
+    })
 }
 
 /// Sum working-set (KB) over the sampled live PIDs of the watcher's Job Object,
@@ -4586,14 +4711,29 @@ fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u
     }
 }
 
+/// A whole-tree RSS sample decomposed into the total, the number of processes
+/// summed, and the largest single member — so a supervisor pre-empt can attribute
+/// "one Node process at 6.5 GB" apart from "twelve processes summing to 6.5 GB".
+/// The total is an upper bound (the RSS sum double-counts pages shared across the
+/// tree), which is exactly why the PID count and largest member ride alongside it.
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TreeRssSample {
+    total_kb: u64,
+    pid_count: u32,
+    largest_member_kb: u64,
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
-/// `ps -eo pid=,ppid=,rss=` table. Cycle-safe via a visited set. Returns `None`
-/// only when `root` is absent from the table, so the caller falls back to a
-/// single-PID sample rather than reporting a wrong sum. Pure so it can be
-/// unit-tested against captured macOS and Linux `ps` output, including
+/// `ps -eo pid=,ppid=,rss=` table, and decompose it into the PID count and the
+/// largest single member. Cycle-safe via a visited set. Returns `None` only when
+/// `root` is absent from the table, so the caller falls back to a single-PID
+/// sample rather than reporting a wrong sum. The `None`-on-missing-root contract
+/// is byte-identical to before, keeping the `Single` fallback unchanged. Pure so
+/// it can be unit-tested against captured macOS and Linux `ps` output, including
 /// reparented (ppid 1) descendants.
 #[cfg(not(target_os = "windows"))]
-fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<u64> {
+fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     use std::collections::{HashMap, HashSet, VecDeque};
     let mut rss_by_pid: HashMap<u32, u64> = HashMap::new();
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -4616,26 +4756,35 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<u64> {
         return None;
     }
     let mut total = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
     let mut visited: HashSet<u32> = HashSet::new();
     let mut queue: VecDeque<u32> = VecDeque::from([root]);
     while let Some(pid) = queue.pop_front() {
         if !visited.insert(pid) {
             continue;
         }
-        total = total.saturating_add(rss_by_pid.get(&pid).copied().unwrap_or(0));
+        let member_kb = rss_by_pid.get(&pid).copied().unwrap_or(0);
+        total = total.saturating_add(member_kb);
+        pid_count = pid_count.saturating_add(1);
+        largest_member_kb = largest_member_kb.max(member_kb);
         if let Some(kids) = children.get(&pid) {
             queue.extend(kids.iter().copied());
         }
     }
-    Some(total)
+    Some(TreeRssSample {
+        total_kb: total,
+        pid_count,
+        largest_member_kb,
+    })
 }
 
-/// Best-effort whole-tree RSS (KB) for the registered watcher PID: one bounded
-/// `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`]. `None`
-/// on spawn/exit/parse failure or a missing root, so the caller falls back to the
-/// single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
+/// bounded `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`].
+/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
+/// to the single-PID sample.
 #[cfg(not(target_os = "windows"))]
-fn sample_pid_tree_rss_kb(root: u32) -> Option<u64> {
+fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd.args(["-eo", "pid=,ppid=,rss="]).output().ok()?;
@@ -4836,19 +4985,24 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // through the npx launcher, with an honest single-PID fallback.
                 // Best-effort.
                 if let Some(pid) = sample_pid {
-                    if let Some((kb, kind)) = sample_watcher_rss_scoped(pid) {
-                        note_watcher_rss(kb, kind);
+                    if let Some(sample) = sample_watcher_rss_scoped(pid) {
+                        // Decide BEFORE recording this tick's sample, so the pure
+                        // projection measures growth from the PRIOR comparable sample
+                        // (value + age) to this one, not from this sample to itself.
+                        let footprint = note_watcher_footprint_and_decide(sample);
+                        note_watcher_rss(sample.kb, sample.kind);
                         // Supervisor footprint ceiling: when a COMPARABLE whole-tree
-                        // footprint stays at or above the declared ceiling across
-                        // consecutive samples, the runner is in genuine runaway (well
-                        // above any healthy set) and heading for a macOS jetsam
-                        // SIGKILL or a Windows commit failure that would destroy the
-                        // memory evidence. Pre-empt HERE so the app — not the host —
+                        // footprint is at or above the declared ceiling on consecutive
+                        // samples — or a measured growth rate would carry it past the
+                        // hard ceiling within one interval — the runner is in genuine
+                        // runaway (well above any healthy set) and heading for a macOS
+                        // jetsam SIGKILL or a Windows commit failure that would destroy
+                        // the memory evidence. Pre-empt HERE so the app — not the host —
                         // decides the outcome, recording an attributed memory-ceiling
                         // lifecycle transition; the existing crash-loop backoff bounds
                         // the respawn cadence. Best-effort — a withheld/shim sample or
                         // a single spike never pre-empts.
-                        if note_watcher_footprint_and_decide(kb, kind)
+                        if footprint.decision
                             == hq_desktop_core::daemon::FootprintCeilingDecision::Preempt
                         {
                             if let Some(generation) = generation_for_handle(DAEMON_HANDLE) {
@@ -4861,7 +5015,13 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                                 // its exit is suppressed as an app teardown, so it
                                 // would otherwise emit no event and leave the
                                 // runaway to be hot-respawned every ~60s.
-                                record_supervisor_memory_preempt(kb);
+                                record_supervisor_memory_preempt(SupervisorPreemptEvidence {
+                                    footprint_kb: sample.kb,
+                                    tree_pid_count: sample.tree_pid_count,
+                                    tree_largest_member_kb: sample.tree_largest_member_kb,
+                                    prev_sample_kb: footprint.prev_comparable_sample_kb,
+                                    gap_secs: footprint.sample_gap_secs,
+                                });
                                 terminate_daemon_generation_once(
                                     generation,
                                     DaemonFailureCategory::RunnerMemory,
@@ -10721,15 +10881,37 @@ mod tests {
     fn sum_pid_tree_rss_kb_sums_descendants_and_handles_edges() {
         // pid ppid rss — root=100 with children 200/300 and grandchild 400.
         let table = "100 1 10\n200 100 20\n300 100 30\n400 200 40\n999 1 99\n";
-        // root + 200 + 300 + 400 = 100; the unrelated 999 is excluded.
-        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(100));
+        // root + 200 + 300 + 400 = 100 KB over 4 PIDs; the unrelated 999 is excluded,
+        // and the largest single member is 400's 40 KB.
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 100),
+            Some(TreeRssSample {
+                total_kb: 100,
+                pid_count: 4,
+                largest_member_kb: 40
+            })
+        );
         // A leaf sums only itself.
-        assert_eq!(sum_pid_tree_rss_kb(table, 400), Some(40));
-        // A missing root -> None, which drives the single-PID fallback.
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 400),
+            Some(TreeRssSample {
+                total_kb: 40,
+                pid_count: 1,
+                largest_member_kb: 40
+            })
+        );
+        // A missing root -> None, which drives the single-PID fallback unchanged.
         assert_eq!(sum_pid_tree_rss_kb(table, 12345), None);
         // Malformed rows are skipped, never fatal; a reparented (ppid 1) row is
         // just another descendant when reachable, or excluded when not.
-        assert_eq!(sum_pid_tree_rss_kb("garbage\n100 1 10\n", 100), Some(10));
+        assert_eq!(
+            sum_pid_tree_rss_kb("garbage\n100 1 10\n", 100),
+            Some(TreeRssSample {
+                total_kb: 10,
+                pid_count: 1,
+                largest_member_kb: 10
+            })
+        );
     }
 
     #[cfg(unix)]
@@ -10737,18 +10919,33 @@ mod tests {
     fn sum_pid_tree_rss_kb_is_cycle_safe() {
         // A pathological ppid cycle must terminate and count each PID once.
         let table = "100 200 10\n200 100 20\n";
-        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(30));
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 100),
+            Some(TreeRssSample {
+                total_kb: 30,
+                pid_count: 2,
+                largest_member_kb: 20
+            })
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
-        // succeeds and reports the honest whole-tree scope.
-        let (kb, kind) = sample_watcher_rss_scoped(std::process::id())
+        // succeeds and reports the honest whole-tree scope with its decomposition.
+        let sample = sample_watcher_rss_scoped(std::process::id())
             .expect("the live test process must be sampleable");
-        assert!(kb > 0, "a live process has a nonzero footprint");
-        assert_eq!(kind, RssSampleKind::Tree);
+        assert!(sample.kb > 0, "a live process has a nonzero footprint");
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(
+            sample.tree_pid_count.unwrap_or(0) >= 1,
+            "a comparable tree sample carries a PID count"
+        );
+        assert!(
+            sample.tree_largest_member_kb.unwrap_or(0) > 0,
+            "a comparable tree sample carries a largest-member RSS"
+        );
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared

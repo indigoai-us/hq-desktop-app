@@ -88,11 +88,14 @@ describe('watcher shim RSS attribution — source contracts', () => {
       '\n}\n',
       'windows sample_watcher_rss_scoped',
     );
-    // Byte-for-byte the pre-fix Windows behaviour, so a shim footprint stays
-    // WITHHELD rather than being reported as a wrong number.
-    expect(windowsArm).toContain(
-      'sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))',
-    );
+    // The same pre-fix Windows fallback behaviour — a shim footprint stays WITHHELD
+    // (single-PID, tagged `Single`) rather than reported as a wrong number. The
+    // sample now rides the shared ScopedRssSample, whose tree decomposition is
+    // withheld (`None`) on the Windows path since the job working-set sum cannot be
+    // cheaply decomposed.
+    expect(windowsArm).toContain('sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {');
+    expect(windowsArm).toContain('kind: RssSampleKind::Single,');
+    expect(windowsArm).toContain('tree_pid_count: None,');
   });
 
   it('keeps the non-Windows sampling path byte-identical (ps descendant sum)', () => {

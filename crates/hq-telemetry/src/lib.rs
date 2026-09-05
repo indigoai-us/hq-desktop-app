@@ -661,6 +661,32 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "declared_default" | "env_override" | "user_node_options"
         )),
+        // Supervisor footprint-preempt decomposition (auto-sync watcher footprint
+        // growth-rate cluster). Bare-integer MB / seconds numeric extras that let
+        // the tree total be split into its largest single member and the non-heap
+        // excess above the declared old-space cap, and the pre-empt's rate be
+        // reconstructed from the prior sample and its age. Each reaches this check
+        // as `""` for a non-string `Value` (type-safe by construction); a string
+        // value must parse as an unsigned integer, so a producer bug that shipped a
+        // path or raw fragment degrades to `[Filtered]` instead.
+        "watcher_tree_rss_mb"
+        | "watcher_tree_largest_member_mb"
+        | "watcher_tree_non_heap_mb"
+        | "watcher_footprint_prev_sample_mb"
+        | "watcher_footprint_sample_gap_secs" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Tree PID count for the pre-empt sample, mirroring `watcher_job_process_count`
+        // (a small integer or the fixed `unknown` sentinel) so a single large runner
+        // is distinguishable from many processes summing to the same total.
+        "watcher_tree_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
+        // Closed-vocabulary bucket of the measured whole-tree growth rate behind a
+        // pre-empt, mirroring `runner_heap_peak_used_bucket`; the exact rate is not
+        // shipped. An off-vocabulary token degrades to `[Filtered]`.
+        "watcher_footprint_growth_bucket" => Some(matches!(
+            value,
+            "under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"
+        )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
         // prerelease/build suffix) or the fixed `unknown` sentinel.
@@ -2962,6 +2988,64 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_preempt_decomposition_fields_survive_egress_and_reject_lookalikes() {
+        // Valid values survive egress: bare-integer MB/seconds, a small PID count or
+        // the `unknown` sentinel, and the closed growth-bucket vocabulary.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506"),
+            ("watcher_tree_rss_mb", ""),
+            ("watcher_tree_largest_member_mb", "4800"),
+            ("watcher_tree_non_heap_mb", "2922"),
+            ("watcher_tree_non_heap_mb", "0"),
+            ("watcher_footprint_prev_sample_mb", "4600"),
+            ("watcher_footprint_prev_sample_mb", ""),
+            ("watcher_footprint_sample_gap_secs", "30"),
+            ("watcher_footprint_sample_gap_secs", ""),
+            ("watcher_tree_process_count", "12"),
+            ("watcher_tree_process_count", "unknown"),
+            ("watcher_footprint_growth_bucket", "under_20mbs"),
+            ("watcher_footprint_growth_bucket", "20_to_50mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs"),
+            ("watcher_footprint_growth_bucket", "over_120mbs"),
+            ("watcher_footprint_growth_bucket", "unknown"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A producer bug that shipped a path, a non-integer, or an out-of-vocabulary
+        // token in any of the new footprint-decomposition fields degrades to
+        // `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506 /Users/Ada"),
+            ("watcher_tree_largest_member_mb", "4800MB"),
+            ("watcher_tree_non_heap_mb", "-1"),
+            ("watcher_footprint_prev_sample_mb", "4600; rm -rf"),
+            ("watcher_footprint_sample_gap_secs", "30s"),
+            ("watcher_tree_process_count", "12 processes /Users/Ada"),
+            ("watcher_footprint_growth_bucket", "40mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
             );
         }
     }
