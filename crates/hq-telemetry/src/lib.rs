@@ -873,6 +873,13 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // timestamp, host name, or identifier to `[Filtered]` instead of leaking
         // it — the same discipline as the pull-based probe extras above.
         "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
+        // Repeated unconfirmed session-terminate counter (HQ-DESKTOP-5J). Emitted as
+        // a bare integer (reaches this check as `""` for a numeric Value); a string
+        // value must parse as an unsigned integer, so a producer bug that shipped a
+        // raw identifier or path degrades to `[Filtered]` instead of leaking it.
+        "session_terminate_unconfirmed_run_count" => {
+            Some(value.is_empty() || value.parse::<u32>().is_ok())
+        }
         _ => None,
     }
 }
@@ -1897,14 +1904,32 @@ mod tests {
             );
         }
 
+        // Repeated unconfirmed session-terminate counter (HQ-DESKTOP-5J): a bare
+        // integer. The empty-string form (a non-string numeric Value) and any u32
+        // string survive; a non-integer must fail closed.
+        for value in ["", "0", "1", "2", "4294967295"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("session_terminate_unconfirmed_run_count", value),
+                Some(true),
+                "run-count value {value:?} must survive egress"
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("session_terminate_unconfirmed_run_count", "two"),
+            Some(false),
+            "a non-integer run count must fail closed"
+        );
+
         // Raw event-log text — the exact leak the allowlist exists to stop — must
-        // fail closed on every one of the probe keys AND the latch key.
+        // fail closed on every one of the probe keys, the latch key, AND the
+        // repeated-session-terminate counter key.
         let leak = r"1074: shutdown.exe (DESKTOP-QOH7J4N) by Ada at C:\Windows";
         for key in [
             "windows_teardown_probe_verdict",
             "windows_teardown_probe_shuttingdown",
             "windows_teardown_probe_log",
             "session_end_latch",
+            "session_terminate_unconfirmed_run_count",
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, leak),

@@ -25,6 +25,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readRepoFile } from './harness';
 import {
   DESTROYED_STATE_PANIC,
   decideSessionEndExit,
@@ -273,5 +274,333 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     // one that would have exited anyway.
     expect(observed.exitedWithinDeadline, diagnostics).toBe(true);
     expect(observed.exitCode, diagnostics).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session-terminate reporting boundary (HQ-DESKTOP-5J)
+// ---------------------------------------------------------------------------
+//
+// A DIFFERENT defect on the same Windows exit seam: an ordinary user sign-out
+// kills the windowless auto-sync child with DBG_TERMINATE_PROCESS (0x40010004)
+// and delivers no window message, so none of the three positive suppressors (an
+// observed WM_ENDSESSION, a contemporaneous durable latch, a probe-confirmed
+// teardown) can fire — and the teardown probe's `Absent` verdict then labelled it
+// with the confident-sounding `unattributed_no_teardown` on the strength of a
+// query whose providers cannot see a logoff at all. The residual was one
+// error-level "auto-sync watcher exited unexpectedly … consecutive failure #1"
+// alert per sign-out (issue HQ-DESKTOP-5J, all events on DESKTOP-QOH7J4N).
+//
+// The fix moves the REPORTING BOUNDARY rather than adding a fourth evidence
+// source (the move that had already been tried twice): the first unconfirmed
+// session-terminate exit of an app run is the benign sign-out (local log only),
+// and only a SECOND within the same run — where the app is provably still alive,
+// so its session did not end — escalates, on a distinct anomaly fingerprint.
+//
+// Same two layers as HQ-DESKTOP-44 above: source contracts over the shipping
+// Rust, and a both-directions envelope model. Both run on Linux/macOS CI with no
+// Windows host.
+
+const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
+const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
+const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
+
+describe('session-terminate reporting boundary — source contracts', () => {
+  it('routes the disposition through a pure per-run counter, not a fourth evidence source', () => {
+    // The three-way disposition and its pure transition ship in the core, keeping
+    // the impure daemon layer down to storing a single number.
+    expect(coreSource).toContain('pub enum DeferredSessionEndDisposition');
+    expect(coreSource).toContain('DropSuppressed');
+    expect(coreSource).toContain('DropFirstUnconfirmed');
+    expect(coreSource).toContain('EscalateRepeatedUnconfirmed');
+    expect(coreSource).toContain('pub fn resolve_deferred_session_end_disposition(');
+    // The evidence gate is UNCHANGED — the fix layers on top of it, it does not
+    // invent a new positive-confirmation source (a standing non-goal).
+    expect(coreSource).toContain('pub fn deferred_session_end_outcome(');
+    expect(coreSource).not.toContain('WTSQuerySessionInformation');
+  });
+
+  it('gates the teardown verdict `Absent` on SM_SHUTTINGDOWN alone, and says so honestly', () => {
+    // Absent still requires BOTH samples to be an explicit `No` (never Unavailable).
+    expect(coreSource).toContain('reading.shuttingdown_at_exit == TeardownShuttingDown::No');
+    expect(coreSource).toContain('reading.shuttingdown_at_resolve == TeardownShuttingDown::No');
+    // And the doc no longer over-claims "positive negative evidence from every
+    // source" — the System channel cannot observe a logoff, so it is supporting.
+    expect(coreSource).not.toContain('positive negative evidence from *every* source');
+    expect(coreSource).toContain('load-bearing on `SM_SHUTTINGDOWN` ALONE');
+  });
+
+  it('keeps an OS session teardown out of the crash-loop counter and respawn backoff', () => {
+    // The deferral shape passes the flag; a crash/fault exit passes false.
+    expect(daemonSource).toContain('deferring_external_session_teardown');
+    expect(daemonSource).toContain(
+      'effects.note_watcher_crashed(deferring_external_session_teardown)',
+    );
+    expect(coreSource).toContain('pub fn is_windows_session_terminate_watcher_exit(');
+    // The counter itself is read/stored, not mutated inline with the decision.
+    expect(daemonSource).toContain('static SESSION_TERMINATE_UNCONFIRMED_RUN_COUNT: AtomicU32');
+    expect(daemonSource).toContain('fn classify_resolved_session_terminate(');
+  });
+
+  it('escalates a repeat on a DISTINCT fingerprint that names the anomaly', () => {
+    expect(daemonSource).toContain('fn escalate_repeated_session_terminate_capture(');
+    // A NEW group, never a reuse of the benign per-sign-out shape.
+    expect(daemonSource).toContain('"auto-sync-watcher-repeated-session-terminate"');
+    // Carrying the bounded run count as an egress-allow-listed integer extra.
+    expect(daemonSource).toContain('"session_terminate_unconfirmed_run_count"');
+    expect(telemetrySource).toContain('"session_terminate_unconfirmed_run_count" =>');
+  });
+
+  it('resets the per-run counter at the confirmed Windows session-end teardown', () => {
+    expect(daemonSource).toContain('fn reset_session_terminate_unconfirmed_run_count(');
+    // The reset is wired into the teardown drop path (a confirmed session end).
+    const dropFn = daemonSource.slice(
+      daemonSource.indexOf('pub fn drop_pending_session_end_captures('),
+    );
+    expect(dropFn.slice(0, 600)).toContain('reset_session_terminate_unconfirmed_run_count()');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact-level envelope model (both directions)
+// ---------------------------------------------------------------------------
+
+type Policy = 'pre-fix' | 'post-fix';
+
+interface SessionTerminateEnvelope {
+  message: string;
+  fingerprint: string[];
+  tags: Record<string, string>;
+  extras: Record<string, string | number>;
+  level: 'error' | 'info';
+  /** Whether an error-level Sentry event actually reaches the wire. */
+  sent: boolean;
+}
+
+/** One resolved deferral's evidence, as the resolver reads it after the grace. */
+interface Resolution {
+  /** A positive suppressor fired: observed message, contemporaneous latch, or a
+   *  probe-confirmed teardown. */
+  suppressed: boolean;
+  /** The resolved windows_terminator reading (fixed vocabulary). */
+  terminator: string;
+  teardownVerdict: 'teardown_confirmed' | 'teardown_absent' | 'teardown_unknown';
+  shuttingdown: 'yes' | 'no' | 'unavailable';
+  teardownLog: 'kernel_general_13' | 'kernel_power_109' | 'user32_1074' | 'none' | 'unavailable';
+  latch: 'latched' | 'absent' | 'unavailable';
+}
+
+const BENIGN_FINGERPRINT = [
+  'sync',
+  'auto-sync-watcher-termination',
+  'windows:session-terminate',
+  'none',
+  'none',
+  'none',
+];
+const ESCALATION_FINGERPRINT = ['sync', 'auto-sync-watcher-repeated-session-terminate'];
+
+/** The benign per-sign-out capture the exit path builds — the exact reported
+ *  HQ-DESKTOP-5J 0.10.108 envelope shape. */
+function benignEnvelope(res: Resolution): SessionTerminateEnvelope {
+  return {
+    message:
+      'auto-sync watcher exited unexpectedly (with Windows status 0x40010004 ' +
+      '(session terminate)), consecutive failure #1',
+    fingerprint: [...BENIGN_FINGERPRINT],
+    tags: {
+      windows_exit_status: '0x40010004',
+      windows_exit_class: 'session_terminate',
+      windows_terminator: res.terminator,
+      sync_route: 'watcher',
+      path: '(auto-sync)',
+      watcher_child_kind: 'cmd_shim',
+      runner_fatal_class: 'none',
+    },
+    extras: {
+      windows_teardown_probe_verdict: res.teardownVerdict,
+      windows_teardown_probe_shuttingdown: res.shuttingdown,
+      windows_teardown_probe_log: res.teardownLog,
+      session_end_latch: res.latch,
+    },
+    level: 'error',
+    sent: true,
+  };
+}
+
+/**
+ * Resolve one deferral to its emitted envelope (or a silent local-log) under a
+ * policy, threading the per-run unconfirmed counter. The ONLY difference between
+ * the policies is the disposition of an UNCONFIRMED exit — the payload the exit
+ * path builds is identical.
+ */
+function resolveEnvelope(
+  res: Resolution,
+  priorRunCount: number,
+  policy: Policy,
+): { envelope: SessionTerminateEnvelope; runCount: number } {
+  if (res.suppressed) {
+    // A confirmed session end: dropped (info) in BOTH policies, and it resets the
+    // per-run counter.
+    return {
+      envelope: { ...benignEnvelope(res), level: 'info', sent: false },
+      runCount: 0,
+    };
+  }
+  if (policy === 'pre-fix') {
+    // The residual: every unconfirmed exit sends an error on the benign group.
+    return { envelope: benignEnvelope(res), runCount: priorRunCount + 1 };
+  }
+  // post-fix: the first unconfirmed exit of a run is the benign sign-out (local
+  // log only); the second and later escalate on the distinct anomaly fingerprint.
+  const runCount = priorRunCount + 1;
+  if (runCount <= 1) {
+    return {
+      envelope: { ...benignEnvelope(res), level: 'info', sent: false },
+      runCount,
+    };
+  }
+  return {
+    envelope: {
+      message:
+        'auto-sync watcher terminated by an external session-terminate status ' +
+        `(0x40010004) ${runCount} times within one app run — the app outlived its ` +
+        'own session, so this is not a user sign-out',
+      fingerprint: [...ESCALATION_FINGERPRINT],
+      tags: {
+        windows_exit_status: '0x40010004',
+        windows_exit_class: 'session_terminate',
+        windows_terminator: res.terminator,
+        sync_route: 'watcher',
+        path: '(auto-sync)',
+        watcher_child_kind: 'cmd_shim',
+        runner_fatal_class: 'none',
+      },
+      extras: {
+        windows_teardown_probe_verdict: res.teardownVerdict,
+        windows_teardown_probe_shuttingdown: res.shuttingdown,
+        windows_teardown_probe_log: res.teardownLog,
+        session_end_latch: res.latch,
+        session_terminate_unconfirmed_run_count: runCount,
+      },
+      level: 'error',
+      sent: true,
+    },
+    runCount,
+  };
+}
+
+/** The exact reported recurrence: an ordinary sign-out — no message, no latch,
+ *  and the OS not doing a system shutdown (so the probe reads Absent). */
+const ORDINARY_SIGNOUT: Resolution = {
+  suppressed: false,
+  terminator: 'unattributed_no_teardown',
+  teardownVerdict: 'teardown_absent',
+  shuttingdown: 'no',
+  teardownLog: 'none',
+  latch: 'absent',
+};
+
+const HEX_STATUS = /^0x[0-9A-F]{8}$/;
+const FIXED_TOKEN = /^[a-z0-9_()-]+$/;
+
+describe('session-terminate reporting boundary — envelope model (both directions)', () => {
+  it('pre-fix reproduces the observed HQ-DESKTOP-5J envelope verbatim', () => {
+    const { envelope } = resolveEnvelope(ORDINARY_SIGNOUT, 0, 'pre-fix');
+    expect(envelope.sent).toBe(true);
+    expect(envelope.level).toBe('error');
+    expect(envelope.fingerprint).toEqual(BENIGN_FINGERPRINT);
+    expect(envelope.tags).toMatchObject({
+      windows_exit_status: '0x40010004',
+      windows_exit_class: 'session_terminate',
+      windows_terminator: 'unattributed_no_teardown',
+      sync_route: 'watcher',
+      path: '(auto-sync)',
+      watcher_child_kind: 'cmd_shim',
+      runner_fatal_class: 'none',
+    });
+    expect(envelope.message).toContain('consecutive failure #1');
+  });
+
+  it('post-fix renders the SAME first sign-out as a silent local log, no error event', () => {
+    const { envelope, runCount } = resolveEnvelope(ORDINARY_SIGNOUT, 0, 'post-fix');
+    expect(envelope.sent).toBe(false);
+    expect(envelope.level).toBe('info');
+    expect(runCount).toBe(1);
+  });
+
+  it('post-fix escalates a SECOND unconfirmed exit within the run on a distinct fingerprint', () => {
+    // First is silent…
+    const first = resolveEnvelope(ORDINARY_SIGNOUT, 0, 'post-fix');
+    expect(first.envelope.sent).toBe(false);
+    // …the second sends, on a NEW group, carrying the run count and diagnostics.
+    const second = resolveEnvelope(ORDINARY_SIGNOUT, first.runCount, 'post-fix');
+    expect(second.envelope.sent).toBe(true);
+    expect(second.envelope.level).toBe('error');
+    expect(second.envelope.fingerprint).toEqual(ESCALATION_FINGERPRINT);
+    expect(second.envelope.fingerprint).not.toEqual(BENIGN_FINGERPRINT);
+    expect(second.envelope.extras.session_terminate_unconfirmed_run_count).toBe(2);
+    // The teardown/latch diagnostics ride along so a real killer is nameable.
+    expect(second.envelope.extras.windows_teardown_probe_verdict).toBe('teardown_absent');
+    expect(second.envelope.extras.session_end_latch).toBe('absent');
+    expect(second.envelope.message).toContain('2 times within one app run');
+  });
+
+  it('a confirmed session end is dropped in BOTH policies and resets the run counter', () => {
+    const confirmed: Resolution = {
+      suppressed: true,
+      terminator: 'session_end_probed',
+      teardownVerdict: 'teardown_confirmed',
+      shuttingdown: 'yes',
+      teardownLog: 'kernel_general_13',
+      latch: 'absent',
+    };
+    for (const policy of ['pre-fix', 'post-fix'] as Policy[]) {
+      const { envelope, runCount } = resolveEnvelope(confirmed, 5, policy);
+      expect(envelope.sent).toBe(false);
+      expect(runCount).toBe(0);
+    }
+    // And after the reset the next unconfirmed exit is a fresh silent first.
+    const afterReset = resolveEnvelope(ORDINARY_SIGNOUT, 0, 'post-fix');
+    expect(afterReset.envelope.sent).toBe(false);
+    expect(afterReset.runCount).toBe(1);
+  });
+
+  it('grouping continuity: the benign group never moves, the escalation group is new', () => {
+    // The still-capturing benign shape keeps its fingerprint across policies…
+    expect(benignEnvelope(ORDINARY_SIGNOUT).fingerprint).toEqual(BENIGN_FINGERPRINT);
+    // …and the escalation is a genuinely new group, not a reuse of it.
+    expect(ESCALATION_FINGERPRINT).not.toEqual(BENIGN_FINGERPRINT);
+    expect(ESCALATION_FINGERPRINT[1]).not.toBe(BENIGN_FINGERPRINT[1]);
+  });
+
+  it('content safety: every modelled envelope is fixed vocabulary, bounded ints and hex only', () => {
+    const envelopes = [
+      resolveEnvelope(ORDINARY_SIGNOUT, 0, 'pre-fix').envelope,
+      resolveEnvelope(ORDINARY_SIGNOUT, 1, 'post-fix').envelope,
+    ];
+    for (const envelope of envelopes) {
+      for (const part of envelope.fingerprint) {
+        expect(part).toMatch(/^[a-z0-9:-]+$/);
+      }
+      expect(envelope.tags.windows_exit_status).toMatch(HEX_STATUS);
+      for (const [key, value] of Object.entries(envelope.tags)) {
+        expect(value, `${key} must be a fixed token`).toMatch(FIXED_TOKEN);
+      }
+      for (const [key, value] of Object.entries(envelope.extras)) {
+        if (typeof value === 'number') {
+          expect(Number.isInteger(value) && value >= 0, `${key} must be a bounded integer`).toBe(
+            true,
+          );
+        } else {
+          expect(value, `${key} must be a fixed token`).toMatch(FIXED_TOKEN);
+        }
+      }
+      // No path, argv, host name, user name or company slug ever appears.
+      const serialized = JSON.stringify(envelope);
+      expect(serialized).not.toContain('DESKTOP-QOH7J4N');
+      expect(serialized).not.toMatch(/[A-Za-z]:\\/);
+      expect(serialized).not.toContain('/Users/');
+    }
   });
 });

@@ -2236,9 +2236,15 @@ pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
 ///   still contemporaneous. Suppresses. This is the r3 link: it survives the
 ///   observer thread dying (`attribution_now` reporting `ObserverFailed`) and the
 ///   app's one-shot session-end drop sweep having already run.
-/// - `UnattributedNoTeardown` — the probe ran and the OS was verifiably *not*
-///   tearing down. This is the honest, genuinely alertable case: it tells the
-///   next investigation round that the killer is not a Windows session teardown.
+/// - `UnattributedNoTeardown` — the probe ran and the OS was verifiably not
+///   doing a *system* shutdown/restart (both `SM_SHUTTINGDOWN` samples read an
+///   explicit `No`). It deliberately does NOT claim "no session ended": the
+///   pull sources cannot observe a user logoff, so a plain sign-out still lands
+///   here. Because the ordinary sign-out is the common producer of this reading,
+///   the reporting boundary (see [`resolve_deferred_session_end_disposition`])
+///   treats the FIRST such exit per app run as a benign local-log event and only
+///   escalates a SECOND within the same run, when the app's own survival proves
+///   its session did not end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsTerminatorAttribution {
     SessionEndObserved,
@@ -2932,12 +2938,21 @@ impl WindowsTeardownVerdict {
 ///   (User32 1074) does NOT confirm on its own: a shutdown can be initiated and
 ///   then aborted, so it is the log-side query phase and must not suppress a real
 ///   watcher crash that merely coincides with it.
-/// - `Absent` requires positive negative evidence from *every* source: both
-///   flags read `No` AND the channel opened and held no bracketing record at all
-///   — not even an initiation. Only then can the probe assert the OS was
-///   verifiably not tearing down.
+/// - `Absent` is load-bearing on `SM_SHUTTINGDOWN` ALONE, because it is the only
+///   source in this probe that can observe a user *logoff* at all. The System
+///   channel is filtered to shutdown/restart providers (User32 1074,
+///   Kernel-General 13, Kernel-Power 109) — a plain sign-out writes none of them
+///   — so an empty channel is not evidence that no session ended; it is only
+///   supporting confirmation that no *system* shutdown/restart proceeded.
+///   `Absent` therefore requires BOTH `SM_SHUTTINGDOWN` samples to read an
+///   EXPLICIT `No` (never `Unavailable`, which is "we could not ask") and, as a
+///   supporting condition, the channel to hold no bracketing record. Even then
+///   the honest reading of `Absent` is "the OS was verifiably not doing a system
+///   shutdown/restart", NOT "no session ended" — a logoff is invisible here, so
+///   the caller must never treat `Absent` as positive proof that this was not a
+///   sign-out.
 /// - Anything else — an unreadable channel, an unavailable flag, a bracketing
-///   *initiation-only* record, any mix short of unanimous negatives — is
+///   *initiation-only* record, any mix short of two explicit `No` samples — is
 ///   `Unknown`, which the caller must treat exactly like today's behaviour and
 ///   send. The record class is still stamped on the diagnostics for the next
 ///   round.
@@ -3131,6 +3146,100 @@ pub fn resolved_session_end_attribution(
             WindowsTerminatorAttribution::UnattributedNoTeardown
         }
         _ => attribution,
+    }
+}
+
+/// True for the exact OS-supplied session-teardown watcher-exit shape:
+/// `DBG_TERMINATE_PROCESS` ([`WINDOWS_SESSION_TERMINATE_EXIT`]) with no signal.
+///
+/// `0x40010004` is a control status handed to a process by an external
+/// `TerminateProcess`/session-manager teardown; a child cannot exit with it of
+/// its own accord. It is therefore never a watcher *crash*, so it must not
+/// advance the crash-loop counter that both drives respawn backoff and prints
+/// "consecutive failure #N". This is the pure discriminator the daemon reads to
+/// keep an OS sign-out out of that counter (the loud fault statuses —
+/// `0xC0000005`, `0xC0000409`, non-zero app codes, any signalled exit — are all
+/// excluded and keep advancing it exactly as before).
+pub fn is_windows_session_terminate_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none()
+}
+
+/// The final disposition of a deferred session-terminate capture, decided AFTER
+/// its grace has resolved the evidence gate ([`deferred_session_end_outcome`])
+/// AND the per-app-run unconfirmed counter has been consulted.
+///
+/// A forced Windows sign-out kills the windowless auto-sync child with
+/// `DBG_TERMINATE_PROCESS` and delivers no window message, so none of the three
+/// positive suppressors (an observed `WM_ENDSESSION`, a contemporaneous durable
+/// latch, or a probe-confirmed teardown) can fire — and it does this exactly
+/// ONCE per app run (every reported event carried `consecutive failure #1`). The
+/// reporting boundary uses that signature: the first unconfirmed session-terminate
+/// exit of a run is the benign sign-out and is local-logged, never alerted; a
+/// SECOND within the same run cannot be a sign-out (the app is still alive, so
+/// its session did not end) and escalates on its own distinct fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredSessionEndDisposition {
+    /// Positive OS evidence suppressed the alert — a benign, expected session
+    /// end. Resets the per-run unconfirmed counter (the run's session ended).
+    DropSuppressed,
+    /// The FIRST unconfirmed session-terminate exit of this app run: the benign
+    /// sign-out signature. Local-logged, never sent as an error.
+    DropFirstUnconfirmed,
+    /// A SECOND (or later) unconfirmed session-terminate exit within the SAME app
+    /// run. The app outlived its own session, so this is a genuine external killer
+    /// — escalated on a distinct anomaly fingerprint, never the benign one.
+    EscalateRepeatedUnconfirmed,
+}
+
+impl DeferredSessionEndDisposition {
+    /// Whether this disposition produces a Sentry send. Only the repeated-within-a-run
+    /// escalation does; both drop variants are silent (local log + breadcrumb only).
+    pub fn sends(self) -> bool {
+        matches!(self, Self::EscalateRepeatedUnconfirmed)
+    }
+
+    /// Stable, content-safe token for the `session_end_decision` extra / logs.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::DropSuppressed => "drop_suppressed",
+            Self::DropFirstUnconfirmed => "drop_first_unconfirmed",
+            Self::EscalateRepeatedUnconfirmed => "escalate_repeated_unconfirmed",
+        }
+    }
+}
+
+/// Resolve a deferred session-terminate capture's final disposition against the
+/// evidence-gate [`DeferredSessionEndOutcome`] and the number of UNCONFIRMED
+/// session-terminate exits already seen in this app run.
+///
+/// This is the whole reporting-boundary decision, kept pure so the impure layer
+/// only stores a number: it takes the previous per-run count and returns the new
+/// count alongside the disposition.
+///
+/// - A `Drop` from the evidence gate is a confirmed session end (observed
+///   message, contemporaneous latch, or probe-confirmed teardown). It suppresses
+///   as before and RESETS the run counter to zero — the session ended, so any
+///   prior unconfirmed count is moot.
+/// - A `Capture` from the evidence gate is an UNCONFIRMED session-terminate exit.
+///   It increments the run counter; the first (count 1) is the benign sign-out
+///   and drops, and the second and later (count ≥ 2) escalate.
+pub fn resolve_deferred_session_end_disposition(
+    outcome: DeferredSessionEndOutcome,
+    prior_unconfirmed_in_run: u32,
+) -> (DeferredSessionEndDisposition, u32) {
+    match outcome {
+        DeferredSessionEndOutcome::Drop => (DeferredSessionEndDisposition::DropSuppressed, 0),
+        DeferredSessionEndOutcome::Capture => {
+            let count = prior_unconfirmed_in_run.saturating_add(1);
+            if count <= 1 {
+                (DeferredSessionEndDisposition::DropFirstUnconfirmed, count)
+            } else {
+                (
+                    DeferredSessionEndDisposition::EscalateRepeatedUnconfirmed,
+                    count,
+                )
+            }
+        }
     }
 }
 
@@ -7204,6 +7313,126 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_first_unconfirmed_session_terminate_of_a_run_is_silent_and_the_second_escalates() {
+        use DeferredSessionEndDisposition as D;
+
+        // The reported shape (HQ-DESKTOP-5J): an ordinary sign-out kills the child
+        // with no message, so the evidence gate yields Capture — but the OS was not
+        // doing a system shutdown, so the verdict is the honest `Absent`. It must
+        // still Capture at the evidence gate (nothing suppressed it)…
+        assert_eq!(
+            deferred_session_end_outcome(
+                WindowsTerminatorAttribution::UnattributedNoSignal,
+                WindowsTeardownVerdict::Absent,
+                SessionEndLatchReading::Absent
+            ),
+            DeferredSessionEndOutcome::Capture
+        );
+        // …and the FIRST such exit of the run drops (benign sign-out), advancing the
+        // per-run counter to 1 without sending.
+        let (first, count) =
+            resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Capture, 0);
+        assert_eq!(first, D::DropFirstUnconfirmed);
+        assert_eq!(count, 1);
+        assert!(!first.sends());
+
+        // The SECOND within the same run cannot be a sign-out — the app is still
+        // alive — so it escalates on its own fingerprint.
+        let (second, count) =
+            resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Capture, count);
+        assert_eq!(second, D::EscalateRepeatedUnconfirmed);
+        assert_eq!(count, 2);
+        assert!(second.sends());
+
+        // And every later unconfirmed exit in the run keeps escalating.
+        let (third, count) =
+            resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Capture, count);
+        assert_eq!(third, D::EscalateRepeatedUnconfirmed);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn a_confirmed_session_end_drops_and_resets_the_per_run_counter() {
+        use DeferredSessionEndDisposition as D;
+
+        // Positive evidence (an observed message, a latch, or a probe-confirmed
+        // teardown) always suppresses, regardless of how many unconfirmed exits
+        // preceded it, and RESETS the run counter — the session ended.
+        for prior in [0, 1, 2, 7, u32::MAX] {
+            let (disposition, count) =
+                resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Drop, prior);
+            assert_eq!(disposition, D::DropSuppressed, "prior={prior}");
+            assert_eq!(count, 0, "a confirmed session end resets the run counter");
+            assert!(!disposition.sends());
+        }
+
+        // A reset mid-run means the NEXT unconfirmed exit is a fresh first (silent)
+        // again, not an immediate escalation.
+        let (_, after_first) =
+            resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Capture, 0);
+        assert_eq!(after_first, 1);
+        let (_, after_confirmed) =
+            resolve_deferred_session_end_disposition(DeferredSessionEndOutcome::Drop, after_first);
+        assert_eq!(after_confirmed, 0);
+        let (fresh, count) = resolve_deferred_session_end_disposition(
+            DeferredSessionEndOutcome::Capture,
+            after_confirmed,
+        );
+        assert_eq!(fresh, D::DropFirstUnconfirmed);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn the_unconfirmed_run_counter_saturates_and_keeps_escalating() {
+        // At the u32 ceiling the count stops growing but the disposition still
+        // escalates — a pathological run can never wrap back to a silent first.
+        let (disposition, count) = resolve_deferred_session_end_disposition(
+            DeferredSessionEndOutcome::Capture,
+            u32::MAX,
+        );
+        assert_eq!(
+            disposition,
+            DeferredSessionEndDisposition::EscalateRepeatedUnconfirmed
+        );
+        assert_eq!(count, u32::MAX);
+    }
+
+    #[test]
+    fn only_the_dbg_terminate_no_signal_shape_is_an_external_session_teardown() {
+        // The one shape that is an OS-supplied teardown, never a watcher crash.
+        assert!(is_windows_session_terminate_watcher_exit(
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            None
+        ));
+        // A signalled exit at the same code is NOT the teardown shape — a signal is
+        // its own provenance and must keep advancing the crash loop.
+        assert!(!is_windows_session_terminate_watcher_exit(
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            Some(9)
+        ));
+        // Every genuine fault status and ordinary code stays a crash.
+        for code in [
+            WINDOWS_CONTROL_C_EXIT,
+            WINDOWS_STATUS_FFFFFFFF,
+            0xC000_0005u32 as i32,
+            0xC000_0409u32 as i32,
+            1,
+            2,
+            126,
+            127,
+            221,
+        ] {
+            assert!(
+                !is_windows_session_terminate_watcher_exit(Some(code), None),
+                "0x{:08X} must stay a crash",
+                code as u32
+            );
+        }
+        assert!(!is_windows_session_terminate_watcher_exit(None, None));
+        assert!(!is_windows_session_terminate_watcher_exit(None, Some(15)));
     }
 
     #[test]
