@@ -28,7 +28,7 @@
   .agent-tasks {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem 0.75rem;
+    gap: 0.375rem 0.5rem;
     padding: 0 2px;
   }
 </style>

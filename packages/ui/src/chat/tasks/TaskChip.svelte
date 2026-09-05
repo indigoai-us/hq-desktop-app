@@ -15,7 +15,7 @@
     onselect?: (task: AgentTask) => void;
   }
 
-  let { task, size = 22, onselect }: Props = $props();
+  let { task, size = 16, onselect }: Props = $props();
 
   // Family comes from the task's category so the shape carries meaning; the
   // variant comes from the task id so a task keeps the same mark for life.
@@ -53,7 +53,7 @@
   .task-chip-row {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     max-width: 100%;
     min-width: 0;
   }
@@ -61,18 +61,18 @@
   .task-chip {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
     max-width: 100%;
-    padding: 4px 11px 4px 5px;
+    padding: 2px 8px 2px 3px;
     border: 1px solid var(--line);
     border-radius: var(--v4-radius-pill, 980px);
     background: var(--hover);
     color: var(--t1);
     font-family: inherit;
-    font-size: var(--type-body, 13px);
-    font-weight: 550;
-    line-height: 18px;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
+    line-height: 16px;
     text-align: left;
   }
 
@@ -106,15 +106,15 @@
   .status {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex: none;
     color: var(--t2);
-    font-size: var(--type-body, 13px);
+    font-size: var(--type-metadata, 13px);
   }
 
   .dot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--v4-idle, var(--t3));
   }
