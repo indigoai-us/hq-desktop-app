@@ -345,6 +345,7 @@ fn manual_runner_exit_context(
 
 fn runner_exit_telemetry_context(
     code: Option<i32>,
+    signal: Option<i32>,
     totals: &RunTotals,
     context: &ManualRunnerExitContext,
     sync_termination_reason: &'static str,
@@ -530,6 +531,19 @@ fn runner_exit_telemetry_context(
             },
         ),
     ];
+    // The observed terminal (code, signal) rendered through the SAME closed
+    // vocabulary the fingerprint's third element uses (`exit:N` / `signal:N` /
+    // the windows:* family / `unknown`) — never a runner byte. It is the third
+    // fingerprint element already, but promoting it to a named extra means a
+    // residual capture still tagged `sync_termination_reason=cancel-status-mismatch`
+    // (HQ-DESKTOP-5Z) names the exact shape that missed the widened POSIX
+    // app-termination gate, instead of forcing another investigation to decode
+    // it. Named to match the watcher route's `termination_status_raw` extra so
+    // the two boundaries present the shape identically.
+    extras.push((
+        "termination_status_raw",
+        sentry::protocol::Value::String(termination_fingerprint_token(code, signal)),
+    ));
     // The integer source line for an assertion abort, present only when parsed.
     if let Some(line) = totals.runner_assert_line() {
         extras.push((
@@ -628,7 +642,7 @@ fn capture_runner_exit_error_with_termination_reason(
         error_site,
     ];
     let (tags, extras) =
-        runner_exit_telemetry_context(code, totals, context, sync_termination_reason);
+        runner_exit_telemetry_context(code, signal, totals, context, sync_termination_reason);
     capture_sync_error_with_fingerprint_and_context(
         payload.company.as_deref(),
         &payload.path,
@@ -3614,6 +3628,22 @@ mod tests {
             let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
                 .expect("runner capture remains sendable");
             assert_eq!(event.tags["sync_termination_reason"], reason);
+            // HQ-DESKTOP-5Z: the observed terminal shape rides every residual
+            // capture as a named, content-safe extra, so a capture still tagged
+            // cancel-status-mismatch names the exact shape that missed the widened
+            // POSIX app-termination gate. It is drawn ONLY from the closed
+            // termination_fingerprint_token vocabulary — here `exit:2`.
+            let shape = event
+                .extra
+                .get("termination_status_raw")
+                .and_then(|value| value.as_str())
+                .expect("residual capture carries the terminal-shape extra");
+            assert_eq!(shape, termination_fingerprint_token(Some(2), None).as_str());
+            assert_eq!(shape, "exit:2");
+            assert!(
+                !shape.contains('/') && !shape.contains('\\'),
+                "the terminal-shape extra must never carry a path byte"
+            );
         }
     }
 
@@ -3878,6 +3908,120 @@ mod tests {
                 "file-lock effect must not copy runner content: {runner_supplied}"
             );
         }
+    }
+
+    /// Spawn a REAL child that installs a SIGTERM trap and exits 1 when it
+    /// receives the signal — the exact reporting-boundary shape HQ-DESKTOP-5Z
+    /// carried on macOS, where the app spawns `npx` / a version-manager shim
+    /// rather than the runner directly and that intermediary traps our SIGTERM
+    /// and collapses it into a generic failure code. The child sends itself the
+    /// SIGTERM, so the terminal status is produced by a real trap and a real
+    /// reap — not a synthesized (code, signal) tuple.
+    #[cfg(unix)]
+    fn run_real_sigterm_trapped_exit_one_runner() -> (Option<i32>, Option<i32>, bool) {
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "trap 'exit 1' TERM; kill -TERM \"$$\"; sleep 5".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let mut terminal = None;
+        run_process_impl(
+            "manual-runner-sigterm-trap-exit-one",
+            &spawn,
+            |event| match event {
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) | ProcessEvent::Stderr(_) => {}
+            },
+        )
+        .expect("real fake runner should run");
+        terminal.expect("real child must emit its terminal event")
+    }
+
+    /// HQ-DESKTOP-5Z regression at the manual-sync terminal boundary (POSIX).
+    /// A real child that traps our SIGTERM and exits 1 surfaces as
+    /// `(code=Some(1), signal=None)`; with an app-owned cancellation observed to
+    /// take effect and no alertable runner error, the production classifier +
+    /// effects path must attribute it to the app and perform ZERO Sentry
+    /// captures. Before the fix this shape returned `Alert` and captured
+    /// `hq-sync-runner exited with code 1` at error level, so this test is
+    /// base-red against `be7bcd48`'s narrowed POSIX shape gate.
+    #[cfg(unix)]
+    #[test]
+    fn real_child_sigterm_trapped_exit_one_after_app_cancellation_is_suppressed() {
+        let (code, signal, success) = run_real_sigterm_trapped_exit_one_runner();
+        assert_eq!(code, Some(1), "a trapped SIGTERM collapses to exit code 1");
+        assert_eq!(signal, None, "the child exits normally, not by signal");
+        assert!(!success);
+
+        let totals = RunTotals::default();
+        let cancellation = CancellationRecord {
+            cause: Some(SyncCancelCause::UserStop),
+            termination_effected: true,
+        };
+        let disposition = classify_runner_exit_disposition_with_fault(
+            code,
+            signal,
+            cancellation.cause,
+            cancellation.termination_effected,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup,
+        );
+        assert_eq!(
+            disposition,
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+            "an effective app cancellation whose child collapsed our SIGTERM into \
+             exit 1 must attribute to the app, not alert",
+        );
+
+        // The residual vocabulary stays truthful — this exact record+shape is no
+        // longer reachable as a capture, but the value still exists for a
+        // genuinely unmatched shape.
+        assert_eq!(
+            residual_sync_termination_reason(cancellation, &totals),
+            "cancel-status-mismatch",
+        );
+
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            disposition,
+            code,
+            signal,
+            &describe_exit(code, signal),
+            &totals,
+            &ManualRunnerExitContext::default(),
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "an app-cancelled runner exit must not capture to Sentry"
+        );
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(effects.terminal_events[0].company, None);
+        assert_eq!(effects.terminal_events[0].path, "(runner)");
+        assert_eq!(
+            effects.terminal_events[0].message,
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::UserStop).message,
+        );
+        assert_eq!(effects.terminal_events[0].message, "Sync was stopped.");
+        // Suppression is not silence: the classified exit is still logged locally,
+        // named through describe_exit, so both surfaces leave the syncing state.
+        assert_eq!(effects.logs.len(), 1);
+        assert!(
+            effects.logs[0].contains(describe_exit(code, signal).as_str()),
+            "the local log must name the exit so suppression stays observable"
+        );
+        assert!(effects.logs[0].contains("user-stop"));
     }
 
     /// Build the cross-platform script the artifact runner executes: each seeded
@@ -4167,7 +4311,7 @@ mod tests {
             ..Default::default()
         };
         let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
         assert!(
             tags.iter().any(|(key, value)| {
                 *key == "runner_unmatched_stderr_shapes" && value.as_str() == "other:1"
@@ -4184,7 +4328,7 @@ mod tests {
         let context = ManualRunnerExitContext::default();
         assert!(context.runner_unmatched_stderr_shapes.is_none());
         let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
         assert!(
             tags.iter()
                 .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),

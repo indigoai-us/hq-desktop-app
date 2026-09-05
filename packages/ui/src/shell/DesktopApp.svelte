@@ -301,8 +301,11 @@
   import type { Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
+    buildCompanyIconMap,
     companyDisplayName,
+    companyIconUrl,
   } from "../company/company-display-map.js";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
@@ -725,6 +728,7 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
+        iconUrl: w.iconUrl ?? null,
       })),
   );
 
@@ -799,6 +803,12 @@
       detail: item.detail,
       keywords: item.keywords,
       lastActivityAt: item.lastActivityAt,
+      // Company channels carry their company's mark so a palette full of
+      // `#`-prefixed labels is scannable by company at a glance.
+      iconUrl: item.iconUrl,
+      showCompanyMark:
+        item.row.kind === "channel" &&
+        (item.row.channelScope ?? "").trim() === "company",
       action: () => handleSelect(item.row),
     }));
     return [...nav, ...conversations];
@@ -806,6 +816,23 @@
 
   const watched = $derived(companies?.length ?? 0);
   const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+  /** uid/slug → presigned company icon, for the header + member popover. */
+  const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
+  /**
+   * Icon for the selected conversation's company: the row's server-stamped
+   * icon first, then the roster. Company channels only — a project or personal
+   * channel header keeps its `#`.
+   */
+  const selectedCompanyIcon = $derived.by(() => {
+    const row = selectedRow;
+    if (!row || row.kind !== "channel") return null;
+    if ((row.channelScope ?? "").trim() !== "company") return null;
+    return row.iconUrl ?? companyIconUrl(row.companyUid, companyIcons);
+  });
+  const selectedIsCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow.channelScope ?? "").trim() === "company",
+  );
 
   /** Company for Atlas — selected conversation company, else first cloud workspace. */
   const atlasCompanyUid = $derived.by(() => {
@@ -1874,6 +1901,7 @@
             companyUid
               ? companyDisplayName(companyUid, companyNames)
               : null,
+            companyUid ? companyIconUrl(companyUid, companyIcons) : null,
           )
         : null);
     // Prefer rebuilding from live read + presence when we have sessions.
@@ -3882,7 +3910,10 @@
           >
             <div class="channel-title-block">
               <div class="channel-title">
-                {#if selectedRow.kind === "channel"}
+                {#if selectedIsCompanyChannel}
+                  <!-- Company channels lead with the company's own mark. -->
+                  <CompanyIcon iconUrl={selectedCompanyIcon} size={22} />
+                {:else if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
                 {#if selectedRow.kind === "dm"}
@@ -4198,6 +4229,12 @@
                             ? companyDisplayName(
                                 selectedRow.companyUid,
                                 companyNames,
+                              )
+                            : null,
+                          selectedRow.companyUid
+                            ? companyIconUrl(
+                                selectedRow.companyUid,
+                                companyIcons,
                               )
                             : null,
                         )}

@@ -1165,6 +1165,10 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::VaultClient
         | RunnerErrorCause::VaultConflict
         | RunnerErrorCause::VaultNotFound
+        // … the ~6.16.11 pin's addition — truncated write-credential scope is
+        // a policy/issuance fault with no unambiguous class analogue, so the
+        // keyword fallback stays authoritative …
+        | RunnerErrorCause::VaultCredentialScope
         | RunnerErrorCause::RateLimited
         | RunnerErrorCause::PresignPreconditionMissing
         | RunnerErrorCause::OutpostHttp
@@ -3354,6 +3358,43 @@ pub fn classify_runner_exit_disposition(
     RunnerExitDisposition::Alert
 }
 
+/// The POSIX terminal-status shapes an app-owned SIGTERM/SIGKILL cancellation
+/// can actually surface as. This set is the third suppression gate's POSIX
+/// vocabulary and has exactly one home so it cannot drift between callers.
+///
+/// Trigger condition: consulted ONLY inside
+/// [`classify_runner_exit_disposition_with_cancellation`] AFTER the
+/// alertable-error short-circuit and only when a cause is present and the
+/// termination was observed to take effect. Widening it can therefore only
+/// convert an ALREADY-attributed, already-effective cancellation from `Alert`
+/// to `CancelledByApp` — never a bare runner fault.
+///
+/// Three shapes are accepted, each a provable encoding of OUR OWN SIGTERM or
+/// SIGKILL:
+///   - `(None, SIGTERM|SIGKILL)` — the direct child died by the signal we
+///     sent it;
+///   - `(Some(1), None)` — an intermediary the app spawns instead of the runner
+///     directly (`npx`, a version-manager shim, an interpreter) trapped our
+///     signal and collapsed it into a generic failure code. This is the shape
+///     HQ-DESKTOP-5Z reported on macOS, and the exact shape the Windows arm
+///     already accepts (`TerminateJobObject(job, 1)`);
+///   - `(Some(143), None)` / `(Some(137), None)` — the POSIX shell convention
+///     `128 + signal` for a child killed by those same two signals, named
+///     through [`SIGTERM_SIGNAL`]/[`SIGKILL_SIGNAL`] rather than as bare
+///     literals.
+///
+/// Every OTHER non-zero exit code stays outside the set, so an arbitrary runner
+/// crash that exits e.g. 2 keeps alerting even alongside a cancellation record.
+pub fn posix_exit_matches_app_termination(code: Option<i32>, signal: Option<i32>) -> bool {
+    match (code, signal) {
+        (None, Some(SIGTERM_SIGNAL)) | (None, Some(SIGKILL_SIGNAL)) => true,
+        (Some(code), None) => {
+            code == 1 || code == 128 + SIGTERM_SIGNAL || code == 128 + SIGKILL_SIGNAL
+        }
+        _ => false,
+    }
+}
+
 /// Classify a manual-sync terminal exit with exact-generation cancellation
 /// evidence. The existing classifier remains the compatibility policy for all
 /// callers that do not own an observed cancellation record.
@@ -3387,9 +3428,7 @@ pub fn classify_runner_exit_disposition_with_cancellation(
 
     let exit_matches_app_termination = match current_termination_host() {
         TerminationHost::Windows => code == Some(1) && signal.is_none(),
-        TerminationHost::Posix => {
-            code.is_none() && matches!(signal, Some(SIGTERM_SIGNAL) | Some(SIGKILL_SIGNAL))
-        }
+        TerminationHost::Posix => posix_exit_matches_app_termination(code, signal),
     };
     if let Some(cause) = cause.filter(|_| termination_effected && exit_matches_app_termination) {
         return RunnerExitDisposition::CancelledByApp(cause);
@@ -5936,7 +5975,12 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn code_one_is_not_an_app_termination_shape_on_posix() {
+    fn posix_code_one_after_an_effective_app_cancellation_is_attributed_to_the_app() {
+        // HQ-DESKTOP-5Z: on POSIX an app-owned cancellation whose runner exits
+        // code 1 with no signal (an npx / shim / interpreter that trapped our
+        // SIGTERM and collapsed it into a generic failure) is the app's own
+        // termination, not an alertable runner fault — the exact shape the
+        // Windows arm has always accepted.
         assert_eq!(
             classify_runner_exit_disposition_with_cancellation(
                 Some(1),
@@ -5945,6 +5989,111 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn posix_app_termination_shape_set_attributes_and_everything_else_stays_loud() {
+        // Every shape our own SIGTERM/SIGKILL can surface as — a direct signal
+        // death, the code-1 wrapper collapse, and the 128+signal shell
+        // convention — attributes to the app once the cancellation is owned and
+        // observed effective.
+        for (code, signal) in [
+            (None, Some(SIGTERM_SIGNAL)),
+            (None, Some(SIGKILL_SIGNAL)),
+            (Some(1), None),
+            (Some(128 + SIGTERM_SIGNAL), None),
+            (Some(128 + SIGKILL_SIGNAL), None),
+        ] {
+            assert!(
+                posix_exit_matches_app_termination(code, signal),
+                "shape code={code:?} signal={signal:?} must be an app-termination shape",
+            );
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    Some(SyncCancelCause::UserStop),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+                "shape code={code:?} signal={signal:?} must attribute to the app",
+            );
+        }
+
+        // Any other terminal shape keeps its legacy verdict even with an
+        // effective cancellation record present — an arbitrary crash exit is
+        // never silently swallowed.
+        for (code, signal) in [
+            (Some(2), None),
+            (Some(7), None),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None),
+            (None, Some(SIGSEGV_SIGNAL)),
+        ] {
+            assert!(
+                !posix_exit_matches_app_termination(code, signal),
+                "shape code={code:?} signal={signal:?} must NOT be an app-termination shape",
+            );
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    Some(SyncCancelCause::UserStop),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                classify_runner_exit_disposition(code, signal, false, false, false),
+                "shape code={code:?} signal={signal:?} must keep its legacy verdict",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn posix_code_one_still_alerts_without_an_effective_owned_cancellation() {
+        // The widened shape only ever converts an ALREADY-attributed,
+        // already-effective cancellation. Strip any one of the other three gates
+        // and the same (Some(1), None) shape must stay loud.
+
+        // Gate 1 — no recorded cause (a natural code-1 exit with no app cancel).
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1), None, None, true, false, false, false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+        // Gate 2 — cause recorded but termination not observed to take effect.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::UserStop),
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+        // Gate 4 — a concurrent alertable runner error wins (the HQ-DESKTOP-5M /
+        // HQ-DESKTOP-62 class that must keep alerting after this fix).
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::UserStop),
+                true,
+                true,
+                true,
                 false,
             ),
             RunnerExitDisposition::Alert,
@@ -5998,9 +6147,10 @@ mod tests {
             false,
         ));
         // Gate 3 — wrong exit shape. Both of these are an app-termination shape
-        // on NEITHER host: POSIX wants (code=None, signal in {15,9}) and Windows
-        // wants (code=1, signal=None), so a crash signal or a plain non-1 exit
-        // code never attributes regardless of platform.
+        // on NEITHER host: on POSIX the set is (code=None, signal in {15,9}) or
+        // (code in {1, 143, 137}, no signal); Windows wants (code=1,
+        // signal=None). So a crash signal (SIGABRT) or a plain exit code outside
+        // {1, 143, 137} never attributes regardless of platform.
         assert!(!watcher_exit_attributed_to_app_teardown(
             None,
             Some(6), // SIGABRT
@@ -6009,7 +6159,7 @@ mod tests {
             false,
         ));
         assert!(!watcher_exit_attributed_to_app_teardown(
-            Some(2), // plain non-zero exit code — not code 1, so not the Windows shape
+            Some(2), // plain non-zero exit code — outside the app-termination set
             None,
             Some(SyncCancelCause::HeartbeatStall),
             true,
@@ -6031,11 +6181,13 @@ mod tests {
         // classifier's `CancelledByApp` projection for EVERY combination of
         // `saw_error` and `saw_node_too_old` — proving those two inputs cannot
         // change an attribution verdict, which is what justifies omitting them.
-        let shapes: [(Option<i32>, Option<i32>); 7] = [
+        let shapes: [(Option<i32>, Option<i32>); 9] = [
             (None, Some(SIGTERM_SIGNAL)),
             (None, Some(SIGKILL_SIGNAL)),
             (None, Some(6)),
             (Some(1), None),
+            (Some(128 + SIGTERM_SIGNAL), None),
+            (Some(128 + SIGKILL_SIGNAL), None),
             (Some(0), None),
             (Some(2), None),
             (None, None),

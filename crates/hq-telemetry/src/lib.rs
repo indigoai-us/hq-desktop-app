@@ -405,6 +405,7 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "vault_conflict",
     "vault_not_found",
     "vault_permission_denied",
+    "vault_write_scope",
     "vend_denied",
     "rate_limited",
     "presign_precondition_missing",
