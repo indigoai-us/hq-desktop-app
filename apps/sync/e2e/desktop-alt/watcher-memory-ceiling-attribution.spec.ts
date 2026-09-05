@@ -176,8 +176,10 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
       'record_supervisor_memory_preempt',
     );
     // Establishes respawn backoff, emits the attributed event, and marks the
-    // evidence source as a supervisor pre-empt (so the token converges).
-    expect(recorder).toContain('note_watcher_crashed()');
+    // evidence source as a supervisor pre-empt (so the token converges). A memory
+    // pre-empt is a real crash episode, so it passes `false` — it advances the
+    // crash-loop counter and backoff, unlike an OS session teardown.
+    expect(recorder).toContain('note_watcher_crashed(false)');
     expect(recorder).toContain('supervisor_preempt: true');
     expect(recorder).toContain('.capture(');
     expect(recorder).toContain('watcher_termination_fingerprint_token(');

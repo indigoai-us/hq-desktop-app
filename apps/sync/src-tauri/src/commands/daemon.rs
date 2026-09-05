@@ -5,7 +5,7 @@
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -47,7 +47,7 @@ use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     MemoryExhaustionEvidence, RunnerErrorClass, RunnerFatalClass,
     deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
-    is_windows_fault_exit,
+    is_windows_fault_exit, resolve_deferred_session_end_disposition, DeferredSessionEndDisposition,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
     runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
     runner_phase_from_event, runner_stack_shape,
@@ -1971,6 +1971,37 @@ static PENDING_SESSION_END_CAPTURES: OnceLock<Mutex<Vec<(u64, DeferredSessionEnd
     OnceLock::new();
 static SESSION_END_DEFERRAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// How many UNCONFIRMED session-terminate watcher exits (deferred, then resolved
+/// with no observed message, no contemporaneous latch and no probe-confirmed
+/// teardown) this app run has seen. A forced Windows sign-out produces exactly
+/// one such exit per run, so the FIRST is the benign sign-out (dropped) and a
+/// SECOND within the same run is a genuine external killer (escalated). It starts
+/// at zero on process start ("reset on app start" is free) and is reset by a
+/// confirmed session end — both a resolution that suppressed on positive evidence
+/// and the Windows session-end teardown's [`drop_pending_session_end_captures`].
+static SESSION_TERMINATE_UNCONFIRMED_RUN_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Advance the per-run unconfirmed session-terminate counter for a resolved
+/// deferral and return its final disposition. The Drop/Capture evidence gate is
+/// already decided; this is the reporting-boundary layer on top of it. The pure
+/// [`resolve_deferred_session_end_disposition`] owns the decision so the impure
+/// part only reads and stores the run count.
+fn classify_resolved_session_terminate(
+    outcome: DeferredSessionEndOutcome,
+) -> (DeferredSessionEndDisposition, u32) {
+    let prior = SESSION_TERMINATE_UNCONFIRMED_RUN_COUNT.load(Ordering::Acquire);
+    let (disposition, next) = resolve_deferred_session_end_disposition(outcome, prior);
+    SESSION_TERMINATE_UNCONFIRMED_RUN_COUNT.store(next, Ordering::Release);
+    (disposition, next)
+}
+
+/// Reset the per-run unconfirmed session-terminate counter. Called when a session
+/// end is confirmed directly by the OS (the Windows session-end teardown), so the
+/// next run — or the vanishingly unlikely continuation of this one — starts fresh.
+fn reset_session_terminate_unconfirmed_run_count() {
+    SESSION_TERMINATE_UNCONFIRMED_RUN_COUNT.store(0, Ordering::Release);
+}
+
 fn pending_session_end_captures() -> &'static Mutex<Vec<(u64, DeferredSessionEndCapture)>> {
     PENDING_SESSION_END_CAPTURES.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -2072,6 +2103,10 @@ where
 /// I/O, so it adds no uncapped work to a teardown that runs inside a window
 /// procedure.
 pub fn drop_pending_session_end_captures() -> usize {
+    // Reaching this teardown IS a confirmed session end, so the per-run unconfirmed
+    // session-terminate counter resets: any prior unconfirmed exit is now known to
+    // have been the sign-out, and it must never carry over to inflate a later run.
+    reset_session_terminate_unconfirmed_run_count();
     let dropped = take_all_pending_session_end_captures().len();
     if dropped > 0 {
         log(
@@ -2201,11 +2236,19 @@ fn resolve_deferred_session_end_capture(id: u64) {
     let latch = current_session_end_latch_reading_at_resolution();
     let resolution = resolve_deferred_decision(reading, teardown, latch);
 
-    match resolution.outcome {
-        DeferredSessionEndOutcome::Drop => {
-            let waited = session_end_grace_waited_bucket(waited_ms);
-            // Name whichever positive source suppressed the alert: an observed
-            // message (session_end_observed) or the probe (session_end_probed).
+    // Reporting boundary (HQ-DESKTOP-5J): the evidence-gate Drop/Capture is now
+    // filtered through the per-app-run unconfirmed counter. A forced sign-out
+    // produces exactly one unconfirmed session-terminate exit per run, so the
+    // first is the benign sign-out (local log only) and only a second-within-a-run
+    // — where the app is provably still alive — escalates.
+    let (disposition, run_count) = classify_resolved_session_terminate(resolution.outcome);
+    let waited = session_end_grace_waited_bucket(waited_ms);
+
+    match disposition {
+        DeferredSessionEndDisposition::DropSuppressed => {
+            // Positive OS evidence suppressed the alert. Name whichever source did:
+            // an observed message (session_end_observed), the probe
+            // (session_end_probed), or a contemporaneous latch (session_end_latched).
             let terminator = resolution
                 .final_attribution
                 .map(|attribution| attribution.class_name())
@@ -2228,16 +2271,55 @@ fn resolve_deferred_session_end_capture(id: u64) {
                 ..Default::default()
             });
         }
-        DeferredSessionEndOutcome::Capture => {
-            send_deferred_session_end_capture(
+        DeferredSessionEndDisposition::DropFirstUnconfirmed => {
+            // The first unconfirmed session-terminate exit of this run: the ordinary
+            // sign-out. `0x40010004` is externally supplied and delivered no message,
+            // so "exited unexpectedly … consecutive failure #N" was never true of it.
+            // Keep the full local log and breadcrumb; only the Sentry error is withheld.
+            let terminator = resolution
+                .final_attribution
+                .map(|attribution| attribution.class_name())
+                .unwrap_or("unattributed_no_signal");
+            log(
+                "daemon",
+                &format!(
+                    "session-terminate watcher exit — first unconfirmed of this app run, \
+                     capture skipped as a benign sign-out (windows_terminator={terminator} \
+                     observer_readiness={readiness} grace_waited={waited})"
+                ),
+            );
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("daemon.exit".into()),
+                level: sentry::Level::Info,
+                message: Some(format!(
+                    "benign session-terminate auto-sync watcher exit (first of run): \
+                     windows_terminator={terminator} grace_waited={waited}"
+                )),
+                ..Default::default()
+            });
+        }
+        DeferredSessionEndDisposition::EscalateRepeatedUnconfirmed => {
+            // A second-or-later unconfirmed session-terminate exit within the SAME
+            // app run: the app outlived its own session, so this is not a sign-out.
+            // Escalate on a DISTINCT fingerprint that names the anomaly, carrying the
+            // teardown-probe and latch diagnostics so a real external killer is
+            // nameable from the wire.
+            log(
+                "daemon",
+                &format!(
+                    "session-terminate watcher exit — unconfirmed #{run_count} within one \
+                     app run, escalating (the app is still alive, so its session did not end)"
+                ),
+            );
+            escalate_repeated_session_terminate_capture(
                 payload,
                 resolution.final_attribution,
                 waited_ms,
                 readiness,
-                "grace_elapsed",
                 resolution.verdict,
                 teardown,
                 latch,
+                run_count,
             );
         }
     }
@@ -2360,6 +2442,75 @@ fn send_deferred_session_end_capture(
         teardown,
         latch,
     );
+    let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
+    let tags: Vec<(&str, String)> = payload
+        .tags
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let extras: Vec<(&str, sentry::protocol::Value)> = payload
+        .extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let mut effects = ProductionWatcherProcessEffects;
+    effects.capture(&payload.message, &fingerprint, &tags, &extras);
+}
+
+/// The distinct Sentry group for a REPEATED unconfirmed session-terminate exit.
+/// It is deliberately not the benign `auto-sync-watcher-termination` shape, so an
+/// escalation never merges into the per-sign-out group and the existing saved
+/// searches and alert rules on that group do not move.
+const REPEATED_SESSION_TERMINATE_FINGERPRINT: [&str; 2] =
+    ["sync", "auto-sync-watcher-repeated-session-terminate"];
+
+/// Escalate a REPEATED unconfirmed session-terminate exit — the second (or later)
+/// within one app run. A forced sign-out kills the child exactly once per run, so
+/// a repeat is not a sign-out: the app is still alive, which means its session did
+/// not end, and something external (antivirus, a job-object defect, a rogue
+/// `TerminateProcess`) is terminating the child.
+///
+/// It reuses the finalized deferral payload so it carries every teardown-probe and
+/// latch diagnostic (step 4b instrumentation), then overrides ONLY the fingerprint
+/// and message to the distinct anomaly group and stamps the bounded run count. The
+/// resolved `windows_terminator` tag still names the reading, so the wire is
+/// self-diagnosing.
+#[allow(clippy::too_many_arguments)]
+fn escalate_repeated_session_terminate_capture(
+    payload: DeferredSessionEndCapture,
+    final_attribution: Option<WindowsTerminatorAttribution>,
+    waited_ms: u64,
+    readiness: &str,
+    verdict: WindowsTeardownVerdict,
+    teardown: WindowsTeardownProbeReading,
+    latch: SessionEndLatchReading,
+    run_count: u32,
+) {
+    let mut payload = finalize_deferred_session_end_payload(
+        payload,
+        final_attribution,
+        waited_ms,
+        readiness,
+        "grace_elapsed_repeat",
+        verdict,
+        teardown,
+        latch,
+    );
+    payload.fingerprint = REPEATED_SESSION_TERMINATE_FINGERPRINT
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+    payload.message = format!(
+        "auto-sync watcher terminated by an external session-terminate status \
+         (0x40010004) {run_count} times within one app run — the app outlived its \
+         own session, so this is not a user sign-out"
+    );
+    // Bounded-integer diagnostic (egress-allow-listed) naming how many unconfirmed
+    // session-terminate exits this run has now seen.
+    payload.extras.push((
+        "session_terminate_unconfirmed_run_count".to_string(),
+        sentry::protocol::Value::Number(run_count.into()),
+    ));
     let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
     let tags: Vec<(&str, String)> = payload
         .tags
@@ -2721,7 +2872,13 @@ fn set_payload_string_extra(
 /// small seam lets process-level tests drive the exact production decisions
 /// without writing real Sentry events or mutating the global supervisor state.
 trait WatcherProcessEffects {
-    fn note_watcher_crashed(&mut self) -> u32;
+    /// Record an unexpected watcher exit and return the crash-loop consecutive
+    /// count. `is_external_session_teardown` is `true` ONLY for the OS-supplied
+    /// `DBG_TERMINATE_PROCESS`/no-signal shape that is about to be deferred as a
+    /// possible sign-out: such an exit is not a watcher crash, so it must not
+    /// advance the crash-loop counter or extend respawn backoff (it returns the
+    /// current count unchanged). Every crash and fault exit passes `false`.
+    fn note_watcher_crashed(&mut self, is_external_session_teardown: bool) -> u32;
     fn note_watcher_capture_policy_streak(
         &mut self,
         policy: WatcherExitCapturePolicy,
@@ -2770,8 +2927,8 @@ trait WatcherProcessEffects {
 struct ProductionWatcherProcessEffects;
 
 impl WatcherProcessEffects for ProductionWatcherProcessEffects {
-    fn note_watcher_crashed(&mut self) -> u32 {
-        note_watcher_crashed()
+    fn note_watcher_crashed(&mut self, is_external_session_teardown: bool) -> u32 {
+        note_watcher_crashed(is_external_session_teardown)
     }
 
     fn note_watcher_capture_policy_streak(
@@ -3001,7 +3158,10 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         return;
     }
 
-    let consecutive = effects.note_watcher_crashed();
+    // Classify the exit BEFORE counting it, so a deferred session-terminate exit
+    // (an OS sign-out, not a crash) can be kept out of the crash-loop counter.
+    // None of these inputs need the consecutive count, so the reorder is inert for
+    // every other shape.
     let capture_policy = if is_benign_watcher_exit(code, signal)
         || context.attributed_to_disk_exhaustion(code, signal)
         || context.attributed_to_file_lock(code, signal)
@@ -3010,7 +3170,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // condition the user fixes, never an actionable watcher crash. Route it to
         // LocalLogOnly — the same non-capturing outcome the manual route's
         // `DiskFull` / `FileLocked` dispositions produce — so the two boundaries
-        // stay in lockstep. Still counted toward the crash streak above so the
+        // stay in lockstep. Still counted toward the crash streak below so the
         // respawn stays paced while the condition persists.
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
@@ -3021,6 +3181,13 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
             context.session_end_latch,
         )
     };
+    // An OS-supplied `DBG_TERMINATE_PROCESS` deferral is a possible sign-out, not
+    // a watcher failure: keep it out of the crash-loop counter and respawn backoff
+    // (HQ-DESKTOP-5J step 4a). Every crash, fault, signal and environmental exit
+    // still advances the counter exactly as before.
+    let deferring_external_session_teardown =
+        capture_policy == WatcherExitCapturePolicy::DeferSessionEndDecision;
+    let consecutive = effects.note_watcher_crashed(deferring_external_session_teardown);
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
     // Evidence-gated memory attribution also drives the user-facing failure
@@ -3926,7 +4093,7 @@ fn record_watcher_process_error_with_effects<E: WatcherProcessEffects>(
         let kind = error.error_kind().unwrap_or(std::io::ErrorKind::Other);
         let raw_os_error = error.raw_os_error();
         effects.reset_exec_not_runnable_failure_streak();
-        let consecutive = effects.note_watcher_crashed();
+        let consecutive = effects.note_watcher_crashed(false);
         let lifecycle_state = if effects.within_respawn_backoff() {
             WatchDaemonState::Backoff
         } else {
@@ -3984,7 +4151,7 @@ fn record_watcher_process_error_with_effects<E: WatcherProcessEffects>(
     // A native spawn error is a different failure class from a child that
     // actually ran and exited 126/127, so it breaks that class-specific streak.
     effects.reset_exec_not_runnable_failure_streak();
-    let consecutive = effects.note_watcher_crashed();
+    let consecutive = effects.note_watcher_crashed(false);
     let lifecycle_state = if effects.within_respawn_backoff() {
         WatchDaemonState::Backoff
     } else {
@@ -4285,8 +4452,21 @@ fn note_runner_preflight_failure() -> u32 {
 
 /// Update the crash-loop state on an unexpected watcher exit and return the
 /// consecutive-failure count so the caller can decide whether to capture.
-fn note_watcher_crashed() -> u32 {
+///
+/// `is_external_session_teardown` is `true` for the `DBG_TERMINATE_PROCESS` /
+/// no-signal shape that is being deferred as a possible Windows sign-out. That
+/// status is supplied by an external terminator, never produced by the child, so
+/// it is not a watcher crash: it must not advance `consecutive` or extend
+/// `backoff_until`, or an ordinary sign-out would inflate the "consecutive
+/// failure #N" count and slow legitimate respawns. The current count is returned
+/// unchanged. Every real crash and fault exit passes `false`.
+fn note_watcher_crashed(is_external_session_teardown: bool) -> u32 {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    if is_external_session_teardown {
+        // Not a crash — leave the crash-loop counter and respawn backoff exactly
+        // as they were and report the current streak.
+        return st.consecutive;
+    }
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
     // Exit-path episode recovery, mirroring the supervisor's live reset: if THIS
     // generation itself survived `HEALTHY_RUN_WINDOW` before dying, the episode has
@@ -4467,7 +4647,7 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     let mut effects = ProductionWatcherProcessEffects;
     // Count the crash episode and set the respawn backoff exactly as an ordinary
     // crash exit would — the suppressed pre-empt exit never will.
-    let consecutive = effects.note_watcher_crashed();
+    let consecutive = effects.note_watcher_crashed(false);
     let heap_ceiling = hq_desktop_core::daemon::effective_runner_heap_ceiling();
     let memory_evidence = MemoryExhaustionEvidence {
         heap_oom_class: false,
@@ -5918,7 +6098,12 @@ mod tests {
     }
 
     impl WatcherProcessEffects for RecordingWatcherEffects {
-        fn note_watcher_crashed(&mut self) -> u32 {
+        fn note_watcher_crashed(&mut self, is_external_session_teardown: bool) -> u32 {
+            if is_external_session_teardown {
+                // Mirrors production: an OS-supplied session teardown is not a
+                // crash, so it advances neither the counter nor the backoff.
+                return self.consecutive;
+            }
             if self.simulate_slow_death {
                 // Ran healthily, then died: production pins `consecutive` to 1.
                 self.consecutive = 1;
@@ -8872,29 +9057,17 @@ mod tests {
         );
     }
 
-    /// HQ-DESKTOP-4N. The regression: a `DBG_TERMINATE_PROCESS` exit the
-    /// observer could not attribute used to be captured on the spot, so an
-    /// affirmation arriving even one millisecond later could not suppress it.
-    /// It must now hold the SEND back — and the held-back payload must be
-    /// byte-identical to what an immediate capture would have sent.
+    /// HQ-DESKTOP-4N / HQ-DESKTOP-5J. A `DBG_TERMINATE_PROCESS` exit the observer
+    /// could not attribute holds its SEND back for the grace so the probe and the
+    /// latch get a second look — and it is NOT counted as a watcher crash. The
+    /// status is supplied by an external terminator, never by the child, so an
+    /// OS sign-out must not advance the crash-loop counter or extend respawn
+    /// backoff (step 4a). The RESOLUTION of the held-back decision — drop the first
+    /// unconfirmed exit of a run, escalate the second — is proved separately by
+    /// `the_first_unconfirmed_session_terminate_resolution_drops_then_escalates`.
     #[test]
-    fn watcher_session_terminate_unattributed_defers_the_send_it_used_to_make() {
+    fn watcher_session_terminate_unattributed_defers_without_counting_a_crash() {
         const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
-        let mut baseline = RecordingWatcherEffects::default();
-        handle_watcher_exit_with_effects(
-            &mut baseline,
-            Some(OBSERVED_SESSION_TERMINATE_EXIT),
-            None,
-            false,
-            false,
-            "npx",
-            None,
-            current_termination_host(),
-            &WatcherExitCaptureContext::default(),
-        );
-        assert_eq!(baseline.captures.len(), 1);
-        let baseline = &baseline.captures[0];
-
         for attribution in [
             WindowsTerminatorAttribution::UnattributedNoSignal,
             WindowsTerminatorAttribution::UnattributedQueryOnly,
@@ -8917,9 +9090,10 @@ mod tests {
                 &context,
             );
 
+            // No inline send: the decision is held for the grace.
             assert!(
                 effects.captures.is_empty(),
-                "{attribution:?} must not send inline any more"
+                "{attribution:?} must not send inline"
             );
             assert_eq!(
                 effects.deferred.len(),
@@ -8928,14 +9102,19 @@ mod tests {
             );
             let deferred = &effects.deferred[0];
 
-            // Same event, just held back: grouping and content are unchanged.
-            assert_eq!(deferred.message, baseline.message);
-            assert_eq!(deferred.fingerprint, baseline.fingerprint);
-            assert_eq!(deferred.extras, baseline.extras);
-            assert_eq!(deferred.tags.len(), baseline.tags.len() + 1);
+            // Grouping is the benign session-terminate shape, and the held-back
+            // payload carries the exit-time reading as its windows_terminator tag.
             assert_eq!(
-                &deferred.tags[..baseline.tags.len()],
-                baseline.tags.as_slice()
+                deferred.fingerprint,
+                vec![
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:session-terminate",
+                    "none",
+                    "none",
+                    "none"
+                ],
+                "{attribution:?} must keep the benign session-terminate fingerprint"
             );
             assert_eq!(
                 deferred.tags.last(),
@@ -8945,20 +9124,68 @@ mod tests {
                 ))
             );
 
-            // Lifecycle, failure category and crash counting are untouched —
-            // only the send moved. Respawn and backoff timing must not shift.
+            // Step 4a: an OS-supplied session teardown is not a watcher crash, so it
+            // advances neither the crash-loop counter nor the respawn backoff. The
+            // lifecycle therefore reads Stopped (not Backoff) and consecutive stays 0.
+            assert_eq!(
+                effects.consecutive, 0,
+                "{attribution:?} must not advance the crash-loop counter"
+            );
             assert_eq!(
                 effects.lifecycle,
-                vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)],
-                "{attribution:?} changed the lifecycle transition"
+                vec![(WatchDaemonState::Stopped, DaemonFailureCategory::Crash)],
+                "{attribution:?} must not enter respawn backoff"
             );
-            assert_eq!(effects.consecutive, 1, "{attribution:?}");
             assert!(
                 effects.logs.iter().any(|(_, message)| message
-                    .starts_with("session-terminate watcher exit #1 — capture deferred")),
+                    .starts_with("session-terminate watcher exit #0 — capture deferred")),
                 "{attribution:?} must record the deferral locally"
             );
         }
+    }
+
+    /// Step 4a, the complementary half: the SAME supervisor sees an unconfirmed
+    /// session-terminate deferral leave the crash-loop counter untouched, then a
+    /// genuine fault exit advances it exactly as before. An OS sign-out never
+    /// dilutes the crash cadence a real crash drives.
+    #[test]
+    fn an_unconfirmed_session_terminate_exit_does_not_advance_the_crash_streak_but_a_fault_does() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let mut effects = RecordingWatcherEffects::default();
+
+        // A session-terminate deferral: no crash counted, no backoff entered.
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext {
+                windows_terminator: Some(WindowsTerminatorAttribution::UnattributedNoSignal),
+                ..Default::default()
+            },
+        );
+        assert_eq!(effects.consecutive, 0, "the sign-out must not count a crash");
+        assert!(!effects.in_backoff, "the sign-out must not enter backoff");
+
+        // A genuine Windows fault exit right after still advances the counter and
+        // backs off — the loud arm is untouched.
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.consecutive, 1, "a real fault must advance the counter");
+        assert!(effects.in_backoff, "a real fault must enter respawn backoff");
     }
 
     /// The fail-closed half of the same decision: a grace that elapses without a
@@ -9365,6 +9592,115 @@ mod tests {
         assert!(take_pending_session_end_capture(first).is_none());
         assert!(take_pending_session_end_capture(second).is_some());
         assert_eq!(drop_pending_session_end_captures(), 0);
+    }
+
+    /// HQ-DESKTOP-5J end-to-end at the resolver. With no positive evidence (the
+    /// exact recurrence shape: no observer message, no latch, no confirmed
+    /// teardown), the FIRST unconfirmed session-terminate exit of a run resolves
+    /// to a silent local-log drop — the benign sign-out — and a SECOND within the
+    /// same run escalates on a DISTINCT fingerprint carrying the run count and the
+    /// teardown/latch diagnostics. A Windows session-end teardown resets the run
+    /// counter, so a later run starts silent again.
+    #[test]
+    fn the_first_unconfirmed_session_terminate_resolution_drops_then_escalates() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        take_all_pending_session_end_captures();
+        reset_session_terminate_unconfirmed_run_count();
+
+        // The held-back payload as the exit path builds it: the benign
+        // session-terminate group, tagged with the exit-time reading.
+        let payload = || {
+            DeferredSessionEndCapture::new(
+                "auto-sync watcher exited unexpectedly (with Windows status 0x40010004 \
+                 (session terminate)), consecutive failure #0",
+                &[
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:session-terminate",
+                    "none",
+                    "none",
+                    "none",
+                ],
+                &[("windows_terminator", "unattributed_no_signal".to_string())],
+                &[],
+            )
+        };
+
+        let captures = sentry::test::with_captured_events(|| {
+            // First unconfirmed exit of the run — dropped as a benign sign-out.
+            let first = register_pending_session_end_capture(payload());
+            resolve_deferred_session_end_capture(first);
+            // Second within the same run — the app is still alive, so escalate.
+            let second = register_pending_session_end_capture(payload());
+            resolve_deferred_session_end_capture(second);
+        });
+
+        assert_eq!(
+            captures.len(),
+            1,
+            "only the second unconfirmed session-terminate exit of a run escalates"
+        );
+        let escalation = &captures[0];
+
+        // A DISTINCT anomaly fingerprint — never the benign session-terminate one.
+        let fingerprint: Vec<&str> =
+            escalation.fingerprint.iter().map(|part| part.as_ref()).collect();
+        assert_eq!(
+            fingerprint,
+            vec!["sync", "auto-sync-watcher-repeated-session-terminate"]
+        );
+
+        // The message names the anomaly with the bounded run count.
+        let message = escalation.message.as_deref().unwrap_or_default();
+        assert!(
+            message.contains("2 times within one app run"),
+            "message must name the run count: {message}"
+        );
+        assert!(
+            message.contains("0x40010004") && message.contains("not a user sign-out"),
+            "message must name the status and the anomaly: {message}"
+        );
+
+        // The bounded run-count extra, and the teardown/latch diagnostics carried
+        // over from the resolution (step 4b instrumentation).
+        assert!(
+            matches!(
+                escalation.extra.get("session_terminate_unconfirmed_run_count"),
+                Some(sentry::protocol::Value::Number(n)) if n.as_u64() == Some(2)
+            ),
+            "run-count extra must be the bounded integer 2"
+        );
+        for key in [
+            "windows_teardown_probe_verdict",
+            "windows_teardown_probe_shuttingdown",
+            "windows_teardown_probe_log",
+            "session_end_latch",
+        ] {
+            assert!(
+                escalation.extra.contains_key(key),
+                "escalation must carry the {key} diagnostic"
+            );
+        }
+        // The reading is still named on the wire, not overwritten.
+        assert_eq!(
+            escalation.tags.get("windows_terminator").map(String::as_str),
+            Some("unattributed_no_signal")
+        );
+
+        // A confirmed session end (the Windows teardown) resets the run counter, so
+        // the NEXT unconfirmed exit is a fresh silent first, not another escalation.
+        drop_pending_session_end_captures();
+        let after_reset = sentry::test::with_captured_events(|| {
+            let id = register_pending_session_end_capture(payload());
+            resolve_deferred_session_end_capture(id);
+        });
+        assert!(
+            after_reset.is_empty(),
+            "after a confirmed session end the counter resets and the next exit is silent"
+        );
+
+        take_all_pending_session_end_captures();
+        reset_session_terminate_unconfirmed_run_count();
     }
 
     /// The deferral must not put anything outside the fixed vocabulary on the

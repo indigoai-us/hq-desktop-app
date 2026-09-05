@@ -109,7 +109,7 @@ describe('watcher stall-teardown attribution — source contracts', () => {
     const decision = sliceBetween(
       daemonSource,
       'fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(',
-      'let consecutive = effects.note_watcher_crashed();',
+      'let consecutive = effects.note_watcher_crashed(deferring_external_session_teardown);',
       'handle_watcher_exit_with_effects',
     );
     // Cancellation — and nothing else — is the early return.
@@ -138,7 +138,7 @@ describe('watcher stall-teardown attribution — source contracts', () => {
     const decision = sliceBetween(
       daemonSource,
       'fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(',
-      'let consecutive = effects.note_watcher_crashed();',
+      'let consecutive = effects.note_watcher_crashed(deferring_external_session_teardown);',
       'handle_watcher_exit_with_effects durable-record gate',
     );
     // The ephemeral early return stays intact, and a SECOND early return
