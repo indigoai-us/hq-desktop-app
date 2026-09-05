@@ -948,3 +948,125 @@ describe('pre-runner (first-push) attribution — HQ-DESKTOP-64', () => {
     }
   });
 });
+
+/**
+ * unknown_unnamed residual instrumentation (HQ-DESKTOP-61/62).
+ *
+ * A runner exit whose ndjson error records classified `unknown_unnamed` — no leading
+ * identity to name, and so no `runner_error_cause_signature` — shipped a dead end:
+ * `causes=unknown_unnamed:N` with zero correlatable identity, and because every
+ * message byte is redacted before Sentry, no sample could ever ground new vocabulary.
+ * This fix adds two DEDICATED, non-fingerprint axes fed ONLY from that residual: a
+ * closed-vocabulary structural PROFILE census and an offline-decodable residual
+ * SIGNATURE. These source contracts pin that wiring at both capture seams, the
+ * record_error feed, and the egress guard, following the same fixture-backed pattern
+ * as the blocks above.
+ */
+describe('unknown_unnamed residual instrumentation — HQ-DESKTOP-61/62', () => {
+  it('feeds both residual rollups ONLY from the UnknownUnnamed branch, touching no fingerprint input or disposition flag', () => {
+    // Slice the gated feed block only (the `if` through its second record call), so the
+    // doc comment above it — which necessarily NAMES the forbidden fields in prose — is
+    // excluded and the assertions are about executable code, not comments.
+    const residualFeed = sliceBetween(
+      coreSource,
+      'if classify_runner_error_cause(&err.message) == RunnerErrorCause::UnknownUnnamed {',
+      'self.runner_error_residual_signature.record(&err.message);',
+      'record_error residual feed',
+    );
+    // Writes the two dedicated residual rollups …
+    expect(residualFeed).toContain('self.runner_error_unknown_profiles.record(&err.message);');
+    expect(residualFeed).toContain('self.runner_error_residual_signature.record(&err.message);');
+    // … and NEVER the three exit-fingerprint rollups (elements 4/5/6) …
+    expect(residualFeed).not.toContain('runner_error_rollup');
+    expect(residualFeed).not.toContain('runner_error_causes');
+    expect(residualFeed).not.toContain('runner_error_sites');
+    // … and NEVER a disposition flag.
+    expect(residualFeed).not.toContain('saw_error');
+    expect(residualFeed).not.toContain('saw_alertable_error');
+    expect(residualFeed).not.toContain('saw_node_too_old');
+  });
+
+  it('emits both residual axes Some-gated at the manual seam, beside the sibling axes', () => {
+    const telemetryContext = sliceBetween(
+      syncSource,
+      'fn runner_exit_telemetry_context(',
+      'fn capture_runner_exit_error(',
+      'runner_exit_telemetry_context',
+    );
+    expect(telemetryContext).toContain(
+      'if let Some(profiles) = totals.runner_error_unknown_profiles.tag_value() {',
+    );
+    expect(telemetryContext).toContain('tags.push(("runner_error_unknown_profiles", profiles));');
+    expect(telemetryContext).toContain(
+      'if let Some(signature) = totals.runner_error_residual_signature.tag_value() {',
+    );
+    expect(telemetryContext).toContain('tags.push(("runner_error_residual_signature", signature));');
+  });
+
+  it('emits both residual axes Some-gated at the watcher seam from the SAME shared totals', () => {
+    // Assignment from the shared RunTotals (both seams read the same source) …
+    expect(daemonSource).toContain(
+      'runner_error_unknown_profiles: totals.runner_error_unknown_profiles.tag_value(),',
+    );
+    expect(daemonSource).toContain(
+      'runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),',
+    );
+    // … and the Some-gated tag pushes on the watcher capture.
+    expect(daemonSource).toContain('if let Some(profiles) = &context.runner_error_unknown_profiles {');
+    expect(daemonSource).toContain('tags.push(("runner_error_unknown_profiles", profiles.clone()));');
+    expect(daemonSource).toContain(
+      'if let Some(signature) = &context.runner_error_residual_signature {',
+    );
+    expect(daemonSource).toContain('tags.push(("runner_error_residual_signature", signature.clone()));');
+  });
+
+  it('defines the profile classifier + residual signature in the shared classifier module', () => {
+    expect(shapeSource).toContain('pub enum RunnerErrorUnknownProfile');
+    expect(shapeSource).toContain('pub fn classify_runner_error_unknown_profile(');
+    expect(shapeSource).toContain('pub fn runner_error_residual_signature(');
+    expect(shapeSource).toContain('pub struct RunnerErrorUnknownProfileRollup');
+    expect(shapeSource).toContain('pub struct RunnerErrorResidualSignatureRollup');
+  });
+
+  it('pins both new keys AND the first-push capture keys to egress arms (emitter<->guard binding)', () => {
+    // The two residual axes are registered — the profile as a closed-vocab count
+    // rollup, the signature reusing the hex12 validator — so a producer bug fails CLOSED.
+    expect(telemetrySource).toContain('const RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS');
+    expect(telemetrySource).toContain(
+      '"runner_error_unknown_profiles" => Some(is_closed_vocab_count_rollup(',
+    );
+    expect(telemetrySource).toContain(
+      '"runner_error_residual_signature" => Some(is_runner_error_cause_signature_rollup(value)),',
+    );
+    // The first-push CAPTURE's two single-value keys (step 2) are registered too, so a
+    // producer bug on that separate event degrades to [Filtered] like every sibling.
+    expect(telemetrySource).toContain('"pre_runner_cause" => Some(PRE_RUNNER_CAUSE_TOKENS.contains(&value)),');
+    expect(telemetrySource).toContain('"pre_runner_status" => Some(is_pre_runner_status(value)),');
+  });
+
+  it('keeps every residual profile token and new key name off the Sentry denylist', () => {
+    const profileTokens = sliceBetween(
+      telemetrySource,
+      'const RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS',
+      '];',
+      'RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS',
+    );
+    for (const denied of DENYLIST) {
+      expect(profileTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
+      for (const key of [
+        'runner_error_unknown_profiles',
+        'runner_error_residual_signature',
+        'pre_runner_cause',
+        'pre_runner_status',
+      ]) {
+        expect(key).not.toContain(denied);
+      }
+    }
+  });
+
+  it('throws when an anchor is moved, so a relocated emission fails loudly', () => {
+    expect(() =>
+      sliceBetween(coreSource, 'a start anchor that does not exist anywhere', '};', 'guard'),
+    ).toThrow();
+  });
+});

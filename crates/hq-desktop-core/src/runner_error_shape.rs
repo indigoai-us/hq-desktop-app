@@ -1936,6 +1936,346 @@ impl RunnerErrorCauseSignatureRollup {
     }
 }
 
+/// Fixed, content-safe *structural profile* of a runner error message that
+/// classified [`RunnerErrorCause::UnknownUnnamed`] — the residual with no leading
+/// identity to name and (by construction) no `runner_error_cause_signature`. The
+/// 61/62-class exits shipped `causes=unknown_unnamed:N` with this residual a dead
+/// end: the message defeated every grammar, and because every byte is redacted
+/// before Sentry, no sample could arrive to ground new vocabulary. This axis records
+/// what the unmatched message STRUCTURALLY was, mirroring
+/// [`crate::watcher_fault::classify_unmatched_stderr_shape`]'s census discipline —
+/// the message is inspected solely to SELECT a compile-time token; nothing is
+/// retained. An unrecognised structure maps to `other`, never a nearest guess, so
+/// the axis can only add information — never mislabel or leak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorUnknownProfile {
+    /// The message carries a Node/V8 stack-frame line (`    at …`).
+    StackFrame,
+    /// The first whitespace token carries a `key=value` (`code=…`).
+    KeyValueLed,
+    /// The first token is a bare identifier immediately followed by `:`.
+    IdentifierColonLed,
+    /// The first token is a drive path or carries >=2 forward slashes.
+    PathLed,
+    /// The first token opens with a quote (`"`, `'`, or backtick).
+    QuotedLed,
+    /// The first token begins with an ASCII digit.
+    DigitLed,
+    /// The first token is an ALL-CAPS bare identifier not in the cause vocabulary.
+    UpperWordLed,
+    /// The first token is a capitalized single-hump word — sentence-case prose or a
+    /// suppressed plain `Error`, deliberately NOT a multi-hump CamelCase class name
+    /// (which the cause-signature axis already correlates).
+    SingleHumpLed,
+    /// The first token is an all-lowercase ASCII-alphabetic word — pull-leg prose.
+    LowerProse,
+    /// The message was empty or whitespace only.
+    Empty,
+    /// None of the above.
+    Other,
+}
+
+impl RunnerErrorUnknownProfile {
+    /// Declaration order is the render tie-break for equal counts and lets tests
+    /// enumerate the emitter's own token set.
+    pub const ALL: [RunnerErrorUnknownProfile; 11] = [
+        Self::StackFrame,
+        Self::KeyValueLed,
+        Self::IdentifierColonLed,
+        Self::PathLed,
+        Self::QuotedLed,
+        Self::DigitLed,
+        Self::UpperWordLed,
+        Self::SingleHumpLed,
+        Self::LowerProse,
+        Self::Empty,
+        Self::Other,
+    ];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from runner input; every
+    /// token avoids the Sentry default-scrubber denylist substrings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StackFrame => "stack_frame",
+            Self::KeyValueLed => "key_value_led",
+            Self::IdentifierColonLed => "identifier_colon_led",
+            Self::PathLed => "path_led",
+            Self::QuotedLed => "quoted_led",
+            Self::DigitLed => "digit_led",
+            Self::UpperWordLed => "upper_word_led",
+            Self::SingleHumpLed => "single_hump_led",
+            Self::LowerProse => "lower_prose",
+            Self::Empty => "empty",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify one `unknown_unnamed` residual message by structure only, selecting a
+/// fixed token in a stable precedence order. The message is inspected solely to
+/// SELECT the token; nothing is retained, so the axis is content-safe by the same
+/// argument as [`crate::watcher_fault::classify_unmatched_stderr_shape`]. Only ever
+/// called for a message that already classified `UnknownUnnamed`, but total for any
+/// input so tests can drive it directly.
+pub fn classify_runner_error_unknown_profile(message: &str) -> RunnerErrorUnknownProfile {
+    if message.trim().is_empty() {
+        return RunnerErrorUnknownProfile::Empty;
+    }
+    // A genuine Node/V8 stack anywhere in the message wins first — the most
+    // actionable structure, and it can precede any leading token.
+    if message_has_stack_frame(message) {
+        return RunnerErrorUnknownProfile::StackFrame;
+    }
+    let Some(first) = message.split_whitespace().next() else {
+        return RunnerErrorUnknownProfile::Empty;
+    };
+    if first.contains('=') {
+        return RunnerErrorUnknownProfile::KeyValueLed;
+    }
+    if profile_identifier_colon_led(first) {
+        return RunnerErrorUnknownProfile::IdentifierColonLed;
+    }
+    if profile_path_led(first) {
+        return RunnerErrorUnknownProfile::PathLed;
+    }
+    if first.starts_with(['"', '\'', '`']) {
+        return RunnerErrorUnknownProfile::QuotedLed;
+    }
+    if first.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        return RunnerErrorUnknownProfile::DigitLed;
+    }
+    if profile_all_caps_identifier(first) && cause_from_identifier(first).is_none() {
+        return RunnerErrorUnknownProfile::UpperWordLed;
+    }
+    if profile_single_hump_word(first) {
+        return RunnerErrorUnknownProfile::SingleHumpLed;
+    }
+    if profile_lower_alpha_word(first) {
+        return RunnerErrorUnknownProfile::LowerProse;
+    }
+    RunnerErrorUnknownProfile::Other
+}
+
+/// A leading bare identifier immediately followed by `:` (`Foo: …`). The head
+/// before the first `:` must be a bare identifier so a `12:34` or a stray colon is
+/// not mistaken for one. A local copy of `watcher_fault`'s discipline, kept here so
+/// the modules stay independent.
+fn profile_identifier_colon_led(token: &str) -> bool {
+    match token.split_once(':') {
+        Some((head, _)) => {
+            !head.is_empty()
+                && head
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && head.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }
+        None => false,
+    }
+}
+
+/// A Windows drive-letter root (`C:\`) or a token carrying >=2 forward slashes —
+/// the two shapes most likely to be a path. Local copy of `watcher_fault`'s
+/// discipline, applied to the leading token.
+fn profile_path_led(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let drive = token.char_indices().any(|(i, c)| {
+        c == ':' && i >= 1 && bytes[i - 1].is_ascii_alphabetic() && bytes.get(i + 1) == Some(&b'\\')
+    });
+    drive || bytes.iter().filter(|byte| **byte == b'/').count() >= 2
+}
+
+/// A bare ALL-CAPS identifier: non-empty, every byte ASCII alphanumeric or `_`, at
+/// least one ASCII uppercase letter, and no ASCII lowercase letter.
+fn profile_all_caps_identifier(token: &str) -> bool {
+    !token.is_empty()
+        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && token.bytes().any(|b| b.is_ascii_uppercase())
+        && !token.bytes().any(|b| b.is_ascii_lowercase())
+}
+
+/// A capitalized single-hump word: an ASCII-uppercase first byte followed only by
+/// ASCII-lowercase letters (no inner uppercase, digit, or separator).
+fn profile_single_hump_word(token: &str) -> bool {
+    let mut bytes = token.bytes();
+    match bytes.next() {
+        Some(first) if first.is_ascii_uppercase() => bytes.all(|b| b.is_ascii_lowercase()),
+        _ => false,
+    }
+}
+
+/// An all-lowercase ASCII-alphabetic word.
+fn profile_lower_alpha_word(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+/// Saturating per-pass counts of the closed [`RunnerErrorUnknownProfile`]
+/// vocabulary. Renders a compact Sentry tag such as `key_value_led:4,lower_prose:1`
+/// through the shared bounded renderer, so its format matches every sibling axis.
+/// `None` when no `unknown_unnamed` residual was profiled, so a run with none stays
+/// byte-identical.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorUnknownProfileRollup {
+    counts: [u32; RunnerErrorUnknownProfile::ALL.len()],
+}
+
+impl RunnerErrorUnknownProfileRollup {
+    /// Profile one `unknown_unnamed` residual message and increment its bucket.
+    pub fn record(&mut self, message: &str) {
+        let profile = classify_runner_error_unknown_profile(message);
+        if let Some(index) = RunnerErrorUnknownProfile::ALL
+            .iter()
+            .position(|candidate| *candidate == profile)
+        {
+            self.counts[index] = self.counts[index].saturating_add(1);
+        }
+    }
+
+    /// The recorded count for one profile — used by tests to assert the census.
+    pub fn count(&self, profile: RunnerErrorUnknownProfile) -> u32 {
+        RunnerErrorUnknownProfile::ALL
+            .iter()
+            .position(|candidate| *candidate == profile)
+            .map(|index| self.counts[index])
+            .unwrap_or(0)
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the stable tie-break for the
+    /// bounded renderer.
+    fn counts(&self) -> [(&'static str, u32); RunnerErrorUnknownProfile::ALL.len()] {
+        core::array::from_fn(|index| {
+            (
+                RunnerErrorUnknownProfile::ALL[index].as_str(),
+                self.counts[index],
+            )
+        })
+    }
+
+    /// Render the top-N profiles by count as a bounded Sentry tag. `None` when
+    /// nothing was recorded, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+/// The `runner_error_residual_signature` of an `unknown_unnamed` residual message:
+/// a bounded, content-safe correlator for a residual that carries NO leading
+/// identity (so [`runner_error_cause_signature`] signs nothing) yet still carries a
+/// machine-decodable shape. Returns the first [`SIGNATURE_HEX_LEN`] lowercase-hex
+/// chars of the SHA-256 of a gated signing input, or `None` when the residual
+/// carries none.
+///
+/// The signing input is derived by precedence:
+///   (i) the first `code=`/`cause=`/`syscall=` value that is a bare identifier
+///       (see [`is_bare_identifier_token`]) AND is NOT already in the cause
+///       vocabulary — an unlisted machine identifier, e.g. an unknown errno symbol;
+///   else (ii) the WORD SKELETON — the first up-to-8 whitespace tokens that are
+///       entirely ASCII alphabetic, lowercased and joined with single spaces,
+///       requiring >=2 surviving tokens; else `None`.
+///
+/// Offline-decode contract: a candidate is recovered by hashing (i) the exact
+/// unlisted identifier, or (ii) the exact lowercased single-space-joined alphabetic
+/// skeleton, and comparing the first [`SIGNATURE_HEX_LEN`] hex chars. hq-cloud
+/// message-template skeletons and candidate errno/identifier tables hash to these
+/// values.
+///
+/// Content-safe by construction: only a one-way fixed-length digest ever ships; the
+/// gate (i) admits only a bare identifier and (ii) drops any token carrying a digit,
+/// separator, quote, punctuation, or non-ASCII byte — so a path, URL, id, quoted
+/// string, or localized text signs nothing through the skeleton. This is the exact
+/// risk envelope the repo already accepted for [`runner_error_cause_signature`],
+/// whose semantics this leaves completely unchanged (it is a sibling, not a
+/// widening).
+pub fn runner_error_residual_signature(message: &str) -> Option<String> {
+    let input = residual_signature_input(message)?;
+    let digest = format!("{:x}", Sha256::digest(input.as_bytes()));
+    Some(digest[..SIGNATURE_HEX_LEN].to_string())
+}
+
+/// Derive the gated signing input for [`runner_error_residual_signature`], or
+/// `None`. Split out so a unit test can pin the exact input a fixture yields before
+/// it is hashed, proving the offline-decode contract.
+fn residual_signature_input(message: &str) -> Option<String> {
+    // (i) The first code=/cause=/syscall= value that is an UNLISTED bare identifier.
+    // A value the cause axis already names needs no residual correlator.
+    let (mut code_value, mut cause_value, mut syscall_value) = (None, None, None);
+    for token in message.split_whitespace() {
+        if let Some(value) = token.strip_prefix("code=") {
+            code_value.get_or_insert(value);
+        } else if let Some(value) = token.strip_prefix("cause=") {
+            cause_value.get_or_insert(value);
+        } else if let Some(value) = token.strip_prefix("syscall=") {
+            syscall_value.get_or_insert(value);
+        }
+    }
+    for candidate in [code_value, cause_value, syscall_value]
+        .into_iter()
+        .flatten()
+    {
+        if is_bare_identifier_token(candidate) && cause_from_identifier(candidate).is_none() {
+            return Some(candidate.to_string());
+        }
+    }
+    // (ii) The word skeleton: up to 8 entirely-ASCII-alphabetic tokens, lowercased
+    // and single-space joined; needs >=2 survivors so a single word, a path-only, or
+    // a localized-only message signs nothing.
+    let skeleton: Vec<String> = message
+        .split_whitespace()
+        .filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_alphabetic()))
+        .take(8)
+        .map(|token| token.to_ascii_lowercase())
+        .collect();
+    if skeleton.len() >= 2 {
+        return Some(skeleton.join(" "));
+    }
+    None
+}
+
+/// Saturating per-pass counts of the `runner_error_residual_signature` axis: a
+/// bounded, content-safe correlator for an `unknown_unnamed` residual (one with no
+/// leading identity, so [`RunnerErrorCauseSignatureRollup`] records nothing). Each
+/// key is a fixed [`SIGNATURE_HEX_LEN`]-char lowercase-hex SHA-256 prefix of a gated
+/// signing input (never a runner byte), so the SAME residual is correlatable across
+/// machines and offline-decodable per [`runner_error_residual_signature`]'s decode
+/// contract. Bounded in BOTH dimensions exactly like the cause-signature rollup: the
+/// rendered tag is capped by `render_top_n` and the retained key set by
+/// [`SIGNATURE_ROLLUP_CAP`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorResidualSignatureRollup {
+    /// Keyed by hex signature; `BTreeMap` gives a deterministic (ascending-hex)
+    /// tie-break so the rendered tag never flaps for the same multiset.
+    counts: BTreeMap<String, u32>,
+}
+
+impl RunnerErrorResidualSignatureRollup {
+    /// Increment the signature count for one `unknown_unnamed` residual message,
+    /// when it yields a gated signing input. A message with none increments nothing.
+    /// Bounded: once [`SIGNATURE_ROLLUP_CAP`] distinct signatures are retained, an
+    /// already-seen signature still increments but a NEW one is dropped, so the map
+    /// cannot grow without limit under a distinct-input flood.
+    pub fn record(&mut self, message: &str) {
+        if let Some(signature) = runner_error_residual_signature(message) {
+            if self.counts.len() >= SIGNATURE_ROLLUP_CAP && !self.counts.contains_key(&signature) {
+                return;
+            }
+            let count = self.counts.entry(signature).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// Render the top-N signatures by count as a bounded Sentry tag such as
+    /// `1a2b3c4d5e6f:9`. `None` when nothing was recorded, so no tag should be sent.
+    /// Ties break by signature ascending (`BTreeMap` order).
+    pub fn tag_value(&self) -> Option<String> {
+        let pairs: Vec<(&str, u32)> = self
+            .counts
+            .iter()
+            .map(|(signature, count)| (signature.as_str(), *count))
+            .collect();
+        render_top_n(&pairs, ROLLUP_TAG_TOP_N)
+    }
+}
+
 /// Fixed-vocabulary description of what the bounded stderr tail actually was, so
 /// a `runner_stack_shape` of `all_redacted` stops conflating "no stack was ever
 /// present" (the tail was a flood of ndjson error records) with "a stack was
@@ -3241,5 +3581,198 @@ mod tests {
             classify_runner_error_cause("TypeError: x is not a function"),
             RunnerErrorCause::TypeError
         );
+    }
+
+    // ── unknown_unnamed residual instrumentation (HQ-DESKTOP-61/62) ────────────
+
+    #[test]
+    fn unknown_profile_selects_one_token_per_variant_and_honours_precedence() {
+        use RunnerErrorUnknownProfile::*;
+        let cases: &[(&str, RunnerErrorUnknownProfile)] = &[
+            ("boom\n    at run (/app/x.js:1:2)", StackFrame),
+            ("code=EWEIRD syscall=open unrecognised errno", KeyValueLed),
+            ("Boom: it failed", IdentifierColonLed),
+            ("/var/log/app/run.log could not be opened", PathLed),
+            ("\"quoted thing\" broke", QuotedLed),
+            ("404 upstream not found", DigitLed),
+            ("EWEIRD unrecognised errno symbol", UpperWordLed),
+            ("Vault unreachable right now", SingleHumpLed),
+            ("connection reset by peer", LowerProse),
+            ("", Empty),
+            ("   \t  ", Empty),
+            ("-dash leads a non-word token", Other),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(
+                classify_runner_error_unknown_profile(message),
+                *expected,
+                "profile mismatch for {message:?}"
+            );
+        }
+        // Precedence: a genuine stack beats a leading key=value, and a leading
+        // key=value beats lower-cased prose.
+        assert_eq!(
+            classify_runner_error_unknown_profile("code=X failed\n    at f (a.js:1:1)"),
+            StackFrame
+        );
+        assert_eq!(
+            classify_runner_error_unknown_profile("code=X connection reset"),
+            KeyValueLed
+        );
+    }
+
+    #[test]
+    fn unknown_profile_rollup_renders_bounded_top_n_and_none_when_empty() {
+        let mut rollup = RunnerErrorUnknownProfileRollup::default();
+        for _ in 0..4 {
+            rollup.record("code=EWEIRD syscall=open unrecognised errno"); // key_value_led
+        }
+        rollup.record("connection reset by peer"); // lower_prose
+        assert_eq!(rollup.count(RunnerErrorUnknownProfile::KeyValueLed), 4);
+        assert_eq!(rollup.count(RunnerErrorUnknownProfile::LowerProse), 1);
+        assert_eq!(
+            rollup.tag_value().as_deref(),
+            Some("key_value_led:4,lower_prose:1")
+        );
+        // Order-independent for the same multiset.
+        let mut reversed = RunnerErrorUnknownProfileRollup::default();
+        reversed.record("connection reset by peer");
+        for _ in 0..4 {
+            reversed.record("code=EWEIRD syscall=open unrecognised errno");
+        }
+        assert_eq!(reversed.tag_value(), rollup.tag_value());
+        // Bounded to top-N; None when nothing was profiled.
+        let mut many = RunnerErrorUnknownProfileRollup::default();
+        many.record("boom\n    at f (a.js:1:1)"); // stack_frame
+        many.record("code=X y=z"); // key_value_led
+        many.record("Boom: nope"); // identifier_colon_led
+        many.record("/a/b/c bad"); // path_led
+        assert!(many.tag_value().unwrap().split(',').count() <= ROLLUP_TAG_TOP_N);
+        assert_eq!(RunnerErrorUnknownProfileRollup::default().tag_value(), None);
+    }
+
+    #[test]
+    fn residual_signature_signs_unlisted_code_value_and_reproduces_fixture_hash() {
+        // The reported 61-class fixture: leading key=value, an unlisted errno symbol.
+        let fixture = "code=EWEIRD syscall=open unrecognised errno";
+        assert_eq!(
+            classify_runner_error_cause(fixture),
+            RunnerErrorCause::UnknownUnnamed
+        );
+        // Source (i): the unlisted `code=` value is the signing input …
+        assert_eq!(residual_signature_input(fixture).as_deref(), Some("EWEIRD"));
+        // … and its digest is the offline-decodable fixture hash.
+        let decoded = format!("{:x}", Sha256::digest(b"EWEIRD"));
+        assert_eq!(
+            runner_error_residual_signature(fixture).as_deref(),
+            Some(&decoded[..SIGNATURE_HEX_LEN])
+        );
+        assert_eq!(
+            runner_error_residual_signature(fixture).as_deref(),
+            Some("ea4e65576be5")
+        );
+    }
+
+    #[test]
+    fn residual_signature_skips_listed_causes_and_signs_the_lowercased_skeleton() {
+        // A listed code= value signs nothing via source (i) — the cause axis names it —
+        // and with no alphabetic skeleton it signs nothing at all.
+        assert_eq!(runner_error_residual_signature("code=EPERM"), None);
+        // Source (ii): the word skeleton, case-normalized, is the signing input, and
+        // hashing that exact skeleton offline reproduces the shipped signature.
+        let prose = "connection reset by peer";
+        assert_eq!(
+            residual_signature_input(prose).as_deref(),
+            Some("connection reset by peer")
+        );
+        let decoded = format!("{:x}", Sha256::digest(prose.as_bytes()));
+        assert_eq!(
+            runner_error_residual_signature(prose).as_deref(),
+            Some(&decoded[..SIGNATURE_HEX_LEN])
+        );
+        assert_eq!(
+            runner_error_residual_signature(prose).as_deref(),
+            Some("9205e6d1c2fb")
+        );
+        // Casing does not change the skeleton, so the signature is stable across it.
+        assert_eq!(
+            residual_signature_input("Connection Reset By Peer").as_deref(),
+            Some("connection reset by peer")
+        );
+        assert_eq!(
+            runner_error_residual_signature("Connection Reset By Peer").as_deref(),
+            Some("9205e6d1c2fb")
+        );
+    }
+
+    #[test]
+    fn residual_signature_drops_paths_digits_punctuation_and_needs_two_words() {
+        for none_case in [
+            "/Users/ada/secret.env", // path-only: no alpha skeleton, no code=
+            "boom",                  // single alpha word (< 2 survivors)
+            "boom 404 /x/y",         // one alpha survivor amid digits/paths
+            "失敗 エラー",           // non-ASCII tokens are dropped
+            "code=EPERM",            // listed cause, no skeleton
+        ] {
+            assert_eq!(
+                runner_error_residual_signature(none_case),
+                None,
+                "must sign nothing: {none_case:?}"
+            );
+        }
+        // >=2 alpha survivors among digits/paths sign the surviving skeleton only.
+        assert_eq!(
+            residual_signature_input("failed 404 to /x/y open").as_deref(),
+            Some("failed to open")
+        );
+    }
+
+    #[test]
+    fn residual_signature_rollup_is_bounded_under_a_distinct_input_flood() {
+        let mut rollup = RunnerErrorResidualSignatureRollup::default();
+        for i in 0..(SIGNATURE_ROLLUP_CAP * 4) {
+            // Each distinct unlisted code= value yields a distinct signature.
+            rollup.record(&format!("code=FLOOD{i}X boom on the company leg"));
+        }
+        assert_eq!(
+            rollup.counts.len(),
+            SIGNATURE_ROLLUP_CAP,
+            "the distinct-signature set must be capped"
+        );
+        // An already-seen signature still increments past the cap; the tag stays top-N.
+        for _ in 0..10 {
+            rollup.record("code=FLOOD0X boom on the company leg");
+        }
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+        // hex12:count grammar — every rendered entry is a 12-hex signature + integer.
+        for entry in value.split(',') {
+            let (sig, count) = entry.split_once(':').expect("hex:count");
+            assert_eq!(sig.len(), SIGNATURE_HEX_LEN);
+            assert!(sig
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+            assert!(!count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()));
+        }
+        assert_eq!(
+            RunnerErrorResidualSignatureRollup::default().tag_value(),
+            None
+        );
+    }
+
+    #[test]
+    fn residual_and_cause_signature_axes_are_independent_siblings() {
+        // The EXISTING cause-signature axis is unchanged: an unlisted NAMED identity
+        // still signs on it.
+        assert!(runner_error_cause_signature("MysteryFleetError boom").is_some());
+        // An unnamed residual signs NOTHING on the existing axis …
+        let unnamed = "code=EWEIRD syscall=open unrecognised errno";
+        assert_eq!(
+            classify_runner_error_cause(unnamed),
+            RunnerErrorCause::UnknownUnnamed
+        );
+        assert_eq!(runner_error_cause_signature(unnamed), None);
+        // … and the residual axis is the sibling that closes the dead end.
+        assert!(runner_error_residual_signature(unnamed).is_some());
     }
 }

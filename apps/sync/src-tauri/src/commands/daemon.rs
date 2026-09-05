@@ -1483,6 +1483,12 @@ struct WatcherExitCaptureContext {
     runner_error_http: Option<String>,
     runner_error_causes: Option<String>,
     runner_error_cause_signature: Option<String>,
+    /// Rendered `runner_error_unknown_profiles` / `runner_error_residual_signature`
+    /// tags (HQ-DESKTOP-61/62), from the SAME shared rollups the manual seam reads, so
+    /// the two seams cannot drift. `None` when no unknown_unnamed residual was
+    /// recorded, so absence never renders as evidence.
+    runner_error_unknown_profiles: Option<String>,
+    runner_error_residual_signature: Option<String>,
     /// Rendered `runner_error_sites` tag (`site:count,...`, top-3), from the SAME
     /// shared rollup the manual seam reads (HQ-DESKTOP-5M). `None` when no runner
     /// error was recorded, so absence never renders as evidence.
@@ -1664,6 +1670,8 @@ impl Default for WatcherExitCaptureContext {
             runner_error_http: None,
             runner_error_causes: None,
             runner_error_cause_signature: None,
+            runner_error_unknown_profiles: None,
+            runner_error_residual_signature: None,
             runner_error_sites: None,
             runner_error_scope: None,
             runner_error_companies: 0,
@@ -1826,6 +1834,8 @@ fn watcher_exit_capture_context(
         runner_error_http: totals.runner_error_http.tag_value(),
         runner_error_causes: totals.runner_error_causes.tag_value(),
         runner_error_cause_signature: totals.runner_error_cause_signature.tag_value(),
+        runner_error_unknown_profiles: totals.runner_error_unknown_profiles.tag_value(),
+        runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),
         runner_error_sites: totals.runner_error_sites.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
         runner_error_companies: totals.runner_error_company_count(),
@@ -3506,6 +3516,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // shared RunTotals source as the manual seam, pushed only when present.
     if let Some(signature) = &context.runner_error_cause_signature {
         tags.push(("runner_error_cause_signature", signature.clone()));
+    }
+    // Route parity: the unknown_unnamed residual axes (HQ-DESKTOP-61/62) ride the same
+    // capture from the same shared RunTotals source as the manual seam, pushed only
+    // when present, so a seam can never silently skip them.
+    if let Some(profiles) = &context.runner_error_unknown_profiles {
+        tags.push(("runner_error_unknown_profiles", profiles.clone()));
+    }
+    if let Some(signature) = &context.runner_error_residual_signature {
+        tags.push(("runner_error_residual_signature", signature.clone()));
     }
     // Route parity: the runner error SITE axis (HQ-DESKTOP-5M) from the same shared
     // rollup as the manual seam, pushed only when a runner error was recorded.
@@ -6794,6 +6813,8 @@ mod tests {
             runner_error_http: Some("http_500:40,http_403:8".to_string()),
             runner_error_causes: Some("vault_not_found:120,unknown_named:8".to_string()),
             runner_error_cause_signature: Some("1a2b3c4d5e6f:8".to_string()),
+            runner_error_unknown_profiles: Some("key_value_led:160,lower_prose:8".to_string()),
+            runner_error_residual_signature: Some("ea4e65576be5:8".to_string()),
             ..Default::default()
         };
         let mut effects = RecordingWatcherEffects::default();
@@ -6825,6 +6846,16 @@ mod tests {
         assert_eq!(
             recorded_tag(capture, "runner_error_cause_signature"),
             "1a2b3c4d5e6f:8"
+        );
+        // The unknown_unnamed residual axes (HQ-DESKTOP-61/62) ride the SAME capture
+        // from the same shared source, pinning both-seams parity for them too.
+        assert_eq!(
+            recorded_tag(capture, "runner_error_unknown_profiles"),
+            "key_value_led:160,lower_prose:8"
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_error_residual_signature"),
+            "ea4e65576be5:8"
         );
         // The pre-existing axes still ride the same capture unchanged.
         assert_eq!(

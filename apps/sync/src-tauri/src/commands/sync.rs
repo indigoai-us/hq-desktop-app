@@ -410,6 +410,17 @@ fn runner_exit_telemetry_context(
     if let Some(signature) = totals.runner_error_cause_signature.tag_value() {
         tags.push(("runner_error_cause_signature", signature));
     }
+    // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): a structural profile and a
+    // residual signature that make a residual with NO leading identity — the dead end
+    // the cause-signature axis leaves blank — self-describing on next occurrence. Read
+    // from the SAME RunTotals source the watcher route reads; absent (no tag) when no
+    // unknown_unnamed residual was recorded, so absence never renders as evidence.
+    if let Some(profiles) = totals.runner_error_unknown_profiles.tag_value() {
+        tags.push(("runner_error_unknown_profiles", profiles));
+    }
+    if let Some(signature) = totals.runner_error_residual_signature.tag_value() {
+        tags.push(("runner_error_residual_signature", signature));
+    }
     // The runner error SITE axis (HQ-DESKTOP-5M): names WHICH runner failure site
     // produced the exit (`local_state`/`runner`/`scope`/`auth`/`company`/`discovery`/
     // `file`), the axis every one of the six reported events lacked. Read from the
@@ -4315,6 +4326,15 @@ mod tests {
             .tags
             .iter()
             .all(|(key, _)| key != "runner_error_cause_signature"));
+        // (1b) The unknown_unnamed residual axes (HQ-DESKTOP-61/62): all 160 pull-leg
+        // prose records are lower-cased-prose-led, and each distinct message skeleton is
+        // signed — making this exact flood self-describing on its next occurrence even
+        // though the fingerprint (and the `unknown_unnamed` cause) are unchanged.
+        assert_eq!(event.tags["runner_error_unknown_profiles"], "lower_prose:160");
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "4620a8381a84:120,57244c1e9fa5:40"
+        );
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -5075,6 +5095,17 @@ mod tests {
             event.tags["runner_error_cause_signature"],
             format!("{expected_signature}:3")
         );
+        // No `unknown_unnamed` residual occurred (every record is a named or matched
+        // cause), so the two residual axes (HQ-DESKTOP-61/62) attach NO tag — a
+        // byte-identical event to the adopted branch on those axes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_unknown_profiles"));
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_residual_signature"));
 
         // Content safety: no raw class name, host, message fragment, or company
         // leaks — only the derived tokens and the fixed-length digest ship.
@@ -5093,6 +5124,207 @@ mod tests {
                 !serialized.contains(forbidden),
                 "final event leaked seeded runner content: {forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn real_child_unknown_unnamed_residual_is_profiled_signed_and_content_safe() {
+        // Closes fix-review minor 3 for HQ-DESKTOP-61/62: drive a REAL child emitting
+        // the observed 61-class shape — ndjson error records whose messages classify
+        // `unknown_unnamed` (a key=value line with an unlisted code, and a lowercase
+        // prose line) plus a plain stderr line — through the PRODUCTION capture path,
+        // and assert the exit now carries the structural-profile and residual-signature
+        // axes (matching the precomputed fixture hashes), alongside the adopted
+        // pre-runner axes, with an UNCHANGED fingerprint and no runner byte leaked.
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..5 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // key=value with an unlisted errno symbol → key_value_led + sig(EWEIRD).
+                    "message": "code=EWEIRD syscall=open unrecognised errno at company acme",
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..3 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // Lower-cased pull-leg prose → lower_prose + skeleton signature.
+                    "message": "connection reset by peer",
+                })
+                .to_string(),
+            );
+        }
+        // A plain (non-ndjson) stderr line rides alongside; it feeds no error event, so
+        // it never pollutes the residual axes.
+        lines.push("runner heartbeat tick".to_string());
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-unknown-unnamed", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            // A first-push fault ALSO preceded this exit: seed the adopted pre-runner
+            // evidence so the exit carries BOTH attribution surfaces at once.
+            {
+                let mut guard = totals.lock().unwrap_or_else(|e| e.into_inner());
+                guard.record_pre_runner_failure(
+                    hq_desktop_core::runner_error_shape::PreRunnerSite::FirstPush,
+                    Some(403),
+                    hq_desktop_core::runner_error_shape::PreRunnerCause::VendHttp,
+                );
+            }
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 9);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("residual flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // The residual is `unknown_unnamed` on the cause axis (no leading identity), and
+        // now ALSO carries the structural profile and the residual signature — the two
+        // axes that make this class of exit self-describing on its next occurrence.
+        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:8");
+        assert_eq!(
+            event.tags["runner_error_unknown_profiles"],
+            "key_value_led:5,lower_prose:3"
+        );
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "ea4e65576be5:5,9205e6d1c2fb:3"
+        );
+        // The unnamed residual still carries NO cause-signature — the dead end this closes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+        // The adopted pre-runner axes ride alongside: the typed 403 folds into the
+        // fingerprint-safe http axis, and the dedicated pre-runner rollups attach.
+        assert_eq!(event.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(event.tags["pre_runner_causes"], "vend_http:1");
+        assert_eq!(event.tags["runner_error_http"], "http_403:1");
+        // The six-element exit fingerprint is UNCHANGED by residual + pre-runner
+        // evidence: class OTHER→"other", dominant cause "unknown_unnamed", site "company".
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "other",
+                "unknown_unnamed",
+                "company"
+            ]
+        );
+        // Content safety: no runner message byte, code symbol, prose, plain line, or
+        // company ships — only the derived fixed tokens and the fixed-length digests.
+        for forbidden in [
+            "EWEIRD",
+            "connection reset by peer",
+            "unrecognised",
+            "heartbeat",
+            "acme",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
+    }
+
+    #[test]
+    fn first_push_reporting_boundary_suppresses_scope_skip_and_captures_a_plain_failure() {
+        // The reporting boundary (HQ-DESKTOP-64), observed end to end at the
+        // commands::sync seam: an EXPECTED ACL-scope skip yields ZERO Sentry captures
+        // (its evidence rides the exit event + the machine-local log), while a plain
+        // vend 403 yields exactly ONE content-safe capture on a fixed fingerprint and a
+        // constant message that never embeds the server body. The company-arm WIRING is
+        // pinned by the desktop-alt source-contract spec; this pins the BEHAVIOUR.
+
+        // Mirror the production company-arm decision exactly.
+        fn report(message: &str, status: Option<u16>, cause: PreRunnerCause) {
+            if is_expected_acl_scope_skip(message) {
+                return;
+            }
+            let status_tag = status
+                .map(|s| format!("http_{s}"))
+                .unwrap_or_else(|| "none".to_string());
+            capture_sync_error_with_fingerprint_and_context(
+                Some("acme"),
+                "(first-push)",
+                FIRST_PUSH_FAILED_CAPTURE_MESSAGE,
+                &["sync", "first-push-failed", cause.as_str()],
+                &[
+                    ("pre_runner_cause", cause.as_str().to_string()),
+                    ("pre_runner_status", status_tag),
+                ],
+                &[],
+            );
+        }
+
+        // The observed HQ-DESKTOP-63/64 body carries the SCOPE_EXCEEDS_PARENT marker.
+        let scope_body = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
+        let plain_body = "vend-child returned HTTP 403 Forbidden for cmp_acme";
+        assert!(is_expected_acl_scope_skip(scope_body), "scope body is an expected skip");
+        assert!(!is_expected_acl_scope_skip(plain_body), "a plain 403 is not an expected skip");
+
+        // The expected ACL-scope skip yields ZERO captures.
+        let skipped = sentry::test::with_captured_events(|| {
+            report(scope_body, Some(403), PreRunnerCause::ScopeExceedsParent);
+        });
+        assert!(skipped.is_empty(), "an expected ACL-scope skip must not be captured");
+
+        // A plain 403 vend failure yields exactly ONE content-safe capture.
+        let captured = sentry::test::with_captured_events(|| {
+            report(plain_body, Some(403), PreRunnerCause::VendHttp);
+        });
+        assert_eq!(captured.len(), 1, "a plain first-push failure is captured once");
+        let event = hq_telemetry::before_send(captured.into_iter().next().unwrap())
+            .expect("first-push capture remains sendable");
+        assert_eq!(event.fingerprint, vec!["sync", "first-push-failed", "vend_http"]);
+        // The content-safe pre-runner capture tags ride the event and survive egress.
+        assert_eq!(event.tags["pre_runner_cause"], "vend_http");
+        assert_eq!(event.tags["pre_runner_status"], "http_403");
+        // The constant message ships; the server body never rides the capture.
+        let serialized = serde_json::to_string(&event).expect("serialize");
+        for forbidden in ["SCOPE_EXCEEDS_PARENT", "Forbidden", "Requested prefixes", "vend-child"] {
+            assert!(!serialized.contains(forbidden), "leaked body substring {forbidden:?}");
         }
     }
 
