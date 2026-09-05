@@ -21,7 +21,14 @@
 //!    [`bulk_delete_verdict`] ports the sync engine's bulk-asymmetry circuit
 //!    breaker (`hq-cloud` `share.ts`: ratio 10%, absolute floor 10, same
 //!    `HQ_SYNC_DELETE_BULK_OVERRIDE` operator knob) onto this path so the two
-//!    layers refuse for the same reasons under one knob name.
+//!    layers refuse for the same reasons under one knob name. The breaker is
+//!    **time-boxed, not a permanent latch**: a refusal that stands past
+//!    [`BULK_DELETE_SETTLE`] over a tree that is still present and only
+//!    partially deleted is committed then ([`decide_bulk_delete_action`]), so a
+//!    genuine, settled deletion drains itself in one pass instead of wedging the
+//!    mirror — and blocking new content along with it — forever. A vanished or
+//!    unreadable tree still refuses indefinitely, and the operator knob still
+//!    forces an immediate commit without waiting for the window.
 //! 2. **It must not wedge the repo.** Every git child here writes
 //!    `.git/index.lock`, and a killed child leaves it behind — which then
 //!    blocks *every* HQ git write, including the autocommit hook, until
@@ -369,6 +376,36 @@ const BULK_ASYMMETRY_MIN_ABS: usize = 10;
 /// both layers instead of twice with different names.
 const BULK_OVERRIDE_ENV: &str = "HQ_SYNC_DELETE_BULK_OVERRIDE";
 
+/// How long a bulk-delete refusal must have stood — continuously, as the durable
+/// wedge clock measures it — before the mirror stops holding it and commits it.
+/// This is the exit the circuit breaker never had.
+///
+/// The breaker was a one-way latch: on refusal it reports, runs `git reset -q`
+/// and returns without committing, so the staged deletions that tripped it can
+/// never drain — the refusal is precisely what prevents the commit that would
+/// clear it, and because it aborts the whole pass it also blocks committing any
+/// NEW content. HQ's own routine operations delete far more than the
+/// [`BULK_ASYMMETRY_RATIO`] / [`BULK_ASYMMETRY_MIN_ABS`] threshold in one go (an
+/// HQ core update replacing `core/`, `.agents/` and `.codex/` wholesale; session
+/// scratch and worktree cleanup), so the breaker trips on ordinary HQ behaviour
+/// and then the mirror commits nothing at all, indefinitely.
+///
+/// Field justification: this module's own telemetry recorded a longest genuinely
+/// transient episode of 84 seconds (see [`REFUSAL_CONFIRM_MIN_AGE`]), while the
+/// wedge that motivated this fix stood on 50 hosts for 7–16 days with
+/// `recovered_episodes_since_report = 0` on every event. Six hours is ~257x that
+/// longest transient and 12x the 30-minute confirmation gate — long enough to
+/// ride out a partial restore, an interrupted pull or a mid-sync sample, short
+/// enough that a genuine wedge self-heals the same working day.
+///
+/// The ordering contract is load-bearing and pinned by a test:
+/// `REFUSAL_CONFIRM_MIN_AGE < BULK_DELETE_SETTLE < REFUSAL_ESCALATION_AGES[0]`.
+/// Sitting strictly below the first escalation rung means a genuine wedge earns
+/// exactly one first-confirmed banner and then drains itself, so the 24h and 7d
+/// rungs stop being reachable in the ordinary case. This constant adds an *exit*
+/// from the latch; it does not retune when the latch trips or when it reports.
+const BULK_DELETE_SETTLE: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// What the breaker decided about a staged change set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulkDeleteVerdict {
@@ -400,6 +437,62 @@ fn bulk_delete_verdict(deletions: usize, tracked: usize, override_on: bool) -> B
         BulkDeleteVerdict::Refuse
     } else {
         BulkDeleteVerdict::Allow
+    }
+}
+
+/// What the settle-aware breaker decided about a staged change set — a superset
+/// of [`BulkDeleteVerdict`]. [`Self::Allow`] and [`Self::Refuse`] mean exactly
+/// what the verdict's variants do; [`Self::AcceptSettled`] is the new exit — a
+/// refusal that has stood long enough, over a present and only partially deleted
+/// tree, to be committed rather than held forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BulkDeleteAction {
+    /// Deletion volume is normal (or explicitly overridden) — commit it, as today.
+    Allow,
+    /// Looks like a broken tree and has not settled — refuse, as today.
+    Refuse,
+    /// Tripped the breaker, but the refusal has stood past [`BULK_DELETE_SETTLE`]
+    /// over a present, partial tree — commit it to drain the wedge.
+    AcceptSettled,
+}
+
+/// Pure settle-aware breaker decision, layered over [`bulk_delete_verdict`] so
+/// the base thresholds keep their single definition and every existing test of
+/// them. Unit-testable without a git repo, a real clock, or a filesystem: the
+/// durable wedge age and whether the tree is present are passed in.
+///
+/// The exit is **fail-closed on every axis**. A change set the base verdict would
+/// [`Allow`](BulkDeleteVerdict::Allow) — under the thresholds, or overridden — is
+/// allowed unchanged, so the operator knob still short-circuits the window. A
+/// refusal is upgraded to [`AcceptSettled`](Self::AcceptSettled) only when ALL of
+/// these hold:
+///
+///   * the durable wedge age is *known* (`Some`) and at least
+///     [`BULK_DELETE_SETTLE`] — an absent, unparsable or future-dated anchor
+///     reads as `None` upstream and refuses;
+///   * the working tree is *present* (`tree_present`) — a moved HQ root or an
+///     unmounted volume refuses forever, exactly as today;
+///   * the deletion is *partial* (`deletions < tracked`) — a vanished whole tree
+///     (`deletions == tracked`) is never auto-accepted.
+///
+/// Otherwise the refusal stands. There is no default-accept branch.
+fn decide_bulk_delete_action(
+    deletions: usize,
+    tracked: usize,
+    override_on: bool,
+    wedge_age: Option<Duration>,
+    tree_present: bool,
+) -> BulkDeleteAction {
+    match bulk_delete_verdict(deletions, tracked, override_on) {
+        BulkDeleteVerdict::Allow => BulkDeleteAction::Allow,
+        BulkDeleteVerdict::Refuse => {
+            let settled = wedge_age.is_some_and(|age| age >= BULK_DELETE_SETTLE);
+            if settled && tree_present && deletions < tracked {
+                BulkDeleteAction::AcceptSettled
+            } else {
+                BulkDeleteAction::Refuse
+            }
+        }
     }
 }
 
@@ -2147,6 +2240,76 @@ pub fn drive_wedge_report_for_test(
     }
 }
 
+/// Test-only production reporting seam for the settle-aware bulk-delete path.
+///
+/// Drives the SAME [`decide_bulk_delete_action`] decision and the SAME reporter
+/// functions the mirror uses ([`report_bulk_acceptance`] on acceptance,
+/// [`emit_bulk_refusal`] on a confirmed refusal), over supplied inputs and a
+/// real deletion set built from NUL-terminated path records, without needing a
+/// git repo. An hq-telemetry envelope test drives this through the real
+/// `before_send` scrubber and asserts on the resulting envelopes, so it measures
+/// production behaviour rather than a re-implementation of it. Returns the
+/// `git_mirror_kind` of the envelope that was billed, or `"none"` when the
+/// decision was to allow without a signal.
+#[cfg(any(test, feature = "test-support"))]
+pub fn drive_bulk_delete_decision_for_test(
+    deletions: usize,
+    tracked: usize,
+    wedge_age_secs: Option<u64>,
+    tree_present: bool,
+    prefix_records: &[u8],
+) -> &'static str {
+    let (prefixes, prefix_groups) = deletion_prefixes(prefix_records);
+    let set = StagedDeletions {
+        count: deletions,
+        digest: deletion_set_digest(prefix_records),
+        prefixes,
+        prefix_groups,
+    };
+    let override_on = is_bulk_override_set();
+    let wedge_age = wedge_age_secs.map(Duration::from_secs);
+    match decide_bulk_delete_action(deletions, tracked, override_on, wedge_age, tree_present) {
+        BulkDeleteAction::AcceptSettled => {
+            report_bulk_acceptance(&set, tracked, wedge_age_secs.unwrap_or(0));
+            "bulk-delete-accepted"
+        }
+        BulkDeleteAction::Refuse => {
+            // Emit the SAME warning a confirmed refusal emits, over a minimal
+            // first-confirmed outcome, so the level and envelope hygiene are
+            // proven through the real reporter and scrubber. `emit_bulk_refusal`
+            // reads only the deletion set, the counts, `has_upstream` and the
+            // outcome/persisted fields below — never the git dir or hq folder —
+            // so the placeholders here never touch disk.
+            let now = Utc::now();
+            let outcome = RefusalOutcome {
+                action: RefusalReportAction::ReportFirstConfirmed,
+                occurrences: REFUSAL_CONFIRM_OCCURRENCES,
+                distinct_sets: 1,
+                suppressed_since_report: 0,
+                episode_reports: 1,
+                episode_age: REFUSAL_CONFIRM_MIN_AGE,
+                wedge_age: wedge_age.unwrap_or(REFUSAL_CONFIRM_MIN_AGE),
+                since_last_report: None,
+                episode_opened_at_wall: now,
+                wedge_started_at: now,
+            };
+            emit_bulk_refusal(
+                &RefusalReport {
+                    hq_folder: "<test>",
+                    git_dir: Path::new("<test>"),
+                    deletions: &set,
+                    tracked,
+                    has_upstream: false,
+                },
+                &outcome,
+                &PersistedRefusalState::default(),
+            );
+            "bulk-delete-refused"
+        }
+        BulkDeleteAction::Allow => "none",
+    }
+}
+
 /// Launch-time self-heal. A lock orphaned by a killed run blocks every HQ git
 /// write — including the autocommit hook — and the app is the only party that
 /// knows the run died, so it clears the wreckage before doing anything else.
@@ -2752,10 +2915,21 @@ fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
     }
 }
 
-/// Apply the bulk-asymmetry breaker to what `git add -A` just staged. On
-/// refusal the index is reset so nothing is left half-staged for the next
-/// writer, and the reason is logged loudly plus reported to Sentry — a guard
-/// that refuses silently only moves the mystery.
+/// Apply the settle-aware bulk-asymmetry breaker to what `git add -A` just
+/// staged. Three outcomes, all mapped onto [`BulkDeleteVerdict`] for the caller:
+///
+///   * **Allow** — volume is normal or the operator override is set. Commit it.
+///   * **Refuse** — volume trips the breaker and the refusal has not settled.
+///     The index is reset so nothing is left half-staged for the next writer,
+///     and the reason is logged loudly plus reported to Sentry — a guard that
+///     refuses silently only moves the mystery.
+///   * **Accept-settled → Allow** — the refusal has stood past
+///     [`BULK_DELETE_SETTLE`] over a present, partial tree. The index is left
+///     exactly as `git add -A` staged it (no `git reset -q`), so [`run_mirror`]
+///     commits the deletions in this same pass and the wedge drains. The wedge
+///     state is cleared and one distinct `bulk-delete-accepted` info event is
+///     captured; the acceptance is deliberately NOT counted as an organic
+///     recovery.
 fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkDeleteVerdict, String> {
     let deletions = count_staged_deletions(hq_folder)?;
     if deletions.count == 0 {
@@ -2763,53 +2937,170 @@ fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkDeleteVer
     }
     let tracked = count_tracked_at_head(hq_folder)?;
     let override_on = is_bulk_override_set();
-    let verdict = bulk_delete_verdict(deletions.count, tracked, override_on);
 
-    if verdict == BulkDeleteVerdict::Allow {
-        if override_on && deletions.count >= BULK_ASYMMETRY_MIN_ABS {
+    // Resolve the durable wedge age once, before any reporting, so the settle
+    // decision and the reporter read one coherent record. Reading it here rather
+    // than re-deriving it inside the reporter also makes a first-ever refusal —
+    // no record on disk yet — read as an *unknown* age and fail closed: this
+    // pass refuses, and the next pass a minute later sees the anchor the reporter
+    // has since written. An absent, unparsable or future-dated stamp all resolve
+    // to `None` through the same `usable_stamp` validation the cooldown uses, so
+    // none of them can ever force an acceptance.
+    let wall_now = Utc::now();
+    let state_path = refusal_state_path(git_dir);
+    let wedge_age = read_persisted_state(git_dir)
+        .and_then(|state| {
+            usable_stamp(
+                state.wedge_started_at.as_ref(),
+                wall_now,
+                &state_path,
+                "wedge start stamp",
+            )
+        })
+        .and_then(|anchor| elapsed_since_wall(anchor, wall_now));
+    let tree_present = hq_folder_present(hq_folder);
+
+    let action = decide_bulk_delete_action(
+        deletions.count,
+        tracked,
+        override_on,
+        wedge_age,
+        tree_present,
+    );
+    let percent = (deletions.count as f64 / tracked as f64 * 100.0).round() as u64;
+
+    match action {
+        BulkDeleteAction::Allow => {
+            if override_on && deletions.count >= BULK_ASYMMETRY_MIN_ABS {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "{hq_folder}: {BULK_OVERRIDE_ENV} is set — committing {} \
+                         deletions of {tracked} tracked files without the volume check",
+                        deletions.count
+                    ),
+                );
+            }
+            Ok(BulkDeleteVerdict::Allow)
+        }
+        BulkDeleteAction::AcceptSettled => {
+            let wedge_secs = wedge_age.map(|age| age.as_secs()).unwrap_or(0);
+            let head = current_head_short(hq_folder);
             log(
                 LOG_TAG,
                 &format!(
-                    "{hq_folder}: {BULK_OVERRIDE_ENV} is set — committing {} \
-                     deletions of {tracked} tracked files without the volume check",
-                    deletions.count
+                    "{hq_folder}: ACCEPTING a settled bulk deletion — {} of {tracked} tracked \
+                     files ({percent}%) have stood staged as deletions for {wedge_secs}s (past the \
+                     {}h settle window) over a tree that is still present and only partially \
+                     deleted. The transient this breaker guards against would have cleared hours \
+                     ago; holding it longer only keeps this mirror wedged, so it is being \
+                     committed now. Prefixes: {}. Recover the pre-deletion snapshot with: \
+                     git checkout {head} -- .",
+                    deletions.count,
+                    BULK_DELETE_SETTLE.as_secs() / 3600,
+                    render_prefix_histogram(&deletions.prefixes, deletions.prefix_groups),
                 ),
             );
+            report_bulk_acceptance(&deletions, tracked, wedge_secs);
+            // Clear the wedge state so a root that ever wedges again opens a
+            // genuinely fresh ladder — but WITHOUT counting this forced
+            // acceptance as an organic recovery, which would poison the
+            // recovered-episode discriminator triage depends on. The index is
+            // left staged on purpose so `run_mirror` commits it.
+            note_wedge_accepted(hq_folder, git_dir);
+            Ok(BulkDeleteVerdict::Allow)
         }
-        return Ok(verdict);
-    }
+        BulkDeleteAction::Refuse => {
+            let reason = format!(
+                "{hq_folder}: REFUSING to mirror — {} of {tracked} tracked files \
+                 ({percent}%) are staged as deletions, at or over the {}% / {} bulk-delete \
+                 threshold. This is what a partial restore, an interrupted pull, a moved HQ \
+                 folder or an unmounted volume looks like — not a cleanup. Nothing was \
+                 committed or pushed; a refusal that stands past {}h over a tree that is still \
+                 present and only partially deleted is committed then. If the deletions are \
+                 real, re-run with {BULK_OVERRIDE_ENV}=1.",
+                deletions.count,
+                (BULK_ASYMMETRY_RATIO * 100.0) as u64,
+                BULK_ASYMMETRY_MIN_ABS,
+                BULK_DELETE_SETTLE.as_secs() / 3600,
+            );
+            log(LOG_TAG, &reason);
+            report_bulk_refusal(&RefusalReport {
+                hq_folder,
+                git_dir,
+                deletions: &deletions,
+                tracked,
+                has_upstream: repo_has_upstream(hq_folder),
+            });
 
-    let percent = (deletions.count as f64 / tracked as f64 * 100.0).round() as u64;
-    let reason = format!(
-        "{hq_folder}: REFUSING to mirror — {} of {tracked} tracked files \
-         ({percent}%) are staged as deletions, at or over the {}% / {} bulk-delete \
-         threshold. This is what a partial restore, an interrupted pull, a moved HQ \
-         folder or an unmounted volume looks like — not a cleanup. Nothing was \
-         committed or pushed. If the deletions are real, re-run with \
-         {BULK_OVERRIDE_ENV}=1.",
-        deletions.count,
-        (BULK_ASYMMETRY_RATIO * 100.0) as u64,
-        BULK_ASYMMETRY_MIN_ABS,
-    );
-    log(LOG_TAG, &reason);
-    report_bulk_refusal(&RefusalReport {
+            // Unstage everything so the refused deletions aren't left sitting in
+            // the index for the next writer (ours or the autocommit hook) to
+            // commit. This only rewinds the index to HEAD; the working tree is
+            // untouched.
+            if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
+                log(
+                    LOG_TAG,
+                    &format!("{hq_folder}: index reset after refusal failed: {e}"),
+                );
+            }
+            Ok(BulkDeleteVerdict::Refuse)
+        }
+    }
+}
+
+/// Whether the HQ folder is present as a readable directory with at least one
+/// entry — the second hard brake on auto-acceptance, beside `deletions < tracked`.
+///
+/// A moved HQ root, an unmounted external volume, or a fully emptied tree all
+/// fail this and keep the breaker latched forever, so only a partial deletion of
+/// a tree that is still there can ever be auto-committed. Deliberately plain
+/// `std::fs` on the same path string the module already hands to git, with no
+/// path rewriting, and every error (missing, not a directory, permission) reads
+/// as "not present" — fail closed, so the Windows path/permission edge cases can
+/// only ever refuse, never spuriously accept. `.git` alone satisfies it, but a
+/// tree with only `.git` left has `deletions == tracked`, which the
+/// partial-deletion guard rejects, so the two brakes together admit only a
+/// genuine partial loss.
+fn hq_folder_present(hq_folder: &str) -> bool {
+    match fs::read_dir(hq_folder) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Render a depth-1 deletion histogram for the diagnostic log — the same shape
+/// the Sentry `deletion_prefixes` extra carries, flattened onto one line. Safe
+/// by construction: [`deletion_prefixes`] already reduces paths to depth-1
+/// prefixes, so no file name or company slug can appear here.
+fn render_prefix_histogram(prefixes: &[(String, usize)], prefix_groups: usize) -> String {
+    let mut rendered = prefixes
+        .iter()
+        .map(|(prefix, count)| format!("{prefix}={count}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if prefix_groups > prefixes.len() {
+        rendered.push_str(&format!(" (+{} more)", prefix_groups - prefixes.len()));
+    }
+    if rendered.is_empty() {
+        rendered.push_str("none");
+    }
+    rendered
+}
+
+/// Best-effort short HEAD sha for the acceptance log's recovery line. A failure
+/// here must never break the mirror, so it falls back to a literal placeholder
+/// rather than propagating an error.
+fn current_head_short(hq_folder: &str) -> String {
+    git_output(
         hq_folder,
-        git_dir,
-        deletions: &deletions,
-        tracked,
-        has_upstream: repo_has_upstream(hq_folder),
-    });
-
-    // Unstage everything so the refused deletions aren't left sitting in the
-    // index for the next writer (ours or the autocommit hook) to commit. This
-    // only rewinds the index to HEAD; the working tree is untouched.
-    if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
-        log(
-            LOG_TAG,
-            &format!("{hq_folder}: index reset after refusal failed: {e}"),
-        );
-    }
-    Ok(BulkDeleteVerdict::Refuse)
+        &["rev-parse", "--short", "HEAD"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()
+    .filter(|out| out.status.success())
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    .filter(|sha| !sha.is_empty())
+    .unwrap_or_else(|| "<previous-commit>".to_string())
 }
 
 /// Everything one refusing pass knows about itself. Grouped so the reporter's
@@ -3070,6 +3361,20 @@ fn report_bulk_refusal_at(
         return false;
     }
 
+    emit_bulk_refusal(report, &outcome, &persisted);
+
+    true
+}
+
+/// Capture the one warning-grade Sentry event for a confirmed bulk-delete
+/// refusal. Extracted so the exact production emission — tags, extras, message
+/// and `Warning` level — has a single definition the test-support seam can drive
+/// through the real `before_send` scrubber without reconstructing it.
+fn emit_bulk_refusal(
+    report: &RefusalReport<'_>,
+    outcome: &RefusalOutcome,
+    persisted: &PersistedRefusalState,
+) {
     let deletion_set_stable = outcome.distinct_sets <= 1;
     let prefixes: serde_json::Map<String, serde_json::Value> = report
         .deletions
@@ -3146,8 +3451,46 @@ fn report_bulk_refusal_at(
             );
         },
     );
+}
 
-    true
+/// Capture the one info-grade Sentry event for a settled bulk deletion the mirror
+/// force-committed after [`BULK_DELETE_SETTLE`].
+///
+/// Emitted at `Info`, not `Warning` — HQ drained the wedge with zero human
+/// action, and a forced drain is the fix working, not a new incident — under a
+/// DISTINCT `git_mirror_kind = "bulk-delete-accepted"` so it groups separately
+/// from HQ-DESKTOP-43's `bulk-delete-refused` fingerprint and stays countable in
+/// triage. Carries the deletion volume, the denominator, the durable wedge age,
+/// and the same safe depth-1 `deletion_prefixes` histogram the refusal path
+/// ships — never a path, a file name, or repository content.
+fn report_bulk_acceptance(deletions: &StagedDeletions, tracked: usize, wedge_age_secs: u64) {
+    let prefixes: serde_json::Map<String, serde_json::Value> = deletions
+        .prefixes
+        .iter()
+        .map(|(prefix, count)| (prefix.clone(), serde_json::Value::from(*count)))
+        .collect();
+
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("git_mirror_kind", "bulk-delete-accepted");
+            scope.set_tag("deletions", deletions.count.to_string());
+            scope.set_tag("tracked", tracked.to_string());
+            scope.set_tag("wedge_age_secs", wedge_age_secs.to_string());
+            scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
+            scope.set_extra(
+                "deletion_prefix_groups",
+                serde_json::Value::from(deletions.prefix_groups),
+            );
+        },
+        || {
+            sentry::capture_message(
+                "[git-mirror] committed a settled bulk deletion of the HQ folder after the settle \
+                 window: the refusal stood past the hold over a present, partially deleted tree, so \
+                 the deletions were committed to drain the wedge",
+                sentry::Level::Info,
+            );
+        },
+    );
 }
 
 /// Close this root's refusal episode.
@@ -3231,6 +3574,39 @@ fn note_mirror_recovered_at(
     write_persisted_state(git_dir, &state);
 
     closed.is_some()
+}
+
+/// Clear the wedge state on the pass that force-commits a settled bulk deletion.
+///
+/// Removes the in-memory episode and clears the persisted episode/wedge fields so
+/// a root that wedges again opens a genuinely fresh ladder — but DELIBERATELY
+/// does not touch [`PersistedRefusalState::recovered_episodes_since_report`] or
+/// [`PersistedRefusalState::longest_recovered_episode_secs`]. Those two fields are
+/// the transient-versus-wedge discriminator this cluster's triage was built on; a
+/// forced acceptance is not an organic recovery, and counting it as one would
+/// poison exactly the signal three prior rounds were spent building. The
+/// `last_reported_at` cooldown anchor is left in place for the same reason
+/// [`note_mirror_recovered_at`] leaves it. Because this clears `episode_started_at`,
+/// the [`note_mirror_recovered`] call on [`run_mirror`]'s commit path that follows
+/// finds no open episode and is a no-op by its own early return — so it cannot
+/// increment the discriminator either.
+fn note_wedge_accepted(hq_folder: &str, git_dir: &Path) {
+    REFUSAL_EPISODES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(hq_folder);
+
+    let Some(mut state) = read_persisted_state(git_dir) else {
+        return;
+    };
+    state.episode_started_at = None;
+    state.episode_last_refusal_at = None;
+    state.episode_occurrences = 0;
+    state.episode_distinct_sets = 0;
+    state.episode_reports = None;
+    state.wedge_started_at = None;
+    state.episode_suppressed_since_report = 0;
+    write_persisted_state(git_dir, &state);
 }
 
 /// Whether the current branch has a tracked upstream.
@@ -7931,12 +8307,36 @@ mod tests {
         );
         reset_refusal_report_state();
 
-        // Real refusing passes on the aged record: the gap keeps the wedge in
-        // await-confirmation and the spent budget carries — nothing is emitted, and
-        // the budget survives on disk rather than resetting to zero.
+        // Refusing passes on the aged record, driven through the reporter seam at
+        // the resumed-app clock. This is a REPORTER concern (does the spent budget
+        // survive an observation gap?), so — exactly like every other aged-wedge
+        // test in this module, which all drive `report_bulk_refusal_at` for their
+        // aged passes — it is exercised through the reporter, not `run_mirror`. A
+        // durable wedge this old and partial now DRAINS through `run_mirror`'s
+        // settle path, a separate, deliberate behaviour proven by
+        // `settled_wedge_commits_on_a_real_repo`; here we isolate the reporter. The
+        // gap keeps the wedge in await-confirmation and the spent budget carries —
+        // nothing is emitted, and the budget survives on disk rather than resetting.
+        let set = staged_deletions_now(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+        let start = Instant::now();
+        let wall = Utc::now();
         let across_gap = sentry::test::with_captured_events(|| {
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            for index in 0..2 {
+                let (pass_now, pass_wall) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 100,
+                        has_upstream,
+                    },
+                    pass_now,
+                    pass_wall,
+                );
+            }
         });
         assert_eq!(
             across_gap.len(),
@@ -8295,6 +8695,574 @@ mod tests {
             !String::from_utf8_lossy(&git(tmp.path(), &["status", "--porcelain"]).stdout)
                 .contains(REFUSAL_STATE_FILE),
             "the episode record must never appear in git status"
+        );
+        reset_refusal_report_state();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Settle window: the exit from the bulk-delete latch.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Count of the `git_mirror_kind` this event carries, for filtering captures.
+    fn is_kind(event: &sentry::protocol::Event<'static>, kind: &str) -> bool {
+        event.tags.get("git_mirror_kind").map(String::as_str) == Some(kind)
+    }
+
+    /// Seed a real repo whose working tree is missing `deleted` of `total` files
+    /// and whose on-disk record shows a wedge of `wedge_age`, the way an
+    /// already-standing wedge reads on disk. Returns the resolved git dir.
+    fn seed_wedged_repo(
+        tmp: &TempDir,
+        total: usize,
+        deleted: std::ops::Range<usize>,
+        wedge_age: Duration,
+    ) -> PathBuf {
+        seed_repo(tmp.path(), total);
+        delete_files(tmp.path(), deleted);
+        let git_dir = git_dir_of(tmp.path());
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        let anchor = wall - chrono::Duration::from_std(wedge_age).unwrap();
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                wedge_started_at: stamp(anchor),
+                episode_started_at: stamp(anchor),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 400,
+                episode_distinct_sets: 1,
+                episode_reports: Some(1),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+        git_dir
+    }
+
+    /// The whole fix, end to end through real git children and the real
+    /// `run_mirror`: two young refusing passes commit nothing, then — the durable
+    /// wedge clock now 7 hours old, past the settle window — the next pass commits
+    /// the deletions, drops them from HEAD, leaves the index clean, and bills
+    /// exactly one `bulk-delete-accepted` info event. On base this pass refuses
+    /// forever, so every assertion below fails there.
+    #[test]
+    fn settled_wedge_commits_on_a_real_repo() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..60);
+
+        // Two real passes ~70s apart: the breaker refuses, resets, commits nothing.
+        let young = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(
+            young
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "a young wedge is never accepted"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "the young breaker commits nothing"
+        );
+        assert!(index_is_clean(tmp.path()), "a refusal resets the index");
+
+        // Age the durable wedge anchor to 7 hours — past the 6-hour settle window —
+        // the way a root wedged since this morning reads on disk. Everything else
+        // in the record (notably recovered_episodes_since_report = 0) is preserved.
+        let git_dir = git_dir_of(tmp.path());
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        let mut state = read_persisted_state(&git_dir).expect("the refusing passes wrote a record");
+        assert_eq!(
+            state.recovered_episodes_since_report, 0,
+            "no organic recovery happened"
+        );
+        state.wedge_started_at = stamp(wall - chrono::Duration::hours(7));
+        state.episode_started_at = stamp(wall - chrono::Duration::hours(7));
+        state.episode_last_refusal_at =
+            stamp(wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64));
+        write_persisted_state(&git_dir, &state);
+        reset_refusal_report_state();
+
+        // The settling pass: the breaker accepts and run_mirror commits the drain.
+        let accepted = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("acceptance is not an error");
+        });
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the settled deletion is committed in exactly one pass"
+        );
+        assert!(
+            index_is_clean(tmp.path()),
+            "the commit drains the staged deletions"
+        );
+
+        // The 60 deleted paths are gone from the new HEAD tree; the 40 survivors stay.
+        let head = git(tmp.path(), &["ls-tree", "-r", "--name-only", "HEAD"]);
+        let listing = String::from_utf8_lossy(&head.stdout);
+        assert!(
+            !listing.contains("file-0000.md"),
+            "a deleted path lingered in HEAD"
+        );
+        assert!(
+            !listing.contains("file-0059.md"),
+            "a deleted path lingered in HEAD"
+        );
+        assert!(
+            listing.contains("file-0060.md"),
+            "a surviving path left HEAD"
+        );
+
+        // Exactly one acceptance event, at info, on a distinct kind, with the volume,
+        // denominator, and durable wedge age it must carry.
+        assert_eq!(
+            accepted.len(),
+            1,
+            "one acceptance event, got {:?}",
+            accepted
+                .iter()
+                .map(|e| (e.level, e.tags.get("git_mirror_kind").cloned()))
+                .collect::<Vec<_>>()
+        );
+        let event = &accepted[0];
+        assert_eq!(event.level, sentry::Level::Info);
+        assert!(is_kind(event, "bulk-delete-accepted"));
+        assert_eq!(event.tags.get("deletions").map(String::as_str), Some("60"));
+        assert_eq!(event.tags.get("tracked").map(String::as_str), Some("100"));
+        assert!(
+            event
+                .tags
+                .get("wedge_age_secs")
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|secs| secs >= BULK_DELETE_SETTLE.as_secs()),
+            "the acceptance is tagged with a wedge age past the settle window, {:?}",
+            event.tags.get("wedge_age_secs")
+        );
+
+        // The wedge state is cleared, but the forced acceptance is NOT counted as an
+        // organic recovery — the discriminator stays honest.
+        let cleared = read_persisted_state(&git_dir).expect("a record still exists");
+        assert_eq!(cleared.wedge_started_at, None, "the wedge clock is cleared");
+        assert_eq!(
+            cleared.episode_started_at, None,
+            "the episode clock is cleared"
+        );
+        assert_eq!(
+            cleared.episode_reports, None,
+            "the report budget is cleared"
+        );
+        assert_eq!(
+            cleared.recovered_episodes_since_report, 0,
+            "a forced acceptance is not an organic recovery"
+        );
+        assert_eq!(
+            cleared.longest_recovered_episode_secs, 0,
+            "no recovered-episode lifetime is recorded for a forced acceptance"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// A forced acceptance must leave the recovered-episode discriminator exactly
+    /// as it found it — never resetting or incrementing it — so a non-zero count
+    /// survives the drain unchanged. Stronger than the settled test's zero case.
+    #[test]
+    fn an_accepted_wedge_is_not_counted_as_a_recovered_episode() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = seed_wedged_repo(&tmp, 100, 0..60, Duration::from_secs(7 * 3600));
+        let before = rev_count(tmp.path());
+        // A record carrying real recovered-episode evidence from earlier transients.
+        let mut state = read_persisted_state(&git_dir).unwrap();
+        state.recovered_episodes_since_report = 3;
+        state.longest_recovered_episode_secs = 999;
+        write_persisted_state(&git_dir, &state);
+
+        let accepted = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("acceptance is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the settled wedge drains"
+        );
+        assert_eq!(
+            accepted
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            1
+        );
+
+        let after = read_persisted_state(&git_dir).unwrap();
+        assert_eq!(
+            after.recovered_episodes_since_report, 3,
+            "the discriminator is preserved verbatim, neither reset nor incremented"
+        );
+        assert_eq!(
+            after.longest_recovered_episode_secs, 999,
+            "the longest-recovered lifetime is preserved verbatim"
+        );
+        assert_eq!(
+            after.wedge_started_at, None,
+            "the wedge clock is still cleared"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// The transient case the breaker exists for: a wedge younger than the settle
+    /// window commits nothing and resets the index, however present and partial.
+    #[test]
+    fn a_wedge_younger_than_the_settle_window_still_refuses() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let _git_dir = seed_wedged_repo(
+            &tmp,
+            100,
+            0..60,
+            BULK_DELETE_SETTLE - Duration::from_secs(3600),
+        );
+        let before = rev_count(tmp.path());
+        reset_refusal_report_state();
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "a young wedge commits nothing"
+        );
+        assert!(
+            index_is_clean(tmp.path()),
+            "a young refusal resets the index"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "a young wedge is never accepted"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// A vanished whole tree (`deletions == tracked`) is never auto-accepted,
+    /// however old the wedge — the signature of an unmounted or moved root.
+    #[test]
+    fn a_vanished_working_tree_is_never_auto_accepted() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let _git_dir = seed_wedged_repo(&tmp, 100, 0..100, Duration::from_secs(8 * 24 * 3600));
+        let before = rev_count(tmp.path());
+        reset_refusal_report_state();
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "a vanished tree commits nothing"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "deletions == tracked is never accepted, however old the wedge"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// The presence probe fails closed on every non-directory-with-content shape,
+    /// and the decision refuses whenever the tree is absent — the second brake.
+    #[test]
+    fn an_unreadable_or_empty_root_is_never_auto_accepted() {
+        let tmp = TempDir::new().unwrap();
+        assert!(
+            !hq_folder_present(tmp.path().to_str().unwrap()),
+            "an empty dir is not present"
+        );
+        fs::write(tmp.path().join("keep"), "x").unwrap();
+        assert!(
+            hq_folder_present(tmp.path().to_str().unwrap()),
+            "a dir with an entry is present"
+        );
+        assert!(
+            !hq_folder_present(tmp.path().join("missing").to_str().unwrap()),
+            "a missing path is not present"
+        );
+        assert!(
+            !hq_folder_present(tmp.path().join("keep").to_str().unwrap()),
+            "a file, not a directory, is not present"
+        );
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, Some(BULK_DELETE_SETTLE), false),
+            BulkDeleteAction::Refuse,
+            "an absent tree refuses however old and partial the wedge"
+        );
+    }
+
+    /// The first-ever refusal has no record on disk, so the wedge age is unknown
+    /// and the pass fails closed — it refuses rather than accepting.
+    #[test]
+    fn a_first_ever_refusal_with_no_persisted_record_refuses() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..60);
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "a first refusal commits nothing"
+        );
+        assert!(
+            index_is_clean(tmp.path()),
+            "the first refusal resets the index"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "an unknown wedge age is never accepted"
+        );
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, None, true),
+            BulkDeleteAction::Refuse,
+            "the pure decision fails closed on an unknown age"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// A corrupt or future-dated wedge stamp yields no usable age through
+    /// `usable_stamp`, so neither can force an acceptance.
+    #[test]
+    fn a_corrupt_or_future_dated_wedge_stamp_refuses() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..60);
+        let git_dir = git_dir_of(tmp.path());
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        for bad in [
+            Some("not-a-timestamp".to_string()),
+            stamp(wall + chrono::Duration::hours(8 * 24)),
+        ] {
+            reset_refusal_report_state();
+            write_persisted_state(
+                &git_dir,
+                &PersistedRefusalState {
+                    wedge_started_at: bad.clone(),
+                    episode_started_at: stamp(wall - chrono::Duration::hours(8 * 24)),
+                    episode_last_refusal_at: stamp(
+                        wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                    ),
+                    episode_occurrences: 9_999,
+                    episode_distinct_sets: 1,
+                    episode_reports: Some(1),
+                    ..PersistedRefusalState::default()
+                },
+            );
+            let events = sentry::test::with_captured_events(|| {
+                run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            });
+            assert_eq!(
+                rev_count(tmp.path()),
+                before,
+                "an unusable wedge stamp ({bad:?}) commits nothing"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                    .count(),
+                0,
+                "an unusable wedge stamp ({bad:?}) is never accepted"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
+    /// The operator override keeps its precedence: a brand-new refusal with the
+    /// knob set commits immediately, without waiting for the settle window, and as
+    /// a plain commit rather than a settle acceptance.
+    #[test]
+    fn the_override_still_short_circuits_the_settle_window() {
+        let _serial = serial();
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..60);
+
+        std::env::set_var(BULK_OVERRIDE_ENV, "1");
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("override commit is not an error");
+        });
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the override commits immediately, with no settle window"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "an override commit is a plain commit, not a settle acceptance"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// The ordering contract the whole design rests on: the settle window sits
+    /// strictly between the confirmation gate and the first escalation rung, so a
+    /// genuine wedge earns exactly one banner and then heals before any rung.
+    #[test]
+    fn the_settle_window_sits_between_the_confirmation_gate_and_the_first_rung() {
+        assert!(
+            REFUSAL_CONFIRM_MIN_AGE < BULK_DELETE_SETTLE,
+            "the settle window must be longer than the confirmation gate"
+        );
+        assert!(
+            BULK_DELETE_SETTLE < REFUSAL_ESCALATION_AGES[0],
+            "the settle window must sit below the first escalation rung"
+        );
+    }
+
+    /// The pure decision table: allow below the thresholds or when overridden;
+    /// refuse when young, unknown-aged, tree-absent, or vanished; accept only when
+    /// the volume trips the breaker, the age is known and past the window, the tree
+    /// is present, and the deletion is partial.
+    #[test]
+    fn decide_bulk_delete_action_covers_the_settle_table() {
+        let settle = BULK_DELETE_SETTLE;
+        let young = settle - Duration::from_secs(1);
+        use BulkDeleteAction::*;
+
+        // Below the thresholds → Allow, delegated to bulk_delete_verdict.
+        assert_eq!(
+            decide_bulk_delete_action(0, 100, false, Some(settle), true),
+            Allow
+        );
+        assert_eq!(
+            decide_bulk_delete_action(9, 100, false, Some(settle), true),
+            Allow
+        );
+        assert_eq!(
+            decide_bulk_delete_action(5, 10, false, Some(settle), true),
+            Allow
+        );
+        // Override → Allow regardless of the window.
+        assert_eq!(decide_bulk_delete_action(60, 100, true, None, true), Allow);
+        // Trips the breaker but the wedge is young / unknown → Refuse.
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, Some(young), true),
+            Refuse
+        );
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, None, true),
+            Refuse
+        );
+        // Settled but the tree is absent → Refuse.
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, Some(settle), false),
+            Refuse
+        );
+        // Settled but the whole tree vanished (deletions == tracked) → Refuse.
+        assert_eq!(
+            decide_bulk_delete_action(100, 100, false, Some(settle), true),
+            Refuse
+        );
+        // Settled, present, partial → AcceptSettled, including at the exact boundary.
+        assert_eq!(
+            decide_bulk_delete_action(60, 100, false, Some(settle), true),
+            AcceptSettled
+        );
+        assert_eq!(
+            decide_bulk_delete_action(11, 100, false, Some(settle), true),
+            AcceptSettled
+        );
+    }
+
+    /// The size latch precedes the settle path: a root latched off does no
+    /// staging, measuring, committing or accepting, however old its wedge anchor.
+    #[test]
+    fn the_size_latch_still_precedes_the_settle_path() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = seed_wedged_repo(&tmp, 100, 0..60, Duration::from_secs(8 * 24 * 3600));
+        let before = rev_count(tmp.path());
+        // Latch the mirror off (a present-but-unparsable latch still disables it).
+        fs::write(git_dir.join(DISABLE_STATE_FILE), "{ latched").unwrap();
+        reset_refusal_report_state();
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a latched pass is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "a size-latched root commits nothing"
+        );
+        assert!(
+            index_is_clean(tmp.path()),
+            "the latch returns before `git add -A`, so nothing is staged"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            0,
+            "a latched root never reaches the settle path"
         );
         reset_refusal_report_state();
     }
