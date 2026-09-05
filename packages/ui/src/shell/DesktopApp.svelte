@@ -32,6 +32,11 @@
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
+  import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
+  import {
+    TaskFeedController,
+    isAgentUid as isAgentTaskUid,
+  } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
   import {
@@ -955,6 +960,39 @@
   // must not keep another channel's optimistic status on screen.
   const AGENT_THINKING_TICK_MS = 5_000;
   let agentThinking = $state<ThinkingEntry[]>([]);
+
+  // Background-task chips for the agents in the selected conversation — the
+  // room-scoped route for a channel (every agent on its roster), the
+  // agent-wide view for a DM with an agent. One controller per selection;
+  // rebuilt when the roster arrives, disposed on switch/teardown. Nothing is
+  // polled when the host exposes neither task view or there is no agent.
+  let taskCtl = $state<TaskFeedController | null>(null);
+  $effect(() => {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() || null;
+    const roster = channelId ? (channelRosterById[channelId] ?? []) : [];
+    const peer = row?.personUid?.trim() || null;
+    const agentUids = channelId
+      ? roster.map((m) => m.personUid)
+      : peer && isAgentTaskUid(peer)
+        ? [peer]
+        : [];
+    const roomFetch = adapter.messaging.listChannelAgentTasks;
+    const agentFetch = adapter.messaging.listAgentTasks;
+    const ctl = new TaskFeedController({
+      agentUids,
+      channelId,
+      fetchRoomTasks: roomFetch
+        ? async (agentUid, ch) => unwrapAdapter(await roomFetch(agentUid, ch))
+        : null,
+      fetchTasks: agentFetch ? async (agentUid) => unwrapAdapter(await agentFetch(agentUid)) : null,
+    });
+    taskCtl = ctl;
+    return () => {
+      ctl.dispose();
+      if (taskCtl === ctl) taskCtl = null;
+    };
+  });
 
   $effect(() => {
     void selectedRow?.id;
@@ -4402,6 +4440,7 @@
                     </div>
                   {/if}
                   <AgentThinkingRow entries={agentThinking} />
+                  <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
