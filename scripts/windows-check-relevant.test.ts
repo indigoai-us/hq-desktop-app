@@ -283,6 +283,24 @@ describe("the Windows test process-tree watchdog", () => {
     expect(watchdogScript).not.toContain("RedirectStandardError");
   });
 
+  it("streams test output live so a test process that dies mid-run leaves a trail", () => {
+    // Run 33940409752: the harness reported only "test exited abnormally"
+    // with no test name because every captured line died with the process.
+    const harnessArguments = watchdogScript.slice(
+      watchdogScript.indexOf("$cargoArguments = @("),
+      watchdogScript.indexOf(")", watchdogScript.indexOf("$cargoArguments = @(")),
+    );
+    expect(harnessArguments).toMatch(/"--",\s*"--nocapture"/);
+  });
+
+  it("records the shell's ancestor chain and cargo's exit code so an abnormal exit is attributable", () => {
+    expect(watchdogScript).toContain("Write-AncestorChain");
+    expect(watchdogScript).toContain("cargo test exited with code $($cargo.ExitCode)");
+    expect(watchdogScript).toContain("Surviving process after cargo exit");
+    // Diagnostics only: the failure still propagates, and nothing reruns.
+    expect(watchdogScript).not.toMatch(/rerun|retry/i);
+  });
+
   it("returns cargo's actual exit code when the suite finishes before the deadline", () => {
     expect(watchdogScript).toContain(
       "if ($cargo.WaitForExit($TimeoutSeconds * 1000)) {",
