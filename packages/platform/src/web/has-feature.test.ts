@@ -30,17 +30,36 @@ function makeAdapter(routes: Record<string, { status: number; body: unknown }>) 
   };
 }
 
+function calledFlagsResolve(calls: RecordedCall[]): boolean {
+  return calls.some((c) => c.path.startsWith("/v1/flags/resolve"));
+}
+
+function calledIdentityFeatures(calls: RecordedCall[]): boolean {
+  return calls.some((c) => c.path.includes("/v1/identity/features/"));
+}
+
 describe("WebPlatformAdapter hasFeature", () => {
-  it("meetings: snapshot missing → deliberate false, never the 404 identity/features path", async () => {
+  it("meetings: registry configured true still resolves false and never consults the registry", async () => {
+    const { adapter, calls } = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 3, flags: { "desktop.meetings": true } },
+      },
+    });
+    await expect(adapter.identity.hasFeature("meetings")).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calledFlagsResolve(calls)).toBe(false);
+    expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("meetings: snapshot missing / registry unreachable → false, no registry or identity/features GET", async () => {
     const { adapter, calls } = makeAdapter({});
     const result = await adapter.identity.hasFeature("meetings");
     expect(result).toEqual({ ok: true, value: false });
-    expect(calls.some((c) => c.path.includes("/v1/identity/features/"))).toBe(
-      false,
-    );
-    expect(
-      calls.some((c) => c.path.startsWith("/v1/flags/resolve")),
-    ).toBe(true);
+    expect(calledIdentityFeatures(calls)).toBe(false);
+    expect(calledFlagsResolve(calls)).toBe(false);
   });
 
   it("meetings: snapshot present-but-unconfigured → deliberate false", async () => {
@@ -52,26 +71,12 @@ describe("WebPlatformAdapter hasFeature", () => {
     });
     const result = await adapter.identity.hasFeature("meetings");
     expect(result).toEqual({ ok: true, value: false });
-    expect(calls.some((c) => c.path.includes("/v1/identity/features/"))).toBe(
-      false,
-    );
+    expect(calledIdentityFeatures(calls)).toBe(false);
+    expect(calledFlagsResolve(calls)).toBe(false);
   });
 
-  it("meetings: snapshot configured true → registry value", async () => {
-    const { adapter } = makeAdapter({
-      "GET /v1/flags/resolve": {
-        status: 200,
-        body: { version: 3, flags: { "desktop.meetings": true } },
-      },
-    });
-    await expect(adapter.identity.hasFeature("meetings")).resolves.toEqual({
-      ok: true,
-      value: true,
-    });
-  });
-
-  it("meetings: snapshot configured false → registry value", async () => {
-    const { adapter } = makeAdapter({
+  it("meetings: snapshot configured false still resolves false without consulting the registry", async () => {
+    const { adapter, calls } = makeAdapter({
       "GET /v1/flags/resolve": {
         status: 200,
         body: { version: 3, flags: { "desktop.meetings": false } },
@@ -81,6 +86,7 @@ describe("WebPlatformAdapter hasFeature", () => {
       ok: true,
       value: false,
     });
+    expect(calledFlagsResolve(calls)).toBe(false);
   });
 
   it("meetings: registry fetch throw → false, no rejection", async () => {
@@ -104,5 +110,16 @@ describe("WebPlatformAdapter hasFeature", () => {
     expect(calls).toEqual([
       { method: "GET", path: "/v1/identity/features/is_indigo_user" },
     ]);
+  });
+
+  it("unmapped flag stays on the legacy identity/features GET (byte-for-byte)", async () => {
+    const { adapter, calls } = makeAdapter({});
+    const result = await adapter.identity.hasFeature("some_other_flag");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("http-404");
+    expect(calls).toEqual([
+      { method: "GET", path: "/v1/identity/features/some_other_flag" },
+    ]);
+    expect(calledFlagsResolve(calls)).toBe(false);
   });
 });

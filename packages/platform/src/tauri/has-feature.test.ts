@@ -75,6 +75,34 @@ describe("createSyncPlatformAdapter hasFeature", () => {
     );
   });
 
+  it("meetings: registry configured true stays true (desktop path untouched)", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { "desktop.meetings": true },
+            }),
+          };
+        }
+        if (cmd === "meetings_feature_enabled") return false;
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(adapter.identity.hasFeature("meetings")).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calls.map((c) => c.cmd)).toEqual(["hq_pro_fetch"]);
+    expect(calls.some((c) => c.cmd === "meetings_feature_enabled")).toBe(
+      false,
+    );
+  });
+
   it("is_indigo_user stays on the Rust command", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({
