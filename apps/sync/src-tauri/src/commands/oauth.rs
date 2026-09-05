@@ -470,7 +470,7 @@ pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuth
 
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
-    let authorize_url = build_authorize_url(&state, &challenge, identity_provider);
+    let authorize_url = build_authorize_url(&state, &challenge, &identity_provider);
 
     Ok(OAuthFlowInit {
         authorize_url,
