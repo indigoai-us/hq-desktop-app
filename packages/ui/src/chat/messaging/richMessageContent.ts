@@ -145,7 +145,10 @@ export interface ProgressBlock {
  * A bordered/tinted note banner. `body` is the ONLY markup path here and it is
  * routed through the same CSP-safe markdown renderer the message body uses
  * (no raw-HTML passthrough, validated hrefs only) — it is never agent-authored
- * HTML. `tone` is a closed enum the renderer maps to a class + icon.
+ * HTML. `tone` is a closed enum the renderer maps to a class + icon. The parser
+ * also accepts a `text` alias for `body` (see `parseCalloutBlock`) to tolerate
+ * emitters that use the markdown block's field name; the alias feeds this same
+ * `body` field and no additional markup path.
  */
 export interface CalloutBlock {
   kind: "callout";
@@ -333,7 +336,10 @@ function parseChartBlock(raw: Record<string, unknown>): ChartBlock | null {
 }
 
 function parseMarkdownBlock(raw: Record<string, unknown>): MarkdownBlock | null {
-  const text = toSafeText(raw.text, MAX_TEXT_LEN);
+  // Mirror the callout tolerance: accept a `body` alias for prose that arrived
+  // under the callout's field name. `text` still wins when both are present.
+  // Data-only — routed through the same CSP-safe renderer via `toSafeText`.
+  const text = toSafeText(raw.text ?? raw.body, MAX_TEXT_LEN);
   return text ? { kind: "markdown", text } : null;
 }
 
@@ -373,7 +379,12 @@ function parseProgressBlock(raw: Record<string, unknown>): ProgressBlock | null 
 }
 
 function parseCalloutBlock(raw: Record<string, unknown>): CalloutBlock | null {
-  const body = toSafeText(raw.body, MAX_TEXT_LEN);
+  // Tolerate the common emitter mix-up where a callout's prose arrives under
+  // `text` (the `markdown` block's field name) instead of the documented
+  // `body`. The alias is data-only: it feeds the SAME CSP-safe markdown
+  // renderer via `toSafeText`, adding no new markup path. `body` still wins
+  // when both are present.
+  const body = toSafeText(raw.body ?? raw.text, MAX_TEXT_LEN);
   if (!body) return null;
   const title = toSafeText(raw.title, MAX_LABEL_LEN);
   return {

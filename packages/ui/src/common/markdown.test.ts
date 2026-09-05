@@ -379,3 +379,27 @@ describe("desktop markdown rendering", () => {
     expect(safeImageSrc("#local")).toBeNull();
   });
 });
+
+describe("softBreak option (chat vs document)", () => {
+  it("defaults soft newlines to a space (CommonMark, knowledge docs)", () => {
+    const html = renderMarkdown("line one\nline two");
+    expect(html).toContain("line one line two");
+    expect(html).not.toContain("<br />");
+  });
+
+  it("emits <br /> for soft newlines when softBreak is 'br'", () => {
+    const html = renderMarkdown("line one\nline two", { softBreak: "br" });
+    expect(html).toContain("line one<br />line two");
+  });
+
+  it("keeps explicit hard breaks regardless of the softBreak option", () => {
+    const html = renderMarkdown("line one  \nline two");
+    expect(html).toContain("line one<br />line two");
+  });
+
+  it("documents (renderMarkdownDocument) keep the space default", () => {
+    const html = renderMarkdownDocument("alpha\nbeta");
+    expect(html).toContain("alpha beta");
+    expect(html).not.toContain("<br />");
+  });
+});

@@ -119,3 +119,21 @@ describe("message body URL autolinking", () => {
     expect(html).not.toContain('href="https://example.com?a=1&b=2"');
   });
 });
+
+describe("chat soft-break handling (one line per idea)", () => {
+  it("renders single newlines as <br /> so a per-line list keeps its breaks", () => {
+    // Regression: the 2026-09-05 DM smoke saw `stat\ntable\n…` collapse to a
+    // single space-joined line. Chat bodies must preserve single newlines.
+    const html = renderMessageBodyMarkdown(
+      "stat\ntable\nchart\nmarkdown\nbadge\nkeyValue\nprogress\ncallout",
+    );
+    expect(html).toContain("stat<br />table<br />chart");
+    expect(html).not.toContain("stat table chart");
+  });
+
+  it("still separates blank-line-delimited paragraphs", () => {
+    const html = renderMessageBodyMarkdown("first line\n\nsecond block");
+    expect(html).toContain("<p>first line</p>");
+    expect(html).toContain("<p>second block</p>");
+  });
+});

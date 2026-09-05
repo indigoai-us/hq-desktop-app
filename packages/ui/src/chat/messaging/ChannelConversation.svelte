@@ -48,12 +48,12 @@
     type ChatAttachmentValidator,
   } from "./chat-attachments";
   import {
-    clipMessageBodyForDisplay,
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
   import {
@@ -1179,9 +1179,7 @@
                       }}
                     >
                       {#if isHeavyMessageBody(rich.text)}
-                        <pre class="dm-plain">{clipMessageBodyForDisplay(
-                            rich.text,
-                          )}</pre>
+                        <PlainMessageBody body={rich.text} />
                       {:else}
                         {@html applyMentionMarkup(
                           renderMessageBodyMarkdown(rich.text),
