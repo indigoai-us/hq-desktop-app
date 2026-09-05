@@ -1286,23 +1286,14 @@ fn handle_sync_line<R: tauri::Runtime>(
     jwt: &str,
     line: &str,
 ) -> bool {
-    // The runner can emit blank lines at process teardown. Skip those cheaply
-    // rather than logging a parse error.
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    // Blank lines (the runner emits them at teardown), malformed JSON, and
+    // event types this build does not model — a newer runner emitting an
+    // additive event such as the post-sync `manifest-upload` outcome — all
+    // yield `None` and are skipped; the stream keeps going. Shared with the
+    // watch daemon so both paths behave identically. See
+    // `events::parse_sync_line`.
+    let Some(event) = crate::events::parse_sync_line(line) else {
         return false;
-    }
-
-    let event: SyncEvent = match serde_json::from_str(trimmed) {
-        Ok(e) => e,
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[sync] skipping unparseable line: {} | line: {}",
-                _e, trimmed
-            );
-            return false;
-        }
     };
 
     observe_manual_runner_phase(phase_context, &event);
