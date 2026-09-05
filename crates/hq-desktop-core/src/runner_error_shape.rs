@@ -693,6 +693,184 @@ impl RunnerErrorSiteRollup {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pre-runner (first-push phase) attribution axes (HQ-DESKTOP-64)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A fault the desktop observed BEFORE the runner spawned — a first-push
+// `/sts/vend-child` HTTP 403, a push-subprocess failure — is captured as a
+// separate Sentry event and never reaches `RunTotals` through the runner-output
+// writers, so the runner-exit event shipped with no pre-runner evidence and no
+// attribution. These two axes carry that evidence onto the exit event.
+//
+// They are DEDICATED rollups, deliberately NOT fingerprint inputs (unlike
+// `runner_error_causes` / `runner_error_sites`), so recording pre-runner evidence
+// can never regroup a runner-termination issue. The typed HTTP status is folded
+// into the shared, fingerprint-safe `runner_error_http` rollup instead (see
+// `RunTotals::record_pre_runner_failure`).
+
+/// The pre-runner failure SITE: which first-push leg failed. Content-safe: every
+/// token is chosen in code, never copied from a vault/runner byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreRunnerSite {
+    /// A newly-provisioned company's first push (the typed vend-child seam lives
+    /// here).
+    FirstPush,
+    /// The personal-vault first push. Its helper collapses every failure to a
+    /// `String`, so this leg carries attribution presence without typed detail.
+    FirstPushPersonal,
+}
+
+impl PreRunnerSite {
+    /// Every variant, so egress-drift tests can enumerate the emitter's own set
+    /// instead of a hand-copied list.
+    pub const ALL: [PreRunnerSite; 2] = [Self::FirstPush, Self::FirstPushPersonal];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from input; every
+    /// token avoids the Sentry default-scrubber denylist substrings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstPush => "first_push",
+            Self::FirstPushPersonal => "first_push_personal",
+        }
+    }
+}
+
+/// The pre-runner failure CAUSE — the typed identity of a first-push fault,
+/// derived in code from the vault client's typed error at the vend-child seam
+/// (company leg) or the fixed `unknown` for the untyped personal leg. Content-safe:
+/// every token is chosen in code and avoids the Sentry default-scrubber denylist
+/// substrings (auth/token/secret/password/credential/session/...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreRunnerCause {
+    /// A `403` whose body carried the scope-exceeds-parent marker — the observed
+    /// HQ-DESKTOP-63/64 chain. Expected, client-resolvable by granting the path.
+    ScopeExceedsParent,
+    /// Any other vend-child HTTP status (a real 4xx/5xx that is not a scope skip).
+    VendHttp,
+    /// A vend-child transport failure (`VaultClientError::Request`).
+    VendTransport,
+    /// A vend-child response-decode failure (`VaultClientError::Json`).
+    VendProtocol,
+    /// A vend-child self-ownership mismatch (`VaultClientError::SelfOwnershipMismatch`).
+    OwnershipMismatch,
+    /// A status-less first-push failure at a non-vend seam (serialize / spawn /
+    /// stdin / wait / fatal / non-zero exit / aborted / no-complete).
+    PushFailed,
+    /// No typed detail available (the personal leg, whose helper returns `String`).
+    Unknown,
+}
+
+impl PreRunnerCause {
+    /// Every variant, so egress-drift tests can enumerate the emitter's own set.
+    pub const ALL: [PreRunnerCause; 7] = [
+        Self::ScopeExceedsParent,
+        Self::VendHttp,
+        Self::VendTransport,
+        Self::VendProtocol,
+        Self::OwnershipMismatch,
+        Self::PushFailed,
+        Self::Unknown,
+    ];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from input.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeExceedsParent => "scope_exceeds_parent",
+            Self::VendHttp => "vend_http",
+            Self::VendTransport => "vend_transport",
+            Self::VendProtocol => "vend_protocol",
+            Self::OwnershipMismatch => "ownership_mismatch",
+            Self::PushFailed => "push_failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Saturating per-run counts of the pre-runner failure SITES. Renders a compact
+/// Sentry tag such as `first_push:1` through the shared bounded renderer, so its
+/// format matches every sibling runner-error axis.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreRunnerSiteRollup {
+    first_push: u32,
+    first_push_personal: u32,
+}
+
+impl PreRunnerSiteRollup {
+    /// Increment one site's count.
+    pub fn record(&mut self, site: PreRunnerSite) {
+        let count = match site {
+            PreRunnerSite::FirstPush => &mut self.first_push,
+            PreRunnerSite::FirstPushPersonal => &mut self.first_push_personal,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// The recorded count for one site — used by tests to assert the fold.
+    pub fn count(&self, site: PreRunnerSite) -> u32 {
+        match site {
+            PreRunnerSite::FirstPush => self.first_push,
+            PreRunnerSite::FirstPushPersonal => self.first_push_personal,
+        }
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the stable tie-break for the
+    /// bounded renderer.
+    fn counts(&self) -> [(&'static str, u32); 2] {
+        [
+            (PreRunnerSite::FirstPush.as_str(), self.first_push),
+            (PreRunnerSite::FirstPushPersonal.as_str(), self.first_push_personal),
+        ]
+    }
+
+    /// Render the top-N sites by count as a bounded Sentry tag. `None` when no
+    /// pre-runner failure was recorded, so no tag should be sent and a clean run
+    /// stays byte-identical.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+/// Saturating per-run counts of the pre-runner failure CAUSES. Renders a compact
+/// Sentry tag such as `scope_exceeds_parent:1` through the shared bounded renderer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreRunnerCauseRollup {
+    counts: [u32; PreRunnerCause::ALL.len()],
+}
+
+impl PreRunnerCauseRollup {
+    /// Increment one cause's count.
+    pub fn record(&mut self, cause: PreRunnerCause) {
+        if let Some(index) = PreRunnerCause::ALL
+            .iter()
+            .position(|candidate| *candidate == cause)
+        {
+            self.counts[index] = self.counts[index].saturating_add(1);
+        }
+    }
+
+    /// The recorded count for one cause — used by tests to assert the fold.
+    pub fn count(&self, cause: PreRunnerCause) -> u32 {
+        PreRunnerCause::ALL
+            .iter()
+            .position(|candidate| *candidate == cause)
+            .map(|index| self.counts[index])
+            .unwrap_or(0)
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the stable tie-break for the
+    /// bounded renderer.
+    fn counts(&self) -> [(&'static str, u32); PreRunnerCause::ALL.len()] {
+        core::array::from_fn(|index| (PreRunnerCause::ALL[index].as_str(), self.counts[index]))
+    }
+
+    /// Render the top-N causes by count as a bounded Sentry tag. `None` when no
+    /// pre-runner failure was recorded.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HTTP-status and cause axes (HQ-DESKTOP-4T follow-up)
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -773,7 +951,13 @@ impl RunnerErrorHttpStatus {
     /// Map a parsed status integer to a token. Specific tokens win over their
     /// class bucket; anything outside 4xx/5xx (a 1xx/2xx/3xx that still parsed)
     /// falls to `http_other`.
-    fn from_status(status: u16) -> Self {
+    ///
+    /// `pub(crate)` so the pre-runner path (`sync_outcome`, same crate) can map a
+    /// status it already holds as a typed `u16` — from the vend-child seam — through
+    /// the SAME table the prose classifier uses, so one status has exactly one
+    /// spelling regardless of source. Not `pub`: the desktop must go through
+    /// [`RunnerErrorHttpRollup::record_status`], never mint a token itself.
+    pub(crate) fn from_status(status: u16) -> Self {
         match status {
             400 => Self::Http400,
             401 => Self::Http401,
@@ -901,6 +1085,22 @@ impl RunnerErrorHttpRollup {
         let Some(status) = classify_runner_error_http_status(message) else {
             return;
         };
+        if let Some(index) = RunnerErrorHttpStatus::ALL
+            .iter()
+            .position(|candidate| *candidate == status)
+        {
+            self.counts[index] = self.counts[index].saturating_add(1);
+        }
+    }
+
+    /// Record a status obtained from a TYPED source — not runner prose —
+    /// incrementing its token count directly and bypassing
+    /// `classify_runner_error_http_status`. Used by the pre-runner failure path,
+    /// where the desktop already holds the HTTP status as a typed `u16` at the
+    /// vend-child seam, so the untrusted-prose parser is neither needed nor
+    /// applicable. The token still comes from `RunnerErrorHttpStatus::from_status`,
+    /// so a 403 recorded this way is byte-identical to a 403 the prose path parsed.
+    pub fn record_status(&mut self, status: RunnerErrorHttpStatus) {
         if let Some(index) = RunnerErrorHttpStatus::ALL
             .iter()
             .position(|candidate| *candidate == status)

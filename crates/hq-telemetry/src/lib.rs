@@ -507,6 +507,24 @@ const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
     "identity",
     "file",
 ];
+// The PRE-RUNNER (first-push phase) attribution vocabularies (HQ-DESKTOP-64).
+// Mirror `hq_desktop_core::runner_error_shape::PreRunnerSite` / `PreRunnerCause`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `PreRunnerSite::ALL` / `PreRunnerCause::ALL` variant through these lists so a
+// producer that adds a token without updating the mirror fails CI. Every token is
+// denylist-safe (no auth/token/secret/... substring) so a server-side scrubber can
+// never blank the axis.
+const PRE_RUNNER_SITE_TOKENS: &[&str] = &["first_push", "first_push_personal"];
+const PRE_RUNNER_CAUSE_TOKENS: &[&str] = &[
+    "scope_exceeds_parent",
+    "vend_http",
+    "vend_transport",
+    "vend_protocol",
+    "ownership_mismatch",
+    "push_failed",
+    "unknown",
+];
 
 /// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
 /// `vocabulary` and whose counts are bare integers. Bounded like
@@ -720,6 +738,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
         // rather than shipping the runner's raw `path` sentinel or a file fragment.
         "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
+        // The PRE-RUNNER (first-push phase) attribution axes (HQ-DESKTOP-64): a
+        // fault the desktop observed before the runner spawned. Same egress
+        // discipline as the runner-error rollups — an off-vocabulary token or
+        // non-digit count degrades to `[Filtered]`. Registering them is what makes
+        // them fail CLOSED: an unregistered key falls through the `_ => None` arm
+        // below and would pass egress UNTOUCHED, so a future producer bug shipping an
+        // out-of-vocabulary value (a raw vault body, a path) could leak. With these
+        // arms, that value degrades to `[Filtered]` instead.
+        "pre_runner_failures" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS))
+        }
+        "pre_runner_causes" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS))
+        }
         // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
         // correlating an `unknown_named` residual across machines. The producer
         // emits only a fixed-length lowercase-hex digest of a gated identifier, so
@@ -2165,6 +2197,102 @@ mod tests {
         let filtered = before_send(leaky).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
         assert_eq!(filtered.tags["runner_error_cause_signature"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{PreRunnerCause, PreRunnerSite};
+        // HQ-DESKTOP-64: the two pre-runner attribution axes are NEW producers of
+        // Sentry tags. Their full emit domain is exactly PreRunnerSite::ALL /
+        // PreRunnerCause::ALL's as_str sets — every one of which the independent
+        // egress mirror must accept. Pinning it fails a future token that slips the
+        // mirror instead of shipping a raw byte.
+        let sites: std::collections::HashSet<&str> =
+            PRE_RUNNER_SITE_TOKENS.iter().copied().collect();
+        for site in PreRunnerSite::ALL {
+            let token = site.as_str();
+            assert!(
+                sites.contains(token),
+                "pre-runner site token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_failures", &format!("{token}:3")),
+                Some(true),
+                "pre-runner site token {token:?} must survive egress"
+            );
+        }
+        let causes: std::collections::HashSet<&str> =
+            PRE_RUNNER_CAUSE_TOKENS.iter().copied().collect();
+        for cause in PreRunnerCause::ALL {
+            let token = cause.as_str();
+            assert!(
+                causes.contains(token),
+                "pre-runner cause token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_causes", &format!("{token}:3")),
+                Some(true),
+                "pre-runner cause token {token:?} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_axes_survive_before_send_and_out_of_vocabulary_is_filtered() {
+        // A realistic pre-runner envelope survives before_send byte-for-byte.
+        let mut event = Event::default();
+        event
+            .tags
+            .insert("pre_runner_failures".into(), "first_push:1".into());
+        event
+            .tags
+            .insert("pre_runner_causes".into(), "scope_exceeds_parent:1".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(survived.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(survived.tags["pre_runner_causes"], "scope_exceeds_parent:1");
+
+        // An out-of-vocabulary value (a path-like fragment a producer bug could ship)
+        // degrades to [Filtered] rather than leaking. On base — before these keys are
+        // registered — the SAME value falls through the `_ => None` arm and survives
+        // verbatim, so this is the non-vacuous base-failing egress probe.
+        let mut leaky = Event::default();
+        leaky
+            .tags
+            .insert("pre_runner_causes".into(), "/Users/ada/secret:1".into());
+        leaky
+            .tags
+            .insert("pre_runner_failures".into(), "not_a_site:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["pre_runner_causes"], "[Filtered]");
+        assert_eq!(filtered.tags["pre_runner_failures"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        for token in PRE_RUNNER_SITE_TOKENS
+            .iter()
+            .chain(PRE_RUNNER_CAUSE_TOKENS.iter())
+        {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "pre-runner token {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
     }
 
     #[test]

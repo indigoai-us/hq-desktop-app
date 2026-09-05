@@ -4,9 +4,11 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    classify_runner_error_cause, classify_runner_error_site, RunnerErrorCause,
+    classify_runner_error_cause, classify_runner_error_site, PreRunnerCause,
+    PreRunnerCauseRollup, PreRunnerSite, PreRunnerSiteRollup, RunnerErrorCause,
     RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, RunnerErrorSite, RunnerErrorSiteRollup,
+    RunnerErrorHttpStatus, RunnerErrorPathRootRollup, RunnerErrorShapeRollup, RunnerErrorSite,
+    RunnerErrorSiteRollup,
 };
 use sha2::{Digest, Sha256};
 
@@ -142,6 +144,19 @@ pub struct RunTotals {
     /// runner failure site produced the exit — the axis every one of the six
     /// HQ-DESKTOP-5M events lacked. Every token is chosen in code, never a path byte.
     pub runner_error_sites: RunnerErrorSiteRollup,
+    /// Content-safe per-run counts of PRE-RUNNER (first-push phase) failure SITES
+    /// (HQ-DESKTOP-64) — a fault the desktop observed BEFORE the runner spawned,
+    /// which never reaches the runner-output writers above. This is a DEDICATED
+    /// rollup, deliberately NOT a fingerprint input, so recording pre-runner
+    /// evidence never regroups a runner-termination issue. Written ONLY by
+    /// `record_pre_runner_failure`.
+    pub pre_runner_failures: PreRunnerSiteRollup,
+    /// Content-safe per-run counts of PRE-RUNNER failure CAUSES (HQ-DESKTOP-64), the
+    /// companion to `pre_runner_failures`. Also a DEDICATED, non-fingerprint rollup;
+    /// the typed HTTP status a pre-runner failure carried is folded into the shared,
+    /// fingerprint-safe `runner_error_http` rollup instead. Written ONLY by
+    /// `record_pre_runner_failure`.
+    pub pre_runner_causes: PreRunnerCauseRollup,
     /// Shape of the Node stack carried INSIDE a `(runner)` error record's message
     /// (an `err.stack` an uncaught rejection ships), computed by `runner_stack_shape`
     /// over the message's own lines. Stored ONLY when it recognised frames, so the
@@ -263,6 +278,39 @@ impl RunTotals {
         }
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
+        }
+    }
+
+    /// Record a PRE-RUNNER (first-push phase) failure the desktop observed BEFORE
+    /// the runner spawned (HQ-DESKTOP-64). Such a fault — e.g. a first-push
+    /// `/sts/vend-child` HTTP 403 — is captured as its own Sentry event and never
+    /// reaches `RunTotals` through the runner-output writers, so an exit it preceded
+    /// shipped with no pre-runner evidence and no attribution.
+    ///
+    /// This writes ONLY:
+    ///   * the two DEDICATED pre-runner rollups (`pre_runner_failures`,
+    ///     `pre_runner_causes`), which are NOT fingerprint inputs, and
+    ///   * the shared, fingerprint-safe `runner_error_http` rollup — via the typed
+    ///     [`RunnerErrorHttpRollup::record_status`] entry point, bypassing the
+    ///     untrusted-prose classifier — when a typed status is present.
+    ///
+    /// It deliberately never touches `saw_error` / `saw_alertable_error` /
+    /// `saw_node_too_old`, so the exit disposition is unchanged, and never touches
+    /// `runner_error_rollup` / `runner_error_causes` / `runner_error_sites` (the
+    /// three rollups the exit fingerprint reads, elements 4/5/6), so for an
+    /// otherwise-identical run the exit fingerprint is equal with and without
+    /// pre-runner evidence recorded. Both invariants are pinned by regression tests.
+    pub fn record_pre_runner_failure(
+        &mut self,
+        site: PreRunnerSite,
+        status: Option<u16>,
+        cause: PreRunnerCause,
+    ) {
+        self.pre_runner_failures.record(site);
+        self.pre_runner_causes.record(cause);
+        if let Some(status) = status {
+            self.runner_error_http
+                .record_status(RunnerErrorHttpStatus::from_status(status));
         }
     }
 
@@ -9077,5 +9125,203 @@ mod tests {
             totals.runner_error_scope().as_deref(),
             Some("company:0,file:0,identity:1")
         );
+    }
+
+    // ── pre-runner (first-push phase) attribution (HQ-DESKTOP-64) ────────────────
+
+    #[test]
+    fn record_pre_runner_failure_feeds_only_dedicated_rollups_and_http() {
+        let mut totals = RunTotals::default();
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // The two DEDICATED axes carry the evidence...
+        assert_eq!(totals.pre_runner_failures.tag_value().as_deref(), Some("first_push:1"));
+        assert_eq!(
+            totals.pre_runner_causes.tag_value().as_deref(),
+            Some("scope_exceeds_parent:1")
+        );
+        // ...and the typed status folds into the shared, fingerprint-SAFE http axis.
+        assert_eq!(totals.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+
+        // It must NOT flip any disposition flag (so the exit disposition is unchanged).
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+        assert!(!totals.saw_node_too_old);
+        assert!(!totals.saw_genuine_crash_fatal);
+
+        // It must NOT write any of the three exit-FINGERPRINT rollups (elements 4/5/6),
+        // so they stay at their empty `none`/absent state. This is the review blocker's
+        // ground truth, enforced here.
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_causes.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_sites.fingerprint_token(), "none");
+        assert_eq!(totals.runner_error_rollup.tag_value(), None);
+        assert_eq!(totals.runner_error_causes.tag_value(), None);
+        assert_eq!(totals.runner_error_sites.tag_value(), None);
+    }
+
+    #[test]
+    fn record_pre_runner_failure_never_moves_the_exit_fingerprint_inputs() {
+        // A run that ALSO saw a genuine runner error, so the three fingerprint tokens
+        // are non-trivial — the case where accidental interference would actually
+        // regroup an issue.
+        let mut base = RunTotals::default();
+        base.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "AccessDenied code=AccessDenied http=403 denied".to_string(),
+        });
+
+        let mut with_pre = base.clone();
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // The exit fingerprint reads exactly these three tokens (elements 4/5/6). They
+        // must be byte-identical with and without pre-runner evidence, so the exit's
+        // six-element fingerprint is equal for an otherwise-identical run.
+        assert_eq!(
+            base.runner_error_rollup.fingerprint_token(),
+            with_pre.runner_error_rollup.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_causes.fingerprint_token(),
+            with_pre.runner_error_causes.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_sites.fingerprint_token(),
+            with_pre.runner_error_sites.fingerprint_token()
+        );
+        // The disposition flags are equally untouched.
+        assert_eq!(base.saw_error, with_pre.saw_error);
+        assert_eq!(base.saw_alertable_error, with_pre.saw_alertable_error);
+        assert_eq!(base.saw_node_too_old, with_pre.saw_node_too_old);
+    }
+
+    #[test]
+    fn record_pre_runner_failure_leaves_exit_disposition_unchanged() {
+        let base = RunTotals::default();
+        let mut with_pre = RunTotals::default();
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+
+        // Drive the full code/signal/cancellation lattice through BOTH the
+        // cancellation- and fault-aware classifiers (the fault seam sync.rs actually
+        // calls), asserting an identical verdict with and without pre-runner evidence.
+        for &code in &[None, Some(0), Some(1), Some(2), Some(17), Some(75)] {
+            for &signal in &[None, Some(15), Some(9), Some(11), Some(6)] {
+                for &cause in &[
+                    None,
+                    Some(SyncCancelCause::UserStop),
+                    Some(SyncCancelCause::TimeoutWatchdog),
+                ] {
+                    for &effected in &[false, true] {
+                        let base_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            base.saw_error,
+                            base.saw_alertable_error,
+                            base.saw_node_too_old,
+                        );
+                        let pre_c = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_pre.saw_error,
+                            with_pre.saw_alertable_error,
+                            with_pre.saw_node_too_old,
+                        );
+                        assert_eq!(base_c, pre_c, "cancellation verdict changed at {code:?}/{signal:?}");
+
+                        let base_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            base.saw_error,
+                            base.saw_alertable_error,
+                            base.saw_node_too_old,
+                            base.saw_genuine_crash_fatal,
+                            &base.runner_error_rollup,
+                        );
+                        let pre_f = classify_runner_exit_disposition_with_fault(
+                            code,
+                            signal,
+                            cause,
+                            effected,
+                            with_pre.saw_error,
+                            with_pre.saw_alertable_error,
+                            with_pre.saw_node_too_old,
+                            with_pre.saw_genuine_crash_fatal,
+                            &with_pre.runner_error_rollup,
+                        );
+                        assert_eq!(base_f, pre_f, "fault verdict changed at {code:?}/{signal:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pre_runner_typed_http_status_matches_the_prose_path() {
+        // A typed 403 recorded through record_status(from_status(..)) renders the SAME
+        // token and count as the prose classifier parsing a `describeError` ` http=403`.
+        let mut typed = RunTotals::default();
+        typed.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::VendHttp);
+
+        let mut prose = RunTotals::default();
+        prose.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "SomeError code=Foo http=403 denied".to_string(),
+        });
+
+        assert_eq!(typed.runner_error_http.tag_value(), prose.runner_error_http.tag_value());
+        assert_eq!(typed.runner_error_http.tag_value().as_deref(), Some("http_403:1"));
+
+        // A None status records nothing on the http axis (absent axis stays absent).
+        let mut no_status = RunTotals::default();
+        no_status.record_pre_runner_failure(
+            PreRunnerSite::FirstPushPersonal,
+            None,
+            PreRunnerCause::Unknown,
+        );
+        assert_eq!(no_status.runner_error_http.tag_value(), None);
+        assert_eq!(
+            no_status.pre_runner_failures.tag_value().as_deref(),
+            Some("first_push_personal:1")
+        );
+        assert_eq!(no_status.pre_runner_causes.tag_value().as_deref(), Some("unknown:1"));
+    }
+
+    #[test]
+    fn pre_runner_rollups_render_bounded_and_ordered() {
+        let mut totals = RunTotals::default();
+        // Two first_push failures, one personal — dominant-by-count ordering, `token:count`.
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(403), PreRunnerCause::ScopeExceedsParent);
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPush, Some(500), PreRunnerCause::VendHttp);
+        totals.record_pre_runner_failure(PreRunnerSite::FirstPushPersonal, None, PreRunnerCause::Unknown);
+
+        assert_eq!(
+            totals.pre_runner_failures.tag_value().as_deref(),
+            Some("first_push:2,first_push_personal:1")
+        );
+        assert_eq!(totals.pre_runner_failures.count(PreRunnerSite::FirstPush), 2);
+        assert_eq!(totals.pre_runner_causes.count(PreRunnerCause::ScopeExceedsParent), 1);
+        // Empty rollups render nothing, so a clean run stays byte-identical.
+        assert_eq!(PreRunnerSiteRollup::default().tag_value(), None);
+        assert_eq!(PreRunnerCauseRollup::default().tag_value(), None);
     }
 }
