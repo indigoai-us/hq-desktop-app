@@ -16,6 +16,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
 
   interface RepairNoticePayload {
     kind: string;
@@ -59,16 +60,30 @@
 
   // Register the listener synchronously before any await so a notice emitted
   // during setup is not missed (same discipline as the sibling popouts).
+  // Teardown goes through `safeUnlisten` so a stale/double unlisten degrades to
+  // a logged no-op instead of throwing out of `onDestroy` (Sentry
+  // HQ-DESKTOP-39), and a registration that resolves AFTER the component was
+  // already destroyed is unlistened immediately rather than leaking.
+  let disposed = false;
   let unlisten: UnlistenFn | undefined;
   listen<RepairNoticePayload>('client-repair:notice', (event) => {
     show(event.payload);
-  }).then((fn) => {
-    unlisten = fn;
-  });
+  })
+    .then((fn) => {
+      if (disposed) {
+        safeUnlisten(fn)();
+        return;
+      }
+      unlisten = safeUnlisten(fn);
+    })
+    .catch((reason) => {
+      console.error('repair-notice: failed to listen for repair notices', reason);
+    });
 
   onDestroy(() => {
+    disposed = true;
     clearCountdown();
-    unlisten?.();
+    safeUnlisten(unlisten)();
   });
 </script>
 

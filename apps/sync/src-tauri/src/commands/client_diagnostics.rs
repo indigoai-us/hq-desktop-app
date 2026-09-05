@@ -583,6 +583,29 @@ where
                 match fetch_desired_commands(api_url, jwt, installation_id).await {
                     Ok(commands) => {
                         match commands.into_iter().find(|c| c.command_id == current.command_id) {
+                            Some(refreshed)
+                                if matches!(
+                                    refreshed.state,
+                                    ClientHealthCommandState::Succeeded
+                                        | ClientHealthCommandState::Failed
+                                        | ClientHealthCommandState::Expired
+                                        | ClientHealthCommandState::Canceled
+                                ) =>
+                            {
+                                // Still listed, but the server has ALREADY moved
+                                // it to a terminal state (admin cancel, expiry,
+                                // or another client raced us to a terminal
+                                // receipt) AFTER 409ing ours. Exactly like the
+                                // gone case below: OUR terminal receipt was never
+                                // accepted, so this is NOT a durably-flushed
+                                // terminal. Re-entering execute_from_current_state
+                                // would short-circuit to Done and let a
+                                // restart/install post-action ride an unaccepted
+                                // receipt (and defy an admin cancel). Fail closed
+                                // to Superseded: mark complete, never re-drive,
+                                // never arm a post-action.
+                                return ExecutionOutcome::Superseded;
+                            }
                             Some(refreshed) => current = refreshed,
                             None => {
                                 // No longer in the active desired-state list —
@@ -1900,6 +1923,95 @@ mod tests {
         assert!(
             matches!(outcome, ExecutionOutcome::Superseded),
             "a 409'd terminal receipt followed by the command leaving desired-state must be Superseded (so no restart/install post-action rides an unaccepted receipt), not Done"
+        );
+    }
+
+    /// The residual sibling of the gone-after-409 case: our terminal receipt
+    /// 409s, and the resync GET STILL lists the command but now in a terminal
+    /// state (an admin canceled it mid-flight, or another actor raced us to a
+    /// terminal receipt). Our receipt was NOT accepted, so — exactly like the
+    /// gone case — the lifecycle must resolve to `Superseded`, never `Done`.
+    /// Otherwise re-entering the terminal short-circuit would return `Done` and
+    /// let `execute_repair` arm a restart/install on an unaccepted receipt (and
+    /// in defiance of the admin's cancel). US-010 invariants 3/4/5.
+    #[tokio::test]
+    async fn terminal_conflict_then_still_listed_terminal_is_superseded_not_done() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+
+        // ack + running accepted; the terminal receipt is 409'd — the server
+        // moved the command to a terminal state out from under us.
+        Mock::given(method("POST"))
+            .and(path("/v1/client-health/commands/receipt"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let state = body["state"].as_str().unwrap_or_default();
+                if state == "succeeded" || state == "failed" {
+                    return ResponseTemplate::new(409);
+                }
+                ResponseTemplate::new(200).set_body_json(&json!({
+                    "applied": true,
+                    "commandId": body["commandId"],
+                    "state": body["state"],
+                    "revision": body["revision"],
+                }))
+            })
+            .mount(&server)
+            .await;
+        // Resync GET after the 409: the command is STILL listed, but now
+        // `canceled` (admin cancel raced our terminal receipt).
+        Mock::given(method("GET"))
+            .and(path("/v1/client-health/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "commands": [{
+                    "commandId": "cmd-superseded-terminal-01",
+                    "kind": "RESTART_APP",
+                    "state": "canceled",
+                    "revision": 9,
+                    "createdAt": "2026-09-05T12:00:00.000Z",
+                    "expiresAt": "2026-09-05T13:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let command = ClientHealthDesiredCommand {
+            command_id: "cmd-superseded-terminal-01".to_string(),
+            kind: ClientHealthRepairKind::RestartApp,
+            state: ClientHealthCommandState::Queued,
+            revision: 0,
+            created_at: "2026-09-05T12:00:00.000Z".to_string(),
+            expires_at: "2026-09-05T13:00:00.000Z".to_string(),
+            required_confirmation: Some(
+                hq_desktop_core::client_health::ClientHealthConfirmationLevel::Consequence,
+            ),
+            args: None,
+        };
+
+        // A stand-in RESTART_APP-shaped terminal action that resolves to
+        // `succeeded` (and, in production, would arm PostAction::Restart). The
+        // point is that a 409 + still-listed-terminal resync must NOT surface as
+        // a durably-flushed `Done`.
+        let outcome = execute_command_lifecycle(
+            &server.uri(),
+            "test-jwt",
+            "inst-superseded-term",
+            &command,
+            || async {
+                TerminalReceiptContent {
+                    state: ClientHealthCommandState::Succeeded,
+                    checks: None,
+                    failure_reason: None,
+                    postcondition: None,
+                    manual_action_required: None,
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ExecutionOutcome::Superseded),
+            "a 409'd terminal receipt followed by the command still listed in a terminal state must be Superseded (never Done), so no restart/install rides an unaccepted receipt or defies an admin cancel"
         );
     }
 }
