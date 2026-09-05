@@ -221,4 +221,11 @@ export { default as AgentTaskStrip } from "./chat/tasks/AgentTaskStrip.svelte";
 export * from "./chat/tasks/agent-tasks";
 export * from "./chat/tasks/agent-task-feed";
 export * from "./chat/tasks/room-task-feed";
-export * from "./chat/tasks/task-feed-controller.svelte";
+export {
+  TaskFeedController,
+  AGENT_TASK_POLL_MS,
+  type TaskFeedControllerOptions,
+  type TaskFeedSource,
+  type TaskFetcher,
+  type RoomTaskFetcher,
+} from "./chat/tasks/task-feed-controller.svelte";
