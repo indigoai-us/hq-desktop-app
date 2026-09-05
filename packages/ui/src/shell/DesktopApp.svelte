@@ -33,6 +33,7 @@
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../chat/tasks/agent-tasks";
   import {
     TaskFeedController,
     isAgentUid as isAgentTaskUid,
@@ -993,6 +994,18 @@
       if (taskCtl === ctl) taskCtl = null;
     };
   });
+  // Rooms: chips live in the thread they were spawned from (ReplyPanel),
+  // never in the main pane — a room-wide strip mixes every thread's work.
+  // DMs have no threads-of-origin on the agent-wide view, so they keep the
+  // strip beneath the conversation.
+  const mainPaneTasks = $derived<AgentTask[]>(
+    selectedRow?.channelId ? [] : (taskCtl?.tasks ?? []),
+  );
+  const threadTasks = $derived<AgentTask[]>(
+    openReplyRootId
+      ? (taskCtl?.tasks ?? []).filter((t) => t.originMessageId === openReplyRootId)
+      : [],
+  );
 
   $effect(() => {
     void selectedRow?.id;
@@ -4440,7 +4453,7 @@
                     </div>
                   {/if}
                   <AgentThinkingRow entries={agentThinking} />
-                  <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
+                  <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -4561,6 +4574,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
+                    tasks={threadTasks}
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}

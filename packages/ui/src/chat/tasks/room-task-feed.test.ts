@@ -74,3 +74,17 @@ describe('roomTaskFeed', () => {
     expect(feed.tasks[0].status).toBe('working');
   });
 });
+
+describe('roomTaskFeed origin + last event', () => {
+  it('carries originMessageId and a parseable lastEventAt, and drops junk values', () => {
+    const feed = roomTaskFeed({
+      tasks: [
+        { taskId: 't1', title: 'A', status: 'working', originMessageId: ' evt_1 ', lastEventAt: '2026-09-05T01:31:51Z' },
+        { taskId: 't2', title: 'B', status: 'done', originMessageId: 42, lastEventAt: 'not a date' },
+      ],
+    });
+    expect(feed.tasks[0]).toMatchObject({ id: 't1', originMessageId: 'evt_1', lastEventAt: '2026-09-05T01:31:51Z' });
+    expect(feed.tasks[1].originMessageId).toBeUndefined();
+    expect(feed.tasks[1].lastEventAt).toBeUndefined();
+  });
+});

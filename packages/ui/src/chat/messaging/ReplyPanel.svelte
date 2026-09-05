@@ -49,6 +49,8 @@
     type ChatAttachmentWire,
   } from "./chat-attachments";
   import { formatComposerSendError } from "./composer-send-error";
+  import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../tasks/agent-tasks";
   import {
     toggleReaction,
     type ReactionAggregate,
@@ -97,6 +99,8 @@
     api: ConversationApi;
     rootEventId: string;
     scope: ReplyThreadScope;
+    /** Background tasks spawned from THIS thread's root message (room view). */
+    tasks?: AgentTask[];
     channelId?: string | null;
     withPersonUid?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
@@ -187,6 +191,7 @@
     onopenprofile,
     mentionCandidates = [],
     onopenurl,
+    tasks = [],
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -1028,6 +1033,7 @@
     </div>
 
     <AgentThinkingRow entries={agentThinking} />
+    <AgentTaskStrip {tasks} />
 
     <div class="reply-composer">
       {#if showMentionPicker}
