@@ -39,17 +39,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
-use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
+use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, PreRunnerCause, PreRunnerSite};
 #[cfg(test)]
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, classify_runner_error_class,
     classify_runner_exit_disposition_with_fault, classify_runner_fatal_class,
-    classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
-    runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
-    termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
-    RunnerExitDisposition, SessionEndLatchReading, SyncCancelCause, WindowsTerminatorAttribution,
-    SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
+    classify_windows_exit_status, describe_exit, is_expected_acl_scope_skip,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape_for_exit,
+    should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
+    windows_fault_symbol, RunnerExitDisposition, SessionEndLatchReading, SyncCancelCause,
+    WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
+    RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
@@ -138,6 +139,14 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
     capture_sync_error_impl(company, path, message, None, &[], &[]);
 }
+
+/// Content-safe message for a non-expected first-push failure Sentry capture
+/// (HQ-DESKTOP-64). It deliberately carries NO server body — the verbatim vault
+/// response (customer grant lists on the observed HQ-DESKTOP-63 event) stays only
+/// in the machine-local log. The cause and status ride fixed-token tags and the
+/// capture's own fixed fingerprint, so grouping is stable and no runner/vault byte
+/// reaches Sentry.
+const FIRST_PUSH_FAILED_CAPTURE_MESSAGE: &str = "first-push failed before runner spawn";
 
 pub(crate) fn capture_sync_error_with_fingerprint(
     company: Option<&str>,
@@ -401,6 +410,17 @@ fn runner_exit_telemetry_context(
     if let Some(signature) = totals.runner_error_cause_signature.tag_value() {
         tags.push(("runner_error_cause_signature", signature));
     }
+    // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): a structural profile and a
+    // residual signature that make a residual with NO leading identity — the dead end
+    // the cause-signature axis leaves blank — self-describing on next occurrence. Read
+    // from the SAME RunTotals source the watcher route reads; absent (no tag) when no
+    // unknown_unnamed residual was recorded, so absence never renders as evidence.
+    if let Some(profiles) = totals.runner_error_unknown_profiles.tag_value() {
+        tags.push(("runner_error_unknown_profiles", profiles));
+    }
+    if let Some(signature) = totals.runner_error_residual_signature.tag_value() {
+        tags.push(("runner_error_residual_signature", signature));
+    }
     // The runner error SITE axis (HQ-DESKTOP-5M): names WHICH runner failure site
     // produced the exit (`local_state`/`runner`/`scope`/`auth`/`company`/`discovery`/
     // `file`), the axis every one of the six reported events lacked. Read from the
@@ -408,6 +428,20 @@ fn runner_exit_telemetry_context(
     // runner error was recorded, so absence never renders as evidence.
     if let Some(sites) = totals.runner_error_sites.tag_value() {
         tags.push(("runner_error_sites", sites));
+    }
+    // Pre-runner (first-push phase) attribution (HQ-DESKTOP-64): a fault the desktop
+    // observed BEFORE the runner spawned — e.g. a first-push /sts/vend-child HTTP 403
+    // — that never reaches RunTotals through the runner-output writers. Recorded into
+    // DEDICATED rollups that are NOT fingerprint inputs, so an exit a pre-runner fault
+    // preceded is attributable without regrouping. Some-gated exactly like every
+    // sibling axis: absent (no tag) when no pre-runner failure was recorded, so a run
+    // with none produces a byte-identical event. The typed HTTP status rides the
+    // fingerprint-safe runner_error_http axis above, single-spelled via record_status.
+    if let Some(failures) = totals.pre_runner_failures.tag_value() {
+        tags.push(("pre_runner_failures", failures));
+    }
+    if let Some(causes) = totals.pre_runner_causes.tag_value() {
+        tags.push(("pre_runner_causes", causes));
     }
     // The coarse structural shape of the stderr lines the fatal classifier did
     // not recognise — the manual route's copy of the watcher route's
@@ -2533,6 +2567,13 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             return Err(e);
         }
     };
+    // Pre-runner (first-push phase) failures accumulate here and are folded into
+    // this run's RunTotals immediately after it is constructed below (HQ-DESKTOP-64),
+    // so an exit that a first-push fault preceded carries attribution. Kept as a
+    // small local list because RunTotals is intentionally constructed only AFTER the
+    // whole first-push phase. EVERY failure arm in this phase must record into it.
+    let mut pre_runner_failures: Vec<(PreRunnerSite, Option<u16>, PreRunnerCause)> = Vec::new();
+
     // Provisioning stays global, but first-push is filtered to this run's scope.
     for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
@@ -2549,7 +2590,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         // First-push: upload every local file for the newly-provisioned company.
         log("sync", &format!("phase: first_push {}", company.slug));
-        if let Err(e) = crate::commands::first_push::first_push_company(
+        if let Err(failure) = crate::commands::first_push::first_push_company(
             &app,
             &vault,
             &std::path::PathBuf::from(&hq_folder_path),
@@ -2557,24 +2598,62 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         )
         .await
         {
+            // Display renders exactly the pre-typed message, so this log line is
+            // byte-identical to before.
             log(
                 "sync",
-                &format!("first_push failed for {}: {e}", company.slug),
+                &format!("first_push failed for {}: {failure}", company.slug),
             );
-            // Terminal failure for this company's first sync — surface it.
-            capture_sync_error(
-                Some(company.slug.as_str()),
-                "(first-push)",
-                &format!("first-push failed: {e}"),
-            );
+            // Record pre-runner evidence so the runner-exit event can attribute an
+            // exit this fault preceded. record_pre_runner_failure (below) writes only
+            // DEDICATED rollups + the fingerprint-safe runner_error_http — never a
+            // fingerprint input, never a disposition flag.
+            pre_runner_failures.push((PreRunnerSite::FirstPush, failure.status, failure.cause));
+            // Reporting boundary (HQ-DESKTOP-64): an EXPECTED ACL-scope skip is the
+            // exact condition is_alertable_error already declares non-alertable on the
+            // runner path. The evidence now rides the exit event (pre_runner_* axes +
+            // runner_error_http) and the machine-local log, so we drop the per-body
+            // Sentry capture here — the pre-typed one leaked customer grant lists
+            // verbatim with unbounded per-body cardinality. Every OTHER first-push
+            // failure keeps an error-level capture, rewritten content-safe: a fixed
+            // fingerprint on the cause token, fixed cause/status tags, and a constant
+            // message that no longer embeds the server body.
+            if is_expected_acl_scope_skip(&failure.message) {
+                log(
+                    "sync",
+                    &format!(
+                        "first_push expected acl-scope skip for {} — recorded, not captured",
+                        company.slug
+                    ),
+                );
+            } else {
+                let status_tag = failure
+                    .status
+                    .map(|status| format!("http_{status}"))
+                    .unwrap_or_else(|| "none".to_string());
+                capture_sync_error_with_fingerprint_and_context(
+                    Some(company.slug.as_str()),
+                    "(first-push)",
+                    FIRST_PUSH_FAILED_CAPTURE_MESSAGE,
+                    &["sync", "first-push-failed", failure.cause.as_str()],
+                    &[
+                        ("pre_runner_cause", failure.cause.as_str().to_string()),
+                        ("pre_runner_status", status_tag),
+                    ],
+                    &[],
+                );
+            }
             #[cfg(debug_assertions)]
-            eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
+            eprintln!(
+                "[sync] first_push failed for {}: {}",
+                company.slug, failure.message
+            );
             let _ = app.emit(
                 crate::events::EVENT_SYNC_COMPANY_FIRST_PUSH_FAILED,
                 crate::events::SyncCompanyFirstPushFailedEvent {
                     company_uid: company.uid.clone(),
                     company_slug: company.slug.clone(),
-                    error: e,
+                    error: failure.message,
                 },
             );
         }
@@ -2596,11 +2675,21 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", &format!("personal first-push failed: {e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] personal first-push failed: {}", e);
-            // NOT captured to Sentry: personal first-push happens before the
-            // runner spawns, so it has no stderr breadcrumb context, and the
-            // exit-time `report_sync_error` capture below won't fire because we
-            // continue past this and let the runner take over. If this path ever
-            // becomes a recurring silent failure, add an explicit capture here.
+            // Record pre-runner evidence so the runner-exit event carries the
+            // attribution this leg previously left invisible (HQ-DESKTOP-64). No
+            // typed detail is available — ensure_personal_bucket_and_first_push
+            // returns a String through many String-collapsing helpers, and no
+            // personal-leg failure appears in this cluster, so plumbing a typed error
+            // through personal.rs would be exactly the over-scoping to avoid: the leg
+            // records site=first_push_personal with status None, cause Unknown
+            // (attribution presence without typed detail). Still emits
+            // EVENT_SYNC_ERROR for the UI; still NOT captured to Sentry here — the
+            // exit event now carries the evidence instead of a blind spot.
+            pre_runner_failures.push((
+                PreRunnerSite::FirstPushPersonal,
+                None,
+                PreRunnerCause::Unknown,
+            ));
             let _ = app.emit(
                 EVENT_SYNC_ERROR,
                 SyncErrorEvent {
@@ -2681,6 +2770,17 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let sync_generation_for_runner = sync_generation;
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
+    // Fold any first-push (pre-runner) failures observed above into this run's
+    // totals (HQ-DESKTOP-64). record_pre_runner_failure writes ONLY the dedicated
+    // pre_runner_* rollups and the fingerprint-safe runner_error_http — never the
+    // disposition flags or the three fingerprint rollups — so an exit a first-push
+    // fault preceded is attributable without changing grouping or alerting.
+    if !pre_runner_failures.is_empty() {
+        let mut initial = totals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (site, status, cause) in &pre_runner_failures {
+            initial.record_pre_runner_failure(*site, *status, *cause);
+        }
+    }
     let runner_phase: Arc<Mutex<RunnerPhaseContext>> =
         Arc::new(Mutex::new(RunnerPhaseContext::default()));
     let runner_stderr_tail: Arc<Mutex<VecDeque<String>>> =
@@ -4226,6 +4326,15 @@ mod tests {
             .tags
             .iter()
             .all(|(key, _)| key != "runner_error_cause_signature"));
+        // (1b) The unknown_unnamed residual axes (HQ-DESKTOP-61/62): all 160 pull-leg
+        // prose records are lower-cased-prose-led, and each distinct message skeleton is
+        // signed — making this exact flood self-describing on its next occurrence even
+        // though the fingerprint (and the `unknown_unnamed` cause) are unchanged.
+        assert_eq!(event.tags["runner_error_unknown_profiles"], "lower_prose:160");
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "4620a8381a84:120,57244c1e9fa5:40"
+        );
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -4333,6 +4442,84 @@ mod tests {
             tags.iter()
                 .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),
             "an empty rollup must attach no tag: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn manual_exit_capture_attaches_pre_runner_axes_when_recorded() {
+        // HQ-DESKTOP-64: a run whose first-push phase recorded a vend-child 403 attaches
+        // the two dedicated pre-runner axes AND the typed status on the shared,
+        // fingerprint-safe runner_error_http axis — the attribution the reported exit
+        // event lacked entirely.
+        let mut totals = RunTotals::default();
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+        let context = ManualRunnerExitContext::default();
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(2), None, &totals, &context, "uncancelled");
+        for (key, value) in [
+            ("pre_runner_failures", "first_push:1"),
+            ("pre_runner_causes", "scope_exceeds_parent:1"),
+            ("runner_error_http", "http_403:1"),
+        ] {
+            assert!(
+                tags.iter().any(|(k, v)| *k == key && v.as_str() == value),
+                "manual exit capture must attach {key}={value}: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_exit_capture_omits_pre_runner_axes_when_none() {
+        // A run with no first-push failure attaches neither pre-runner axis (nor the
+        // http axis), so a clean run's event is byte-identical to before.
+        let context = ManualRunnerExitContext::default();
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        for absent in ["pre_runner_failures", "pre_runner_causes", "runner_error_http"] {
+            assert!(
+                tags.iter().all(|(key, _)| *key != absent),
+                "an absent pre-runner axis must attach no {absent} tag: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_evidence_does_not_move_the_exit_fingerprint() {
+        // The exit fingerprint reads three rollups (elements 4/5/6). Recording
+        // pre-runner evidence must leave all three byte-identical, so an otherwise
+        // identical exit groups the same with and without a first-push fault — the
+        // review blocker, proved at the manual capture seam.
+        let seed = |totals: &mut RunTotals| {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: "(company)".to_string(),
+                message: "AccessDenied code=AccessDenied http=403 denied".to_string(),
+            });
+        };
+        let mut base = RunTotals::default();
+        seed(&mut base);
+        let mut with_pre = RunTotals::default();
+        seed(&mut with_pre);
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+        assert_eq!(
+            base.runner_error_rollup.fingerprint_token(),
+            with_pre.runner_error_rollup.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_causes.fingerprint_token(),
+            with_pre.runner_error_causes.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_sites.fingerprint_token(),
+            with_pre.runner_error_sites.fingerprint_token()
         );
     }
 
@@ -4908,6 +5095,17 @@ mod tests {
             event.tags["runner_error_cause_signature"],
             format!("{expected_signature}:3")
         );
+        // No `unknown_unnamed` residual occurred (every record is a named or matched
+        // cause), so the two residual axes (HQ-DESKTOP-61/62) attach NO tag — a
+        // byte-identical event to the adopted branch on those axes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_unknown_profiles"));
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_residual_signature"));
 
         // Content safety: no raw class name, host, message fragment, or company
         // leaks — only the derived tokens and the fixed-length digest ship.
@@ -4926,6 +5124,207 @@ mod tests {
                 !serialized.contains(forbidden),
                 "final event leaked seeded runner content: {forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn real_child_unknown_unnamed_residual_is_profiled_signed_and_content_safe() {
+        // Closes fix-review minor 3 for HQ-DESKTOP-61/62: drive a REAL child emitting
+        // the observed 61-class shape — ndjson error records whose messages classify
+        // `unknown_unnamed` (a key=value line with an unlisted code, and a lowercase
+        // prose line) plus a plain stderr line — through the PRODUCTION capture path,
+        // and assert the exit now carries the structural-profile and residual-signature
+        // axes (matching the precomputed fixture hashes), alongside the adopted
+        // pre-runner axes, with an UNCHANGED fingerprint and no runner byte leaked.
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..5 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // key=value with an unlisted errno symbol → key_value_led + sig(EWEIRD).
+                    "message": "code=EWEIRD syscall=open unrecognised errno at company acme",
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..3 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // Lower-cased pull-leg prose → lower_prose + skeleton signature.
+                    "message": "connection reset by peer",
+                })
+                .to_string(),
+            );
+        }
+        // A plain (non-ndjson) stderr line rides alongside; it feeds no error event, so
+        // it never pollutes the residual axes.
+        lines.push("runner heartbeat tick".to_string());
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-unknown-unnamed", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            // A first-push fault ALSO preceded this exit: seed the adopted pre-runner
+            // evidence so the exit carries BOTH attribution surfaces at once.
+            {
+                let mut guard = totals.lock().unwrap_or_else(|e| e.into_inner());
+                guard.record_pre_runner_failure(
+                    hq_desktop_core::runner_error_shape::PreRunnerSite::FirstPush,
+                    Some(403),
+                    hq_desktop_core::runner_error_shape::PreRunnerCause::VendHttp,
+                );
+            }
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 9);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("residual flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // The residual is `unknown_unnamed` on the cause axis (no leading identity), and
+        // now ALSO carries the structural profile and the residual signature — the two
+        // axes that make this class of exit self-describing on its next occurrence.
+        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:8");
+        assert_eq!(
+            event.tags["runner_error_unknown_profiles"],
+            "key_value_led:5,lower_prose:3"
+        );
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "ea4e65576be5:5,9205e6d1c2fb:3"
+        );
+        // The unnamed residual still carries NO cause-signature — the dead end this closes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+        // The adopted pre-runner axes ride alongside: the typed 403 folds into the
+        // fingerprint-safe http axis, and the dedicated pre-runner rollups attach.
+        assert_eq!(event.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(event.tags["pre_runner_causes"], "vend_http:1");
+        assert_eq!(event.tags["runner_error_http"], "http_403:1");
+        // The six-element exit fingerprint is UNCHANGED by residual + pre-runner
+        // evidence: class OTHER→"other", dominant cause "unknown_unnamed", site "company".
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "other",
+                "unknown_unnamed",
+                "company"
+            ]
+        );
+        // Content safety: no runner message byte, code symbol, prose, plain line, or
+        // company ships — only the derived fixed tokens and the fixed-length digests.
+        for forbidden in [
+            "EWEIRD",
+            "connection reset by peer",
+            "unrecognised",
+            "heartbeat",
+            "acme",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
+    }
+
+    #[test]
+    fn first_push_reporting_boundary_suppresses_scope_skip_and_captures_a_plain_failure() {
+        // The reporting boundary (HQ-DESKTOP-64), observed end to end at the
+        // commands::sync seam: an EXPECTED ACL-scope skip yields ZERO Sentry captures
+        // (its evidence rides the exit event + the machine-local log), while a plain
+        // vend 403 yields exactly ONE content-safe capture on a fixed fingerprint and a
+        // constant message that never embeds the server body. The company-arm WIRING is
+        // pinned by the desktop-alt source-contract spec; this pins the BEHAVIOUR.
+
+        // Mirror the production company-arm decision exactly.
+        fn report(message: &str, status: Option<u16>, cause: PreRunnerCause) {
+            if is_expected_acl_scope_skip(message) {
+                return;
+            }
+            let status_tag = status
+                .map(|s| format!("http_{s}"))
+                .unwrap_or_else(|| "none".to_string());
+            capture_sync_error_with_fingerprint_and_context(
+                Some("acme"),
+                "(first-push)",
+                FIRST_PUSH_FAILED_CAPTURE_MESSAGE,
+                &["sync", "first-push-failed", cause.as_str()],
+                &[
+                    ("pre_runner_cause", cause.as_str().to_string()),
+                    ("pre_runner_status", status_tag),
+                ],
+                &[],
+            );
+        }
+
+        // The observed HQ-DESKTOP-63/64 body carries the SCOPE_EXCEEDS_PARENT marker.
+        let scope_body = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
+        let plain_body = "vend-child returned HTTP 403 Forbidden for cmp_acme";
+        assert!(is_expected_acl_scope_skip(scope_body), "scope body is an expected skip");
+        assert!(!is_expected_acl_scope_skip(plain_body), "a plain 403 is not an expected skip");
+
+        // The expected ACL-scope skip yields ZERO captures.
+        let skipped = sentry::test::with_captured_events(|| {
+            report(scope_body, Some(403), PreRunnerCause::ScopeExceedsParent);
+        });
+        assert!(skipped.is_empty(), "an expected ACL-scope skip must not be captured");
+
+        // A plain 403 vend failure yields exactly ONE content-safe capture.
+        let captured = sentry::test::with_captured_events(|| {
+            report(plain_body, Some(403), PreRunnerCause::VendHttp);
+        });
+        assert_eq!(captured.len(), 1, "a plain first-push failure is captured once");
+        let event = hq_telemetry::before_send(captured.into_iter().next().unwrap())
+            .expect("first-push capture remains sendable");
+        assert_eq!(event.fingerprint, vec!["sync", "first-push-failed", "vend_http"]);
+        // The content-safe pre-runner capture tags ride the event and survive egress.
+        assert_eq!(event.tags["pre_runner_cause"], "vend_http");
+        assert_eq!(event.tags["pre_runner_status"], "http_403");
+        // The constant message ships; the server body never rides the capture.
+        let serialized = serde_json::to_string(&event).expect("serialize");
+        for forbidden in ["SCOPE_EXCEEDS_PARENT", "Forbidden", "Requested prefixes", "vend-child"] {
+            assert!(!serialized.contains(forbidden), "leaked body substring {forbidden:?}");
         }
     }
 

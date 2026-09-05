@@ -77,11 +77,12 @@ use std::path::Path;
 use std::process::Stdio;
 
 use hq_desktop_core::first_push::{CliEvent, EntityContextPayload, EntityCredentials};
+use hq_desktop_core::runner_error_shape::PreRunnerCause;
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::commands::provision::ProvisionedCompany;
-use crate::commands::vault_client::{TaskScope, VaultClient, VendChildInput};
+use crate::commands::vault_client::{TaskScope, VaultClient, VaultClientError, VendChildInput};
 use crate::events::{
     SyncCompanyFirstPushCompleteEvent, SyncCompanyFirstPushProgressEvent,
     EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE, EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
@@ -89,6 +90,79 @@ use crate::events::{
 use crate::util::hq_resolver::{self, HqInvocation};
 use crate::util::logfile::log;
 use crate::util::paths;
+
+// ── Typed failure ───────────────────────────────────────────────────────────
+
+/// A typed first-push failure (HQ-DESKTOP-64). The desktop holds the HTTP status
+/// as a typed `u16` at the `/sts/vend-child` seam exactly once; the pre-typed code
+/// collapsed it to prose there, so a first-push 403 that preceded a runner exit
+/// was invisible on the exit event. This type preserves the status and the derived
+/// cause so the caller can record pre-runner attribution AND report content-safe.
+///
+/// `message` keeps the EXACT human-readable text the pre-typed code produced, and
+/// `Display` renders only that message, so the caller's local log line and both
+/// Tauri events (`EVENT_SYNC_COMPANY_FIRST_PUSH_FAILED` / `EVENT_SYNC_ERROR`) stay
+/// byte-identical to before.
+#[derive(Debug, Clone)]
+pub struct FirstPushFailure {
+    /// The typed HTTP status, present ONLY for the vend-child seam (the one site
+    /// whose error carries it). Every other seam is status-less.
+    pub status: Option<u16>,
+    /// The derived, content-safe cause identity.
+    pub cause: PreRunnerCause,
+    /// The exact prose the pre-typed code produced (log + UI parity).
+    pub message: String,
+}
+
+impl FirstPushFailure {
+    /// A status-less failure at a non-vend seam (serialize / spawn / stdin / wait /
+    /// fatal / non-zero exit / aborted / no-complete): every one maps to the fixed
+    /// `push_failed` cause with no HTTP status.
+    fn push_failed(message: String) -> Self {
+        Self {
+            status: None,
+            cause: PreRunnerCause::PushFailed,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for FirstPushFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Render exactly the message so `{e}` in the caller's existing log line is
+        // byte-identical to the pre-typed `String` return.
+        write!(f, "{}", self.message)
+    }
+}
+
+/// Derive the typed HTTP status and pre-runner cause from a vend-child error,
+/// BEFORE it is collapsed into prose. The vend-child seam is the ONLY first-push
+/// site whose error carries a typed status. A body with a scope-exceeds marker
+/// maps to the dedicated `ScopeExceedsParent` cause (the observed HQ-DESKTOP-63/64
+/// chain, and the same condition `is_expected_acl_scope_skip` suppresses), any
+/// other HTTP status to `VendHttp`, and the transport / protocol / ownership
+/// variants to their fixed status-less causes.
+fn classify_vend_child_error(err: &VaultClientError) -> (Option<u16>, PreRunnerCause) {
+    match err {
+        VaultClientError::Http { status, body } => {
+            // Mirror `is_expected_acl_scope_skip`'s two markers on the raw body so
+            // the cause classification and the caller's expected-skip suppression
+            // always agree on the same fault.
+            let lowered = body.to_lowercase();
+            let cause = if lowered.contains("scope_exceeds_parent")
+                || lowered.contains("outside granted acl scope")
+            {
+                PreRunnerCause::ScopeExceedsParent
+            } else {
+                PreRunnerCause::VendHttp
+            };
+            (Some(*status), cause)
+        }
+        VaultClientError::Request(_) => (None, PreRunnerCause::VendTransport),
+        VaultClientError::Json(_) => (None, PreRunnerCause::VendProtocol),
+        VaultClientError::SelfOwnershipMismatch => (None, PreRunnerCause::OwnershipMismatch),
+    }
+}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -98,21 +172,23 @@ use crate::util::paths;
 ///
 /// On success, emits `EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE` with final
 /// upload/skip counts and returns `Ok(())`. On failure (subprocess crash,
-/// non-zero exit, or `fatal` event), returns `Err(message)`; the caller
-/// (`sync.rs::run_sync_now`) is responsible for surfacing that to the UI.
+/// non-zero exit, or `fatal` event), returns `Err(FirstPushFailure)` carrying the
+/// typed status (vend-child seam only), the derived cause, and the exact prose
+/// message; the caller (`sync.rs::start_sync`) records pre-runner attribution from
+/// the typed fields and surfaces the message to the UI.
 pub async fn first_push_company(
     app: &tauri::AppHandle,
     vault: &VaultClient,
     hq_root: &Path,
     company: &ProvisionedCompany,
-) -> Result<(), String> {
+) -> Result<(), FirstPushFailure> {
     // Step 1: Vend STS creds via /sts/vend-child. UNCHANGED from the pre-C3
     // implementation — preserves task-scoped audit (task_id + description +
     // scope) that share()'s simpler /sts/vend doesn't carry. 15-min TTL is
     // well above typical first-push runtime so the subprocess never has to
     // worry about refresh; share() with a pre-vended context does NOT
     // attempt to refresh (no Cognito token to re-vend with).
-    let vend_result = vault
+    let vend_result = match vault
         .vend_child(&VendChildInput {
             company_uid: company.uid.clone(),
             task_id: ulid::Ulid::new().to_string(),
@@ -124,7 +200,20 @@ pub async fn first_push_company(
             duration_seconds: Some(900),
         })
         .await
-        .map_err(|e| format!("vend_child for {}: {e}", company.uid))?;
+    {
+        Ok(vend_result) => vend_result,
+        Err(e) => {
+            // Derive the typed status + cause from the vault error BEFORE it is
+            // collapsed to prose — this is the only seam that carries the status
+            // as a typed `u16`. `message` keeps the exact pre-typed text.
+            let (status, cause) = classify_vend_child_error(&e);
+            return Err(FirstPushFailure {
+                status,
+                cause,
+                message: format!("vend_child for {}: {e}", company.uid),
+            });
+        }
+    };
 
     // Step 2: Build the EntityContext payload that share() consumes via
     // --creds-from-stdin. Region is hard-coded to us-east-1 for the same
@@ -144,8 +233,8 @@ pub async fn first_push_company(
         },
         expires_at: vend_result.expires_at,
     };
-    let payload_json =
-        serde_json::to_string(&payload).map_err(|e| format!("serialize EntityContext: {e}"))?;
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|e| FirstPushFailure::push_failed(format!("serialize EntityContext: {e}")))?;
 
     // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`.
     //
@@ -204,9 +293,12 @@ pub async fn first_push_company(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn `hq sync push` ({}): {e}", invocation.label()))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        FirstPushFailure::push_failed(format!(
+            "spawn `hq sync push` ({}): {e}",
+            invocation.label()
+        ))
+    })?;
 
     // Holds the first-push subprocess under the same machine-wide CPU ceiling
     // as the steady-state sync runner. Dropping the guard always resumes the
@@ -222,11 +314,11 @@ pub async fn first_push_company(
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "child stdin pipe missing".to_string())?;
+            .ok_or_else(|| FirstPushFailure::push_failed("child stdin pipe missing".to_string()))?;
         stdin
             .write_all(payload_json.as_bytes())
             .await
-            .map_err(|e| format!("write child stdin: {e}"))?;
+            .map_err(|e| FirstPushFailure::push_failed(format!("write child stdin: {e}")))?;
         stdin.flush().await.ok();
         // dropped here → close
     }
@@ -241,7 +333,7 @@ pub async fn first_push_company(
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "child stderr pipe missing".to_string())?;
+        .ok_or_else(|| FirstPushFailure::push_failed("child stderr pipe missing".to_string()))?;
     let mut reader = BufReader::new(stderr).lines();
 
     let mut total_files: usize = 0;
@@ -342,7 +434,10 @@ pub async fn first_push_company(
     }
 
     // Step 6: Wait for exit and reconcile.
-    let status = child.wait().await.map_err(|e| format!("wait child: {e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| FirstPushFailure::push_failed(format!("wait child: {e}")))?;
 
     log(
         "first-push-cli",
@@ -361,14 +456,14 @@ pub async fn first_push_company(
                 company.slug,
             )
         });
-        return Err(msg);
+        return Err(FirstPushFailure::push_failed(msg));
     }
 
     if aborted {
-        return Err(format!(
+        return Err(FirstPushFailure::push_failed(format!(
             "hq sync push aborted for slug={} (uploaded={files_uploaded}, skipped={files_skipped})",
             company.slug,
-        ));
+        )));
     }
 
     if !saw_complete {
@@ -377,10 +472,10 @@ pub async fn first_push_company(
         // future CLI version crashes after share() returns. Surface as
         // an error rather than silently emitting a complete event with
         // (0, 0) counts that would mislead the UI.
-        return Err(format!(
+        return Err(FirstPushFailure::push_failed(format!(
             "hq sync push exited 0 without `complete` event for slug={}",
             company.slug,
-        ));
+        )));
     }
 
     // Emit the terminal Tauri event the menubar listens for.
@@ -395,4 +490,75 @@ pub async fn first_push_company(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hq_desktop_core::sync_outcome::is_expected_acl_scope_skip;
+
+    // The verbatim shape of the observed HQ-DESKTOP-63 vend-child 403 body: prose plus
+    // the machine-readable code the server returns. Only its scope-marker substring is
+    // load-bearing for classification.
+    const OBSERVED_SCOPE_BODY: &str = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
+
+    #[test]
+    fn vend_child_scope_403_maps_to_scope_exceeds_parent_and_is_expected() {
+        let err = VaultClientError::Http {
+            status: 403,
+            body: OBSERVED_SCOPE_BODY.to_string(),
+        };
+        assert_eq!(
+            classify_vend_child_error(&err),
+            (Some(403), PreRunnerCause::ScopeExceedsParent)
+        );
+        // The caller routes the rendered message through this predicate to suppress the
+        // per-body capture; the classification and the suppression must agree.
+        let message = format!("vend_child for cmp_01ABC: {err}");
+        assert!(is_expected_acl_scope_skip(&message));
+    }
+
+    #[test]
+    fn vend_child_plain_403_maps_to_vend_http_and_is_not_expected() {
+        let err = VaultClientError::Http {
+            status: 403,
+            body: "{\"error\":\"Forbidden\"}".to_string(),
+        };
+        assert_eq!(classify_vend_child_error(&err), (Some(403), PreRunnerCause::VendHttp));
+        let message = format!("vend_child for cmp_01ABC: {err}");
+        assert!(!is_expected_acl_scope_skip(&message));
+        // A plain-403 capture carries none of the observed scope body's substrings.
+        assert!(!message.contains("Child scope exceeds parent permissions"));
+        assert!(!message.contains("SCOPE_EXCEEDS_PARENT"));
+    }
+
+    #[test]
+    fn vend_child_5xx_maps_to_vend_http_with_its_status() {
+        let err = VaultClientError::Http {
+            status: 500,
+            body: "internal".to_string(),
+        };
+        assert_eq!(classify_vend_child_error(&err), (Some(500), PreRunnerCause::VendHttp));
+    }
+
+    #[test]
+    fn vend_child_json_and_ownership_map_to_fixed_status_less_causes() {
+        assert_eq!(
+            classify_vend_child_error(&VaultClientError::Json("bad".to_string())),
+            (None, PreRunnerCause::VendProtocol)
+        );
+        assert_eq!(
+            classify_vend_child_error(&VaultClientError::SelfOwnershipMismatch),
+            (None, PreRunnerCause::OwnershipMismatch)
+        );
+    }
+
+    #[test]
+    fn push_failed_is_status_less_and_display_is_the_message() {
+        let failure = FirstPushFailure::push_failed("spawn `hq sync push`: boom".to_string());
+        assert_eq!(failure.status, None);
+        assert_eq!(failure.cause, PreRunnerCause::PushFailed);
+        // Display renders exactly the message so the caller's log line stays identical.
+        assert_eq!(format!("{failure}"), "spawn `hq sync push`: boom");
+    }
 }

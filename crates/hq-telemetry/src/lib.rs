@@ -507,6 +507,44 @@ const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
     "identity",
     "file",
 ];
+// The PRE-RUNNER (first-push phase) attribution vocabularies (HQ-DESKTOP-64).
+// Mirror `hq_desktop_core::runner_error_shape::PreRunnerSite` / `PreRunnerCause`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `PreRunnerSite::ALL` / `PreRunnerCause::ALL` variant through these lists so a
+// producer that adds a token without updating the mirror fails CI. Every token is
+// denylist-safe (no auth/token/secret/... substring) so a server-side scrubber can
+// never blank the axis.
+const PRE_RUNNER_SITE_TOKENS: &[&str] = &["first_push", "first_push_personal"];
+const PRE_RUNNER_CAUSE_TOKENS: &[&str] = &[
+    "scope_exceeds_parent",
+    "vend_http",
+    "vend_transport",
+    "vend_protocol",
+    "ownership_mismatch",
+    "push_failed",
+    "unknown",
+];
+// The unknown_unnamed residual STRUCTURAL PROFILE vocabulary (HQ-DESKTOP-61/62).
+// Mirrors `hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile::as_str`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `RunnerErrorUnknownProfile::ALL` variant through this list so a producer that adds
+// a token without updating the mirror fails CI instead of blanking a live tag. Every
+// token is denylist-safe (no auth/token/secret/... substring).
+const RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS: &[&str] = &[
+    "stack_frame",
+    "key_value_led",
+    "identifier_colon_led",
+    "path_led",
+    "quoted_led",
+    "digit_led",
+    "upper_word_led",
+    "single_hump_led",
+    "lower_prose",
+    "empty",
+    "other",
+];
 
 /// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
 /// `vocabulary` and whose counts are bare integers. Bounded like
@@ -544,6 +582,17 @@ fn is_runner_error_cause_signature_rollup(value: &str) -> bool {
                     && !count.is_empty()
                     && count.bytes().all(|byte| byte.is_ascii_digit())
             })
+        })
+}
+
+/// The first-push capture's `pre_runner_status` tag (HQ-DESKTOP-64): the typed HTTP
+/// status a first-push fault carried, spelled `http_<1-3 digits>`, or the `none`
+/// sentinel when it had none. A bounded, closed shape so a producer bug that shipped
+/// a raw status line or vault body degrades to `[Filtered]` instead of leaking.
+fn is_pre_runner_status(value: &str) -> bool {
+    value == "none"
+        || value.strip_prefix("http_").is_some_and(|digits| {
+            (1..=3).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
 
@@ -720,12 +769,45 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
         // rather than shipping the runner's raw `path` sentinel or a file fragment.
         "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
+        // The PRE-RUNNER (first-push phase) attribution axes (HQ-DESKTOP-64): a
+        // fault the desktop observed before the runner spawned. Same egress
+        // discipline as the runner-error rollups — an off-vocabulary token or
+        // non-digit count degrades to `[Filtered]`. Registering them is what makes
+        // them fail CLOSED: an unregistered key falls through the `_ => None` arm
+        // below and would pass egress UNTOUCHED, so a future producer bug shipping an
+        // out-of-vocabulary value (a raw vault body, a path) could leak. With these
+        // arms, that value degrades to `[Filtered]` instead.
+        "pre_runner_failures" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS))
+        }
+        "pre_runner_causes" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS))
+        }
+        // The first-push CAPTURE's two tags (HQ-DESKTOP-64) — a separate event from the
+        // exit, carrying a SINGLE typed cause token and status, not a count rollup.
+        // Unregistered they fell through `_ => None` and passed egress verbatim, so a
+        // future producer bug on this capture could leak a raw vault body; registering
+        // them makes that value degrade to `[Filtered]`. `pre_runner_cause` is exactly
+        // one `PreRunnerCause` token; `pre_runner_status` is `http_<1-3 digits>`/`none`.
+        "pre_runner_cause" => Some(PRE_RUNNER_CAUSE_TOKENS.contains(&value)),
+        "pre_runner_status" => Some(is_pre_runner_status(value)),
         // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
         // correlating an `unknown_named` residual across machines. The producer
         // emits only a fixed-length lowercase-hex digest of a gated identifier, so
         // this independent egress check refuses anything else — a raw identifier,
         // path, or message fragment degrades to `[Filtered]` instead of shipping.
         "runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(value)),
+        // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): the structural profile
+        // census (a closed-vocab count rollup) and the residual signature (a bounded
+        // `hex12:count` rollup, sharing the cause-signature validator). Registering them
+        // is what makes them fail CLOSED — an unregistered key falls through `_ => None`
+        // below and would pass egress UNTOUCHED, so a producer bug shipping an
+        // out-of-vocabulary token or a raw message fragment degrades to `[Filtered]`.
+        "runner_error_unknown_profiles" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS,
+        )),
+        "runner_error_residual_signature" => Some(is_runner_error_cause_signature_rollup(value)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -2165,6 +2247,247 @@ mod tests {
         let filtered = before_send(leaky).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
         assert_eq!(filtered.tags["runner_error_cause_signature"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{PreRunnerCause, PreRunnerSite};
+        // HQ-DESKTOP-64: the two pre-runner attribution axes are NEW producers of
+        // Sentry tags. Their full emit domain is exactly PreRunnerSite::ALL /
+        // PreRunnerCause::ALL's as_str sets — every one of which the independent
+        // egress mirror must accept. Pinning it fails a future token that slips the
+        // mirror instead of shipping a raw byte.
+        let sites: std::collections::HashSet<&str> =
+            PRE_RUNNER_SITE_TOKENS.iter().copied().collect();
+        for site in PreRunnerSite::ALL {
+            let token = site.as_str();
+            assert!(
+                sites.contains(token),
+                "pre-runner site token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_failures", &format!("{token}:3")),
+                Some(true),
+                "pre-runner site token {token:?} must survive egress"
+            );
+        }
+        let causes: std::collections::HashSet<&str> =
+            PRE_RUNNER_CAUSE_TOKENS.iter().copied().collect();
+        for cause in PreRunnerCause::ALL {
+            let token = cause.as_str();
+            assert!(
+                causes.contains(token),
+                "pre-runner cause token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_causes", &format!("{token}:3")),
+                Some(true),
+                "pre-runner cause token {token:?} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_axes_survive_before_send_and_out_of_vocabulary_is_filtered() {
+        // A realistic pre-runner envelope survives before_send byte-for-byte.
+        let mut event = Event::default();
+        event
+            .tags
+            .insert("pre_runner_failures".into(), "first_push:1".into());
+        event
+            .tags
+            .insert("pre_runner_causes".into(), "scope_exceeds_parent:1".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(survived.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(survived.tags["pre_runner_causes"], "scope_exceeds_parent:1");
+
+        // An out-of-vocabulary value (a path-like fragment a producer bug could ship)
+        // degrades to [Filtered] rather than leaking. On base — before these keys are
+        // registered — the SAME value falls through the `_ => None` arm and survives
+        // verbatim, so this is the non-vacuous base-failing egress probe.
+        let mut leaky = Event::default();
+        leaky
+            .tags
+            .insert("pre_runner_causes".into(), "/Users/ada/secret:1".into());
+        leaky
+            .tags
+            .insert("pre_runner_failures".into(), "not_a_site:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["pre_runner_causes"], "[Filtered]");
+        assert_eq!(filtered.tags["pre_runner_failures"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        for token in PRE_RUNNER_SITE_TOKENS
+            .iter()
+            .chain(PRE_RUNNER_CAUSE_TOKENS.iter())
+        {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "pre-runner token {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
+    }
+
+    // ── unknown_unnamed residual axes (HQ-DESKTOP-61/62) ─────────────────────────
+
+    #[test]
+    fn residual_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile;
+        // The structural-profile census is a NEW producer of a Sentry tag. Its full
+        // emit domain is exactly RunnerErrorUnknownProfile::ALL's as_str set — every
+        // one of which the independent egress mirror must accept. Pinning it fails a
+        // future profile token that slips the mirror instead of shipping a raw byte.
+        let allowed: std::collections::HashSet<&str> =
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().copied().collect();
+        for profile in RunnerErrorUnknownProfile::ALL {
+            let token = profile.as_str();
+            assert!(
+                allowed.contains(token),
+                "profile token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field(
+                    "runner_error_unknown_profiles",
+                    &format!("{token}:3")
+                ),
+                Some(true),
+                "profile token {token:?} must survive egress"
+            );
+        }
+        // The residual-signature axis reuses the cause-signature validator: a valid
+        // hex12:count survives, a raw identity fails closed.
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "runner_error_residual_signature",
+                "ea4e65576be5:4,9205e6d1c2fb:1"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_error_residual_signature", "EWEIRD:4"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_axes_survive_before_send_and_malformed_is_filtered() {
+        // Valid envelopes on all four newly-registered keys survive before_send
+        // byte-for-byte.
+        let mut event = Event::default();
+        event.tags.insert(
+            "runner_error_unknown_profiles".into(),
+            "key_value_led:160,lower_prose:8".into(),
+        );
+        event.tags.insert(
+            "runner_error_residual_signature".into(),
+            "ea4e65576be5:9,9205e6d1c2fb:2".into(),
+        );
+        event
+            .tags
+            .insert("pre_runner_cause".into(), "scope_exceeds_parent".into());
+        event.tags.insert("pre_runner_status".into(), "http_403".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            survived.tags["runner_error_unknown_profiles"],
+            "key_value_led:160,lower_prose:8"
+        );
+        assert_eq!(
+            survived.tags["runner_error_residual_signature"],
+            "ea4e65576be5:9,9205e6d1c2fb:2"
+        );
+        assert_eq!(survived.tags["pre_runner_cause"], "scope_exceeds_parent");
+        assert_eq!(survived.tags["pre_runner_status"], "http_403");
+        // `none` is a valid pre_runner_status sentinel.
+        let mut none_status = Event::default();
+        none_status
+            .tags
+            .insert("pre_runner_status".into(), "none".into());
+        assert_eq!(
+            before_send(none_status).expect("sendable").tags["pre_runner_status"],
+            "none"
+        );
+
+        // Fail-closed rejection cases. On base — before these keys are registered — the
+        // SAME values fall through the `_ => None` arm and ship verbatim, so these are
+        // the non-vacuous base-failing egress probes.
+        for (key, value) in [
+            ("runner_error_unknown_profiles", "not_a_profile:1"),
+            ("runner_error_unknown_profiles", "key_value_led:x"),
+            ("runner_error_unknown_profiles", "/Users/ada/secret.env:1"),
+            ("runner_error_residual_signature", "VaultNotFoundError:1"),
+            ("runner_error_residual_signature", "1A2B3C4D5E6F:1"),
+            ("runner_error_residual_signature", "1a2b3c:1"),
+            // The single-value capture keys: a count rollup, a raw body, or a bad
+            // status must all fail closed.
+            ("pre_runner_cause", "scope_exceeds_parent:1"),
+            ("pre_runner_cause", "/Users/ada/secret"),
+            ("pre_runner_status", "http_4030"),
+            ("pre_runner_status", "500"),
+            ("pre_runner_status", "http_x"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "lookalike {key}={value:?} must fail closed"
+            );
+            let mut leaky = Event::default();
+            leaky.tags.insert(key.to_string(), value.to_string());
+            assert_eq!(
+                before_send(leaky).expect("event remains sendable").tags[key],
+                "[Filtered]",
+                "{key}={value:?} must degrade to [Filtered]"
+            );
+        }
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        // Every profile token and every newly-registered key name is denylist-safe, so
+        // the server-side @password:filter can never blank the axis.
+        let keys = [
+            "runner_error_unknown_profiles",
+            "runner_error_residual_signature",
+            "pre_runner_cause",
+            "pre_runner_status",
+        ];
+        for token in RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().chain(keys.iter()) {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "token/key {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
     }
 
     #[test]
