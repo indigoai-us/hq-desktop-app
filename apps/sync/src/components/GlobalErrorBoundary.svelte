@@ -27,6 +27,38 @@
     }
   }
 
+  /**
+   * Svelte's production runtime replaces its own error text with a bare docs
+   * URL — a real `each_key_duplicate` crash reaches us as nothing but
+   * "https://svelte.dev/e/each_key_duplicate", with no component and no key.
+   * Pull the code back out so the crash is at least classifiable in Sentry and
+   * in the log, and keep the stack (Sentry un-minifies it against the release
+   * sourcemaps, which is the only way to recover the component).
+   */
+  function svelteErrorCode(error: unknown): string | null {
+    const match = /svelte\.dev\/e\/([a-z0-9_]+)/i.exec(errorMessage(error));
+    return match?.[1] ?? null;
+  }
+
+  function errorStack(error: unknown): string | null {
+    return error instanceof Error ? (error.stack ?? null) : null;
+  }
+
+  /** What the owner can copy into a bug report. */
+  const errorReport = $derived.by(() => {
+    const error = boundaryError;
+    if (!error) return null;
+    const code = svelteErrorCode(error);
+    return [
+      `window: ${windowLabel}`,
+      code ? `svelte error: ${code}` : null,
+      `message: ${errorMessage(error)}`,
+      errorStack(error),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  });
+
   async function recoverInstallPath(): Promise<void> {
     if (recoveringPath || recoveredPath) return;
     recoveringPath = true;
@@ -54,9 +86,25 @@
   function handleBoundaryError(error: unknown, reset: () => void): void {
     void reset;
     boundaryError = error;
-    console.error('[GlobalErrorBoundary]', error);
+    const code = svelteErrorCode(error);
+    // Log the code and the stack as separate arguments — the webview console
+    // collapses a bare Error to its message, which in a production build is
+    // only the docs URL and tells us nothing about where it came from.
+    console.error('[GlobalErrorBoundary]', {
+      windowLabel,
+      svelteErrorCode: code,
+      message: errorMessage(error),
+      stack: errorStack(error),
+    });
     Sentry.withScope((scope) => {
       scope.setTag('window_label', windowLabel);
+      if (code) {
+        // Tagged so every instance of one Svelte failure mode groups together
+        // instead of scattering across minified frames.
+        scope.setTag('svelte_error_code', code);
+        scope.setFingerprint(['svelte', code, windowLabel]);
+      }
+      scope.setExtra('boundary_message', errorMessage(error));
       Sentry.captureException(
         error instanceof Error ? error : new Error(errorMessage(error)),
       );
@@ -99,6 +147,13 @@
         <span>Error</span>
         <p>{errorMessage(boundaryError ?? error)}</p>
       </div>
+
+      {#if errorReport}
+        <details class="error-detail">
+          <summary>Technical details</summary>
+          <pre class="report" data-testid="boundary-report">{errorReport}</pre>
+        </details>
+      {/if}
 
       {#if recoveredPath}
         <div class="error-detail">
@@ -205,6 +260,26 @@
     margin-top: 4px;
     overflow-wrap: anywhere;
     color: var(--c-text);
+  }
+
+  .error-detail summary {
+    color: var(--c-muted);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .error-detail .report {
+    margin: 6px 0 0;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--c-text);
+    font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    line-height: 16px;
+    user-select: all;
   }
 
   .error-detail .path {
