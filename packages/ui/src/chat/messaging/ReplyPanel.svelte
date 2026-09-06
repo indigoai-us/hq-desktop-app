@@ -64,6 +64,7 @@
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import type { DecisionOption } from "./richMessageContent";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -549,6 +550,21 @@
     });
   }
 
+  /**
+   * A decision-block button in the thread was clicked. A concrete option sends
+   * its label as a reply; "Other…" focuses the composer for a free-text answer.
+   */
+  async function handleDecision(detail: {
+    questionId?: string;
+    option: DecisionOption | null;
+  }): Promise<void> {
+    if (!detail.option) {
+      composerEl?.focus();
+      return;
+    }
+    await send(detail.option.label);
+  }
+
   async function send(body: string): Promise<void> {
     const text = body.trim();
     if ((!text && pendingFiles.length === 0) || sending) return;
@@ -802,7 +818,7 @@
             </div>
           {/if}
           {#if rootRich.rich}
-            <RichMessageContent content={rootRich.rich} />
+            <RichMessageContent content={rootRich.rich} ondecision={handleDecision} />
           {/if}
           {#if root.details?.trim()}
             <ArtifactCard
@@ -956,7 +972,7 @@
                 </div>
               {/if}
               {#if replyRich.rich}
-                <RichMessageContent content={replyRich.rich} />
+                <RichMessageContent content={replyRich.rich} ondecision={handleDecision} />
               {/if}
               <MessageAttachments
                 attachments={parseMessageAttachments(msg)}

@@ -560,3 +560,80 @@ describe("richContentForMessage — field precedence + fallback guarantee", () =
     expect(text).toBe("plain");
   });
 });
+
+describe("parseRichContent — decision block", () => {
+  const decision = (over: Record<string, unknown> = {}) => ({
+    v: 1,
+    blocks: [
+      {
+        kind: "decision",
+        question: "Append the smoke-test line to core.yaml?",
+        options: [
+          { id: "1", label: "Yes, append it", recommended: true },
+          { id: "2", label: "No, use a scratch file" },
+          { id: "3", label: "No, cancel" },
+        ],
+        allowOther: true,
+        questionId: "clarify_abc123",
+        ...over,
+      },
+    ],
+  });
+
+  it("parses a well-formed decision block", () => {
+    const model = parseRichContent(decision());
+    expect(model).not.toBeNull();
+    const block = model!.blocks[0];
+    expect(block.kind).toBe("decision");
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.question).toContain("Append");
+    expect(block.options.map((o) => o.label)).toEqual([
+      "Yes, append it",
+      "No, use a scratch file",
+      "No, cancel",
+    ]);
+    expect(block.options[0].recommended).toBe(true);
+    expect(block.allowOther).toBe(true);
+    expect(block.questionId).toBe("clarify_abc123");
+  });
+
+  it("drops a decision with no question or no valid options", () => {
+    expect(parseRichContent(decision({ question: "" }))).toBeNull();
+    expect(parseRichContent(decision({ options: [] }))).toBeNull();
+    expect(parseRichContent(decision({ options: [{ id: "1" }] }))).toBeNull();
+  });
+
+  it("defaults allowOther to true and keeps only the first recommended", () => {
+    const model = parseRichContent(
+      decision({
+        allowOther: undefined,
+        options: [
+          { id: "1", label: "A", recommended: true },
+          { id: "2", label: "B", recommended: true },
+        ],
+      }),
+    );
+    const block = model!.blocks[0];
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.allowOther).toBe(true);
+    expect(block.options.filter((o) => o.recommended)).toHaveLength(1);
+    expect(block.options[0].recommended).toBe(true);
+  });
+
+  it("tolerates bare-string options and caps at 10", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `opt${i}`);
+    const model = parseRichContent(decision({ options: many }));
+    const block = model!.blocks[0];
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.options).toHaveLength(10);
+    expect(block.options[0]).toEqual({ id: "1", label: "opt0" });
+  });
+
+  it("projects to a numbered plain-text fallback", () => {
+    const model = parseRichContent(decision());
+    const text = richContentToPlainText(model!);
+    expect(text).toContain("Append the smoke-test line to core.yaml?");
+    expect(text).toContain("1. Yes, append it (Recommended)");
+    expect(text).toContain("2. No, use a scratch file");
+  });
+});
