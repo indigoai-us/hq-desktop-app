@@ -67,12 +67,16 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
       '// Runner memory ceiling (auto-sync watcher child unbounded-memory cluster)',
       'build_watch_runner_args',
     );
-    // The ceiling is merged into NODE_OPTIONS (shared by BOTH the pinned npx path
-    // and the bare-node local-runner path)…
-    expect(fn).toContain('merge_node_options_ceiling(');
+    // The ceiling is composed into NODE_OPTIONS at the ONE shared spawn-flags seam
+    // (compose_runner_spawn_flags, which internally does the non-clobbering
+    // merge_node_options_ceiling), shared by BOTH the pinned npx path and the
+    // bare-node local-runner path…
+    expect(fn).toContain('compose_runner_spawn_flags(');
+    expect(fn).toContain('Some(heap_ceiling)');
     expect(fn).toContain('env.insert("NODE_OPTIONS"');
-    // …and ALSO passed in argv on the node path we own.
-    expect(fn).toContain('runner_max_old_space_arg(heap_ceiling)');
+    // …and ALSO passed in argv on the node path we own (ceiling + report flags,
+    // from the same shared seam so the two routes cannot drift).
+    expect(fn).toContain('spawn_flags.node_argv');
     // Both spawn paths still exist and share the same env (which now carries the
     // ceiling), so no platform is left with an undeclared host-derived ceiling.
     expect(fn).toContain('paths::resolve_bin("node")');

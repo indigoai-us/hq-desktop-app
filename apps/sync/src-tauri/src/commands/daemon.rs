@@ -5,6 +5,7 @@
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -1004,9 +1005,16 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         ));
     }
 
+    // Create this generation's app-owned diagnostic-report directory so the runner
+    // child can write a crash-surviving Node fatal report into it (HQ-DESKTOP-5W).
+    // Best-effort: if it cannot be created, the spawn requests no report and the
+    // exit records `report_not_requested`. The exit reader recomputes the SAME path
+    // from `daemon_generation`.
+    let report_dir = ensure_runner_report_dir("watcher", daemon_generation);
     let spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
         &hq_folder_path,
         &runner_spawn_target,
+        report_dir.as_deref(),
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
@@ -1253,6 +1261,33 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             exit_context.watcher_fault_job_image_provenance =
                                 Some(job_sample.images.provenance_token().to_string());
                         }
+                        // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W):
+                        // recompute this generation's report directory and seed the
+                        // read provenance. The runner child may have written a
+                        // crash-surviving Node fatal report; `deferred_report_dir` is
+                        // Some only when a report was actually requested (the directory
+                        // exists AND the user set no `--report-*` of their own), and it
+                        // is handed to the deferred fault worker below to read OFF the
+                        // exit path. Otherwise the seed records why none will be read.
+                        let generation_report_dir =
+                            hq_desktop_core::daemon::runner_report_dir(
+                                "watcher",
+                                daemon_generation,
+                            )
+                            .filter(|dir| dir.exists());
+                        let report_request =
+                            hq_desktop_core::daemon::resolve_runner_report_request(
+                                std::env::var("NODE_OPTIONS").ok().as_deref(),
+                                generation_report_dir.as_deref(),
+                            );
+                        exit_context.runner_report_read =
+                            report_request.seed_read_token().to_string();
+                        let deferred_report_dir = matches!(
+                            report_request,
+                            hq_desktop_core::daemon::RunnerReportRequest::Requested
+                        )
+                        .then(|| generation_report_dir.clone())
+                        .flatten();
                         // Only a genuine Windows fault exit warrants reading the OS
                         // fault record; every other exit and platform is not
                         // applicable and keeps the honest sentinels.
@@ -1294,6 +1329,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         exception_code,
                                         gen_start_ms: fault_window_start,
                                         gen_end_ms: fault_window_end,
+                                        report_dir: deferred_report_dir.clone(),
                                     });
                             }
                             None => {
@@ -1311,6 +1347,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             last_stderr,
                             &exit_context,
                         );
+                        // Clean up this generation's report directory unless a deferred
+                        // fault worker owns it (that worker deletes it after reading).
+                        // Covers the clean-exit case and the user-disabled/not-requested
+                        // cases, so no run accumulates disk under `~/.hq/runner-reports`.
+                        if deferred_report_dir.is_none() {
+                            if let Some(dir) = &generation_report_dir {
+                                remove_runner_report_dir(dir);
+                            }
+                        }
                     }
                 }
             },
@@ -1427,6 +1472,12 @@ struct WatcherFaultDeferredRead {
     exception_code: u32,
     gen_start_ms: i64,
     gen_end_ms: i64,
+    /// This generation's app-owned diagnostic-report directory (this reopen,
+    /// HQ-DESKTOP-5W), when a report was actually requested. The deferred worker
+    /// reads a crash-surviving Node fatal report from it OFF the exit path, patches
+    /// the fatal-reason tags, and deletes it. `None` when no report was requested
+    /// (no directory, or the user set their own `--report-*`).
+    report_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -1498,6 +1549,13 @@ struct WatcherExitCaptureContext {
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
     watcher_launch_origin: String,
+    /// The `runner_report_read` provenance SEED for this exit (this reopen,
+    /// HQ-DESKTOP-5W): whether a crash-surviving Node diagnostic report was
+    /// requested for this generation, withheld by a user `--report-*`, or not
+    /// requested. Fixed vocabulary. For a Windows fault exit the deferred worker
+    /// upgrades this in-place to `report_read`/`report_absent`/`report_unreadable`
+    /// after it reads the report; other exits keep the seed. Diagnostic-only.
+    runner_report_read: String,
     runner_stack_shape: String,
     runner_stack_signature: String,
     runner_stack_depth: u8,
@@ -1678,6 +1736,7 @@ impl Default for WatcherExitCaptureContext {
             runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             watcher_launch_origin: "renderer".to_string(),
+            runner_report_read: "report_not_requested".to_string(),
             runner_stack_shape: "all_redacted".to_string(),
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
@@ -1845,6 +1904,10 @@ fn watcher_exit_capture_context(
         )
         .to_string(),
         watcher_launch_origin: generation.launch_origin.as_str().to_string(),
+        // Seeded `report_not_requested`; the exit callback (which knows this
+        // generation's report directory) overwrites it with the resolved request,
+        // and the deferred worker upgrades it after the report read.
+        runner_report_read: "report_not_requested".to_string(),
         runner_stack_shape: stack.shape,
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
@@ -2646,6 +2709,152 @@ where
 /// normal slow return (≤ budget + one sweep) from a genuine wedge.
 const WATCHER_FAULT_READ_SUPERVISOR_GRACE: Duration = Duration::from_secs(5);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Runner diagnostic report — the crash-surviving third cause channel (HQ-DESKTOP-5W)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Hard cap on the runner diagnostic report bytes read at exit. Mirrors the core
+/// parser's cap; a `--report-compact` report is a few KB, so a larger file is
+/// treated as hostile/oversized and degrades to `report_unreadable`.
+const RUNNER_REPORT_READ_MAX_BYTES: u64 =
+    hq_desktop_core::runner_diagnostic_report::RUNNER_REPORT_MAX_BYTES as u64;
+
+/// Create a run's app-owned diagnostic-report directory, keyed by spawn `route`
+/// and `generation`. Best-effort: returns `None` (and logs) if it cannot be
+/// resolved or created, so the spawn simply requests no report and the exit
+/// records `report_not_requested`. Shared by BOTH spawn routes.
+pub(crate) fn ensure_runner_report_dir(route: &str, generation: u64) -> Option<PathBuf> {
+    let dir = hq_desktop_core::daemon::runner_report_dir(route, generation)?;
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => {
+            // Bound disk: remove leaked sibling directories (from a teardown/kill
+            // race that skipped the per-read deletion, or a prior session) so a
+            // machine that faults repeatedly cannot accumulate reports.
+            prune_stale_runner_report_siblings(&dir);
+            Some(dir)
+        }
+        Err(error) => {
+            log(
+                "daemon",
+                &format!("could not create runner report dir: {error}"),
+            );
+            None
+        }
+    }
+}
+
+/// Bound disk under `~/.hq/runner-reports/<route>` by removing every sibling report
+/// directory EXCEPT the single newest one. Race-free by construction: only ONE
+/// generation runs at a time per route, so the only directory that can still have a
+/// deferred read pending is the most recently created prior generation — which is
+/// always the newest sibling and is therefore never pruned. Every other sibling is
+/// an already-read (deleted-then-recreated is impossible) or leaked directory.
+/// Best-effort and bounded: it lists one small directory and removes stale entries.
+fn prune_stale_runner_report_siblings(current: &Path) {
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut siblings: Vec<(PathBuf, SystemTime)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path != current && path.is_dir())
+        .map(|path| {
+            let mtime = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(UNIX_EPOCH);
+            (path, mtime)
+        })
+        .collect();
+    // Protect the newest sibling — the only possible in-flight prior generation.
+    if let Some(newest) = siblings
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (_, mtime))| *mtime)
+        .map(|(index, _)| index)
+    {
+        siblings.remove(newest);
+    }
+    for (path, _) in siblings {
+        let _ = std::fs::remove_dir_all(&path);
+    }
+}
+
+/// Remove a run's report directory and any file in it, best-effort. This is what
+/// bounds disk under `~/.hq/runner-reports`: every run's directory is removed after
+/// its exit — by the deferred worker once it has read, or by the exit callback
+/// otherwise — so a crash-looping machine cannot accumulate reports.
+pub(crate) fn remove_runner_report_dir(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Read and parse a run's crash-surviving Node fatal report, OFF the exit path.
+/// Bounded: a single read of one fixed-name file under a hard size cap, with NO
+/// directory listing. Removes the report directory after the read (so it never
+/// accumulates) and degrades to a fixed honesty token on any failure. Only fixed
+/// vocabulary, a bounded stack shape, and a digest leave — never a raw byte.
+/// Shared by BOTH exit seams (the watcher deferred worker and the manual exit).
+pub(crate) fn read_runner_diagnostic_report(
+    report_dir: &Path,
+) -> hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport {
+    use hq_desktop_core::runner_diagnostic_report::{
+        parse_runner_diagnostic_report, RunnerDiagnosticReport,
+    };
+    let path = report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
+    let outcome = match std::fs::metadata(&path) {
+        Err(_) => RunnerDiagnosticReport::absent(),
+        Ok(meta) if meta.len() > RUNNER_REPORT_READ_MAX_BYTES => {
+            RunnerDiagnosticReport::unreadable()
+        }
+        Ok(_) => match std::fs::read(&path) {
+            Ok(bytes) => parse_runner_diagnostic_report(&bytes),
+            Err(_) => RunnerDiagnosticReport::unreadable(),
+        },
+    };
+    // The read (success, absent, or unreadable) is terminal for this generation.
+    remove_runner_report_dir(report_dir);
+    outcome
+}
+
+/// Patch a deferred fault capture's tags with a runner diagnostic report's
+/// attribution, OFF the exit path. A report-derived class NEVER overrides a
+/// stderr-derived class that already named the cause: it is adopted ONLY when the
+/// current `runner_fatal_class` is `none` (the exact Windows-fault case the stderr
+/// channel loses). Always records `runner_report_read`; when a class IS adopted,
+/// flips `runner_fatal_source` to `node_report` and adopts the report's
+/// content-safe stack shape/signature. Pure — a test proves the patch with no I/O.
+fn apply_report_to_fault_tags(
+    tags: &mut Vec<(String, String)>,
+    report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
+) {
+    set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
+    let current_class = tags
+        .iter()
+        .find(|(key, _)| key == "runner_fatal_class")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("none");
+    if report.named_cause() && current_class == "none" {
+        set_payload_tag(
+            tags,
+            "runner_fatal_class",
+            report.fatal_class.as_str().to_string(),
+        );
+        set_payload_tag(tags, "runner_stack_shape", report.stack.shape.clone());
+        set_payload_tag(
+            tags,
+            "runner_stack_signature",
+            report.stack.signature.clone(),
+        );
+        set_payload_tag(
+            tags,
+            "runner_fatal_source",
+            report.fatal_source().to_string(),
+        );
+    }
+}
+
 /// Hand a fault capture to a bounded worker that performs the deferred OS fault
 /// read OFF the exit path, then resolves and sends it. Two guards make it robust:
 ///
@@ -2695,7 +2904,15 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
         let outcome = rx.recv_timeout(bound).ok();
         // Claim send-rights EXACTLY once. If a teardown flush already claimed it,
         // this is a no-op — the event has already shipped with honest provenance.
-        if let Some(payload) = take_pending_watcher_fault_capture(id) {
+        if let Some(mut payload) = take_pending_watcher_fault_capture(id) {
+            // Read the crash-surviving Node fatal report OFF the exit path (this
+            // supervisor thread) and patch the fatal-reason tags, when a report was
+            // requested for this generation. A single bounded read; a report-derived
+            // class never overrides a stderr-derived one (see apply_report_to_fault_tags).
+            if let Some(report_dir) = payload.read.report_dir.clone() {
+                let report = read_runner_diagnostic_report(&report_dir);
+                apply_report_to_fault_tags(&mut payload.tags, &report);
+            }
             let resolution = if outcome.is_some() {
                 "read_resolved"
             } else {
@@ -3500,6 +3717,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W). `runner_fatal_source`
+    // names WHERE the fatal class came from — the runner's own stderr when it already
+    // named the class, else `none`; the deferred fault worker upgrades it to `node_report`
+    // when a crash-surviving Node diagnostic report names a cause the stderr channel lost
+    // (the exact 0xC0000409 case). `runner_report_read` is that report's read provenance,
+    // seeded from the request and upgraded by the deferred worker. Both diagnostic-only.
+    tags.push((
+        "runner_fatal_source",
+        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+    ));
+    tags.push(("runner_report_read", context.runner_report_read.clone()));
     // Name the terminating signal's disposition as a fixed, closed-vocabulary
     // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
     // Sentry without parsing the message text. Always present (`none` for a
@@ -7247,6 +7475,154 @@ mod tests {
             .all(|(k, _)| k != "watcher_fault_offset"));
     }
 
+    // ── Runner diagnostic report — the crash-surviving third channel (HQ-DESKTOP-5W) ──
+
+    fn heap_oom_report_json() -> String {
+        serde_json::json!({
+            "header": {
+                "trigger": "FatalError",
+                "event": "Allocation failed - JavaScript heap out of memory"
+            },
+            "nativeStack": [
+                { "pc": "0x1", "symbol": "node::OOMErrorHandler(char const*)" },
+                { "pc": "0x2", "symbol": "v8::internal::V8::FatalProcessOutOfMemory(char const*)" }
+            ]
+        })
+        .to_string()
+    }
+
+    fn report_tags_with_class(class: &str) -> Vec<(String, String)> {
+        vec![
+            ("runner_fatal_class".to_string(), class.to_string()),
+            ("sync_route".to_string(), "watcher".to_string()),
+            ("runner_stack_shape".to_string(), "all_redacted".to_string()),
+            ("runner_stack_signature".to_string(), "unknown".to_string()),
+            ("runner_fatal_source".to_string(), "none".to_string()),
+            ("runner_report_read".to_string(), "report_absent".to_string()),
+        ]
+    }
+
+    fn report_tag_of<'a>(tags: &'a [(String, String)], key: &str) -> &'a str {
+        tags.iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    }
+
+    fn unique_report_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("hq-report-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn apply_report_adopts_a_named_cause_only_when_stderr_named_none() {
+        // The Windows-fault case: stderr named nothing, so the report's heap_oom is
+        // adopted and runner_fatal_source flips to node_report.
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            heap_oom_report_json().as_bytes(),
+        );
+        assert!(report.named_cause());
+        let mut tags = report_tags_with_class("none");
+        apply_report_to_fault_tags(&mut tags, &report);
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "heap_oom");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "node_report");
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+        assert_ne!(report_tag_of(&tags, "runner_stack_shape"), "all_redacted");
+        assert_eq!(report_tag_of(&tags, "runner_stack_signature").len(), 16);
+    }
+
+    #[test]
+    fn apply_report_never_overrides_a_stderr_named_class() {
+        // A stderr-derived class already named the cause: the report records its read
+        // provenance but NEVER overrides the class, source, or shape (macOS heap_oom
+        // and every stderr attribution keeps priority).
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            heap_oom_report_json().as_bytes(),
+        );
+        let mut tags = report_tags_with_class("libuv_assert");
+        set_payload_tag(&mut tags, "runner_fatal_source", "stderr".to_string());
+        set_payload_tag(
+            &mut tags,
+            "runner_stack_shape",
+            "node_check_abort>v8_abort".to_string(),
+        );
+        apply_report_to_fault_tags(&mut tags, &report);
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
+        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        // Only the read provenance is recorded.
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+    }
+
+    #[test]
+    fn apply_report_records_absence_without_naming_a_cause() {
+        let mut tags = report_tags_with_class("none");
+        apply_report_to_fault_tags(
+            &mut tags,
+            &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport::absent(),
+        );
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+    }
+
+    #[test]
+    fn read_runner_diagnostic_report_reads_then_deletes_the_directory() {
+        let dir = unique_report_dir("read");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            heap_oom_report_json(),
+        )
+        .unwrap();
+        let report = read_runner_diagnostic_report(&dir);
+        assert_eq!(
+            report.read,
+            hq_desktop_core::runner_diagnostic_report::RunnerReportRead::Read
+        );
+        assert_eq!(report.fatal_class.as_str(), "heap_oom");
+        // The reader removed the directory after reading, bounding disk.
+        assert!(!dir.exists(), "report directory must be removed after the read");
+    }
+
+    #[test]
+    fn read_runner_diagnostic_report_reports_absent_for_an_empty_dir() {
+        let dir = unique_report_dir("empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = read_runner_diagnostic_report(&dir);
+        assert_eq!(
+            report.read,
+            hq_desktop_core::runner_diagnostic_report::RunnerReportRead::Absent
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn prune_stale_runner_report_siblings_keeps_current_and_one_prior() {
+        // A route directory with three prior-generation siblings plus the current
+        // one: the current dir is never pruned, and exactly ONE prior sibling (the
+        // newest — the only one that could still have a deferred read pending)
+        // survives, so leaks cannot accumulate.
+        let base = unique_report_dir("prune");
+        let current = base.join("current");
+        let priors = [base.join("g1"), base.join("g2"), base.join("g3")];
+        std::fs::create_dir_all(&current).unwrap();
+        for prior in &priors {
+            std::fs::create_dir_all(prior).unwrap();
+        }
+        prune_stale_runner_report_siblings(&current);
+        assert!(current.exists(), "the current directory is never pruned");
+        let survivors = priors.iter().filter(|prior| prior.exists()).count();
+        assert_eq!(
+            survivors, 1,
+            "exactly the newest prior sibling survives; the rest are pruned"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     // ── Deferred watcher-fault capture wiring (HQ-DESKTOP-4X) ──
 
     #[test]
@@ -7267,6 +7643,7 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
             }),
             ..Default::default()
         };
@@ -7342,6 +7719,7 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
                 },
             )
         };
@@ -7382,6 +7760,7 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
                 },
             )
         };
@@ -7426,6 +7805,7 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
             },
         );
         let tag = |payload: &DeferredWatcherFaultCapture, key: &str| {
