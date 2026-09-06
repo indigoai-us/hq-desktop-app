@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { WIZARD_STEPS, type WizardStepId } from './onboarding-wizard';
 import {
+  INSTALLER_SIGNIN_STEP_BY_ACTION,
   INSTALLER_STEP_BY_WIZARD_STEP,
   __resetInstallerStepTelemetryForTests,
   getInstallerStepEndpoint,
@@ -85,13 +86,36 @@ describe('installer step mapping', () => {
         action: 'started',
         flow: 'first_install',
       }),
-    ).toEqual(['signin']);
+    ).toEqual(['signin-clicked']);
     expect(
       installerStepsForOnboarding({
         step: 'welcome-signin',
         action: 'completed',
       }),
-    ).toEqual(['signin']);
+    ).toEqual(['signin-completed']);
+  });
+
+  it('reports what happened on the sign-in screen as distinct anonymous steps', () => {
+    // The authenticated record for this panel cannot leave the device until
+    // sign-in succeeds, so these pings are the only observable outcome.
+    expect(INSTALLER_SIGNIN_STEP_BY_ACTION).toEqual({
+      started: 'signin-clicked',
+      failed: 'signin-failed',
+      completed: 'signin-completed',
+    });
+    expect(
+      installerStepsForOnboarding({ step: 'welcome-signin', action: 'failed' }),
+    ).toEqual(['signin-failed']);
+    // Navigation actions keep the historical name so the funnel does not fork.
+    for (const action of ['back', 'resumed', 'skipped']) {
+      expect(installerStepsForOnboarding({ step: 'welcome-signin', action })).toEqual([
+        'signin',
+      ]);
+    }
+    // Only the sign-in panel has outcome pings; other panels stay one step.
+    expect(installerStepsForOnboarding({ step: 'setup', action: 'failed' })).toEqual([
+      'setup',
+    ]);
   });
 
   it('maps remaining first-run panels onto a single installer step', () => {
