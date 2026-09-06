@@ -1003,6 +1003,38 @@ fn heap_oom_stack_shape(frames: &[String]) -> RunnerStackShape {
     }
 }
 
+/// Build a content-safe [`RunnerStackShape`] from an ordered list of native-frame
+/// symbols, exactly as the macOS heap-OOM stderr path builds one (the SAME
+/// [`heap_oom_frame_token`] allow-list and SHA-256 digest discipline). Used by the
+/// Node diagnostic-report parser (this reopen, HQ-DESKTOP-5W) so a report-derived
+/// shape and its 16-hex signature are constructed identically to today's stderr
+/// path. The symbols themselves NEVER leave: only the fixed shape tokens and the
+/// digest do, so a frame symbol carrying a path or hostile bytes yields only
+/// allow-listed tokens. A stack in which nothing matched the allow-list (empty, or
+/// every frame collapsed to `anon`) reports the honest `all_redacted`/`unknown`
+/// shape, never a string of `anon` tokens or an empty shape with a real digest —
+/// the same honesty contract [`runner_stack_shape`] holds.
+pub fn runner_stack_shape_from_native_symbols(symbols: &[String]) -> RunnerStackShape {
+    if symbols.is_empty() {
+        return RunnerStackShape {
+            shape: "all_redacted".to_string(),
+            depth: 0,
+            redacted_frames: 0,
+            signature: "unknown".to_string(),
+        };
+    }
+    let shape = heap_oom_stack_shape(symbols);
+    if shape.shape.split('>').all(|token| token == HEAP_OOM_ANON_FRAME) {
+        return RunnerStackShape {
+            shape: "all_redacted".to_string(),
+            depth: shape.depth,
+            redacted_frames: shape.depth,
+            signature: "unknown".to_string(),
+        };
+    }
+    shape
+}
+
 /// Choose the exit-time stack shape both routes report: the class-scoped
 /// heap-OOM shape when a heap-OOM native stack was retained this pass, else the
 /// generic tail shape byte-identically. Reading from the shared `RunTotals` keeps

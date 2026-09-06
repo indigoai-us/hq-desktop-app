@@ -160,18 +160,28 @@ function exitDetail(cls?: string, status?: string, fatal?: string): string | nul
     fatal && FATAL_CLASSES.has(fatal) && fatal !== 'none' ? fatal.replace(/_/g, ' ') : null;
   if (!cls || !EXIT_CLASSES.has(cls)) return fatalPhrase();
   const hex = isStatusHex(status) ? status : undefined;
+  let windowsPhrase: string;
   switch (cls) {
     case 'fault':
-      return hex ? `windows fault ${hex}` : 'windows fault';
+      windowsPhrase = hex ? `windows fault ${hex}` : 'windows fault';
+      break;
     case 'session_terminate':
-      return 'windows session terminate';
+      windowsPhrase = 'windows session terminate';
+      break;
     case 'console_control':
-      return 'windows console control';
+      windowsPhrase = 'windows console control';
+      break;
     case 'indeterminate_status':
-      return 'windows indeterminate status';
+      windowsPhrase = 'windows indeterminate status';
+      break;
     default:
       return fatalPhrase(); // ordinary — not a Windows-signalled shape
   }
+  // HQ-DESKTOP-5W surviving half: a Windows shape names WHAT the OS signalled;
+  // when a genuine fatal class ALSO names WHY (e.g. from the Node diagnostic
+  // report), render both. Byte-identical when the fatal class is none/invalid.
+  const reason = fatalPhrase();
+  return reason ? `${windowsPhrase} / ${reason}` : windowsPhrase;
 }
 
 /** Faithful mirror of `hq_telemetry::derive_sync_child_exit_culprit`. */
@@ -258,6 +268,38 @@ describe('sync exit culprit — envelope simulator (both directions)', () => {
     expect(culpritUnderPolicy(MANUAL_5X, 'post-fix')).toBe(
       'sync/runner push: windows session terminate',
     );
+  });
+
+  it('names BOTH the windows shape and the reason on both routes (this reopen)', () => {
+    // The surviving half of HQ-DESKTOP-5W: once the third channel (Node diagnostic
+    // report) names a reason the stderr channel lost, the culprit carries it — on
+    // the watcher (5W) shape AND the manual (5X-family) shape, pinned identically.
+    const watcherWithReason: Tags = {
+      ...WATCHER_5W,
+      watcher_fault_provenance: 'deadline_expired',
+      runner_fatal_class: 'heap_oom',
+      runner_fatal_source: 'node_report',
+      runner_report_read: 'report_read',
+    };
+    expect(deriveCulprit(watcherWithReason)).toBe(
+      'sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)',
+    );
+    // A manual-route Windows fault with a report-named reason renders the SAME way.
+    const manualFaultWithReason: Tags = {
+      sync_route: 'manual',
+      runner_phase: 'push',
+      windows_exit_class: 'fault',
+      windows_exit_status: '0xC0000409',
+      runner_fatal_class: 'heap_oom',
+      runner_fatal_source: 'node_report',
+      runner_report_read: 'report_read',
+    };
+    expect(deriveCulprit(manualFaultWithReason)).toBe(
+      'sync/runner push: windows fault 0xC0000409 / heap oom',
+    );
+    // With runner_fatal_class=none the culprit is byte-identical to the merged
+    // behaviour — a missing reason is never fabricated.
+    expect(deriveCulprit(WATCHER_5W)).toBe('sync/watcher: node_exe (windows fault 0xC0000409)');
   });
 
   it('both derived culprits are bounded and content-safe', () => {

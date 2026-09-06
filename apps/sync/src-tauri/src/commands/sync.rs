@@ -35,6 +35,7 @@
 //! kind of bump.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -48,8 +49,8 @@ use hq_desktop_core::sync_outcome::{
     classify_windows_exit_status, describe_exit, is_expected_acl_scope_skip,
     runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape_for_exit,
     should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
-    windows_fault_symbol, RunnerExitDisposition, SessionEndLatchReading, SyncCancelCause,
-    WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
+    windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass, SessionEndLatchReading,
+    SyncCancelCause, WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
     RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
@@ -293,6 +294,17 @@ struct ManualRunnerExitContext {
     /// `session_end_latch` axis, from the SAME shared reader so the two seams
     /// cannot drift.
     session_end_latch: SessionEndLatchReading,
+    /// The `runner_report_read` provenance for this run (this reopen,
+    /// HQ-DESKTOP-5W): whether a crash-surviving Node diagnostic report was read,
+    /// requested but absent/unreadable, withheld by a user `--report-*`, or not
+    /// requested. Set by the exit caller from the SAME shared reader the watcher
+    /// route uses. Fixed vocabulary; diagnostic-only.
+    runner_report_read: String,
+    /// The parsed report itself when one was read this run, so the exit builder can
+    /// adopt its named cause when the runner's own stderr named none (the exact
+    /// Windows-fault case). `None` when no report was read; a report that named no
+    /// cause never overrides the stderr attribution.
+    runner_report: Option<hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport>,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -308,6 +320,8 @@ impl Default for ManualRunnerExitContext {
             runner_unmatched_stderr_shapes: None,
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
+            runner_report_read: "report_not_requested".to_string(),
+            runner_report: None,
         }
     }
 }
@@ -349,6 +363,11 @@ fn manual_runner_exit_context(
         // DBG_TERMINATE_PROCESS/no-signal shape; inert here (HQ-DESKTOP-5X).
         windows_terminator: None,
         session_end_latch: SessionEndLatchReading::Unavailable,
+        // Set by the caller after reading this run's Node diagnostic report via the
+        // shared reader; `report_not_requested`/`None` here so a context that read
+        // none renders the honest seed (HQ-DESKTOP-5W).
+        runner_report_read: "report_not_requested".to_string(),
+        runner_report: None,
     }
 }
 
@@ -364,13 +383,43 @@ fn runner_exit_telemetry_context(
 ) {
     // Prefer the class-scoped heap-OOM shape when this run retained one, else the
     // generic tail shape byte-identically — the same seam the watcher route uses.
-    let stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
+    let stderr_stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
+    let stderr_class = totals.runner_fatal_class;
+    // The Node diagnostic report is the third cause channel (HQ-DESKTOP-5W): on
+    // Windows the runner's fatal stderr is lost to an async pipe, so when the report
+    // named a cause AND the stderr channel named NONE, adopt the report's class +
+    // content-safe stack shape. A stderr-named cause ALWAYS wins — a report never
+    // overrides it — so macOS heap_oom and every existing attribution is unchanged.
+    let adopt_report = context
+        .runner_report
+        .as_ref()
+        .filter(|report| report.named_cause() && stderr_class == RunnerFatalClass::None);
+    let (effective_fatal_class, fatal_source, stack) = match adopt_report {
+        Some(report) => (
+            report.fatal_class.as_str().to_string(),
+            "node_report",
+            report.stack.clone(),
+        ),
+        None => (
+            stderr_class.as_str().to_string(),
+            if stderr_class != RunnerFatalClass::None {
+                "stderr"
+            } else {
+                "none"
+            },
+            stderr_stack,
+        ),
+    };
     let mut tags = vec![
         ("sync_route", "manual".to_string()),
         ("sync_scope", context.sync_scope.clone()),
         ("runner_phase", context.runner_phase.clone()),
         ("runner_stack_shape", stack.shape),
         ("runner_stack_signature", stack.signature),
+        // Windows fatal-reason attribution axes (HQ-DESKTOP-5W), the SAME two the
+        // watcher route emits, so the routes cannot drift.
+        ("runner_fatal_source", fatal_source.to_string()),
+        ("runner_report_read", context.runner_report_read.clone()),
     ];
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
@@ -457,10 +506,10 @@ fn runner_exit_telemetry_context(
     // route's watcher_hq_cloud_version/package.
     tags.push(("hq_cloud_version", HQ_CLOUD_VERSION.to_string()));
     tags.push(("hq_cloud_package", HQ_CLOUD_PACKAGE.to_string()));
-    tags.push((
-        "runner_fatal_class",
-        totals.runner_fatal_class.as_str().to_string(),
-    ));
+    // The effective fatal class: the stderr-derived class, or a Node diagnostic
+    // report's class when stderr named none (HQ-DESKTOP-5W). Byte-identical to
+    // `totals.runner_fatal_class` on every non-Windows / non-fault path.
+    tags.push(("runner_fatal_class", effective_fatal_class));
     // Symmetric with the watcher route: the libuv syscall + errno attach wherever
     // runner_fatal_class is, so the two routes read the same source and cannot
     // drift. Present only for a libuv fatal-syscall class; both are content-safe
@@ -1207,6 +1256,7 @@ pub fn build_sync_spawn_args(
     hq_folder_path: &str,
     personal_sync_enabled: bool,
     scope: &SyncRunScope,
+    report_dir: Option<&Path>,
 ) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
@@ -1223,6 +1273,21 @@ pub fn build_sync_spawn_args(
         &mut env,
         hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
     );
+
+    // Ask Node for a crash-surviving fatal diagnostic report (this reopen,
+    // HQ-DESKTOP-5W), composed at the SAME shared seam the watcher route uses so the
+    // two routes cannot drift. The manual route declares NO heap ceiling (a non-goal
+    // here), so only the report flags are added — and none at all if the user set
+    // their own `--report-*`. npx-only path, so the argv double-application is unused.
+    let inherited_node_options = std::env::var("NODE_OPTIONS").ok();
+    let spawn_flags = hq_desktop_core::daemon::compose_runner_spawn_flags(
+        inherited_node_options.as_deref(),
+        None,
+        report_dir,
+    );
+    if let Some(node_options) = spawn_flags.node_options {
+        env.insert("NODE_OPTIONS".to_string(), node_options);
+    }
 
     let mut args = vec![
         "-y".to_string(),
@@ -2715,7 +2780,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // ATTEMPT timestamp (distinct from completion/success) and heartbeat.
     crate::commands::client_health::record_sync_attempt_started();
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
+    // Create this run's app-owned diagnostic-report directory so the runner child
+    // can write a crash-surviving Node fatal report (HQ-DESKTOP-5W). Keyed by the
+    // manual route + this sync generation (independent of the watcher's counter);
+    // read at the exit seam below via the SAME shared reader the watcher route uses.
+    let manual_report_dir =
+        crate::commands::daemon::ensure_runner_report_dir("manual", sync_generation);
+    let spawn_args = build_sync_spawn_args(
+        &hq_folder_path,
+        personal_sync_enabled,
+        &scope,
+        manual_report_dir.as_deref(),
+    );
     log(
         "sync",
         &format!(
@@ -2921,6 +2997,30 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             current_windows_terminator_attribution(&app_bg, code, signal);
                         exit_context.session_end_latch =
                             current_session_end_latch_reading_for_exit(code, signal);
+                        // Windows fatal-reason attribution (HQ-DESKTOP-5W): read this
+                        // run's crash-surviving Node diagnostic report via the SAME
+                        // shared reader the watcher deferred worker uses, and record the
+                        // read provenance. A report is read only when it was actually
+                        // requested (directory created AND the user set no `--report-*`
+                        // of their own); the reader deletes the file after reading.
+                        let manual_report_request =
+                            hq_desktop_core::daemon::resolve_runner_report_request(
+                                std::env::var("NODE_OPTIONS").ok().as_deref(),
+                                manual_report_dir.as_deref(),
+                            );
+                        if let (
+                            hq_desktop_core::daemon::RunnerReportRequest::Requested,
+                            Some(dir),
+                        ) = (manual_report_request, manual_report_dir.as_deref())
+                        {
+                            let report =
+                                crate::commands::daemon::read_runner_diagnostic_report(dir);
+                            exit_context.runner_report_read = report.read.as_str().to_string();
+                            exit_context.runner_report = Some(report);
+                        } else {
+                            exit_context.runner_report_read =
+                                manual_report_request.seed_read_token().to_string();
+                        }
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
@@ -2980,6 +3080,13 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         success,
                         &final_totals,
                     );
+                    // Remove this run's report directory if it still exists (a clean
+                    // success wrote none; the capture path's read already removed it).
+                    // One terminal cleanup for every exit branch, bounding disk under
+                    // `~/.hq/runner-reports` (HQ-DESKTOP-5W).
+                    if let Some(dir) = &manual_report_dir {
+                        crate::commands::daemon::remove_runner_report_dir(dir);
+                    }
                 }
             },
         );
@@ -3189,6 +3296,7 @@ mod tests {
             "/Users/test/HQ",
             true,
             &SyncRunScope::Company("indigo".to_string()),
+            None,
         );
         let company_index = args
             .args
@@ -3205,7 +3313,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         // `resolve_bin` may return an absolute path or a bare name. Windows
         // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
         let expected = if cfg!(target_os = "windows") {
@@ -3226,7 +3334,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         assert_eq!(
             args.args,
             vec![
@@ -3249,7 +3357,7 @@ mod tests {
     /// the flag in the wrong direction (e.g. inverted check) surfaces here.
     #[test]
     fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         assert!(
             !args.args.iter().any(|a| a == "--skip-personal"),
             "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
@@ -3263,7 +3371,7 @@ mod tests {
     /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
     #[test]
     fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All, None);
         assert_eq!(
             args.args.last().map(String::as_str),
             Some("--skip-personal"),
@@ -3288,11 +3396,12 @@ mod tests {
         )
         .unwrap();
         let _home = scoped_home(tmp.path());
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         let scoped = build_sync_spawn_args(
             "/Users/test/HQ",
             true,
             &SyncRunScope::Company("zeta".into()),
+            None,
         );
 
         let env = args.env.expect("env");
@@ -3316,7 +3425,7 @@ mod tests {
     /// cause one conflict to halt every other file's progress.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_cloud_wins_keep() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -3329,7 +3438,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -3345,7 +3454,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -3368,7 +3477,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert!(
@@ -3380,7 +3489,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -3396,7 +3505,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn test_build_sync_spawn_args_env_sets_windows_path() {
-        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -3409,7 +3518,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All, None);
         assert!(args.cwd.is_none());
     }
 
