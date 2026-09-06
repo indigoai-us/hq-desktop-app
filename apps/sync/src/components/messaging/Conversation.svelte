@@ -402,7 +402,9 @@
 
   .dm-thread {
     flex: 1;
+    min-width: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;

@@ -337,6 +337,62 @@
   }
   let openThread = $state<OpenThread | null>(null);
 
+  // A docked thread starts at the old fixed width, but users can pull its left
+  // edge wider or narrower without sacrificing a usable conversation pane.
+  const DEFAULT_THREAD_PANEL_WIDTH = 340;
+  const MIN_THREAD_PANEL_WIDTH = 280;
+  const MAX_THREAD_PANEL_WIDTH = 560;
+  const RAIL_WIDTH = 300;
+  const MIN_CONVERSATION_WIDTH = 340;
+  let messagesWindow = $state<HTMLElement | null>(null);
+  let threadPanelWidth = $state(DEFAULT_THREAD_PANEL_WIDTH);
+  let resizingThread = $state(false);
+  let threadResizeStartX = 0;
+  let threadResizeStartWidth = DEFAULT_THREAD_PANEL_WIDTH;
+
+  function maximumThreadPanelWidth(): number {
+    const windowWidth = messagesWindow?.clientWidth ?? window.innerWidth;
+    return Math.max(
+      MIN_THREAD_PANEL_WIDTH,
+      Math.min(MAX_THREAD_PANEL_WIDTH, windowWidth - RAIL_WIDTH - MIN_CONVERSATION_WIDTH),
+    );
+  }
+
+  function setThreadPanelWidth(width: number): void {
+    threadPanelWidth = Math.min(maximumThreadPanelWidth(), Math.max(MIN_THREAD_PANEL_WIDTH, width));
+  }
+
+  function startThreadResize(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    resizingThread = true;
+    threadResizeStartX = event.clientX;
+    threadResizeStartWidth = threadPanelWidth;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function resizeThread(event: PointerEvent): void {
+    if (!resizingThread) return;
+    // The grab edge is on the panel's left, so moving left makes it wider.
+    setThreadPanelWidth(threadResizeStartWidth + threadResizeStartX - event.clientX);
+  }
+
+  function stopThreadResize(event: PointerEvent): void {
+    if (!resizingThread) return;
+    resizingThread = false;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  }
+
+  function resizeThreadWithKeyboard(event: KeyboardEvent): void {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setThreadPanelWidth(threadPanelWidth + 20);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setThreadPanelWidth(threadPanelWidth - 20);
+    }
+  }
+
   // Open the thread for a DM root message. The reply recipient is the selected peer.
   function handleOpenDmThread(rootEventId: string): void {
     if (!selected || selected.source === 'agent') return;
@@ -1301,7 +1357,7 @@
   });
 </script>
 
-<div class="messages-window">
+<div class="messages-window" bind:this={messagesWindow} class:thread-resizing={resizingThread}>
   <!-- DESKTOP-002: source-list rail (glass) + naked main canvas. Compact header
        — no redundant "Messages" page title; no People/Requests tabs. -->
   <aside class="rail" aria-label="Conversations">
@@ -1562,7 +1618,20 @@
   </section>
 
   {#if openThread}
-    <section class="thread-column">
+    <section class="thread-column" style:--thread-panel-width={`${threadPanelWidth}px`}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="thread-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize thread panel"
+        tabindex="0"
+        onpointerdown={startThreadResize}
+        onpointermove={resizeThread}
+        onpointerup={stopThreadResize}
+        onpointercancel={stopThreadResize}
+        onkeydown={resizeThreadWithKeyboard}
+      ></div>
       <ThreadPanel
         rootEventId={openThread.rootEventId}
         scope={openThread.scope}
@@ -1928,6 +1997,10 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    /* Keep wide message content inside the same shrinking column as the
+       composer. Without this boundary, a long body can paint underneath the
+       thread panel while the input correctly shrinks with the window. */
+    overflow: hidden;
     /* Naked canvas — no glass, no raised outer shell. */
     background: transparent;
     border-radius: 0;
@@ -2000,20 +2073,53 @@
   /* Wide default: fixed third column. Narrow collapses the list-detail third
      pane to an overlay so the conversation primary actions stay mounted. */
   .thread-column {
-    width: 340px;
+    width: min(var(--thread-panel-width, 340px), calc(100vw - 640px));
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    position: relative;
     border-left: 1px solid var(--border);
     background: var(--surface-rail);
+  }
+
+  .thread-resize-handle {
+    position: absolute;
+    z-index: 6;
+    top: 0;
+    bottom: 0;
+    left: -6px;
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .thread-resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 5px;
+    width: 2px;
+    background: var(--focus, var(--accent));
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .thread-resize-handle:hover::after,
+  .thread-resize-handle:focus-visible::after,
+  .thread-resizing .thread-resize-handle::after {
+    opacity: 1;
   }
 
   /* Narrow: overlay the conversation pane instead of squeezing a third column
      into a small window. The panel slides over from the right and covers the
      pane; the close/back affordance returns to the main conversation. Primary
      conversation chrome stays visible under the overlay close control. */
-  @media (max-width: 720px) {
+  /* A docked thread needs room for the 300px rail, its 340px column, and a
+     usable conversation pane. Switch to the overlay before the conversation
+     is squeezed narrow enough for message content to escape beneath it. */
+  @media (max-width: 1000px) {
     .thread-column {
       position: absolute;
       top: 0;
@@ -2024,10 +2130,16 @@
       z-index: 5;
     }
 
+    .thread-resize-handle {
+      display: none;
+    }
+
     .messages-window {
       position: relative;
     }
+  }
 
+  @media (max-width: 720px) {
     .rail {
       flex-basis: min(260px, 42%);
     }
