@@ -6,6 +6,7 @@ import { mount, tick, unmount } from "svelte";
 import ReplyPanel from "./ReplyPanel.svelte";
 import type { ConversationApi, SendReplyArgs } from "../chat-api";
 import type { MentionTarget } from "../mentions.js";
+import { MARKETPLACE_COVER_HOST } from "../../avatars/csp-image-src";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -67,6 +68,91 @@ function mountPanel(props: Record<string, unknown> = {}): HTMLDivElement {
 }
 
 describe("ReplyPanel thread parity", () => {
+  it("uses the signed-in person's profile photo for an optimistic thread reply", async () => {
+    let resolveSend!: () => void;
+    const pendingSend = new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    });
+    const stefanPhoto = `https://${MARKETPLACE_COVER_HOST}/members/prs_stefan/h.png?X-Amz-Signature=mock`;
+    const h = mountPanel({
+      selfDisplayName: "Stefan Johnson",
+      selfPersonUid: "prs_stefan",
+      avatarByUid: { prs_stefan: stefanPhoto },
+      api: {
+        fetchReplyThread: async () => ({
+          scope: "channel",
+          root,
+          replies: [reply],
+          replyCount: 1,
+        }),
+        sendReply: async () => pendingSend,
+      } as unknown as ConversationApi,
+    });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const composer = h.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    composer.value = "Following up";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    (h.querySelector('[data-testid="reply-panel-send"]') as HTMLButtonElement).click();
+    await tick();
+
+    const optimistic = h.querySelector(
+      '[data-testid="reply-panel-message"][data-send-status="sending"]',
+    );
+    expect(optimistic).not.toBeNull();
+    expect(
+      optimistic?.querySelector("img.avatar-img")?.getAttribute("src"),
+    ).toBe(stefanPhoto);
+    resolveSend();
+  });
+
+  it("shows the agent response state for a plain reply in an agent DM thread", async () => {
+    const h = mountPanel({
+      scope: "dm",
+      channelId: null,
+      withPersonUid: "agt_deacon",
+      mentionCandidates: [
+        {
+          participantUid: "agt_deacon",
+          participantType: "agent",
+          displayName: "Deacon",
+        },
+      ] satisfies MentionTarget[],
+      api: {
+        fetchReplyThread: async () => ({
+          scope: "dm",
+          root,
+          replies: [],
+          replyCount: 0,
+        }),
+        sendReply: async () => ({}),
+      } as unknown as ConversationApi,
+    });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const composer = h.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    composer.value = "Deacon?";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    (h.querySelector('[data-testid="reply-panel-send"]') as HTMLButtonElement).click();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const thinking = h.querySelector('[data-testid="agent-thinking-row"]');
+    expect(thinking).not.toBeNull();
+    expect(thinking?.textContent).toContain("Deacon is thinking");
+  });
+
   it("registers only after the initial reply fetch supplies the seen ids", async () => {
     type ReplyThread = Awaited<ReturnType<ConversationApi["fetchReplyThread"]>>;
     let resolveFetch!: (value: ReplyThread) => void;
