@@ -20,6 +20,8 @@
     BadgeTone,
     CalloutTone,
     ChartBlock,
+    DecisionBlock,
+    DecisionOption,
     RichContentModel,
     StatItem,
     TableBlock,
@@ -27,9 +29,46 @@
 
   interface Props {
     content: RichContentModel;
+    /**
+     * Host callback for a decision block. `option` is the chosen option, or
+     * null for the free-text "Other…" affordance. The host sends a reply in the
+     * thread (body = option.label) or focuses the composer for "Other". No
+     * agent code runs; this is the only interactivity a block may trigger.
+     */
+    ondecision?: (detail: {
+      questionId?: string;
+      option: DecisionOption | null;
+    }) => void;
+    /**
+     * questionIds already answered (from the thread), so a decision renders
+     * disabled with the chosen option marked when it reopens after a reply.
+     */
+    answeredQuestionIds?: ReadonlySet<string>;
   }
 
-  let { content }: Props = $props();
+  let { content, ondecision, answeredQuestionIds }: Props = $props();
+
+  // Optimistic local disable after a click, keyed by block index (stable per
+  // message). Mirrors LifecycleCard's `localPending`. Value = chosen label
+  // (or "" for Other) so we can mark the picked option inline.
+  let localChoice = $state<Record<number, string>>({});
+
+  function decisionAnswered(block: DecisionBlock, index: number): boolean {
+    if (index in localChoice) return true;
+    return Boolean(
+      block.questionId && answeredQuestionIds?.has(block.questionId),
+    );
+  }
+
+  function pickDecision(
+    block: DecisionBlock,
+    index: number,
+    option: DecisionOption | null,
+  ): void {
+    if (decisionAnswered(block, index)) return;
+    localChoice = { ...localChoice, [index]: option ? option.label : "" };
+    ondecision?.({ questionId: block.questionId, option });
+  }
 
   const TREND_CLASS: Record<NonNullable<StatItem["trend"]>, string> = {
     up: "trend-up",
@@ -323,6 +362,49 @@
             {@html renderMessageBodyMarkdown(block.body)}
           </div>
         </div>
+      </div>
+    {:else if block.kind === "decision"}
+      {@const answered = decisionAnswered(block, blockIndex)}
+      {@const chosen = localChoice[blockIndex]}
+      <div class="rich-decision" data-testid="rich-decision" role="group" aria-label={block.question}>
+        <div class="rich-decision-q">{block.question}</div>
+        <div class="rich-decision-options">
+          {#each block.options as option, i (option.id || i)}
+            <button
+              type="button"
+              class="rich-decision-btn"
+              class:is-recommended={option.recommended}
+              class:is-chosen={answered && chosen === option.label}
+              disabled={answered}
+              data-testid="rich-decision-option"
+              onclick={() => pickDecision(block, blockIndex, option)}
+            >
+              <span class="rich-decision-btn-label">{option.label}</span>
+              {#if option.recommended}
+                <span class="rich-decision-tag">Recommended</span>
+              {/if}
+              {#if option.description}
+                <span class="rich-decision-desc">{option.description}</span>
+              {/if}
+            </button>
+          {/each}
+          {#if block.allowOther}
+            <button
+              type="button"
+              class="rich-decision-btn rich-decision-other"
+              disabled={answered}
+              data-testid="rich-decision-other"
+              onclick={() => pickDecision(block, blockIndex, null)}
+            >
+              Other…
+            </button>
+          {/if}
+        </div>
+        {#if answered}
+          <div class="rich-decision-answered" data-testid="rich-decision-answered">
+            {chosen ? `You chose: ${chosen}` : "Answered"}
+          </div>
+        {/if}
       </div>
     {/if}
   {/each}
@@ -624,5 +706,86 @@
   }
   .rich-callout-body :global(:last-child) {
     margin-bottom: 0;
+  }
+
+  /* Decision: interactive Q&A. Buttons compose a reply (host `ondecision`);
+     recommended option gets the single violet accent. */
+  .rich-decision {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--line, var(--pop-border));
+    border-radius: 8px;
+  }
+  .rich-decision-q {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t1, var(--pop-text));
+  }
+  .rich-decision-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rich-decision-btn {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 8px;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--t1, var(--pop-text));
+    background: var(--pop-surface, transparent);
+    border: 1px solid var(--line, var(--pop-border));
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .rich-decision-btn:hover:not(:disabled) {
+    border-color: var(--vio-ink);
+  }
+  .rich-decision-btn:focus-visible {
+    outline: 2px solid var(--vio-ink);
+    outline-offset: 1px;
+  }
+  .rich-decision-btn.is-recommended {
+    border-color: var(--vio-ink);
+    background: color-mix(in srgb, var(--vio-ink) 8%, transparent);
+  }
+  .rich-decision-btn:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+  .rich-decision-btn.is-chosen {
+    border-color: var(--vio-ink);
+    background: color-mix(in srgb, var(--vio-ink) 14%, transparent);
+    opacity: 1;
+  }
+  .rich-decision-btn-label {
+    font-weight: 500;
+  }
+  .rich-decision-tag {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vio-ink);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .rich-decision-desc {
+    flex-basis: 100%;
+    font-size: 12px;
+    color: var(--t2, var(--pop-muted));
+  }
+  .rich-decision-other {
+    color: var(--t2, var(--pop-muted));
+    font-style: italic;
+  }
+  .rich-decision-answered {
+    font-size: 12px;
+    color: var(--t3, var(--pop-muted));
   }
 </style>

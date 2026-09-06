@@ -209,3 +209,104 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     expect(el.querySelector(".rich-kv-value")?.textContent).toContain("<script>");
   });
 });
+
+describe("RichMessageContent — decision block interactivity", () => {
+  function renderDecision(
+    over: Record<string, unknown> = {},
+    props: Record<string, unknown> = {},
+  ): { el: HTMLElement; calls: Array<{ questionId?: string; option: unknown }> } {
+    const raw = {
+      v: 1,
+      blocks: [
+        {
+          kind: "decision",
+          question: "Append the smoke-test line?",
+          options: [
+            { id: "1", label: "Yes, append it", recommended: true },
+            { id: "2", label: "No, cancel" },
+          ],
+          allowOther: true,
+          questionId: "clarify_abc123",
+          ...over,
+        },
+      ],
+    };
+    const content = parseRichContent(raw);
+    if (!content) throw new Error("fixture did not parse");
+    const calls: Array<{ questionId?: string; option: unknown }> = [];
+    host = document.createElement("div");
+    host.className = "chat-shell";
+    document.body.appendChild(host);
+    component = mount(RichMessageContent, {
+      target: host,
+      props: { content, ondecision: (d: unknown) => calls.push(d as never), ...props },
+    });
+    return { el: host, calls };
+  }
+
+  it("renders one button per option plus Other, with the recommended pill", async () => {
+    const { el } = renderDecision();
+    await tick();
+    expect(el.querySelector('[data-testid="rich-decision"]')).not.toBeNull();
+    expect(el.querySelectorAll('[data-testid="rich-decision-option"]')).toHaveLength(2);
+    expect(el.querySelector('[data-testid="rich-decision-other"]')).not.toBeNull();
+    const first = el.querySelector('[data-testid="rich-decision-option"]');
+    expect(first?.classList.contains("is-recommended")).toBe(true);
+    expect(first?.querySelector(".rich-decision-tag")?.textContent).toContain(
+      "Recommended",
+    );
+  });
+
+  it("fires ondecision with the chosen option and disables after a click", async () => {
+    const { el, calls } = renderDecision();
+    await tick();
+    const buttons = el.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="rich-decision-option"]',
+    );
+    buttons[0].click();
+    await tick();
+    expect(calls).toHaveLength(1);
+    expect((calls[0].option as { label: string }).label).toBe("Yes, append it");
+    expect(calls[0].questionId).toBe("clarify_abc123");
+    // All buttons disabled + chosen shown.
+    el.querySelectorAll<HTMLButtonElement>("button").forEach((b) =>
+      expect(b.disabled).toBe(true),
+    );
+    expect(
+      el.querySelector('[data-testid="rich-decision-answered"]')?.textContent,
+    ).toContain("Yes, append it");
+    // A second click does nothing.
+    buttons[1].click();
+    await tick();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("fires ondecision with option=null for Other", async () => {
+    const { el, calls } = renderDecision();
+    await tick();
+    el.querySelector<HTMLButtonElement>('[data-testid="rich-decision-other"]')!.click();
+    await tick();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].option).toBeNull();
+  });
+
+  it("omits Other when allowOther is false", async () => {
+    const { el } = renderDecision({ allowOther: false });
+    await tick();
+    expect(el.querySelector('[data-testid="rich-decision-other"]')).toBeNull();
+  });
+
+  it("renders disabled when the questionId is already answered", async () => {
+    const { el, calls } = renderDecision(
+      {},
+      { answeredQuestionIds: new Set(["clarify_abc123"]) },
+    );
+    await tick();
+    el.querySelectorAll<HTMLButtonElement>("button").forEach((b) =>
+      expect(b.disabled).toBe(true),
+    );
+    el.querySelector<HTMLButtonElement>('[data-testid="rich-decision-option"]')!.click();
+    await tick();
+    expect(calls).toHaveLength(0);
+  });
+});

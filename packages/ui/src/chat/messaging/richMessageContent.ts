@@ -157,6 +157,38 @@ export interface CalloutBlock {
   body: string;
 }
 
+/**
+ * One selectable option in a {@link DecisionBlock}. Data-only: `id` and
+ * `label` are sanitized text, `recommended` is a bool the renderer maps to its
+ * OWN "primary" styling (never an agent-supplied style). Clicking an option
+ * does NOT run agent code — it composes a plain-text reply (the `label`) in the
+ * thread; see {@link RichMessageContent}'s `ondecision` callback.
+ */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+/**
+ * An interactive Q&A prompt: a question plus a closed list of options rendered
+ * as buttons in HQ DMs, with an optional free-text "Other". This is the one
+ * interactive block kind; its interactivity is confined to the host `ondecision`
+ * callback (a reply send), not agent-authored markup or handlers. `questionId`
+ * correlates the answer back to the agent's pending clarify; the transport is
+ * still plain text (the reply body is the chosen `label`).
+ */
+export interface DecisionBlock {
+  kind: "decision";
+  question: string;
+  options: DecisionOption[];
+  /** Whether a free-text "Other…" affordance is offered (default true). */
+  allowOther: boolean;
+  /** Opaque id echoed back for correlation; never rendered. */
+  questionId?: string;
+}
+
 export type RichBlock =
   | StatBlock
   | TableBlock
@@ -165,7 +197,8 @@ export type RichBlock =
   | BadgeBlock
   | KeyValueBlock
   | ProgressBlock
-  | CalloutBlock;
+  | CalloutBlock
+  | DecisionBlock;
 
 export interface RichContentModel {
   blocks: RichBlock[];
@@ -181,6 +214,7 @@ export const KNOWN_BLOCK_KINDS = new Set<string>([
   "keyValue",
   "progress",
   "callout",
+  "decision",
 ]);
 
 /** Hard caps so a hostile/oversized payload cannot freeze the render loop. */
@@ -194,6 +228,7 @@ const MAX_TEXT_LEN = 4_000;
 const MAX_CELL_LEN = 500;
 const MAX_LABEL_LEN = 200;
 const MAX_KV_ITEMS = 50;
+const MAX_DECISION_OPTIONS = 10;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -395,6 +430,47 @@ function parseCalloutBlock(raw: Record<string, unknown>): CalloutBlock | null {
   };
 }
 
+function parseDecisionBlock(raw: Record<string, unknown>): DecisionBlock | null {
+  const question = toSafeText(raw.question, MAX_TEXT_LEN);
+  if (!question) return null;
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+  const options: DecisionOption[] = [];
+  let sawRecommended = false;
+  for (const [i, entry] of rawOptions.slice(0, MAX_DECISION_OPTIONS).entries()) {
+    // Tolerate a bare string option (label only).
+    if (typeof entry === "string") {
+      const label = toSafeText(entry, MAX_LABEL_LEN);
+      if (!label) continue;
+      options.push({ id: String(i + 1), label });
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const label = toSafeText(entry.label, MAX_LABEL_LEN);
+    if (!label) continue;
+    const id = toSafeText(entry.id, MAX_LABEL_LEN) || String(i + 1);
+    const description = toSafeText(entry.description, MAX_CELL_LEN);
+    // At most one option is styled recommended (first wins).
+    const recommended = entry.recommended === true && !sawRecommended;
+    if (recommended) sawRecommended = true;
+    options.push({
+      id,
+      label,
+      ...(description ? { description } : {}),
+      ...(recommended ? { recommended: true } : {}),
+    });
+  }
+  if (options.length === 0) return null;
+  const questionId = toSafeText(raw.questionId, MAX_LABEL_LEN);
+  return {
+    kind: "decision",
+    question,
+    options,
+    // Free-text "Other" is offered unless explicitly disabled.
+    allowOther: raw.allowOther !== false,
+    ...(questionId ? { questionId } : {}),
+  };
+}
+
 function parseBlock(raw: unknown): RichBlock | null {
   if (!isRecord(raw)) return null;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
@@ -415,6 +491,8 @@ function parseBlock(raw: unknown): RichBlock | null {
       return parseProgressBlock(raw);
     case "callout":
       return parseCalloutBlock(raw);
+    case "decision":
+      return parseDecisionBlock(raw);
     // `genui` (and any future arbitrary-markup kind) is DESIGN-ONLY and gated.
     // While GENUI_ENABLED is false it is dropped here so nothing renders.
     case "genui":
@@ -545,6 +623,14 @@ function blockToPlainText(block: RichBlock): string {
       return `${block.label ? `${block.label}: ` : ""}${block.value}%`;
     case "callout":
       return `${block.title ? `${block.title} — ` : ""}${block.body}`;
+    case "decision":
+      return [
+        block.question,
+        ...block.options.map(
+          (o, i) =>
+            `  ${i + 1}. ${o.label}${o.recommended ? " (Recommended)" : ""}`,
+        ),
+      ].join("\n");
     default:
       return "";
   }
