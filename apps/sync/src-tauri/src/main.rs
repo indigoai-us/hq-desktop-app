@@ -7,6 +7,7 @@ mod boot_watchdog;
 mod commands;
 mod deep_link;
 mod events;
+mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
 mod recovery;
@@ -278,6 +279,15 @@ fn main() {
     // here in the binary and passed in, so the crate carries no build-env coupling.
     // `env!("SENTRY_DSN")` is "" on dev/PR CI (no release secret) → Sentry no-ops.
     // Hold the guard for the process lifetime.
+    // Raise the open-file soft limit (macOS GUI default 256) before anything
+    // opens sockets, logs, or webviews. See `fd_limit` for the failure mode.
+    match fd_limit::raise_open_file_limit() {
+        Ok(outcome) => util::logfile::log("startup", &format!("open-file limit: {outcome:?}")),
+        Err(error) => {
+            util::logfile::log("startup", &format!("open-file limit raise failed: {error}"))
+        }
+    }
+
     let _guard = hq_telemetry::init_with_identity(
         env!("SENTRY_DSN"),
         env!("APP_VERSION"),

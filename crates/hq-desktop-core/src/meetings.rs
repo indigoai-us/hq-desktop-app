@@ -480,6 +480,39 @@ pub fn dedupe_new(seen: &mut HashSet<String>, candidates: &[&ScheduledBot]) -> V
     out
 }
 
+/// Most unattributed-meeting banners one poll may raise. A fresh process
+/// starts with an empty "seen" set, so the first poll surfaces the whole
+/// backlog; on one dogfood machine that was 32 pop-ups in 2 ms (31 instances
+/// of the same recurring standup). Each pop-up cost the app a renderer handle
+/// set it never got back, and the user cannot act on 32 stacked cards anyway.
+/// The rest stay marked as seen and remain listed in the popover's meetings
+/// view for assignment.
+pub const UNATTRIBUTED_BANNER_CAP_PER_POLL: usize = 3;
+
+/// Keep at most `cap` of `new_ids`, preferring the newest scheduled start.
+/// Ids missing from `bots`, or without a start time, sort as oldest. Output
+/// order is newest first so the last banner shown is the most recent meeting.
+pub fn cap_unattributed_notifications(
+    new_ids: Vec<String>,
+    bots: &[ScheduledBot],
+    cap: usize,
+) -> Vec<String> {
+    if new_ids.len() <= cap {
+        return new_ids;
+    }
+    let start_of = |id: &str| -> Option<String> {
+        bots.iter()
+            .find(|bot| bot.bot_id == id)
+            .and_then(|bot| bot.scheduled_start_time.clone())
+    };
+    let mut ranked: Vec<(Option<String>, String)> =
+        new_ids.into_iter().map(|id| (start_of(&id), id)).collect();
+    // `None < Some(_)`, so unknown starts land at the front of an ascending
+    // sort; reverse for newest-first. Stable, so ties keep input order.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.into_iter().take(cap).map(|(_, id)| id).collect()
+}
+
 /// Build the notification body for a detected meeting.
 pub fn build_notification_body(
     platform_lc: &str,
@@ -980,6 +1013,77 @@ mod tests {
             set_company_error_message(None),
             "Couldn't update the meeting's company."
         );
+    }
+
+    fn unattributed_bot(id: &str, start: Option<&str>) -> ScheduledBot {
+        let mut bot = bot_with_status("scheduled");
+        bot.bot_id = id.into();
+        bot.scheduled_start_time = start.map(str::to_string);
+        bot
+    }
+
+    // A fresh app process starts with an empty "seen" set, so the first
+    // unattributed poll surfaces the whole backlog at once. On one dogfood
+    // machine that was 32 pop-ups in 2 ms (31 instances of the same recurring
+    // standup), and every pop-up cost the app a renderer handle set it never
+    // got back. The poller must cap what it notifies per poll and keep the
+    // newest meetings, which are the ones the user can still act on.
+    #[test]
+    fn cap_unattributed_notifications_passes_small_batches_through_in_order() {
+        let bots = vec![
+            unattributed_bot("bot-a", Some("2026-09-06T10:00:00Z")),
+            unattributed_bot("bot-b", Some("2026-09-06T09:00:00Z")),
+        ];
+        let new_ids = vec!["bot-a".to_string(), "bot-b".to_string()];
+        assert_eq!(
+            cap_unattributed_notifications(new_ids, &bots, 3),
+            vec!["bot-a".to_string(), "bot-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn cap_unattributed_notifications_keeps_only_the_newest_when_a_backlog_surfaces() {
+        let bots: Vec<ScheduledBot> = (1..=32)
+            .map(|n| {
+                unattributed_bot(
+                    &format!("bot-{n:02}"),
+                    Some(&format!("2026-08-{:02}T09:00:00Z", n.min(31))),
+                )
+            })
+            .collect();
+        let new_ids: Vec<String> = bots.iter().map(|b| b.bot_id.clone()).collect();
+        let kept = cap_unattributed_notifications(new_ids, &bots, UNATTRIBUTED_BANNER_CAP_PER_POLL);
+        assert_eq!(kept.len(), UNATTRIBUTED_BANNER_CAP_PER_POLL);
+        // bot-31 and bot-32 share the newest start; bot-30 is next.
+        assert!(kept.contains(&"bot-31".to_string()));
+        assert!(kept.contains(&"bot-32".to_string()));
+        assert!(kept.contains(&"bot-30".to_string()));
+        assert!(!kept.contains(&"bot-01".to_string()));
+    }
+
+    #[test]
+    fn cap_unattributed_notifications_treats_unknown_start_times_as_oldest() {
+        let bots = vec![
+            unattributed_bot("bot-unknown", None),
+            unattributed_bot("bot-old", Some("2026-01-01T00:00:00Z")),
+            unattributed_bot("bot-new", Some("2026-09-06T00:00:00Z")),
+        ];
+        let new_ids = vec![
+            "bot-unknown".to_string(),
+            "bot-old".to_string(),
+            "bot-new".to_string(),
+            "bot-not-in-list".to_string(),
+        ];
+        assert_eq!(
+            cap_unattributed_notifications(new_ids, &bots, 2),
+            vec!["bot-new".to_string(), "bot-old".to_string()]
+        );
+    }
+
+    #[test]
+    fn unattributed_banner_cap_is_small_enough_to_never_flood_a_desktop() {
+        assert!(UNATTRIBUTED_BANNER_CAP_PER_POLL >= 1);
+        assert!(UNATTRIBUTED_BANNER_CAP_PER_POLL <= 5);
     }
 
     #[test]
