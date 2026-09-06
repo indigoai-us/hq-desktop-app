@@ -227,36 +227,29 @@ pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), S
 
     let pos = top_right_position(&app);
 
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+    // Get-or-create is single-flight: the label check and the build are not
+    // atomic, and a burst of shows on a fresh process used to build one window
+    // per call. Every build leaves a renderer handle set behind for the life
+    // of the process, so the window is built once and reused (hidden on
+    // dismiss, never closed).
+    let (window, created) = {
+        let lookup_app = app.clone();
+        let build_app = app.clone();
+        get_or_create_serialized(
+            move || lookup_app.get_webview_window(WINDOW_LABEL),
+            move || build_banner_window(&build_app, pos),
+        )
+        .await?
+    };
+
+    if !created {
         let _ = window.set_position(pos);
         window.show().map_err(|e| e.to_string())?;
         app.emit_to(WINDOW_LABEL, EVENT_BANNER, &payload)
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
-
-    let _window = WebviewWindowBuilder::new(
-        &app,
-        WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("HQ Notification")
-    .inner_size(BANNER_W, BANNER_H)
-    .position(pos.x, pos.y)
-    .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    // Native shadow ON — the contentView is clipped to a rounded rect (below),
-    // so the OS shadow follows the rounded shape. (The card's CSS box-shadow is
-    // clipped away by masksToBounds, so the native one provides the drop.)
-    .shadow(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(false)
-    .visible_on_all_workspaces(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    drop(window);
 
     // (1) Clear the WKWebView's `underPageBackgroundColor`. macOS 12+ WebKit
     // paints it (a system gray) behind a transparent page, filling the square
@@ -698,9 +691,64 @@ fn reclip_banner_corners(app: &AppHandle) {
     });
 }
 
+/// Serialize a get-or-create of a keyed resource (the banner window). Callers
+/// that find the resource already present return `(resource, false)`; the one
+/// caller that builds it returns `(resource, true)` and owns any post-build
+/// setup. A failed build releases the lock so the next caller can retry.
+async fn get_or_create_serialized<T, L, C>(lookup: L, create: C) -> Result<(T, bool), String>
+where
+    L: Fn() -> Option<T>,
+    C: FnOnce() -> Result<T, String>,
+{
+    if let Some(existing) = lookup() {
+        return Ok((existing, false));
+    }
+    let _guard = BANNER_WINDOW_CREATE.lock().await;
+    if let Some(existing) = lookup() {
+        return Ok((existing, false));
+    }
+    let built = create()?;
+    Ok((built, true))
+}
+
+/// Guards banner window creation so concurrent shows cannot each build one.
+static BANNER_WINDOW_CREATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn build_banner_window(
+    app: &AppHandle,
+    pos: tauri::LogicalPosition<f64>,
+) -> Result<tauri::WebviewWindow, String> {
+    WebviewWindowBuilder::new(
+        app,
+        WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("HQ Notification")
+    .inner_size(BANNER_W, BANNER_H)
+    .position(pos.x, pos.y)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    // Native shadow ON — the contentView is clipped to a rounded rect (below),
+    // so the OS shadow follows the rounded shape. (The card's CSS box-shadow is
+    // clipped away by masksToBounds, so the native one provides the drop.)
+    .shadow(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible_on_all_workspaces(true)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())
+}
+
+/// Hide, never close: closing destroys the webview but its renderer handle
+/// set (Metal shader cache, netsrc socket, metallibs) is never returned to the
+/// process, and the next show would build a fresh one. Hidden, the window is
+/// reused by `show_banner` for the life of the process.
 fn dismiss_banner_inner(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.close();
+        let _ = window.hide();
     }
 }
 
@@ -811,6 +859,86 @@ mod tests {
             ACTION_ACK_TIMEOUT,
             "ordinary actions retain the short bounded timeout"
         );
+    }
+
+    // Every banner show used to race its own window creation: `show_banner`
+    // checks for the `dm-banner` window and builds one when it is missing, and
+    // the check and the build were not atomic. When the meeting poller fired
+    // 32 shows back to back on a fresh process, each one found no window and
+    // built its own. Every build left a renderer handle set (Metal shader
+    // cache, netsrc control socket, metallibs) behind for the life of the
+    // process; 28 of them pushed the app past macOS's 256-handle soft limit
+    // and every child spawn failed with EMFILE. Creation must be single-flight.
+    #[tokio::test]
+    async fn concurrent_shows_create_the_banner_window_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let existing: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+        let creations = Arc::new(AtomicUsize::new(0));
+
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let existing = Arc::clone(&existing);
+            let creations = Arc::clone(&creations);
+            tasks.push(tokio::spawn(async move {
+                let lookup = {
+                    let existing = Arc::clone(&existing);
+                    move || *existing.lock().unwrap()
+                };
+                let create = {
+                    let existing = Arc::clone(&existing);
+                    let creations = Arc::clone(&creations);
+                    move || {
+                        creations.fetch_add(1, Ordering::SeqCst);
+                        // Simulate the window build: the label only becomes
+                        // visible to `lookup` once the build finishes.
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        *existing.lock().unwrap() = Some(7);
+                        Ok::<u32, String>(7)
+                    }
+                };
+                get_or_create_serialized(lookup, create).await
+            }));
+        }
+
+        let mut created_flags = 0;
+        for task in tasks {
+            let (window, created) = task.await.expect("task").expect("get or create");
+            assert_eq!(window, 7);
+            if created {
+                created_flags += 1;
+            }
+        }
+        assert_eq!(creations.load(Ordering::SeqCst), 1, "window built once");
+        assert_eq!(
+            created_flags, 1,
+            "exactly one caller owns post-build styling"
+        );
+    }
+
+    #[tokio::test]
+    async fn serialized_creation_surfaces_build_errors_and_lets_the_next_caller_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let lookup = || None::<u32>;
+        let failing = || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err::<u32, String>("boom".into())
+        };
+        assert_eq!(
+            get_or_create_serialized(lookup, failing).await,
+            Err("boom".to_string())
+        );
+        let succeeding = || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<u32, String>(1)
+        };
+        assert_eq!(
+            get_or_create_serialized(lookup, succeeding).await,
+            Ok((1, true))
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]
