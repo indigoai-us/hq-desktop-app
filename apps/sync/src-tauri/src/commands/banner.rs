@@ -869,18 +869,100 @@ mod tests {
     // cache, netsrc control socket, metallibs) behind for the life of the
     // process; 28 of them pushed the app past macOS's 256-handle soft limit
     // and every child spawn failed with EMFILE. Creation must be single-flight.
-    #[tokio::test]
-    async fn concurrent_shows_create_the_banner_window_exactly_once() {
+    //
+    // These tests need a MULTI-THREAD runtime. `#[tokio::test]` defaults to the
+    // current-thread flavor, where a `create` that blocks its thread simply
+    // runs to completion before any other task is polled — so every caller
+    // after the first observes the finished window and the test passes even
+    // with the lock removed. It proves nothing about concurrent creation. The
+    // deterministic test below pins the actual property: while one build is in
+    // flight, a second caller must be unable to make progress.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_second_show_cannot_build_while_a_build_is_in_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let existing: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+        let creations = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let spawn_caller = |window: u32, hooks: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>| {
+            let existing = Arc::clone(&existing);
+            let creations = Arc::clone(&creations);
+            tokio::spawn(async move {
+                let lookup = {
+                    let existing = Arc::clone(&existing);
+                    move || *existing.lock().unwrap()
+                };
+                let create = {
+                    let existing = Arc::clone(&existing);
+                    let creations = Arc::clone(&creations);
+                    move || {
+                        creations.fetch_add(1, Ordering::SeqCst);
+                        if let Some((entered, release)) = hooks {
+                            // Announce that the build started, then stay inside
+                            // it — the window is NOT yet visible to `lookup`.
+                            entered.send(()).expect("signal build start");
+                            release.recv().expect("wait for release");
+                        }
+                        *existing.lock().unwrap() = Some(window);
+                        Ok::<u32, String>(window)
+                    }
+                };
+                get_or_create_serialized(lookup, create).await
+            })
+        };
+
+        let first = spawn_caller(7, Some((entered_tx, release_rx)));
+        entered_rx.recv().expect("first build starts");
+
+        // The first build is parked inside `create` with nothing published.
+        // A second caller must block on the guard rather than build its own.
+        let mut second = spawn_caller(9, None);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), &mut second)
+                .await
+                .is_err(),
+            "second caller proceeded while a build was in flight — it would \
+             have created a duplicate window and leaked its renderer handles"
+        );
+
+        release_tx.send(()).expect("release first build");
+        let (first_window, first_created) = first.await.expect("first task").expect("first build");
+        let (second_window, second_created) =
+            second.await.expect("second task").expect("second lookup");
+
+        assert_eq!((first_window, first_created), (7, true));
+        assert_eq!(
+            (second_window, second_created),
+            (7, false),
+            "second caller must reuse the window the first one built"
+        );
+        assert_eq!(creations.load(Ordering::SeqCst), 1, "window built once");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_burst_of_shows_creates_the_banner_window_exactly_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
 
         let existing: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
         let creations = Arc::new(AtomicUsize::new(0));
+        // Release every caller at the same instant, the way the meeting poller
+        // did when it raised 32 banners inside two milliseconds. The barrier is
+        // the async one on purpose: `std::sync::Barrier` parks the calling
+        // thread, so 32 tasks waiting on it would deadlock a runtime with
+        // fewer than 32 workers instead of racing.
+        let gate = Arc::new(tokio::sync::Barrier::new(32));
 
         let mut tasks = Vec::new();
         for _ in 0..32 {
             let existing = Arc::clone(&existing);
             let creations = Arc::clone(&creations);
+            let gate = Arc::clone(&gate);
             tasks.push(tokio::spawn(async move {
                 let lookup = {
                     let existing = Arc::clone(&existing);
@@ -891,13 +973,14 @@ mod tests {
                     let creations = Arc::clone(&creations);
                     move || {
                         creations.fetch_add(1, Ordering::SeqCst);
-                        // Simulate the window build: the label only becomes
-                        // visible to `lookup` once the build finishes.
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        // A real window build is slow and, crucially, the label
+                        // only becomes visible to `lookup` once it finishes.
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                         *existing.lock().unwrap() = Some(7);
                         Ok::<u32, String>(7)
                     }
                 };
+                gate.wait().await;
                 get_or_create_serialized(lookup, create).await
             }));
         }
