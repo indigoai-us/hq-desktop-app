@@ -368,7 +368,14 @@ pub(crate) fn output_with_timeout(
     let child_stdout = retry_transient_io(|| stdout.try_clone()).map_err(harness_io)?;
     let child_stderr = retry_transient_io(|| stderr.try_clone()).map_err(harness_io)?;
     cmd.stdout(Stdio::from(child_stdout))
-        .stderr(Stdio::from(child_stderr));
+        .stderr(Stdio::from(child_stderr))
+        // Give the child a null stdin. A version probe never feeds input, and an
+        // inherited stdin lets a name-collision `hq` that reads stdin (the common
+        // shape for a foreign jq-like `hq`) block for the full deadline and report
+        // the opaque `timed_out` (HQ-DESKTOP-3P) instead of a classifiable
+        // outcome. The real CLI and `npm root -g` never read stdin, so their
+        // behaviour is unchanged.
+        .stdin(Stdio::null());
     VersionProbeContainment::prepare(cmd);
     let mut child = retry_transient_io(|| cmd.spawn())?;
     let mut containment = match VersionProbeContainment::establish(&child) {
@@ -1251,6 +1258,23 @@ fn probe_local_version_after_binary(
 
     let (local, hq_version, managed_runtime, interpreter_recovery) =
         hq_version_with_recovery(hq, path, managed);
+    // Make `hq_installed` truthful for the definitively-foreign case. A resolved
+    // `hq` we could read NO version from (npm-root and `hq --version` both failed)
+    // AND whose backing is a DEFINITIVE package-absent OUTSIDE every managed root
+    // is not an hq-cli install — it is an unrelated program named `hq`
+    // (HQ-DESKTOP-3P). Reporting it as installed both fires the false
+    // unreadable-version warning on every launch and BLOCKS the installer
+    // (`cli_install_needed(None, latest, true)` is false), so the machine can
+    // never converge. Flipping it to false silences the false alarm and lets the
+    // already-shipped installer put the real CLI on the machine, after which the
+    // resolver's backed preference selects HQ's own copy. Every OTHER case keeps
+    // reporting: an INDETERMINATE read (`HqBacking::NotProbed` — an unreadable or
+    // unparseable manifest, a canonicalize failure, an AV/permission hold) and an
+    // `UnbackedManaged` orphan both stay `hq_installed = true`, and a version read
+    // via the npm-root fallback (which returned above) keeps it true too — the
+    // flip is gated on `local.is_none()`.
+    let hq_installed =
+        hq_installed && !(local.is_none() && hq_backing == HqBacking::UnbackedForeign);
     LocalVersionProbeResult {
         local,
         hq_installed,
@@ -12636,7 +12660,12 @@ mod tests {
         let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
+        // HQ-DESKTOP-3P: a definitively-unbacked FOREIGN hq (PackageNotFound,
+        // outside every managed root) whose version cannot be read is not an
+        // install — it is silent-and-installable, not a forever-report. The three
+        // probe outcomes still stay distinct.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
         assert_eq!(
             result.probes.binary_anchor,
             VersionProbeOutcome::PackageNotFound
@@ -12647,7 +12676,8 @@ mod tests {
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix,
         );
-        assert!(should_report_unreadable_version(&result));
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     #[test]
@@ -12787,20 +12817,27 @@ mod tests {
             result.probes.hq_version,
             VersionProbeOutcome::InterpreterNotFound
         );
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this pnpm shim is definitively unbacked and foreign, so it
+        // is silent-and-installable — the still-reporting interpreter-gap case is
+        // unprovisioned_managed_node_keeps_reporting_and_names_the_gap.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     // ---- HQ-DESKTOP-3P: managed-Node interpreter recovery ------------------
 
     /// HQ-DESKTOP-3P reproduction: a resolved `hq` shim in an npm-prefix `bin`
-    /// dir whose `env node` interpreter is not on the child PATH, with no npm
-    /// and no managed Node, produces the EXACT production quadruple and reports.
-    /// Injecting `managed = None` keeps this identical to the base commit's
-    /// behaviour, so it anchors the byte-identical field set the recovery test
-    /// then flips.
+    /// dir whose `env node` interpreter is not on the child PATH, with no npm and
+    /// no managed Node, produces the EXACT production quadruple — and, because the
+    /// shim is definitively unbacked and FOREIGN (PackageNotFound outside every
+    /// managed root), the machine now CONVERGES VIA INSTALL rather than reporting
+    /// the same unreadable-version warning forever. The four probe fields are the
+    /// byte-identical production set (`managed = None` matches the base commit);
+    /// only the reporting / `hq_installed` decision is the corrected one.
     #[test]
     #[cfg(unix)]
-    fn unreadable_version_reproduces_the_production_quadruple_and_reports() {
+    fn unreadable_version_reproduces_the_production_quadruple_and_converges_via_install() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bin = tmp.path().join("bin");
         let hq = bin.join("hq");
@@ -12811,7 +12848,8 @@ mod tests {
             probe_local_version_with_managed(Some(&hq), ResolvedProgramKind::Exe, None, None, "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
         assert_eq!(
             result.probes.binary_anchor,
             VersionProbeOutcome::PackageNotFound
@@ -12826,7 +12864,8 @@ mod tests {
             BinaryAnchorShape::NpmPrefix
         );
         assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
-        assert!(should_report_unreadable_version(&result));
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     /// HQ-DESKTOP-3P fix: with HQ's managed Node present, the same otherwise
@@ -12925,6 +12964,11 @@ mod tests {
         let hq = bin.join("hq");
         std::fs::create_dir_all(&bin).unwrap();
         write_executable(&hq, "#!/usr/bin/env node\n");
+        // HQ-DESKTOP-3P: a manifest PRESENT beside the shim but unparseable keeps
+        // the backing INDETERMINATE (NotProbed) — a real install we cannot prove
+        // absent still reports; only a definitively-foreign shim is silent-and-
+        // installable (see definitively_unbacked_foreign_hq_is_not_installed_and_converges).
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let managed = crate::toolchain::ManagedRuntime::NotProvisioned;
         let result = probe_local_version_with_managed(
@@ -12986,7 +13030,12 @@ mod tests {
             result.probes.interpreter_recovery,
             InterpreterRecovery::StillUnreadable
         );
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this shim is definitively unbacked and foreign, so once
+        // recovery cannot read a version the machine converges via install rather
+        // than reporting forever.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     /// A resolved-but-absent program (`SpawnProgramMissing`) routes through the
@@ -13082,6 +13131,10 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         // Exits nonzero for a real reason — not a missing interpreter.
         write_executable(&hq, "#!/bin/sh\nexit 3\n");
+        // HQ-DESKTOP-3P: an unparseable manifest beside the shim keeps the backing
+        // INDETERMINATE (NotProbed) — a broken install we cannot prove absent still
+        // reports; only a definitively-foreign shim is silent-and-installable.
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let managed_bin = tmp.path().join("managed/node/bin");
         std::fs::create_dir_all(&managed_bin).unwrap();
@@ -13160,7 +13213,19 @@ mod tests {
             without_child_path.probes.hq_version,
             VersionProbeOutcome::InterpreterNotFound
         );
-        assert!(should_report_unreadable_version(&without_child_path));
+        // HQ-DESKTOP-3P: with no child PATH the foreign shim's interpreter is
+        // unreachable AND the shim is definitively unbacked, so the machine is
+        // silent-and-installable; the child-PATH half below recovers a real version.
+        assert_eq!(
+            without_child_path.probes.hq_backing,
+            HqBacking::UnbackedForeign
+        );
+        assert!(!should_report_unreadable_version(&without_child_path));
+        assert!(cli_install_needed(
+            None,
+            "5.103.30",
+            without_child_path.hq_installed
+        ));
 
         let with_child_path = probe_local_version(
             Some(&hq),
@@ -14101,28 +14166,46 @@ mod tests {
         }
     }
 
-    /// **The anti-silencing pin.** A resolved-but-non-spawnable `hq` is a
-    /// broken CLI, not an absent one. Dropping such a resolution back to the
-    /// bare name would flip `hq_installed` to false and silence the event, the
-    /// banner, and the regression watermark while the user's CLI stays broken.
+    /// **The anti-silencing pin, re-anchored (HQ-DESKTOP-3P).** A resolved `hq`
+    /// whose backing is INDETERMINATE — a manifest that is PRESENT but could not be
+    /// read or parsed (a permission/AV hold), NOT a definitive absence — is a CLI
+    /// we cannot prove is absent. It stays `hq_installed` and keeps reporting: a
+    /// transient blip must never silence the event, the banner, and the regression
+    /// watermark while the user's CLI may be fine. The definitively-unbacked
+    /// foreign case is the sharper, OPPOSITE contract, pinned by
+    /// `definitively_unbacked_foreign_hq_is_not_installed_and_converges` below.
     #[test]
-    fn marked_non_spawnable_resolution_still_reports_and_carries_its_kind() {
+    fn indeterminate_backing_resolution_still_reports_and_carries_its_kind() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bin = tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        // A real file the loader cannot execute — the cross-platform stand-in
-        // for the extensionless POSIX shim resolved on the field host.
+        // A real file the loader cannot execute — the cross-platform stand-in for
+        // the extensionless POSIX shim resolved on the field host.
         let hq = bin.join("hq");
         std::fs::write(&hq, "#!/usr/bin/env sh\n").unwrap();
+        // A package.json PRESENT beside it but unparseable: the binary anchor is
+        // INDETERMINATE, never a definitive absence, so the resolution keeps
+        // reporting instead of being treated as a foreign program.
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let result =
             probe_local_version_with_kind(Some(&hq), ResolvedProgramKind::Extensionless, None, "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed, "a broken CLI is still installed");
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::ManifestReadOrParseFailed,
+            "an unparseable manifest is indeterminate, not a definitive absence"
+        );
+        assert_eq!(
+            result.probes.hq_backing,
+            HqBacking::NotProbed,
+            "an indeterminate read never names an unbacked sub-case"
+        );
+        assert!(result.hq_installed, "a CLI we cannot prove absent is installed");
         assert!(
             should_report_unreadable_version(&result),
-            "silencing an installed-but-unusable CLI is prohibited"
+            "silencing a CLI we cannot prove is absent is prohibited"
         );
         assert_eq!(
             result.probes.resolved_program_kind,
@@ -14132,6 +14215,53 @@ mod tests {
         assert_eq!(
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix
+        );
+    }
+
+    /// The sharper contract (HQ-DESKTOP-3P): a resolved `hq` that is DEFINITIVELY
+    /// unbacked and foreign — a definitive `package_not_found` from a path OUTSIDE
+    /// every managed-toolchain root — whose version also cannot be read is not an
+    /// hq-cli install at all; it is an unrelated program named `hq`. Reporting it
+    /// as installed would fire the false unreadable-version warning forever AND
+    /// block the installer. Instead `hq_installed` is false, the report is silent,
+    /// and `cli_install_needed` becomes true so the machine converges. All three
+    /// assertions are RED on the base commit, where `hq_installed = hq.is_some()`.
+    #[test]
+    fn definitively_unbacked_foreign_hq_is_not_installed_and_converges() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // An `hq` with NO hq-cli manifest anywhere, at a path outside every
+        // managed-toolchain root → binary anchor PackageNotFound, backing
+        // UnbackedForeign.
+        let hq = bin.join("hq");
+        std::fs::write(&hq, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = probe_local_version_with_kind(Some(&hq), ResolvedProgramKind::Exe, None, "");
+
+        assert_eq!(result.local, None);
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound,
+            "the foreign hq has no hq-cli package"
+        );
+        assert_eq!(
+            result.probes.hq_backing,
+            HqBacking::UnbackedForeign,
+            "a definitive absence outside every managed root is foreign"
+        );
+        // The three field assertions that run RED on the base commit:
+        assert!(
+            !result.hq_installed,
+            "a definitively-unbacked foreign hq is not an install"
+        );
+        assert!(
+            !should_report_unreadable_version(&result),
+            "the foreign unbacked case converges via install, not a forever-report"
+        );
+        assert!(
+            cli_install_needed(None, "5.103.30", result.hq_installed),
+            "with hq_installed false the installer runs and the machine converges"
         );
     }
 
@@ -14184,8 +14314,15 @@ mod tests {
         let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this field fixture is a definitively-unbacked FOREIGN `hq`
+        // (PackageNotFound from a path outside every managed root) whose version
+        // cannot be read. Under the truthful-`hq_installed` contract it is NOT an
+        // install — the machine converges via the installer instead of reporting
+        // the same unreadable-version warning forever.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
         // The three field-matching outcomes are unchanged…
         assert_eq!(
             result.probes.binary_anchor,

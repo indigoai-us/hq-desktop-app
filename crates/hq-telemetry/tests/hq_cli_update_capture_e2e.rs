@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, decide_post_install, non_convergent_episode_key,
+    apply_post_install_effects, cli_install_needed, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
     ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
@@ -1320,11 +1320,14 @@ fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
     }
 }
 
-/// The anti-silencing counterpart, end to end: a marked-non-spawnable
+/// The anti-silencing counterpart, end to end: a marked, still-installed
 /// resolution with every probe failed must still emit EXACTLY ONE
-/// version-unreadable event. The signal is what tells the team a user's CLI is
-/// installed but unusable; dropping the resolution to "not installed" would
-/// make this zero.
+/// version-unreadable event. Under the truthful-`hq_installed` contract
+/// (HQ-DESKTOP-3P) the still-reporting non-spawnable population is HQ's OWN
+/// orphaned managed-toolchain shim (`UnbackedManaged`) — an install we own whose
+/// package tree is gone but which we must keep surfacing. Only a definitively-
+/// FOREIGN shim is dropped to not-installed and converges silently; dropping the
+/// managed orphan too would make this zero.
 #[test]
 fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
     let probes = LocalVersionProbeDiagnostics {
@@ -1335,8 +1338,8 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
         resolved_program_kind: ResolvedProgramKind::Extensionless,
         managed_runtime: ManagedRuntimeState::NotProbed,
         interpreter_recovery: InterpreterRecovery::NotNeeded,
-        resolution_source: ResolutionSource::SystemPrefix,
-        hq_backing: HqBacking::UnbackedForeign,
+        resolution_source: ResolutionSource::ManagedToolchain,
+        hq_backing: HqBacking::UnbackedManaged,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -1344,7 +1347,7 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
     assert_eq!(
         events.len(),
         1,
-        "an installed-but-unusable CLI must keep producing its warning"
+        "an installed-but-unusable CLI (HQ's own orphaned shim) must keep producing its warning"
     );
     assert_eq!(events[0].level, sentry::Level::Warning);
     assert_eq!(
@@ -1353,13 +1356,20 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
     );
 }
 
-/// HQ-DESKTOP-3P: once the resolver selects the BACKED candidate the version
-/// reads, so `should_report_unreadable_version` is false and the self-heal is
-/// SILENT — zero events. The foreign-unbacked counterpart still reports exactly
-/// one honest event that NAMES its sub-case, so a genuinely broken third-party
-/// CLI stays visible.
+/// HQ-DESKTOP-3P, end to end on the reporting decision: the two halves of the
+/// backing vocabulary now stay coherent with the truthful-`hq_installed` contract.
+///
+/// - A BACKED, readable selection is SILENT (nothing to report).
+/// - A DEFINITIVELY-foreign, unreadable `hq` is ALSO silent — it is not an install
+///   at all, so `should_report_unreadable_version` is false and the machine
+///   converges through `cli_install_needed` instead of reporting the same warning
+///   forever.
+/// - An INDETERMINATE backing (a real install we cannot prove absent) still emits
+///   EXACTLY ONE honest event that NAMES its sub-case and keeps Sentry's default
+///   grouping, so a genuinely broken install stays visible.
 #[test]
-fn backed_selection_is_silent_and_foreign_unbacked_reports_once_named() {
+fn backed_and_foreign_are_silent_while_indeterminate_reports_once_named() {
+    // 1. Backed + readable → silent.
     let backed = LocalVersionProbeResult {
         local: Some("5.103.30".to_string()),
         hq_installed: true,
@@ -1386,9 +1396,10 @@ fn backed_selection_is_silent_and_foreign_unbacked_reports_once_named() {
         "a backed, readable selection must emit nothing"
     );
 
+    // 2. Definitively-foreign + unreadable → NOT an install → silent + installable.
     let foreign = LocalVersionProbeResult {
         local: None,
-        hq_installed: true,
+        hq_installed: false,
         probes: LocalVersionProbeDiagnostics {
             binary_anchor: VersionProbeOutcome::PackageNotFound,
             npm_root: VersionProbeOutcome::PackageNotFound,
@@ -1401,20 +1412,55 @@ fn backed_selection_is_silent_and_foreign_unbacked_reports_once_named() {
             hq_backing: HqBacking::UnbackedForeign,
         },
     };
-    assert!(should_report_unreadable_version(&foreign));
-    let events = captured_events(|| report_unreadable_version("5.103.30", &foreign.probes));
+    assert!(
+        !should_report_unreadable_version(&foreign),
+        "a definitively-foreign unbacked hq is not an install → silent"
+    );
+    assert!(
+        cli_install_needed(None, "5.103.30", foreign.hq_installed),
+        "instead it converges via the installer"
+    );
+    let events = captured_events(|| {
+        if should_report_unreadable_version(&foreign) {
+            report_unreadable_version("5.103.30", &foreign.probes);
+        }
+    });
+    assert!(
+        events.is_empty(),
+        "a definitively-foreign, unreadable hq emits zero events"
+    );
+
+    // 3. Indeterminate backing (a real install we cannot prove absent) → still
+    //    reports EXACTLY ONE event that names its sub-case.
+    let indeterminate = LocalVersionProbeResult {
+        local: None,
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::ManifestReadOrParseFailed,
+            npm_root: VersionProbeOutcome::PackageNotFound,
+            hq_version: VersionProbeOutcome::NonzeroExit,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::Exe,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::SettingsPath,
+            hq_backing: HqBacking::NotProbed,
+        },
+    };
+    assert!(should_report_unreadable_version(&indeterminate));
+    let events = captured_events(|| report_unreadable_version("5.103.30", &indeterminate.probes));
     assert_eq!(
         events.len(),
         1,
-        "an installed-but-unreadable CLI still reports"
+        "an install we cannot prove absent still reports"
     );
     let Some(Value::Object(recorded)) = events[0].extra.get("hq_cli_version_probes") else {
         panic!("probe diagnostics must be an object: {:?}", events[0].extra);
     };
     assert_eq!(
         recorded.get("hq_backing"),
-        Some(&Value::String("unbacked_foreign".into())),
-        "the honest event names the foreign sub-case"
+        Some(&Value::String("not_probed".into())),
+        "the honest event names the indeterminate sub-case"
     );
     // Additive field, unchanged grouping: the cluster does not split.
     assert_eq!(fingerprint(&events[0]), ["{{ default }}"]);

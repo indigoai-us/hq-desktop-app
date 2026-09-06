@@ -73,3 +73,50 @@ describe('hq resolver prefers a backed install over an orphan or foreign hq (HQ-
     expect(cli).toContain('result.local.is_none() && result.hq_installed');
   });
 });
+
+/**
+ * HQ-DESKTOP-3P (regression reopen) — the macOS/Unix `hq` resolver now sweeps
+ * every lane in ONE cross-lane list with the SAME tiered backed-candidate
+ * preference the Windows arm shipped, and the version probe's `hq_installed` is
+ * truthful for a definitively-foreign, unreadable `hq`. These source-contract
+ * assertions lock that wiring so a later edit cannot silently reintroduce the
+ * Unix settings-only lane split or re-inflate `hq_installed`.
+ */
+describe('the Unix hq resolver sweeps one cross-lane list with a backed preference (HQ-DESKTOP-3P)', () => {
+  const paths = readRepoFile('../../crates/hq-desktop-core/src/paths.rs');
+  const cli = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+  it('sweeps the Unix hq lanes as ONE cross-lane list, not a settings-only loop', () => {
+    expect(paths).toContain('select_hq_program_in_dirs(');
+    expect(paths).toContain('&unix_hq_search_dirs(home_dir().as_deref()),');
+    // The per-candidate settings-only loop that returned on any hit must be gone:
+    // its distinctive `is_executable_file(&candidate)` call on a single joined
+    // path is replaced by `&is_executable_file` passed to the selector.
+    expect(paths).not.toContain('is_executable_file(&candidate)');
+  });
+
+  it('builds the Unix search dirs as one ordered, fixture-injectable list', () => {
+    expect(paths).toContain('fn unix_hq_search_dirs(home: Option<&Path>) -> Vec<PathBuf> {');
+    expect(paths).toContain('fn unix_hq_search_dirs_in(');
+  });
+
+  it('injects the backing oracle and the executable-file predicate on Unix', () => {
+    // The oracle is injected (not reimplemented), and the sweep uses the same
+    // executable-file contract a shell honours.
+    expect(paths).toContain('&is_executable_file,');
+    expect(paths).toContain('crate::hq_cli_update::hq_cli_backing(path)');
+  });
+
+  it('derives hq_installed from the backing: definitively-foreign + unreadable is not installed', () => {
+    // The honesty lives in the INPUT to should_report_unreadable_version, whose
+    // body is untouched (asserted above). A foreign, unreadable hq flips
+    // hq_installed false so the installer converges the machine.
+    expect(cli).toContain(
+      'hq_installed && !(local.is_none() && hq_backing == HqBacking::UnbackedForeign)',
+    );
+  });
+
+  it('gives the version probe a null stdin so a foreign hq cannot block on stdin', () => {
+    expect(cli).toContain('.stdin(Stdio::null())');
+  });
+});
