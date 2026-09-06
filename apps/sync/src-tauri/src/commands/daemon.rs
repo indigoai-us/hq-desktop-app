@@ -33,7 +33,9 @@ use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
+    RunnerReportRequest,
 };
+use hq_desktop_core::runner_diagnostic_report::runner_fatal_axes;
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::{
     classify_runner_stack_input, RunnerErrorCause, RunnerErrorSite,
@@ -1004,9 +1006,21 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         ));
     }
 
+    // Ask Node for a crash-surviving fatal diagnostic report for THIS generation.
+    // The app owns the per-generation report directory (under the system temp dir,
+    // OUTSIDE the synced HQ tree so a crash report is never uploaded); the deferred
+    // fault reader reads + deletes it at exit. `None` when the directory could not
+    // be created, in which case no report is requested for this generation.
+    let runner_report_dir =
+        crate::commands::runner_report::runner_report_dir_for(daemon_generation);
+    let runner_report_request = hq_desktop_core::daemon::runner_report_request(
+        std::env::var("NODE_OPTIONS").ok().as_deref(),
+        runner_report_dir.is_some(),
+    );
     let spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
         &hq_folder_path,
         &runner_spawn_target,
+        runner_report_dir.as_deref().and_then(std::path::Path::to_str),
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
@@ -1294,6 +1308,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         exception_code,
                                         gen_start_ms: fault_window_start,
                                         gen_end_ms: fault_window_end,
+                                        report_dir: runner_report_dir.clone(),
+                                        report_request: runner_report_request,
                                     });
                             }
                             None => {
@@ -1427,6 +1443,11 @@ struct WatcherFaultDeferredRead {
     exception_code: u32,
     gen_start_ms: i64,
     gen_end_ms: i64,
+    /// The per-generation Node diagnostic-report directory to read the
+    /// crash-surviving fatal report from, and whether one was requested at spawn.
+    /// The deferred worker reads + deletes it OFF the terminal exit callback.
+    report_dir: Option<std::path::PathBuf>,
+    report_request: RunnerReportRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -2612,8 +2633,10 @@ pub fn flush_pending_watcher_fault_captures(reason: &str) -> usize {
     let flushed = flush_pending_watcher_fault_captures_with(|payload| {
         // The read never completed; keep the seeded `deferred` provenance and
         // stamp WHY it is being sent now (which teardown seam) so the event is
-        // self-explaining.
-        send_deferred_watcher_fault_capture(payload, None, reason);
+        // self-explaining. `report: None` — a teardown flush may run inside a
+        // Windows window procedure, so it does NO filesystem work; the report axes
+        // seeded at capture-build stand.
+        send_deferred_watcher_fault_capture(payload, None, None, reason);
     });
     if flushed > 0 {
         log(
@@ -2667,12 +2690,23 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
         Ok(id) => id,
         Err(payload) => {
             // Teardown latch already armed: emit now with honest `deferred`
-            // provenance instead of deferring into an abandoned registry.
-            send_deferred_watcher_fault_capture(payload, None, "shutdown_immediate");
+            // provenance instead of deferring into an abandoned registry. `report:
+            // None` — this path runs ON the terminal exit callback, which must do NO
+            // filesystem work; the report axes seeded at capture-build stand.
+            send_deferred_watcher_fault_capture(payload, None, None, "shutdown_immediate");
             return;
         }
     };
     let _supervisor = std::thread::spawn(move || {
+        // Read the crash-surviving Node diagnostic report OFF the terminal exit
+        // callback (we are on the supervisor thread), under the pure reader's own
+        // bounded filesystem work. Done BEFORE the inner WER reader takes ownership
+        // of `read`, and independently of it — so the report result survives even if
+        // the timeout-less wevtapi read below wedges.
+        let report = crate::commands::runner_report::read_runner_diagnostic_report(
+            read.report_dir.as_deref(),
+            read.report_request,
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         // Inner reader — may block in a timeout-less wevtapi call if the Event Log
         // service stalls. Abandoned if it outlasts the supervisor bound below.
@@ -2701,7 +2735,7 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
             } else {
                 "read_supervisor_timeout"
             };
-            send_deferred_watcher_fault_capture(payload, outcome, resolution);
+            send_deferred_watcher_fault_capture(payload, outcome, Some(report), resolution);
         }
     });
 }
@@ -2716,6 +2750,7 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
 fn finalize_watcher_fault_payload(
     mut payload: DeferredWatcherFaultCapture,
     outcome: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome>,
+    report: Option<crate::commands::runner_report::RunnerReportRead>,
     resolution: &str,
 ) -> DeferredWatcherFaultCapture {
     if let Some(outcome) = outcome {
@@ -2746,6 +2781,40 @@ fn finalize_watcher_fault_payload(
             outcome.fault_offset.map(|offset| offset.to_string()),
         );
     }
+
+    // Fill the reason the Windows fail-fast erased, from the crash-surviving Node
+    // diagnostic report. A report-derived class NEVER overrides a stderr-named one
+    // (the shared `runner_fatal_axes` guarantees it); it only names the blank stderr
+    // left. When the read did not run (a shutdown-immediate emit passes `None`), the
+    // axes seeded at capture-build stand.
+    if let Some(report) = report {
+        let stderr_class =
+            payload_tag_value(&payload.tags, "runner_fatal_class").unwrap_or("none");
+        let stderr_shape =
+            payload_tag_value(&payload.tags, "runner_stack_shape").unwrap_or("all_redacted");
+        let stderr_signature =
+            payload_tag_value(&payload.tags, "runner_stack_signature").unwrap_or("unknown");
+        let axes = runner_fatal_axes(
+            stderr_class,
+            stderr_shape,
+            stderr_signature,
+            report.read_token,
+            report.attribution.as_ref(),
+        );
+        set_payload_tag(&mut payload.tags, "runner_fatal_class", axes.fatal_class);
+        set_payload_tag(&mut payload.tags, "runner_stack_shape", axes.stack_shape);
+        set_payload_tag(&mut payload.tags, "runner_stack_signature", axes.stack_signature);
+        set_payload_tag(
+            &mut payload.tags,
+            "runner_fatal_source",
+            axes.fatal_source.to_string(),
+        );
+        set_payload_tag(
+            &mut payload.tags,
+            "runner_report_read",
+            axes.report_read.to_string(),
+        );
+    }
     let waited_ms = payload
         .deferred_at
         .elapsed()
@@ -2765,9 +2834,10 @@ fn finalize_watcher_fault_payload(
 fn send_deferred_watcher_fault_capture(
     payload: DeferredWatcherFaultCapture,
     outcome: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome>,
+    report: Option<crate::commands::runner_report::RunnerReportRead>,
     resolution: &str,
 ) {
-    let payload = finalize_watcher_fault_payload(payload, outcome, resolution);
+    let payload = finalize_watcher_fault_payload(payload, outcome, report, resolution);
     let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
     let tags: Vec<(&str, String)> = payload
         .tags
@@ -2781,6 +2851,13 @@ fn send_deferred_watcher_fault_capture(
         .collect();
     let mut effects = ProductionWatcherProcessEffects;
     effects.capture(&payload.message, &fingerprint, &tags, &extras);
+}
+
+/// Read one tag's current value from a held-back payload's tag list.
+fn payload_tag_value<'a>(tags: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    tags.iter()
+        .find(|(existing, _)| existing == key)
+        .map(|(_, value)| value.as_str())
 }
 
 /// Overwrite (or insert) one tag in a held-back payload's tag list.
@@ -3500,6 +3577,21 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Seed the reason-attribution axes (HQ-DESKTOP-5W). For a Windows fault the
+    // deferred worker UPGRADES these after reading the crash-surviving Node report;
+    // for every other exit — and a shutdown-immediate/teardown emit that does no
+    // filesystem work — the honest seed stands: the source is `stderr` when stderr
+    // already named a class (else `none`), and the read seed reflects whether a
+    // report was even requested for this generation.
+    let seed_report_read = match &context.watcher_fault_deferred_read {
+        Some(deferred) => deferred.report_request.seed_report_read_token(),
+        None => "report_absent",
+    };
+    tags.push((
+        "runner_fatal_source",
+        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+    ));
+    tags.push(("runner_report_read", seed_report_read.to_string()));
     // Name the terminating signal's disposition as a fixed, closed-vocabulary
     // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
     // Sentry without parsing the message text. Always present (`none` for a
@@ -7267,6 +7359,8 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
+                report_request: RunnerReportRequest::NotRequested,
             }),
             ..Default::default()
         };
@@ -7342,6 +7436,8 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
+                    report_request: RunnerReportRequest::NotRequested,
                 },
             )
         };
@@ -7382,6 +7478,8 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
+                    report_request: RunnerReportRequest::NotRequested,
                 },
             )
         };
@@ -7426,6 +7524,8 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
+                report_request: RunnerReportRequest::NotRequested,
             },
         );
         let tag = |payload: &DeferredWatcherFaultCapture, key: &str| {
@@ -7451,7 +7551,7 @@ mod tests {
             event_time_unix_ms: Some(1_000_500),
         };
         let resolved = attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
-        let out = finalize_watcher_fault_payload(base.clone(), Some(resolved), "read_resolved");
+        let out = finalize_watcher_fault_payload(base.clone(), Some(resolved), None, "read_resolved");
         assert_eq!(tag(&out, "watcher_fault_provenance"), "pid_matched");
         assert_eq!(tag(&out, "watcher_fault_faulting_image"), "node_exe");
         assert_eq!(tag(&out, "watcher_fault_faulting_module"), "ntdll_dll");
@@ -7461,11 +7561,82 @@ mod tests {
 
         // An unresolved (teardown-flushed) payload keeps the honest `deferred`
         // provenance and never names an image, only stamping the resolution.
-        let flushed = finalize_watcher_fault_payload(base.clone(), None, "teardown_flush");
+        let flushed = finalize_watcher_fault_payload(base.clone(), None, None, "teardown_flush");
         assert_eq!(tag(&flushed, "watcher_fault_provenance"), "deferred");
         assert_eq!(tag(&flushed, "watcher_fault_faulting_image"), "unavailable");
         assert!(!has_extra(&flushed, "watcher_fault_exception_code"));
         assert!(has_extra(&flushed, "watcher_fault_read_resolution"));
+    }
+
+    #[test]
+    fn watcher_fault_deferred_finalize_names_the_reason_from_a_report_without_overriding_stderr() {
+        use crate::commands::runner_report::RunnerReportRead;
+        use hq_desktop_core::runner_diagnostic_report::{
+            parse_runner_diagnostic_report, RunnerReportParse,
+        };
+
+        let tag = |payload: &DeferredWatcherFaultCapture, key: &str| {
+            payload
+                .tags
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        // The Windows fail-fast envelope: stderr named nothing.
+        let base = || {
+            DeferredWatcherFaultCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[
+                    ("runner_fatal_class", "none".to_string()),
+                    ("runner_stack_shape", "all_redacted".to_string()),
+                    ("runner_stack_signature", "unknown".to_string()),
+                    ("runner_fatal_source", "none".to_string()),
+                    ("runner_report_read", "report_absent".to_string()),
+                ],
+                &[],
+                WatcherFaultDeferredRead {
+                    sampled_pids: vec![6700],
+                    exception_code: 0xC000_0409,
+                    gen_start_ms: 0,
+                    gen_end_ms: 1,
+                    report_dir: None,
+                    report_request: RunnerReportRequest::Requested,
+                },
+            )
+        };
+        let RunnerReportParse::Named(attribution) = parse_runner_diagnostic_report(
+            &serde_json::json!({
+                "header": { "event": "Allocation failed - JavaScript heap out of memory", "trigger": "FatalError" },
+                "javascriptStack": { "message": "FATAL ERROR: JavaScript heap out of memory" },
+                "nativeStack": [{ "symbol": "node::OnFatalError(char const*, char const*) [/node]" }]
+            })
+            .to_string(),
+        ) else {
+            panic!("fixture report must name a class");
+        };
+
+        // A report that names the reason fills the blank stderr left.
+        let named = RunnerReportRead {
+            read_token: "report_read",
+            attribution: Some(attribution),
+        };
+        let out = finalize_watcher_fault_payload(base(), None, Some(named), "read_resolved");
+        assert_eq!(tag(&out, "runner_fatal_class"), "heap_oom");
+        assert_eq!(tag(&out, "runner_fatal_source"), "node_report");
+        assert_eq!(tag(&out, "runner_report_read"), "report_read");
+        assert_ne!(tag(&out, "runner_stack_shape"), "all_redacted");
+
+        // No report present degrades honestly and NEVER fabricates a class.
+        let absent = RunnerReportRead {
+            read_token: "report_absent",
+            attribution: None,
+        };
+        let out = finalize_watcher_fault_payload(base(), None, Some(absent), "read_resolved");
+        assert_eq!(tag(&out, "runner_fatal_class"), "none");
+        assert_eq!(tag(&out, "runner_fatal_source"), "none");
+        assert_eq!(tag(&out, "runner_report_read"), "report_absent");
     }
 
     #[test]

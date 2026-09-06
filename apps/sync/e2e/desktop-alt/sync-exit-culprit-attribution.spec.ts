@@ -106,6 +106,26 @@ describe('sync exit culprit — source contracts (hq-telemetry)', () => {
     expect(elseArm).toBeGreaterThan(boundArm);
     expect(candidateArm).toBeGreaterThan(elseArm);
   });
+
+  it('names the runner fatal reason alongside a Windows fault, and registers the new axes', () => {
+    // The `fault` arm no longer short-circuits before the fatal phrase — it appends
+    // "/ <reason>" when a fatal class is known (base-red: this construction does not
+    // exist before the fix). This is what lets the Windows fail-fast finally reach
+    // the alert with a reason, via the crash-surviving Node report.
+    const detail = sliceBetween(
+      telemetrySource,
+      'fn sync_child_exit_detail(',
+      'fn derive_sync_child_exit_culprit(',
+      'sync_child_exit_detail',
+    );
+    expect(detail).toContain('format!("{base} / {phrase}")');
+    // The two reason-attribution axes are registered in the egress allow-list so
+    // they fail closed — an off-vocabulary or [Filtered] value never reaches a tag.
+    expect(telemetrySource).toContain(
+      '"runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none"))',
+    );
+    expect(telemetrySource).toContain('"runner_report_read" => Some(matches!(');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -161,8 +181,14 @@ function exitDetail(cls?: string, status?: string, fatal?: string): string | nul
   if (!cls || !EXIT_CLASSES.has(cls)) return fatalPhrase();
   const hex = isStatusHex(status) ? status : undefined;
   switch (cls) {
-    case 'fault':
-      return hex ? `windows fault ${hex}` : 'windows fault';
+    case 'fault': {
+      // A Windows fault now also names the reason when a runner fatal class is
+      // known (reachable via the crash-surviving Node report on Windows). Byte-
+      // identical when the class is `none`/off-vocabulary (HQ-DESKTOP-5W/5X).
+      const base = hex ? `windows fault ${hex}` : 'windows fault';
+      const phrase = fatalPhrase();
+      return phrase ? `${base} / ${phrase}` : base;
+    }
     case 'session_terminate':
       return 'windows session terminate';
     case 'console_control':
@@ -257,6 +283,35 @@ describe('sync exit culprit — envelope simulator (both directions)', () => {
   it('post-fix names the seam + phase + shape for HQ-DESKTOP-5X', () => {
     expect(culpritUnderPolicy(MANUAL_5X, 'post-fix')).toBe(
       'sync/runner push: windows session terminate',
+    );
+  });
+
+  it('post-fix names the report-derived reason alongside the fault on BOTH routes', () => {
+    // HQ-DESKTOP-5W watcher fault whose reason the crash-surviving Node report
+    // recovered (runner_fatal_class now populated where stderr was silent).
+    const watcherWithReason: Tags = { ...WATCHER_5W, runner_fatal_class: 'heap_oom' };
+    expect(culpritUnderPolicy(watcherWithReason, 'post-fix')).toBe(
+      'sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)',
+    );
+    // A manual-route Windows fault (HQ-DESKTOP-5X shape) is pinned to the SAME
+    // rendering — seam + phase + fault + reason — proving both routes render alike.
+    const manualFaultWithReason: Tags = {
+      sync_route: 'manual',
+      runner_phase: 'push',
+      windows_exit_class: 'fault',
+      windows_exit_status: '0xC0000409',
+      runner_fatal_class: 'heap_oom',
+    };
+    expect(culpritUnderPolicy(manualFaultWithReason, 'post-fix')).toBe(
+      'sync/runner push: windows fault 0xC0000409 / heap oom',
+    );
+  });
+
+  it('a Windows fault with no known reason stays byte-identical to today (no regression)', () => {
+    // runner_fatal_class=none → no "/ reason" suffix; the merged HQ-DESKTOP-5W/5X
+    // rendering is preserved exactly.
+    expect(culpritUnderPolicy(WATCHER_5W, 'post-fix')).toBe(
+      'sync/watcher: node_exe (windows fault 0xC0000409)',
     );
   });
 

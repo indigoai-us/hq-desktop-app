@@ -647,6 +647,23 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // stderr fragment degrades to `[Filtered]` instead.
         "runner_fatal_syscall" => Some(is_content_safe_syscall_token(value)),
         "runner_fatal_errno" => Some(value.parse::<i64>().is_ok()),
+        // Reason-attribution provenance (HQ-DESKTOP-5W / HQ-DESKTOP-5X): where a
+        // named runner fatal class came from, and the outcome of reading the Node
+        // crash-surviving diagnostic report — the third channel that names WHY a
+        // Windows sync child died where stderr and WER are both empty. Both are
+        // fixed vocabulary from the shared reader/decision; registering them here is
+        // what makes them fail CLOSED — an unregistered key would pass egress
+        // untouched, so an off-vocabulary or `[Filtered]` value degrades to
+        // `[Filtered]` instead of reaching a tag or the culprit.
+        "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        "runner_report_read" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_disabled_by_user_options"
+        )),
         "watcher_job_peak_commit_bucket" => Some(matches!(
             value,
             "under_128mb"
@@ -1166,10 +1183,22 @@ fn sync_child_exit_detail(
         _ => None,
     };
     Some(match class {
-        "fault" => match status {
-            Some(status) => format!("windows fault {status}"),
-            None => "windows fault".to_string(),
-        },
+        // A Windows fault names the NT status AND, when a runner fatal class is
+        // known (now reachable via the crash-surviving Node diagnostic report on
+        // Windows, where stderr is lost), the reason too — e.g.
+        // `windows fault 0xC0000409 / heap oom`. Byte-identical to before when the
+        // fatal class is `none` or off-vocabulary, so a fault that still names no
+        // reason renders exactly as it does today.
+        "fault" => {
+            let base = match status {
+                Some(status) => format!("windows fault {status}"),
+                None => "windows fault".to_string(),
+            };
+            match fatal_phrase() {
+                Some(phrase) => format!("{base} / {phrase}"),
+                None => base,
+            }
+        }
         "session_terminate" => "windows session terminate".to_string(),
         "console_control" => "windows console control".to_string(),
         "indeterminate_status" => "windows indeterminate status".to_string(),
@@ -2731,6 +2760,84 @@ mod tests {
             before_send(preset).unwrap().culprit.as_deref(),
             Some("existing::culprit")
         );
+    }
+
+    /// The exact HQ-DESKTOP-5W recurrence envelope (release 0.10.200), with a
+    /// runner fatal class now supplied by the crash-surviving Node report.
+    fn recurrence_envelope_event(runner_fatal_class: &str) -> Event<'static> {
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("runner_stack_shape", "all_redacted"),
+            ("runner_stack_signature", "unknown"),
+            ("runner_fatal_class", runner_fatal_class),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        event
+    }
+
+    #[test]
+    fn before_send_windows_fault_culprit_now_names_the_report_derived_reason() {
+        // BASE-RED: on the merge-base the `fault` arm short-circuits before the
+        // fatal phrase, so this envelope renders 'sync/watcher: node_exe (windows
+        // fault 0xC0000409)' and the `/ heap oom` assertion fails. On the candidate
+        // the reason the Node report recovered reaches the alert.
+        let event = recurrence_envelope_event("heap_oom");
+        assert_eq!(
+            before_send(event).unwrap().culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)")
+        );
+    }
+
+    #[test]
+    fn before_send_windows_fault_culprit_is_byte_identical_when_reason_is_none() {
+        // NO-REGRESSION: the same envelope with no named reason must render exactly
+        // as it does today — the merged HQ-DESKTOP-5W/5X behaviour is preserved.
+        let event = recurrence_envelope_event("none");
+        assert_eq!(
+            before_send(event).unwrap().culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+    }
+
+    #[test]
+    fn reason_attribution_axes_survive_egress_when_valid_and_fail_closed_when_poisoned() {
+        // Valid tokens survive egress untouched.
+        let mut valid = recurrence_envelope_event("heap_oom");
+        valid
+            .tags
+            .insert("runner_fatal_source".into(), "node_report".into());
+        valid
+            .tags
+            .insert("runner_report_read".into(), "report_read".into());
+        let sent = before_send(valid).unwrap();
+        assert_eq!(sent.tags.get("runner_fatal_source").map(String::as_str), Some("node_report"));
+        assert_eq!(sent.tags.get("runner_report_read").map(String::as_str), Some("report_read"));
+
+        // A poisoned (off-vocabulary) value degrades to [Filtered] and NEVER rides
+        // into the culprit — the axes fail closed exactly like every sibling axis.
+        let mut poisoned = recurrence_envelope_event("heap_oom");
+        poisoned.tags.insert(
+            "runner_fatal_source".into(),
+            "/Users/secret/HQ node_report".into(),
+        );
+        poisoned
+            .tags
+            .insert("runner_report_read".into(), "C:/Windows/leak".into());
+        let sent = before_send(poisoned).unwrap();
+        assert_eq!(sent.tags.get("runner_fatal_source").map(String::as_str), Some("[Filtered]"));
+        assert_eq!(sent.tags.get("runner_report_read").map(String::as_str), Some("[Filtered]"));
+        // The culprit still renders from the (valid) fatal class, never the poison.
+        let culprit = sent.culprit.expect("seam is named");
+        assert!(!culprit.contains("secret"));
+        assert!(!culprit.contains("Windows"));
     }
 
     #[test]
