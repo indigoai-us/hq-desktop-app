@@ -23,6 +23,7 @@
   import MentionPicker from "./MentionPicker.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -114,6 +115,7 @@
       files?: File[],
     ) => void | Promise<void>;
     /** Presign a vault GET so image thumbs and the tray can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -212,6 +214,7 @@
     oncardaction,
     ontogglereaction,
     onsend,
+    previewCache,
     onpresign,
     mentionCandidates = [],
     onreply,
@@ -1229,6 +1232,8 @@
                     />
                   {/if}
                   <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                     attachments={parseMessageAttachments(msg)}
                     onopen={openAttachment}
                     resolveUrl={resolveAttachmentUrl}
@@ -1544,6 +1549,7 @@
   </div>
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
+      {previewCache}
       items={conversationAttachments}
       selectedId={traySelectedId}
       onselect={(id) => (traySelectedId = id)}
