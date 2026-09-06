@@ -4555,7 +4555,7 @@ mod tests {
             ..Default::default()
         };
         let (tags, _extras) = runner_exit_telemetry_context(
-            Some(WINDOWS_STACK_BUFFER_OVERRUN),
+            Some(0xC000_0409u32 as i32),
             None,
             &RunTotals::default(),
             &context,
