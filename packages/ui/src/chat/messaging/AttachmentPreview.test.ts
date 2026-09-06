@@ -28,6 +28,7 @@ let component: ReturnType<typeof mount> | null = null;
 
 function mountPreview(props: {
   item: FileAttachmentModel;
+  thumbnailUrl?: string | null;
   resolveUrl?: (a: FileAttachmentModel) => Promise<string | null>;
   onreleaseurl?: (url: string) => void;
 }): void {
@@ -127,4 +128,19 @@ describe("AttachmentPreview image detail pane", () => {
     component = null;
     expect(onreleaseurl).toHaveBeenCalledWith("blob:desktop-detail");
   });
+});
+
+
+it("shows the cached thumbnail immediately but downloads only the full original", async () => {
+  let finish!: (url: string) => void;
+  mountPreview({
+    item: item(), thumbnailUrl: "blob:thumbnail",
+    resolveUrl: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:thumbnail");
+  expect(host.querySelector<HTMLButtonElement>("[data-testid=attachment-download]")?.disabled).toBe(true);
+  finish("blob:original");
+  await settle();
+  expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:original");
+  expect(host.querySelector<HTMLButtonElement>("[data-testid=attachment-download]")?.disabled).toBe(false);
 });

@@ -27,6 +27,9 @@
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
   } from "./sidebar-layout.js";
+  import { ImagePreviewCache } from "../chat/messaging/image-preview-cache";
+  import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
+  import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
@@ -3154,7 +3157,8 @@
     }
     const isDm = row.kind === "dm" && !!row.personUid;
     const selfUid = self?.uid?.trim() ?? "";
-    return uploadChatAttachments({
+    const cache = imagePreviewCache;
+    const uploaded = await uploadChatAttachments({
       files,
       companyUid,
       scope: isDm ? "dm" : "chan",
@@ -3175,6 +3179,13 @@
               })
           : putAttachmentObject,
     });
+    // Preserve the local upload preview under its final immutable vault path.
+    void Promise.all(uploaded.map(async (item, index) => {
+      if (item.kind !== "image" || !cache) return;
+      try { await cache.warm(item.companyUid, item.vaultPath, files[index]); }
+      catch (error) { console.warn("[image-preview] Upload preview unavailable", error); }
+    }));
+    return uploaded;
   }
 
   async function persistSend(
@@ -3278,6 +3289,58 @@
       agentThinking = [];
       throw err;
     }
+  }
+
+  let imagePreviewCache = $state<ImagePreviewCache | null>(null);
+  const imagePreviewStore = createImagePreviewStore();
+  let previousPreviewAccount = "";
+  let previousPreviewCache: ImagePreviewCache | null = null;
+  $effect(() => {
+    const account = self?.uid?.trim() || tenantAccountId?.trim() || "";
+    void tenantGeneration;
+    if (previousPreviewAccount && previousPreviewAccount !== account) {
+      void previousPreviewCache?.clearAccount().catch((error) => {
+        console.warn("[image-preview] Account cache cleanup failed", error);
+      });
+    }
+    previousPreviewAccount = account;
+    const cache = account ? new ImagePreviewCache({
+      account,
+      store: imagePreviewStore,
+      load: async (scope, path) => {
+        const signed = await adapter.files.presignVaultGet(scope, path);
+        if (!signed.ok) throw new Error("Image unavailable");
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) throw new Error("Image URL missing");
+        const response = await getVaultBytesForHost(url, 25 * 1024 * 1024);
+        if (!response.ok) throw new Error("Image unavailable");
+        return response.blob();
+      },
+    }) : null;
+    imagePreviewCache = cache;
+    previousPreviewCache = cache;
+    return () => cache?.dispose();
+  });
+
+  // Warm only a small recent slice; the cache limits concurrent byte/decode work.
+  $effect(() => {
+    const cache = imagePreviewCache;
+    const scope = attachmentCompanyUid(selectedRow);
+    const images = liveTimeline.slice(-20).flatMap(parseMessageAttachments)
+      .filter((item) => item.kind === "image" && item.contentType !== "image/svg+xml" && !/\.svg$/i.test(item.name)).slice(-8);
+    if (!cache || !scope) return;
+    for (const item of images) {
+      void cache.warm(item.companyUid || scope, item.vaultPath).catch(() => {
+        // The visible attachment owns the accessible retry/error state.
+      });
+    }
+  });
+
+  async function signOutWithImageCleanup(): Promise<void> {
+    const cache = imagePreviewCache;
+    await onsignout?.();
+    try { await cache?.clearAccount(); }
+    catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }
   }
 
   async function presignAttachment(
@@ -3859,7 +3922,7 @@
         {version}
         initialSection={settingsSection}
         onback={closeSettings}
-        onsignout={onsignout}
+        onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
@@ -3904,7 +3967,7 @@
             meetingFocusRequest = null;
           }}
           onopenSettings={() => openSettings()}
-          onsignout={onsignout}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           onrows={(rows) => (railRows = rows)}
@@ -4485,6 +4548,7 @@
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
+                  previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
@@ -4591,6 +4655,7 @@
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
+                    previewCache={imagePreviewCache}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
                     onopenartifact={openArtifact}
@@ -4663,6 +4728,7 @@
 
   {#if attachTray}
     <AttachmentTray
+      previewCache={imagePreviewCache}
       items={attachTray.items}
       selectedId={attachTray.selectedId}
       onselect={(id) => {
