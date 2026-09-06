@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.205"
+version = "0.10.206"
 edition = "2021"
 
 [build-dependencies]
