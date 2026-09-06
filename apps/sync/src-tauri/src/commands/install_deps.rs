@@ -103,14 +103,28 @@ mod which {
     fn executable_candidate(candidate: &Path) -> Option<PathBuf> {
         #[cfg(windows)]
         {
-            if is_executable_file(candidate) {
-                return Some(candidate.to_path_buf());
-            }
-            if candidate.extension().is_some() {
-                return None;
-            }
+            // Only a PATHEXT extension makes a file spawnable by CreateProcess.
+            // npm, qmd, and hq all ship an extensionless POSIX script next to
+            // their `.cmd` shim; accepting the bare file spawns it directly and
+            // fails with ERROR_BAD_EXE_FORMAT (os error 193), so a bare name
+            // must resolve through PATHEXT instead.
             let pathext =
                 env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
+            let ext_matches = |path: &Path| {
+                path.extension().is_some_and(|ext| {
+                    let ext = ext.to_string_lossy();
+                    pathext
+                        .to_string_lossy()
+                        .split(';')
+                        .any(|pe| pe.trim_start_matches('.').eq_ignore_ascii_case(&ext))
+                })
+            };
+            if candidate.extension().is_some() {
+                if ext_matches(candidate) && is_executable_file(candidate) {
+                    return Some(candidate.to_path_buf());
+                }
+                return None;
+            }
             for ext in pathext.to_string_lossy().split(';') {
                 if ext.is_empty() {
                     continue;
@@ -4718,13 +4732,53 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     };
 
     let cmd_path = prefix.join("qmd.cmd");
-    let body = format!(
-        "@ECHO off\r\n\
-        SETLOCAL\r\n\
-        bash \"%~dp0{bin_rel}\" %*\r\n"
-    );
+    // Resolve Git Bash to an absolute path at install time. A bare `bash` in
+    // the shim resolves through the USER's shell PATH at run time, where
+    // `C:\Windows\System32\bash.exe` (the WSL launcher) precedes Git's bash on
+    // any machine with WSL enabled — and WSL bash cannot run a Windows-path
+    // script argument (the INS-0580 failure class).
+    let body = match git_bash_path() {
+        Some(bash) => format!(
+            "@ECHO off\r\n\
+            SETLOCAL\r\n\
+            \"{}\" \"%~dp0{bin_rel}\" %*\r\n",
+            bash.display()
+        ),
+        None => format!(
+            "@ECHO off\r\n\
+            SETLOCAL\r\n\
+            bash \"%~dp0{bin_rel}\" %*\r\n"
+        ),
+    };
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+/// Absolute path to Git for Windows' bash.exe, if one exists. Never returns
+/// the WSL launcher (`System32\bash.exe`). Prefers the bash sitting next to
+/// whichever `git.exe` the engine's search path resolves, then well-known
+/// install locations.
+#[cfg(windows)]
+fn git_bash_path() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Ok(git) = which::which_in("git", Some(extended_search_path()), &cwd) {
+        // <root>\cmd\git.exe or <root>\bin\git.exe -> <root>\bin\bash.exe
+        if let Some(root) = git.parent().and_then(|p| p.parent()) {
+            let bash = root.join("bin").join("bash.exe");
+            if bash.is_file() {
+                return Some(bash);
+            }
+        }
+    }
+    let candidates = [
+        program_files().join("Git").join("bin").join("bash.exe"),
+        local_app_data()
+            .join("Programs")
+            .join("Git")
+            .join("bin")
+            .join("bash.exe"),
+    ];
+    candidates.into_iter().find(|c| c.is_file())
 }
 
 #[cfg(windows)]
@@ -6046,6 +6100,40 @@ mod windows_tests {
     use super::*;
     use std::io::Write as _;
 
+    /// npm/qmd/hq all install an extensionless POSIX script next to their
+    /// `.cmd` shim. Resolving the bare script and spawning it fails with
+    /// ERROR_BAD_EXE_FORMAT (os error 193) — the first Windows headless
+    /// install run died on exactly this. PATHEXT must win.
+    #[test]
+    fn which_prefers_pathext_over_extensionless_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("npm"), b"#!/bin/sh\nexec node npm.js\n").unwrap();
+        std::fs::write(tmp.path().join("npm.cmd"), b"@echo off\r\n").unwrap();
+
+        let found = which::which_in(
+            "npm",
+            Some(tmp.path().to_string_lossy().as_ref()),
+            tmp.path(),
+        )
+        .expect("npm should resolve");
+        // PATHEXT entries are uppercase, so the resolved path may come back
+        // as `npm.CMD`; compare case-insensitively like the filesystem does.
+        assert_eq!(
+            found.to_string_lossy().to_lowercase(),
+            tmp.path().join("npm.cmd").to_string_lossy().to_lowercase()
+        );
+
+        // A lone extensionless file must not resolve at all — it cannot be
+        // spawned by CreateProcess.
+        std::fs::write(tmp.path().join("qmd"), b"#!/bin/sh\n").unwrap();
+        assert!(which::which_in(
+            "qmd",
+            Some(tmp.path().to_string_lossy().as_ref()),
+            tmp.path(),
+        )
+        .is_err());
+    }
+
     fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let cursor = std::io::Cursor::new(Vec::new());
         let mut writer = zip::ZipWriter::new(cursor);
@@ -6404,7 +6492,18 @@ mod windows_tests {
         std::fs::write(&qmd_bin, b"").unwrap();
         write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
         let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
-        assert!(qmd_cmd.contains("bash \"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"));
+        // The bash invocation is either an absolute Git Bash path (when one is
+        // installed on the test machine) or a bare `bash` fallback — both end
+        // with the same script-relative argument.
+        assert!(
+            qmd_cmd.contains("\"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"),
+            "{qmd_cmd}"
+        );
+        assert!(qmd_cmd.to_lowercase().contains("bash"), "{qmd_cmd}");
+        assert!(
+            !qmd_cmd.to_lowercase().contains("system32"),
+            "shim must never invoke the WSL launcher: {qmd_cmd}"
+        );
 
         let npm_bin = tmp.path().join("npm-bin");
         write_rsync_shim_in(&npm_bin).expect("rsync shims should write");
