@@ -20,7 +20,7 @@ const channelView = readFileSync(
 
 describe('AgentTaskStrip source contract', () => {
   it('renders nothing at all when there are no tasks', () => {
-    expect(strip).toContain('{#if tasks.length > 0}');
+    expect(strip).toContain('{#if shown.length > 0}');
   });
 
   it('is a polite status region, not a message', () => {
@@ -29,7 +29,8 @@ describe('AgentTaskStrip source contract', () => {
   });
 
   it('renders one TaskChip per task, keyed by id', () => {
-    expect(strip).toContain('{#each tasks as task (task.id)}');
+    expect(strip).toContain('{#each shown as task (task.id)}');
+    expect(strip).toContain('visibleTasks(tasks, now())');
     expect(strip).toContain('<TaskChip {task} />');
   });
 

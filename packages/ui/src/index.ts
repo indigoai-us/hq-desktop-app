@@ -229,3 +229,4 @@ export {
   type TaskFetcher,
   type RoomTaskFetcher,
 } from "./chat/tasks/task-feed-controller.svelte";
+export * from "./chat/tasks/visible-tasks";

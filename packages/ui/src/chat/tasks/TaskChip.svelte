@@ -58,11 +58,8 @@
          for task content to reach the DOM as markup. -->
     <span class="mark" style={`--mark-size: ${size}px;`}>{@html mark.svg}</span>
     <span class="title">{task.title}</span>
+    <span class="dot" data-tone={tone} data-testid="task-chip-dot"></span>
   </svelte:element>
-
-  <span class="status" data-tone={tone}>
-    <span class="dot"></span>{statusLabel}
-  </span>
 
   <!-- Hover / focus card: the detail a glance at the chip does not carry.
        Plain text only — every field is either our own label or a
@@ -96,7 +93,7 @@
     gap: 6px;
     min-width: 0;
     max-width: 100%;
-    padding: 2px 8px 2px 3px;
+    padding: 2px 9px 2px 3px;
     border: 1px solid var(--line);
     border-radius: var(--v4-radius-pill, 980px);
     background: var(--hover);
@@ -135,32 +132,24 @@
     white-space: nowrap;
   }
 
-  .status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    flex: none;
-    color: var(--t2);
-    font-size: var(--type-metadata, 13px);
-  }
-
   .dot {
+    flex: none;
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: var(--v4-idle, var(--t3));
   }
 
-  .status[data-tone="ok"] .dot {
+  .dot[data-tone="ok"] {
     background: var(--v4-ok, var(--ok));
   }
-  .status[data-tone="warn"] .dot {
+  .dot[data-tone="warn"] {
     background: var(--v4-warn, var(--warn));
   }
-  .status[data-tone="error"] .dot {
+  .dot[data-tone="error"] {
     background: var(--v4-error, var(--warn-ink));
   }
-  .status[data-tone="unread"] .dot {
+  .dot[data-tone="unread"] {
     background: var(--v4-unread, var(--v4-brand-accent));
   }
 
