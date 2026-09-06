@@ -481,7 +481,7 @@ static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 /// the OnceLock cache. Format is treated as a semi-public contract so
 /// support paste-backs stay greppable.
 #[cfg(not(windows))]
-fn shell_login_path() -> &'static str {
+pub(crate) fn shell_login_path() -> &'static str {
     SHELL_LOGIN_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let spawn_result = Command::new(&shell)
@@ -1675,39 +1675,80 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
     Ok(rendered)
 }
 
-/// Write the composed toolchain PATH into `<hq>/.claude/settings.json` and
-/// re-ensure the shell-profile PATH block.
-///
-/// Invoked by the setup orchestrator after the deps stage on every installer
-/// pass, including reinstalls where all deps are already present. A missing
-/// settings.json is a skip rather than an error.
+/// The result of writing the composed managed-toolchain PATH into the winning
+/// `.claude` settings file.
 #[cfg(not(windows))]
-#[tauri::command]
-pub async fn configure_claude_settings_path(
-    app: AppHandle,
-    hq_path: String,
-) -> Result<String, String> {
-    let home = home_dir_or_err(&app, "path")?;
-    ensure_shell_path_configured(&home, &app);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SettingsPathWriteOutcome {
+    /// Wrote the composed PATH into this settings file.
+    Wrote(PathBuf),
+    /// No settings file to write into (the target file is absent). A skip, not an
+    /// error, so an already-installed machine without a base settings.json is not
+    /// treated as a failure.
+    Skipped(String),
+}
 
-    let settings_path = Path::new(&hq_path).join(".claude").join("settings.json");
+/// Compose the managed-toolchain-first PATH and write it into the `.claude`
+/// settings file the resolver actually READS for `hq_root` — settings.local.json
+/// when it defines a non-empty `env.PATH`, else settings.json — resolved through
+/// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
+///
+/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
+/// already produces the correct managed-first ordering; only the DESTINATION file
+/// was wrong (it was hard-coded to settings.json, which the resolver ignores
+/// whenever settings.local.json defines a non-empty PATH, so the managed-first
+/// value never reached the file the app resolves `hq` through and a stale foreign
+/// copy kept shadowing the managed CLI).
+///
+/// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
+/// write is impossible, and canonicalizes the resolved file to require it stay
+/// inside the resolved HQ folder — a symlinked settings file cannot redirect the
+/// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
+/// home (no `AppHandle`).
+#[cfg(not(windows))]
+pub(crate) fn write_managed_toolchain_settings_path(
+    hq_root: &Path,
+    home: &Path,
+    login_path: &str,
+) -> Result<SettingsPathWriteOutcome, String> {
+    let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
+        hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
+        // Base or None both write the generated base file, exactly as before the
+        // fix: the reader consults settings.json in both cases.
+        hq_desktop_core::paths::SettingsPathFile::Base
+        | hq_desktop_core::paths::SettingsPathFile::None => "settings.json",
+    };
+    let settings_path = hq_root.join(".claude").join(file);
     let contents = match std::fs::read_to_string(&settings_path) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!(
-                "[path] no settings.json at {} - skipped ({e})",
+            return Ok(SettingsPathWriteOutcome::Skipped(format!(
+                "no {file} at {} - skipped ({e})",
                 settings_path.display()
-            );
-            emit_preflight_line(&app, &msg);
-            return Ok(msg);
+            )));
         }
     };
+
+    // Canonicalization guard: the file exists (we just read it), so canonicalize
+    // it — a symlink resolves to its true location — and require it to stay inside
+    // the resolved HQ folder. A settings file symlinked out of the HQ tree is
+    // refused rather than followed, so the write cannot clobber an unrelated file.
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|e| format!("cannot canonicalize HQ folder {}: {e}", hq_root.display()))?;
+    let canonical_file = std::fs::canonicalize(&settings_path)
+        .map_err(|e| format!("cannot canonicalize {}: {e}", settings_path.display()))?;
+    if !canonical_file.starts_with(&canonical_root) {
+        return Err(format!(
+            "refusing to write settings PATH outside the HQ folder: {} is not within {}",
+            canonical_file.display(),
+            canonical_root.display()
+        ));
+    }
 
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
-    let composed =
-        composed_settings_env_path(&home, shell_login_path(), existing_env_path.as_deref());
+    let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
@@ -1717,13 +1758,38 @@ pub async fn configure_claude_settings_path(
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
+    Ok(SettingsPathWriteOutcome::Wrote(settings_path))
+}
 
-    let msg = format!(
-        "[path] wrote managed toolchain PATH into {}",
-        settings_path.display()
-    );
-    emit_preflight_line(&app, &msg);
-    Ok(msg)
+/// Write the composed toolchain PATH into the winning `.claude` settings file
+/// (settings.local.json when it defines env.PATH, else settings.json) and
+/// re-ensure the shell-profile PATH block.
+///
+/// Invoked by the setup orchestrator after the deps stage on every installer
+/// pass, including reinstalls where all deps are already present. A missing
+/// target settings file is a skip rather than an error.
+#[cfg(not(windows))]
+#[tauri::command]
+pub async fn configure_claude_settings_path(
+    app: AppHandle,
+    hq_path: String,
+) -> Result<String, String> {
+    let home = home_dir_or_err(&app, "path")?;
+    ensure_shell_path_configured(&home, &app);
+
+    match write_managed_toolchain_settings_path(Path::new(&hq_path), &home, shell_login_path()) {
+        Ok(SettingsPathWriteOutcome::Wrote(path)) => {
+            let msg = format!("[path] wrote managed toolchain PATH into {}", path.display());
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Ok(SettingsPathWriteOutcome::Skipped(reason)) => {
+            let msg = format!("[path] {reason}");
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Windows no-op. The managed toolchain dirs land on the user PATH via the
@@ -5960,6 +6026,142 @@ mod install_deps_tests {
 
         let err = settings_json_with_env_path(r#"{"env": "bad"}"#, "/managed/bin").unwrap_err();
         assert_eq!(err, "settings.json 'env' is not an object");
+    }
+
+    /// HQ-DESKTOP-46: the composed managed-first PATH must be WRITTEN into the
+    /// file the resolver READS. settings.local.json defines env.PATH, so it wins,
+    /// and settings.json (which the resolver ignores) must be left untouched.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_targets_settings_local_when_it_has_a_path() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}",
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("settings.local.json"),
+            "{\"keep\":true,\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            outcome,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
+        );
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(claude.join("settings.local.json")).unwrap())
+                .unwrap();
+        let path = doc["env"]["PATH"].as_str().unwrap();
+        // The managed node bin is hoisted to the FRONT.
+        let managed = managed_tool_paths_in(home.path());
+        assert!(
+            path.starts_with(&managed[0]),
+            "managed node bin must be first: {path}"
+        );
+        // The pre-existing foreign dir survives, just behind the managed dirs.
+        assert!(path.split(':').any(|seg| seg == "/opt/homebrew/bin"));
+        // Every other key in the winning document is preserved.
+        assert_eq!(doc["keep"].as_bool(), Some(true));
+        // The base file the resolver ignores is untouched.
+        assert_eq!(
+            std::fs::read_to_string(claude.join("settings.json")).unwrap(),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}"
+        );
+    }
+
+    /// When only the base settings.json defines env.PATH the writer targets it,
+    /// exactly as before the fix — and the rewrite is idempotent.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_falls_back_to_base_and_is_idempotent() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"model\":\"x\",\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let first =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            first,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_first = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+
+        let second =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            second,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_second = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert_eq!(after_first, after_second, "the rewrite must be idempotent");
+        let doc: serde_json::Value = serde_json::from_str(&after_second).unwrap();
+        assert_eq!(doc["model"].as_str(), Some("x"));
+    }
+
+    /// A missing target settings file is a skip, not an error.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_skips_when_no_settings_file() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(hq.path().join(".claude")).unwrap();
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap();
+        assert!(matches!(outcome, SettingsPathWriteOutcome::Skipped(_)));
+    }
+
+    /// A settings file symlinked OUT of the HQ folder is refused, so the write
+    /// cannot be redirected to clobber an unrelated file.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_symlink_escaping_the_hq_folder() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let target = outside.path().join("evil-settings.json");
+        std::fs::write(&target, "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}").unwrap();
+        std::os::unix::fs::symlink(&target, claude.join("settings.local.json")).unwrap();
+
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("outside the HQ folder"), "unexpected error: {err}");
+        // The escaping target was NOT rewritten.
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}"
+        );
+    }
+
+    /// A non-object settings document is refused rather than clobbered.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_non_object_document() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // No file defines env.PATH -> target is settings.json; it exists but is a
+        // JSON array, so the composer refuses it as a non-object.
+        std::fs::write(claude.join("settings.json"), "[]").unwrap();
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("not an object"), "unexpected error: {err}");
     }
 
     #[test]

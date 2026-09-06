@@ -4,9 +4,10 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
     reset_non_convergent_marker_unpersisted_capture_for_tests, DeliveredPrefixShim,
-    ExecutedCopyAim, InstallExecutor, ManagedShadowRepairOutcome, NonConvergenceKind,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    ResolutionSource, NON_CONVERGENT_ERROR_PREFIX,
+    ExecutedCopyAim, InstallExecutor, ManagedBinInSettingsPath, ManagedShadowRepairOutcome,
+    NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, ResolutionSource, SettingsPathRepair, SettingsPathTelemetry,
+    NON_CONVERGENT_ERROR_PREFIX,
 };
 use std::path::PathBuf;
 use sentry::test::with_captured_events_options;
@@ -144,6 +145,7 @@ fn an_unaimed_pnpm_run_persists_no_marker() {
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::Undetermined,
             home_env_present: false,
@@ -297,6 +299,93 @@ fn a_delivered_prefix_with_no_shim_persists_no_marker() {
     assert_eq!(captures, 1, "it stays observable once");
 }
 
+/// HQ-DESKTOP-46: a settings-PATH foreign shadow HQ REPAIRED in-run (the winning
+/// `.claude` settings file's PATH was rewritten managed-first) persists NO
+/// durable marker — the next resolution reads the rewritten PATH and converges
+/// on HQ's own current copy, so blocking would wedge the very machine HQ just
+/// fixed. It stays observable once, not silent.
+#[test]
+fn a_rewritten_settings_path_shadow_persists_no_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    let ctx = PostInstallContext::npm(
+        "/opt/homebrew/bin/hq",
+        "/opt/homebrew/bin/hq",
+        Some("5.103.30"),
+        Some("5.103.30"),
+        "5.103.34",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+        false,
+        Some("5.103.34"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::Rewritten,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Present,
+    });
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ForeignManaged)
+    );
+    assert_eq!(decide_post_install(&ctx).record_non_convergent, None);
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 0,
+        "a rewritten settings-PATH shadow persists no marker"
+    );
+    assert_eq!(captures, 1, "it stays observable once");
+}
+
+/// HQ-DESKTOP-46: a settings-PATH shadow HQ could NOT repair (the managed copy
+/// was not newer, so the rewrite was refused) still classifies ForeignManaged
+/// and still persists its durable marker. The durable-marker gate flipped ONLY
+/// for the repaired shape, never for a refusal — a machine HQ cannot fix keeps
+/// its stop-paging behaviour.
+#[test]
+fn a_refused_settings_path_shadow_still_persists_its_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    let ctx = PostInstallContext::npm(
+        "/opt/homebrew/bin/hq",
+        "/opt/homebrew/bin/hq",
+        Some("5.103.30"),
+        Some("5.103.30"),
+        "5.103.34",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+        false,
+        Some("5.103.34"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::RefusedNotStale,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Absent,
+    });
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ForeignManaged)
+    );
+    assert_eq!(
+        decide_post_install(&ctx).record_non_convergent.as_deref(),
+        Some("5.103.34")
+    );
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 1,
+        "a refused settings-PATH shadow still persists its marker"
+    );
+    assert_eq!(captures, 1);
+}
+
 /// The pnpm >=11 nested field layout. `matches` is now a native-resolution
 /// diagnostic only; the marker decision turns on delivery evidence. `'static` so
 /// the fixtures need no caller-side locals.
@@ -321,6 +410,7 @@ fn pnpm_marker_ctx(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,

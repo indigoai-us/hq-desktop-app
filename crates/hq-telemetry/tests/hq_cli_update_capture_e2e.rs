@@ -6,10 +6,11 @@ use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
     ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind,
-    NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, ResolutionSource, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    LocalVersionProbeResult, ManagedBinInSettingsPath, ManagedRuntimeState,
+    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolutionSource, ResolvedProgramKind, SettingsPathRepair, SettingsPathTelemetry,
+    VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -98,6 +99,7 @@ fn pnpm_context<'a>(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
@@ -438,6 +440,190 @@ fn the_non_convergent_event_carries_hq_bin_lane_and_delivered_prefix_shim() {
             .unwrap();
         assert!(!lane.contains(forbidden) && !shim.contains(forbidden));
     }
+}
+
+/// HQ-DESKTOP-46: once HQ rewrites the winning `.claude` settings file's PATH,
+/// the re-resolution lands the managed current copy, so the run CONVERGES and
+/// the capture pipeline produces zero envelopes and zero marker writes — where
+/// the same shape pre-repair wrote the durable marker that wedged auto-update.
+#[test]
+fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let managed_hq = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let homebrew_hq = "/opt/homebrew/bin/hq";
+
+    // Pre-repair over the FULL capture pipeline: the durable marker that wedges
+    // the machine, one per hq-cli publish (the base behaviour).
+    let base = foreign_nvm_ctx(
+        homebrew_hq,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::Undrivable,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::SettingsPath,
+        &[],
+    )
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::NotAttempted,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Absent,
+    });
+    let (base_events, base_records, base_captures, _) = composed_non_convergent_events(&base, true);
+    assert_eq!(base_records, 1, "the pre-repair shadow writes the wedging marker");
+    assert_eq!(base_captures, 1);
+    assert_eq!(base_events.len(), 1);
+
+    // Post-repair: the rewritten PATH resolves the managed current copy, so the
+    // after-version is `latest` -> converged. Drive the real decide -> effects ->
+    // reporter seam and assert it produces no envelope and no marker write.
+    let converged = PostInstallContext::npm(
+        homebrew_hq,
+        &managed_hq,
+        Some("5.83.0"),
+        Some("5.84.0"),
+        "5.84.0",
+        Some(&managed_prefix),
+        &managed_npm,
+        false,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::Rewritten,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Present,
+    });
+    let records = Cell::new(0usize);
+    let captures = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&converged);
+        assert!(matches!(
+            outcome.verdict,
+            ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+        ));
+        assert!(outcome.record_non_convergent.is_none());
+        assert!(outcome.capture.is_none());
+        let record = |_version: String| {
+            records.set(records.get() + 1);
+            Ok(())
+        };
+        let clear = || {};
+        let capture = |report: NonConvergentReport| {
+            captures.set(captures.get() + 1);
+            report_non_convergent_install(&report);
+        };
+        let record_failure = |_error: String| {};
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    assert_eq!(records.get(), 0, "a repaired+converged run writes no marker");
+    assert_eq!(captures.get(), 0, "a repaired+converged run captures nothing");
+    assert!(events.is_empty(), "a repaired+converged run emits no envelope");
+}
+
+/// HQ-DESKTOP-46: a settings-PATH shadow HQ could NOT repair (the rewrite was
+/// refused) still blocks and stays observable, and the residual event now names
+/// its own mechanism through the three closed settings-PATH tokens. The durable
+/// marker bounds it to exactly one envelope per episode across repeated checks,
+/// and the fingerprint is unchanged so the new tags never split the group.
+#[test]
+fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_episode() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let homebrew_hq = "/opt/homebrew/bin/hq";
+    let telemetry = SettingsPathTelemetry {
+        repair: SettingsPathRepair::RefusedNotStale,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Absent,
+    };
+
+    // First occurrence (not yet blocked): captured, with the durable marker.
+    let first = foreign_nvm_ctx(
+        homebrew_hq,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::Undrivable,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::SettingsPath,
+        &[],
+    )
+    .with_settings_path(telemetry);
+    let (events, records, captures, _) = composed_non_convergent_events(&first, true);
+    assert_eq!(records, 1);
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    for (tag, expected) in [
+        ("settings_path_file", "local"),
+        ("managed_bin_in_settings_path", "absent"),
+        ("settings_path_repair", "refused-not-stale"),
+        ("hq_bin_lane", "settings_path"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    assert_eq!(fingerprint(event), ["hq-cli-update", "install-non-convergent"]);
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    // The three tokens are drawn from closed vocabularies, never a path.
+    for token in ["settings_path_file", "managed_bin_in_settings_path", "settings_path_repair"] {
+        let value = event.tags.get(token).map(String::as_str).unwrap();
+        assert!(!value.contains('/'), "{token} must be path-free");
+    }
+
+    // Second occurrence (already blocked by the durable marker): NOT captured, so
+    // a persistent unrepairable shadow emits exactly one envelope, not one per 6h.
+    let repeat = PostInstallContext::npm(
+        homebrew_hq,
+        homebrew_hq,
+        Some("5.83.0"),
+        Some("5.83.0"),
+        "5.84.0",
+        Some(&managed_prefix),
+        &managed_npm,
+        true,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_settings_path(telemetry);
+    let (repeat_events, _r, repeat_captures, _f) = composed_non_convergent_events(&repeat, true);
+    assert_eq!(repeat_captures, 0, "an already-blocked episode is not re-captured");
+    assert!(repeat_events.is_empty(), "no second envelope for the same episode");
 }
 
 /// The per-episode bound holds ACROSS runs for the not-yet-aimed foreign shape:
@@ -1561,6 +1747,7 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
