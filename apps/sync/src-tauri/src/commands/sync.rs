@@ -293,6 +293,13 @@ struct ManualRunnerExitContext {
     /// `session_end_latch` axis, from the SAME shared reader so the two seams
     /// cannot drift.
     session_end_latch: SessionEndLatchReading,
+    /// The crash-surviving Node diagnostic report read for this run, set by the
+    /// exit seam AFTER the content snapshot. `None` when no read was performed
+    /// (every non-production caller), in which case the fatal class/shape come from
+    /// stderr byte-identically to today. When `Some`, the SHARED `runner_fatal_axes`
+    /// lets a report name the reason a Windows fail-fast erased from stderr —
+    /// without ever overriding a stderr-named class (HQ-DESKTOP-5X).
+    runner_report: Option<crate::commands::runner_report::RunnerReportRead>,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -308,6 +315,7 @@ impl Default for ManualRunnerExitContext {
             runner_unmatched_stderr_shapes: None,
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
+            runner_report: None,
         }
     }
 }
@@ -349,6 +357,9 @@ fn manual_runner_exit_context(
         // DBG_TERMINATE_PROCESS/no-signal shape; inert here (HQ-DESKTOP-5X).
         windows_terminator: None,
         session_end_latch: SessionEndLatchReading::Unavailable,
+        // Set by the exit seam after this snapshot (reads the crash-surviving Node
+        // report); `None` here so a context that never read one is byte-identical.
+        runner_report: None,
     }
 }
 
@@ -365,13 +376,47 @@ fn runner_exit_telemetry_context(
     // Prefer the class-scoped heap-OOM shape when this run retained one, else the
     // generic tail shape byte-identically — the same seam the watcher route uses.
     let stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
+    // Resolve the final fatal class/shape/signature and the reason-attribution
+    // axes. When a crash-surviving Node report was read this run (production exit
+    // seam only), the SHARED `runner_fatal_axes` lets it NAME the reason a Windows
+    // fail-fast erased from stderr — but never overrides a stderr-named class. When
+    // no report was read (`None`), the class/shape come from stderr byte-identically
+    // to today and no new axis is added.
+    let stderr_fatal_class = totals.runner_fatal_class.as_str();
+    let axes = context.runner_report.as_ref().map(|report| {
+        hq_desktop_core::runner_diagnostic_report::runner_fatal_axes(
+            stderr_fatal_class,
+            &stack.shape,
+            &stack.signature,
+            report.read_token,
+            report.attribution.as_ref(),
+        )
+    });
+    let (fatal_class, stack_shape, stack_signature) = match &axes {
+        Some(axes) => (
+            axes.fatal_class.clone(),
+            axes.stack_shape.clone(),
+            axes.stack_signature.clone(),
+        ),
+        None => (
+            stderr_fatal_class.to_string(),
+            stack.shape.clone(),
+            stack.signature.clone(),
+        ),
+    };
     let mut tags = vec![
         ("sync_route", "manual".to_string()),
         ("sync_scope", context.sync_scope.clone()),
         ("runner_phase", context.runner_phase.clone()),
-        ("runner_stack_shape", stack.shape),
-        ("runner_stack_signature", stack.signature),
+        ("runner_stack_shape", stack_shape),
+        ("runner_stack_signature", stack_signature),
     ];
+    // The reason-attribution axes ride only when a report read was performed, so a
+    // context that never read one produces a byte-identical event.
+    if let Some(axes) = &axes {
+        tags.push(("runner_fatal_source", axes.fatal_source.to_string()));
+        tags.push(("runner_report_read", axes.report_read.to_string()));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
     // the SAME RunTotals source the watcher route reads, keeping the routes
@@ -457,10 +502,7 @@ fn runner_exit_telemetry_context(
     // route's watcher_hq_cloud_version/package.
     tags.push(("hq_cloud_version", HQ_CLOUD_VERSION.to_string()));
     tags.push(("hq_cloud_package", HQ_CLOUD_PACKAGE.to_string()));
-    tags.push((
-        "runner_fatal_class",
-        totals.runner_fatal_class.as_str().to_string(),
-    ));
+    tags.push(("runner_fatal_class", fatal_class));
     // Symmetric with the watcher route: the libuv syscall + errno attach wherever
     // runner_fatal_class is, so the two routes read the same source and cannot
     // drift. Present only for a libuv fatal-syscall class; both are content-safe
@@ -1208,6 +1250,22 @@ pub fn build_sync_spawn_args(
     personal_sync_enabled: bool,
     scope: &SyncRunScope,
 ) -> SpawnArgs {
+    // Compatibility overload: no per-generation report directory. The production
+    // manual route calls the `_with_report` variant with one so a Windows fault can
+    // finally name its cause; every other caller is byte-identical to today.
+    build_sync_spawn_args_with_report(hq_folder_path, personal_sync_enabled, scope, None)
+}
+
+/// As [`build_sync_spawn_args`], but also asks Node for a crash-surviving fatal
+/// diagnostic report written into `report_directory` (HQ-DESKTOP-5X). The manual
+/// route uses this so a Windows sync-child fault can name WHY it died, where its
+/// stderr fatal line is lost to the abort.
+pub fn build_sync_spawn_args_with_report(
+    hq_folder_path: &str,
+    personal_sync_enabled: bool,
+    scope: &SyncRunScope,
+    report_directory: Option<&str>,
+) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -1223,6 +1281,20 @@ pub fn build_sync_spawn_args(
         &mut env,
         hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
     );
+
+    // Ask Node for a crash-surviving fatal diagnostic report via the SAME shared
+    // NODE_OPTIONS composer the watcher route uses, so the manual and watcher
+    // launches cannot drift. The manual route gets ONLY the report flags — no heap
+    // ceiling (out of scope for this route) — and inherits none today, so this is
+    // the first NODE_OPTIONS it sets. A user `--report-*` still suppresses ours.
+    let spawn_flags = hq_desktop_core::daemon::compose_runner_spawn_flags(
+        std::env::var("NODE_OPTIONS").ok().as_deref(),
+        None,
+        report_directory.map(|directory| hq_desktop_core::daemon::RunnerReportSpec { directory }),
+    );
+    if let Some(node_options) = spawn_flags.node_options {
+        env.insert("NODE_OPTIONS".to_string(), node_options);
+    }
 
     let mut args = vec![
         "-y".to_string(),
@@ -2715,7 +2787,22 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // ATTEMPT timestamp (distinct from completion/success) and heartbeat.
     crate::commands::client_health::record_sync_attempt_started();
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
+    // Ask Node for a crash-surviving fatal diagnostic report for this run's
+    // generation (under the system temp dir, OUTSIDE the synced HQ tree). The exit
+    // seam reads + deletes it so a Windows fault can finally name WHY it died. `None`
+    // when the directory could not be created → no report requested.
+    let runner_report_dir =
+        crate::commands::runner_report::runner_report_dir_for(sync_generation);
+    let runner_report_request = hq_desktop_core::daemon::runner_report_request(
+        std::env::var("NODE_OPTIONS").ok().as_deref(),
+        runner_report_dir.is_some(),
+    );
+    let spawn_args = build_sync_spawn_args_with_report(
+        &hq_folder_path,
+        personal_sync_enabled,
+        &scope,
+        runner_report_dir.as_deref().and_then(std::path::Path::to_str),
+    );
     log(
         "sync",
         &format!(
@@ -2921,6 +3008,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             current_windows_terminator_attribution(&app_bg, code, signal);
                         exit_context.session_end_latch =
                             current_session_end_latch_reading_for_exit(code, signal);
+                        // Read the crash-surviving Node diagnostic report for this
+                        // run (bounded filesystem work; the pure reader deletes the
+                        // file after). The shared reader + `runner_fatal_axes` name
+                        // the reason a Windows fail-fast erased from stderr — without
+                        // overriding a stderr-named class (HQ-DESKTOP-5X). The manual
+                        // route has no supervisor to starve, so the read is inline.
+                        exit_context.runner_report = Some(
+                            crate::commands::runner_report::read_runner_diagnostic_report(
+                                runner_report_dir.as_deref(),
+                                runner_report_request,
+                            ),
+                        );
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
@@ -4427,6 +4526,66 @@ mod tests {
             }),
             "manual exit capture must attach the unmatched-stderr rollup: {tags:?}"
         );
+    }
+
+    #[test]
+    fn manual_windows_fault_names_the_reason_from_a_crash_surviving_report() {
+        use hq_desktop_core::runner_diagnostic_report::{
+            parse_runner_diagnostic_report, RunnerReportParse,
+        };
+        // The manual-route HQ-DESKTOP-5X shape: a Windows fail-fast (0xC0000409)
+        // whose stderr fatal line was lost, so `totals.runner_fatal_class` is `none`.
+        // With a crash-surviving Node report read, the SHARED reader/decision names
+        // the reason and the two provenance axes ride the capture.
+        let RunnerReportParse::Named(attribution) = parse_runner_diagnostic_report(
+            &serde_json::json!({
+                "header": { "event": "Allocation failed - JavaScript heap out of memory", "trigger": "FatalError" },
+                "javascriptStack": { "message": "FATAL ERROR: JavaScript heap out of memory" },
+                "nativeStack": [{ "symbol": "node::OnFatalError(char const*, char const*) [/node]" }]
+            })
+            .to_string(),
+        ) else {
+            panic!("fixture report must name a class");
+        };
+        let context = ManualRunnerExitContext {
+            runner_report: Some(crate::commands::runner_report::RunnerReportRead {
+                read_token: "report_read",
+                attribution: Some(attribution),
+            }),
+            ..Default::default()
+        };
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(WINDOWS_STACK_BUFFER_OVERRUN),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
+        let tag = |key: &str| {
+            tags.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(tag("runner_fatal_class"), Some("heap_oom"));
+        assert_eq!(tag("runner_fatal_source"), Some("node_report"));
+        assert_eq!(tag("runner_report_read"), Some("report_read"));
+        assert_eq!(tag("windows_exit_class"), Some("fault"));
+        assert_ne!(tag("runner_stack_shape"), Some("all_redacted"));
+    }
+
+    #[test]
+    fn manual_exit_without_a_report_read_is_byte_identical_and_adds_no_new_axes() {
+        // The default (no report read): no runner_fatal_source / runner_report_read
+        // axis, and the fatal class is exactly the stderr-derived one.
+        let context = ManualRunnerExitContext::default();
+        assert!(context.runner_report.is_none());
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        assert!(tags.iter().all(|(key, _)| *key != "runner_fatal_source"));
+        assert!(tags.iter().all(|(key, _)| *key != "runner_report_read"));
+        assert!(tags
+            .iter()
+            .any(|(key, value)| *key == "runner_fatal_class" && value == "none"));
     }
 
     #[test]

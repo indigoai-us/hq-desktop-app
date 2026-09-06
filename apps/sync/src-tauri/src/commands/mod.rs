@@ -61,6 +61,7 @@ pub mod provision_reconcile;
 pub mod realtime_mutation;
 pub mod recall_sdk;
 pub mod run_cli_provision;
+pub mod runner_report;
 pub mod session_end_attribution;
 pub mod session_end_latch;
 pub mod session_end_observer;

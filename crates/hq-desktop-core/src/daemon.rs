@@ -133,7 +133,10 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         Some(script) => crate::runner_target::RunnerSpawnTarget::Local { script },
         None => crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root(),
     };
-    build_watch_runner_args_for_target(hq_folder_path, &target)
+    // Compatibility wrapper: no per-generation report directory (the app owns that
+    // and calls `build_watch_runner_args_for_target` with one). The heap-ceiling
+    // behaviour is unchanged.
+    build_watch_runner_args_for_target(hq_folder_path, &target, None)
 }
 
 /// Build the watcher command for a source selected before startup preflight.
@@ -145,6 +148,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
 pub fn build_watch_runner_args_for_target(
     hq_folder_path: &str,
     target: &crate::runner_target::RunnerSpawnTarget,
+    report_directory: Option<&str>,
 ) -> SpawnArgs {
     use crate::hq_cloud::{
         HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
@@ -169,17 +173,20 @@ pub fn build_watch_runner_args_for_target(
     // Bandwidth governor: tell the runner what share of the link it may use.
     crate::bandwidth::apply_bandwidth_env(&mut env, crate::bandwidth::prefs_bandwidth_percent());
 
-    // Declare a V8 old-space ceiling for the runner child so its mid-pull heap
-    // growth is bounded at an app-DECLARED point rather than one derived from
-    // whatever RAM the host happens to have (auto-sync watcher unbounded-memory
-    // cluster). The child inherits THIS process's environment, so read any
-    // inherited NODE_OPTIONS and MERGE the ceiling into it: an explicit user
-    // `--max-old-space-size` always wins and every other inherited option is
-    // preserved verbatim. Applied identically on BOTH spawn paths below.
+    // Declare a V8 old-space ceiling for the runner child AND ask Node for a
+    // crash-surviving fatal diagnostic report, composed into ONE NODE_OPTIONS value
+    // through the shared seam. The child inherits THIS process's environment, so an
+    // explicit user `--max-old-space-size` always wins, a user `--report-*` option
+    // suppresses ours, and every other inherited option is preserved verbatim.
+    // Applied identically on BOTH spawn paths below (the shared helper is also
+    // called by the manual route, so the two cannot drift).
     let heap_ceiling = effective_runner_heap_ceiling();
-    if let Some(node_options) =
-        merge_node_options_ceiling(std::env::var("NODE_OPTIONS").ok().as_deref(), heap_ceiling)
-    {
+    let spawn_flags = compose_runner_spawn_flags(
+        std::env::var("NODE_OPTIONS").ok().as_deref(),
+        Some(heap_ceiling),
+        report_directory.map(|directory| RunnerReportSpec { directory }),
+    );
+    if let Some(node_options) = spawn_flags.node_options.clone() {
         env.insert("NODE_OPTIONS".to_string(), node_options);
     }
 
@@ -216,13 +223,15 @@ pub fn build_watch_runner_args_for_target(
     // to npm; production falls through to the npx-pinned path below.
     if let crate::runner_target::RunnerSpawnTarget::Local { script } = target {
         let mut args = Vec::new();
-        // On the path we own (bare `node`), ALSO pass the ceiling in argv so a
-        // NODE_OPTIONS that fails to reach the child (host policy/packaging)
-        // still bounds the heap. A node CLI flag must precede the script path,
-        // and it is withheld when the user set their own `--max-old-space-size`
+        // On the path we own (bare `node`), ALSO pass the ceiling AND the
+        // diagnostic-report flags in argv so a NODE_OPTIONS that fails to reach the
+        // child (host policy/packaging) still bounds the heap and still writes a
+        // fatal report. Node CLI flags must precede the script path, and the
+        // composer already withheld the ceiling flag when the user set their own
+        // `--max-old-space-size` and the report flags when they set `--report-*`
         // (argv would override the user's NODE_OPTIONS value, which must win).
-        if let Some(flag) = runner_max_old_space_arg(heap_ceiling) {
-            args.push(flag);
+        for flag in &spawn_flags.argv_flags {
+            args.push(flag.clone());
         }
         args.push(script.clone());
         args.extend(runner_args);
@@ -425,6 +434,166 @@ pub fn runner_max_old_space_arg(ceiling: RunnerHeapCeiling) -> Option<String> {
     match ceiling.source {
         RunnerHeapCeilingSource::UserNodeOptions => None,
         _ => Some(format!("--max-old-space-size={}", ceiling.mb)),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runner Node diagnostic report (HQ-DESKTOP-5W / HQ-DESKTOP-5X)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The stderr and WER channels are both empirically dead for a Windows sync
+// child fail-fast (`0xC0000409`): the child's V8 fatal-error line is queued on
+// an async libuv pipe that never drains once the process aborts, and WER has
+// bound a faulting image zero times in 90 days. Node ships one channel that
+// survives the abort — `--report-on-fatalerror` writes a diagnostic report file
+// synchronously at fatal-error time, before the abort. We compose those flags
+// into the SAME NODE_OPTIONS seam that already carries the runner heap ceiling,
+// so both spawn routes ask Node for a crash-surviving report the exit path can
+// then read (content-safely) to finally name WHY the child died.
+
+/// The fixed filename Node writes its fatal diagnostic report to. A single known
+/// name (never templated) so the reader looks in exactly one place and a repeated
+/// fault OVERWRITES rather than accumulates files.
+pub const RUNNER_DIAGNOSTIC_REPORT_FILENAME: &str = "runner-fatal-report.json";
+
+/// Whether the runner child was asked for a Node diagnostic report at spawn — and
+/// when not, why. Fixed vocabulary so the exit path can seed an honest
+/// `runner_report_read` token without re-deriving intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerReportRequest {
+    /// The `--report-*` flags were composed into the child's launch.
+    Requested,
+    /// The inherited NODE_OPTIONS already set a `--report-*` option, so the user
+    /// owns the report configuration and we added none of ours.
+    DisabledByUserOptions,
+    /// No per-generation report directory was available, so no flags were composed.
+    NotRequested,
+}
+
+impl RunnerReportRequest {
+    /// The `runner_report_read` token this request implies BEFORE any read: a
+    /// requested-but-unread report is honestly `report_absent` until the reader
+    /// upgrades it; a user override or a non-request renders its own token.
+    pub fn seed_report_read_token(self) -> &'static str {
+        match self {
+            Self::Requested => "report_absent",
+            Self::DisabledByUserOptions => "report_disabled_by_user_options",
+            Self::NotRequested => "report_not_requested",
+        }
+    }
+}
+
+/// A per-generation Node-diagnostic-report target: the app-owned directory Node
+/// writes into (the filename is the fixed [`RUNNER_DIAGNOSTIC_REPORT_FILENAME`]).
+#[derive(Debug, Clone, Copy)]
+pub struct RunnerReportSpec<'a> {
+    pub directory: &'a str,
+}
+
+/// The composed launch flags for a runner child: its `NODE_OPTIONS` value, the
+/// flags to ALSO pass in argv on the bare-`node` path, and the report provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerSpawnFlags {
+    /// The value to set the child's `NODE_OPTIONS` to, or `None` to leave it unset
+    /// (nothing was appended and nothing was inherited).
+    pub node_options: Option<String>,
+    /// Flags to ALSO pass in argv on the bare-`node` local-runner path, mirroring
+    /// the existing ceiling double-application so a host that strips NODE_OPTIONS
+    /// still gets them. Empty on the npx path (which cannot take node CLI flags).
+    pub argv_flags: Vec<String>,
+    /// Whether a report was requested, for the exit path's honest seed.
+    pub report_request: RunnerReportRequest,
+}
+
+/// True when an inherited NODE_OPTIONS already carries any `--report-*` option, so
+/// the user owns the diagnostic-report configuration and we must add none of ours.
+fn inherited_sets_report_option(inherited: Option<&str>) -> bool {
+    inherited.is_some_and(|value| {
+        value.split_whitespace().any(|token| {
+            token
+                .trim_start_matches(['"', '\''])
+                .starts_with("--report")
+        })
+    })
+}
+
+/// Pure resolution of the report-request provenance, shared by the spawn composer
+/// and the exit-path seeding so intent is derived in exactly one place.
+pub fn runner_report_request(
+    inherited_node_options: Option<&str>,
+    report_dir_available: bool,
+) -> RunnerReportRequest {
+    if !report_dir_available {
+        RunnerReportRequest::NotRequested
+    } else if inherited_sets_report_option(inherited_node_options) {
+        RunnerReportRequest::DisabledByUserOptions
+    } else {
+        RunnerReportRequest::Requested
+    }
+}
+
+/// The Node diagnostic-report flags for a given report directory. `--report-compact`
+/// keeps the file small; `--report-on-fatalerror` writes it synchronously at
+/// fatal-error time (before the abort) — the crash-surviving channel.
+fn runner_report_flags(directory: &str) -> Vec<String> {
+    vec![
+        "--report-on-fatalerror".to_string(),
+        "--report-compact".to_string(),
+        format!("--report-directory={directory}"),
+        format!("--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"),
+    ]
+}
+
+/// Compose the runner child's `NODE_OPTIONS` and bare-`node` argv flags from the
+/// inherited environment, an optional heap ceiling (watcher route only), and an
+/// optional per-generation diagnostic-report directory. Pure — reads no
+/// environment and no filesystem. This is the single seam BOTH spawn routes use,
+/// so the manual and watcher launches cannot drift.
+///
+/// Precedence is preserved verbatim: an inherited user `--max-old-space-size`
+/// still wins (the ceiling flag is withheld exactly as [`runner_max_old_space_arg`]
+/// decides), every other inherited option passes through unchanged, and if the
+/// user already set any `--report-*` option we add none of ours and say so via
+/// [`RunnerReportRequest::DisabledByUserOptions`].
+pub fn compose_runner_spawn_flags(
+    inherited_node_options: Option<&str>,
+    ceiling: Option<RunnerHeapCeiling>,
+    report: Option<RunnerReportSpec<'_>>,
+) -> RunnerSpawnFlags {
+    let mut node_options = inherited_node_options
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut argv_flags = Vec::new();
+    let append = |value: &mut Option<String>, flag: &str| match value {
+        Some(existing) => existing.push_str(&format!(" {flag}")),
+        None => *value = Some(flag.to_string()),
+    };
+
+    // Heap ceiling (watcher route only): identical precedence to the shipped
+    // ceiling path — withheld when the user's own NODE_OPTIONS declares one.
+    if let Some(ceiling) = ceiling {
+        if let Some(flag) = runner_max_old_space_arg(ceiling) {
+            append(&mut node_options, &flag);
+            argv_flags.push(flag);
+        }
+    }
+
+    // Diagnostic report: added unless the user already owns a `--report-*` option.
+    let report_request = runner_report_request(inherited_node_options, report.is_some());
+    if report_request == RunnerReportRequest::Requested {
+        if let Some(spec) = report {
+            for flag in runner_report_flags(spec.directory) {
+                append(&mut node_options, &flag);
+                argv_flags.push(flag);
+            }
+        }
+    }
+
+    RunnerSpawnFlags {
+        node_options,
+        argv_flags,
+        report_request,
     }
 }
 
@@ -1358,7 +1527,7 @@ mod tests {
         let target = crate::runner_target::RunnerSpawnTarget::Npx {
             cache_root: crate::runner_target::NpmCacheRoot::Established(cache_root.clone()),
         };
-        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target, None);
         let env = args.env.expect("watch runner env");
 
         assert_eq!(
@@ -1375,7 +1544,7 @@ mod tests {
                 "/tmp/assumed-npm-cache",
             )),
         };
-        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target, None);
         let env = args.env.expect("watch runner env");
 
         assert!(
@@ -1646,6 +1815,113 @@ mod tests {
                 source: RunnerHeapCeilingSource::UserNodeOptions
             }),
             None
+        );
+    }
+
+    fn declared_ceiling(mb: u32) -> RunnerHeapCeiling {
+        RunnerHeapCeiling {
+            mb,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        }
+    }
+
+    #[test]
+    fn compose_watcher_route_adds_ceiling_and_report_flags_to_both_node_options_and_argv() {
+        let flags = compose_runner_spawn_flags(
+            None,
+            Some(declared_ceiling(3584)),
+            Some(RunnerReportSpec {
+                directory: "/tmp/gen-1",
+            }),
+        );
+        let node_options = flags.node_options.expect("watcher route sets NODE_OPTIONS");
+        assert!(node_options.contains("--max-old-space-size=3584"));
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(node_options.contains("--report-compact"));
+        assert!(node_options.contains("--report-directory=/tmp/gen-1"));
+        assert!(node_options.contains(&format!(
+            "--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"
+        )));
+        // The bare-node path double-applies every one of them in argv.
+        assert!(flags.argv_flags.iter().any(|f| f == "--max-old-space-size=3584"));
+        assert!(flags.argv_flags.iter().any(|f| f == "--report-on-fatalerror"));
+        assert_eq!(flags.report_request, RunnerReportRequest::Requested);
+    }
+
+    #[test]
+    fn compose_manual_route_sets_only_report_flags_no_ceiling() {
+        // No ceiling (manual route) and nothing inherited → NODE_OPTIONS is exactly
+        // the report flags, and it carries no heap ceiling.
+        let flags = compose_runner_spawn_flags(
+            None,
+            None,
+            Some(RunnerReportSpec {
+                directory: "/tmp/gen-2",
+            }),
+        );
+        let node_options = flags.node_options.expect("manual route now sets NODE_OPTIONS");
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(!node_options.contains("--max-old-space-size"));
+        assert_eq!(flags.report_request, RunnerReportRequest::Requested);
+    }
+
+    #[test]
+    fn compose_preserves_inherited_options_and_lets_user_max_old_space_win() {
+        // A user --max-old-space-size is signalled by the ceiling source; ours is
+        // withheld, every other inherited option passes through verbatim, and the
+        // report flags are still appended.
+        let flags = compose_runner_spawn_flags(
+            Some("--enable-source-maps --max-old-space-size=1234"),
+            Some(RunnerHeapCeiling {
+                mb: 3584,
+                source: RunnerHeapCeilingSource::UserNodeOptions,
+            }),
+            Some(RunnerReportSpec {
+                directory: "/tmp/gen-3",
+            }),
+        );
+        let node_options = flags.node_options.expect("NODE_OPTIONS present");
+        assert!(node_options.contains("--enable-source-maps"));
+        assert!(node_options.contains("--max-old-space-size=1234"));
+        assert!(!node_options.contains("--max-old-space-size=3584"));
+        assert!(node_options.contains("--report-on-fatalerror"));
+        // Our ceiling flag is not double-applied in argv either.
+        assert!(!flags.argv_flags.iter().any(|f| f.contains("3584")));
+    }
+
+    #[test]
+    fn compose_withholds_all_report_flags_when_user_set_a_report_option() {
+        let flags = compose_runner_spawn_flags(
+            Some("--report-directory=/home/me/reports"),
+            None,
+            Some(RunnerReportSpec {
+                directory: "/tmp/gen-4",
+            }),
+        );
+        let node_options = flags.node_options.expect("inherited option preserved");
+        assert!(node_options.contains("--report-directory=/home/me/reports"));
+        assert!(!node_options.contains("--report-on-fatalerror"));
+        assert!(!node_options.contains("/tmp/gen-4"));
+        assert_eq!(
+            flags.report_request,
+            RunnerReportRequest::DisabledByUserOptions
+        );
+        assert_eq!(
+            flags.report_request.seed_report_read_token(),
+            "report_disabled_by_user_options"
+        );
+    }
+
+    #[test]
+    fn compose_without_a_report_dir_requests_no_report() {
+        let flags = compose_runner_spawn_flags(None, Some(declared_ceiling(3584)), None);
+        let node_options = flags.node_options.expect("ceiling still set");
+        assert!(node_options.contains("--max-old-space-size=3584"));
+        assert!(!node_options.contains("--report-on-fatalerror"));
+        assert_eq!(flags.report_request, RunnerReportRequest::NotRequested);
+        assert_eq!(
+            flags.report_request.seed_report_read_token(),
+            "report_not_requested"
         );
     }
 

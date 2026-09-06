@@ -1003,6 +1003,51 @@ fn heap_oom_stack_shape(frames: &[String]) -> RunnerStackShape {
     }
 }
 
+/// Strip a Node diagnostic-report native-frame symbol down to a content-safe
+/// form before it is tokenised or hashed: drop a leading `0x…` instruction
+/// pointer if the report embeds one, and a trailing `[module]` suffix (which on
+/// some platforms is a filesystem path). Reuses the exact discipline the stderr
+/// native-frame parser uses ([`parse_native_frame_symbol`] /
+/// [`strip_trailing_bracketed`]) so the symbol that reaches the shape builder is
+/// the function name only — never an address, a module path, or observed bytes
+/// beyond the symbol itself.
+pub fn normalize_report_native_symbol(symbol: &str) -> String {
+    let symbol = symbol.trim();
+    let symbol = match symbol.split_once(char::is_whitespace) {
+        Some((maybe_address, rest))
+            if maybe_address.len() > 2
+                && (maybe_address.starts_with("0x") || maybe_address.starts_with("0X"))
+                && maybe_address.as_bytes()[2..]
+                    .iter()
+                    .all(u8::is_ascii_hexdigit) =>
+        {
+            rest.trim_start()
+        }
+        _ => symbol,
+    };
+    strip_trailing_bracketed(symbol).trim().to_string()
+}
+
+/// Build a content-safe stack shape from a Node diagnostic report's native-frame
+/// symbols, reusing the SAME frame allow-list and 16-hex-signature discipline as
+/// the macOS heap-OOM stderr path ([`heap_oom_stack_shape`]) so a report-derived
+/// shape and a stderr-derived one are built identically. Symbols must already be
+/// normalized via [`normalize_report_native_symbol`]. An empty (or absent) native
+/// stack degrades to the same `all_redacted` / `unknown` sentinel the generic
+/// tail path uses, so a report that names a class but carries no readable frames
+/// never fabricates a shape. Only fixed tokens and the digest ever escape.
+pub fn runner_report_stack_shape(normalized_symbols: &[String]) -> RunnerStackShape {
+    if normalized_symbols.is_empty() {
+        return RunnerStackShape {
+            shape: "all_redacted".to_string(),
+            depth: 0,
+            redacted_frames: 0,
+            signature: "unknown".to_string(),
+        };
+    }
+    heap_oom_stack_shape(normalized_symbols)
+}
+
 /// Choose the exit-time stack shape both routes report: the class-scoped
 /// heap-OOM shape when a heap-OOM native stack was retained this pass, else the
 /// generic tail shape byte-identically. Reading from the shared `RunTotals` keeps
