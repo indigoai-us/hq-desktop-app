@@ -421,47 +421,105 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// the session finds `hq` via this PATH, so the version check / auto-update /
 /// install must consult it too, or it wrongly concludes the CLI is missing or
 /// stale when it merely lives on a prefix only the settings PATH knows about.
-pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
-    let claude = hq_root.join(".claude");
+pub fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
     // Claude Code merges settings PER KEY, and `env.PATH` is a scalar: a value in
     // settings.local.json OVERRIDES the one in settings.json rather than
     // concatenating. So the FIRST file that defines a non-empty `env.PATH` wins
     // outright — settings.json is consulted only when the local file has none.
     // Concatenating would let a stale base PATH resolve an `hq` the session
-    // (which uses only the local PATH) would never run.
-    for file in ["settings.local.json", "settings.json"] {
-        let raw = match std::fs::read_to_string(claude.join(file)) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let value: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let path_val = value
-            .get("env")
-            .and_then(|env| env.get("PATH"))
-            .and_then(|p| p.as_str())
-            .unwrap_or("");
-        if path_val.is_empty() {
+    // (which uses only the local PATH) would never run. That precedence lives in
+    // ONE place — `winning_settings_path_file` — so the resolver here and the
+    // installer's writer can never disagree about which file supplies env.PATH
+    // (the reader/writer split that let a stale Homebrew `hq` shadow the managed
+    // CLI in HQ-DESKTOP-46).
+    let claude = hq_root.join(".claude");
+    let Some(file) = winning_settings_path_file(hq_root).filename() else {
+        return Vec::new();
+    };
+    let path_val = settings_env_path_value(&claude.join(file)).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for seg in path_val.split(PATH_SEP) {
+        if seg.is_empty() {
             continue;
         }
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        for seg in path_val.split(PATH_SEP) {
-            if seg.is_empty() {
-                continue;
-            }
-            let dir = PathBuf::from(seg);
-            // Absolute + real directory only: a relative or missing entry from a
-            // hand-edited settings file must not shadow the real search order.
-            if dir.is_absolute() && dir.is_dir() && seen.insert(dir.clone()) {
-                dirs.push(dir);
-            }
+        let dir = PathBuf::from(seg);
+        // Absolute + real directory only: a relative or missing entry from a
+        // hand-edited settings file must not shadow the real search order.
+        if dir.is_absolute() && dir.is_dir() && seen.insert(dir.clone()) {
+            dirs.push(dir);
         }
-        return dirs;
     }
-    Vec::new()
+    dirs
+}
+
+/// Which `.claude` settings file supplies the winning `env.PATH` for an HQ root,
+/// under the precedence Claude Code applies (see [`settings_path_dirs_in`]):
+/// `settings.local.json` wins whenever it defines a non-empty `env.PATH`, else
+/// `settings.json`, else neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPathFile {
+    /// `.claude/settings.local.json` defines a non-empty `env.PATH`.
+    Local,
+    /// `.claude/settings.local.json` does not, but `.claude/settings.json` does.
+    Base,
+    /// Neither file defines a non-empty `env.PATH`.
+    #[default]
+    None,
+}
+
+impl SettingsPathFile {
+    /// The `.claude` filename this variant names, or `None` when neither file
+    /// supplies a PATH.
+    pub fn filename(self) -> Option<&'static str> {
+        match self {
+            Self::Local => Some("settings.local.json"),
+            Self::Base => Some("settings.json"),
+            Self::None => Option::None,
+        }
+    }
+
+    /// Closed, path-free token for the `settings_path_file` telemetry tag.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Base => "base",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Read a `.claude` settings file's `env.PATH` string, if the file exists, parses
+/// as JSON, and defines a non-empty `env.PATH`. `None` for a missing, malformed,
+/// or PATH-less file — the same three skips the resolver has always applied,
+/// now shared between the reader and [`winning_settings_path_file`].
+fn settings_env_path_value(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let path_val = value
+        .get("env")
+        .and_then(|env| env.get("PATH"))
+        .and_then(|p| p.as_str())?;
+    (!path_val.is_empty()).then(|| path_val.to_string())
+}
+
+/// The [`SettingsPathFile`] whose `env.PATH` the app resolves `hq` through for
+/// `hq_root`. Single source of truth shared by the resolver
+/// ([`settings_path_dirs_in`]) and the installer's writer
+/// (`configure_claude_settings_path`): the composed managed-first PATH must be
+/// WRITTEN into whichever file the resolver READS, or it lands in a file the
+/// resolver ignores and a stale foreign `hq` keeps shadowing the managed CLI
+/// (HQ-DESKTOP-46). Pure over the filesystem (only reads the two settings
+/// files) so the precedence is unit-testable with a tempdir.
+pub fn winning_settings_path_file(hq_root: &Path) -> SettingsPathFile {
+    let claude = hq_root.join(".claude");
+    if settings_env_path_value(&claude.join("settings.local.json")).is_some() {
+        SettingsPathFile::Local
+    } else if settings_env_path_value(&claude.join("settings.json")).is_some() {
+        SettingsPathFile::Base
+    } else {
+        SettingsPathFile::None
+    }
 }
 
 /// True iff `path` is a regular file with an executable bit set. Merely existing
@@ -498,6 +556,15 @@ fn resolved_hq_folder_for_path() -> PathBuf {
 /// no HQ folder or settings file, so callers degrade to their existing search.
 pub(crate) fn settings_path_dirs() -> Vec<PathBuf> {
     settings_path_dirs_in(&resolved_hq_folder_for_path())
+}
+
+/// The HQ folder the PATH resolver reads its `.claude` settings from — the same
+/// four-tier resolution [`settings_path_dirs`] uses (menubar.json `hqPath`, then
+/// config.json `hqFolderPath`, then core.yaml discovery, then `~/HQ`). Public so
+/// the in-run settings-PATH repair writes into the SAME root the resolver reads,
+/// keeping reader and writer on one folder.
+pub fn resolved_hq_folder() -> PathBuf {
+    resolved_hq_folder_for_path()
 }
 
 /// Whether `path` lives inside npm's `npx` cache (`…/_npx/…`).
@@ -1905,6 +1972,41 @@ mod tests {
             &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
         );
         assert_eq!(settings_path_dirs_in(root), vec![base]);
+    }
+
+    #[test]
+    fn winning_settings_path_file_names_local_base_or_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // Nothing at all -> None.
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::None);
+        // Only base defines env.PATH -> Base.
+        write_settings(root, "settings.json", "{\"env\":{\"PATH\":\"/x\"}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+        // Local exists but with an empty/absent env.PATH -> still Base.
+        write_settings(root, "settings.local.json", "{\"env\":{}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+        // Local defines a non-empty env.PATH -> Local wins outright.
+        write_settings(root, "settings.local.json", "{\"env\":{\"PATH\":\"/y\"}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Local);
+        // A malformed local file is skipped, not fatal, and falls through to base.
+        write_settings(root, "settings.local.json", "{not json");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+    }
+
+    #[test]
+    fn settings_path_file_filename_and_tokens_are_closed() {
+        assert_eq!(
+            SettingsPathFile::Local.filename(),
+            Some("settings.local.json")
+        );
+        assert_eq!(SettingsPathFile::Base.filename(), Some("settings.json"));
+        assert_eq!(SettingsPathFile::None.filename(), None);
+        assert_eq!(SettingsPathFile::Local.telemetry_value(), "local");
+        assert_eq!(SettingsPathFile::Base.telemetry_value(), "base");
+        assert_eq!(SettingsPathFile::None.telemetry_value(), "none");
+        // The default file is the safe "nothing supplies a PATH" state.
+        assert_eq!(SettingsPathFile::default(), SettingsPathFile::None);
     }
 
     #[cfg(not(target_os = "windows"))]

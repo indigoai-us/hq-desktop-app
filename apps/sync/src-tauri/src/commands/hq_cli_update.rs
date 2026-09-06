@@ -119,12 +119,23 @@ pub use hq_desktop_core::hq_cli_update::{
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
     ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState,
+    SettingsPathTelemetry,
     NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
     NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
     STDERR_ORIGIN_NON_NPM,
+};
+
+// The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
+// registry-managed, so there is no `.claude` settings file to rewrite. These
+// symbols are used exclusively by `settings_path_repair_and_refinalize`, so they
+// are imported under the same cfg to avoid unused-import warnings on Windows.
+#[cfg(not(windows))]
+use hq_desktop_core::hq_cli_update::{
+    managed_bin_in_settings_path, settings_path_repair_gate, settings_path_repair_outcome,
+    SettingsPathRepairGate,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -1404,6 +1415,9 @@ async fn install_hq_cli_update_via_pnpm(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        // pnpm never reaches the ForeignManaged arm, so no settings-PATH repair
+        // is relevant; the default triple emits not-attempted / none / unknown.
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
@@ -1547,6 +1561,9 @@ async fn install_hq_cli_update_via_bun(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        // Bun never reaches the ForeignManaged arm; the default settings-PATH
+        // triple emits not-attempted / none / unknown.
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: None,
     });
     log("hq-cli-update", &outcome.log_line);
@@ -2301,6 +2318,37 @@ async fn finalize_convergence(
         }
     }
 
+    // Settings-PATH foreign shadow (HQ-DESKTOP-46): the app executes a stale copy
+    // resolved through the winning `.claude` settings file's PATH (undrivable, a
+    // Homebrew/system copy), while HQ delivered `latest` into its own managed
+    // prefix (present shim). Rewrite that settings file's PATH managed-first and
+    // re-resolve, instead of wedging auto-update for a shape HQ can actually
+    // repair — HQ owns the one input it never fixed: the winning file's env.PATH.
+    // Unix-only: Windows PATH is registry-managed, so there is no settings file
+    // to rewrite (configure_claude_settings_path is a no-op there).
+    #[cfg(not(windows))]
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
+        && executed_copy_aim == ExecutedCopyAim::Undrivable
+        && delivered_prefix_shim == DeliveredPrefixShim::Present
+        && hq_bin_lane == paths::ResolutionSource::SettingsPath
+    {
+        if let Some(prefix) = prefix {
+            return settings_path_repair_and_refinalize(
+                app,
+                before_bin,
+                installer_npm,
+                before_version,
+                latest,
+                prefix,
+                already_blocked,
+                &managed_roots,
+                delivered_version.as_deref(),
+                resolved.as_deref(),
+            )
+            .await;
+        }
+    }
+
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
@@ -2419,6 +2467,175 @@ async fn repair_managed_shadow_and_refinalize(
     );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
+}
+
+/// Repair a settings-PATH foreign shadow (HQ-DESKTOP-46): rewrite the winning
+/// `.claude` settings file's `env.PATH` managed-first, re-resolve the binary the
+/// app now executes, and route the result back through `decide_post_install` with
+/// the repair outcome attached. A rewritten repair whose re-resolution lands HQ's
+/// managed current copy converges and clears the marker; a refusal or write
+/// failure keeps today's blocking behaviour, tagged with why. Exactly one attempt
+/// per run, mirroring [`repair_managed_shadow_and_refinalize`]. The caller has
+/// already confirmed the settings-PATH lane and a present managed shim; this
+/// function owns the staleness gate, the rewrite, and the re-decide.
+/// Filesystem-only and non-fatal — a write failure never errors the install
+/// command, it just downgrades the outcome.
+#[cfg(not(windows))]
+#[allow(clippy::too_many_arguments)]
+async fn settings_path_repair_and_refinalize(
+    app: &AppHandle,
+    before_bin: &str,
+    installer_npm: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    prefix: &str,
+    already_blocked: bool,
+    managed_roots: &[PathBuf],
+    managed_copy_version: Option<&str>,
+    executed_version: Option<&str>,
+) -> Result<HqCliUpdateInfo, String> {
+    // The caller confirmed lane == SettingsPath and a present managed shim, so the
+    // only gate outcomes reachable are Attempt / RefusedNotStale.
+    let gate = settings_path_repair_gate(
+        paths::ResolutionSource::SettingsPath,
+        managed_copy_version,
+        executed_version,
+    );
+    let hq_root = paths::resolved_hq_folder();
+    let wrote = if gate == SettingsPathRepairGate::Attempt {
+        if let Some(home) = paths::home_dir() {
+            let hq_root = hq_root.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                crate::commands::install_deps::write_managed_toolchain_settings_path(
+                    &hq_root,
+                    &home,
+                    crate::commands::install_deps::shell_login_path(),
+                )
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("settings-path rewrite task failed: {e}")));
+            match result {
+                Ok(crate::commands::install_deps::SettingsPathWriteOutcome::Wrote(path)) => {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "settings-path repair: rewrote {}",
+                            redact_home(&path.to_string_lossy())
+                        ),
+                    );
+                    true
+                }
+                Ok(crate::commands::install_deps::SettingsPathWriteOutcome::Skipped(reason)) => {
+                    log("hq-cli-update", &format!("settings-path repair skipped: {reason}"));
+                    false
+                }
+                Err(error) => {
+                    log("hq-cli-update", &format!("settings-path repair failed: {error}"));
+                    false
+                }
+            }
+        } else {
+            // No resolvable home dir: nothing to rewrite. Falls through to the
+            // blocking re-decide exactly as a refusal would.
+            false
+        }
+    } else {
+        false
+    };
+    let repair = settings_path_repair_outcome(gate, wrote);
+    log(
+        "hq-cli-update",
+        &format!("settings-path repair outcome: {}", repair.telemetry_value()),
+    );
+
+    // Re-resolve what the app now executes. After a rewrite the settings PATH
+    // lists HQ's managed dirs first, so resolution lands the managed current copy
+    // and converges; for a refusal the same stale copy resolves and the re-decide
+    // blocks exactly as today.
+    let post_install_hq = paths::resolve_bin("hq");
+    let resolved = {
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let delivered_version = {
+        let prefix_owned = prefix.to_string();
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            installed_hq_cli_version_in_prefix(&prefix_owned, &hq)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    let converged = install_converged(resolved.as_deref(), latest);
+    let nonblocking_episode_keys = if converged {
+        Vec::new()
+    } else {
+        non_convergent_episode_markers()
+    };
+    let hq_bin_lane = paths::resolution_source_of_bin(&post_install_hq);
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        Some(prefix),
+        installer_npm,
+        managed_roots,
+        paths::home_dir().as_deref(),
+    );
+    let delivered_prefix_shim = delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref());
+    // Closed, path-free settings-PATH telemetry for the residual event: which file
+    // won, whether it now lists HQ's managed bin dir, and what the repair achieved.
+    let winning_file = paths::winning_settings_path_file(&hq_root);
+    let managed_bin_dir = managed_roots
+        .first()
+        .map(|root| paths::managed_npm_bin_in(root))
+        .unwrap_or_default();
+    let settings_path = SettingsPathTelemetry {
+        repair,
+        file: winning_file,
+        managed_bin: managed_bin_in_settings_path(
+            winning_file,
+            &paths::settings_path_dirs_in(&hq_root),
+            &managed_bin_dir,
+        ),
+    };
+
+    let outcome = decide_post_install(
+        &PostInstallContext::npm(
+            before_bin,
+            &post_install_hq,
+            before_version,
+            resolved.as_deref(),
+            latest,
+            Some(prefix),
+            installer_npm,
+            already_blocked,
+            delivered_version.as_deref(),
+        )
+        .with_managed_roots(managed_roots)
+        .with_nonblocking_episode_keys(&nonblocking_episode_keys)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(hq_bin_lane, delivered_prefix_shim)
+        .with_settings_path(settings_path),
+    );
+    log("hq-cli-update", &outcome.log_line);
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key after the capture (its OWN menubar key,
+    // never the durable blocking marker), so a rewritten-but-still-foreign shape
+    // reports once per `latest` rather than on every check.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
 }
 
 /// Apply the caller-side persistence half of a repeat-guarded install-failure

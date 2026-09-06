@@ -20,6 +20,8 @@ const appUpdater = read('src-tauri/src/updater.rs');
 const workShell = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+const installDeps = read('src-tauri/src/commands/install_deps.rs');
+const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
 const processRegistry = read('src-tauri/src/commands/process.rs');
@@ -220,6 +222,50 @@ describe('master automatic-updates switch', () => {
     // source of truth for both the background gate and the install command.
     expect(cliUpdateCore).toContain('pub fn non_convergent_episode_blocked(');
     expect(cliUpdate).toContain('non_convergent_episode_blocked(');
+  });
+
+  it('an undrivable settings-PATH foreign shadow is repaired in-run, not wedged (HQ-DESKTOP-46)', () => {
+    // The live macOS recurrence: the app executes a stale Homebrew `hq` resolved
+    // via the winning `.claude` settings file's PATH, while HQ delivered `latest`
+    // into its own managed prefix. HQ owns the one input it never fixed — the
+    // winning settings file's env.PATH — so it rewrites that file managed-first
+    // and re-resolves instead of writing the durable marker that wedges forever.
+
+    // 1. The reader and the writer agree on WHICH file supplies env.PATH via one
+    //    source of truth, so the composed managed-first value lands in the file
+    //    the resolver actually reads.
+    expect(paths).toContain('pub fn winning_settings_path_file(');
+    expect(paths).toContain('pub enum SettingsPathFile {');
+    expect(installDeps).toContain('pub(crate) fn write_managed_toolchain_settings_path(');
+    expect(installDeps).toContain('winning_settings_path_file(hq_root)');
+    expect(installDeps).toContain('"settings.local.json"');
+    expect(installDeps).toContain('"settings.json"');
+    // A symlinked settings file cannot redirect the write outside the HQ folder.
+    expect(installDeps).toContain('refusing to write settings PATH outside the HQ folder');
+
+    // 2. The updater's undrivable-foreign arm routes THIS shape into the in-run
+    //    repair — an npm ForeignManaged run that is undrivable, delivered a
+    //    present shim, and resolved via the settings PATH.
+    expect(normalize(cliUpdate)).toContain(
+      'if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged) ' +
+        '&& executed_copy_aim == ExecutedCopyAim::Undrivable ' +
+        '&& delivered_prefix_shim == DeliveredPrefixShim::Present ' +
+        '&& hq_bin_lane == paths::ResolutionSource::SettingsPath',
+    );
+    expect(cliUpdate).toContain('return settings_path_repair_and_refinalize(');
+    expect(cliUpdate).toContain('async fn settings_path_repair_and_refinalize(');
+    // The repair calls the SAME staged + atomic writer the installer uses.
+    expect(cliUpdate).toContain('write_managed_toolchain_settings_path(');
+    expect(cliUpdate).toContain('settings_path_repair_gate(');
+
+    // 3. The durable-marker write is gated on the repair outcome: only a
+    //    `Rewritten` repair relaxes the ForeignManaged block, so the re-decide
+    //    carries the outcome and every refusal still blocks byte-for-byte.
+    expect(cliUpdateCore).toContain('pub fn settings_path_repair_gate(');
+    expect(cliUpdateCore).toContain('pub fn settings_path_repair_outcome(');
+    expect(cliUpdateCore).toContain('pub enum SettingsPathRepair {');
+    expect(cliUpdateCore).toContain('if settings_path_repair == SettingsPathRepair::Rewritten {');
+    expect(cliUpdate).toContain('.with_settings_path(settings_path)');
   });
 
   it('the pnpm executor shares the npm executor’s convergence contract', () => {
@@ -661,6 +707,14 @@ describe('master automatic-updates switch', () => {
     // categories from `bin_resolution_source`, never the resolved path.
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
+    // The settings-PATH triple (HQ-DESKTOP-46) is emitted from closed, path-free
+    // token vocabularies (telemetry_value), never a raw filesystem path.
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "settings_path_file",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "managed_bin_in_settings_path",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "settings_path_repair",');
+    expect(cliUpdateCore).toContain('report.settings_path.file.telemetry_value()');
+    expect(cliUpdateCore).toContain('report.settings_path.managed_bin.telemetry_value()');
+    expect(cliUpdateCore).toContain('report.settings_path.repair.telemetry_value()');
   });
 });
 

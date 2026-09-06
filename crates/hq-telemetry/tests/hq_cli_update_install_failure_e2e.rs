@@ -6,7 +6,7 @@ use hq_desktop_core::hq_cli_update::{
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
     DeliveredPrefixShim, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
     ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmToolchainSource, RequestedSpecKind, ResolutionSource,
+    NpmToolchainSource, RequestedSpecKind, ResolutionSource, SettingsPathTelemetry,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -848,6 +848,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
             hq_bin_lane: ResolutionSource::LoginShell,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+            settings_path: SettingsPathTelemetry::default(),
         })
     });
     assert_eq!(events.len(), 1);
