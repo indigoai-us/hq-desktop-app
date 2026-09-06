@@ -183,6 +183,7 @@
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
+    stampMentionCompany,
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
@@ -2889,7 +2890,13 @@
         // `cancelled` alone is not enough — check the scope we resolved for
         // still matches the scope currently being displayed.
         if (cancelled || mentionRosterScope !== scope || !res.ok) return;
-        liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
+        // The roster request was tenant-scoped but the rows come back without a
+        // company field, so stamp the scope on: that is what lets the picker
+        // render "Izzy · Indigo" instead of a uid fragment.
+        liveMentionTargets = stampMentionCompany(
+          mentionTargetsFromContactsPayload(res.value),
+          scope,
+        );
       });
     return () => {
       cancelled = true;

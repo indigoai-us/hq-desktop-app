@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { mentionTargetLabel, type MentionTarget } from "../mentions.js";
+  import {
+    mentionRowPill,
+    mentionRowSubtitle,
+    mentionTargetLabel,
+    type MentionTarget,
+  } from "../mentions.js";
   import { agentAvatarFor } from "./agent-avatars";
 
   interface Props {
@@ -21,6 +26,7 @@
     <div class="mention-empty">No one matches</div>
   {:else}
     {#each hits as hit, index (hit.participantUid)}
+      {@const pill = mentionRowPill(hit)}
       {@const generated =
         hit.participantType === "agent"
           ? agentAvatarFor(hit.participantUid)
@@ -47,16 +53,12 @@
         >
         <span class="mention-copy">
           <span class="mention-name"
-            >{hit.displayName}{#if hit.disambiguator}<span
+            >{hit.displayName}{#if pill}<span
                 class="mention-tag"
-                data-testid="mention-disambiguator">{hit.disambiguator}</span
+                data-testid="mention-disambiguator">{pill}</span
               >{/if}</span
           >
-          <span class="mention-sub"
-            >{hit.participantType === "agent"
-              ? "Agent"
-              : hit.email || "Teammate"}</span
-          >
+          <span class="mention-sub">{mentionRowSubtitle(hit)}</span>
         </span>
       </button>
     {/each}
@@ -149,8 +151,9 @@
     font-weight: 600;
   }
 
-  /* Tenant disambiguator — only rendered when two survivors share a name, so
-     the user can never mention the wrong company's agent by accident. */
+  /* Owning company — the only pill this row ever shows. Never a uid fragment:
+     it is what tells two same-named agents in different companies apart, and
+     it is omitted entirely when the company cannot be resolved. */
   .mention-tag {
     flex: 0 1 auto;
     overflow: hidden;
