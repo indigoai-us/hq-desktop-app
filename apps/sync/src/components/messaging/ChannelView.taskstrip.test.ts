@@ -9,7 +9,15 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}), emit: vi.fn() }));
 import { flushSync, mount, unmount } from 'svelte';
 import ChannelView from './ChannelView.svelte';
-import roomTasks from './__fixtures__/room-tasks.json';
+import roomTasksFixture from './__fixtures__/room-tasks.json';
+
+// The strip only keeps finished tasks for a short while after their last
+// event, so re-stamp the captured fixture as "just now" — the shapes are
+// what matter here, not the capture time.
+const roomTasks = {
+  ...roomTasksFixture,
+  tasks: roomTasksFixture.tasks.map((t) => ({ ...t, lastEventAt: new Date().toISOString() })),
+};
 
 const DEACON = 'agt_01KTX6WQ6SYH3TZGF3DSDRPGGD';
 const ROOM = 'chn_01M0VBWPD2SQ41EQV2SACNQ23J';
