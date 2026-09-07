@@ -554,6 +554,39 @@ describe("takeRailConversations — siderail is not the full directory", () => {
     expect(seed).toHaveLength(5);
     expect(seed[0]?.channelId).toBe("unread");
   });
+
+  // The seed is the persisted rail, the ⌘K index and the first-paint list, all
+  // rendered keyed by channel id. A duplicate id there crashes the whole shell
+  // with `each_key_duplicate`, so the seed must never emit one — at any size,
+  // and whether the repeat is unread (the pass that used not to dedupe) or not.
+  it("takeDirectorySeed never emits a duplicate channelId", () => {
+    const unreadTwice = [
+      { channelId: "dup", unreadCount: 3, lastActivityAt: "2026-08-20T00:00:00.000Z" },
+      { channelId: "dup", unreadCount: 3, lastActivityAt: "2026-08-20T00:00:00.000Z" },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        channelId: `ch-${i}`,
+        unreadCount: 0,
+        lastActivityAt: `2026-08-${String(17 - (i % 10)).padStart(2, "0")}T00:00:00.000Z`,
+      })),
+    ];
+    const seed = takeDirectorySeed(unreadTwice, 5);
+    const ids = seed.map((row) => row.channelId);
+    expect(ids).toHaveLength(new Set(ids).size);
+    expect(ids.filter((id) => id === "dup")).toHaveLength(1);
+  });
+
+  it("takeDirectorySeed dedupes even when the list already fits the limit", () => {
+    const rows = [
+      { channelId: "a", unreadCount: 0, lastActivityAt: "2026-08-20T00:00:00.000Z" },
+      { channelId: "a", unreadCount: 0, lastActivityAt: "2026-08-20T00:00:00.000Z" },
+      { channelId: "b", unreadCount: 1, lastActivityAt: "2026-08-21T00:00:00.000Z" },
+    ];
+    // Order is preserved for a list that fits — only the repeat is dropped.
+    expect(takeDirectorySeed(rows, 24).map((row) => row.channelId)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
 });
 
 describe("pickAutoOpenConversation", () => {

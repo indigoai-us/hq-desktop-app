@@ -165,27 +165,56 @@ function displayNameKey(target: MentionTarget): string {
 }
 
 /**
- * Short, stable suffix of a uid — the last-resort disambiguator when a roster
- * row carries no company at all. Better an opaque suffix than a dropped row.
+ * The label that tells two same-named targets apart, and the pill the picker
+ * renders. COMPANY NAME first, then an email for humans.
+ *
+ * A raw uid is never a label. The picker used to fall back to a `…906VYS`
+ * suffix of the agent uid, which read as a bug ("why does this agent have that
+ * weird id?") and told the user nothing. When nothing human resolves we return
+ * null and the row simply renders without a pill; the uid stays a hidden match
+ * keyword (see {@link filterMentionCandidates}) so typing part of it still
+ * finds the row.
  */
-function shortUidSuffix(uid: string): string {
-  const bare = uid
-    .trim()
-    .replace(/^agent:/i, "")
-    .replace(/^(agt|prs|cmp|co)_/i, "");
-  const tail = bare || uid.trim();
-  return tail.length > 6 ? `…${tail.slice(-6)}` : tail;
-}
-
-/** The label that tells two same-named targets apart. Company name first. */
-export function mentionDisambiguatorFor(target: MentionTarget): string {
+export function mentionDisambiguatorFor(target: MentionTarget): string | null {
   const companyName = target.companyName?.trim();
   if (companyName) return companyName;
-  const companyUid = target.companyUid?.trim();
-  if (companyUid) return shortUidSuffix(companyUid);
   const email = target.email?.trim();
   if (email) return email;
-  return shortUidSuffix(target.participantUid);
+  return null;
+}
+
+/**
+ * The pill beside the display name: the owning COMPANY, for agents and for
+ * humans when known. Never an id, never an email (the email is already the
+ * human row's subtitle). Unresolved company → no pill.
+ */
+export function mentionRowPill(target: MentionTarget): string | null {
+  return target.companyName?.trim() || null;
+}
+
+/** The row's subtitle: what kind of participant it is, or the human's email. */
+export function mentionRowSubtitle(target: MentionTarget): string {
+  if (target.participantType === "agent") return "Agent";
+  return target.email?.trim() || "Teammate";
+}
+
+/**
+ * Stamp a tenant onto roster rows that arrived without one.
+ *
+ * `GET /v1/notify/contacts?companyUid=…` answers with rows that carry no
+ * company field at all, even though the request itself was tenant-scoped. The
+ * scope IS the row's company, so the client fills it in rather than waiting on
+ * a server field; rows that already declare a company are left alone.
+ */
+export function stampMentionCompany(
+  targets: readonly MentionTarget[],
+  companyUid: string | null | undefined,
+): MentionTarget[] {
+  const uid = companyUid?.trim();
+  if (!uid) return [...targets];
+  return targets.map((target) =>
+    target.companyUid?.trim() ? target : { ...target, companyUid: uid },
+  );
 }
 
 /**
@@ -216,7 +245,13 @@ export function disambiguateMentionTargets(
       const { disambiguator: _drop, ...rest } = target;
       return rest;
     }
-    return { ...target, disambiguator: mentionDisambiguatorFor(target) };
+    const label = mentionDisambiguatorFor(target);
+    if (!label) {
+      if (target.disambiguator === undefined) return target;
+      const { disambiguator: _stale, ...rest } = target;
+      return rest;
+    }
+    return { ...target, disambiguator: label };
   });
 }
 
@@ -279,9 +314,11 @@ export function filterMentionCandidates(
   return candidates
     .filter((candidate) => !selectedIds.has(candidate.participantUid))
     .filter((candidate) => {
-      // Include the company so typing the tenant narrows a name collision.
+      // Include the company so typing the tenant narrows a name collision, and
+      // the uids so pasting `agt_…`/`prs_…` still finds a row even though no id
+      // is ever rendered.
       const haystack =
-        `${candidate.displayName} ${candidate.email ?? ""} ${candidate.companyName ?? ""} ${candidate.disambiguator ?? ""}`.toLowerCase();
+        `${candidate.displayName} ${candidate.email ?? ""} ${candidate.companyName ?? ""} ${candidate.disambiguator ?? ""} ${candidate.participantUid} ${candidate.companyUid ?? ""}`.toLowerCase();
       return query.length === 0 || haystack.includes(query);
     })
     .slice(0, 30);

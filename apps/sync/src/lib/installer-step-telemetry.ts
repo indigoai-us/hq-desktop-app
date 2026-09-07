@@ -47,6 +47,17 @@ export type InstallerFetch = (
  *                          (this panel is both the first screen and the
  *                          auth surface; historical welcome and signin
  *                          were sequential screens, now combined)
+ *                        `started`   → signin-clicked   (a provider button)
+ *                        `failed`    → signin-failed    (rejected / OAuth error)
+ *                        `completed` → signin-completed (authenticated, moving on)
+ *                          The authenticated desktop_onboarding_step record
+ *                          for this panel cannot leave the device before
+ *                          sign-in succeeds, so the anonymous pings are the
+ *                          only place the screen's outcome is observable:
+ *                          a session with `signin` and nothing after it is
+ *                          an abandonment, `signin-clicked` without
+ *                          `signin-completed` is a provider round-trip that
+ *                          never came back.
  *   directory          → install   (HQ folder selection)
  *   setup              → setup
  *   consent            → consent   (new; asked after person provision)
@@ -68,6 +79,13 @@ export const INSTALLER_STEP_BY_WIZARD_STEP = {
   build: null,
 } as const satisfies Record<WizardStepId, string | null>;
 
+/** Sign-in outcomes reported anonymously; every other action stays `signin`. */
+export const INSTALLER_SIGNIN_STEP_BY_ACTION: Readonly<Record<string, string>> = {
+  started: 'signin-clicked',
+  failed: 'signin-failed',
+  completed: 'signin-completed',
+};
+
 export function installerStepsForOnboarding(input: {
   step: WizardStepId;
   action: string;
@@ -75,8 +93,16 @@ export function installerStepsForOnboarding(input: {
 }): string[] {
   const mapped = INSTALLER_STEP_BY_WIZARD_STEP[input.step];
   const steps: string[] = [];
-  if (input.step === 'welcome-signin' && input.action === 'entered' && input.flow !== 'resume') {
-    steps.push('welcome');
+  if (input.step === 'welcome-signin') {
+    if (input.action === 'entered' && input.flow !== 'resume') {
+      steps.push('welcome');
+    }
+    steps.push(
+      Object.prototype.hasOwnProperty.call(INSTALLER_SIGNIN_STEP_BY_ACTION, input.action)
+        ? INSTALLER_SIGNIN_STEP_BY_ACTION[input.action]!
+        : mapped!,
+    );
+    return steps;
   }
   if (mapped) steps.push(mapped);
   return steps;

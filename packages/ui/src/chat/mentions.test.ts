@@ -5,11 +5,14 @@ import {
   collapseDuplicateMentionTargets,
   filterMentionCandidates,
   mentionSpansForBody,
+  mentionRowPill,
+  mentionRowSubtitle,
   mentionTargetLabel,
   mentionTargetsFromContacts,
   mentionTargetsFromContactsPayload,
   mentionTypeForUid,
   replaceActiveMention,
+  stampMentionCompany,
   storedMentionType,
 } from "./mentions.js";
 
@@ -90,7 +93,7 @@ describe("channel mentions", () => {
     ]);
   });
 
-  it("falls back to a uid suffix rather than dropping a nameless-company dupe", () => {
+  it("keeps both nameless-company dupes but never labels them with a uid", () => {
     const rows = collapseDuplicateMentionTargets([
       {
         participantUid: "agt_aaaaaaaaaaaa111111",
@@ -105,10 +108,12 @@ describe("channel mentions", () => {
     ]);
     expect(rows).toHaveLength(2);
     for (const row of rows) {
-      expect(row.disambiguator).toBeTruthy();
+      // No company, no email → no label at all. A uid tail like "…906VYS" is
+      // never shown to the user.
+      expect(row.disambiguator).toBeUndefined();
+      expect(mentionRowPill(row)).toBeNull();
+      expect(mentionTargetLabel(row)).toBe("Izzy");
     }
-    // Distinct suffixes — the two rows are actually tellable apart.
-    expect(rows[0]?.disambiguator).not.toBe(rows[1]?.disambiguator);
   });
 
   it("leaves a unique display name undecorated", () => {
@@ -413,5 +418,103 @@ describe("applyMentionMarkup markup safety", () => {
     expect(applyMentionMarkup("<p>hey @Deacon</p>", [])).toBe(
       "<p>hey @Deacon</p>",
     );
+  });
+
+  it("renders the company as the pill and the kind as the subtitle", () => {
+    const [agent, human] = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_izzy_indigo",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+      },
+      {
+        participantUid: "prs_scouty",
+        participantType: "human",
+        displayName: "Scouty",
+        email: "scouty@getindigo.ai",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(agent && mentionRowPill(agent)).toBe("Indigo");
+    expect(agent && mentionRowSubtitle(agent)).toBe("Agent");
+    expect(human && mentionRowPill(human)).toBe("Indigo");
+    expect(human && mentionRowSubtitle(human)).toBe("scouty@getindigo.ai");
+  });
+
+  it("omits the pill for an agent whose company never resolved", () => {
+    const row = {
+      participantUid: "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+      participantType: "agent" as const,
+      displayName: "Izzy",
+    };
+    expect(mentionRowPill(row)).toBeNull();
+    expect(mentionRowSubtitle(row)).toBe("Agent");
+  });
+
+  it("shows the company on both same-named agents so they are tellable apart", () => {
+    const rows = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_izzy_indigo",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyName: "Indigo",
+      },
+      {
+        participantUid: "agt_izzy_lr",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyName: "LiveRecover",
+      },
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => mentionRowPill(row))).toEqual([
+      "Indigo",
+      "LiveRecover",
+    ]);
+  });
+
+  it("matches a pasted uid even though no id is rendered", () => {
+    const roster = collapseDuplicateMentionTargets([
+      {
+        participantUid: "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+        participantType: "agent",
+        displayName: "Izzy",
+        companyName: "Indigo",
+      },
+    ]);
+    expect(
+      filterMentionCandidates(roster, "906vys", []).map(
+        (row) => row.displayName,
+      ),
+    ).toEqual(["Izzy"]);
+  });
+
+  it("stamps the scoped tenant onto roster rows that carry no company", () => {
+    const rows = stampMentionCompany(
+      [
+        {
+          participantUid: "agt_izzy",
+          participantType: "agent",
+          displayName: "Izzy",
+        },
+        {
+          participantUid: "agt_other",
+          participantType: "agent",
+          displayName: "Other",
+          companyUid: "cmp_liverecover",
+        },
+      ],
+      "cmp_indigo",
+    );
+    expect(rows.map((row) => row.companyUid)).toEqual([
+      "cmp_indigo",
+      "cmp_liverecover",
+    ]);
+    // No scope → rows are returned untouched.
+    expect(
+      stampMentionCompany(rows, "  ").map((row) => row.companyUid),
+    ).toEqual(["cmp_indigo", "cmp_liverecover"]);
   });
 });

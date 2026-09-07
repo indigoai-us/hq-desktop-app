@@ -32,6 +32,10 @@ export interface AgentTask {
   status: AgentTaskStatus;
   /** Optional explicit category; otherwise derived from the title. */
   category?: TaskCategory;
+  /** Room message the task was spawned from (room-scoped view only). */
+  originMessageId?: string;
+  /** ISO time of the task's latest lifecycle event (room-scoped view only). */
+  lastEventAt?: string;
 }
 
 /**

@@ -873,6 +873,24 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // timestamp, host name, or identifier to `[Filtered]` instead of leaking
         // it — the same discipline as the pull-based probe extras above.
         "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
+        // Windows fatal-reason attribution — the THIRD cause channel (this reopen,
+        // HQ-DESKTOP-5W). On Windows both existing "why" channels (WER and runner
+        // stderr) come up empty for a 0xC0000409 fail-fast, so a Node
+        // `--report-on-fatalerror` diagnostic report is read at exit to name the
+        // cause. `runner_fatal_source` names WHERE the reported `runner_fatal_class`
+        // came from; `runner_report_read` is the report read's own provenance. Both
+        // are fixed producer vocabulary; these independent egress checks degrade a
+        // producer bug that shipped a path, a raw report byte, or a stderr fragment
+        // to `[Filtered]` instead of projecting it into a tag or Event.culprit.
+        "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        "runner_report_read" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_disabled_by_user_options"
+        )),
         _ => None,
     }
 }
@@ -1165,7 +1183,7 @@ fn sync_child_exit_detail(
         Some(value) if is_windows_exit_status_hex(value) => Some(value),
         _ => None,
     };
-    Some(match class {
+    let windows_phrase = match class {
         "fault" => match status {
             Some(status) => format!("windows fault {status}"),
             None => "windows fault".to_string(),
@@ -1176,6 +1194,18 @@ fn sync_child_exit_detail(
         // An ordinary exit is not a Windows-signalled shape — prefer a real fatal
         // class if one names the cause.
         _ => return fatal_phrase(),
+    };
+    // A Windows exit class names WHAT the OS signalled; a `fault` shape can only
+    // ever render the raw NT status (`windows fault 0xC0000409`). When the runner's
+    // own output ALSO named WHY it died — a genuine `runner_fatal_class` — render
+    // both (`windows fault 0xC0000409 / heap oom`), so the reason the Windows shape
+    // alone could never state reaches the culprit. This is the surviving half of
+    // HQ-DESKTOP-5W: before, a valid Windows class short-circuited here and the
+    // fatal class was dropped. Byte-identical to before whenever the fatal class is
+    // `none` or invalid — `fatal_phrase()` is then `None`.
+    Some(match fatal_phrase() {
+        Some(reason) => format!("{windows_phrase} / {reason}"),
+        None => windows_phrase,
     })
 }
 
@@ -2810,6 +2840,129 @@ mod tests {
         assert_eq!(
             before_send(event).unwrap().culprit.as_deref(),
             Some("sync/runner pull: heap oom")
+        );
+    }
+
+    #[test]
+    fn before_send_culprit_names_both_the_windows_shape_and_the_reason() {
+        // HQ-DESKTOP-5W, surviving half: the recurrence's exact watcher envelope PLUS
+        // a now-knowable reason (runner_fatal_class=heap_oom, e.g. from the Node
+        // diagnostic report this reopen adds). The culprit must name BOTH the Windows
+        // shape AND the reason. On base a valid Windows class short-circuits
+        // sync_child_exit_detail and the reason is silently dropped, so this
+        // assertion is RED until that short-circuit is fixed.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("windows_fault_symbol", "STATUS_STACK_BUFFER_OVERRUN"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "node_report"),
+            ("runner_report_read", "report_read"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)")
+        );
+        // The two new attribution axes are content-safe fixed vocabulary and survive
+        // egress unchanged.
+        assert_eq!(result.tags["runner_fatal_source"], "node_report");
+        assert_eq!(result.tags["runner_report_read"], "report_read");
+    }
+
+    #[test]
+    fn before_send_culprit_windows_fault_with_no_reason_is_byte_identical() {
+        // The SAME recurrence envelope with NO knowable reason (runner_fatal_class=none,
+        // report_absent) renders today's culprit byte-for-byte — the merged
+        // HQ-DESKTOP-5W behaviour is preserved when the third channel yields nothing.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "none"),
+            ("runner_fatal_source", "none"),
+            ("runner_report_read", "report_absent"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+    }
+
+    #[test]
+    fn runner_fatal_source_and_report_read_axes_fail_closed_at_egress() {
+        // Valid fixed vocabulary passes; anything else — an off-vocabulary token, a
+        // path, or a [Filtered]-shaped value a producer bug might ship — is refused,
+        // so it can never reach a tag or the culprit.
+        for value in ["stderr", "node_report", "none"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", value),
+                Some(true),
+                "valid source {value:?} must pass egress"
+            );
+        }
+        for value in [
+            "report_read",
+            "report_absent",
+            "report_unreadable",
+            "report_not_requested",
+            "report_disabled_by_user_options",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", value),
+                Some(true),
+                "valid read {value:?} must pass egress"
+            );
+        }
+        for bad in ["node_reporte", "", "/var/report.json", "[Filtered]", "heap_oom"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", bad),
+                Some(false),
+                "off-vocabulary source {bad:?} must degrade to [Filtered]"
+            );
+        }
+        for bad in ["report", "", r"C:\Users\Ada\report.json", "[Filtered]"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", bad),
+                Some(false),
+                "off-vocabulary read {bad:?} must degrade to [Filtered]"
+            );
+        }
+
+        // End-to-end through before_send: a poisoned axis is scrubbed to [Filtered];
+        // the culprit still names the (valid) fatal class and never the poison.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "push"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "/etc/passwd"),
+            ("runner_report_read", "report"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(result.tags["runner_fatal_source"], "[Filtered]");
+        assert_eq!(result.tags["runner_report_read"], "[Filtered]");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/runner push: heap oom")
         );
     }
 

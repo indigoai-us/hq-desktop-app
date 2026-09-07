@@ -1832,17 +1832,150 @@ fn take_test_windows_terminate_process_result() -> Option<bool> {
     })
 }
 
-/// Enumerate the transitive children of `root_pid` via a process snapshot.
-/// Only pids reachable from the registered root are returned, so the fallback
-/// below can never widen past this app's own child tree.
+/// One row of a process snapshot: a pid, the pid the OS recorded as its
+/// creator, and the process's creation time when it could be read.
+///
+/// `created` is `None` when the process could not be opened for a creation
+/// time — it exited between the snapshot and the query, or it belongs to a
+/// principal this process cannot query. A row without a creation time can
+/// never be validated, so it is neither returned nor walked through.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessTreeRow {
+    pid: u32,
+    parent_pid: u32,
+    created: Option<u64>,
+}
+
+/// Transitive descendants of `root_pid` in a snapshot, with two invariants
+/// that the raw parent-pid walk it replaces did not have.
+///
+/// 1. A parent link is honoured only when the child was created no earlier
+///    than the parent. Windows records `th32ParentProcessID` at creation and
+///    never updates it, and it reuses pids aggressively: once a creator exits,
+///    its pid can be handed to a new process, which then looks like the parent
+///    of every orphan the dead creator left behind. On a GitHub-hosted Windows
+///    runner those orphans include the runner's own ancestor chain, so a
+///    fixture child that inherited such a pid made the raw walk return the
+///    test process itself and `TerminateProcess(_, 1)` it mid-sweep (run
+///    33940409752, job 101236599413: exit code 1, no failing test, cargo
+///    still alive to report it). A reused pid is always younger than the
+///    orphans it inherits, so the creation-time rule rejects exactly those
+///    links while keeping every real one.
+/// 2. `protected` pids — this process and its validated ancestors — are never
+///    returned, and nothing beneath them is walked, so the fallback cannot
+///    terminate the app, its launcher, or a sibling tree even if the snapshot
+///    is wrong in a way the first rule does not catch.
+///
+/// A root without a creation time has no verifiable descendants and yields an
+/// empty list; the caller then fails to open the root and reports no effect.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn descendants_in_snapshot(
+    root_pid: u32,
+    rows: &[ProcessTreeRow],
+    protected: &HashSet<u32>,
+) -> Vec<u32> {
+    if protected.contains(&root_pid) {
+        return Vec::new();
+    }
+    let created_of = |pid: u32| -> Option<u64> {
+        rows.iter()
+            .find(|row| row.pid == pid)
+            .and_then(|row| row.created)
+    };
+    let Some(root_created) = created_of(root_pid) else {
+        return Vec::new();
+    };
+
+    let mut descendants: Vec<u32> = Vec::new();
+    let mut frontier = vec![(root_pid, root_created)];
+    while let Some((parent, parent_created)) = frontier.pop() {
+        for row in rows {
+            if row.parent_pid != parent
+                || row.pid == root_pid
+                || row.pid == parent
+                || descendants.contains(&row.pid)
+            {
+                continue;
+            }
+            let Some(child_created) = row.created else {
+                continue;
+            };
+            if child_created < parent_created {
+                // The recorded creator is a reused pid: this row predates the
+                // process that currently owns `parent`.
+                continue;
+            }
+            if protected.contains(&row.pid) {
+                continue;
+            }
+            descendants.push(row.pid);
+            frontier.push((row.pid, child_created));
+        }
+    }
+    descendants
+}
+
+/// `pid` and its creation-validated ancestors: the chain of recorded creators
+/// followed only while each creator is at least as old as the process it is
+/// said to have created. The chain stops at the first stale or unreadable
+/// link, which is exactly where a dead creator's pid stops being meaningful.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn ancestors_in_snapshot(pid: u32, rows: &[ProcessTreeRow]) -> HashSet<u32> {
+    let mut protected = HashSet::new();
+    protected.insert(pid);
+    let mut current = rows.iter().find(|row| row.pid == pid).copied();
+    while let Some(row) = current {
+        let Some(child_created) = row.created else {
+            break;
+        };
+        let Some(parent) = rows
+            .iter()
+            .find(|candidate| candidate.pid == row.parent_pid)
+        else {
+            break;
+        };
+        let Some(parent_created) = parent.created else {
+            break;
+        };
+        if parent_created > child_created || !protected.insert(parent.pid) {
+            break;
+        }
+        current = Some(*parent);
+    }
+    protected
+}
+
+/// The creation time of `pid` as a FILETIME tick count, or `None` when the
+/// process cannot be opened for it (already exited, or not ours to query).
 #[cfg(target_os = "windows")]
-fn windows_descendants(root_pid: u32) -> Vec<u32> {
+fn windows_process_creation_time(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let times =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) };
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    times.ok()?;
+    Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
+/// Snapshot every process with its recorded creator and creation time.
+#[cfg(target_os = "windows")]
+fn windows_process_snapshot() -> Vec<ProcessTreeRow> {
     let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
         Ok(snapshot) => snapshot,
         Err(error) => {
             log(
                 "process",
-                &format!("CreateToolhelp32Snapshot failed for pid {root_pid}: {error}"),
+                &format!("CreateToolhelp32Snapshot failed: {error}"),
             );
             return Vec::new();
         }
@@ -1855,7 +1988,11 @@ fn windows_descendants(root_pid: u32) -> Vec<u32> {
     };
     let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
     while next.is_ok() {
-        rows.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        rows.push(ProcessTreeRow {
+            pid: entry.th32ProcessID,
+            parent_pid: entry.th32ParentProcessID,
+            created: windows_process_creation_time(entry.th32ProcessID),
+        });
         entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
@@ -1865,18 +2002,172 @@ fn windows_descendants(root_pid: u32) -> Vec<u32> {
     unsafe {
         let _ = CloseHandle(snapshot);
     }
+    rows
+}
 
-    let mut descendants = Vec::new();
-    let mut frontier = vec![root_pid];
-    while let Some(parent) = frontier.pop() {
-        for (pid, parent_pid) in &rows {
-            if *parent_pid == parent && *pid != root_pid && !descendants.contains(pid) {
-                descendants.push(*pid);
-                frontier.push(*pid);
-            }
+/// Pids the pid-tree fallback must never touch: this process and its
+/// creation-validated ancestors (cargo, the CI shell, the runner service, or
+/// in production the launcher that started the app).
+#[cfg(target_os = "windows")]
+fn windows_protected_pids(rows: &[ProcessTreeRow]) -> HashSet<u32> {
+    ancestors_in_snapshot(std::process::id(), rows)
+}
+
+/// Enumerate the transitive children of `root_pid` via a process snapshot.
+/// Only pids reachable from the registered root through creation-validated
+/// parent links are returned, and this process and its ancestors never are,
+/// so the fallback below can never widen past this app's own child tree —
+/// see `descendants_in_snapshot` for why a raw parent-pid walk could.
+#[cfg(target_os = "windows")]
+fn windows_descendants(root_pid: u32) -> Vec<u32> {
+    let rows = windows_process_snapshot();
+    let protected = windows_protected_pids(&rows);
+    descendants_in_snapshot(root_pid, &rows, &protected)
+}
+
+#[cfg(test)]
+mod process_tree_snapshot_tests {
+    use super::*;
+
+    fn row(pid: u32, parent_pid: u32, created: Option<u64>) -> ProcessTreeRow {
+        ProcessTreeRow {
+            pid,
+            parent_pid,
+            created,
         }
     }
-    descendants
+
+    fn sorted(mut pids: Vec<u32>) -> Vec<u32> {
+        pids.sort_unstable();
+        pids
+    }
+
+    #[test]
+    fn a_creation_ordered_tree_is_walked_transitively() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+            row(310, 200, Some(31)),
+            row(900, 1, Some(5)),
+        ];
+        assert_eq!(
+            sorted(descendants_in_snapshot(100, &rows, &HashSet::new())),
+            vec![200, 300, 310]
+        );
+    }
+
+    /// Regression for run 33940409752 / job 101236599413: a fixture root that
+    /// inherited a dead creator's pid "adopted" that creator's orphans, which
+    /// on the CI runner were the test process's own ancestors, and the raw
+    /// walk returned the test process for termination. An orphan is always
+    /// older than the process that reused its creator's pid, so the link is
+    /// rejected and nothing beneath it is walked.
+    #[test]
+    fn an_orphan_recorded_under_a_reused_creator_pid_is_not_a_descendant() {
+        const REUSED_PID: u32 = 4242;
+        let rows = vec![
+            // The fixture root, created recently, holding the recycled pid.
+            row(REUSED_PID, 77, Some(1_000)),
+            // Its genuine child.
+            row(500, REUSED_PID, Some(1_001)),
+            // The runner's ancestor chain: its original creator had pid 4242
+            // and exited long ago. Every link here predates the fixture root.
+            row(60, REUSED_PID, Some(100)),
+            row(61, 60, Some(101)),
+            row(62, 61, Some(102)),
+            row(63, 62, Some(103)),
+        ];
+        assert_eq!(
+            descendants_in_snapshot(REUSED_PID, &rows, &HashSet::new()),
+            vec![500]
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_creation_time_is_neither_returned_nor_walked_through() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, None),
+            row(300, 200, Some(30)),
+            row(210, 100, Some(21)),
+        ];
+        assert_eq!(
+            descendants_in_snapshot(100, &rows, &HashSet::new()),
+            vec![210]
+        );
+    }
+
+    #[test]
+    fn a_root_without_a_creation_time_has_no_descendants() {
+        let rows = vec![row(100, 1, None), row(200, 100, Some(20))];
+        assert!(descendants_in_snapshot(100, &rows, &HashSet::new()).is_empty());
+        assert!(descendants_in_snapshot(999, &rows, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn protected_pids_are_excluded_together_with_everything_beneath_them() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+            row(210, 100, Some(21)),
+        ];
+        let protected: HashSet<u32> = [200].into_iter().collect();
+        assert_eq!(descendants_in_snapshot(100, &rows, &protected), vec![210]);
+
+        let root_protected: HashSet<u32> = [100].into_iter().collect();
+        assert!(descendants_in_snapshot(100, &rows, &root_protected).is_empty());
+    }
+
+    #[test]
+    fn a_parent_cycle_from_pid_reuse_terminates() {
+        let rows = vec![
+            row(100, 200, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+        ];
+        assert_eq!(
+            sorted(descendants_in_snapshot(100, &rows, &HashSet::new())),
+            vec![200, 300]
+        );
+    }
+
+    #[test]
+    fn ancestors_follow_only_creation_ordered_links() {
+        let rows = vec![
+            // A stale creator pid: 5 is younger than the process it "created".
+            row(5, 1, Some(500)),
+            row(10, 5, Some(100)),
+            row(20, 10, Some(200)),
+            row(30, 20, Some(300)),
+        ];
+        let mut expected: Vec<u32> = ancestors_in_snapshot(30, &rows).into_iter().collect();
+        expected.sort_unstable();
+        assert_eq!(expected, vec![10, 20, 30]);
+
+        assert_eq!(
+            ancestors_in_snapshot(999, &rows)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![999],
+            "an unknown pid still protects itself"
+        );
+    }
+
+    #[test]
+    fn ancestors_stop_at_an_unreadable_link_and_never_loop() {
+        // 10 cannot be validated (no creation time) and, via 20 <- 10 <- 20,
+        // would loop if it were followed.
+        let rows = vec![
+            row(10, 20, None),
+            row(20, 10, Some(200)),
+            row(30, 20, Some(300)),
+        ];
+        let mut chain: Vec<u32> = ancestors_in_snapshot(30, &rows).into_iter().collect();
+        chain.sort_unstable();
+        assert_eq!(chain, vec![20, 30]);
+    }
 }
 
 /// Fall back to the registered root pid when no Job Object was attached.
@@ -1908,9 +2199,25 @@ fn terminate_windows_pid_tree(root_pid: u32) -> bool {
         }
     }
 
+    let rows = windows_process_snapshot();
+    let protected = windows_protected_pids(&rows);
+    if protected.contains(&root_pid) {
+        // The registered root can only be a child this process spawned. A pid
+        // that is this process or one of its ancestors is a reused or corrupt
+        // registration, and sweeping it would terminate the app itself.
+        let message = format!(
+            "refusing pid-tree fallback for root pid {root_pid}: it is this process or one of its ancestors"
+        );
+        log("process", &message);
+        // The log file is not part of a CI run's output; say it where the
+        // harness can show it.
+        eprintln!("[process] {message}");
+        return false;
+    }
+
     // Deepest-first: terminating a parent before its children can leave the
     // grandchild reparented and outside the next snapshot.
-    let mut pids = windows_descendants(root_pid);
+    let mut pids = descendants_in_snapshot(root_pid, &rows, &protected);
     pids.reverse();
 
     for pid in pids {
@@ -6286,6 +6593,122 @@ mod windows_job_attachment_failure_tests {
         sibling
             .kill_and_wait()
             .expect("the exact sibling fixture must be reaped on the success path");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pid-tree fallback scope — the sweep can never reach this process
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Real-process proofs for the two invariants behind `windows_descendants`.
+/// Run 33940409752 (job 101236599413) ended with the whole test binary dying
+/// with exit code 1 and no failing test: a fixture root had inherited a dead
+/// creator's pid, the raw parent-pid walk attributed that creator's orphans —
+/// the runner's own ancestor chain — to the fixture, and the sweep
+/// `TerminateProcess`ed the test process itself.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_pid_tree_scope_tests {
+    use super::windows_test_fixture::{await_bounded, pid_alive};
+    use super::*;
+
+    /// Owns a deliberately orphaned real process by pid and terminates it on
+    /// every exit path, including a panicking assertion.
+    struct OrphanGuard(u32);
+
+    impl Drop for OrphanGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, self.0) {
+                    let _ = TerminateProcess(process, 1);
+                    let _ = CloseHandle(process);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_fallback_refuses_this_process_and_its_ancestors() {
+        clear_test_windows_termination_results();
+        let rows = windows_process_snapshot();
+        let protected = windows_protected_pids(&rows);
+        let this = std::process::id();
+        assert!(protected.contains(&this));
+        assert!(
+            protected.len() >= 2,
+            "the test process must resolve at least its live creator (cargo or the CI shell): {protected:?}"
+        );
+        for pid in &protected {
+            // Before the scope guard this would have terminated the test
+            // binary: the regression is the process surviving to assert.
+            assert!(
+                !terminate_windows_pid_tree(*pid),
+                "the fallback must refuse protected pid {pid}"
+            );
+            assert!(
+                !windows_descendants(*pid).contains(&this),
+                "no walk may return this process (root {pid})"
+            );
+        }
+        assert!(pid_alive(this));
+    }
+
+    #[test]
+    fn orphans_of_a_dead_creator_are_not_descendants_of_its_pid() {
+        let dir = tempfile::tempdir().expect("orphan fixture tempdir");
+        let pid_file = dir.path().join("orphan.pid");
+        // The creator starts a detached ten-minute child, records its pid, and
+        // exits. The child keeps the creator's pid as `th32ParentProcessID`
+        // forever, which is exactly the stale link a recycled pid inherits.
+        let mut creator = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'ping.exe' -ArgumentList '127.0.0.1','-n','600'; [System.IO.File]::WriteAllText('{}', \"$($child.Id)\")",
+                    pid_file.to_string_lossy().replace('\'', "''")
+                ),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("orphan creator must spawn");
+        let creator_pid = creator.id();
+        let status = creator.wait().expect("orphan creator must be waited");
+        assert!(status.success(), "orphan creator failed: {status}");
+
+        let orphan = std::fs::read_to_string(&pid_file)
+            .expect("creator must record the orphan pid")
+            .trim()
+            .parse::<u32>()
+            .expect("orphan pid must parse");
+        let _guard = OrphanGuard(orphan);
+        assert!(pid_alive(orphan), "the orphan must outlive its creator");
+
+        let rows = windows_process_snapshot();
+        let orphan_row = rows
+            .iter()
+            .find(|row| row.pid == orphan)
+            .copied()
+            .expect("the orphan must appear in the snapshot");
+        assert_eq!(
+            orphan_row.parent_pid, creator_pid,
+            "Windows must still report the dead creator as the orphan's parent"
+        );
+
+        // Whether the creator's pid is currently free or already recycled by
+        // another process, the orphan predates any process that now holds it.
+        let protected = windows_protected_pids(&rows);
+        assert!(
+            !descendants_in_snapshot(creator_pid, &rows, &protected).contains(&orphan),
+            "an orphan must not be attributed to whatever now holds its creator's pid"
+        );
+        assert!(!windows_descendants(creator_pid).contains(&orphan));
+
+        drop(_guard);
+        await_bounded("the orphan fixture to be reaped", || !pid_alive(orphan));
     }
 }
 

@@ -49,15 +49,22 @@
     type ChatAttachmentWire,
   } from "./chat-attachments";
   import { formatComposerSendError } from "./composer-send-error";
+  import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../tasks/agent-tasks";
   import {
     toggleReaction,
     type ReactionAggregate,
     type ReactionMap,
   } from "./reactions";
-  import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import {
+    isHeavyMessageBody,
+    renderMessageBodyMarkdown,
+  } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import type { DecisionOption } from "./richMessageContent";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -93,6 +100,8 @@
     api: ConversationApi;
     rootEventId: string;
     scope: ReplyThreadScope;
+    /** Background tasks spawned from THIS thread's root message (room view). */
+    tasks?: AgentTask[];
     channelId?: string | null;
     withPersonUid?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
@@ -183,6 +192,7 @@
     onopenprofile,
     mentionCandidates = [],
     onopenurl,
+    tasks = [],
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -540,6 +550,21 @@
     });
   }
 
+  /**
+   * A decision-block button in the thread was clicked. A concrete option sends
+   * its label as a reply; "Other…" focuses the composer for a free-text answer.
+   */
+  async function handleDecision(detail: {
+    questionId?: string;
+    option: DecisionOption | null;
+  }): Promise<void> {
+    if (!detail.option) {
+      composerEl?.focus();
+      return;
+    }
+    await send(detail.option.label);
+  }
+
   async function send(body: string): Promise<void> {
     const text = body.trim();
     if ((!text && pendingFiles.length === 0) || sending) return;
@@ -782,14 +807,18 @@
                 }
               }}
             >
-              {@html applyMentionMarkup(
-                renderMessageBodyMarkdown(rootRich.text),
-                storedMentions(root),
-              )}
+              {#if isHeavyMessageBody(rootRich.text)}
+                <PlainMessageBody body={rootRich.text} />
+              {:else}
+                {@html applyMentionMarkup(
+                  renderMessageBodyMarkdown(rootRich.text),
+                  storedMentions(root),
+                )}
+              {/if}
             </div>
           {/if}
           {#if rootRich.rich}
-            <RichMessageContent content={rootRich.rich} />
+            <RichMessageContent content={rootRich.rich} ondecision={handleDecision} />
           {/if}
           {#if root.details?.trim()}
             <ArtifactCard
@@ -932,14 +961,18 @@
                     }
                   }}
                 >
-                  {@html applyMentionMarkup(
-                    renderMessageBodyMarkdown(replyRich.text),
-                    storedMentions(msg),
-                  )}
+                  {#if isHeavyMessageBody(replyRich.text)}
+                    <PlainMessageBody body={replyRich.text} />
+                  {:else}
+                    {@html applyMentionMarkup(
+                      renderMessageBodyMarkdown(replyRich.text),
+                      storedMentions(msg),
+                    )}
+                  {/if}
                 </div>
               {/if}
               {#if replyRich.rich}
-                <RichMessageContent content={replyRich.rich} />
+                <RichMessageContent content={replyRich.rich} ondecision={handleDecision} />
               {/if}
               <MessageAttachments
                 attachments={parseMessageAttachments(msg)}
@@ -1016,6 +1049,7 @@
     </div>
 
     <AgentThinkingRow entries={agentThinking} />
+    <AgentTaskStrip {tasks} />
 
     <div class="reply-composer">
       {#if showMentionPicker}

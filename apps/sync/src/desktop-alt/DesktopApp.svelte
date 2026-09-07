@@ -26,6 +26,7 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
+  import RepairNotice from './repair-notice.svelte';
   import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
   import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
@@ -1932,6 +1933,9 @@
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
+
+  <!-- US-010: customer-visible support-repair notices (RESUME_SYNC / RESTART_APP). -->
+  <RepairNotice />
 
   {#if actionToast}
     <div

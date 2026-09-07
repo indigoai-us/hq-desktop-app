@@ -21,6 +21,7 @@ interface WireRoomTask {
   taskId?: unknown;
   title?: unknown;
   status?: unknown;
+  originMessageId?: unknown;
   lastEventAt?: unknown;
 }
 
@@ -56,7 +57,12 @@ function toTask(row: WireRoomTask): AgentTask | null {
   // The server only emits statuses in our vocabulary; an unknown one means a
   // contract drift we would rather notice than paper over — drop the row.
   if (!STATUSES.has(status)) return null;
-  return { id, title: safeTitle(row?.title, id), status: status as AgentTaskStatus };
+  const task: AgentTask = { id, title: safeTitle(row?.title, id), status: status as AgentTaskStatus };
+  const origin = str(row?.originMessageId);
+  if (origin) task.originMessageId = origin;
+  const at = str(row?.lastEventAt);
+  if (at && !Number.isNaN(Date.parse(at))) task.lastEventAt = at;
+  return task;
 }
 
 /** Normalize a raw `list_channel_agent_tasks` payload. */

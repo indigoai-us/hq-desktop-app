@@ -144,6 +144,16 @@ function renderRawHtmlImage(rawAttributes: string): string {
   return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt ?? "")}" loading="lazy" decoding="async"${optional} />`;
 }
 
+/** Options threaded through block rendering. */
+export interface RenderMarkdownOptions {
+  /**
+   * How a single (soft) newline inside a paragraph is rendered. CommonMark
+   * collapses it to a space (the default, used by knowledge documents); chat
+   * message bodies pass `"br"` so one-line-per-idea replies keep their breaks.
+   */
+  softBreak?: "space" | "br";
+}
+
 /**
  * Render inline markdown (bold, italic, inline code, links) inside an already
  * block-resolved line. Input is raw (unescaped) markdown text; output is safe
@@ -366,13 +376,20 @@ function renderTableCell(
   return `<${tag}${scope}${className}>${renderInline(content)}</${tag}>`;
 }
 
-function renderParagraph(lines: string[]): string {
+function renderParagraph(
+  lines: string[],
+  options: RenderMarkdownOptions = {},
+): string {
+  // In chat/DM bodies a single newline is a meaningful line break (users type
+  // one line per idea), so message rendering opts into `softBreak: "br"`.
+  // Knowledge documents keep CommonMark's soft-break-as-space default.
+  const softSeparator = options.softBreak === "br" ? "<br />" : " ";
   const content = lines
     .map((line, index) => {
       const hardBreak = /(?: {2,}|\\)$/.test(line);
       const clean = hardBreak ? line.replace(/(?: {2,}|\\)$/, "") : line;
       const separator =
-        index === lines.length - 1 ? "" : hardBreak ? "<br />" : " ";
+        index === lines.length - 1 ? "" : hardBreak ? "<br />" : softSeparator;
       return `${renderInline(clean.trim())}${separator}`;
     })
     .join("");
@@ -620,7 +637,10 @@ function renderListBlock(
  * and ordered lists, blockquotes, horizontal rules, and paragraphs. Anything not
  * matched flows into a paragraph of inline-rendered (escaped) text.
  */
-function renderMarkdownCore(source: string): string {
+function renderMarkdownCore(
+  source: string,
+  options: RenderMarkdownOptions = {},
+): string {
   const lines = suppressUnsafeRawHtml(source).split("\n");
   const out: string[] = [];
 
@@ -629,7 +649,7 @@ function renderMarkdownCore(source: string): string {
 
   const flushParagraph = () => {
     if (paragraph.length === 0) return;
-    out.push(renderParagraph(paragraph));
+    out.push(renderParagraph(paragraph, options));
     paragraph = [];
   };
 
@@ -673,7 +693,7 @@ function renderMarkdownCore(source: string): string {
       const detailsBody = (
         summary ? rawDetails.body.slice(summary[0].length) : rawDetails.body
       ).trim();
-      const bodyHtml = detailsBody ? renderMarkdownCore(detailsBody) : "";
+      const bodyHtml = detailsBody ? renderMarkdownCore(detailsBody, options) : "";
       const open = rawDetails.attributes.has("open") ? " open" : "";
       out.push(`<details${open}>${summaryHtml}${bodyHtml}</details>`);
       i = rawDetails.nextIndex;
@@ -807,7 +827,7 @@ function renderMarkdownCore(source: string): string {
         i += 1;
       }
       out.push(
-        `<blockquote>${renderMarkdownCore(quote.join("\n"))}</blockquote>`,
+        `<blockquote>${renderMarkdownCore(quote.join("\n"), options)}</blockquote>`,
       );
       continue;
     }
@@ -843,8 +863,11 @@ function renderMarkdownCore(source: string): string {
  * Render arbitrary Markdown without treating a YAML-shaped prefix as hidden
  * metadata. Messages and recursive blocks use this lossless entry point.
  */
-export function renderMarkdown(source: string): string {
-  return renderMarkdownCore(source);
+export function renderMarkdown(
+  source: string,
+  options?: RenderMarkdownOptions,
+): string {
+  return renderMarkdownCore(source, options);
 }
 
 /**

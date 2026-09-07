@@ -99,7 +99,8 @@ describe("ConversationView task strip", () => {
     const strip = host.querySelector('[data-testid="agent-task-strip"]');
     expect(strip).not.toBeNull();
     const chips = strip!.querySelectorAll('[data-testid="task-chip"]');
-    expect(chips.length).toBe(2);
+    // The live task shows; the task that finished yesterday has aged out.
+    expect(chips.length).toBe(1);
     expect(chips[0].getAttribute("aria-label")).toMatch(/^Room inventory sweep, Working/);
     // The strip sits between the message list and the composer.
     const composer = host.querySelector('[data-testid="conversation-composer"]');

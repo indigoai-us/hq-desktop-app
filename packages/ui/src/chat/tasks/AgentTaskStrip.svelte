@@ -8,17 +8,21 @@
   // otherwise see a permanent error under every agent conversation.
   import TaskChip from "./TaskChip.svelte";
   import type { AgentTask } from "./agent-tasks";
+  import { visibleTasks } from "./visible-tasks";
 
   interface Props {
     tasks: AgentTask[];
+    /** Injectable clock for tests. */
+    now?: () => number;
   }
 
-  let { tasks }: Props = $props();
+  let { tasks, now = () => Date.now() }: Props = $props();
+  const shown = $derived(visibleTasks(tasks, now()));
 </script>
 
-{#if tasks.length > 0}
+{#if shown.length > 0}
   <div class="agent-tasks" role="status" aria-live="polite" data-testid="agent-task-strip">
-    {#each tasks as task (task.id)}
+    {#each shown as task (task.id)}
       <TaskChip {task} />
     {/each}
   </div>
@@ -28,7 +32,7 @@
   .agent-tasks {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem 0.75rem;
+    gap: 0.375rem 0.5rem;
     padding: 0 2px;
   }
 </style>
