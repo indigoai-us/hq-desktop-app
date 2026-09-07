@@ -41,6 +41,69 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
+const MARKDOWN = [
+  "# Work Mesh Live — engineering handoff",
+  "",
+  "Rollout is complete on every surface.",
+  "",
+  "## Where things stand",
+  "",
+  "- **hq-pro production** deployed and quiet.",
+  "- Fleet daemons idle under 1 percent CPU.",
+  "",
+  "| Check | Expected |",
+  "| --- | --- |",
+  "| Session status | bound |",
+  "",
+  "line 14",
+  "line 15",
+  "line 16",
+  "line 17",
+  "line 18",
+  "TAIL — only in the pane",
+].join("\n");
+
+describe("ArtifactCard markdown preview", () => {
+  it("renders markdown artifacts as a document, not as monospace text", () => {
+    mountCard({ text: MARKDOWN });
+    const preview = host.querySelector<HTMLElement>(
+      "[data-testid='artifact-card-preview']",
+    );
+    expect(preview?.tagName).not.toBe("PRE");
+    expect(preview?.getAttribute("data-render")).toBe("markdown");
+    expect(preview?.classList.contains("artifact-md")).toBe(true);
+    expect(preview?.querySelector("h2")?.textContent).toBe("Where things stand");
+    expect(preview?.querySelectorAll("li").length).toBe(2);
+    expect(preview?.querySelector("strong")?.textContent).toBe(
+      "hq-pro production",
+    );
+    expect(preview?.querySelector("table")).not.toBeNull();
+    // The card never repeats the raw `#` / `**` syntax.
+    expect(preview?.textContent).not.toContain("**");
+    expect(preview?.textContent).not.toContain("# Work");
+  });
+
+  it("fades a markdown preview and keeps the tail for the pane", () => {
+    mountCard({ text: MARKDOWN });
+    const preview =
+      host.querySelector("[data-testid='artifact-card-preview']")
+        ?.textContent ?? "";
+    expect(preview).not.toContain("TAIL");
+    expect(host.querySelector(".artifact-card-fade")).not.toBeNull();
+    expect(host.querySelector(".artifact-card.is-markdown")).not.toBeNull();
+  });
+
+  it("keeps plain artifacts line-preserving in the UI face (no mono class)", () => {
+    mountCard({ text: LONG });
+    const preview = host.querySelector<HTMLElement>(
+      "[data-testid='artifact-card-preview']",
+    );
+    expect(preview?.tagName).toBe("PRE");
+    expect(preview?.getAttribute("data-render")).toBe("plain");
+    expect(preview?.classList.contains("artifact-plain")).toBe(true);
+  });
+});
+
 describe("ArtifactCard chrome", () => {
   it("renders a title, a kind label and a size hint", () => {
     mountCard({ text: LONG });

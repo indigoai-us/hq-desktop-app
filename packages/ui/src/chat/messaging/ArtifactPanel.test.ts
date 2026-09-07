@@ -32,6 +32,56 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
+const MARKDOWN = [
+  "# Handoff",
+  "",
+  "Paragraph with `code` and **bold**.",
+  "",
+  "1. first",
+  "2. second",
+  "",
+  "```sh",
+  "hq mesh session status",
+  "```",
+  "",
+  "TAIL LINE",
+].join("\n");
+
+describe("ArtifactPanel markdown", () => {
+  it("renders a markdown artifact as a full document", () => {
+    mountPanel(MARKDOWN);
+    const body = host.querySelector<HTMLElement>(
+      "[data-testid='artifact-panel-content']",
+    );
+    expect(body?.tagName).toBe("ARTICLE");
+    expect(body?.getAttribute("data-render")).toBe("markdown");
+    expect(body?.classList.contains("artifact-md")).toBe(true);
+    expect(body?.querySelector("h1")?.textContent).toBe("Handoff");
+    expect(body?.querySelectorAll("ol li").length).toBe(2);
+    expect(body?.querySelector("pre code")?.textContent).toContain(
+      "hq mesh session status",
+    );
+    expect(body?.querySelector("strong")?.textContent).toBe("bold");
+    expect(body?.textContent).toContain("TAIL LINE");
+    expect(body?.textContent).not.toContain("**");
+  });
+
+  it("copies the raw markdown source, not the rendered text", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mountPanel(MARKDOWN);
+    host
+      .querySelector<HTMLElement>("[data-testid='artifact-panel-copy']")
+      ?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith(MARKDOWN);
+  });
+});
+
 describe("ArtifactPanel body", () => {
   it("renders the FULL content, untruncated", () => {
     mountPanel();

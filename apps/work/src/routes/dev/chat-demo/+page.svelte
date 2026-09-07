@@ -6,7 +6,12 @@
    * never ships: in production builds this route renders nothing.
    */
   import { dev } from "$app/environment";
-  import { ChannelConversation, ReplyPanel } from "@hq/ui";
+  import {
+    ArtifactPanel,
+    ChannelConversation,
+    ReplyPanel,
+    type ChatArtifact,
+  } from "@hq/ui";
 
   const now = Date.now();
   const iso = (minsAgo: number) =>
@@ -70,7 +75,54 @@
       createdAt: iso(3),
       direction: "out",
     },
+    {
+      eventId: "evt-6",
+      fromDisplayName: "Yousuf Kalim",
+      fromPersonUid: "prs_yousuf",
+      body:
+        "Backend fixes are landing in production now. Live so far: the durable scheduled-jobs fix, the Slack upgrade flow (the console's Migrate to Agents v2 card works again), and the presence-daemon install fix. Next deploy brings the rest of the restored settings, the disk alarm, and the v3 worker infra.",
+      createdAt: iso(2),
+      direction: "in",
+    },
+    {
+      eventId: "evt-7",
+      fromDisplayName: "Izzy",
+      fromPersonUid: "agt_izzy",
+      body:
+        "Work Mesh Live: handoff attached. Two gaps are blocking signals — fixes are small. Full report in the details below.",
+      createdAt: iso(1),
+      direction: "in",
+      details: [
+        "# Work Mesh Live — engineering handoff (2026-09-07, 17:15 UTC)",
+        "",
+        "This document hands the Work Mesh Live project over for the next stretch of work. It covers what is deployed, what changed since the rollout, the current health, and an evidence-backed list of why work signals are still not showing up, with the fix for each gap. Everything referenced here is on `main` in its repo unless stated otherwise.",
+        "",
+        "## 1. Where things stand",
+        "",
+        "Rollout is complete on every surface and the presence layer is healthy:",
+        "",
+        "- **hq-pro production**: work-mesh routes, presence ingest, credential vend and alarms deployed and quiet (zero Lambda errors, hourly checks since 5 Sep).",
+        "- **hq-cli 5.108.20** on 97 of 97 fleet daemons (5 boxes have no daemon unit because toolset delivery to them fails; see section 5).",
+        "- Fleet daemons idle under 1 percent CPU; Indigo live view shows 26 to 29 agents online at every check.",
+        "",
+        "## 2. The two gaps",
+        "",
+        "1. The hq-pro register handler requires a `harness` field that the hq-cli outbox deliverer never sends, so every registration returns 400.",
+        "2. On agent boxes the identity file is only consulted when `HQ_AGENT_IDENTITY_FILE` is set, so Codex sessions get no company and about 22,000 events sit held as NEEDS_COMPANY.",
+        "",
+        "> Suggested order: gap 1, gap 2, then the product decisions on person attribution.",
+        "",
+        "| Check | Command | Expected |",
+        "| --- | --- | --- |",
+        "| Session status | `hq mesh session status --company indigo` | bound |",
+        "| Route health | CloudWatch Logs Insights on the prod vault-api log group | 2xx only |",
+      ].join("\n"),
+      prompt:
+        "Read the Work Mesh Live handoff (2026-09-07) in HQ. Start with Gap 1 (add 'harness' to the hq-cli outbox register body or make hq-pro accept its absence; add a contract test posting the exact client body) and Gap 2 (default the agent identity path to /var/lib/hq-agent/identity.json when present and route the transcript watcher through the same company resolver as reconcile). Verify with: hq mesh session status --company indigo, and CloudWatch Logs Insights on the prod vault-api log group filtering routeKey like /work-mesh/ by status.",
+    },
   ] as never[];
+
+  let artifactOpen = $state<ChatArtifact | null>(null);
 
   const reactions = {
     "evt-1": [
@@ -119,10 +171,21 @@
         placeholder="Message # demo — paste or drop an image here…"
         onsend={async () => {}}
         ontogglereaction={() => {}}
-        onreply={(id) => (replyOpenRoot = id)}
+        onreply={(id) => {
+          artifactOpen = null;
+          replyOpenRoot = id;
+        }}
+        onopenartifact={(a) => {
+          replyOpenRoot = null;
+          artifactOpen = a;
+        }}
       />
     </div>
-    {#if replyOpenRoot}
+    {#if artifactOpen}
+      <div class="demo-side chat-shell">
+        <ArtifactPanel artifact={artifactOpen} onclose={() => (artifactOpen = null)} />
+      </div>
+    {:else if replyOpenRoot}
       <div class="demo-side">
         <ReplyPanel
           api={stubApi}
@@ -152,9 +215,27 @@
 {/if}
 
 <style>
+  /* Dev harness only: load the same Geist faces the desktop window ships so
+     the browser preview matches shipped rendering. */
+  @font-face {
+    font-family: "Geist";
+    src: url("../../../../../sync/src/assets/fonts/geist-sans-400.woff2") format("woff2");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Geist";
+    src: url("../../../../../sync/src/assets/fonts/geist-sans-500.woff2") format("woff2");
+    font-weight: 500;
+  }
+  @font-face {
+    font-family: "Geist";
+    src: url("../../../../../sync/src/assets/fonts/geist-sans-600.woff2") format("woff2");
+    font-weight: 600;
+  }
   :global(body) {
     margin: 0;
     background: #101014;
+    -webkit-font-smoothing: antialiased;
   }
   .demo {
     display: flex;
@@ -166,7 +247,8 @@
     min-width: 0;
   }
   .demo-side {
-    flex: 0 0 360px;
+    flex: 0 0 420px;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     min-width: 0;
   }

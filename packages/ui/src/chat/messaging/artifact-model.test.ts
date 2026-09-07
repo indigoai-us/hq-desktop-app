@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   ARTIFACT_PREVIEW_LINES,
+  artifactBodyAfterTitle,
   artifactHasMore,
+  artifactLooksLikeMarkdown,
   artifactPreview,
   artifactPreviewLines,
   artifactSizeLabel,
@@ -71,6 +73,51 @@ describe("artifactPreview", () => {
   it("reports when there is more content than the preview shows", () => {
     expect(artifactHasMore(LONG)).toBe(true);
     expect(artifactHasMore("one\ntwo")).toBe(false);
+  });
+});
+
+describe("artifactLooksLikeMarkdown", () => {
+  it("detects headings, lists, fences, quotes, tables, emphasis, code and links", () => {
+    expect(artifactLooksLikeMarkdown("# Title\n\nbody")).toBe(true);
+    expect(artifactLooksLikeMarkdown("intro\n- one\n- two")).toBe(true);
+    expect(artifactLooksLikeMarkdown("steps\n1. first\n2. second")).toBe(true);
+    expect(artifactLooksLikeMarkdown("```sh\nhq sync\n```")).toBe(true);
+    expect(artifactLooksLikeMarkdown("> quoted line")).toBe(true);
+    expect(artifactLooksLikeMarkdown("| a | b |\n| --- | --- |")).toBe(true);
+    expect(artifactLooksLikeMarkdown("this is **bold** text")).toBe(true);
+    expect(artifactLooksLikeMarkdown("run `hq dm` now")).toBe(true);
+    expect(artifactLooksLikeMarkdown("see [docs](https://x.test/d)")).toBe(true);
+  });
+
+  it("leaves plain prose, logs and JSON as plain text", () => {
+    expect(artifactLooksLikeMarkdown(LONG)).toBe(false);
+    expect(artifactLooksLikeMarkdown("Read the handoff. Start with Gap 1.")).toBe(false);
+    expect(artifactLooksLikeMarkdown('{"ok": true, "n": 3}')).toBe(false);
+    expect(
+      artifactLooksLikeMarkdown("12:01 worker started\n12:02 worker * idle"),
+    ).toBe(false);
+  });
+});
+
+describe("artifactBodyAfterTitle", () => {
+  it("drops a leading heading the card already shows as its title", () => {
+    const text = "# Handoff notes\n\nFirst real line.\nSecond line.";
+    expect(artifactBodyAfterTitle(text, "details")).toBe(
+      "First real line.\nSecond line.",
+    );
+  });
+
+  it("drops a leading TITLE: label line", () => {
+    expect(artifactBodyAfterTitle("Title: Legal page\nBody here", "prompt")).toBe(
+      "Body here",
+    );
+  });
+
+  it("keeps ordinary first lines — the title was only a summary of them", () => {
+    expect(artifactBodyAfterTitle(LONG, "details")).toBe(LONG);
+    expect(artifactBodyAfterTitle("Read the handoff.\nThen act.", "prompt")).toBe(
+      "Read the handoff.\nThen act.",
+    );
   });
 });
 

@@ -93,6 +93,47 @@ export function artifactPreviewLines(
   return kept;
 }
 
+/**
+ * True when the artifact reads as Markdown (headings, lists, fences, tables,
+ * emphasis, links, quotes) and should render through the safe Markdown
+ * renderer. Plain prose, logs and JSON dumps stay as line-preserving text —
+ * a `*` in a log line must not turn into emphasis.
+ */
+export function artifactLooksLikeMarkdown(text: string): boolean {
+  if (/^\s*```/m.test(text)) return true;
+  if (/^\s{0,3}#{1,6}\s+\S/m.test(text)) return true;
+  if (/^\s{0,3}(?:[-*+]|\d+[.)])\s+\S/m.test(text)) return true;
+  if (/^\s{0,3}>\s?\S/m.test(text)) return true;
+  if (/^\s{0,3}\|.+\|\s*$/m.test(text)) return true;
+  if (/\*\*[^*\n]+\*\*/.test(text)) return true;
+  if (/`[^`\n]+`/.test(text)) return true;
+  if (/\[[^\]\n]+\]\([^)\s]+\)/.test(text)) return true;
+  return false;
+}
+
+/**
+ * The artifact body without a leading `# Title` / `TITLE:` line that the card
+ * already shows as its title — the preview should start on the first line
+ * the header does not repeat. Returns `text` unchanged when the first line is
+ * ordinary content.
+ */
+export function artifactBodyAfterTitle(text: string, kind: ArtifactKind): string {
+  const title = artifactTitle(text, kind);
+  const lines = text.split("\n");
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  if (i >= lines.length) return text;
+  const first = lines[i].trim();
+  const isHeading = /^\s{0,3}#{1,6}\s+\S/.test(first);
+  const isLabelled = /^(?:title|subject|re)\s*:/i.test(first);
+  if (!isHeading && !isLabelled) return text;
+  const labelled = /^(?:title|subject|re)\s*:\s*(.+)$/i.exec(first);
+  const candidate = stripTitleMarkup(labelled ? labelled[1] : first);
+  const shown = title.endsWith("…") ? title.slice(0, -1) : title;
+  if (!candidate.startsWith(shown)) return text;
+  return lines.slice(i + 1).join("\n").replace(/^\s*\n/, "");
+}
+
 export function artifactPreview(text: string, maxLines?: number): string {
   return artifactPreviewLines(text, maxLines).join("\n");
 }
