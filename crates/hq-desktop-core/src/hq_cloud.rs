@@ -448,14 +448,20 @@
 /// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
 /// cache key.
 ///
-/// `~6.16.11` -> `~6.16.21`: floors the runner at the first published release
-/// carrying the post-sync manifest-upload pass (US-004,
+/// `~6.16.11` -> `~6.16.22`: floors the runner at the first published release
+/// whose post-sync manifest-upload pass actually WORKS in production (US-004,
 /// sync-reconciliation-audit; hq-cloud `src/bin/sync-runner-manifest.ts`,
-/// published as 6.16.21 and recorded in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`]).
-/// Semver admission alone would NOT have been enough here: 6.16.21 already
+/// recorded in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`]). The pass first shipped in
+/// 6.16.21, but its chunker carried no byte budget and emitted 16-18 MiB
+/// chunks against API Gateway's 10 MB request limit, so every vault large
+/// enough to chunk got HTTP 413 and uploaded nothing; 6.16.22 adds the byte
+/// budget and 413 backoff. 6.16.21 is therefore deliberately NOT the floor —
+/// flooring there would ship a manifest pass that is dead on arrival.
+///
+/// Semver admission alone would NOT have been enough here: 6.16.22 already
 /// satisfies `~6.16.11`, but npm keys `_npx` entries by the requested spec
 /// string, so every existing desktop would keep serving its cached 6.16.11
-/// resolution. Changing the requested spec from `~6.16.11` to `~6.16.21` is
+/// resolution. Changing the requested spec from `~6.16.11` to `~6.16.22` is
 /// what actually moves the cache key and delivers the manifest runner.
 ///
 /// Nothing else on the desktop side is required: the manifest outcome arrives
@@ -463,19 +469,22 @@
 /// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
 /// switch reaches the runner by plain environment inheritance (see
 /// `commands::process::child_env_tests`).
-pub const HQ_CLOUD_VERSION: &str = "~6.16.21";
+pub const HQ_CLOUD_VERSION: &str = "~6.16.22";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
 ///
-/// Published as hq-cloud 6.16.21, so this is `Some("6.16.21")` and
-/// [`HQ_CLOUD_VERSION`] was bumped to `~6.16.21` in the same commit — the
+/// The pass first shipped in 6.16.21, but that release's unbudgeted chunker
+/// drew HTTP 413 from API Gateway and uploaded nothing, so the FIRST version
+/// that delivers a working manifest upload — and therefore the only sound
+/// floor — is 6.16.22. [`HQ_CLOUD_VERSION`] was bumped to `~6.16.22` in the
+/// same commit as this constant — the
 /// pairing the release checklist requires. With this filled in, the
 /// `manifest_upload_floor_is_recorded_once_published` test below is a REAL
 /// floor guard: it fails if the pin's lower bound ever drops below the
 /// manifest-upload release, which is the only thing that moves the npx cache
 /// key for desktops already on an older spec.
-pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.21");
+pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.22");
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -543,12 +552,12 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.21");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.22");
     }
 
     /// Manifest-upload floor (US-004, sync-reconciliation-audit).
     ///
-    /// The manifest runner published as hq-cloud 6.16.21, so the constant is
+    /// The working manifest runner published as hq-cloud 6.16.22, so the constant is
     /// `Some` and this is a real guard that the pin FLOORS at (not merely
     /// admits) the manifest release — semver admission alone would leave
     /// desktops on a cached npx entry that predates it. The `None` arm is kept
@@ -557,7 +566,7 @@ mod tests {
     fn manifest_upload_floor_is_recorded_once_published() {
         match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
             None => assert_eq!(
-                HQ_CLOUD_VERSION, "~6.16.21",
+                HQ_CLOUD_VERSION, "~6.16.22",
                 "manifest runner is still unpublished; when it ships, set \
                  MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
             ),

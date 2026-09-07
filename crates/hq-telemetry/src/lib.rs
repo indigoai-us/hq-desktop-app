@@ -406,7 +406,7 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "vault_not_found",
     "vault_permission_denied",
     "vault_write_scope",
-    // Added at the ~6.16.21 runner pin: the manifest-upload contract class
+    // Added at the ~6.16.22 runner pin: the manifest-upload contract class
     // (hq-cloud src/manifest/contract.ts -> SyncManifestContractError).
     "sync_manifest_contract",
     "vend_denied",
