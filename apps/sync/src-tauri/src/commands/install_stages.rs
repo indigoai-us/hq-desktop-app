@@ -370,8 +370,40 @@ pub struct EnsureOutcome {
 /// Fresh installs do not require the pack to be present on disk.
 #[tauri::command]
 pub async fn install_work_mesh() -> Result<(), String> {
+    // Serialize with the SteadyState launch path so the wizard stage and
+    // `ensure_work_mesh_daemon` never install concurrently or overwrite each
+    // other's marker.
+    let _guard = MESH_INSTALL_LOCK.lock().await;
     let hq_root = PathBuf::from(resolve_hq_path()?);
-    run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root).await
+    run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root).await?;
+    // Record the wizard install in the same marker the launch path reads, so a
+    // later deliberate `hq mesh daemon uninstall` is not undone on next launch.
+    let cli_version = crate::commands::hq_cli_update::get_hq_cli_version()
+        .await
+        .unwrap_or_else(|| "unknown".to_string());
+    record_mesh_install_ok(&cli_version);
+    Ok(())
+}
+
+/// One lock for every code path that installs the Work Mesh daemon
+/// (onboarding wizard stage and SteadyState launch), held across the whole
+/// status → decide → install → write-marker sequence.
+static MESH_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Best-effort: write an `ok` auto-install marker for `cli_version`.
+fn record_mesh_install_ok(cli_version: &str) {
+    let Ok(marker_path) = mesh_daemon_auto_install_marker_path() else {
+        return;
+    };
+    let marker = AutoInstallMarker {
+        cli_version: cli_version.to_string(),
+        attempted_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        outcome: "ok".to_string(),
+        error: None,
+    };
+    if let Err(e) = write_auto_install_marker(&marker_path, &marker) {
+        crate::util::logfile::log("work-mesh", &format!("mesh install marker not written: {e}"));
+    }
 }
 
 fn mesh_daemon_auto_install_marker_path() -> Result<PathBuf, String> {
@@ -405,12 +437,16 @@ pub fn should_auto_install(
     marker: Option<&AutoInstallMarker>,
     cli_version: &str,
 ) -> bool {
-    if !unit_not_installed(status) {
-        return false;
-    }
     match marker {
+        // A successful install for this CLI version was recorded (by the wizard
+        // or by us). If the unit is gone now, the person removed it on purpose.
         Some(m) if m.cli_version == cli_version && m.outcome == "ok" => false,
-        _ => true,
+        // Our last attempt for this CLI version failed. Retry even if it left a
+        // partial unit behind; `hq mesh daemon install` is idempotent.
+        Some(m) if m.cli_version == cli_version && m.outcome == "failed" => true,
+        // No marker (or one from another CLI version): install only when the
+        // unit is actually missing.
+        _ => unit_not_installed(status),
     }
 }
 
@@ -435,6 +471,7 @@ fn write_auto_install_marker(path: &Path, marker: &AutoInstallMarker) -> Result<
 /// auto-install for the same CLI version (marker outcome `ok`).
 #[tauri::command]
 pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
+    let _guard = MESH_INSTALL_LOCK.lock().await;
     let hq_root = PathBuf::from(resolve_hq_path()?);
     let status_value = run_hq_json(MESH_DAEMON_STATUS_ARGS, &hq_root).await?;
     let status: DaemonStatus = serde_json::from_value(status_value)
@@ -631,6 +668,34 @@ mod tests {
             Some(&failed_marker("5.100.0")),
             "5.100.0"
         ));
+    }
+
+    #[test]
+    fn should_auto_install_when_failed_marker_and_partial_unit_exists() {
+        // A failed attempt may leave a unit file behind; the failed marker for
+        // this CLI version must still allow a retry.
+        let dir = tempdir().unwrap();
+        let status = installed_status(dir.path());
+        let marker = failed_marker("5.108.20");
+        assert!(should_auto_install(&status, Some(&marker), "5.108.20"));
+    }
+
+    #[test]
+    fn should_not_auto_install_when_ok_marker_and_unit_removed_deliberately() {
+        let marker = ok_marker("5.108.20");
+        assert!(!should_auto_install(&not_installed_status(), Some(&marker), "5.108.20"));
+    }
+
+    #[test]
+    fn install_paths_share_one_lock_and_wizard_records_marker() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/install_stages.rs"
+        ));
+        // Both install paths take the same lock.
+        assert_eq!(src.matches("MESH_INSTALL_LOCK.lock().await").count(), 2);
+        // The wizard stage records the same marker the launch path reads.
+        assert!(src.contains("record_mesh_install_ok(&cli_version);"));
     }
 
     #[test]
