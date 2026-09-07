@@ -93,6 +93,40 @@ function scrollTo(el: HTMLElement, top: number): void {
 }
 
 describe("ChannelConversation scroll ownership", () => {
+  it("loads the next history page when the user reaches the top", async () => {
+    mountConversation(messages(60));
+    await tick();
+    const el = stubLayout(20);
+
+    // Loading more messages keeps the current first row anchored, so the
+    // user's next upward scroll continues naturally into the new page.
+    scrollTo(el, 0);
+    rowCountRef.value = 40;
+    await tick();
+
+    expect(el.scrollTop).toBe(20 * ROW_HEIGHT);
+    expect(
+      host.querySelector('[data-testid="conversation-load-earlier"]')?.textContent,
+    ).toContain("20 earlier");
+  });
+
+  it("keeps automatically loaded history when a live refresh arrives", async () => {
+    const props = mountConversation(messages(60));
+    await tick();
+    const el = stubLayout(20);
+    scrollTo(el, 0);
+    rowCountRef.value = 40;
+    await tick();
+
+    // A new message must not reset the user's already-open history page.
+    rowCountRef.value = 41;
+    props.messages = messages(61);
+    await tick();
+    expect(
+      host.querySelector('[data-testid="conversation-load-earlier"]')?.textContent,
+    ).toContain("21 earlier");
+  });
+
   it("lands at the bottom on initial mount", async () => {
     mountConversation(messages(10));
     await tick();

@@ -297,6 +297,8 @@
   // Optimistic local sends appended to the injected timeline (no persistence).
   let localSends = $state<ConversationMessageWire[]>([]);
   let extraOlder = $state(0);
+  /** Avoid scheduling the same history page twice from a burst of top scrolls. */
+  let loadingEarlier = $state(false);
   /** Release blob: previews created for optimistic sends (leak guard). */
   function revokeLocalPreviews(rows: ConversationMessageWire[]): void {
     for (const row of rows) {
@@ -310,7 +312,6 @@
 
   $effect(() => {
     void messages.at(-1)?.eventId;
-    extraOlder = 0;
     // untrack: reading localSends here would make this effect re-run on its
     // own `localSends = []` write (effect depth explosion).
     untrack(() => revokeLocalPreviews(localSends));
@@ -381,6 +382,7 @@
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     stickToBottom = distance <= STICK_THRESHOLD_PX;
     if (stickToBottom) hasUnseenBelow = false;
+    if (scroller.scrollTop <= STICK_THRESHOLD_PX) showEarlier();
   }
 
   function jumpToLatest(): void {
@@ -391,6 +393,8 @@
 
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   function showEarlier(): void {
+    if (loadingEarlier || windowed.hidden === 0) return;
+    loadingEarlier = true;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
     extraOlder += TIMELINE_WINDOW;
   }
@@ -956,6 +960,7 @@
         // shifting scrollTop by exactly the height the prepend added.
         el.scrollTop += el.scrollHeight - prependAnchorHeight;
         prependAnchorHeight = 0;
+        loadingEarlier = false;
         return;
       }
       if (stickToBottom) {
