@@ -126,7 +126,11 @@ export function linkForRow(row: ConversationRow, links: ProjectLink[]): ProjectL
         link.project.toLowerCase() === projectId ||
         link.projectName.trim().toLowerCase() === projectId,
     );
-    if (byProject) return byProject;
+    // Project metadata may be shared by several channels. The selected row,
+    // not a cached project's previous channel, owns the launch/read scope.
+    if (byProject) return row.channelId
+      ? { ...byProject, channelId: row.channelId, channelName: row.title }
+      : byProject;
   }
   const title = normalizeChannelName(row.title);
   if (!title.startsWith('p-')) return null;

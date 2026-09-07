@@ -126,11 +126,11 @@ describe('linkForRow', () => {
   });
 
   it('falls back to the hq-pro projectId, then to the p-<slug> title', () => {
-    expect(linkForRow(row({ channelId: 'chn_other', projectId: 'onboarding-v2' }), links)).toBe(
-      onboarding,
+    expect(linkForRow(row({ channelId: 'chn_other', projectId: 'onboarding-v2' }), links)).toMatchObject(
+      { ...onboarding, channelId: 'chn_other', channelName: expect.any(String) },
     );
-    expect(linkForRow(row({ channelId: 'chn_other', projectId: 'Onboarding v2' }), links)).toBe(
-      onboarding,
+    expect(linkForRow(row({ channelId: 'chn_other', projectId: 'Onboarding v2' }), links)).toMatchObject(
+      { ...onboarding, channelId: 'chn_other', channelName: expect.any(String) },
     );
     expect(linkForRow(row({ channelId: 'chn_other', title: '#P-Onboarding-v2' }), links)).toBe(
       onboarding,
@@ -153,6 +153,18 @@ describe('linkForRow', () => {
 });
 
 describe('badge + extras', () => {
+  it('launches in the clicked channel when a cached project points at another channel', () => {
+    const onnew = vi.fn();
+    const extras = rowExtrasFor(
+      row({ channelId: 'chn_new_project', projectId: 'launch', title: 'Verified project' }),
+      links, null, onnew, vi.fn(),
+    );
+    extras?.actions?.[0].onselect();
+    expect(onnew).toHaveBeenCalledWith(expect.objectContaining({
+      project: 'launch', channelId: 'chn_new_project', channelName: 'Verified project',
+    }));
+    expect(launch.channelId).toBe('chn_launch');
+  });
   it('says how many are live, else how many there were, else nothing', () => {
     expect(sessionsBadge(launch)).toBe('1 live');
     expect(sessionsBadge(onboarding)).toBe('1');
