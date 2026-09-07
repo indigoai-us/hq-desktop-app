@@ -692,10 +692,14 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/src/commands/install_stages.rs"
         ));
+        // Needles are built at runtime so this test's own source (included via
+        // include_str!) does not match itself.
+        let lock_needle = format!("{}.lock().await", "MESH_INSTALL_LOCK");
+        let marker_needle = format!("{}(&cli_version);", "record_mesh_install_ok");
         // Both install paths take the same lock.
-        assert_eq!(src.matches("MESH_INSTALL_LOCK.lock().await").count(), 2);
+        assert_eq!(src.matches(lock_needle.as_str()).count(), 2);
         // The wizard stage records the same marker the launch path reads.
-        assert!(src.contains("record_mesh_install_ok(&cli_version);"));
+        assert!(src.contains(marker_needle.as_str()));
     }
 
     #[test]
