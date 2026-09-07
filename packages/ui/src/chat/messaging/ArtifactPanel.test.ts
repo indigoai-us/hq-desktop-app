@@ -11,7 +11,11 @@ const LONG = `${"Paragraph one.\n\n"}${"word ".repeat(400)}\n\nTAIL LINE`;
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function mountPanel(text = LONG, onclose = vi.fn()) {
+function mountPanel(
+  text = LONG,
+  onclose = vi.fn(),
+  onopenurl?: (url: string) => void,
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(ArtifactPanel, {
@@ -19,6 +23,7 @@ function mountPanel(text = LONG, onclose = vi.fn()) {
     props: {
       artifact: chatArtifact({ text, eventId: "evt-1", kind: "details" }),
       onclose,
+      onopenurl,
     },
   });
   flushSync();
@@ -79,6 +84,27 @@ describe("ArtifactPanel markdown", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith(MARKDOWN);
+  });
+
+  it("routes markdown links through the host opener instead of navigating", () => {
+    const onopenurl = vi.fn();
+    mountPanel("# Doc\n\nSee [the runbook](https://example.test/runbook).", vi.fn(), onopenurl);
+    const a = host.querySelector<HTMLAnchorElement>(
+      "[data-testid='artifact-panel-content'] a",
+    );
+    expect(a?.getAttribute("href")).toBe("https://example.test/runbook");
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    a?.dispatchEvent(ev);
+    expect(onopenurl).toHaveBeenCalledWith("https://example.test/runbook");
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("skips the markdown pass for oversized dumps", () => {
+    mountPanel(`# Big\n\n${"- line\n".repeat(40_000)}`);
+    expect(
+      host.querySelector("[data-testid='artifact-panel-content']")
+        ?.getAttribute("data-render"),
+    ).toBe("plain");
   });
 });
 

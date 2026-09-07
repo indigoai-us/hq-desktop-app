@@ -10,6 +10,7 @@
    */
   import { onMount } from "svelte";
 
+  import { handleLinkActivate } from "../../common/external-links.js";
   import { renderMarkdown } from "../../common/markdown.js";
   import {
     artifactLooksLikeMarkdown,
@@ -20,11 +21,25 @@
   interface Props {
     artifact: ChatArtifact;
     onclose: () => void;
+    /** Host-owned external link opener (same contract as message bodies). */
+    onopenurl?: (url: string) => void;
   }
 
-  let { artifact, onclose }: Props = $props();
+  let { artifact, onclose, onopenurl }: Props = $props();
 
-  const isMarkdown = $derived(artifactLooksLikeMarkdown(artifact.text));
+  /** Above this the Markdown pass is skipped — a dump this size is not prose,
+      and rendering it would stall the pane open animation. */
+  const MARKDOWN_MAX_CHARS = 200_000;
+
+  const isMarkdown = $derived(
+    artifact.text.length <= MARKDOWN_MAX_CHARS &&
+      artifactLooksLikeMarkdown(artifact.text),
+  );
+
+  /* Links never navigate the webview: route them through the host opener. */
+  function onLinkActivate(e: Event): void {
+    handleLinkActivate(e, { onopenurl, mode: "message" });
+  }
   const html = $derived(
     isMarkdown ? renderMarkdown(artifact.text, { softBreak: "br" }) : "",
   );
@@ -119,10 +134,14 @@
   </header>
   <div class="artifact-panel-body">
     {#if isMarkdown}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <article
         class="artifact-panel-content artifact-md"
         data-testid="artifact-panel-content"
         data-render="markdown"
+        onclick={onLinkActivate}
+        onauxclick={onLinkActivate}
+        onkeydown={onLinkActivate}
       >
         {@html html}
       </article>

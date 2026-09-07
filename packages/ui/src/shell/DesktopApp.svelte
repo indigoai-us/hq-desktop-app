@@ -4522,6 +4522,7 @@
                   <ArtifactPanel
                     artifact={openArtifactView}
                     onclose={closeArtifact}
+                    {onopenurl}
                   />
                 </div>
               {:else if openAgentMember}
