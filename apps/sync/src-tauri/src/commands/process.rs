@@ -7069,3 +7069,120 @@ mod watcher_fault_e2e_tests {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Child-environment inheritance (US-004 manifest kill-switch passthrough)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, unix))]
+mod child_env_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Serializes the tests below, which mutate this process's environment.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// hq-cloud's `MANIFEST_UPLOAD_DISABLED_ENV` (`src/manifest/upload-manifest.ts`).
+    const KILL_SWITCH: &str = "HQ_SYNC_MANIFEST_DISABLED";
+
+    /// Sets an env var for the duration of a test and removes it on drop, so
+    /// cleanup happens even if an assertion panics mid-test. Without this an
+    /// early failure would leak the variable into every later test in the
+    /// binary.
+    struct EnvGuard(&'static str);
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            std::env::set_var(key, value);
+            Self(key)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+
+    /// Run `/bin/sh -c <script>` through the real spawn path and return stdout.
+    fn stdout_of(handle: &str, script: &str, env: Option<HashMap<String, String>>) -> String {
+        let spawn = SpawnArgs {
+            cmd: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            cwd: None,
+            env,
+        };
+        let out = Mutex::new(String::new());
+        run_process_impl(handle, &spawn, |ev| {
+            if let ProcessEvent::Stdout(line) = ev {
+                out.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_str(&line);
+            }
+        })
+        .expect("spawn /bin/sh");
+        let captured = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        captured
+    }
+
+    /// The manifest kill switch reaches the spawned `hq-sync-runner`.
+    ///
+    /// `SpawnArgs.env` is applied with `Command::env(k, v)` per key and there
+    /// is no `env_clear()` anywhere in this module, so the child inherits the
+    /// whole parent environment and the explicit entries merely override.
+    /// That means `HQ_SYNC_MANIFEST_DISABLED`, set in the app's environment,
+    /// is visible to the runner without the desktop app enumerating it. The
+    /// test spawns through `run_process_impl` — the same function the manual
+    /// sync and watch daemon spawns use — so the guarantee is proven end to
+    /// end rather than asserted about the code.
+    #[test]
+    fn kill_switch_env_var_reaches_the_child_process() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set(KILL_SWITCH, "1");
+
+        // Env map shaped like the runner spawn's: explicit keys only, with the
+        // kill switch deliberately NOT among them.
+        let mut env = HashMap::new();
+        env.insert("HQ_ROOT".to_string(), "/tmp/hq".to_string());
+        env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        assert!(
+            !env.contains_key(KILL_SWITCH),
+            "the kill switch must arrive by inheritance, not an explicit entry"
+        );
+
+        let seen = stdout_of(
+            "child-env-test-kill-switch",
+            "printf '%s' \"$HQ_SYNC_MANIFEST_DISABLED\"",
+            Some(env),
+        );
+
+        assert_eq!(
+            seen, "1",
+            "HQ_SYNC_MANIFEST_DISABLED must reach the runner subprocess"
+        );
+    }
+
+    /// Guard against a future `env_clear()` / allowlist refactor silently
+    /// severing every non-enumerated variable, which would break the kill
+    /// switch above and any other runner-side env override.
+    #[test]
+    fn child_inherits_parent_env_not_an_allowlist() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        const SENTINEL: &str = "HQ_SYNC_TEST_INHERITANCE_SENTINEL";
+        let _guard = EnvGuard::set(SENTINEL, "inherited");
+
+        let mut env = HashMap::new();
+        env.insert("HQ_ROOT".to_string(), "/tmp/hq".to_string());
+        let seen = stdout_of(
+            "child-env-test-inheritance",
+            "printf '%s' \"$HQ_SYNC_TEST_INHERITANCE_SENTINEL\"",
+            Some(env),
+        );
+
+        assert_eq!(
+            seen, "inherited",
+            "child must inherit the parent environment"
+        );
+    }
+}

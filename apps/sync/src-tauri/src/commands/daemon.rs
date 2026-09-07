@@ -295,13 +295,11 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
     phase_context: &Mutex<WatcherPhaseContext>,
     line: &str,
 ) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    // Shared tolerant parse seam — blank, malformed, and unknown-type lines
+    // (e.g. the runner's additive `manifest-upload` event) are skipped rather
+    // than killing the watcher. See `events::parse_sync_line`.
+    let Some(event) = crate::events::parse_sync_line(line) else {
         return false;
-    }
-    let event: SyncEvent = match serde_json::from_str(trimmed) {
-        Ok(e) => e,
-        Err(_) => return false,
     };
     observe_watcher_phase_from_event(phase_context, &event);
     {
