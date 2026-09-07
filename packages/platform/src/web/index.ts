@@ -1062,6 +1062,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly workMesh: PlatformAdapter["workMesh"] = {
+    createProjectStory: (projectId, companyUid, story) => this.post(
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
+      { ...story, companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: async () => DESKTOP_ONLY,
     getProjectView: (projectId, companyUid) => {
       const id = projectId.trim();

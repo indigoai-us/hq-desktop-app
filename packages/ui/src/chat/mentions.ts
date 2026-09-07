@@ -307,12 +307,12 @@ export function activeMentionQuery(text: string): string | null {
 export function filterMentionCandidates(
   candidates: readonly MentionTarget[],
   query: string | null,
-  selected: readonly MentionTarget[],
+  _selected: readonly MentionTarget[],
 ): MentionTarget[] {
   if (query === null) return [];
-  const selectedIds = new Set(selected.map((target) => target.participantUid));
+  // A draft can mention someone repeatedly. Deduplicate notification recipients
+  // in mergeMentionTargets, without removing them from the completion picker.
   return candidates
-    .filter((candidate) => !selectedIds.has(candidate.participantUid))
     .filter((candidate) => {
       // Include the company so typing the tenant narrows a name collision, and
       // the uids so pasting `agt_…`/`prs_…` still finds a row even though no id

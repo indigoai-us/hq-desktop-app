@@ -3174,6 +3174,7 @@ mod tests {
             from_email: String::new(),
             from_display_name: "Bryan".to_string(),
             body: "Looks good".to_string(),
+            attachments: None,
             details: None,
             prompt: None,
             created_at: "2026-09-01T00:00:00.000Z".to_string(),

@@ -1052,6 +1052,9 @@ export interface MigrateSessionRequest {
  * so both hosts share the @hq/core mapper.
  */
 export interface WorkMeshApi {
+  createProjectStory?(projectId: string, companyUid: string, story: {
+    id: string; title: string; description: string; status: string; passes: boolean;
+  }): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;

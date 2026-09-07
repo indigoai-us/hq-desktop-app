@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -1366,9 +1367,58 @@
   const boardHasCards = $derived(
     Boolean(overlayBoard?.columns.some((column) => column.cards.length > 0)),
   );
-  const board = $derived<BoardTabData | null>(
-    boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard),
-  );
+  let createdTasks = $state<Record<string, BoardTabData>>({});
+  $effect(() => {
+    self?.uid;
+    createdTasks = {};
+  });
+  $effect(() => {
+    const key = selectedRow ? activityKeyForRow(selectedRow) : "";
+    const pending = createdTasks[key];
+    const base = boardHasCards ? overlayBoard : liveTabs?.board;
+    if (!pending || !base) return;
+    const remaining = Object.fromEntries(Object.entries(pending.stories).filter(([id]) => !base.stories[id]));
+    if (Object.keys(remaining).length === Object.keys(pending.stories).length) return;
+    const next = {...createdTasks};
+    if (!Object.keys(remaining).length) delete next[key];
+    else next[key] = {...pending, stories: remaining, columns: pending.columns.map(column => ({...column, cards: column.cards.filter(card => remaining[card.storyId])}))};
+    createdTasks = next;
+  });
+  const board = $derived.by((): BoardTabData | null => {
+    const base = boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard);
+    const added = selectedRow ? createdTasks[activityKeyForRow(selectedRow)] : null;
+    if (!added) return base;
+    if (!base) return added;
+    return { ...base, stories: {...added.stories, ...base.stories}, columns: base.columns.map(column => ({
+      ...column, cards: [...column.cards, ...(added.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => !base.stories[card.storyId])],
+    })) };
+  });
+
+  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const create = adapter.workMesh.createProjectStory;
+    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
+    const key = activityKeyForRow(row);
+    const account = self?.uid;
+    // A retry after a lost response must not append the same task twice.
+    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
+    const existing = before.stories.find(story => story.id === task.id);
+    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
+    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
+    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    const story = saved?.stories.find(story => story.id === task.id);
+    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
+    if (self?.uid !== account) return;
+    const prior = createdTasks[key];
+    const added = projectViewToBoard({...saved, stories: [story]});
+    createdTasks = {...createdTasks, [key]: prior ? {
+      ...added, stories: {...prior.stories, ...added.stories},
+      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
+    } : added};
+  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -4644,6 +4694,7 @@
                     reactions={rowReactions}
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
+                    selfPersonUid={self?.uid ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     previewCache={imagePreviewCache}
                     onpresign={presignAttachment}
@@ -4666,6 +4717,7 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
+              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
               onOpenInChannel={() => (tab = "chat")}

@@ -1071,6 +1071,10 @@ export function createSyncPlatformAdapter(
     },
 
     workMesh: {
+      createProjectStory: (projectId, companyUid, story) => hqProJson(
+        'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
+        { ...story, companyUid: companyUid.trim() },
+      ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>
         hqProJson(

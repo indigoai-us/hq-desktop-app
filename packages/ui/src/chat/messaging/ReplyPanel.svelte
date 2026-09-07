@@ -164,6 +164,7 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
   }
@@ -179,6 +180,7 @@
     reactions = {},
     ontogglereaction,
     selfDisplayName = null,
+    selfPersonUid = null,
     onuploadfiles = undefined,
     previewCache,
     onpresign = undefined,
@@ -850,6 +852,8 @@
         </div>
         {#if reactionsFor(rootId).length > 0}
           <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
             messageId={rootId}
             reactions={reactionsFor(rootId)}
             ontoggle={toggle}
@@ -989,6 +993,8 @@
               />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                   messageId={msg.eventId}
                   reactions={reactionsFor(msg.eventId)}
                   ontoggle={toggle}

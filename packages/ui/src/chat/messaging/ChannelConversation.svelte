@@ -1076,6 +1076,8 @@
                 <RunCompleteCard model={systemModel} {onopenurl} />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1113,6 +1115,8 @@
                 />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1333,6 +1337,8 @@
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}

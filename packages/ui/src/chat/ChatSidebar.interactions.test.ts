@@ -831,3 +831,35 @@ describe("ChatSidebar channel rail stamp on the owner's own send", () => {
     expect(sectionLabelFor("ch:chn_hq_dev")).toMatch(/^TODAY/);
   });
 });
+
+describe("conversation search keyboard navigation", () => {
+  it("selects results with arrows, ignores composing Enter, opens with Enter and restores focus on Escape", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, { target: host, props: {
+      api: stubApi(), seedDirectory: [seedRow], onselect,
+    }});
+    const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Search or jump to a conversation"]')!;
+    trigger.click();
+    await tick();
+    const input = document.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    input.value = 'launch';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+    expect(document.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('launch');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await tick();
+    expect(input.getAttribute('aria-activedescendant')).toBe('conversation-search-0');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+    await tick();
+    expect(document.querySelector('[role="combobox"]')).toBeTruthy();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => expect(onselect).toHaveBeenCalled());
+    expect(document.querySelector('[role="combobox"]')).toBeNull();
+    trigger.click();
+    await tick();
+    document.querySelector('[role="combobox"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    expect(document.querySelector('[role="combobox"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});

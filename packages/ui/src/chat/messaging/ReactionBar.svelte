@@ -3,7 +3,7 @@
   // ported verbatim from the hq-sync desktop source). Pure presentation: the
   // parent owns the reaction map and the toggle call; this component renders the
   // pills and bubbles a (messageId, emoji) toggle up.
-  import { type ReactionAggregate } from "./reactions";
+  import { type ReactionAggregate, reactionAttribution } from "./reactions";
   import EmojiPicker from "./EmojiPicker.svelte";
 
   interface Props {
@@ -11,6 +11,8 @@
     reactions?: ReactionAggregate[];
     ontoggle: (messageId: string, emoji: string) => void;
     compact?: boolean;
+    selfPersonUid?: string | null;
+    displayNameByUid?: Record<string, string>;
   }
 
   let {
@@ -18,21 +20,14 @@
     reactions = [],
     ontoggle,
     compact = false,
+    selfPersonUid = null,
+    displayNameByUid = {},
   }: Props = $props();
 
   let pickerOpen = $state(false);
 
-  /** Slack-style "Alice, Bob reacted with 👍" hover title. Empty when the
-   *  server didn't supply reactor identities (older builds) — pill shows count. */
-  function reactorTitle(r: ReactionAggregate): string | undefined {
-    const names = (r.reactors ?? []).map((x) => x.displayName).filter(Boolean);
-    if (names.length === 0) return undefined;
-    let who: string;
-    if (names.length === 1) who = names[0];
-    else if (names.length === 2) who = `${names[0]} and ${names[1]}`;
-    else
-      who = `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-    return `${who} reacted with ${r.emoji}`;
+  function reactorTitle(r: ReactionAggregate): string {
+    return reactionAttribution(r, selfPersonUid, displayNameByUid);
   }
 
   function toggle(emoji: string): void {
@@ -59,6 +54,7 @@
     >
       <span class="reaction-emoji">{r.emoji}</span>
       <span class="reaction-count">{r.count}</span>
+      <span class="reaction-tooltip" aria-hidden="true">{reactorTitle(r)}</span>
     </button>
   {/each}
 
@@ -93,7 +89,27 @@
     margin: 0.25rem 0.125rem 0;
   }
 
+  .reaction-tooltip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    width: max-content;
+    max-width: 280px;
+    padding: 6px 8px;
+    border: 1px solid var(--pop-border);
+    border-radius: 6px;
+    background: var(--c-field-bg);
+    color: var(--pop-text);
+    text-align: left;
+    line-height: 1.4;
+    pointer-events: none;
+  }
+  .reaction-pill:hover .reaction-tooltip,
+  .reaction-pill:focus-visible .reaction-tooltip { display: block; }
   .reaction-pill {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
