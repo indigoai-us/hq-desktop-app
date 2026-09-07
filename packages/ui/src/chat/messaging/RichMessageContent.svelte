@@ -544,8 +544,8 @@
   }
 
   .rich-markdown {
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.55;
   }
 
   /* ── Shared tone ramp (badge / progress / callout) ──────────────────── */

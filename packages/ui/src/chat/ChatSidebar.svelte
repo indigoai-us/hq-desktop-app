@@ -2960,7 +2960,9 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 13px;
+    /* Same step as the timeline body (14px) so the rail and the conversation
+       share one reading size. */
+    font-size: 14px;
     font-weight: 400;
     line-height: 1.2;
     text-align: left;
