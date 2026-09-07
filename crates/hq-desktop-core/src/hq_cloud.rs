@@ -448,6 +448,20 @@
 /// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
 /// cache key.
 ///
+/// `~6.16.23` -> `~6.16.24`: floors the runner at the release that stops one
+/// unroutable key from wedging the whole personal vault (hq-cloud#499,
+/// recorded in [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`]). The vault's area layout
+/// is frozen at cutover, so any top-level directory created afterwards — the
+/// incident was a stray `npm install -g` writing `bin/` into the HQ root —
+/// resolved to no area, and the journal append threw, aborting EVERY
+/// checkpoint on every machine that pulled it. Deletes never stuck (a delete is
+/// itself a journal write), the vault kept pulling the directory back, and the
+/// only recovery was hand-deleting it on each box. 6.16.24 routes such keys to
+/// an always-configured overflow area and excludes Node project markers from
+/// the vault so the contamination cannot travel again. A desktop holding a
+/// cached 6.16.23 satisfies `~6.16.23` and would never re-resolve; only the
+/// spec-string change below delivers the fix.
+///
 /// `~6.16.11` -> `~6.16.23`: floors the runner at the first published release
 /// whose post-sync manifest-upload pass is both functional AND honest in its
 /// bookkeeping (US-004, sync-reconciliation-audit; hq-cloud
@@ -482,7 +496,7 @@
 /// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
 /// switch reaches the runner by plain environment inheritance (see
 /// `commands::process::child_env_tests`).
-pub const HQ_CLOUD_VERSION: &str = "~6.16.23";
+pub const HQ_CLOUD_VERSION: &str = "~6.16.24";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -500,6 +514,16 @@ pub const HQ_CLOUD_VERSION: &str = "~6.16.23";
 /// manifest-upload release, which is the only thing that moves the npx cache
 /// key for desktops already on an older spec.
 pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.23");
+
+/// First `@indigoai-us/hq-cloud` version whose personal-vault journal routes a
+/// key the frozen area layout cannot place to an overflow area instead of
+/// aborting the checkpoint (hq-cloud#499, published as 6.16.24). Below it a
+/// single stray top-level directory in the HQ root wedges the vault on every
+/// machine that syncs it, and nothing on the desktop can recover that short of
+/// the user deleting files by hand. The pin must FLOOR here so the npx cache
+/// key moves for every installed desktop; see
+/// `version_floor_delivers_unrouted_overflow` below.
+pub const UNROUTED_OVERFLOW_MIN_HQ_CLOUD: &str = "6.16.24";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -567,7 +591,26 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.23");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.24");
+    }
+
+    /// Unrouted-key overflow floor (hq-cloud#499). A desktop below this floor
+    /// can be wedged for good by one stray top-level directory in the HQ root:
+    /// every checkpoint aborts, deletes never stick, and the vault keeps pulling
+    /// the directory back. Semver admission is not delivery — a cached 6.16.23
+    /// satisfies `~6.16.23` forever — so the pin's LOWER BOUND must sit at the
+    /// overflow release to move the npx cache key.
+    #[test]
+    fn version_floor_delivers_unrouted_overflow() {
+        let floor = semver::Version::parse(UNROUTED_OVERFLOW_MIN_HQ_CLOUD)
+            .expect("UNROUTED_OVERFLOW_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             unrouted-overflow release {floor}; bump the pin so the npx cache key \
+             moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
     }
 
     /// Manifest-upload floor (US-004, sync-reconciliation-audit).
@@ -581,7 +624,7 @@ mod tests {
     fn manifest_upload_floor_is_recorded_once_published() {
         match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
             None => assert_eq!(
-                HQ_CLOUD_VERSION, "~6.16.23",
+                HQ_CLOUD_VERSION, "~6.16.24",
                 "manifest runner is still unpublished; when it ships, set \
                  MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
             ),
