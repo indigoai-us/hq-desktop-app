@@ -207,10 +207,11 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     // time (a const assertion, not only a #[test]) so a pin bump on ANY branch —
     // including one cut before the guard existed, the PR #533 defect — fails the
     // build instead of silently merging a mismatch.
-    // ~6.16.24 (unrouted-key overflow, hq-cloud#499) was re-derived against
-    // both tags and adds no identity, so the vocabulary is unchanged and only
-    // the source-version marker moves with the pin.
-    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.24"');
+    // ~6.16.24 (unrouted-key overflow, hq-cloud#499) and ~6.16.25 (the
+    // root-`bin/` personal-vault exclusion, hq-cloud#501) were each re-derived
+    // against both tags and add no identity, so the vocabulary is unchanged and
+    // only the source-version marker moves with the pin.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.25"');
     expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
 
     // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
