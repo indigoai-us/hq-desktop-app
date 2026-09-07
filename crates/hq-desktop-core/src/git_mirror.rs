@@ -400,10 +400,15 @@ const BULK_OVERRIDE_ENV: &str = "HQ_SYNC_DELETE_BULK_OVERRIDE";
 ///
 /// The ordering contract is load-bearing and pinned by a test:
 /// `REFUSAL_CONFIRM_MIN_AGE < BULK_DELETE_SETTLE < REFUSAL_ESCALATION_AGES[0]`.
-/// Sitting strictly below the first escalation rung means a genuine wedge earns
-/// exactly one first-confirmed banner and then drains itself, so the 24h and 7d
-/// rungs stop being reachable in the ordinary case. This constant adds an *exit*
-/// from the latch; it does not retune when the latch trips or when it reports.
+/// Sitting strictly below the first escalation rung means a genuine wedge drains
+/// itself before any rung, so the 24h and 7d rungs stop being reachable in the
+/// ordinary case. This constant adds an *exit* from the latch; the reporting gate
+/// now also holds a settle-eligible wedge's FIRST Sentry banner until this same
+/// window has elapsed (see [`decide_refusal_report`] and [`settle_eligible`]), so
+/// the ordinary drain case earns ZERO banners — the first banner is billed only
+/// once the drain has demonstrably failed to clear the wedge within the window.
+/// A wedge that will never drain (tree absent, or a whole-tree loss) is not
+/// settle-eligible and keeps the unchanged 30-minute first-confirmed gate.
 const BULK_DELETE_SETTLE: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// What the breaker decided about a staged change set.
@@ -487,13 +492,30 @@ fn decide_bulk_delete_action(
         BulkDeleteVerdict::Allow => BulkDeleteAction::Allow,
         BulkDeleteVerdict::Refuse => {
             let settled = wedge_age.is_some_and(|age| age >= BULK_DELETE_SETTLE);
-            if settled && tree_present && deletions < tracked {
+            if settled && settle_eligible(deletions, tracked, tree_present) {
                 BulkDeleteAction::AcceptSettled
             } else {
                 BulkDeleteAction::Refuse
             }
         }
     }
+}
+
+/// The age-independent half of the settle exit's admission test, shared by the
+/// accept path ([`decide_bulk_delete_action`]) and the reporting gate
+/// ([`decide_refusal_report`], via its call site) so the two can never drift.
+///
+/// A refusal is only ever auto-committed — and, symmetrically, only ever has its
+/// first Sentry banner *held* for the settle window — when the working tree is
+/// still present (`tree_present`) and the deletion is *partial*
+/// (`deletions < tracked`). A moved or unmounted root, or a whole-tree loss, is
+/// eligible on neither side: it is never drained and never silenced, so it keeps
+/// the unchanged 30-minute first-confirmed gate. One definition means the
+/// population whose banner is held is exactly the population the settle path will
+/// drain — a wedge that will never auto-accept can never be silenced, and a wedge
+/// that will auto-accept can never warn before the window.
+fn settle_eligible(deletions: usize, tracked: usize, tree_present: bool) -> bool {
+    tree_present && deletions < tracked
 }
 
 /// Truthy spellings accepted by the engine, matched case-insensitively.
@@ -613,6 +635,13 @@ enum RefusalReportAction {
     /// Too few refusing passes so far — this still looks like a transient
     /// mid-sync sample, so it stays in the local log only.
     AwaitConfirmation,
+    /// Confirmed AND settle-eligible (present, partial), but still inside the
+    /// settle window: this same durable wedge age will auto-drain at
+    /// [`BULK_DELETE_SETTLE`] with no human action, so the FIRST banner is held
+    /// until the drain has had its chance. Non-emitting, like
+    /// [`Self::AwaitConfirmation`]; only the first banner is ever held, so the
+    /// escalation rungs are untouched.
+    AwaitSettleWindow,
     /// Confirmed, but this root is inside its cooldown.
     Suppress,
     /// The first report of this episode.
@@ -637,6 +666,7 @@ impl RefusalReportAction {
     fn source(self) -> &'static str {
         match self {
             RefusalReportAction::AwaitConfirmation => "await-confirmation",
+            RefusalReportAction::AwaitSettleWindow => "await-settle-window",
             RefusalReportAction::Suppress => "suppressed",
             RefusalReportAction::ReportFirstConfirmed => "first-confirmed",
             RefusalReportAction::ReportEscalation => "episode-escalation",
@@ -691,12 +721,27 @@ fn decide_refusal_report(
     confirm_min_age: Duration,
     cooldown: Duration,
     escalation_ages: &[Duration],
+    settle_hold: Option<Duration>,
 ) -> RefusalReportAction {
     // Confirmation is gated on the CONTINUOUS episode age, never the wedge age: a
     // root just resumed after a gap must re-clear this window before any banner,
     // including a rung that came due while it slept.
     if occurrences < confirm_after || episode_age < confirm_min_age {
         return RefusalReportAction::AwaitConfirmation;
+    }
+    // A settle-eligible wedge (present, partial) at this same durable age will
+    // auto-drain at `settle_hold` (= BULK_DELETE_SETTLE) with no human action, so
+    // its FIRST banner is held until the drain window has passed — the wedge is
+    // billed only if it outlives the window the settle path should have cleared it
+    // in, which is the point at which it becomes genuinely actionable. Gated on the
+    // DURABLE `wedge_age`, never the resettable `episode_age`, so a machine that
+    // sleeps between passes still reaches the window's end instead of being
+    // silenced forever. Scoped to the first banner (`reports_so_far == 0`), so once
+    // a wedge has escalated the 24h/7d rungs below are untouched. `settle_hold` is
+    // `None` for a non-eligible wedge (tree absent, whole-tree loss), which keeps
+    // the unchanged 30-minute first-confirmed gate for a wedge that never drains.
+    if reports_so_far == 0 && settle_hold.is_some_and(|hold| wedge_age < hold) {
+        return RefusalReportAction::AwaitSettleWindow;
     }
     // The cooldown is a floor, not the pacer: never emit two banners for one
     // root closer together than this, whatever the ladder below would allow. A
@@ -2242,21 +2287,33 @@ pub fn drive_wedge_report_for_test(
 
 /// Test-only production reporting seam for the settle-aware bulk-delete path.
 ///
-/// Drives the SAME [`decide_bulk_delete_action`] decision and the SAME reporter
-/// functions the mirror uses ([`report_bulk_acceptance`] on acceptance,
-/// [`emit_bulk_refusal`] on a confirmed refusal), over supplied inputs and a
-/// real deletion set built from NUL-terminated path records, without needing a
-/// git repo. An hq-telemetry envelope test drives this through the real
+/// Drives the SAME [`decide_bulk_delete_action`] decision, the SAME
+/// [`decide_refusal_report`] gate (with the real `settle_hold`), and the SAME
+/// reporter functions the mirror uses ([`report_bulk_acceptance`] on acceptance,
+/// [`emit_bulk_refusal`] on a confirmed, non-held refusal), over supplied inputs
+/// and a real deletion set built from NUL-terminated path records, without
+/// needing a git repo. An hq-telemetry envelope test drives this through the real
 /// `before_send` scrubber and asserts on the resulting envelopes, so it measures
 /// production behaviour rather than a re-implementation of it. Returns the
 /// `git_mirror_kind` of the envelope that was billed, or `"none"` when the
-/// decision was to allow without a signal.
+/// decision was to allow, or to HOLD the refusal's first banner because the wedge
+/// is settle-eligible and still inside the settle window — the exact reopening
+/// shape, now billed to nobody.
+///
+/// The gate inputs (`occurrences`, `episode_age_secs`, `reports_so_far`) let a
+/// caller position a refusal past the confirmation gate so the ONLY thing left to
+/// decide is the settle-hold, rather than re-implementing the gate as the old seam
+/// did by hard-coding `ReportFirstConfirmed`.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
 pub fn drive_bulk_delete_decision_for_test(
     deletions: usize,
     tracked: usize,
     wedge_age_secs: Option<u64>,
     tree_present: bool,
+    occurrences: usize,
+    episode_age_secs: u64,
+    reports_so_far: usize,
     prefix_records: &[u8],
 ) -> &'static str {
     let (prefixes, prefix_groups) = deletion_prefixes(prefix_records);
@@ -2268,27 +2325,53 @@ pub fn drive_bulk_delete_decision_for_test(
     };
     let override_on = is_bulk_override_set();
     let wedge_age = wedge_age_secs.map(Duration::from_secs);
+    let episode_age = Duration::from_secs(episode_age_secs);
+    // The durable wedge age the reporting gate reads; falls back to the episode age
+    // when no anchor is supplied, exactly as the production gate does.
+    let gate_wedge_age = wedge_age.unwrap_or(episode_age);
     match decide_bulk_delete_action(deletions, tracked, override_on, wedge_age, tree_present) {
         BulkDeleteAction::AcceptSettled => {
-            report_bulk_acceptance(&set, tracked, wedge_age_secs.unwrap_or(0));
+            report_bulk_acceptance(&set, tracked, wedge_age_secs.unwrap_or(0), tree_present);
             "bulk-delete-accepted"
         }
         BulkDeleteAction::Refuse => {
-            // Emit the SAME warning a confirmed refusal emits, over a minimal
-            // first-confirmed outcome, so the level and envelope hygiene are
-            // proven through the real reporter and scrubber. `emit_bulk_refusal`
-            // reads only the deletion set, the counts, `has_upstream` and the
-            // outcome/persisted fields below — never the git dir or hq folder —
-            // so the placeholders here never touch disk.
+            // Run the REAL reporting gate with the REAL settle_hold, so this seam
+            // measures the production decision rather than re-implementing it. A
+            // held first banner (settle-eligible, inside the window) emits nothing —
+            // the reopening shape — so this returns "none"; a non-held emitting
+            // action bills the SAME warning production does.
+            let settle_hold =
+                settle_eligible(deletions, tracked, tree_present).then_some(BULK_DELETE_SETTLE);
+            let action = decide_refusal_report(
+                occurrences,
+                episode_age,
+                gate_wedge_age,
+                reports_so_far,
+                None,
+                REFUSAL_CONFIRM_OCCURRENCES,
+                REFUSAL_CONFIRM_MIN_AGE,
+                REFUSAL_COOLDOWN,
+                &REFUSAL_ESCALATION_AGES,
+                settle_hold,
+            );
+            if !action.emits() {
+                return "none";
+            }
+            // Emit the SAME warning a confirmed refusal emits, over the gate's real
+            // action, so the level and envelope hygiene are proven through the real
+            // reporter and scrubber. `emit_bulk_refusal` reads only the deletion
+            // set, the counts, `tree_present`, `has_upstream` and the
+            // outcome/persisted fields below — never the git dir or hq folder — so
+            // the placeholders here never touch disk.
             let now = Utc::now();
             let outcome = RefusalOutcome {
-                action: RefusalReportAction::ReportFirstConfirmed,
-                occurrences: REFUSAL_CONFIRM_OCCURRENCES,
+                action,
+                occurrences,
                 distinct_sets: 1,
                 suppressed_since_report: 0,
-                episode_reports: 1,
-                episode_age: REFUSAL_CONFIRM_MIN_AGE,
-                wedge_age: wedge_age.unwrap_or(REFUSAL_CONFIRM_MIN_AGE),
+                episode_reports: reports_so_far + 1,
+                episode_age,
+                wedge_age: gate_wedge_age,
                 since_last_report: None,
                 episode_opened_at_wall: now,
                 wedge_started_at: now,
@@ -2299,6 +2382,7 @@ pub fn drive_bulk_delete_decision_for_test(
                     git_dir: Path::new("<test>"),
                     deletions: &set,
                     tracked,
+                    tree_present,
                     has_upstream: false,
                 },
                 &outcome,
@@ -3001,7 +3085,7 @@ fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkDeleteVer
                     render_prefix_histogram(&deletions.prefixes, deletions.prefix_groups),
                 ),
             );
-            report_bulk_acceptance(&deletions, tracked, wedge_secs);
+            report_bulk_acceptance(&deletions, tracked, wedge_secs, tree_present);
             // Clear the wedge state so a root that ever wedges again opens a
             // genuinely fresh ladder — but WITHOUT counting this forced
             // acceptance as an organic recovery, which would poison the
@@ -3030,6 +3114,7 @@ fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkDeleteVer
                 git_dir,
                 deletions: &deletions,
                 tracked,
+                tree_present,
                 has_upstream: repo_has_upstream(hq_folder),
             });
 
@@ -3111,6 +3196,12 @@ struct RefusalReport<'a> {
     git_dir: &'a Path,
     deletions: &'a StagedDeletions,
     tracked: usize,
+    /// Whether the working tree is still present, from the same `hq_folder_present`
+    /// probe the accept path reads. It is the reporting gate's half of
+    /// [`settle_eligible`]: with a partial deletion it decides whether this refusal's
+    /// first banner is held for the settle window (present) or billed at the
+    /// unchanged 30-minute gate (absent). Also shipped as a triage tag.
+    tree_present: bool,
     has_upstream: bool,
 }
 
@@ -3236,6 +3327,11 @@ fn report_bulk_refusal_at(
             REFUSAL_CONFIRM_MIN_AGE,
             REFUSAL_COOLDOWN,
             &REFUSAL_ESCALATION_AGES,
+            // Hold the first banner only for a wedge the settle path will drain —
+            // the exact same eligibility test the accept path reads, so the two
+            // never disagree about which wedge is silenced.
+            settle_eligible(report.deletions.count, report.tracked, report.tree_present)
+                .then_some(BULK_DELETE_SETTLE),
         );
 
         let suppressed_since_report = if action.emits() {
@@ -3344,6 +3440,21 @@ fn report_bulk_refusal_at(
                     REFUSAL_CONFIRM_MIN_AGE.as_secs(),
                 ),
             ),
+            RefusalReportAction::AwaitSettleWindow => log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: refusal confirmed but settle-eligible ({} of {} tracked files \
+                     deleted over a tree that is still present); {}s of {}s through the settle \
+                     window, so holding the first Sentry banner — this wedge is expected to \
+                     auto-drain when the window elapses, exactly as the same build already does \
+                     for the aged, present, partial wedges it commits. It stays fully logged here \
+                     regardless.",
+                    report.deletions.count,
+                    report.tracked,
+                    outcome.wedge_age.as_secs(),
+                    BULK_DELETE_SETTLE.as_secs(),
+                ),
+            ),
             _ => log(
                 LOG_TAG,
                 &format!(
@@ -3438,6 +3549,19 @@ fn emit_bulk_refusal(
             // A refusing root with no upstream is only losing local history; one
             // with an upstream has silently stopped publishing.
             scope.set_tag("has_upstream", report.has_upstream.to_string());
+            // The two discriminators triage lacked, both booleans derived from
+            // counts and a directory probe (never a path, name, or content): is the
+            // tree still there, and — with the partial-deletion half folded in — is
+            // this the settle-eligible shape the same build auto-drains hours later.
+            // A refusal that still reached Sentry with `settle_eligible=true` has
+            // therefore outlived its settle window (a drain that failed to run);
+            // `settle_eligible=false` is a wedge that never self-heals.
+            scope.set_tag("tree_present", report.tree_present.to_string());
+            scope.set_tag(
+                "settle_eligible",
+                settle_eligible(report.deletions.count, report.tracked, report.tree_present)
+                    .to_string(),
+            );
             scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
             scope.set_extra(
                 "deletion_prefix_groups",
@@ -3463,7 +3587,12 @@ fn emit_bulk_refusal(
 /// triage. Carries the deletion volume, the denominator, the durable wedge age,
 /// and the same safe depth-1 `deletion_prefixes` histogram the refusal path
 /// ships — never a path, a file name, or repository content.
-fn report_bulk_acceptance(deletions: &StagedDeletions, tracked: usize, wedge_age_secs: u64) {
+fn report_bulk_acceptance(
+    deletions: &StagedDeletions,
+    tracked: usize,
+    wedge_age_secs: u64,
+    tree_present: bool,
+) {
     let prefixes: serde_json::Map<String, serde_json::Value> = deletions
         .prefixes
         .iter()
@@ -3476,6 +3605,10 @@ fn report_bulk_acceptance(deletions: &StagedDeletions, tracked: usize, wedge_age
             scope.set_tag("deletions", deletions.count.to_string());
             scope.set_tag("tracked", tracked.to_string());
             scope.set_tag("wedge_age_secs", wedge_age_secs.to_string());
+            // Always `true` on this path by construction (an absent tree never
+            // reaches acceptance), carried so the accepted and refused fingerprints
+            // share the discriminator and triage can pivot on one tag across both.
+            scope.set_tag("tree_present", tree_present.to_string());
             scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
             scope.set_extra(
                 "deletion_prefix_groups",
@@ -3874,6 +4007,16 @@ mod tests {
 
     /// Drive one refusing pass through the reporter at an injected instant.
     /// `wall_now` only matters where a persisted stamp is in play.
+    ///
+    /// These synthetic-set seams isolate the reporting gate — confirmation,
+    /// dedup, escalation ladder, budget, cooldown — which is orthogonal to
+    /// settle-eligibility, so they drive the NON-settle-eligible column
+    /// (`tree_present: false`). There is no real tree behind a `staged(..)` set,
+    /// so `false` is the only coherent value; the eligible column (where the
+    /// settle-hold lives) is pinned separately by the pure-gate settle-hold table
+    /// and the real-repo held/drain/outlive tests. Post-change this is also the
+    /// faithful model for the escalation tests: a wedge that reaches the 24h/7d
+    /// rungs is necessarily one the settle path never drains.
     fn refuse_at(
         hq_folder: &str,
         git_dir: &Path,
@@ -3888,6 +4031,7 @@ mod tests {
                 git_dir,
                 deletions,
                 tracked,
+                tree_present: false,
                 has_upstream: true,
             },
             now,
@@ -4026,6 +4170,9 @@ mod tests {
                 min_age,
                 cooldown,
                 &ladder,
+                // No settle_hold: this suite pins the non-eligible column (a wedge
+                // the settle path never drains), which must stay byte-identical.
+                None,
             )
         };
 
@@ -6163,6 +6310,9 @@ mod tests {
                 min_age,
                 cooldown,
                 &ladder,
+                // No settle_hold: the episode/wedge-clock split under test is the
+                // non-eligible column and must stay byte-identical.
+                None,
             )
         };
 
@@ -6511,6 +6661,7 @@ mod tests {
         use std::collections::HashSet;
         let all = [
             RefusalReportAction::AwaitConfirmation,
+            RefusalReportAction::AwaitSettleWindow,
             RefusalReportAction::Suppress,
             RefusalReportAction::ReportFirstConfirmed,
             RefusalReportAction::ReportEscalation,
@@ -6529,6 +6680,15 @@ mod tests {
         assert_eq!(
             RefusalReportAction::ReportFirstConfirmed.source(),
             "first-confirmed"
+        );
+        // The newly added non-emitting variant must never render as first-confirmed.
+        assert_eq!(
+            RefusalReportAction::AwaitSettleWindow.source(),
+            "await-settle-window"
+        );
+        assert!(
+            !RefusalReportAction::AwaitSettleWindow.emits(),
+            "a held banner must not emit"
         );
     }
 
@@ -6926,6 +7086,14 @@ mod tests {
 
     /// Carry a real-git episode past the confirmation window on the injected
     /// clock, one refusing pass at a time, and return the events it captured.
+    ///
+    /// This seam isolates the reporting gate's confirmation/dedup/escalation
+    /// behaviour, which is independent of settle-eligibility, so it drives the
+    /// NON-settle-eligible column (`tree_present: false`). The eligible field
+    /// shape's held-then-drained behaviour is covered separately by
+    /// `a_young_settle_eligible_wedge_reports_nothing_on_a_real_repo` and
+    /// `settled_wedge_commits_on_a_real_repo`; here the wedge stands as a genuinely
+    /// non-draining one so its first-confirmed banner and ladder stay exercised.
     fn cross_confirmation_window(
         dir: &Path,
         tracked: usize,
@@ -6949,6 +7117,7 @@ mod tests {
                         git_dir: &git_dir,
                         deletions: &set,
                         tracked,
+                        tree_present: false,
                         has_upstream,
                     },
                     now,
@@ -8092,6 +8261,7 @@ mod tests {
                         git_dir: &git_dir,
                         deletions: &set,
                         tracked: 1_356,
+                        tree_present: false,
                         has_upstream,
                     },
                     now,
@@ -8108,6 +8278,7 @@ mod tests {
                         git_dir: &git_dir,
                         deletions: &set,
                         tracked: 1_356,
+                        tree_present: false,
                         has_upstream,
                     },
                     banner_now + Duration::from_secs(hours as u64 * 3_600),
@@ -8206,6 +8377,7 @@ mod tests {
                     git_dir: &git_dir,
                     deletions: &set,
                     tracked: 1_356,
+                    tree_present: false,
                     has_upstream,
                 },
                 start + Duration::from_secs(hours as u64 * 3_600),
@@ -8331,6 +8503,7 @@ mod tests {
                         git_dir: &git_dir,
                         deletions: &set,
                         tracked: 100,
+                        tree_present: false,
                         has_upstream,
                     },
                     pass_now,
@@ -8454,6 +8627,7 @@ mod tests {
                     git_dir: &git_dir,
                     deletions: &set,
                     tracked: 1_356,
+                    tree_present: false,
                     has_upstream,
                 },
                 start + Duration::from_secs(hours.max(0) as u64 * 3_600),
@@ -8572,6 +8746,7 @@ mod tests {
                     git_dir: &git_dir,
                     deletions: &set,
                     tracked: 100,
+                    tree_present: false,
                     has_upstream,
                 },
                 now,
@@ -9227,6 +9402,500 @@ mod tests {
             decide_bulk_delete_action(11, 100, false, Some(settle), true),
             AcceptSettled
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Settle-hold: the reporting gate holds a settle-eligible wedge's FIRST
+    // banner until the settle window has had its chance to drain it.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// The pure decision table for the settle-hold. The `settle_hold = None`
+    /// (non-eligible) column must be byte-identical to the pre-hold gate; the
+    /// `Some` column holds the first banner inside the window, fires it once the
+    /// DURABLE wedge age outlives the window, and never touches the escalation
+    /// rungs. Removing the `AwaitSettleWindow` return, or keying the hold on the
+    /// resettable episode age, each turns a specific row red.
+    #[test]
+    fn decide_refusal_report_covers_the_settle_hold_table() {
+        let confirm = REFUSAL_CONFIRM_OCCURRENCES;
+        let cooldown = REFUSAL_COOLDOWN;
+        let min_age = REFUSAL_CONFIRM_MIN_AGE;
+        let ladder = REFUSAL_ESCALATION_AGES;
+        let hold = BULK_DELETE_SETTLE;
+        let young = hold - Duration::from_secs(1);
+        let gate = |episode_age, wedge_age, reports, settle_hold| {
+            decide_refusal_report(
+                9_999,
+                episode_age,
+                wedge_age,
+                reports,
+                None,
+                confirm,
+                min_age,
+                cooldown,
+                &ladder,
+                settle_hold,
+            )
+        };
+
+        // Confirmation still comes first: a young CONTINUOUS episode awaits, hold or
+        // not — the transient filter is unchanged and ahead of the settle-hold.
+        assert_eq!(
+            gate(min_age - Duration::from_secs(1), young, 0, Some(hold)),
+            RefusalReportAction::AwaitConfirmation,
+            "the 30-minute continuous-episode gate still runs ahead of the settle-hold"
+        );
+
+        // Confirmed, settle-eligible, inside the window → held, not billed.
+        assert_eq!(
+            gate(min_age, young, 0, Some(hold)),
+            RefusalReportAction::AwaitSettleWindow,
+            "a confirmed settle-eligible wedge inside the window holds its first banner"
+        );
+        // The same wedge once it OUTLIVES the window → first-confirmed banner.
+        assert_eq!(
+            gate(min_age, hold, 0, Some(hold)),
+            RefusalReportAction::ReportFirstConfirmed,
+            "a wedge that outlives the settle window earns its first banner"
+        );
+
+        // The None (non-eligible) column is byte-identical to the pre-hold gate: a
+        // confirmed young wedge that will never drain reports at the 30-minute gate.
+        assert_eq!(
+            gate(min_age, young, 0, None),
+            RefusalReportAction::ReportFirstConfirmed,
+            "a non-eligible wedge keeps the unchanged first-confirmed gate"
+        );
+
+        // The hold is keyed on the DURABLE wedge age, never the resettable episode
+        // age: a wedge whose episode age is past the window but whose durable age is
+        // not is STILL held (a machine that slept between passes is not silenced by
+        // its own gap, nor prematurely banners).
+        assert_eq!(
+            gate(hold + Duration::from_secs(60), young, 0, Some(hold)),
+            RefusalReportAction::AwaitSettleWindow,
+            "the hold reads the durable wedge age, so a long episode age cannot end it early"
+        );
+
+        // The hold is scoped to the FIRST banner: once a wedge has reported, the
+        // 24h/7d rungs are reachable exactly as for a non-eligible wedge, even while
+        // still settle-eligible and even inside the window on the durable clock.
+        assert_eq!(
+            gate(min_age, ladder[0], 1, Some(hold)),
+            RefusalReportAction::ReportEscalation,
+            "the settle-hold never touches the escalation rungs"
+        );
+    }
+
+    /// The population whose first banner is held is EXACTLY the population the
+    /// accept path drains: both read the one `settle_eligible` helper. For every
+    /// breaker-tripping shape at a settled wedge age, the accept path returns
+    /// `AcceptSettled` iff `settle_eligible` is true — so a wedge that will never
+    /// auto-accept can never be silenced, and one that will can never warn early.
+    #[test]
+    fn the_settle_hold_and_the_accept_path_agree_on_eligibility() {
+        let settle = BULK_DELETE_SETTLE;
+        // Every shape here trips the breaker (>= 10 deletions, >= 10% of tracked),
+        // so the base verdict is Refuse and the settle exit is the only variable.
+        for (deletions, tracked) in [
+            (60usize, 100usize),
+            (11, 100),
+            (10, 100),
+            (99, 100),
+            (100, 100),
+        ] {
+            for tree_present in [true, false] {
+                let eligible = settle_eligible(deletions, tracked, tree_present);
+                let accepts = decide_bulk_delete_action(
+                    deletions,
+                    tracked,
+                    false,
+                    Some(settle),
+                    tree_present,
+                ) == BulkDeleteAction::AcceptSettled;
+                assert_eq!(
+                    eligible, accepts,
+                    "settle_eligible and the accept path must agree for \
+                     ({deletions}/{tracked}, tree_present={tree_present})"
+                );
+            }
+        }
+    }
+
+    /// A wedge that never self-heals is never silenced: tree absent (moved or
+    /// unmounted) and a whole-tree loss (`deletions == tracked`) are both
+    /// non-eligible, so the first banner fires at the unchanged 30-minute gate
+    /// however young the wedge is.
+    #[test]
+    fn a_non_draining_wedge_keeps_the_thirty_minute_gate() {
+        let ladder = REFUSAL_ESCALATION_AGES;
+        let young = BULK_DELETE_SETTLE - Duration::from_secs(1);
+        let gate = |deletions, tracked, tree_present| {
+            let settle_hold =
+                settle_eligible(deletions, tracked, tree_present).then_some(BULK_DELETE_SETTLE);
+            decide_refusal_report(
+                REFUSAL_CONFIRM_OCCURRENCES,
+                REFUSAL_CONFIRM_MIN_AGE,
+                young,
+                0,
+                None,
+                REFUSAL_CONFIRM_OCCURRENCES,
+                REFUSAL_CONFIRM_MIN_AGE,
+                REFUSAL_COOLDOWN,
+                &ladder,
+                settle_hold,
+            )
+        };
+
+        assert!(
+            !settle_eligible(50, 100, false),
+            "an absent tree is not eligible"
+        );
+        assert_eq!(
+            gate(50, 100, false),
+            RefusalReportAction::ReportFirstConfirmed,
+            "a young wedge over an absent tree still banners at the gate"
+        );
+        assert!(
+            !settle_eligible(100, 100, true),
+            "a whole-tree loss is not eligible"
+        );
+        assert_eq!(
+            gate(100, 100, true),
+            RefusalReportAction::ReportFirstConfirmed,
+            "a young whole-tree deletion still banners at the gate"
+        );
+    }
+
+    /// A settle-eligible wedge whose drain never runs still escalates. Once it
+    /// outlives the window it earns its first banner, and the 24h and 7d rungs stay
+    /// reachable and finite — the budget still caps at `escalation_ages.len() + 1`.
+    #[test]
+    fn the_escalation_rungs_survive_the_settle_hold() {
+        let ladder = REFUSAL_ESCALATION_AGES;
+        let hold = Some(BULK_DELETE_SETTLE);
+        let gate = |wedge_age, reports| {
+            decide_refusal_report(
+                9_999,
+                REFUSAL_CONFIRM_MIN_AGE,
+                wedge_age,
+                reports,
+                Some(REFUSAL_COOLDOWN),
+                REFUSAL_CONFIRM_OCCURRENCES,
+                REFUSAL_CONFIRM_MIN_AGE,
+                REFUSAL_COOLDOWN,
+                &ladder,
+                hold,
+            )
+        };
+
+        // Held, then the first banner once it outlives the window.
+        assert_eq!(
+            gate(BULK_DELETE_SETTLE - Duration::from_secs(1), 0),
+            RefusalReportAction::AwaitSettleWindow
+        );
+        assert_eq!(
+            gate(BULK_DELETE_SETTLE, 0),
+            RefusalReportAction::ReportFirstConfirmed
+        );
+        // Both rungs stay reachable for a still-eligible wedge that never drains.
+        assert_eq!(gate(ladder[0], 1), RefusalReportAction::ReportEscalation);
+        assert_eq!(gate(ladder[1], 2), RefusalReportAction::ReportEscalation);
+        // …and the ladder stays finite: the budget caps at len() + 1.
+        assert_eq!(
+            gate(ladder[1] * 4, ladder.len() + 1),
+            RefusalReportAction::Suppress,
+            "an exhausted budget never re-reports, hold or not"
+        );
+    }
+
+    /// The operator override still short-circuits everything: with the override on,
+    /// the base verdict is Allow, so there is no refusal, no settle-hold, and no
+    /// banner — even for a young, settle-eligible shape.
+    #[test]
+    fn the_override_still_short_circuits_the_settle_hold() {
+        use BulkDeleteAction::*;
+        assert_eq!(
+            decide_bulk_delete_action(50, 100, true, Some(Duration::from_secs(3_813)), true),
+            Allow
+        );
+        assert_eq!(decide_bulk_delete_action(50, 100, true, None, true), Allow);
+    }
+
+    /// The gold-standard real-repo replay of the 2026-09-07 reopening event: 50 of
+    /// 100 tracked deleted over a present tree, a durable wedge 63 minutes old (past
+    /// the 30-minute gate, ~5 hours short of the 6-hour window), first banner never
+    /// yet fired. It bills ZERO envelopes, and the durable wedge clock is carried
+    /// forward unchanged so the settle window it waits on still arrives. On the
+    /// pre-hold code this captured one first-confirmed warning — the reopening event.
+    #[test]
+    fn a_young_settle_eligible_wedge_reports_nothing_on_a_real_repo() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        delete_files(tmp.path(), 0..50);
+
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        let anchor = wall - chrono::Duration::seconds(3_813);
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                wedge_started_at: stamp(anchor),
+                episode_started_at: stamp(anchor),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 10,
+                episode_distinct_sets: 1,
+                // The first banner has never fired — the state the hold governs.
+                ..PersistedRefusalState::default()
+            },
+        );
+        reset_refusal_report_state();
+
+        let start = Instant::now();
+        let events = sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 100,
+                        tree_present: true,
+                        has_upstream,
+                    },
+                    now,
+                    wall_now,
+                );
+            }
+        });
+        assert_eq!(
+            events.len(),
+            0,
+            "a settle-eligible wedge inside the window bills nothing, got: {:?}",
+            events
+                .iter()
+                .map(|e| (e.level, e.tags.get("git_mirror_kind").cloned()))
+                .collect::<Vec<_>>()
+        );
+
+        // The refusal is still fully recorded locally: the durable wedge anchor is
+        // carried forward (so wedge_age keeps growing toward the window, never reset
+        // to "now"), and no banner budget was spent.
+        let state = read_persisted_state(&git_dir).expect("held passes persist a record");
+        let held_age = usable_stamp(
+            state.wedge_started_at.as_ref(),
+            Utc::now(),
+            &refusal_state_path(&git_dir),
+            "wedge start stamp",
+        )
+        .and_then(|stamp| elapsed_since_wall(stamp, Utc::now()))
+        .expect("the durable wedge clock survives the hold");
+        assert!(
+            held_age >= Duration::from_secs(3_813),
+            "the held banner must not reset the durable wedge clock (age {held_age:?})"
+        );
+        assert!(
+            matches!(state.episode_reports, None | Some(0)),
+            "a held wedge spends no banner budget, got {:?}",
+            state.episode_reports
+        );
+        reset_refusal_report_state();
+    }
+
+    /// The other half of the hold: a settle-eligible wedge that OUTLIVES the window
+    /// (a drain that never ran) earns exactly one first-confirmed warning, tagged
+    /// `settle_eligible=true` so triage reads it as a drain that failed rather than
+    /// a wedge that never could. So a failed drain is never silent.
+    #[test]
+    fn a_settle_eligible_wedge_that_outlives_the_window_still_banners() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        delete_files(tmp.path(), 0..50);
+
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        // A present, partial wedge that has stood past the 6-hour window without
+        // draining — the accept path unavailable — so the reporter must banner.
+        let anchor = wall - chrono::Duration::seconds(BULK_DELETE_SETTLE.as_secs() as i64 + 300);
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                wedge_started_at: stamp(anchor),
+                episode_started_at: stamp(anchor),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 10,
+                episode_distinct_sets: 1,
+                ..PersistedRefusalState::default()
+            },
+        );
+        reset_refusal_report_state();
+
+        let start = Instant::now();
+        let events = sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 100,
+                        tree_present: true,
+                        has_upstream,
+                    },
+                    now,
+                    wall_now,
+                );
+            }
+        });
+        assert_eq!(
+            events.len(),
+            1,
+            "a wedge past the window earns exactly one banner"
+        );
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        assert_eq!(
+            event.tags.get("tree_present").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event.tags.get("settle_eligible").map(String::as_str),
+            Some("true"),
+            "a settle-eligible refusal that reached Sentry outlived its drain window"
+        );
+        reset_refusal_report_state();
+    }
+
+    /// Invariant 2 end to end on a real repo: repeated held passes never stall the
+    /// durable wedge clock they wait on — the anchor is carried forward unchanged —
+    /// and once the wedge outlives the window a real mirror pass drains it. The
+    /// worst outcome (permanently silent AND permanently wedged) is structurally
+    /// impossible.
+    #[test]
+    fn the_held_banner_still_advances_the_durable_wedge_clock_then_drains() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..50);
+
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        let anchor = wall - chrono::Duration::seconds(3_813);
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                wedge_started_at: stamp(anchor),
+                episode_started_at: stamp(anchor),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 10,
+                episode_distinct_sets: 1,
+                ..PersistedRefusalState::default()
+            },
+        );
+        reset_refusal_report_state();
+
+        // Held passes across half an hour: nothing billed, anchor unchanged.
+        let start = Instant::now();
+        let held = sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 100,
+                        tree_present: true,
+                        has_upstream,
+                    },
+                    now,
+                    wall_now,
+                );
+            }
+        });
+        assert_eq!(held.len(), 0, "every pass inside the window is held");
+        let carried = read_persisted_state(&git_dir).expect("held passes persist the record");
+        let held_age = usable_stamp(
+            carried.wedge_started_at.as_ref(),
+            Utc::now(),
+            &refusal_state_path(&git_dir),
+            "wedge start stamp",
+        )
+        .and_then(|stamp| elapsed_since_wall(stamp, Utc::now()))
+        .expect("the durable wedge clock survives the hold");
+        assert!(
+            held_age >= Duration::from_secs(3_813),
+            "the held banner carries the wedge anchor forward (age {held_age:?}), so wedge_age \
+             advances rather than resetting"
+        );
+
+        // The wedge now outlives the window: a real mirror pass drains it. The hold
+        // never stalled the settle path.
+        let now2 = Utc::now();
+        let mut state = read_persisted_state(&git_dir).unwrap();
+        state.wedge_started_at = stamp(now2 - chrono::Duration::hours(7));
+        state.episode_started_at = stamp(now2 - chrono::Duration::hours(7));
+        state.episode_last_refusal_at =
+            stamp(now2 - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64));
+        write_persisted_state(&git_dir, &state);
+        reset_refusal_report_state();
+
+        let drained = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("acceptance is not an error");
+        });
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the settled deletion drains in exactly one pass"
+        );
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|e| is_kind(e, "bulk-delete-accepted"))
+                .count(),
+            1,
+            "the drain bills exactly one acceptance"
+        );
+        reset_refusal_report_state();
     }
 
     /// The size latch precedes the settle path: a root latched off does no
