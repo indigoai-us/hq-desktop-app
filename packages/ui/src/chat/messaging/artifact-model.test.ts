@@ -7,6 +7,7 @@ import {
   artifactLooksLikeMarkdown,
   artifactPreview,
   artifactPreviewLines,
+  artifactSummary,
   artifactSizeLabel,
   artifactTitle,
   chatArtifact,
@@ -118,6 +119,29 @@ describe("artifactBodyAfterTitle", () => {
     expect(artifactBodyAfterTitle("Read the handoff.\nThen act.", "prompt")).toBe(
       "Read the handoff.\nThen act.",
     );
+  });
+});
+
+describe("artifactSummary", () => {
+  it("returns the first content line after the title, markdown stripped", () => {
+    expect(
+      artifactSummary("# Handoff\n\n- **hq-pro** is `quiet` now\n- more", "details"),
+    ).toBe("hq-pro is quiet now");
+    expect(artifactSummary(LONG, "details")).toMatch(/^The terms must state/);
+  });
+
+  it("skips fences, rules and table separators", () => {
+    expect(
+      artifactSummary("# T\n```sh\nhq sync\n```\n---\n| a | b |\n| --- | --- |\n| x | y |", "details"),
+    ).toBe("a · b");
+  });
+
+  it("is empty for a title-only artifact and truncates long lines", () => {
+    expect(artifactSummary("# Only", "prompt")).toBe("");
+    const long = `Title line\n${"word ".repeat(80)}`;
+    const out = artifactSummary(long, "prompt");
+    expect(out.length).toBeLessThanOrEqual(160);
+    expect(out.endsWith("…")).toBe(true);
   });
 });
 

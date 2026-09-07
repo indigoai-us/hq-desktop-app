@@ -134,6 +134,58 @@ export function artifactBodyAfterTitle(text: string, kind: ArtifactKind): string
   return lines.slice(i + 1).join("\n").replace(/^\s*\n/, "");
 }
 
+/** Inline markdown → plain text for a one-line summary. */
+function stripInlineMarkup(line: string): string {
+  return line
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
+    .replace(/^\s*>\s?/, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(\*|_)(.+?)\1/g, "$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\|?\s*|\s*\|?$/g, "")
+    .replace(/\s*\|\s*/g, " · ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export const ARTIFACT_SUMMARY_MAX = 160;
+
+/**
+ * One-line description for the collapsed card: the first content line after
+ * the title, with markdown syntax stripped. Skips fences, rules, and table
+ * separator rows. Empty when the artifact is nothing but its title.
+ */
+export function artifactSummary(text: string, kind: ArtifactKind): string {
+  const body = artifactBodyAfterTitle(text, kind);
+  // For plain artifacts the title IS the first line; skip it here too.
+  const title = artifactTitle(text, kind);
+  const shownTitle = title.endsWith("…") ? title.slice(0, -1) : title;
+  let seenContent = false;
+  let inFence = false;
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !line) continue;
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) continue;
+    if (/^\|?\s*:?-{2,}/.test(line)) continue;
+    const plain = stripInlineMarkup(line);
+    if (!plain) continue;
+    if (!seenContent) {
+      seenContent = true;
+      if (plain.startsWith(shownTitle)) continue;
+    }
+    return plain.length > ARTIFACT_SUMMARY_MAX
+      ? `${plain.slice(0, ARTIFACT_SUMMARY_MAX - 1).trimEnd()}…`
+      : plain;
+  }
+  return "";
+}
+
 export function artifactPreview(text: string, maxLines?: number): string {
   return artifactPreviewLines(text, maxLines).join("\n");
 }
