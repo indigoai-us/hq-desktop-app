@@ -857,19 +857,19 @@ mod tests {
             "a483dd3663414ee8",
         );
         assert_eq!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.22"),
-            "607e969513df33b3",
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            "67dee2de97f5e14d",
         );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
         );
-        // The manifest-upload floor bump: 6.16.22 already SATISFIES `~6.16.11`,
+        // The manifest-upload floor bump: 6.16.23 already SATISFIES `~6.16.11`,
         // so semver admission alone would have left every existing desktop on
         // its cached entry. Changing the requested spec is what moves the key.
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.22"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
         );
     }
 
@@ -1044,13 +1044,13 @@ mod tests {
         let spec = pinned_package_spec();
         let entry = cache.join(npx_cache_entry_hash(&spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.22"}"#);
-        assert_eq!(runner_hq_cloud_version_in(&cache, &spec), "6.16.22");
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.23"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, &spec), "6.16.23");
         assert_eq!(
             runner_hq_cloud_version(&RunnerSpawnTarget::Npx {
                 cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
             }),
-            "6.16.22",
+            "6.16.23",
             "the npx launch snapshot reports the version from its exact cache entry"
         );
 

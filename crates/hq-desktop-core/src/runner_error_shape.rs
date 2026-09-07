@@ -94,16 +94,16 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// the one new class) and `sync-runner-events.ts` `ERROR_TYPES` (`error`,
 /// `auth-error`) are unchanged.
 ///
-/// The `~6.16.11` -> `~6.16.22` bump (the manifest-upload runner) was
+/// The `~6.16.11` -> `~6.16.23` bump (the manifest-upload runner) was
 /// re-derived from both hq-cloud tags: 51 -> 52 distinct `this.name`
 /// identities, the one new class being `SyncManifestContractError`
 /// (`src/manifest/contract.ts`, thrown when a sync-manifest field fails the
 /// runner's fail-closed contract validation), and `sync-runner-events.ts`
-/// `ERROR_TYPES` (`error`, `auth-error`) are unchanged. 6.16.22 (the byte
-/// budget + 413 backoff fix that superseded the unusable 6.16.21) was
-/// re-derived independently and adds no further identity, so the vocabulary
-/// below covers the pin exactly.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.22";
+/// `ERROR_TYPES` (`error`, `auth-error`) are unchanged. 6.16.22 (byte budget
+/// + 413 backoff) and 6.16.23 (the failure-backoff rewrite of the
+/// non-success bookkeeping path) were each re-derived independently and add
+/// no further identity, so the vocabulary below covers the pin exactly.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.23";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1194,7 +1194,7 @@ pub enum RunnerErrorCause {
     // before an upload when vault credentials silently omit granted write
     // prefixes (`code = POLICY_WRITE_SCOPE_TRUNCATED`).
     VaultCredentialScope,
-    // Added when the runner pin moved to ~6.16.22 — hq-cloud 6.16.21 introduced
+    // Added when the runner pin moved to ~6.16.23 — hq-cloud 6.16.21 introduced
     // `SyncManifestContractError` (src/manifest/contract.ts), thrown when the
     // post-sync manifest-upload pass rejects a field against its fail-closed
     // contract (`sync-manifest contract violation [<code>] at <field>`).
@@ -1576,7 +1576,7 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         // granted write prefixes (src/credential-scope-error.ts,
         // POLICY_WRITE_SCOPE_TRUNCATED).
         "VaultCredentialScopeError" => RunnerErrorCause::VaultCredentialScope,
-        // Added at the ~6.16.22 pin: the manifest-upload contract violation
+        // Added at the ~6.16.23 pin: the manifest-upload contract violation
         // class (src/manifest/contract.ts).
         "SyncManifestContractError" => RunnerErrorCause::SyncManifestContract,
         "VendDeniedError" => RunnerErrorCause::VendDenied,
@@ -3074,7 +3074,7 @@ mod tests {
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
         // outposts terminal classes SessionManagerPluginLaunchError +
         // TerminalSessionTimeoutError), from 50 to 51 at ~6.16.11 (added
-        // VaultCredentialScopeError), and from 51 to 52 at ~6.16.22 (added
+        // VaultCredentialScopeError), and from 51 to 52 at ~6.16.23 (added
         // SyncManifestContractError, the manifest-upload contract class).
         assert_eq!(HQ_CLOUD_IDENTITIES.len(), 52);
         let mut tokens = std::collections::BTreeSet::new();
