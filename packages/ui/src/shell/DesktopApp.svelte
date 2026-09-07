@@ -4590,6 +4590,7 @@
                     reactions={rowReactions}
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
+                    selfPersonUid={self?.uid ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}

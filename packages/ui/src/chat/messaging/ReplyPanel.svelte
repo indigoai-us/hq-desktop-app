@@ -22,6 +22,7 @@
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
+    isAgentUid,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -112,6 +113,8 @@
     ontogglereaction?: (messageId: string, emoji: string) => void;
     /** Signed-in display name so optimistic replies are not labelled "You". */
     selfDisplayName?: string | null;
+    /** Signed-in person UID so optimistic replies resolve the known profile photo. */
+    selfPersonUid?: string | null;
     /**
      * Host-owned upload seam: uploads to the vault and returns wire
      * attachments. Absent = the attach affordance is hidden (web
@@ -177,6 +180,7 @@
     reactions = {},
     ontogglereaction,
     selfDisplayName = null,
+    selfPersonUid = null,
     onuploadfiles = undefined,
     onpresign = undefined,
     onopenattachment = undefined,
@@ -272,7 +276,7 @@
     return () => clearInterval(handle);
   });
 
-  function startThinkingForMentions(mentions: MentionTarget[]): void {
+  function startThinkingForTargets(mentions: MentionTarget[]): void {
     const now = Date.now();
     for (const mention of mentions) {
       if (mention.participantType !== "agent") continue;
@@ -281,6 +285,29 @@
         {
           agentUid: mention.participantUid,
           agentName: mention.displayName,
+        },
+        now,
+      );
+    }
+
+    // A 1:1 DM thread is inherently addressed to its peer, just like the main
+    // DM composer. Do not require an explicit @mention to show response state.
+    const peerUid = (withPersonUid ?? "").trim();
+    if (scope === "dm" && isAgentUid(peerUid)) {
+      const candidate = mentionCandidates.find(
+        (mention) => mention.participantUid === peerUid,
+      );
+      const threadAuthor = [root, seedRoot].find(
+        (message) => (message?.fromPersonUid ?? "").trim() === peerUid,
+      );
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: peerUid,
+          agentName:
+            displayNameByUid[peerUid]?.trim() ||
+            candidate?.displayName?.trim() ||
+            (threadAuthor ? messageAuthor(threadAuthor) : "Agent"),
         },
         now,
       );
@@ -585,6 +612,7 @@
     const optimistic: LocalReply = {
       eventId: localId,
       fromDisplayName: selfDisplayName?.trim() || "You",
+      fromPersonUid: selfPersonUid?.trim() || undefined,
       body: text,
       createdAt: new Date().toISOString(),
       direction: "out",
@@ -606,7 +634,7 @@
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
-      startThinkingForMentions(mentions);
+      startThinkingForTargets(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
@@ -643,7 +671,7 @@
         row.eventId === eventId ? { ...row, sendStatus: undefined } : row,
       );
       emitCount(replyCount + 1, replies);
-      startThinkingForMentions(retryMentions);
+      startThinkingForTargets(retryMentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === eventId ? { ...row, sendStatus: "failed" } : row,
