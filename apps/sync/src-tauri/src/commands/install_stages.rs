@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
@@ -85,7 +85,7 @@ fn format_hq_failure(args: &[&str], output: &Output) -> String {
     )
 }
 
-async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
+async fn run_hq_output(args: &[&str], hq_root: &Path) -> Result<Output, String> {
     let invocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
     // Serialize concurrent npx self-heal installs against the shared
@@ -96,15 +96,28 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
         .args(args)
         .current_dir(hq_root)
         .env("PATH", &path_env)
+        // Keep mid-call CLI self-updates from racing the command we asked for.
+        .env("HQ_NO_UPDATE_CHECK", "1")
         .output()
         .await
         .map_err(|e| format!("Failed to spawn hq ({}): {e}", invocation.label()))?;
 
     if output.status.success() {
-        Ok(())
+        Ok(output)
     } else {
         Err(format_hq_failure(args, &output))
     }
+}
+
+async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
+    run_hq_output(args, hq_root).await.map(|_| ())
+}
+
+async fn run_hq_json(args: &[&str], hq_root: &Path) -> Result<serde_json::Value, String> {
+    let output = run_hq_output(args, hq_root).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("parse `hq {}` JSON: {e}", args.join(" ")))
 }
 
 fn read_global_git_config(git: &str, path_env: &str, key: &str) -> Result<Option<String>, String> {
@@ -317,6 +330,40 @@ pub async fn install_menubar_app() -> Result<(), String> {
 /// Argv for the Work Mesh Live daemon install (hq-cli). Not the retired pack listen path.
 pub const MESH_DAEMON_INSTALL_ARGS: &[&str] = &["mesh", "daemon", "install"];
 
+const MESH_DAEMON_STATUS_ARGS: &[&str] = &["mesh", "daemon", "status", "--json"];
+const MESH_DAEMON_AUTO_INSTALL_MARKER: &str = "mesh-daemon-auto-install.json";
+
+/// Status payload from `hq mesh daemon status --json`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DaemonStatus {
+    pub running: bool,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub dest: Option<String>,
+}
+
+/// Persisted auto-install attempt under `~/.hq/menubar/`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoInstallMarker {
+    pub cli_version: String,
+    pub attempted_at: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Result of [`ensure_work_mesh_daemon`].
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureOutcome {
+    pub installed: bool,
+    pub already_installed: bool,
+    pub skipped: bool,
+    pub reason: String,
+}
+
 /// Install the Work Mesh Live daemon (`hq mesh daemon install`).
 ///
 /// Replaces the retired pack listen installer and its LaunchAgent.
@@ -325,6 +372,137 @@ pub const MESH_DAEMON_INSTALL_ARGS: &[&str] = &["mesh", "daemon", "install"];
 pub async fn install_work_mesh() -> Result<(), String> {
     let hq_root = PathBuf::from(resolve_hq_path()?);
     run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root).await
+}
+
+fn mesh_daemon_auto_install_marker_path() -> Result<PathBuf, String> {
+    Ok(paths::hq_config_dir()?
+        .join("menubar")
+        .join(MESH_DAEMON_AUTO_INSTALL_MARKER))
+}
+
+fn unit_not_installed(status: &DaemonStatus) -> bool {
+    if status.running {
+        return false;
+    }
+    let message_not_installed = status
+        .message
+        .to_ascii_lowercase()
+        .contains("not installed");
+    let dest_missing = match status.dest.as_deref() {
+        Some(path) => !Path::new(path).exists(),
+        None => false,
+    };
+    message_not_installed || dest_missing
+}
+
+/// Decide whether SteadyState auto-install should run for this CLI version.
+///
+/// Installs only when the unit is not installed and there is no successful
+/// marker for the current CLI version. A deliberate uninstall after a prior
+/// `ok` marker is left alone; a `failed` marker does not block retry.
+pub fn should_auto_install(
+    status: &DaemonStatus,
+    marker: Option<&AutoInstallMarker>,
+    cli_version: &str,
+) -> bool {
+    if !unit_not_installed(status) {
+        return false;
+    }
+    match marker {
+        Some(m) if m.cli_version == cli_version && m.outcome == "ok" => false,
+        _ => true,
+    }
+}
+
+fn read_auto_install_marker(path: &Path) -> Option<AutoInstallMarker> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_auto_install_marker(path: &Path, marker: &AutoInstallMarker) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create mesh auto-install marker dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(marker)
+        .map_err(|e| format!("serialize mesh auto-install marker: {e}"))?;
+    fs::write(path, json).map_err(|e| format!("write mesh auto-install marker: {e}"))
+}
+
+/// Ensure the Work Mesh Live daemon is installed for already-onboarded machines.
+///
+/// Runs once per launch from SteadyState. Never re-installs after a successful
+/// auto-install for the same CLI version (marker outcome `ok`).
+#[tauri::command]
+pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
+    let hq_root = PathBuf::from(resolve_hq_path()?);
+    let status_value = run_hq_json(MESH_DAEMON_STATUS_ARGS, &hq_root).await?;
+    let status: DaemonStatus = serde_json::from_value(status_value)
+        .map_err(|e| format!("parse mesh daemon status: {e}"))?;
+
+    let cli_version = crate::commands::hq_cli_update::get_hq_cli_version()
+        .await
+        .unwrap_or_else(|| "unknown".to_string());
+    let marker_path = mesh_daemon_auto_install_marker_path()?;
+    let marker = read_auto_install_marker(&marker_path);
+
+    if !should_auto_install(&status, marker.as_ref(), &cli_version) {
+        if !unit_not_installed(&status) {
+            return Ok(EnsureOutcome {
+                installed: false,
+                already_installed: true,
+                skipped: false,
+                reason: "daemon already installed".to_string(),
+            });
+        }
+        return Ok(EnsureOutcome {
+            installed: false,
+            already_installed: false,
+            skipped: true,
+            reason: format!(
+                "skipped: prior ok auto-install marker for cli {cli_version}"
+            ),
+        });
+    }
+
+    let attempted_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    match run_hq(MESH_DAEMON_INSTALL_ARGS, &hq_root).await {
+        Ok(()) => {
+            let marker = AutoInstallMarker {
+                cli_version: cli_version.clone(),
+                attempted_at,
+                outcome: "ok".to_string(),
+                error: None,
+            };
+            write_auto_install_marker(&marker_path, &marker)?;
+            crate::util::logfile::log(
+                "work-mesh",
+                &format!("auto-installed mesh daemon for cli {cli_version}"),
+            );
+            Ok(EnsureOutcome {
+                installed: true,
+                already_installed: false,
+                skipped: false,
+                reason: "installed".to_string(),
+            })
+        }
+        Err(err) => {
+            let marker = AutoInstallMarker {
+                cli_version: cli_version.clone(),
+                attempted_at,
+                outcome: "failed".to_string(),
+                error: Some(err.clone()),
+            };
+            // Best-effort marker so the next launch can still retry; surface
+            // the install error either way.
+            let _ = write_auto_install_marker(&marker_path, &marker);
+            crate::util::logfile::log(
+                "work-mesh",
+                &format!("auto-install mesh daemon failed for cli {cli_version}: {err}"),
+            );
+            Err(err)
+        }
+    }
 }
 
 /// Start the first personal-vault cloud sync in the background.
@@ -355,6 +533,42 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn not_installed_status() -> DaemonStatus {
+        DaemonStatus {
+            running: false,
+            message: "LaunchAgent not installed".to_string(),
+            dest: Some("/tmp/hq-mesh-daemon-missing.plist".to_string()),
+        }
+    }
+
+    fn installed_status(dir: &Path) -> DaemonStatus {
+        let dest = dir.join("hq-mesh-daemon.plist");
+        fs::write(&dest, "unit").unwrap();
+        DaemonStatus {
+            running: false,
+            message: "loaded but not running".to_string(),
+            dest: Some(dest.to_string_lossy().to_string()),
+        }
+    }
+
+    fn ok_marker(version: &str) -> AutoInstallMarker {
+        AutoInstallMarker {
+            cli_version: version.to_string(),
+            attempted_at: "2026-09-07T00:00:00Z".to_string(),
+            outcome: "ok".to_string(),
+            error: None,
+        }
+    }
+
+    fn failed_marker(version: &str) -> AutoInstallMarker {
+        AutoInstallMarker {
+            cli_version: version.to_string(),
+            attempted_at: "2026-09-07T00:00:00Z".to_string(),
+            outcome: "failed".to_string(),
+            error: Some("boom".to_string()),
+        }
+    }
+
     #[test]
     fn git_init_path_creates_git_directory() {
         let dir = tempdir().unwrap();
@@ -380,5 +594,61 @@ mod tests {
         let retired_mjs = format!("{}.mjs listen", "work-mesh");
         assert!(!src.contains(&retired_sh));
         assert!(!src.contains(&retired_mjs));
+    }
+
+    #[test]
+    fn should_auto_install_when_not_installed_and_no_marker() {
+        assert!(should_auto_install(
+            &not_installed_status(),
+            None,
+            "5.100.0"
+        ));
+    }
+
+    #[test]
+    fn should_not_auto_install_when_ok_marker_matches_cli_version() {
+        assert!(!should_auto_install(
+            &not_installed_status(),
+            Some(&ok_marker("5.100.0")),
+            "5.100.0"
+        ));
+    }
+
+    #[test]
+    fn should_auto_install_when_ok_marker_is_older_cli_version() {
+        assert!(should_auto_install(
+            &not_installed_status(),
+            Some(&ok_marker("5.90.0")),
+            "5.100.0"
+        ));
+    }
+
+    #[test]
+    fn should_auto_install_when_failed_marker_exists() {
+        // A failed attempt must not permanently wedge SteadyState installs.
+        assert!(should_auto_install(
+            &not_installed_status(),
+            Some(&failed_marker("5.100.0")),
+            "5.100.0"
+        ));
+    }
+
+    #[test]
+    fn should_not_auto_install_when_unit_already_installed() {
+        let dir = tempdir().unwrap();
+        assert!(!should_auto_install(
+            &installed_status(dir.path()),
+            None,
+            "5.100.0"
+        ));
+    }
+
+    #[test]
+    fn ensure_work_mesh_daemon_is_registered_in_main() {
+        let main = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+        assert!(
+            main.contains("commands::install_stages::ensure_work_mesh_daemon"),
+            "main.rs must register ensure_work_mesh_daemon next to install_work_mesh"
+        );
     }
 }
