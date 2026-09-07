@@ -121,7 +121,8 @@ pub async fn session_share_to_channel(args: ShareArgs) -> Result<ShareResult, St
     let digest_chars = digest.as_deref().map(|d| d.chars().count()).unwrap_or(0);
 
     // ── Step 1: resolve the channel ────────────────────────────────────────
-    let (channel, created) = resolve_channel(&args.target, &company_uid).await?;
+    let project_id = selected_project_id(&hq_root, &company, &args.target)?;
+    let (channel, created) = resolve_channel(&args.target, &company_uid, project_id.as_deref()).await?;
     let channel_id = channel.channel_id.clone();
     let channel_name = channel.name.clone();
 
@@ -220,9 +221,21 @@ pub async fn session_share_to_channel(args: ShareArgs) -> Result<ShareResult, St
 /// the server left membership unstated, joined (an outstanding invite is
 /// accepted). New target → reuse a same-named company channel when one is
 /// visible, else create it. Returns `(channel, created)`.
+fn selected_project_id(hq_root: &Path, company: &str, target: &ShareTarget) -> Result<Option<String>, String> {
+    let ShareTarget::New { project_path: Some(path), .. } = target else { return Ok(None); };
+    let slug = hq_desktop_core::session_links::project_slug(path);
+    let project = hq_desktop_core::hq_context::projects::find_company_project(hq_root, company, &slug)
+        .ok_or("Selected project is unavailable in this company")?;
+    let selected = std::fs::canonicalize(path).map_err(|_| "Selected project is unavailable")?;
+    let expected = std::fs::canonicalize(&project.path).map_err(|_| "Selected project is unavailable")?;
+    if selected != expected { return Err("Selected project belongs to a different company or HQ folder".into()); }
+    Ok(Some(slug))
+}
+
 async fn resolve_channel(
     target: &ShareTarget,
     company_uid: &str,
+    project_id: Option<&str>,
 ) -> Result<(Channel, bool), String> {
     let visible = messages::list_channels(Some(company_uid.to_string()), Some(true))
         .await?
@@ -256,6 +269,9 @@ async fn resolve_channel(
                     && channel_name_matches(&c.name, &name)
             });
             if let Some(channel) = existing {
+                if project_id.is_some() && channel.project_id.as_deref() != project_id {
+                    return Err("A channel with this name exists but is not linked to the selected project. Choose a different channel name.".into());
+                }
                 log(
                     LOG_TAG,
                     &format!(
@@ -268,10 +284,10 @@ async fn resolve_channel(
             }
             let channel = messages::create_channel(
                 name.clone(),
-                "company".to_string(),
+                if project_id.is_some() { "project" } else { "company" }.to_string(),
                 Some(company_uid.to_string()),
                 None,
-                None,
+                project_id.map(str::to_string),
             )
             .await?;
             log(
@@ -461,6 +477,20 @@ fn extract_event_id(value: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn project_selection_is_resolved_inside_configured_hq_and_company() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("companies/awesomeco/projects/sharing-test");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("prd.json"), r#"{"name":"Sharing test","userStories":[]}"#).unwrap();
+        let target = ShareTarget::New { name: "p-sharing-test".into(), project_path: Some(project.to_string_lossy().into_owned()) };
+        assert_eq!(selected_project_id(root.path(), "awesomeco", &target).unwrap(), Some("sharing-test".into()));
+        assert!(selected_project_id(root.path(), "other-company", &target).is_err());
+        let other_root = tempfile::tempdir().unwrap();
+        assert!(selected_project_id(other_root.path(), "awesomeco", &target).is_err());
+        assert_eq!(selected_project_id(root.path(), "awesomeco", &ShareTarget::New { name: "general".into(), project_path: None }).unwrap(), None);
+    }
 
     #[test]
     fn event_id_is_read_from_every_known_envelope() {
