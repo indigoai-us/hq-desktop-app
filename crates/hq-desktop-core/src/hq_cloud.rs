@@ -447,7 +447,59 @@
 /// sync is push-only for `workspace/.session-logs/` and whose reindex prunes
 /// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
 /// cache key.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.11";
+///
+/// `~6.16.11` -> `~6.16.23`: floors the runner at the first published release
+/// whose post-sync manifest-upload pass is both functional AND honest in its
+/// bookkeeping (US-004, sync-reconciliation-audit; hq-cloud
+/// `src/bin/sync-runner-manifest.ts` + `src/manifest/upload-manifest.ts`,
+/// recorded in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`]). Two prior releases are
+/// deliberately NOT the floor:
+///
+///   - 6.16.21 first shipped the pass, but its chunker carried no byte budget
+///     and emitted 16-18 MiB chunks against API Gateway's 10 MB request limit,
+///     so every vault large enough to chunk got HTTP 413 and uploaded nothing.
+///   - 6.16.22 added the byte budget, but still routed every server-answered
+///     non-success (refused fold, `resend_full`, 404, 413) through
+///     `recordUploadAttempt`, which wrote `lastUploadAt` and armed the full 24h
+///     throttle on the FIRST failure. That claimed an upload that never landed
+///     — so `hq doctor` read healthy while the scope sat silently unaudited —
+///     and suppressed retries for a day per attempt even for a fault that
+///     cleared in minutes.
+///
+/// 6.16.23 replaces that path with `recordFailedAttempt`: a real failure
+/// backoff starting at 1h and escalating to the same 24h ceiling, never
+/// writing `lastUploadAt` on a non-success. Flooring below it would ship a
+/// manifest pass whose health signal cannot be trusted.
+///
+/// Semver admission alone would NOT have been enough here: 6.16.23 already
+/// satisfies `~6.16.11`, but npm keys `_npx` entries by the requested spec
+/// string, so every existing desktop would keep serving its cached 6.16.11
+/// resolution. Changing the requested spec from `~6.16.11` to `~6.16.23` is
+/// what actually moves the cache key and delivers the manifest runner.
+///
+/// Nothing else on the desktop side is required: the manifest outcome arrives
+/// as an additive ndjson event that `events::parse_sync_line` already skips
+/// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
+/// switch reaches the runner by plain environment inheritance (see
+/// `commands::process::child_env_tests`).
+pub const HQ_CLOUD_VERSION: &str = "~6.16.23";
+
+/// First `@indigoai-us/hq-cloud` version that ships the post-sync
+/// manifest-upload pass (US-004, sync-reconciliation-audit).
+///
+/// The pass first shipped in 6.16.21, whose unbudgeted chunker drew HTTP 413
+/// and uploaded nothing; 6.16.22 fixed the chunking but still wrote
+/// `lastUploadAt` on server-answered failures, so a scope could read healthy
+/// while never having been uploaded. The FIRST version that delivers a
+/// manifest upload that both lands and reports truthfully — and therefore the
+/// only sound floor — is 6.16.23. [`HQ_CLOUD_VERSION`] was bumped to
+/// `~6.16.23` in the same commit as this constant — the
+/// pairing the release checklist requires. With this filled in, the
+/// `manifest_upload_floor_is_recorded_once_published` test below is a REAL
+/// floor guard: it fails if the pin's lower bound ever drops below the
+/// manifest-upload release, which is the only thing that moves the npx cache
+/// key for desktops already on an older spec.
+pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.23");
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -515,7 +567,36 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.11");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.23");
+    }
+
+    /// Manifest-upload floor (US-004, sync-reconciliation-audit).
+    ///
+    /// The working manifest runner published as hq-cloud 6.16.23, so the constant is
+    /// `Some` and this is a real guard that the pin FLOORS at (not merely
+    /// admits) the manifest release — semver admission alone would leave
+    /// desktops on a cached npx entry that predates it. The `None` arm is kept
+    /// as the fail-closed shape for any future unpublished-runner window.
+    #[test]
+    fn manifest_upload_floor_is_recorded_once_published() {
+        match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
+            None => assert_eq!(
+                HQ_CLOUD_VERSION, "~6.16.23",
+                "manifest runner is still unpublished; when it ships, set \
+                 MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
+            ),
+            Some(published) => {
+                let floor = semver::Version::parse(published)
+                    .expect("MANIFEST_UPLOAD_MIN_HQ_CLOUD must be an exact semver version");
+                assert!(
+                    pin_lower_bound() >= floor,
+                    "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+                     manifest-upload release {floor}; bump the pin so the npx cache key \
+                     moves, not merely so semver admits it",
+                    pin_lower_bound()
+                );
+            }
+        }
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry

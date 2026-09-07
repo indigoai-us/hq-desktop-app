@@ -1279,6 +1279,10 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         // a policy/issuance fault with no unambiguous class analogue, so the
         // keyword fallback stays authoritative …
         | RunnerErrorCause::VaultCredentialScope
+        // … the ~6.16.23 pin's addition — a sync-manifest contract violation is
+        // a runner-side validation fault, not an auth/network/errno one, so the
+        // keyword fallback stays authoritative …
+        | RunnerErrorCause::SyncManifestContract
         | RunnerErrorCause::RateLimited
         | RunnerErrorCause::PresignPreconditionMissing
         | RunnerErrorCause::OutpostHttp
