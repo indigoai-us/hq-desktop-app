@@ -110,7 +110,15 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// (the overflow routes keys instead of throwing, and the failure reasons are
 /// snapshot fields, not error identities), and `sync-runner-events.ts`
 /// `ERROR_TYPES` (`error`, `auth-error`) are unchanged.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.24";
+///
+/// The `~6.16.24` -> `~6.16.25` bump (the root-`bin/` personal-vault
+/// exclusion, hq-cloud#501) was re-derived from both hq-cloud tags: the same
+/// 52 distinct `this.name` identities, no new class (the change is two
+/// exclusion-list entries plus their tests — an excluded path is skipped, it
+/// never raises), and `sync-runner-events.ts` `ERROR_TYPES` (`error`,
+/// `auth-error`) are unchanged. The whole release touches five files, none of
+/// which declares or throws an error type.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.25";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

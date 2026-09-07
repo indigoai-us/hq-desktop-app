@@ -496,7 +496,28 @@
 /// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
 /// switch reaches the runner by plain environment inheritance (see
 /// `commands::process::child_env_tests`).
-pub const HQ_CLOUD_VERSION: &str = "~6.16.24";
+///
+/// `~6.16.24` -> `~6.16.25`: floors the runner at the release that keeps the
+/// HQ root's own `bin/` out of the personal vault entirely (hq-cloud#501,
+/// recorded in [`ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD`]). 6.16.24 stopped an
+/// unroutable key from WEDGING the vault, but it did not stop the debris from
+/// travelling: a misdirected `npm install -g` whose prefix resolves to the HQ
+/// root writes a top-level `bin/` of dangling symlinks beside
+/// `lib/node_modules`, and the vault happily pushed it to every machine the
+/// person owned. 6.16.25 excludes that directory on BOTH legs — the push walk
+/// and watcher via `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`, and, critically, the
+/// pull planner via a root-anchored `hq-root-bin` rule in
+/// `PERSONAL_VAULT_DEFAULT_EXCLUSIONS`. The pull leg is what makes this a
+/// fleet-wide fix rather than a local one: every bucket that ALREADY holds the
+/// debris re-downloads it on the next pull, so a desktop upgraded without the
+/// pull-side rule would re-materialise the directory it had just been cleaned
+/// of. The exclusion is anchored at the root on purpose, so a legitimate
+/// nested `personal/tools/bin/` still round-trips.
+///
+/// A desktop holding a cached 6.16.24 satisfies `~6.16.24` and would never
+/// re-resolve, so — exactly as with every bump above — only this spec-string
+/// change delivers the fix.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.25";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -524,6 +545,25 @@ pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.23");
 /// key moves for every installed desktop; see
 /// `version_floor_delivers_unrouted_overflow` below.
 pub const UNROUTED_OVERFLOW_MIN_HQ_CLOUD: &str = "6.16.24";
+
+/// First `@indigoai-us/hq-cloud` version that excludes the HQ root's own
+/// `bin/` from the personal vault on BOTH the push and the pull leg
+/// (hq-cloud#501, published as 6.16.25).
+///
+/// [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`] above made the vault survive this
+/// debris; this floor stops it existing. The two are separate constants
+/// because they fix separate failures and a desktop can sit between them:
+/// on 6.16.24 the vault checkpoints again, yet the stray `bin/` keeps
+/// syncing to every machine the person owns and keeps coming back after a
+/// local delete, because the pull planner had no rule matching it.
+///
+/// The pull leg is the reason this floor exists at all. A push-only exclusion
+/// would protect a clean root and do nothing for the population that already
+/// has the objects in their bucket — which is every user the incident actually
+/// reached. Semver admission is again not delivery: 6.16.25 satisfies
+/// `~6.16.24`, so the pin's LOWER BOUND must sit here to move the npx cache
+/// key; see `version_floor_delivers_root_bin_exclusion` below.
+pub const ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD: &str = "6.16.25";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -591,7 +631,43 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.24");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.25");
+    }
+
+    /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
+    /// vault that already holds the misdirected global install's `bin/` keeps
+    /// re-downloading it on every pull, so deleting it locally — or even
+    /// deleting it from the vault — cannot converge while any other machine is
+    /// still pushing. As everywhere else on this pin, a cached 6.16.24 would
+    /// satisfy `~6.16.24` forever, so the LOWER BOUND has to move.
+    #[test]
+    fn version_floor_delivers_root_bin_exclusion() {
+        let floor = semver::Version::parse(ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD)
+            .expect("ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             root-`bin/` exclusion release {floor}; bump the pin so the npx cache \
+             key moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
+    }
+
+    /// The two vault floors fix DIFFERENT failures and must stay ordered:
+    /// survive-the-debris (6.16.24) shipped before never-carry-the-debris
+    /// (6.16.25). If a future edit ever collapsed them, one of the two guards
+    /// would silently stop guarding anything.
+    #[test]
+    fn vault_floors_are_distinct_and_ordered() {
+        let overflow = semver::Version::parse(UNROUTED_OVERFLOW_MIN_HQ_CLOUD)
+            .expect("UNROUTED_OVERFLOW_MIN_HQ_CLOUD must be an exact semver version");
+        let root_bin = semver::Version::parse(ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD)
+            .expect("ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            root_bin > overflow,
+            "the root-`bin/` exclusion ({root_bin}) must floor above the \
+             unrouted-overflow release ({overflow})"
+        );
     }
 
     /// Unrouted-key overflow floor (hq-cloud#499). A desktop below this floor

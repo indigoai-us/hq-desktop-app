@@ -864,6 +864,10 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
             "1033876e3ec2f43e",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            "838c2f33a5cf6d2a",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -881,6 +885,14 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+        );
+        // The root-`bin/` exclusion floor bump (hq-cloud#501): 6.16.25
+        // SATISFIES `~6.16.24`, so a desktop that already resolved 6.16.24
+        // would keep re-pulling the stray `bin/` forever on semver admission
+        // alone. Moving the requested spec is what delivers the exclusion.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
         );
     }
 
