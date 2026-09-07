@@ -93,7 +93,17 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// 50 → 51 distinct `this.name` identities (`VaultCredentialScopeError` is
 /// the one new class) and `sync-runner-events.ts` `ERROR_TYPES` (`error`,
 /// `auth-error`) are unchanged.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.11";
+///
+/// The `~6.16.11` -> `~6.16.23` bump (the manifest-upload runner) was
+/// re-derived from both hq-cloud tags: 51 -> 52 distinct `this.name`
+/// identities, the one new class being `SyncManifestContractError`
+/// (`src/manifest/contract.ts`, thrown when a sync-manifest field fails the
+/// runner's fail-closed contract validation), and `sync-runner-events.ts`
+/// `ERROR_TYPES` (`error`, `auth-error`) are unchanged. 6.16.22 (byte budget
+/// + 413 backoff) and 6.16.23 (the failure-backoff rewrite of the
+/// non-success bookkeeping path) were each re-derived independently and add
+/// no further identity, so the vocabulary below covers the pin exactly.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.23";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1192,6 +1202,11 @@ pub enum RunnerErrorCause {
     // before an upload when vault credentials silently omit granted write
     // prefixes (`code = POLICY_WRITE_SCOPE_TRUNCATED`).
     VaultCredentialScope,
+    // Added when the runner pin moved to ~6.16.23 — hq-cloud 6.16.21 introduced
+    // `SyncManifestContractError` (src/manifest/contract.ts), thrown when the
+    // post-sync manifest-upload pass rejects a field against its fail-closed
+    // contract (`sync-manifest contract violation [<code>] at <field>`).
+    SyncManifestContract,
     VendDenied,
     RateLimited,
     PresignPreconditionMissing,
@@ -1302,7 +1317,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 98] = [
+    pub const ALL: [RunnerErrorCause; 99] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1338,6 +1353,7 @@ impl RunnerErrorCause {
         Self::VaultNotFound,
         Self::VaultPermissionDenied,
         Self::VaultCredentialScope,
+        Self::SyncManifestContract,
         Self::VendDenied,
         Self::RateLimited,
         Self::PresignPreconditionMissing,
@@ -1444,6 +1460,7 @@ impl RunnerErrorCause {
             // precedent): the class name's middle word is a Sentry default-scrubber
             // denylist substring, so the emitted value is vault_write_scope.
             Self::VaultCredentialScope => "vault_write_scope",
+            Self::SyncManifestContract => "sync_manifest_contract",
             Self::VendDenied => "vend_denied",
             Self::RateLimited => "rate_limited",
             Self::PresignPreconditionMissing => "presign_precondition_missing",
@@ -1567,6 +1584,9 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         // granted write prefixes (src/credential-scope-error.ts,
         // POLICY_WRITE_SCOPE_TRUNCATED).
         "VaultCredentialScopeError" => RunnerErrorCause::VaultCredentialScope,
+        // Added at the ~6.16.23 pin: the manifest-upload contract violation
+        // class (src/manifest/contract.ts).
+        "SyncManifestContractError" => RunnerErrorCause::SyncManifestContract,
         "VendDeniedError" => RunnerErrorCause::VendDenied,
         "RateLimited" => RunnerErrorCause::RateLimited,
         "PresignPreconditionMissing" => RunnerErrorCause::PresignPreconditionMissing,
@@ -2811,6 +2831,10 @@ mod tests {
             // Newly covered identities — the classes the prior sample missed.
             ("VaultNotFoundError vault entry not found for company", VaultNotFound),
             ("VaultCredentialScopeError write prefixes omitted", VaultCredentialScope),
+            (
+                "SyncManifestContractError sync-manifest contract violation",
+                SyncManifestContract,
+            ),
             ("StateStoreCorruptionError reducer state is corrupt", StateStoreCorruption),
             ("RateLimited too many requests", RateLimited),
             (
@@ -3101,6 +3125,7 @@ mod tests {
         "StateStoreCorruptionError",
         "StateStoreLockError",
         "StateStoreReducerError",
+        "SyncManifestContractError",
         "SyncMutationNotEnrolledError",
         "TerminalSessionTimeoutError",
         "TombstoneFetchError",
@@ -3121,16 +3146,17 @@ mod tests {
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
         // Completeness over the FULL derived identity set (not a sample): every
         // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 51 identities must map to 51 DISTINCT tokens — the exact property
+        // the 52 identities must map to 52 DISTINCT tokens — the exact property
         // the prior 16-name sample violated, collapsing every out-of-sample
         // company fault to the flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
         // ChildProcessSyncWorkerError), from 46 to 50 at ~6.16.0 (added
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
         // outposts terminal classes SessionManagerPluginLaunchError +
-        // TerminalSessionTimeoutError), and from 50 to 51 at ~6.16.11 (added
-        // VaultCredentialScopeError).
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 51);
+        // TerminalSessionTimeoutError), from 50 to 51 at ~6.16.11 (added
+        // VaultCredentialScopeError), and from 51 to 52 at ~6.16.23 (added
+        // SyncManifestContractError, the manifest-upload contract class).
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 52);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -3156,7 +3182,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 51, "expected 51 distinct cause tokens");
+        assert_eq!(tokens.len(), 52, "expected 52 distinct cause tokens");
     }
 
     #[test]

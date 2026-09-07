@@ -856,9 +856,20 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
             "a483dd3663414ee8",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            "67dee2de97f5e14d",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+        );
+        // The manifest-upload floor bump: 6.16.23 already SATISFIES `~6.16.11`,
+        // so semver admission alone would have left every existing desktop on
+        // its cached entry. Changing the requested spec is what moves the key.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
         );
     }
 
@@ -1027,23 +1038,26 @@ mod tests {
     fn runner_hq_cloud_version_reads_the_resolved_npx_entry_and_fails_soft() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("_npx");
-        let spec = "@indigoai-us/hq-cloud@~6.16.11";
-        let entry = cache.join(npx_cache_entry_hash(spec));
+        // The spec must be the CURRENT pin: the launch-snapshot path below
+        // resolves `pinned_package_spec()`, so a hardcoded stale spec would
+        // silently start reporting "unknown" on the next floor bump.
+        let spec = pinned_package_spec();
+        let entry = cache.join(npx_cache_entry_hash(&spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
-        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.11");
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.23"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, &spec), "6.16.23");
         assert_eq!(
             runner_hq_cloud_version(&RunnerSpawnTarget::Npx {
                 cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
             }),
-            "6.16.11",
+            "6.16.23",
             "the npx launch snapshot reports the version from its exact cache entry"
         );
 
         // Every bad cache input is reporting-only and must fail soft rather than
         // changing the watcher crash path.
         assert_eq!(
-            runner_hq_cloud_version_in(&cache.join("missing"), spec),
+            runner_hq_cloud_version_in(&cache.join("missing"), &spec),
             "unknown"
         );
 
