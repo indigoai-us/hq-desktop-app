@@ -118,7 +118,16 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// never raises), and `sync-runner-events.ts` `ERROR_TYPES` (`error`,
 /// `auth-error`) are unchanged. The whole release touches five files, none of
 /// which declares or throws an error type.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.25";
+///
+/// The `~6.16.25` -> `~6.16.26` bump (the area-collision heal, hq-cloud#502)
+/// was re-derived from both hq-cloud trees: the same 52 distinct `this.name`
+/// identities, byte-identical, and `sync-runner-events.ts` `ERROR_TYPES`
+/// (`error`, `auth-error`) are unchanged. The release touches two files —
+/// `src/sync/area-ledger.ts` and its test — and neither declares a named error
+/// class. The ledger does throw on a two-real-area duplicate, but as a plain
+/// `Error` carrying an `area-ledger:` message, so it lands in the generic
+/// bucket exactly as it did before and adds no identity.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.26";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

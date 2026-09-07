@@ -517,7 +517,30 @@
 /// A desktop holding a cached 6.16.24 satisfies `~6.16.24` and would never
 /// re-resolve, so — exactly as with every bump above — only this spec-string
 /// change delivers the fix.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.25";
+///
+/// `~6.16.25` -> `~6.16.26`: floors the runner at the release that repairs the
+/// overflow area introduced by 6.16.24 (hq-cloud#502, recorded in
+/// [`AREA_COLLISION_HEAL_MIN_HQ_CLOUD`]). 6.16.24 shipped the overflow area and
+/// the top-level lockfile exclusions in ONE release, and together they turned a
+/// lockfile with a live entry in a real area into a key that no longer routed:
+/// the next delta took the overflow route and the same key was journaled in two
+/// areas at once. The aggregate builder treated that as corruption and threw —
+/// from inside the journal-store OPEN path, so it fired on every open. That is
+/// strictly worse than the failure 6.16.24 removed: the append-time abort was
+/// recoverable, this one wedges the vault permanently with nothing the user can
+/// do. Both HQ outposts hit it within hours of upgrading.
+///
+/// 6.16.26 makes the read tolerate the duplicate and resolve it to the real
+/// area, makes the write refuse to create a new one, and converges the stale
+/// overflow copy away on the next append that touches the key — so an already
+/// wedged vault heals itself with no user action. Two REAL areas holding one
+/// key is still rejected, on the full-rebuild and the incremental path alike.
+///
+/// This floor matters more than any above it, because the population it repairs
+/// is precisely the population that took the 6.16.24 and 6.16.25 pins. A
+/// desktop holding a cached 6.16.25 satisfies `~6.16.25` and never re-resolves,
+/// so the spec string is again the only thing that delivers the repair.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.26";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -564,6 +587,25 @@ pub const UNROUTED_OVERFLOW_MIN_HQ_CLOUD: &str = "6.16.24";
 /// `~6.16.24`, so the pin's LOWER BOUND must sit here to move the npx cache
 /// key; see `version_floor_delivers_root_bin_exclusion` below.
 pub const ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD: &str = "6.16.25";
+
+/// First `@indigoai-us/hq-cloud` version that heals a personal-vault journal
+/// whose overflow area collides with a real one (hq-cloud#502, published as
+/// 6.16.26).
+///
+/// This is the repair floor for a regression the two floors above introduced
+/// together. [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`] added the overflow area in
+/// 6.16.24, and the same release excluded the top-level lockfiles; a lockfile
+/// that already had a live entry in a real area stopped routing, so its next
+/// delta went to the overflow and the key existed in two areas. Building the
+/// aggregate then threw, on the journal-store OPEN path, on every open.
+///
+/// A desktop between 6.16.24 and this floor is therefore not merely missing a
+/// fix — it is exposed to a hard wedge that no local action clears, which is
+/// why this floor is separate from the two above rather than folded into them.
+/// Semver admission is not delivery: a cached 6.16.25 satisfies `~6.16.25`
+/// forever, so the pin's LOWER BOUND must sit here; see
+/// `version_floor_delivers_area_collision_heal` below.
+pub const AREA_COLLISION_HEAL_MIN_HQ_CLOUD: &str = "6.16.26";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -631,7 +673,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.25");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.26");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
@@ -653,20 +695,47 @@ mod tests {
         );
     }
 
-    /// The two vault floors fix DIFFERENT failures and must stay ordered:
+    /// Area-collision heal floor (hq-cloud#502). Below this floor a vault can
+    /// be wedged permanently: the same key ends up in the overflow area AND a
+    /// real one, and building the aggregate throws from the journal-store OPEN
+    /// path, so every open fails and nothing the user does clears it. As
+    /// everywhere else on this pin, a cached 6.16.25 satisfies `~6.16.25`
+    /// forever, so the LOWER BOUND has to move for the repair to be delivered.
+    #[test]
+    fn version_floor_delivers_area_collision_heal() {
+        let floor = semver::Version::parse(AREA_COLLISION_HEAL_MIN_HQ_CLOUD)
+            .expect("AREA_COLLISION_HEAL_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             area-collision heal release {floor}; bump the pin so the npx cache \
+             key moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
+    }
+
+    /// The three vault floors fix DIFFERENT failures and must stay ordered:
     /// survive-the-debris (6.16.24) shipped before never-carry-the-debris
-    /// (6.16.25). If a future edit ever collapsed them, one of the two guards
-    /// would silently stop guarding anything.
+    /// (6.16.25), which shipped before repair-what-6.16.24-broke (6.16.26). If
+    /// a future edit ever collapsed any pair, one of the guards would silently
+    /// stop guarding anything.
     #[test]
     fn vault_floors_are_distinct_and_ordered() {
         let overflow = semver::Version::parse(UNROUTED_OVERFLOW_MIN_HQ_CLOUD)
             .expect("UNROUTED_OVERFLOW_MIN_HQ_CLOUD must be an exact semver version");
         let root_bin = semver::Version::parse(ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD)
             .expect("ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD must be an exact semver version");
+        let heal = semver::Version::parse(AREA_COLLISION_HEAL_MIN_HQ_CLOUD)
+            .expect("AREA_COLLISION_HEAL_MIN_HQ_CLOUD must be an exact semver version");
         assert!(
             root_bin > overflow,
             "the root-`bin/` exclusion ({root_bin}) must floor above the \
              unrouted-overflow release ({overflow})"
+        );
+        assert!(
+            heal > root_bin,
+            "the area-collision heal ({heal}) must floor above the root-`bin/` \
+             exclusion ({root_bin})"
         );
     }
 

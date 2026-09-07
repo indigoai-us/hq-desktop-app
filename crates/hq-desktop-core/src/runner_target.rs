@@ -868,6 +868,10 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
             "838c2f33a5cf6d2a",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            "478e3736ac567ec3",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -893,6 +897,15 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+        );
+        // The area-collision heal floor bump (hq-cloud#502): 6.16.26 SATISFIES
+        // `~6.16.25`, so a desktop that already resolved 6.16.25 would stay on
+        // it — and 6.16.25 carries the wedge, because the overflow area that
+        // causes it shipped in 6.16.24. This is the one bump where semver
+        // admission alone leaves the user with a vault that cannot be opened.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
         );
     }
 
