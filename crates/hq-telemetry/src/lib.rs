@@ -736,6 +736,35 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"
         )),
+        // Live memory-class decomposition read from a signal-triggered Node
+        // diagnostic report just before a footprint pre-empt (auto-sync watcher
+        // footprint growth-rate cluster, HQ-DESKTOP-60): the JS old-space total/used,
+        // the inferred non-heap excess (tree RSS minus JS heap total), and the count
+        // of ACTIVE libuv handles — a direct leak signal for a file watcher, so the
+        // ~2.9 GB the tree total alone could not attribute gets a named class. Each
+        // reaches this check as `""` for an unmeasured value (type-safe by
+        // construction); a string value must parse as an unsigned integer, so a
+        // producer bug that shipped a path or fragment degrades to `[Filtered]`.
+        "watcher_js_heap_total_mb"
+        | "watcher_js_heap_used_mb"
+        | "watcher_inferred_non_heap_mb"
+        | "watcher_libuv_active_handles" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Why the memory-class decomposition is or is not present, so an absent report
+        // degrades honestly to a queryable token instead of a guess (mirrors
+        // `WatcherMemoryClassSource::as_str`). The POSIX report path yields
+        // report_read / report_absent / report_unreadable, the manual/no-dir path
+        // report_not_requested, and Windows report_unsupported_platform. An
+        // off-vocabulary token degrades to `[Filtered]`.
+        "watcher_memory_class_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
         // prerelease/build suffix) or the fixed `unknown` sentinel.
@@ -3510,6 +3539,58 @@ mod tests {
             ("watcher_tree_process_count", "12 processes /Users/Ada"),
             ("watcher_footprint_growth_bucket", "40mbs"),
             ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_class_fields_survive_egress_and_reject_lookalikes() {
+        // The live memory-class decomposition read from a signal-triggered report
+        // (HQ-DESKTOP-60): bare-integer MB / counts (or "" when unmeasured) and the
+        // fixed source vocabulary survive egress.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584"),
+            ("watcher_js_heap_total_mb", ""),
+            ("watcher_js_heap_used_mb", "3072"),
+            ("watcher_inferred_non_heap_mb", "4365"),
+            ("watcher_inferred_non_heap_mb", "0"),
+            ("watcher_libuv_active_handles", "128"),
+            ("watcher_libuv_active_handles", ""),
+            ("watcher_memory_class_source", "report_read"),
+            ("watcher_memory_class_source", "report_absent"),
+            ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_not_requested"),
+            ("watcher_memory_class_source", "report_unsupported_platform"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A path, non-integer, or out-of-vocabulary token in any new memory-class
+        // field degrades to `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584 /Users/Ada"),
+            ("watcher_js_heap_used_mb", "3072MB"),
+            ("watcher_inferred_non_heap_mb", "-1"),
+            ("watcher_libuv_active_handles", "128; rm -rf"),
+            ("watcher_memory_class_source", "report_read /Users/Ada"),
+            ("watcher_memory_class_source", "report_guessed"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
