@@ -88,11 +88,37 @@ describe('watcher shim RSS attribution — source contracts', () => {
       '\n}\n',
       'windows sample_watcher_rss_scoped',
     );
-    // Byte-for-byte the pre-fix Windows behaviour, so a shim footprint stays
-    // WITHHELD rather than being reported as a wrong number.
-    expect(windowsArm).toContain(
-      'sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))',
+    // The same pre-fix Windows fallback behaviour — a shim footprint stays WITHHELD
+    // (single-PID, tagged `Single`) rather than reported as a wrong number. The
+    // sample now rides the shared ScopedRssSample, whose tree decomposition is
+    // withheld (`None`) on the Windows path since the job working-set sum cannot be
+    // cheaply decomposed.
+    expect(windowsArm).toContain('sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {');
+    expect(windowsArm).toContain('kind: RssSampleKind::Single,');
+    expect(windowsArm).toContain('tree_pid_count: None,');
+  });
+
+  it('withholds the live memory-class decomposition on Windows (unsupported-platform token)', () => {
+    // Windows has no live-signal report path, so the memory-class decomposition is
+    // withheld with the unsupported-platform sentinel — matching how the shared
+    // Windows sample already withholds the per-member tree decomposition
+    // (HQ-DESKTOP-60).
+    const windowsResolve = sliceBetween(
+      daemonSource,
+      '#[cfg(not(unix))]\nfn resolve_watcher_memory_class(',
+      '\n}\n',
+      'windows resolve_watcher_memory_class',
     );
+    expect(windowsResolve).toContain('WatcherMemoryClassSource::ReportUnsupportedPlatform');
+    expect(windowsResolve).toContain('RunnerReportMemoryClass::default()');
+    // The Windows sample carries no largest-member PID to signal.
+    const windowsArm = sliceBetween(
+      daemonSource,
+      '#[cfg(target_os = "windows")]\nfn sample_watcher_rss_scoped(',
+      '\n}\n',
+      'windows sample_watcher_rss_scoped',
+    );
+    expect(windowsArm).toContain('tree_largest_member_pid: None,');
   });
 
   it('keeps the non-Windows sampling path byte-identical (ps descendant sum)', () => {

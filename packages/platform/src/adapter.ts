@@ -586,6 +586,15 @@ export interface MessagingApi {
   /** GET /v1/notify/channels/{id}/members — owner/creator + invitees. */
   listChannelMembers(channelId: string): AdapterPromise<Json>;
   /**
+   * GET /v1/agent-telescope/agents/{agentUid}/channels/{channelId}/tasks —
+   * tasks an agent spawned from messages in ONE room (trace-backed; terminal
+   * states retained). Optional: a host without the route omits it and the
+   * chat falls back to the agent-wide view.
+   */
+  listChannelAgentTasks?(agentUid: string, channelId: string): AdapterPromise<Json>;
+  /** GET /v1/agent-telescope/agents/{agentUid}/tasks — heartbeat task view. */
+  listAgentTasks?(agentUid: string): AdapterPromise<Json>;
+  /**
    * POST /v1/notify/channels/{id}/cards/{cardId}/actions — desktop
    * `run_card_action`. Client-generated idempotencyKey; 409 replay is success.
    */

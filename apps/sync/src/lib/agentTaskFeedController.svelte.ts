@@ -25,9 +25,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { agentTaskFeed, type AgentTaskFeed } from '../desktop-alt/lib/agent-task-feed';
-import { roomTaskFeed } from '../desktop-alt/lib/room-task-feed';
-import type { AgentTask } from '../desktop-alt/lib/agent-tasks';
+import { agentTaskFeed, roomTaskFeed, type AgentTask, type AgentTaskFeed } from '@hq/ui';
 import { memberKindFromUid } from '../desktop-alt/lib/team-telemetry';
 
 export interface RosterMember {

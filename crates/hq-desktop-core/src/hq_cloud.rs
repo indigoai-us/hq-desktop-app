@@ -442,7 +442,12 @@
 /// caches `_npx` entries by the requested spec, so moving the floor changes the
 /// cache-key argument and prevents existing desktops from serving the cached
 /// older runtime.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.6";
+///
+/// `~6.16.6` -> `~6.16.11`: floors the runner at the release whose personal-vault
+/// sync is push-only for `workspace/.session-logs/` and whose reindex prunes
+/// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
+/// cache key.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.11";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -510,7 +515,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.6");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.11");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry

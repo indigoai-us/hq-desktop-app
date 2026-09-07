@@ -42,6 +42,12 @@ export interface Workspace {
    * Tenant brand record when entitled. Absent when not entitled or unset.
    */
   brand?: CompanyBrandSettings | null;
+  /**
+   * Presigned company website favicon (hq-pro `/membership/me` `iconUrl`).
+   * Every-plan — NOT gated on `brandingEnabled`, which covers white-label
+   * logos only. Absent → surfaces draw the building glyph.
+   */
+  iconUrl?: string | null;
 }
 
 export function isWorkspaceSyncEnabled(

@@ -104,3 +104,87 @@ describe("normalizeDirectoryFeed", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Company icon (`iconUrl`). The server stamps it on company-owned rows; the
+// normalizer must carry it (in either casing, top level or nested) and must
+// leave it undefined when absent so reconciliation cannot blank a known icon.
+// ---------------------------------------------------------------------------
+describe("normalizeDirectoryFeed — iconUrl", () => {
+  const ICON =
+    "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/branding/cmp_acme/favicon.png?X-Amz-Signature=mock";
+
+  function firstRow(channels: unknown[]) {
+    return normalizeDirectoryFeed({ channels }).rows?.[0];
+  }
+
+  it("reads iconUrl from the top level of a channel payload", () => {
+    expect(
+      firstRow([
+        {
+          channelId: "chn_01KWGKHOH5C8TESTCHANNEL0001",
+          scope: "company",
+          companyUid: "cmp_acme",
+          name: "general",
+          iconUrl: ICON,
+        },
+      ])?.iconUrl,
+    ).toBe(ICON);
+  });
+
+  it("reads iconUrl from the nested directoryRow", () => {
+    expect(
+      firstRow([
+        {
+          channelId: "chn_01KWGKHOH5C8TESTCHANNEL0001",
+          scope: "company",
+          name: "general",
+          directoryRow: { companyUid: "cmp_acme", iconUrl: ICON },
+        },
+      ])?.iconUrl,
+    ).toBe(ICON);
+  });
+
+  it("accepts the snake_case spelling like every sibling field", () => {
+    expect(
+      firstRow([
+        {
+          channelId: "chn_01KWGKHOH5C8TESTCHANNEL0001",
+          scope: "company",
+          name: "general",
+          icon_url: ICON,
+        },
+      ])?.iconUrl,
+    ).toBe(ICON);
+  });
+
+  it("leaves iconUrl undefined when the server does not send it", () => {
+    // A v-old server omits the field entirely; undefined (not null) is what
+    // lets reconciliation preserve an already-known icon.
+    expect(
+      firstRow([
+        {
+          channelId: "chn_01KWGKHOH5C8TESTCHANNEL0001",
+          scope: "company",
+          companyUid: "cmp_acme",
+          name: "general",
+        },
+      ])?.iconUrl,
+    ).toBeUndefined();
+  });
+
+  it("leaves iconUrl undefined for an empty or non-string value", () => {
+    for (const iconUrl of ["", "   ", 42, {}, []]) {
+      expect(
+        firstRow([
+          {
+            channelId: "chn_01KWGKHOH5C8TESTCHANNEL0001",
+            scope: "company",
+            name: "general",
+            iconUrl,
+          },
+        ])?.iconUrl,
+      ).toBeUndefined();
+    }
+  });
+});

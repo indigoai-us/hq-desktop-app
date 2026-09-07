@@ -33,8 +33,21 @@
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
+  import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../chat/tasks/agent-tasks";
+  import {
+    TaskFeedController,
+    isAgentUid as isAgentTaskUid,
+  } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import {
+    findLifecycleCardElement,
+    runAddAgentEntry,
+    runCreateCompanyEntry,
+    type EntryPointResult,
+    type EntryPointTarget,
+  } from "../chat/lifecycle-entry-points.js";
   import {
     patchLifecycleCardState,
     submitLifecycleCardAction,
@@ -171,6 +184,7 @@
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
+    stampMentionCompany,
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
@@ -295,8 +309,11 @@
   import type { Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
+    buildCompanyIconMap,
     companyDisplayName,
+    companyIconUrl,
   } from "../company/company-display-map.js";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
@@ -738,6 +755,7 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
+        iconUrl: w.iconUrl ?? null,
       })),
   );
 
@@ -820,6 +838,12 @@
       detail: item.detail,
       keywords: item.keywords,
       lastActivityAt: item.lastActivityAt,
+      // Company channels carry their company's mark so a palette full of
+      // `#`-prefixed labels is scannable by company at a glance.
+      iconUrl: item.iconUrl,
+      showCompanyMark:
+        item.row.kind === "channel" &&
+        (item.row.channelScope ?? "").trim() === "company",
       action: () => handleSelect(item.row),
     }));
     return [...nav, ...conversations];
@@ -827,6 +851,23 @@
 
   const watched = $derived(companies?.length ?? 0);
   const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+  /** uid/slug → presigned company icon, for the header + member popover. */
+  const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
+  /**
+   * Icon for the selected conversation's company: the row's server-stamped
+   * icon first, then the roster. Company channels only — a project or personal
+   * channel header keeps its `#`.
+   */
+  const selectedCompanyIcon = $derived.by(() => {
+    const row = selectedRow;
+    if (!row || row.kind !== "channel") return null;
+    if ((row.channelScope ?? "").trim() !== "company") return null;
+    return row.iconUrl ?? companyIconUrl(row.companyUid, companyIcons);
+  });
+  const selectedIsCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow.channelScope ?? "").trim() === "company",
+  );
 
   /** Company for Atlas — selected conversation company, else first cloud workspace. */
   const atlasCompanyUid = $derived.by(() => {
@@ -949,6 +990,51 @@
   // must not keep another channel's optimistic status on screen.
   const AGENT_THINKING_TICK_MS = 5_000;
   let agentThinking = $state<ThinkingEntry[]>([]);
+
+  // Background-task chips for the agents in the selected conversation — the
+  // room-scoped route for a channel (every agent on its roster), the
+  // agent-wide view for a DM with an agent. One controller per selection;
+  // rebuilt when the roster arrives, disposed on switch/teardown. Nothing is
+  // polled when the host exposes neither task view or there is no agent.
+  let taskCtl = $state<TaskFeedController | null>(null);
+  $effect(() => {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() || null;
+    const roster = channelId ? (channelRosterById[channelId] ?? []) : [];
+    const peer = row?.personUid?.trim() || null;
+    const agentUids = channelId
+      ? roster.map((m) => m.personUid)
+      : peer && isAgentTaskUid(peer)
+        ? [peer]
+        : [];
+    const roomFetch = adapter.messaging.listChannelAgentTasks;
+    const agentFetch = adapter.messaging.listAgentTasks;
+    const ctl = new TaskFeedController({
+      agentUids,
+      channelId,
+      fetchRoomTasks: roomFetch
+        ? async (agentUid, ch) => unwrapAdapter(await roomFetch(agentUid, ch))
+        : null,
+      fetchTasks: agentFetch ? async (agentUid) => unwrapAdapter(await agentFetch(agentUid)) : null,
+    });
+    taskCtl = ctl;
+    return () => {
+      ctl.dispose();
+      if (taskCtl === ctl) taskCtl = null;
+    };
+  });
+  // Rooms: chips live in the thread they were spawned from (ReplyPanel),
+  // never in the main pane — a room-wide strip mixes every thread's work.
+  // DMs have no threads-of-origin on the agent-wide view, so they keep the
+  // strip beneath the conversation.
+  const mainPaneTasks = $derived<AgentTask[]>(
+    selectedRow?.channelId ? [] : (taskCtl?.tasks ?? []),
+  );
+  const threadTasks = $derived<AgentTask[]>(
+    openReplyRootId
+      ? (taskCtl?.tasks ?? []).filter((t) => t.originMessageId === openReplyRootId)
+      : [],
+  );
 
   $effect(() => {
     void selectedRow?.id;
@@ -1895,6 +1981,7 @@
             companyUid
               ? companyDisplayName(companyUid, companyNames)
               : null,
+            companyUid ? companyIconUrl(companyUid, companyIcons) : null,
           )
         : null);
     // Prefer rebuilding from live read + presence when we have sessions.
@@ -2052,6 +2139,15 @@
     sendReply: async (args) => {
       unwrapAdapter(await adapter.messaging.sendReply(args));
     },
+    listChannelAgentTasks: adapter.messaging.listChannelAgentTasks
+      ? async (args) =>
+          unwrapAdapter(
+            await adapter.messaging.listChannelAgentTasks!(args.agentUid, args.channelId),
+          )
+      : undefined,
+    listAgentTasks: adapter.messaging.listAgentTasks
+      ? async (args) => unwrapAdapter(await adapter.messaging.listAgentTasks!(args.agentUid))
+      : undefined,
     runCardAction: async (args) => {
       const raw = unwrapAdapter(
         await adapter.messaging.runCardAction(args),
@@ -2068,6 +2164,14 @@
         agentChannelId:
           typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
         agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        focusCardId:
+          typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+        // Entry points: the summary card's create_company action answers with
+        // the channel + card it posted; pending checkout answers with a url.
+        channelId:
+          typeof raw?.channelId === "string" ? raw.channelId : undefined,
+        reason: typeof raw?.reason === "string" ? raw.reason : undefined,
+        url: typeof raw?.url === "string" ? raw.url : undefined,
       };
     },
     getCompanyTab: adapter.messaging.getCompanyTab
@@ -2091,10 +2195,178 @@
               raw?.navigateTo === "chat" ? "chat" : undefined,
             focusCardId:
               typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+            channelId:
+              typeof raw?.channelId === "string" ? raw.channelId : undefined,
+            reason: typeof raw?.reason === "string" ? raw.reason : undefined,
+            url: typeof raw?.url === "string" ? raw.url : undefined,
           };
         }
       : undefined,
   });
+
+  // ── Lifecycle entry points (New company / New agent) ─────────────────────
+
+  /** Card the shell should scroll to and focus once the timeline paints it. */
+  // Plain (non-reactive) on purpose: the poll compares by identity and a
+  // `$state` proxy would never equal the object it was handed.
+  let pendingFocusCard: Pick<EntryPointTarget, "cardId" | "cardKind"> | null =
+    null;
+  let focusCardTimer: ReturnType<typeof setTimeout> | undefined;
+  const FOCUS_CARD_POLL_MS = 120;
+  const FOCUS_CARD_POLL_LIMIT = 50;
+  /** After the first focus, watch this long for the node being re-rendered. */
+  const FOCUS_CARD_SETTLE_MS = 150;
+  const FOCUS_CARD_SETTLE_LIMIT = 12;
+
+  /**
+   * Poll the shell for the target card. Cards arrive asynchronously (the
+   * channel opens, hydrates, then the wake delivers the posted card), so a
+   * one-shot query would miss it; the poll is bounded so a card that never
+   * shows up cannot leak a timer.
+   */
+  function focusLifecycleCard(
+    target: Pick<EntryPointTarget, "cardId" | "cardKind">,
+  ): void {
+    if (!target.cardId && !target.cardKind) return;
+    if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
+    pendingFocusCard = target;
+    let attempts = 0;
+    const tryFocus = (): void => {
+      focusCardTimer = undefined;
+      if (pendingFocusCard !== target) return;
+      const root: ParentNode =
+        typeof document !== "undefined" ? document : ({} as ParentNode);
+      const el =
+        typeof root.querySelector === "function"
+          ? findLifecycleCardElement(root, target)
+          : null;
+      if (el) {
+        pendingFocusCard = null;
+        applyCardFocus(el);
+        settleCardFocus(el, target, 0);
+        return;
+      }
+      attempts += 1;
+      if (attempts >= FOCUS_CARD_POLL_LIMIT) {
+        pendingFocusCard = null;
+        return;
+      }
+      focusCardTimer = setTimeout(tryFocus, FOCUS_CARD_POLL_MS);
+    };
+    // First attempt on a macrotask: the caller (create modal, header button)
+    // still has to close / re-enable and restore its own focus first, and the
+    // card must win that exchange.
+    focusCardTimer = setTimeout(tryFocus, 0);
+  }
+
+  function applyCardFocus(el: HTMLElement): void {
+    if (typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "center" });
+    }
+    el.focus({ preventScroll: true });
+  }
+
+  /**
+   * A channel switch hydrates in stages, so the node focused first can be
+   * replaced a moment later (focus falls to <body>). Re-assert onto the
+   * fresh node while ours is detached; never steal focus the user moved.
+   */
+  function settleCardFocus(
+    el: HTMLElement,
+    target: Pick<EntryPointTarget, "cardId" | "cardKind">,
+    attempt: number,
+  ): void {
+    if (attempt >= FOCUS_CARD_SETTLE_LIMIT) return;
+    focusCardTimer = setTimeout(() => {
+      focusCardTimer = undefined;
+      let current = el;
+      if (!current.isConnected) {
+        const next =
+          typeof document !== "undefined"
+            ? findLifecycleCardElement(document, target)
+            : null;
+        if (next) {
+          applyCardFocus(next);
+          current = next;
+        }
+      }
+      settleCardFocus(current, target, attempt + 1);
+    }, FOCUS_CARD_SETTLE_MS);
+  }
+
+  /** Select the target channel (if not already there) and focus its card. */
+  function navigateToEntryTarget(
+    target: EntryPointTarget,
+    companyUid: string | null,
+  ): void {
+    const focus = { cardId: target.cardId, cardKind: target.cardKind };
+    if (selectedRow?.channelId !== target.channelId || view !== "conversation") {
+      requestChannelOpen(target.channelId, {
+        companyUid,
+        focusCardId: target.cardId,
+        focusCardKind: target.cardKind,
+      });
+    }
+    focusLifecycleCard(focus);
+  }
+
+  const canRunEntryPoints = $derived(
+    typeof adapter.messaging.runCardAction === "function",
+  );
+
+  /** Sidebar / switcher "New company": summary card action, then #setup. */
+  async function createCompanyEntry(): Promise<EntryPointResult> {
+    const result = await runCreateCompanyEntry(conversationApi);
+    if (result.ok) navigateToEntryTarget(result.target, null);
+    return result;
+  }
+
+  /** Sidebar / header "New agent": Team tab action, then the company channel. */
+  async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
+    const result = await runAddAgentEntry(conversationApi, companyUid);
+    if (result.ok) navigateToEntryTarget(result.target, companyUid);
+    return result;
+  }
+
+  /**
+   * Whether the viewer may act on the current company's Team tab. Read from
+   * the tab surface the server sends (its `viewer` is per company), fetched
+   * once per company so the header button is right on the Chat tab too.
+   */
+  let companyTeamCanAct = $state(false);
+  let companyTeamCanActUid: string | null = null;
+  let headerAddAgentBusy = $state(false);
+  let headerAddAgentError = $state<string | null>(null);
+
+  async function loadCompanyTeamCanAct(uid: string): Promise<void> {
+    if (companyTeamCanActUid === uid) return;
+    companyTeamCanActUid = uid;
+    companyTeamCanAct = false;
+    headerAddAgentError = null;
+    const getTab = conversationApi.getCompanyTab;
+    if (!getTab || !conversationApi.runCompanyTabAction) return;
+    try {
+      const parsed = parseCompanyTab(await getTab(uid, "team"));
+      if (companyTeamCanActUid === uid) {
+        companyTeamCanAct = parsed?.viewer.canAct === true;
+      }
+    } catch {
+      if (companyTeamCanActUid === uid) companyTeamCanAct = false;
+    }
+  }
+
+  async function addAgentFromHeader(): Promise<void> {
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (!uid || headerAddAgentBusy) return;
+    headerAddAgentBusy = true;
+    headerAddAgentError = null;
+    try {
+      const result = await addAgentEntry(uid);
+      if (!result.ok) headerAddAgentError = result.reason;
+    } finally {
+      headerAddAgentBusy = false;
+    }
+  }
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
@@ -2146,6 +2418,9 @@
         companyAppearanceName = parsed.appearance.name.trim();
       }
       companyTabData = tabId === "chat" ? companyTabData : parsed;
+      if (tabId === "team" && parsed && companyTeamCanActUid === uid) {
+        companyTeamCanAct = parsed.viewer.canAct === true;
+      }
     } catch {
       if (tabId !== "chat") {
         companyTabData = {
@@ -2164,6 +2439,17 @@
     if (!isCompanyChannel) return;
     const tabId = companyTab;
     void loadCompanyTabSurface(tabId);
+  });
+
+  $effect(() => {
+    if (!isCompanyChannel) {
+      companyTeamCanActUid = null;
+      companyTeamCanAct = false;
+      headerAddAgentError = null;
+      return;
+    }
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (uid) void loadCompanyTeamCanAct(uid);
   });
 
   async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
@@ -2208,6 +2494,31 @@
         title: headerTitle,
         companyUid: selectedRow?.companyUid ?? null,
       });
+      return;
+    }
+    if (!result) return;
+    // Pending checkout: `retry_checkout` answers with the session url.
+    const url = typeof result.url === "string" ? result.url.trim() : "";
+    if (/^https?:\/\//i.test(url)) onopenurl?.(url);
+    // A card that posts another card (companies_summary → create_company)
+    // answers with where it went; land on it.
+    const postedCardId =
+      typeof result.cardId === "string" ? result.cardId.trim() : "";
+    const postedChannelId =
+      typeof result.channelId === "string" ? result.channelId.trim() : "";
+    if (
+      postedCardId &&
+      postedCardId !== event.cardId &&
+      result.state !== "blocked"
+    ) {
+      navigateToEntryTarget(
+        {
+          channelId: postedChannelId || event.channelId,
+          cardId: postedCardId,
+          cardKind: null,
+        },
+        selectedRow?.companyUid ?? null,
+      );
     }
   }
 
@@ -2453,6 +2764,12 @@
       },
       { preserveView: pending.automatic && view !== "conversation" },
     );
+    if (pending.focusCardId || pending.focusCardKind) {
+      focusLifecycleCard({
+        cardId: pending.focusCardId,
+        cardKind: pending.focusCardKind,
+      });
+    }
   }
 
   function applyPendingConversation(target: ConversationTarget): void {
@@ -2601,7 +2918,13 @@
         // `cancelled` alone is not enough — check the scope we resolved for
         // still matches the scope currently being displayed.
         if (cancelled || mentionRosterScope !== scope || !res.ok) return;
-        liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
+        // The roster request was tenant-scoped but the rows come back without a
+        // company field, so stamp the scope on: that is what lets the picker
+        // render "Izzy · Indigo" instead of a uid fragment.
+        liveMentionTargets = stampMentionCompany(
+          mentionTargetsFromContactsPayload(res.value),
+          scope,
+        );
       });
     return () => {
       cancelled = true;
@@ -3424,6 +3747,8 @@
         automatic: detail.automatic === true,
         title: detail.title ?? null,
         companyUid: detail.companyUid ?? null,
+        focusCardId: detail.focusCardId ?? null,
+        focusCardKind: detail.focusCardKind ?? null,
       });
     }
     function onMessagePerson(event: Event): void {
@@ -3462,6 +3787,7 @@
 
     return () => {
       detachEmbeddedNavigation?.();
+      if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
@@ -3625,6 +3951,8 @@
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout}
+          oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+          oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           onrows={(rows) => (railRows = rows)}
           {bootTimeoutMs}
           {onShellReady}
@@ -3708,7 +4036,10 @@
           >
             <div class="channel-title-block">
               <div class="channel-title">
-                {#if selectedRow.kind === "channel"}
+                {#if selectedIsCompanyChannel}
+                  <!-- Company channels lead with the company's own mark. -->
+                  <CompanyIcon iconUrl={selectedCompanyIcon} size={22} />
+                {:else if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
                 {#if selectedRow.kind === "dm"}
@@ -3847,6 +4178,28 @@
                   {/each}
                 </nav>
               {:else if isCompanyChannel}
+                {#if companyTeamCanAct}
+                  {#if headerAddAgentError}
+                    <span
+                      class="header-inline-error"
+                      role="alert"
+                      data-testid="company-add-agent-error"
+                    >
+                      {headerAddAgentError}
+                    </span>
+                  {/if}
+                  <button
+                    type="button"
+                    class="header-ghost-btn"
+                    data-testid="company-add-agent"
+                    aria-label={`Add an agent to ${companyHeroTitle}`}
+                    aria-busy={headerAddAgentBusy ? "true" : undefined}
+                    disabled={headerAddAgentBusy}
+                    onclick={() => void addAgentFromHeader()}
+                  >
+                    Add agent
+                  </button>
+                {/if}
                 <CompanyTabs
                   active={companyTab}
                   onselect={(id) => (companyTab = id)}
@@ -4002,6 +4355,12 @@
                             ? companyDisplayName(
                                 selectedRow.companyUid,
                                 companyNames,
+                              )
+                            : null,
+                          selectedRow.companyUid
+                            ? companyIconUrl(
+                                selectedRow.companyUid,
+                                companyIcons,
                               )
                             : null,
                         )}
@@ -4160,6 +4519,7 @@
                     </div>
                   {/if}
                   <AgentThinkingRow entries={agentThinking} />
+                  <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -4280,6 +4640,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
+                    tasks={threadTasks}
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
@@ -4703,6 +5064,48 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
+  }
+
+  /* 28px ghost button: same control scale as the tab-row actions. */
+  .header-ghost-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--line2, var(--panel-border));
+    border-radius: 0;
+    background: transparent;
+    color: var(--t1);
+    font: 500 12px/1 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .header-ghost-btn:hover {
+    background: var(--hover);
+  }
+
+  .header-ghost-btn:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .header-ghost-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
+  }
+
+  .header-inline-error {
+    color: var(--danger, #e5484d);
+    font-size: 12px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .edit-profile-btn {

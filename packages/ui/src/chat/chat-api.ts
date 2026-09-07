@@ -340,6 +340,13 @@ export interface ConversationApi {
     values: Record<string, string>;
     idempotencyKey?: string;
   }): Promise<CardActionResult>;
+  /**
+   * Room-scoped agent tasks (hq-pro #3035). Optional: absent on hosts that
+   * have no telescope routes; the task strip then stays hidden.
+   */
+  listChannelAgentTasks?(args: { agentUid: string; channelId: string }): Promise<unknown>;
+  /** Agent-wide heartbeat task view — the DM / fallback source. */
+  listAgentTasks?(args: { agentUid: string }): Promise<unknown>;
 }
 
 /** Wire result of `run_card_action` / the cards actions route. */
@@ -355,6 +362,16 @@ export interface CardActionResult {
   agentUid?: string;
   navigateTo?: "chat";
   focusCardId?: string;
+  /**
+   * Channel that received the card this action posted or resurfaced
+   * (entry-point actions: `companies_summary/create_company` answers
+   * `setup`; `team:spend/add_agent` answers the company channel).
+   */
+  channelId?: string;
+  /** Server reason when `state` is `blocked` (permission, plan). */
+  reason?: string;
+  /** URL the host should open (pending checkout: `retry_checkout`). */
+  url?: string;
 }
 
 /** Backend seam for the notifications feed (replaces invoke calls). */

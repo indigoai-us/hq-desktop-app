@@ -48,14 +48,15 @@
     type ChatAttachmentValidator,
   } from "./chat-attachments";
   import {
-    clipMessageBodyForDisplay,
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import type { DecisionOption } from "./richMessageContent";
   import {
     handleLinkActivate,
     type LinkMenuAnchor,
@@ -406,6 +407,26 @@
     }
     return out;
   });
+  /**
+   * A decision-block button was clicked. A concrete option sends its label as a
+   * reply (through the normal composer path, so it shows optimistically and
+   * bubbles via `onsend`); "Other…" (option === null) focuses the composer for
+   * a free-text answer. No agent code runs.
+   */
+  async function handleDecision(detail: {
+    questionId?: string;
+    option: DecisionOption | null;
+  }): Promise<void> {
+    if (!detail.option) {
+      replyInputEl?.focus();
+      return;
+    }
+    const label = detail.option.label;
+    if (replyInputEl) replyInputEl.value = label;
+    replyText = label;
+    await send();
+  }
+
   function syncComposerFromDom(): void {
     const el = replyInputEl;
     if (!el || el.value === replyText) return;
@@ -1179,9 +1200,7 @@
                       }}
                     >
                       {#if isHeavyMessageBody(rich.text)}
-                        <pre class="dm-plain">{clipMessageBodyForDisplay(
-                            rich.text,
-                          )}</pre>
+                        <PlainMessageBody body={rich.text} />
                       {:else}
                         {@html applyMentionMarkup(
                           renderMessageBodyMarkdown(rich.text),
@@ -1191,7 +1210,7 @@
                     </div>
                   {/if}
                   {#if rich.rich}
-                    <RichMessageContent content={rich.rich} />
+                    <RichMessageContent content={rich.rich} ondecision={handleDecision} />
                   {/if}
                   {#if msg.details?.trim()}
                     <ArtifactCard

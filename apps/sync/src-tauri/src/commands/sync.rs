@@ -35,21 +35,23 @@
 //! kind of bump.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
-use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
+use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, PreRunnerCause, PreRunnerSite};
 #[cfg(test)]
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, classify_runner_error_class,
     classify_runner_exit_disposition_with_fault, classify_runner_fatal_class,
-    classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
-    runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
-    termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
-    RunnerExitDisposition, SessionEndLatchReading, SyncCancelCause, WindowsTerminatorAttribution,
-    SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
+    classify_windows_exit_status, describe_exit, is_expected_acl_scope_skip,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape_for_exit,
+    should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
+    windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass, SessionEndLatchReading,
+    SyncCancelCause, WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
+    RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
@@ -138,6 +140,14 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
     capture_sync_error_impl(company, path, message, None, &[], &[]);
 }
+
+/// Content-safe message for a non-expected first-push failure Sentry capture
+/// (HQ-DESKTOP-64). It deliberately carries NO server body — the verbatim vault
+/// response (customer grant lists on the observed HQ-DESKTOP-63 event) stays only
+/// in the machine-local log. The cause and status ride fixed-token tags and the
+/// capture's own fixed fingerprint, so grouping is stable and no runner/vault byte
+/// reaches Sentry.
+const FIRST_PUSH_FAILED_CAPTURE_MESSAGE: &str = "first-push failed before runner spawn";
 
 pub(crate) fn capture_sync_error_with_fingerprint(
     company: Option<&str>,
@@ -284,6 +294,17 @@ struct ManualRunnerExitContext {
     /// `session_end_latch` axis, from the SAME shared reader so the two seams
     /// cannot drift.
     session_end_latch: SessionEndLatchReading,
+    /// The `runner_report_read` provenance for this run (this reopen,
+    /// HQ-DESKTOP-5W): whether a crash-surviving Node diagnostic report was read,
+    /// requested but absent/unreadable, withheld by a user `--report-*`, or not
+    /// requested. Set by the exit caller from the SAME shared reader the watcher
+    /// route uses. Fixed vocabulary; diagnostic-only.
+    runner_report_read: String,
+    /// The parsed report itself when one was read this run, so the exit builder can
+    /// adopt its named cause when the runner's own stderr named none (the exact
+    /// Windows-fault case). `None` when no report was read; a report that named no
+    /// cause never overrides the stderr attribution.
+    runner_report: Option<hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport>,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -299,6 +320,8 @@ impl Default for ManualRunnerExitContext {
             runner_unmatched_stderr_shapes: None,
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
+            runner_report_read: "report_not_requested".to_string(),
+            runner_report: None,
         }
     }
 }
@@ -340,11 +363,17 @@ fn manual_runner_exit_context(
         // DBG_TERMINATE_PROCESS/no-signal shape; inert here (HQ-DESKTOP-5X).
         windows_terminator: None,
         session_end_latch: SessionEndLatchReading::Unavailable,
+        // Set by the caller after reading this run's Node diagnostic report via the
+        // shared reader; `report_not_requested`/`None` here so a context that read
+        // none renders the honest seed (HQ-DESKTOP-5W).
+        runner_report_read: "report_not_requested".to_string(),
+        runner_report: None,
     }
 }
 
 fn runner_exit_telemetry_context(
     code: Option<i32>,
+    signal: Option<i32>,
     totals: &RunTotals,
     context: &ManualRunnerExitContext,
     sync_termination_reason: &'static str,
@@ -354,13 +383,43 @@ fn runner_exit_telemetry_context(
 ) {
     // Prefer the class-scoped heap-OOM shape when this run retained one, else the
     // generic tail shape byte-identically — the same seam the watcher route uses.
-    let stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
+    let stderr_stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
+    let stderr_class = totals.runner_fatal_class;
+    // The Node diagnostic report is the third cause channel (HQ-DESKTOP-5W): on
+    // Windows the runner's fatal stderr is lost to an async pipe, so when the report
+    // named a cause AND the stderr channel named NONE, adopt the report's class +
+    // content-safe stack shape. A stderr-named cause ALWAYS wins — a report never
+    // overrides it — so macOS heap_oom and every existing attribution is unchanged.
+    let adopt_report = context
+        .runner_report
+        .as_ref()
+        .filter(|report| report.named_cause() && stderr_class == RunnerFatalClass::None);
+    let (effective_fatal_class, fatal_source, stack) = match adopt_report {
+        Some(report) => (
+            report.fatal_class.as_str().to_string(),
+            "node_report",
+            report.stack.clone(),
+        ),
+        None => (
+            stderr_class.as_str().to_string(),
+            if stderr_class != RunnerFatalClass::None {
+                "stderr"
+            } else {
+                "none"
+            },
+            stderr_stack,
+        ),
+    };
     let mut tags = vec![
         ("sync_route", "manual".to_string()),
         ("sync_scope", context.sync_scope.clone()),
         ("runner_phase", context.runner_phase.clone()),
         ("runner_stack_shape", stack.shape),
         ("runner_stack_signature", stack.signature),
+        // Windows fatal-reason attribution axes (HQ-DESKTOP-5W), the SAME two the
+        // watcher route emits, so the routes cannot drift.
+        ("runner_fatal_source", fatal_source.to_string()),
+        ("runner_report_read", context.runner_report_read.clone()),
     ];
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
@@ -400,6 +459,17 @@ fn runner_exit_telemetry_context(
     if let Some(signature) = totals.runner_error_cause_signature.tag_value() {
         tags.push(("runner_error_cause_signature", signature));
     }
+    // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): a structural profile and a
+    // residual signature that make a residual with NO leading identity — the dead end
+    // the cause-signature axis leaves blank — self-describing on next occurrence. Read
+    // from the SAME RunTotals source the watcher route reads; absent (no tag) when no
+    // unknown_unnamed residual was recorded, so absence never renders as evidence.
+    if let Some(profiles) = totals.runner_error_unknown_profiles.tag_value() {
+        tags.push(("runner_error_unknown_profiles", profiles));
+    }
+    if let Some(signature) = totals.runner_error_residual_signature.tag_value() {
+        tags.push(("runner_error_residual_signature", signature));
+    }
     // The runner error SITE axis (HQ-DESKTOP-5M): names WHICH runner failure site
     // produced the exit (`local_state`/`runner`/`scope`/`auth`/`company`/`discovery`/
     // `file`), the axis every one of the six reported events lacked. Read from the
@@ -407,6 +477,20 @@ fn runner_exit_telemetry_context(
     // runner error was recorded, so absence never renders as evidence.
     if let Some(sites) = totals.runner_error_sites.tag_value() {
         tags.push(("runner_error_sites", sites));
+    }
+    // Pre-runner (first-push phase) attribution (HQ-DESKTOP-64): a fault the desktop
+    // observed BEFORE the runner spawned — e.g. a first-push /sts/vend-child HTTP 403
+    // — that never reaches RunTotals through the runner-output writers. Recorded into
+    // DEDICATED rollups that are NOT fingerprint inputs, so an exit a pre-runner fault
+    // preceded is attributable without regrouping. Some-gated exactly like every
+    // sibling axis: absent (no tag) when no pre-runner failure was recorded, so a run
+    // with none produces a byte-identical event. The typed HTTP status rides the
+    // fingerprint-safe runner_error_http axis above, single-spelled via record_status.
+    if let Some(failures) = totals.pre_runner_failures.tag_value() {
+        tags.push(("pre_runner_failures", failures));
+    }
+    if let Some(causes) = totals.pre_runner_causes.tag_value() {
+        tags.push(("pre_runner_causes", causes));
     }
     // The coarse structural shape of the stderr lines the fatal classifier did
     // not recognise — the manual route's copy of the watcher route's
@@ -422,10 +506,10 @@ fn runner_exit_telemetry_context(
     // route's watcher_hq_cloud_version/package.
     tags.push(("hq_cloud_version", HQ_CLOUD_VERSION.to_string()));
     tags.push(("hq_cloud_package", HQ_CLOUD_PACKAGE.to_string()));
-    tags.push((
-        "runner_fatal_class",
-        totals.runner_fatal_class.as_str().to_string(),
-    ));
+    // The effective fatal class: the stderr-derived class, or a Node diagnostic
+    // report's class when stderr named none (HQ-DESKTOP-5W). Byte-identical to
+    // `totals.runner_fatal_class` on every non-Windows / non-fault path.
+    tags.push(("runner_fatal_class", effective_fatal_class));
     // Symmetric with the watcher route: the libuv syscall + errno attach wherever
     // runner_fatal_class is, so the two routes read the same source and cannot
     // drift. Present only for a libuv fatal-syscall class; both are content-safe
@@ -530,6 +614,19 @@ fn runner_exit_telemetry_context(
             },
         ),
     ];
+    // The observed terminal (code, signal) rendered through the SAME closed
+    // vocabulary the fingerprint's third element uses (`exit:N` / `signal:N` /
+    // the windows:* family / `unknown`) — never a runner byte. It is the third
+    // fingerprint element already, but promoting it to a named extra means a
+    // residual capture still tagged `sync_termination_reason=cancel-status-mismatch`
+    // (HQ-DESKTOP-5Z) names the exact shape that missed the widened POSIX
+    // app-termination gate, instead of forcing another investigation to decode
+    // it. Named to match the watcher route's `termination_status_raw` extra so
+    // the two boundaries present the shape identically.
+    extras.push((
+        "termination_status_raw",
+        sentry::protocol::Value::String(termination_fingerprint_token(code, signal)),
+    ));
     // The integer source line for an assertion abort, present only when parsed.
     if let Some(line) = totals.runner_assert_line() {
         extras.push((
@@ -628,7 +725,7 @@ fn capture_runner_exit_error_with_termination_reason(
         error_site,
     ];
     let (tags, extras) =
-        runner_exit_telemetry_context(code, totals, context, sync_termination_reason);
+        runner_exit_telemetry_context(code, signal, totals, context, sync_termination_reason);
     capture_sync_error_with_fingerprint_and_context(
         payload.company.as_deref(),
         &payload.path,
@@ -1159,6 +1256,7 @@ pub fn build_sync_spawn_args(
     hq_folder_path: &str,
     personal_sync_enabled: bool,
     scope: &SyncRunScope,
+    report_dir: Option<&Path>,
 ) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
@@ -1175,6 +1273,21 @@ pub fn build_sync_spawn_args(
         &mut env,
         hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
     );
+
+    // Ask Node for a crash-surviving fatal diagnostic report (this reopen,
+    // HQ-DESKTOP-5W), composed at the SAME shared seam the watcher route uses so the
+    // two routes cannot drift. The manual route declares NO heap ceiling (a non-goal
+    // here), so only the report flags are added — and none at all if the user set
+    // their own `--report-*`. npx-only path, so the argv double-application is unused.
+    let inherited_node_options = std::env::var("NODE_OPTIONS").ok();
+    let spawn_flags = hq_desktop_core::daemon::compose_runner_spawn_flags(
+        inherited_node_options.as_deref(),
+        None,
+        report_dir,
+    );
+    if let Some(node_options) = spawn_flags.node_options {
+        env.insert("NODE_OPTIONS".to_string(), node_options);
+    }
 
     let mut args = vec![
         "-y".to_string(),
@@ -2520,6 +2633,13 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             return Err(e);
         }
     };
+    // Pre-runner (first-push phase) failures accumulate here and are folded into
+    // this run's RunTotals immediately after it is constructed below (HQ-DESKTOP-64),
+    // so an exit that a first-push fault preceded carries attribution. Kept as a
+    // small local list because RunTotals is intentionally constructed only AFTER the
+    // whole first-push phase. EVERY failure arm in this phase must record into it.
+    let mut pre_runner_failures: Vec<(PreRunnerSite, Option<u16>, PreRunnerCause)> = Vec::new();
+
     // Provisioning stays global, but first-push is filtered to this run's scope.
     for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
@@ -2536,7 +2656,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         // First-push: upload every local file for the newly-provisioned company.
         log("sync", &format!("phase: first_push {}", company.slug));
-        if let Err(e) = crate::commands::first_push::first_push_company(
+        if let Err(failure) = crate::commands::first_push::first_push_company(
             &app,
             &vault,
             &std::path::PathBuf::from(&hq_folder_path),
@@ -2544,24 +2664,62 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         )
         .await
         {
+            // Display renders exactly the pre-typed message, so this log line is
+            // byte-identical to before.
             log(
                 "sync",
-                &format!("first_push failed for {}: {e}", company.slug),
+                &format!("first_push failed for {}: {failure}", company.slug),
             );
-            // Terminal failure for this company's first sync — surface it.
-            capture_sync_error(
-                Some(company.slug.as_str()),
-                "(first-push)",
-                &format!("first-push failed: {e}"),
-            );
+            // Record pre-runner evidence so the runner-exit event can attribute an
+            // exit this fault preceded. record_pre_runner_failure (below) writes only
+            // DEDICATED rollups + the fingerprint-safe runner_error_http — never a
+            // fingerprint input, never a disposition flag.
+            pre_runner_failures.push((PreRunnerSite::FirstPush, failure.status, failure.cause));
+            // Reporting boundary (HQ-DESKTOP-64): an EXPECTED ACL-scope skip is the
+            // exact condition is_alertable_error already declares non-alertable on the
+            // runner path. The evidence now rides the exit event (pre_runner_* axes +
+            // runner_error_http) and the machine-local log, so we drop the per-body
+            // Sentry capture here — the pre-typed one leaked customer grant lists
+            // verbatim with unbounded per-body cardinality. Every OTHER first-push
+            // failure keeps an error-level capture, rewritten content-safe: a fixed
+            // fingerprint on the cause token, fixed cause/status tags, and a constant
+            // message that no longer embeds the server body.
+            if is_expected_acl_scope_skip(&failure.message) {
+                log(
+                    "sync",
+                    &format!(
+                        "first_push expected acl-scope skip for {} — recorded, not captured",
+                        company.slug
+                    ),
+                );
+            } else {
+                let status_tag = failure
+                    .status
+                    .map(|status| format!("http_{status}"))
+                    .unwrap_or_else(|| "none".to_string());
+                capture_sync_error_with_fingerprint_and_context(
+                    Some(company.slug.as_str()),
+                    "(first-push)",
+                    FIRST_PUSH_FAILED_CAPTURE_MESSAGE,
+                    &["sync", "first-push-failed", failure.cause.as_str()],
+                    &[
+                        ("pre_runner_cause", failure.cause.as_str().to_string()),
+                        ("pre_runner_status", status_tag),
+                    ],
+                    &[],
+                );
+            }
             #[cfg(debug_assertions)]
-            eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
+            eprintln!(
+                "[sync] first_push failed for {}: {}",
+                company.slug, failure.message
+            );
             let _ = app.emit(
                 crate::events::EVENT_SYNC_COMPANY_FIRST_PUSH_FAILED,
                 crate::events::SyncCompanyFirstPushFailedEvent {
                     company_uid: company.uid.clone(),
                     company_slug: company.slug.clone(),
-                    error: e,
+                    error: failure.message,
                 },
             );
         }
@@ -2583,11 +2741,21 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", &format!("personal first-push failed: {e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] personal first-push failed: {}", e);
-            // NOT captured to Sentry: personal first-push happens before the
-            // runner spawns, so it has no stderr breadcrumb context, and the
-            // exit-time `report_sync_error` capture below won't fire because we
-            // continue past this and let the runner take over. If this path ever
-            // becomes a recurring silent failure, add an explicit capture here.
+            // Record pre-runner evidence so the runner-exit event carries the
+            // attribution this leg previously left invisible (HQ-DESKTOP-64). No
+            // typed detail is available — ensure_personal_bucket_and_first_push
+            // returns a String through many String-collapsing helpers, and no
+            // personal-leg failure appears in this cluster, so plumbing a typed error
+            // through personal.rs would be exactly the over-scoping to avoid: the leg
+            // records site=first_push_personal with status None, cause Unknown
+            // (attribution presence without typed detail). Still emits
+            // EVENT_SYNC_ERROR for the UI; still NOT captured to Sentry here — the
+            // exit event now carries the evidence instead of a blind spot.
+            pre_runner_failures.push((
+                PreRunnerSite::FirstPushPersonal,
+                None,
+                PreRunnerCause::Unknown,
+            ));
             let _ = app.emit(
                 EVENT_SYNC_ERROR,
                 SyncErrorEvent {
@@ -2613,7 +2781,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // ATTEMPT timestamp (distinct from completion/success) and heartbeat.
     crate::commands::client_health::record_sync_attempt_started();
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled, &scope);
+    // Create this run's app-owned diagnostic-report directory so the runner child
+    // can write a crash-surviving Node fatal report (HQ-DESKTOP-5W). Keyed by the
+    // manual route + this sync generation (independent of the watcher's counter);
+    // read at the exit seam below via the SAME shared reader the watcher route uses.
+    let manual_report_dir =
+        crate::commands::daemon::ensure_runner_report_dir("manual", sync_generation);
+    let spawn_args = build_sync_spawn_args(
+        &hq_folder_path,
+        personal_sync_enabled,
+        &scope,
+        manual_report_dir.as_deref(),
+    );
     log(
         "sync",
         &format!(
@@ -2668,6 +2847,17 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let sync_generation_for_runner = sync_generation;
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
+    // Fold any first-push (pre-runner) failures observed above into this run's
+    // totals (HQ-DESKTOP-64). record_pre_runner_failure writes ONLY the dedicated
+    // pre_runner_* rollups and the fingerprint-safe runner_error_http — never the
+    // disposition flags or the three fingerprint rollups — so an exit a first-push
+    // fault preceded is attributable without changing grouping or alerting.
+    if !pre_runner_failures.is_empty() {
+        let mut initial = totals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (site, status, cause) in &pre_runner_failures {
+            initial.record_pre_runner_failure(*site, *status, *cause);
+        }
+    }
     let runner_phase: Arc<Mutex<RunnerPhaseContext>> =
         Arc::new(Mutex::new(RunnerPhaseContext::default()));
     let runner_stderr_tail: Arc<Mutex<VecDeque<String>>> =
@@ -2808,6 +2998,30 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             current_windows_terminator_attribution(&app_bg, code, signal);
                         exit_context.session_end_latch =
                             current_session_end_latch_reading_for_exit(code, signal);
+                        // Windows fatal-reason attribution (HQ-DESKTOP-5W): read this
+                        // run's crash-surviving Node diagnostic report via the SAME
+                        // shared reader the watcher deferred worker uses, and record the
+                        // read provenance. A report is read only when it was actually
+                        // requested (directory created AND the user set no `--report-*`
+                        // of their own); the reader deletes the file after reading.
+                        let manual_report_request =
+                            hq_desktop_core::daemon::resolve_runner_report_request(
+                                std::env::var("NODE_OPTIONS").ok().as_deref(),
+                                manual_report_dir.as_deref(),
+                            );
+                        if let (
+                            hq_desktop_core::daemon::RunnerReportRequest::Requested,
+                            Some(dir),
+                        ) = (manual_report_request, manual_report_dir.as_deref())
+                        {
+                            let report =
+                                crate::commands::daemon::read_runner_diagnostic_report(dir);
+                            exit_context.runner_report_read = report.read.as_str().to_string();
+                            exit_context.runner_report = Some(report);
+                        } else {
+                            exit_context.runner_report_read =
+                                manual_report_request.seed_read_token().to_string();
+                        }
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
@@ -2867,6 +3081,13 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         success,
                         &final_totals,
                     );
+                    // Remove this run's report directory if it still exists (a clean
+                    // success wrote none; the capture path's read already removed it).
+                    // One terminal cleanup for every exit branch, bounding disk under
+                    // `~/.hq/runner-reports` (HQ-DESKTOP-5W).
+                    if let Some(dir) = &manual_report_dir {
+                        crate::commands::daemon::remove_runner_report_dir(dir);
+                    }
                 }
             },
         );
@@ -3076,6 +3297,7 @@ mod tests {
             "/Users/test/HQ",
             true,
             &SyncRunScope::Company("indigo".to_string()),
+            None,
         );
         let company_index = args
             .args
@@ -3092,7 +3314,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         // `resolve_bin` may return an absolute path or a bare name. Windows
         // resolves npm's command shim (`npx.cmd`); Unix resolves `npx`.
         let expected = if cfg!(target_os = "windows") {
@@ -3113,7 +3335,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         assert_eq!(
             args.args,
             vec![
@@ -3136,7 +3358,7 @@ mod tests {
     /// the flag in the wrong direction (e.g. inverted check) surfaces here.
     #[test]
     fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         assert!(
             !args.args.iter().any(|a| a == "--skip-personal"),
             "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
@@ -3150,7 +3372,7 @@ mod tests {
     /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
     #[test]
     fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
-        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", false, &SyncRunScope::All, None);
         assert_eq!(
             args.args.last().map(String::as_str),
             Some("--skip-personal"),
@@ -3175,11 +3397,12 @@ mod tests {
         )
         .unwrap();
         let _home = scoped_home(tmp.path());
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         let scoped = build_sync_spawn_args(
             "/Users/test/HQ",
             true,
             &SyncRunScope::Company("zeta".into()),
+            None,
         );
 
         let env = args.env.expect("env");
@@ -3203,7 +3426,7 @@ mod tests {
     /// cause one conflict to halt every other file's progress.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_cloud_wins_keep() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -3216,7 +3439,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -3232,7 +3455,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -3255,7 +3478,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/Users/test/HQ", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert!(
@@ -3267,7 +3490,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -3283,7 +3506,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn test_build_sync_spawn_args_env_sets_windows_path() {
-        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args(r"C:\HQ", true, &SyncRunScope::All, None);
         let env = args.env.unwrap();
         let path = env
             .get("PATH")
@@ -3296,7 +3519,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All);
+        let args = build_sync_spawn_args("/any/path", true, &SyncRunScope::All, None);
         assert!(args.cwd.is_none());
     }
 
@@ -3615,6 +3838,22 @@ mod tests {
             let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
                 .expect("runner capture remains sendable");
             assert_eq!(event.tags["sync_termination_reason"], reason);
+            // HQ-DESKTOP-5Z: the observed terminal shape rides every residual
+            // capture as a named, content-safe extra, so a capture still tagged
+            // cancel-status-mismatch names the exact shape that missed the widened
+            // POSIX app-termination gate. It is drawn ONLY from the closed
+            // termination_fingerprint_token vocabulary — here `exit:2`.
+            let shape = event
+                .extra
+                .get("termination_status_raw")
+                .and_then(|value| value.as_str())
+                .expect("residual capture carries the terminal-shape extra");
+            assert_eq!(shape, termination_fingerprint_token(Some(2), None).as_str());
+            assert_eq!(shape, "exit:2");
+            assert!(
+                !shape.contains('/') && !shape.contains('\\'),
+                "the terminal-shape extra must never carry a path byte"
+            );
         }
     }
 
@@ -3881,6 +4120,120 @@ mod tests {
         }
     }
 
+    /// Spawn a REAL child that installs a SIGTERM trap and exits 1 when it
+    /// receives the signal — the exact reporting-boundary shape HQ-DESKTOP-5Z
+    /// carried on macOS, where the app spawns `npx` / a version-manager shim
+    /// rather than the runner directly and that intermediary traps our SIGTERM
+    /// and collapses it into a generic failure code. The child sends itself the
+    /// SIGTERM, so the terminal status is produced by a real trap and a real
+    /// reap — not a synthesized (code, signal) tuple.
+    #[cfg(unix)]
+    fn run_real_sigterm_trapped_exit_one_runner() -> (Option<i32>, Option<i32>, bool) {
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "trap 'exit 1' TERM; kill -TERM \"$$\"; sleep 5".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let mut terminal = None;
+        run_process_impl(
+            "manual-runner-sigterm-trap-exit-one",
+            &spawn,
+            |event| match event {
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) | ProcessEvent::Stderr(_) => {}
+            },
+        )
+        .expect("real fake runner should run");
+        terminal.expect("real child must emit its terminal event")
+    }
+
+    /// HQ-DESKTOP-5Z regression at the manual-sync terminal boundary (POSIX).
+    /// A real child that traps our SIGTERM and exits 1 surfaces as
+    /// `(code=Some(1), signal=None)`; with an app-owned cancellation observed to
+    /// take effect and no alertable runner error, the production classifier +
+    /// effects path must attribute it to the app and perform ZERO Sentry
+    /// captures. Before the fix this shape returned `Alert` and captured
+    /// `hq-sync-runner exited with code 1` at error level, so this test is
+    /// base-red against `be7bcd48`'s narrowed POSIX shape gate.
+    #[cfg(unix)]
+    #[test]
+    fn real_child_sigterm_trapped_exit_one_after_app_cancellation_is_suppressed() {
+        let (code, signal, success) = run_real_sigterm_trapped_exit_one_runner();
+        assert_eq!(code, Some(1), "a trapped SIGTERM collapses to exit code 1");
+        assert_eq!(signal, None, "the child exits normally, not by signal");
+        assert!(!success);
+
+        let totals = RunTotals::default();
+        let cancellation = CancellationRecord {
+            cause: Some(SyncCancelCause::UserStop),
+            termination_effected: true,
+        };
+        let disposition = classify_runner_exit_disposition_with_fault(
+            code,
+            signal,
+            cancellation.cause,
+            cancellation.termination_effected,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup,
+        );
+        assert_eq!(
+            disposition,
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+            "an effective app cancellation whose child collapsed our SIGTERM into \
+             exit 1 must attribute to the app, not alert",
+        );
+
+        // The residual vocabulary stays truthful — this exact record+shape is no
+        // longer reachable as a capture, but the value still exists for a
+        // genuinely unmatched shape.
+        assert_eq!(
+            residual_sync_termination_reason(cancellation, &totals),
+            "cancel-status-mismatch",
+        );
+
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            disposition,
+            code,
+            signal,
+            &describe_exit(code, signal),
+            &totals,
+            &ManualRunnerExitContext::default(),
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "an app-cancelled runner exit must not capture to Sentry"
+        );
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(effects.terminal_events[0].company, None);
+        assert_eq!(effects.terminal_events[0].path, "(runner)");
+        assert_eq!(
+            effects.terminal_events[0].message,
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::UserStop).message,
+        );
+        assert_eq!(effects.terminal_events[0].message, "Sync was stopped.");
+        // Suppression is not silence: the classified exit is still logged locally,
+        // named through describe_exit, so both surfaces leave the syncing state.
+        assert_eq!(effects.logs.len(), 1);
+        assert!(
+            effects.logs[0].contains(describe_exit(code, signal).as_str()),
+            "the local log must name the exit so suppression stays observable"
+        );
+        assert!(effects.logs[0].contains("user-stop"));
+    }
+
     /// Build the cross-platform script the artifact runner executes: each seeded
     /// ndjson line is emitted verbatim to stderr, then the child exits 2. JSON is
     /// single-quoted on both shells (it contains no single quote), so no escaping
@@ -4083,6 +4436,15 @@ mod tests {
             .tags
             .iter()
             .all(|(key, _)| key != "runner_error_cause_signature"));
+        // (1b) The unknown_unnamed residual axes (HQ-DESKTOP-61/62): all 160 pull-leg
+        // prose records are lower-cased-prose-led, and each distinct message skeleton is
+        // signed — making this exact flood self-describing on its next occurrence even
+        // though the fingerprint (and the `unknown_unnamed` cause) are unchanged.
+        assert_eq!(event.tags["runner_error_unknown_profiles"], "lower_prose:160");
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "4620a8381a84:120,57244c1e9fa5:40"
+        );
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -4168,7 +4530,7 @@ mod tests {
             ..Default::default()
         };
         let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
         assert!(
             tags.iter().any(|(key, value)| {
                 *key == "runner_unmatched_stderr_shapes" && value.as_str() == "other:1"
@@ -4185,11 +4547,89 @@ mod tests {
         let context = ManualRunnerExitContext::default();
         assert!(context.runner_unmatched_stderr_shapes.is_none());
         let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
         assert!(
             tags.iter()
                 .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),
             "an empty rollup must attach no tag: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn manual_exit_capture_attaches_pre_runner_axes_when_recorded() {
+        // HQ-DESKTOP-64: a run whose first-push phase recorded a vend-child 403 attaches
+        // the two dedicated pre-runner axes AND the typed status on the shared,
+        // fingerprint-safe runner_error_http axis — the attribution the reported exit
+        // event lacked entirely.
+        let mut totals = RunTotals::default();
+        totals.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+        let context = ManualRunnerExitContext::default();
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(2), None, &totals, &context, "uncancelled");
+        for (key, value) in [
+            ("pre_runner_failures", "first_push:1"),
+            ("pre_runner_causes", "scope_exceeds_parent:1"),
+            ("runner_error_http", "http_403:1"),
+        ] {
+            assert!(
+                tags.iter().any(|(k, v)| *k == key && v.as_str() == value),
+                "manual exit capture must attach {key}={value}: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_exit_capture_omits_pre_runner_axes_when_none() {
+        // A run with no first-push failure attaches neither pre-runner axis (nor the
+        // http axis), so a clean run's event is byte-identical to before.
+        let context = ManualRunnerExitContext::default();
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        for absent in ["pre_runner_failures", "pre_runner_causes", "runner_error_http"] {
+            assert!(
+                tags.iter().all(|(key, _)| *key != absent),
+                "an absent pre-runner axis must attach no {absent} tag: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_evidence_does_not_move_the_exit_fingerprint() {
+        // The exit fingerprint reads three rollups (elements 4/5/6). Recording
+        // pre-runner evidence must leave all three byte-identical, so an otherwise
+        // identical exit groups the same with and without a first-push fault — the
+        // review blocker, proved at the manual capture seam.
+        let seed = |totals: &mut RunTotals| {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: "(company)".to_string(),
+                message: "AccessDenied code=AccessDenied http=403 denied".to_string(),
+            });
+        };
+        let mut base = RunTotals::default();
+        seed(&mut base);
+        let mut with_pre = RunTotals::default();
+        seed(&mut with_pre);
+        with_pre.record_pre_runner_failure(
+            PreRunnerSite::FirstPush,
+            Some(403),
+            PreRunnerCause::ScopeExceedsParent,
+        );
+        assert_eq!(
+            base.runner_error_rollup.fingerprint_token(),
+            with_pre.runner_error_rollup.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_causes.fingerprint_token(),
+            with_pre.runner_error_causes.fingerprint_token()
+        );
+        assert_eq!(
+            base.runner_error_sites.fingerprint_token(),
+            with_pre.runner_error_sites.fingerprint_token()
         );
     }
 
@@ -4765,6 +5205,17 @@ mod tests {
             event.tags["runner_error_cause_signature"],
             format!("{expected_signature}:3")
         );
+        // No `unknown_unnamed` residual occurred (every record is a named or matched
+        // cause), so the two residual axes (HQ-DESKTOP-61/62) attach NO tag — a
+        // byte-identical event to the adopted branch on those axes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_unknown_profiles"));
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_residual_signature"));
 
         // Content safety: no raw class name, host, message fragment, or company
         // leaks — only the derived tokens and the fixed-length digest ship.
@@ -4783,6 +5234,207 @@ mod tests {
                 !serialized.contains(forbidden),
                 "final event leaked seeded runner content: {forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn real_child_unknown_unnamed_residual_is_profiled_signed_and_content_safe() {
+        // Closes fix-review minor 3 for HQ-DESKTOP-61/62: drive a REAL child emitting
+        // the observed 61-class shape — ndjson error records whose messages classify
+        // `unknown_unnamed` (a key=value line with an unlisted code, and a lowercase
+        // prose line) plus a plain stderr line — through the PRODUCTION capture path,
+        // and assert the exit now carries the structural-profile and residual-signature
+        // axes (matching the precomputed fixture hashes), alongside the adopted
+        // pre-runner axes, with an UNCHANGED fingerprint and no runner byte leaked.
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..5 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // key=value with an unlisted errno symbol → key_value_led + sig(EWEIRD).
+                    "message": "code=EWEIRD syscall=open unrecognised errno at company acme",
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..3 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // Lower-cased pull-leg prose → lower_prose + skeleton signature.
+                    "message": "connection reset by peer",
+                })
+                .to_string(),
+            );
+        }
+        // A plain (non-ndjson) stderr line rides alongside; it feeds no error event, so
+        // it never pollutes the residual axes.
+        lines.push("runner heartbeat tick".to_string());
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-unknown-unnamed", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            // A first-push fault ALSO preceded this exit: seed the adopted pre-runner
+            // evidence so the exit carries BOTH attribution surfaces at once.
+            {
+                let mut guard = totals.lock().unwrap_or_else(|e| e.into_inner());
+                guard.record_pre_runner_failure(
+                    hq_desktop_core::runner_error_shape::PreRunnerSite::FirstPush,
+                    Some(403),
+                    hq_desktop_core::runner_error_shape::PreRunnerCause::VendHttp,
+                );
+            }
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 9);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("residual flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // The residual is `unknown_unnamed` on the cause axis (no leading identity), and
+        // now ALSO carries the structural profile and the residual signature — the two
+        // axes that make this class of exit self-describing on its next occurrence.
+        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:8");
+        assert_eq!(
+            event.tags["runner_error_unknown_profiles"],
+            "key_value_led:5,lower_prose:3"
+        );
+        assert_eq!(
+            event.tags["runner_error_residual_signature"],
+            "ea4e65576be5:5,9205e6d1c2fb:3"
+        );
+        // The unnamed residual still carries NO cause-signature — the dead end this closes.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+        // The adopted pre-runner axes ride alongside: the typed 403 folds into the
+        // fingerprint-safe http axis, and the dedicated pre-runner rollups attach.
+        assert_eq!(event.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(event.tags["pre_runner_causes"], "vend_http:1");
+        assert_eq!(event.tags["runner_error_http"], "http_403:1");
+        // The six-element exit fingerprint is UNCHANGED by residual + pre-runner
+        // evidence: class OTHER→"other", dominant cause "unknown_unnamed", site "company".
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "other",
+                "unknown_unnamed",
+                "company"
+            ]
+        );
+        // Content safety: no runner message byte, code symbol, prose, plain line, or
+        // company ships — only the derived fixed tokens and the fixed-length digests.
+        for forbidden in [
+            "EWEIRD",
+            "connection reset by peer",
+            "unrecognised",
+            "heartbeat",
+            "acme",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
+    }
+
+    #[test]
+    fn first_push_reporting_boundary_suppresses_scope_skip_and_captures_a_plain_failure() {
+        // The reporting boundary (HQ-DESKTOP-64), observed end to end at the
+        // commands::sync seam: an EXPECTED ACL-scope skip yields ZERO Sentry captures
+        // (its evidence rides the exit event + the machine-local log), while a plain
+        // vend 403 yields exactly ONE content-safe capture on a fixed fingerprint and a
+        // constant message that never embeds the server body. The company-arm WIRING is
+        // pinned by the desktop-alt source-contract spec; this pins the BEHAVIOUR.
+
+        // Mirror the production company-arm decision exactly.
+        fn report(message: &str, status: Option<u16>, cause: PreRunnerCause) {
+            if is_expected_acl_scope_skip(message) {
+                return;
+            }
+            let status_tag = status
+                .map(|s| format!("http_{s}"))
+                .unwrap_or_else(|| "none".to_string());
+            capture_sync_error_with_fingerprint_and_context(
+                Some("acme"),
+                "(first-push)",
+                FIRST_PUSH_FAILED_CAPTURE_MESSAGE,
+                &["sync", "first-push-failed", cause.as_str()],
+                &[
+                    ("pre_runner_cause", cause.as_str().to_string()),
+                    ("pre_runner_status", status_tag),
+                ],
+                &[],
+            );
+        }
+
+        // The observed HQ-DESKTOP-63/64 body carries the SCOPE_EXCEEDS_PARENT marker.
+        let scope_body = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
+        let plain_body = "vend-child returned HTTP 403 Forbidden for cmp_acme";
+        assert!(is_expected_acl_scope_skip(scope_body), "scope body is an expected skip");
+        assert!(!is_expected_acl_scope_skip(plain_body), "a plain 403 is not an expected skip");
+
+        // The expected ACL-scope skip yields ZERO captures.
+        let skipped = sentry::test::with_captured_events(|| {
+            report(scope_body, Some(403), PreRunnerCause::ScopeExceedsParent);
+        });
+        assert!(skipped.is_empty(), "an expected ACL-scope skip must not be captured");
+
+        // A plain 403 vend failure yields exactly ONE content-safe capture.
+        let captured = sentry::test::with_captured_events(|| {
+            report(plain_body, Some(403), PreRunnerCause::VendHttp);
+        });
+        assert_eq!(captured.len(), 1, "a plain first-push failure is captured once");
+        let event = hq_telemetry::before_send(captured.into_iter().next().unwrap())
+            .expect("first-push capture remains sendable");
+        assert_eq!(event.fingerprint, vec!["sync", "first-push-failed", "vend_http"]);
+        // The content-safe pre-runner capture tags ride the event and survive egress.
+        assert_eq!(event.tags["pre_runner_cause"], "vend_http");
+        assert_eq!(event.tags["pre_runner_status"], "http_403");
+        // The constant message ships; the server body never rides the capture.
+        let serialized = serde_json::to_string(&event).expect("serialize");
+        for forbidden in ["SCOPE_EXCEEDS_PARENT", "Forbidden", "Requested prefixes", "vend-child"] {
+            assert!(!serialized.contains(forbidden), "leaked body substring {forbidden:?}");
         }
     }
 

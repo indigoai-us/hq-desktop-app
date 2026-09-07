@@ -51,6 +51,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         automatic: false,
         title: null,
         companyUid: null,
+        focusCardId: null,
+        focusCardKind: null,
       });
       expect(takePendingConversation()).toBeNull();
     });
@@ -65,6 +67,8 @@ describe('US-104 internal notification + deep-link routing', () => {
         automatic: false,
         title: null,
         companyUid: null,
+        focusCardId: null,
+        focusCardKind: null,
       });
       expect(takePendingConversation()).toBeNull();
     });

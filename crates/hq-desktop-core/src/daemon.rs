@@ -1,7 +1,7 @@
 //! Pure daemon lifecycle helpers shared by desktop app shells.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -133,7 +133,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         Some(script) => crate::runner_target::RunnerSpawnTarget::Local { script },
         None => crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root(),
     };
-    build_watch_runner_args_for_target(hq_folder_path, &target)
+    build_watch_runner_args_for_target(hq_folder_path, &target, None)
 }
 
 /// Build the watcher command for a source selected before startup preflight.
@@ -145,6 +145,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
 pub fn build_watch_runner_args_for_target(
     hq_folder_path: &str,
     target: &crate::runner_target::RunnerSpawnTarget,
+    report_dir: Option<&Path>,
 ) -> SpawnArgs {
     use crate::hq_cloud::{
         HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
@@ -177,9 +178,17 @@ pub fn build_watch_runner_args_for_target(
     // `--max-old-space-size` always wins and every other inherited option is
     // preserved verbatim. Applied identically on BOTH spawn paths below.
     let heap_ceiling = effective_runner_heap_ceiling();
-    if let Some(node_options) =
-        merge_node_options_ceiling(std::env::var("NODE_OPTIONS").ok().as_deref(), heap_ceiling)
-    {
+    // Compose NODE_OPTIONS (heap ceiling + Node's crash-surviving diagnostic-report
+    // flags) at the ONE shared seam both routes use, so the two cannot drift. The
+    // report flags are added only when a per-generation report directory is supplied
+    // and the user set no `--report-*` of their own.
+    let inherited_node_options = std::env::var("NODE_OPTIONS").ok();
+    let spawn_flags = compose_runner_spawn_flags(
+        inherited_node_options.as_deref(),
+        Some(heap_ceiling),
+        report_dir,
+    );
+    if let Some(node_options) = spawn_flags.node_options.clone() {
         env.insert("NODE_OPTIONS".to_string(), node_options);
     }
 
@@ -216,14 +225,14 @@ pub fn build_watch_runner_args_for_target(
     // to npm; production falls through to the npx-pinned path below.
     if let crate::runner_target::RunnerSpawnTarget::Local { script } = target {
         let mut args = Vec::new();
-        // On the path we own (bare `node`), ALSO pass the ceiling in argv so a
-        // NODE_OPTIONS that fails to reach the child (host policy/packaging)
-        // still bounds the heap. A node CLI flag must precede the script path,
-        // and it is withheld when the user set their own `--max-old-space-size`
-        // (argv would override the user's NODE_OPTIONS value, which must win).
-        if let Some(flag) = runner_max_old_space_arg(heap_ceiling) {
-            args.push(flag);
-        }
+        // On the path we own (bare `node`), ALSO pass the ceiling AND the report
+        // flags in argv so a NODE_OPTIONS that fails to reach the child (host
+        // policy/packaging) still bounds the heap and still yields a report. These
+        // node CLI flags must precede the script path; each is withheld when the
+        // user set the corresponding option of their own (the ceiling for a user
+        // `--max-old-space-size`, the report flags for a user `--report-*`), which
+        // must win. Composed at the same shared seam as NODE_OPTIONS above.
+        args.extend(spawn_flags.node_argv.clone());
         args.push(script.clone());
         args.extend(runner_args);
         return SpawnArgs {
@@ -439,6 +448,196 @@ pub fn effective_runner_heap_ceiling() -> RunnerHeapCeiling {
     resolve_runner_heap_ceiling(inherited.as_deref(), override_mb)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Runner diagnostic report — the crash-surviving third cause channel (HQ-DESKTOP-5W)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The fixed filename Node writes the runner's fatal diagnostic report to inside
+/// the app-owned per-generation report directory. Fixed so the exit reader knows
+/// exactly what to look for without listing a directory.
+pub const RUNNER_DIAGNOSTIC_REPORT_FILENAME: &str = "runner-fatal.json";
+
+/// Whether the diagnostic-report flags were added to a runner spawn, withheld
+/// because the user configured their own `--report-*`, or not requested (no report
+/// directory for this generation). Fixed vocabulary; the exit reader seeds
+/// `runner_report_read` from this before it reads a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerReportRequest {
+    /// The report flags were added; a report is expected at the target path.
+    Requested,
+    /// The child's inherited NODE_OPTIONS already set a `--report-*` option, so
+    /// ours were withheld — the user's report configuration wins.
+    DisabledByUserOptions,
+    /// No report directory was supplied for this generation; none was requested.
+    NotRequested,
+}
+
+impl RunnerReportRequest {
+    /// The `runner_report_read` token to seed at exit BEFORE the reader runs. A
+    /// `Requested` report seeds `report_absent` (the honest "requested, none read
+    /// yet"); the reader upgrades it to `report_read` / `report_unreadable`.
+    pub fn seed_read_token(self) -> &'static str {
+        match self {
+            Self::Requested => "report_absent",
+            Self::DisabledByUserOptions => "report_disabled_by_user_options",
+            Self::NotRequested => "report_not_requested",
+        }
+    }
+}
+
+/// The runner child spawn flags: the composed `NODE_OPTIONS` value (heap ceiling
+/// and/or diagnostic-report flags) and the additional argv flags to pass on the
+/// bare-`node` path, plus whether a report was requested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerSpawnFlags {
+    /// The composed `NODE_OPTIONS` value to set on the child, or `None` to leave the
+    /// inherited environment untouched (nothing to add on either axis).
+    pub node_options: Option<String>,
+    /// Additional Node CLI flags to pass in argv on the spawn path we own (bare
+    /// `node`), in the order they must precede the script path. Empty on the npx
+    /// path (the manual route and the production watcher npx path).
+    pub node_argv: Vec<String>,
+    /// Whether the diagnostic report was requested, withheld, or not requested.
+    pub report: RunnerReportRequest,
+}
+
+/// Detect whether an inherited NODE_OPTIONS already carries ANY `--report-*`
+/// option, in which case we add none of ours (the user's report configuration
+/// wins). Matches Node's `--report-` flag family over whitespace-split tokens,
+/// honouring the underscore spelling Node also accepts.
+pub fn node_options_has_report_flag(node_options: Option<&str>) -> bool {
+    let Some(raw) = node_options else {
+        return false;
+    };
+    raw.split_whitespace()
+        .any(|token| token.starts_with("--report-") || token.starts_with("--report_"))
+}
+
+/// Resolve the report request from the inherited NODE_OPTIONS and whether a
+/// per-generation report directory exists. Shared by the spawn composer and the
+/// exit reader so both derive the SAME provenance from the SAME inputs.
+pub fn resolve_runner_report_request(
+    inherited: Option<&str>,
+    report_dir: Option<&Path>,
+) -> RunnerReportRequest {
+    match report_dir {
+        None => RunnerReportRequest::NotRequested,
+        Some(_) if node_options_has_report_flag(inherited) => {
+            RunnerReportRequest::DisabledByUserOptions
+        }
+        Some(_) => RunnerReportRequest::Requested,
+    }
+}
+
+/// The report flags as passed in argv (bare-`node` path): the directory value is a
+/// SINGLE argv element, so it is never quoted (a quote would become a literal).
+/// On POSIX the signal-triggered report is armed too (see
+/// [`runner_report_signal_flag`]).
+fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
+    let mut flags = vec!["--report-on-fatalerror".to_string()];
+    if let Some(signal_flag) = runner_report_signal_flag() {
+        flags.push(signal_flag.to_string());
+    }
+    flags.push("--report-compact".to_string());
+    flags.push(format!("--report-directory={}", report_dir.display()));
+    flags.push(format!("--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"));
+    flags
+}
+
+/// The report flags as composed into NODE_OPTIONS: Node whitespace-splits
+/// NODE_OPTIONS, so the directory value is quoted to survive a path with a space
+/// (e.g. a Windows profile name with a space). Node's NODE_OPTIONS parser honours
+/// quoting — the same property `parse_max_old_space_mb` relies on. On POSIX the
+/// signal-triggered report is armed too (see [`runner_report_signal_flag`]).
+fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
+    let mut flags = vec!["--report-on-fatalerror".to_string()];
+    if let Some(signal_flag) = runner_report_signal_flag() {
+        flags.push(signal_flag.to_string());
+    }
+    flags.push("--report-compact".to_string());
+    flags.push(format!("--report-directory=\"{}\"", report_dir.display()));
+    flags.push(format!("--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"));
+    flags
+}
+
+/// The Node flag that arms a SIGNAL-triggered diagnostic report, or `None` on a
+/// platform without a live-signal report path (this reopen, HQ-DESKTOP-60). On
+/// POSIX the supervisor sends the report signal (Node's default SIGUSR2) to the
+/// largest tree member just before a footprint pre-empt to capture a LIVE
+/// memory-class decomposition; on Windows there is no equivalent, so the flag is
+/// withheld and the decomposition degrades to the unsupported-platform sentinel.
+/// A signal-triggered report shares the fixed report filename with the
+/// fatal-error report, so a Signal `trigger` must never be adopted as a fatal
+/// cause — pinned by `classify_report_fatal` in `runner_diagnostic_report.rs`.
+pub fn runner_report_signal_flag() -> Option<&'static str> {
+    if cfg!(unix) {
+        Some("--report-on-signal")
+    } else {
+        None
+    }
+}
+
+/// Compose the runner child spawn flags at ONE shared seam for BOTH spawn routes
+/// (watcher and manual) so they can never drift. The optional heap ceiling keeps
+/// its exact prior precedence — an inherited user `--max-old-space-size` always
+/// wins and every other inherited option passes through verbatim (`None` ceiling
+/// on the manual route, which declares no ceiling). Node's crash-surviving
+/// diagnostic-report flags are appended when a per-generation report directory is
+/// supplied AND the user has not set their own `--report-*`; if the user did, we
+/// add NONE of ours and report `DisabledByUserOptions`. The report flags never
+/// override a user option — they are appended after the inherited value.
+pub fn compose_runner_spawn_flags(
+    inherited: Option<&str>,
+    ceiling: Option<RunnerHeapCeiling>,
+    report_dir: Option<&Path>,
+) -> RunnerSpawnFlags {
+    // Heap ceiling: reuse the existing merge (None when the user set their own) and
+    // its bare-`node` argv double-application, unchanged.
+    let mut node_options = ceiling.and_then(|c| merge_node_options_ceiling(inherited, c));
+    let mut node_argv: Vec<String> = Vec::new();
+    if let Some(flag) = ceiling.and_then(runner_max_old_space_arg) {
+        node_argv.push(flag);
+    }
+
+    let report = resolve_runner_report_request(inherited, report_dir);
+    if let (RunnerReportRequest::Requested, Some(dir)) = (report, report_dir) {
+        // Append the report flags to NODE_OPTIONS, preserving any inherited value
+        // (including a user `--max-old-space-size` the ceiling merge left untouched).
+        let composed = runner_report_node_options_flags(dir).join(" ");
+        node_options = Some(match node_options {
+            Some(existing) => format!("{existing} {composed}"),
+            None => match inherited.map(str::trim).filter(|value| !value.is_empty()) {
+                Some(existing) => format!("{existing} {composed}"),
+                None => composed,
+            },
+        });
+        // Mirror the ceiling's double-application on the bare-`node` path so a
+        // NODE_OPTIONS the host strips still yields a report.
+        node_argv.extend(runner_report_argv_flags(dir));
+    }
+
+    RunnerSpawnFlags {
+        node_options,
+        node_argv,
+        report,
+    }
+}
+
+/// The app-owned per-generation directory a runner child writes its Node fatal
+/// diagnostic report into: `~/.hq/runner-reports/<route>/<generation>/`. Keyed by
+/// BOTH the spawn route and its generation, because the watcher and manual routes
+/// number their generations in independent counter spaces that would otherwise
+/// collide. Per-generation so the exit reader for one run never reads another
+/// run's report; `None` only when the HQ config dir cannot be resolved. The caller
+/// creates it before spawn and recomputes the SAME path at exit.
+pub fn runner_report_dir(route: &str, generation: u64) -> Option<PathBuf> {
+    crate::paths::hq_config_dir().ok().map(|dir| {
+        dir.join("runner-reports")
+            .join(route)
+            .join(generation.to_string())
+    })
+}
+
 /// Fixed-vocabulary bucket for the runner's retained V8 heap-used measurement
 /// immediately before a heap OOM. The exact MB figure remains a numeric Sentry
 /// extra; this bounded tag makes the peak-at-abort queryable without high
@@ -470,13 +669,18 @@ pub const WATCHER_FOOTPRINT_CEILING_MB: u32 = 4608;
 /// Absolute whole-tree footprint safety threshold (MB) that pre-empts on ONE
 /// comparable supervisor sample. The ordinary ceiling below intentionally needs
 /// two samples to ignore a healthy transient, but that would leave the 5,632 MB
-/// default-derived backstop only 268 MB below the observed 5,900 MB OS-kill
-/// floor. At the 30s supervisor cadence, 5,120 + (20 MB/s * 30s) = 5,720 MB,
-/// still below 5,900 MB and leaving 180 MB for termination after the sample.
-/// This hard ceiling therefore tolerates a 20 MB/s runaway for a complete missed
-/// sampling interval while preserving the ordinary backstop's anti-spike policy.
-/// It is absolute even for a user heap override: an override may not trade away
-/// the app's ability to pre-empt before the observed OS kill.
+/// default-derived backstop only 268 MB below the observed 5,900 MB OS-kill floor.
+/// The prior fix sized the margin against an ASSUMED 20 MB/s runaway over a full
+/// 30s gap (5,120 + 20*30 = 5,720 < 5,900); production ran 82.9 MB/s and 250 MB/s,
+/// so that gap was 4x–12x too optimistic and a real runaway crossed this ceiling
+/// mid-gap and raced the OS (2026-09-06T14:05:14Z, pre-empted only at 7,949 MB).
+/// It is now paired with an ADAPTIVE sampling cadence (see
+/// [`next_footprint_sample_delay_secs`]): once growth is measured the sampling
+/// delay shortens so no more than [`WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB`] can be
+/// added before the next sample, bounding the overshoot past this ceiling to that
+/// budget (5,120 + 500 = 5,620 < 5,900) even at the worst OBSERVED 250 MB/s rate.
+/// This hard ceiling stays absolute even for a user heap override: an override may
+/// not trade away the app's ability to pre-empt before the observed OS kill.
 pub const WATCHER_FOOTPRINT_HARD_CEILING_MB: u32 = 5120;
 
 /// Consecutive over-ceiling supervisor samples required before a pre-empt. At the
@@ -492,6 +696,31 @@ pub const WATCHER_FOOTPRINT_CEILING_CONSECUTIVE: u32 = 2;
 /// so this leaves 717 MB above the observed maximum. The footprint backstop must
 /// sit at least this far above the heap ceiling.
 pub const WATCHER_FOOTPRINT_HEADROOM_MB: u32 = 2048;
+
+/// Worst-case whole-tree footprint growth (MB) tolerated BETWEEN two footprint
+/// samples once the adaptive sampling cadence is armed (this reopen,
+/// HQ-DESKTOP-60). [`next_footprint_sample_delay_secs`] shortens the sampling
+/// delay so that, at the measured runaway rate, no more than this many MB can be
+/// added before the next sample; paired with the absolute
+/// [`WATCHER_FOOTPRINT_HARD_CEILING_MB`] trigger it bounds the overshoot past the
+/// hard ceiling to this budget. 500 MB keeps the worst OBSERVED runaway (250 MB/s)
+/// pre-empting at ~5,120 + 500 = 5,620 MB, still below [`OBSERVED_OS_KILL_FLOOR_MB`].
+pub const WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB: u32 = 500;
+
+/// Floor (seconds) on the adaptive footprint sampling delay. At the worst observed
+/// runaway rate the delay clamps here; sampling more often is not worth the extra
+/// `ps` / job-query churn. `2s * 250 MB/s = 500 MB =`
+/// [`WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB`], so this floor and the budget are
+/// consistent by construction.
+pub const WATCHER_FOOTPRINT_MIN_WATCH_SECS: u64 = 2;
+
+/// Worst whole-tree runaway rate (MB/s) OBSERVED in production for this cluster: the
+/// 2026-09-06T14:05:14Z event grew 448 MB → 7,949 MB across one 30s gap (250 MB/s);
+/// the 2026-09-06T18:55:04Z ramp grew 288 MB → 2,776 MB (82.9 MB/s). The safety pin
+/// sizes the armed sampling gap against THIS measured rate rather than the earlier
+/// assumed 20 MB/s ([`WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC`]), which
+/// production exceeded by roughly 4x–12x.
+pub const WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC: u32 = 250;
 
 /// The effective supervisor footprint ceiling (MB) for a resolved heap ceiling:
 /// the LARGER of the fixed footprint floor and the heap ceiling plus non-heap
@@ -511,24 +740,96 @@ pub enum FootprintCeilingDecision {
     Preempt,
 }
 
-/// Pure supervisor decision: given a fresh scoped footprint sample and the
-/// running over-ceiling streak, return the UPDATED streak and whether to
-/// pre-empt. A comparable (whole-tree / job) sample at or above the hard safety
-/// threshold pre-empts immediately. Otherwise, ONLY a comparable sample at or
-/// above the ordinary ceiling advances the streak; a withheld/shim sample, a
-/// missing sample, or one below the ceiling resets it to zero. Pre-empt the
-/// ordinary backstop only once the streak reaches the required consecutive count
-/// — never on a single spike, never on an unsampled or withheld footprint.
+/// The PRIOR comparable footprint sample carried into the pure supervisor
+/// decision so the hard-ceiling trigger can PROJECT growth one supervisor
+/// interval ahead instead of assuming a fixed runaway rate. The
+/// [`WATCHER_FOOTPRINT_HARD_CEILING_MB`] doc derives its 5,120 MB from an
+/// ASSUMED 20 MB/s runaway; production runs 2.3x–11.4x faster, so the first
+/// comparable sample the app sees is already far above the hard ceiling. Measuring
+/// the rate per-episode restores the margin without re-deriving a constant.
+///
+/// `prev_sample_kb` is `None` whenever there is no usable prior comparable (Tree)
+/// sample — the first tick after a spawn, or a prior tick that degraded to a
+/// non-comparable / withheld / missing sample — in which case the projection is
+/// skipped and the decision is byte-identical to the pre-projection behaviour.
+/// `gap_secs` is the age between the prior comparable sample and this one;
+/// `cadence_secs` is the look-ahead horizon — the delay until the NEXT footprint
+/// sample, which under the adaptive sampling cadence is NOT a fixed supervisor
+/// interval (HQ-DESKTOP-60). `heap_ceiling_kb` is the runner's resolved declared V8
+/// old-space ceiling; the projection may fire only once the current comparable
+/// footprint EXCEEDS it (growth proven to be outside V8 old space), and is `0`
+/// whenever that ceiling is unusable, which keeps the projection arm inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FootprintProjection {
+    pub prev_sample_kb: Option<u64>,
+    pub gap_secs: u64,
+    pub cadence_secs: u64,
+    pub heap_ceiling_kb: u64,
+}
+
+/// Pure supervisor decision: given a fresh scoped footprint sample, the running
+/// over-ceiling streak, and the prior comparable sample, return the UPDATED
+/// streak and whether to pre-empt.
+///
+/// A comparable (whole-tree / job) sample at or above the hard safety threshold
+/// pre-empts immediately (today's absolute trigger, unchanged). In ADDITION, when
+/// a measurable positive growth rate — derived from the prior comparable sample
+/// and its age — would carry the comparable footprint to or past the hard ceiling
+/// within the look-ahead horizon, pre-empt now rather than waiting for the raw
+/// sample to cross it. That projection may only ever ADVANCE a pre-empt, never
+/// delay or suppress one: it requires a comparable current sample already ABOVE the
+/// runner's declared heap ceiling (`projection.heap_ceiling_kb`), a usable prior
+/// comparable sample, a strictly positive delta, and a positive gap and cadence,
+/// and falls back to exactly the behaviour below on any unmeasurable input or while
+/// the footprint is still within the declared V8 old-space budget.
+///
+/// Otherwise, ONLY a comparable sample at or above the ordinary ceiling advances
+/// the streak; a withheld/shim sample, a missing sample, or one below the ceiling
+/// resets it to zero. Pre-empt the ordinary backstop only once the streak reaches
+/// the required consecutive count — never on a single spike, never on an unsampled
+/// or withheld footprint.
 pub fn footprint_ceiling_step(
     sample_kb: Option<u64>,
     scope_comparable: bool,
     ceiling_kb: u64,
     prior_streak: u32,
     required_consecutive: u32,
+    projection: FootprintProjection,
 ) -> (u32, FootprintCeilingDecision) {
     let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    // Absolute trigger: one comparable sample at or above the hard ceiling.
     if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
         return (0, FootprintCeilingDecision::Preempt);
+    }
+    // Rate-aware projection: pre-empt one interval early when the measured growth
+    // would reach the hard ceiling. Narrowed by a heap-ceiling gate (this reopen,
+    // HQ-DESKTOP-60): it may fire ONLY once the current comparable footprint already
+    // EXCEEDS the runner's declared V8 old-space ceiling, i.e. once the tree proves
+    // the growth is not bounded by `--max-old-space-size`. A cold ramp still inside
+    // the declared heap budget is bounded by V8's own cap and must never be
+    // projected away — that was the false kill (2,776 MB against a 3,584 MB cap with
+    // zero non-heap excess). The gate can only ever REMOVE a projection pre-empt
+    // relative to today's absolute rule, never add or delay one. Guarded so it never
+    // fires on unmeasurable data, and inert (byte-identical to the pre-projection
+    // behaviour) whenever the heap ceiling, the prior sample, the gap, or the cadence
+    // is unusable.
+    if scope_comparable {
+        if let (Some(cur), Some(prev)) = (sample_kb, projection.prev_sample_kb) {
+            let heap_ceiling_kb = projection.heap_ceiling_kb;
+            if heap_ceiling_kb > 0
+                && cur > heap_ceiling_kb
+                && projection.gap_secs > 0
+                && projection.cadence_secs > 0
+                && cur > prev
+            {
+                let growth_kb = (cur - prev)
+                    .saturating_mul(projection.cadence_secs)
+                    / projection.gap_secs;
+                if cur.saturating_add(growth_kb) >= hard_ceiling_kb {
+                    return (0, FootprintCeilingDecision::Preempt);
+                }
+            }
+        }
     }
     let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
     if !over {
@@ -541,6 +842,158 @@ pub fn footprint_ceiling_step(
         FootprintCeilingDecision::KeepRunning
     };
     (streak, decision)
+}
+
+/// Pure: how long to wait before the NEXT whole-tree footprint sample, given the
+/// current sample, whether it is a comparable (Tree/job) reading, and the growth
+/// rate measured since the prior comparable sample (this reopen, HQ-DESKTOP-60).
+///
+/// Returns `base_secs` when growth is absent or slow — an idle or gently-growing
+/// runner keeps the existing one-sample-per-tick cost. Shortens toward `min_secs`
+/// as the measured rate rises, so the worst-case growth per gap stays within
+/// [`WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB`] (`delay = budget / rate`, clamped to
+/// `[min_secs, base_secs]`). Returns `min_secs` while the generation has NO measured
+/// rate yet (`None` — one comparable sample, no prior), so a cold ramp is MEASURED
+/// across a short gap rather than ASSUMED across a full tick: the shipped 250 MB/s
+/// runaway began inside the first 30s gap after a benign 448 MB sample. A
+/// non-comparable current sample (a shim/withheld reading) has no tree to project
+/// over and keeps the base cadence. As a final-approach guard, a comparable sample
+/// already within one overshoot budget of the hard ceiling always samples at the
+/// floor, so a momentarily slow reading cannot open a long gap right before the
+/// ceiling. Saturating and panic-free for extreme rates.
+pub fn next_footprint_sample_delay_secs(
+    sample_kb: u64,
+    scope_comparable: bool,
+    measured_rate_kb_per_sec: Option<u64>,
+    base_secs: u64,
+    min_secs: u64,
+) -> u64 {
+    // Never below 1s, never above the base cadence.
+    let base = base_secs.max(1);
+    let min = min_secs.clamp(1, base);
+    if !scope_comparable {
+        return base;
+    }
+    let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    let budget_kb = u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB) * 1024;
+    // Final-approach guard: within one overshoot budget of the hard ceiling, sample
+    // at the floor regardless of the last measured rate.
+    if sample_kb.saturating_add(budget_kb) >= hard_ceiling_kb {
+        return min;
+    }
+    match measured_rate_kb_per_sec {
+        // No measured rate yet: sample soon so the ramp is measured, not assumed.
+        None => min,
+        // Flat or shrinking: the ordinary cadence and its single-sample cost.
+        Some(0) => base,
+        // Time (secs) to consume the overshoot budget at the measured rate, clamped.
+        Some(rate) => (budget_kb / rate).clamp(min, base),
+    }
+}
+
+/// Pure: assemble the [`FootprintProjection`] for THIS sample and the delay until
+/// the NEXT footprint sample, from the prior comparable sample and its age (this
+/// reopen, HQ-DESKTOP-60). The projection's look-ahead horizon (`cadence_secs`) is
+/// set to that same next-sample delay, so the projection extrapolates exactly the
+/// gap it is covering — never a fixed 30s look-ahead paired with a 2–6s sampling
+/// cadence, which would re-create the false pre-empt from the other direction.
+///
+/// `prev_comparable_sample_kb` is `None` when there is no usable prior comparable
+/// sample; `prev_sample_age_secs` is that sample's age. When either is missing the
+/// gap is 0, the projection arm stays inert, and the next delay is the minimum
+/// (measure the ramp rather than assume it). `heap_ceiling_kb` gates the projection
+/// arm (see [`footprint_ceiling_step`]). Pure and saturating.
+pub fn footprint_projection_and_next_delay(
+    cur_sample_kb: u64,
+    scope_comparable: bool,
+    prev_comparable_sample_kb: Option<u64>,
+    prev_sample_age_secs: Option<u64>,
+    heap_ceiling_kb: u64,
+    base_secs: u64,
+    min_secs: u64,
+) -> (FootprintProjection, u64) {
+    // A gap is only meaningful when there is a prior COMPARABLE sample to measure from.
+    let gap_secs = prev_comparable_sample_kb
+        .and(prev_sample_age_secs)
+        .unwrap_or(0);
+    // Measured whole-tree growth rate (KB/s) since the prior comparable sample, when
+    // measurable; `None` while the generation has no comparable prior yet.
+    let measured_rate_kb_per_sec = match prev_comparable_sample_kb {
+        Some(prev) if gap_secs > 0 && cur_sample_kb > prev => {
+            Some((cur_sample_kb - prev) / gap_secs)
+        }
+        _ => None,
+    };
+    let next_delay = next_footprint_sample_delay_secs(
+        cur_sample_kb,
+        scope_comparable,
+        measured_rate_kb_per_sec,
+        base_secs,
+        min_secs,
+    );
+    let projection = FootprintProjection {
+        prev_sample_kb: prev_comparable_sample_kb,
+        gap_secs,
+        cadence_secs: next_delay,
+        heap_ceiling_kb,
+    };
+    (projection, next_delay)
+}
+
+/// Fixed-vocabulary bucket for the measured whole-tree footprint growth rate
+/// (MB/s) behind a supervisor pre-empt. Mirrors [`runner_heap_peak_used_bucket`]:
+/// the exact rate is not shipped (it is derivable from the prior-sample and
+/// sample-gap extras and would be high-cardinality); this bounded token makes
+/// "how fast was it growing" queryable and content-safe. The caller maps an
+/// unmeasurable rate (no prior comparable sample, non-positive delta) to its own
+/// `unknown` sentinel rather than a bucket.
+pub fn footprint_growth_bucket_mb_per_sec(rate_mb_per_sec: u64) -> &'static str {
+    match rate_mb_per_sec {
+        0..=19 => "under_20mbs",
+        20..=49 => "20_to_50mbs",
+        50..=119 => "50_to_120mbs",
+        _ => "over_120mbs",
+    }
+}
+
+/// Why the live memory-class decomposition is or is not present on a supervisor
+/// pre-empt (this reopen, HQ-DESKTOP-60). Fixed vocabulary, safe for a Sentry tag:
+/// an absent report degrades to a queryable token, never a guess — a systematically
+/// empty channel is itself a finding rather than silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherMemoryClassSource {
+    /// A signal-triggered report was read and carried at least one memory field.
+    ReportRead,
+    /// A report was armed but none was readable within the bounded wait.
+    ReportAbsent,
+    /// A report file was present but oversized/truncated/non-JSON/schema-drifted.
+    ReportUnreadable,
+    /// No report was requested for this generation (no report directory).
+    ReportNotRequested,
+    /// The platform has no live-signal report path (Windows).
+    ReportUnsupportedPlatform,
+}
+
+impl WatcherMemoryClassSource {
+    /// Every variant, so content-safety tests enumerate the emitter's own token set.
+    pub const ALL: [WatcherMemoryClassSource; 5] = [
+        Self::ReportRead,
+        Self::ReportAbsent,
+        Self::ReportUnreadable,
+        Self::ReportNotRequested,
+        Self::ReportUnsupportedPlatform,
+    ];
+
+    /// Fixed vocabulary, safe for a Sentry tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReportRead => "report_read",
+            Self::ReportAbsent => "report_absent",
+            Self::ReportUnreadable => "report_unreadable",
+            Self::ReportNotRequested => "report_not_requested",
+            Self::ReportUnsupportedPlatform => "report_unsupported_platform",
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1454,7 +1907,7 @@ mod tests {
         let target = crate::runner_target::RunnerSpawnTarget::Npx {
             cache_root: crate::runner_target::NpmCacheRoot::Established(cache_root.clone()),
         };
-        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target, None);
         let env = args.env.expect("watch runner env");
 
         assert_eq!(
@@ -1471,7 +1924,7 @@ mod tests {
                 "/tmp/assumed-npm-cache",
             )),
         };
-        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target);
+        let args = build_watch_runner_args_for_target("/Users/test/HQ", &target, None);
         let env = args.env.expect("watch runner env");
 
         assert!(
@@ -1725,6 +2178,178 @@ mod tests {
     }
 
     #[test]
+    fn compose_runner_spawn_flags_adds_report_flags_and_ceiling_watcher_route() {
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let dir = Path::new("/home/ada/.hq/runner-reports/7");
+        let flags = compose_runner_spawn_flags(None, Some(ceiling), Some(dir));
+        let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
+        assert!(node_options.contains("--max-old-space-size=3584"));
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(node_options.contains("--report-compact"));
+        // The directory is QUOTED inside NODE_OPTIONS so a path with a space is not
+        // split by Node's whitespace tokenizer.
+        assert!(node_options.contains("--report-directory=\"/home/ada/.hq/runner-reports/7\""));
+        assert!(node_options.contains("--report-filename=runner-fatal.json"));
+        // argv double-application carries the ceiling FIRST, then the report flags,
+        // with an UNQUOTED directory (a single argv element).
+        assert_eq!(flags.node_argv[0], "--max-old-space-size=3584");
+        assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+        assert!(flags
+            .node_argv
+            .iter()
+            .any(|a| a == "--report-directory=/home/ada/.hq/runner-reports/7"));
+        assert_eq!(flags.report, RunnerReportRequest::Requested);
+        assert_eq!(flags.report.seed_read_token(), "report_absent");
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_manual_route_adds_report_without_ceiling() {
+        // The manual route declares no ceiling: report flags only, no
+        // --max-old-space-size (a non-goal for the manual route).
+        let dir = Path::new("/tmp/rr/3");
+        let flags = compose_runner_spawn_flags(None, None, Some(dir));
+        let node_options = flags.node_options.clone().expect("report flags composed");
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(!node_options.contains("--max-old-space-size"));
+        assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+        assert!(!flags.node_argv.iter().any(|a| a.contains("max-old-space")));
+        assert_eq!(flags.report, RunnerReportRequest::Requested);
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_preserves_inherited_and_user_max_old_space() {
+        // A user --max-old-space-size wins (we add none of ours) and every other
+        // inherited option passes through verbatim; the report flags still append.
+        let ceiling = resolve_runner_heap_ceiling(Some("--max-old-space-size=1234"), None);
+        let dir = Path::new("/tmp/rr/9");
+        let flags = compose_runner_spawn_flags(
+            Some("--enable-source-maps --max-old-space-size=1234"),
+            Some(ceiling),
+            Some(dir),
+        );
+        let node_options = flags.node_options.clone().expect("composed");
+        assert!(node_options.starts_with("--enable-source-maps --max-old-space-size=1234"));
+        assert!(node_options.contains("--report-on-fatalerror"));
+        // Exactly one max-old-space token — the user's; we added none.
+        assert_eq!(node_options.matches("--max-old-space-size").count(), 1);
+        assert!(!flags.node_argv.iter().any(|a| a.contains("max-old-space")));
+        assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_withholds_report_when_user_set_report_option() {
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let dir = Path::new("/tmp/rr/1");
+        for inherited in [
+            "--report-directory=/x",
+            "--report-on-fatalerror",
+            "--report_uncaught_exception",
+        ] {
+            let flags = compose_runner_spawn_flags(Some(inherited), Some(ceiling), Some(dir));
+            assert_eq!(
+                flags.report,
+                RunnerReportRequest::DisabledByUserOptions,
+                "for {inherited}"
+            );
+            let node_options = flags.node_options.clone().expect("ceiling still composed");
+            assert!(!node_options.contains("--report-filename=runner-fatal.json"));
+            assert!(!flags.node_argv.iter().any(|a| a.contains("runner-fatal.json")));
+            assert_eq!(flags.report.seed_read_token(), "report_disabled_by_user_options");
+        }
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_no_report_dir_is_not_requested() {
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let flags = compose_runner_spawn_flags(None, Some(ceiling), None);
+        assert_eq!(flags.report, RunnerReportRequest::NotRequested);
+        assert_eq!(flags.report.seed_read_token(), "report_not_requested");
+        assert!(!flags.node_options.unwrap().contains("--report"));
+        // Nothing to add at all (manual route, no report dir, no ceiling).
+        let none = compose_runner_spawn_flags(None, None, None);
+        assert_eq!(none.node_options, None);
+        assert!(none.node_argv.is_empty());
+        assert_eq!(none.report, RunnerReportRequest::NotRequested);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn compose_runner_spawn_flags_arms_the_signal_report_on_posix() {
+        // POSIX: the signal-triggered report is armed on BOTH spawn paths so the
+        // supervisor can request a LIVE memory-class decomposition before a pre-empt
+        // (this reopen, HQ-DESKTOP-60). The fatal-error report and the fixed filename
+        // are unchanged.
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let dir = Path::new("/home/ada/.hq/runner-reports/7");
+        let flags = compose_runner_spawn_flags(None, Some(ceiling), Some(dir));
+        let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(node_options.contains("--report-on-signal"));
+        assert!(flags.node_argv.iter().any(|a| a == "--report-on-signal"));
+        assert_eq!(runner_report_signal_flag(), Some("--report-on-signal"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn compose_runner_spawn_flags_withholds_the_signal_report_on_windows() {
+        // Windows has no equivalent live-signal report path, so it is withheld and the
+        // decomposition degrades to the unsupported-platform sentinel.
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let dir = Path::new("C:/Users/ada/.hq/runner-reports/7");
+        let flags = compose_runner_spawn_flags(None, Some(ceiling), Some(dir));
+        let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(!node_options.contains("--report-on-signal"));
+        assert!(!flags.node_argv.iter().any(|a| a == "--report-on-signal"));
+        assert_eq!(runner_report_signal_flag(), None);
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_withholds_signal_report_when_user_set_report_option() {
+        // A user --report-* still suppresses ALL of ours, including the signal flag —
+        // the DisabledByUserOptions precedence is preserved verbatim.
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        let dir = Path::new("/tmp/rr/1");
+        let flags =
+            compose_runner_spawn_flags(Some("--report-on-signal"), Some(ceiling), Some(dir));
+        assert_eq!(flags.report, RunnerReportRequest::DisabledByUserOptions);
+        let node_options = flags.node_options.clone().expect("ceiling still composed");
+        assert!(!node_options.contains("--report-filename=runner-fatal.json"));
+        assert!(!flags.node_argv.iter().any(|a| a.contains("runner-fatal.json")));
+    }
+
+    #[test]
+    fn node_options_has_report_flag_detects_both_spellings() {
+        assert!(node_options_has_report_flag(Some("--report-on-fatalerror")));
+        assert!(node_options_has_report_flag(Some(
+            "--enable-source-maps --report-directory=/x"
+        )));
+        assert!(node_options_has_report_flag(Some("--report_compact")));
+        assert!(!node_options_has_report_flag(Some("--max-old-space-size=100")));
+        assert!(!node_options_has_report_flag(None));
+        // A flag that merely CONTAINS "report" is not a --report-* flag.
+        assert!(!node_options_has_report_flag(Some("--enable-report-thing")));
+    }
+
+    #[test]
     fn test_runner_max_old_space_arg_respects_user_override() {
         for source in [
             RunnerHeapCeilingSource::DeclaredDefault,
@@ -1781,30 +2406,47 @@ mod tests {
         let required = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
         assert!(required >= 2, "a single spike must not pre-empt");
 
+        // No prior comparable sample → the projection is inert and behaviour is
+        // byte-identical to the pre-projection rule for every case below.
+        let no_projection = FootprintProjection::default();
+
         // A below-ceiling comparable sample never advances the streak.
         assert_eq!(
-            footprint_ceiling_step(Some(ceiling_kb - 1), true, ceiling_kb, 5, required),
+            footprint_ceiling_step(Some(ceiling_kb - 1), true, ceiling_kb, 5, required, no_projection),
             (0, FootprintCeilingDecision::KeepRunning)
         );
         // A single over-ceiling sample advances but does not pre-empt.
         let (streak, decision) =
-            footprint_ceiling_step(Some(ceiling_kb), true, ceiling_kb, 0, required);
+            footprint_ceiling_step(Some(ceiling_kb), true, ceiling_kb, 0, required, no_projection);
         assert_eq!(streak, 1);
         assert_eq!(decision, FootprintCeilingDecision::KeepRunning);
         // Reaching the required consecutive count pre-empts.
-        let (streak, decision) =
-            footprint_ceiling_step(Some(ceiling_kb + 1), true, ceiling_kb, required - 1, required);
+        let (streak, decision) = footprint_ceiling_step(
+            Some(ceiling_kb + 1),
+            true,
+            ceiling_kb,
+            required - 1,
+            required,
+            no_projection,
+        );
         assert_eq!(streak, required);
         assert_eq!(decision, FootprintCeilingDecision::Preempt);
         // A non-comparable (shim/withheld) sample resets the streak even when huge —
         // a launcher/shim footprint must never pre-empt the runner.
         assert_eq!(
-            footprint_ceiling_step(Some(ceiling_kb * 4), false, ceiling_kb, required - 1, required),
+            footprint_ceiling_step(
+                Some(ceiling_kb * 4),
+                false,
+                ceiling_kb,
+                required - 1,
+                required,
+                no_projection,
+            ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
         // A missing (unsampled) tick resets the streak too.
         assert_eq!(
-            footprint_ceiling_step(None, true, ceiling_kb, required - 1, required),
+            footprint_ceiling_step(None, true, ceiling_kb, required - 1, required, no_projection),
             (0, FootprintCeilingDecision::KeepRunning)
         );
     }
@@ -1823,8 +2465,413 @@ mod tests {
                 ordinary_ceiling_kb,
                 0,
                 WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                FootprintProjection::default(),
             ),
             (0, FootprintCeilingDecision::Preempt)
+        );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_preempts_one_interval_early_on_measured_rate() {
+        // The ordinary ceiling (5,632 MB default-derived) is far above the sample
+        // used here, so ONLY the projection can pre-empt — never the streak.
+        let ordinary_ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let hard_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+        let mb = |m: u64| m * 1024;
+
+        // Prior comparable sample 4,000 MB; the next comparable sample 30s later is
+        // 5,000 MB — still BELOW the 5,120 MB hard ceiling, so today's absolute rule
+        // keeps it running. Both samples are ABOVE the 3,584 MB declared heap ceiling,
+        // so the heap-ceiling gate is open: this growth is provably NOT bounded by V8
+        // old space. Measured growth is (5,000-4,000)/30s ≈ 33 MB/s, above the 20 MB/s
+        // the hard ceiling was sized for (production ran ≥46 MB/s and ≥228 MB/s).
+        // Projected one 30s interval ahead: 5,000 + 1,000 = 6,000 MB ≥ 5,120 →
+        // pre-empt now, one full interval before the raw sample would cross.
+        let cur = mb(5000);
+        assert!(cur < hard_kb, "current sample is below the absolute hard ceiling");
+        let projection = FootprintProjection {
+            prev_sample_kb: Some(mb(4000)),
+            gap_secs: 30,
+            cadence_secs: 30,
+            heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+        };
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ordinary_ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            (0, FootprintCeilingDecision::Preempt),
+            "a measured runaway rate must pre-empt one interval before the raw sample crosses the hard ceiling"
+        );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_falls_back_to_base_without_a_usable_prior() {
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        // Below both the hard (5,120) and ordinary (5,632) ceilings, so the ONLY
+        // thing that could change the decision is the projection.
+        let cur = mb(5000);
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+
+        // No prior sample at all → no projection → keep running (today's behaviour).
+        assert_eq!(
+            footprint_ceiling_step(Some(cur), true, ceiling_kb, 0, base, FootprintProjection::default()),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A prior sample but a zero gap is unmeasurable → no projection.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 0, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A non-positive delta (flat or shrinking footprint) yields no rate.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(cur), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A non-comparable current sample never projects, even with a huge prior delta.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                false,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+        // A usable rate but an UNUSABLE (zero) heap ceiling keeps the arm inert — the
+        // projection can never fire without a declared heap ceiling to gate on.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(cur),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(4000)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: 0 },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_never_preempts_a_healthy_ramp_below_ceiling() {
+        // The healthy-large-sync guard: a first sync of a big vault that ramps then
+        // decelerates and plateaus BELOW the hard ceiling must never be pre-empted.
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        let cadence = 30;
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+        let ramp = [
+            (3000u64, 3800u64),
+            (3800, 4300),
+            (4300, 4600),
+            (4600, 4750),
+            (4750, 4800),
+        ];
+        let mut streak = 0u32;
+        for (prev, cur) in ramp {
+            let (next, decision) = footprint_ceiling_step(
+                Some(mb(cur)),
+                true,
+                ceiling_kb,
+                streak,
+                base,
+                FootprintProjection { prev_sample_kb: Some(mb(prev)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+            );
+            assert_eq!(
+                decision,
+                FootprintCeilingDecision::KeepRunning,
+                "a healthy ramp {prev}->{cur} MB that stays below the ceiling must not pre-empt"
+            );
+            streak = next;
+        }
+        // A decreasing footprint yields no rate and stays below the ceiling.
+        let (_, decision) = footprint_ceiling_step(
+            Some(mb(4000)),
+            true,
+            ceiling_kb,
+            0,
+            base,
+            FootprintProjection { prev_sample_kb: Some(mb(4800)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+        );
+        assert_eq!(decision, FootprintCeilingDecision::KeepRunning);
+    }
+
+    #[test]
+    fn test_footprint_ceiling_projection_is_saturating_and_panic_free() {
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let base = WATCHER_FOOTPRINT_CEILING_CONSECUTIVE;
+        let hard_minus_one = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024 - 1;
+        let mb_kb = |m: u32| u64::from(m) * 1024;
+
+        // An absurd current sample already at/above the hard ceiling is caught by the
+        // absolute rule before the projection — no overflow.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(u64::MAX),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+            ),
+            (0, FootprintCeilingDecision::Preempt)
+        );
+        // A huge cadence saturates the growth term without panicking; the projected
+        // total saturates to u64::MAX and pre-empts. The sample is above the declared
+        // heap ceiling, so the heap-ceiling gate is open.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_minus_one),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: u64::MAX, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+            ),
+            (0, FootprintCeilingDecision::Preempt)
+        );
+        // A u64::MAX gap drives the measured rate to ~0, so a below-hard sample is not
+        // projected over the ceiling — it falls through to today's streak logic.
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(hard_minus_one),
+                true,
+                ceiling_kb,
+                0,
+                base,
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: u64::MAX, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+            ),
+            (0, FootprintCeilingDecision::KeepRunning)
+        );
+    }
+
+    #[test]
+    fn test_footprint_projection_heap_gate_blocks_a_cold_ramp_within_the_heap_budget() {
+        // Direct regression pin for the false kill (this reopen, HQ-DESKTOP-60, event
+        // 2026-09-06T18:55:04Z): a cold Node runner ramps 288 MB -> 2,776 MB across a
+        // 30s gap (82.9 MB/s) while STILL 808 MB below its declared 3,584 MB V8
+        // old-space ceiling, with zero non-heap excess. On the pre-gate projection the
+        // linear extrapolation was 2,776 + 82.9*30 = 5,264 >= 5,120 and killed a
+        // healthy first sync. The heap-ceiling gate blocks the projection while the
+        // footprint is inside the declared V8 budget, so the ramp KEEPS RUNNING.
+        let ordinary_ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        let (streak, decision) = footprint_ceiling_step(
+            Some(mb(2776)),
+            true,
+            ordinary_ceiling_kb,
+            0,
+            WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            FootprintProjection {
+                prev_sample_kb: Some(mb(288)),
+                gap_secs: 30,
+                cadence_secs: 30,
+                heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+            },
+        );
+        assert_eq!(
+            decision,
+            FootprintCeilingDecision::KeepRunning,
+            "a cold ramp still inside the declared V8 heap budget must never be projected away"
+        );
+        assert_eq!(streak, 0, "a below-ordinary-ceiling sample must not advance the streak");
+    }
+
+    #[test]
+    fn test_footprint_projection_still_preempts_once_the_ramp_crosses_the_heap_ceiling() {
+        // The gate NARROWS the projection, it does not disable it: the same
+        // accelerating ramp, sampled once it has crossed the declared 3,584 MB heap
+        // ceiling, must still pre-empt one interval early. 3,700 -> 4,700 MB across a
+        // matched 30s gap projects 4,700 + 1,000 = 5,700 >= 5,120, and 4,700 > 3,584
+        // so the gate is open.
+        let ordinary_ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let mb = |m: u64| m * 1024;
+        let (_, decision) = footprint_ceiling_step(
+            Some(mb(4700)),
+            true,
+            ordinary_ceiling_kb,
+            0,
+            WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+            FootprintProjection {
+                prev_sample_kb: Some(mb(3700)),
+                gap_secs: 30,
+                cadence_secs: 30,
+                heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+            },
+        );
+        assert_eq!(
+            decision,
+            FootprintCeilingDecision::Preempt,
+            "a runaway that has crossed the declared heap ceiling must still pre-empt one interval early"
+        );
+    }
+
+    #[test]
+    fn test_next_footprint_sample_delay_is_adaptive_saturating_and_clamped() {
+        let base = 30u64;
+        let min = WATCHER_FOOTPRINT_MIN_WATCH_SECS; // 2
+        let kbps = |mbps: u64| mbps * 1024; // MB/s -> KB/s
+        // A low current sample keeps the final-approach guard inactive so the rate
+        // logic is isolated (1,000 MB is far below the hard ceiling).
+        let low = 1000 * 1024;
+
+        // No measured rate yet (fresh generation) -> sample at the floor so the ramp
+        // is MEASURED, not assumed across a full tick.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, None, base, min), min);
+        // Flat/shrinking growth -> the ordinary cadence and its one-sample cost.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(0), base, min), base);
+        // A slow rate projects a long delay -> clamps to base.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(1)), base, min), base);
+        // The two OBSERVED rates: 500 MB overshoot budget / rate.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(250)), base, min), 2);
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(82)), base, min), 6);
+        // An extreme rate clamps to the floor, never below and never a panic.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(u64::MAX), base, min), min);
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(10_000)), base, min), min);
+        // A non-comparable current sample has no tree to project over -> base cadence.
+        assert_eq!(next_footprint_sample_delay_secs(low, false, Some(kbps(250)), base, min), base);
+        // Final-approach guard: within one overshoot budget of the hard ceiling, sample
+        // at the floor regardless of a momentarily slow measured rate.
+        let hard_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+        let budget_kb = u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB) * 1024;
+        let near = hard_kb - budget_kb + 1;
+        assert_eq!(next_footprint_sample_delay_secs(near, true, Some(0), base, min), min);
+        // A degenerate base of 0 still returns at least 1s and never panics.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, None, 0, 0), 1);
+    }
+
+    #[test]
+    fn test_footprint_projection_and_next_delay_matches_horizon_and_gate() {
+        let mb = |m: u64| m * 1024;
+        let base = 30u64;
+        let min = WATCHER_FOOTPRINT_MIN_WATCH_SECS;
+        let heap_kb = mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB));
+
+        // A fresh generation (no prior comparable sample) measures the ramp at the
+        // floor and leaves the projection arm inert (prev None, gap 0).
+        let (proj, delay) =
+            footprint_projection_and_next_delay(mb(448), true, None, None, heap_kb, base, min);
+        assert_eq!(delay, min);
+        assert_eq!(proj.prev_sample_kb, None);
+        assert_eq!(proj.gap_secs, 0);
+        assert_eq!(proj.cadence_secs, delay, "the horizon must equal the next-sample delay");
+        assert_eq!(proj.heap_ceiling_kb, heap_kb);
+
+        // A measured 250 MB/s runaway sets BOTH the delay and the projection horizon to
+        // 2s — the projection extrapolates exactly the gap it will cover, never a fixed
+        // 30s look-ahead paired with a 2s cadence.
+        let (proj, delay) = footprint_projection_and_next_delay(
+            mb(4000),
+            true,
+            Some(mb(3250)),
+            Some(3),
+            heap_kb,
+            base,
+            min,
+        );
+        // rate = (4000-3250)MB / 3s = 250 MB/s -> delay 2s.
+        assert_eq!(delay, 2);
+        assert_eq!(proj.cadence_secs, delay);
+        assert_eq!(proj.gap_secs, 3);
+        assert_eq!(proj.prev_sample_kb, Some(mb(3250)));
+    }
+
+    #[test]
+    fn test_adaptive_cadence_constants_beat_the_observed_os_kill_floor() {
+        // The re-derived safety margin (this reopen, HQ-DESKTOP-60): once the adaptive
+        // cadence is armed, no more than one overshoot budget can be added past the
+        // hard ceiling before the next sample, so even the WORST OBSERVED runaway
+        // pre-empts below the OS-kill floor. Pins the constant relationships the
+        // app-crate safety pin depends on.
+        // Floor * worst observed rate == the overshoot budget, by construction.
+        assert_eq!(
+            WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                * u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC),
+            u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+        );
+        // Hard ceiling + the overshoot budget stays below the observed OS-kill floor.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+            "the armed guard must pre-empt the worst observed runaway below the OS-kill floor"
+        );
+        // Expressed directly against the worst observed rate over the armed gap.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC)
+                    * WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB)
+        );
+        // The worst observed rate genuinely exceeded the prior assumed 20 MB/s, which
+        // is why the prior pin was 4x-12x optimistic.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC)
+                > u64::from(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC)
+        );
+    }
+
+    #[test]
+    fn test_footprint_growth_bucket_is_fixed_vocabulary() {
+        assert_eq!(footprint_growth_bucket_mb_per_sec(0), "under_20mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(19), "under_20mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(20), "20_to_50mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(49), "20_to_50mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(50), "50_to_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(119), "50_to_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(120), "over_120mbs");
+        assert_eq!(footprint_growth_bucket_mb_per_sec(10_000), "over_120mbs");
+    }
+
+    #[test]
+    fn test_watcher_memory_class_source_is_fixed_content_safe_vocabulary() {
+        for source in WatcherMemoryClassSource::ALL {
+            let token = source.as_str();
+            assert!(token.starts_with("report_"));
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
+        // The exact tokens the telemetry allow-list mirrors.
+        assert_eq!(WatcherMemoryClassSource::ReportRead.as_str(), "report_read");
+        assert_eq!(WatcherMemoryClassSource::ReportAbsent.as_str(), "report_absent");
+        assert_eq!(
+            WatcherMemoryClassSource::ReportUnreadable.as_str(),
+            "report_unreadable"
+        );
+        assert_eq!(
+            WatcherMemoryClassSource::ReportNotRequested.as_str(),
+            "report_not_requested"
+        );
+        assert_eq!(
+            WatcherMemoryClassSource::ReportUnsupportedPlatform.as_str(),
+            "report_unsupported_platform"
         );
     }
 

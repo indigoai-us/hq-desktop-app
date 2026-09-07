@@ -38,6 +38,7 @@
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
+  import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -109,6 +110,7 @@
     type MessageSearchHit,
     type ShowFilter,
     type SortMode,
+    type ScopeCompany,
   } from "./sidebar-model";
   import type { RowExtrasResolver } from "./row-extras.js";
   import {
@@ -118,6 +120,7 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
   import { focusOnMount, menuPortal, portal } from "./portal.js";
   import {
     FILTER_POPOVER_MAX_PX,
@@ -179,6 +182,14 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => Promise<void> | void;
+    /**
+     * Lifecycle entry points. The host runs the card action and navigates to
+     * the posted card; the sidebar only offers the rows ("+" modal and the
+     * company switcher) and shows a failure reason inline. Hosts without the
+     * card seams leave these unset and the rows are hidden.
+     */
+    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -229,6 +240,8 @@
     onselect,
     oncompanyscopechange,
     onsignout,
+    oncreatecompany = null,
+    oncreateagent = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     offscreen = false,
@@ -447,8 +460,37 @@
       .map((w) => ({
         companyUid: w.cloudUid as string,
         label: w.displayName?.trim() || w.slug,
+        // Every-plan company icon (NOT gated on brandingEnabled).
+        iconUrl: w.iconUrl ?? null,
       })),
   );
+
+  /** companyUid → presigned icon, for rows that only carry a uid. */
+  const companyIcons = $derived(
+    new Map(
+      scopeCompanies
+        .filter((c) => Boolean(c.iconUrl))
+        .map((c) => [c.companyUid, c.iconUrl as string]),
+    ),
+  );
+
+  /**
+   * The icon for a rail row: the server's per-row icon first, then the
+   * company roster. Company-scoped channels ONLY — a project or personal
+   * channel keeps the generic `#`, which is still the right mark for it.
+   */
+  function rowCompanyIcon(row: ConversationRow): string | null {
+    if (row.kind !== "channel") return null;
+    if ((row.channelScope ?? "").trim() !== "company") return null;
+    return row.iconUrl ?? companyIcons.get(row.companyUid ?? "") ?? null;
+  }
+
+  /** True when a rail row should show a company mark instead of `#`. */
+  function isCompanyScopedRow(row: ConversationRow): boolean {
+    return (
+      row.kind === "channel" && (row.channelScope ?? "").trim() === "company"
+    );
+  }
 
   /**
    * Create targets. `scopeCompanies` above is the BROWSE list and keeps
@@ -458,6 +500,41 @@
   const createScopeCompanies = $derived(
     companiesForChannelCreate(companies, accountLabel),
   );
+
+  /**
+   * Companies an agent can be added to: the workspace list, plus any company
+   * the directory already shows a company channel for. A company created a
+   * moment ago has its channel before the workspace list refreshes, and the
+   * "New agent" row must not lag behind it.
+   */
+  const agentCompanies = $derived.by<ScopeCompany[]>(() => {
+    const out = new Map<string, ScopeCompany>();
+    const knownLabels = new Set<string>();
+    for (const company of scopeCompanies) {
+      out.set(company.companyUid, company);
+      knownLabels.add(company.label.trim().toLowerCase());
+    }
+    for (const workspace of companies ?? []) {
+      knownLabels.add(workspace.slug.trim().toLowerCase());
+    }
+    for (const channel of channels) {
+      const uid = channel.companyUid?.trim() ?? "";
+      // Only server-named company channels qualify: a channel name is not a
+      // company name, and older directories key by slug rather than uid.
+      const label = channel.companyName?.trim() ?? "";
+      if (!uid || !label || out.has(uid) || channel.scope !== "company") {
+        continue;
+      }
+      if (
+        knownLabels.has(uid.toLowerCase()) ||
+        knownLabels.has(label.toLowerCase())
+      ) {
+        continue;
+      }
+      out.set(uid, { companyUid: uid, label });
+    }
+    return [...out.values()];
+  });
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
@@ -757,6 +834,28 @@
     footerMenuOpen = next;
   }
 
+  /** Failure reason from a switcher-triggered New company, shown inline. */
+  let scopeEntryError = $state<string | null>(null);
+  let scopeEntryBusy = $state(false);
+
+  async function newCompanyFromSwitcher(): Promise<void> {
+    if (!oncreatecompany || scopeEntryBusy) return;
+    scopeEntryBusy = true;
+    scopeEntryError = null;
+    try {
+      const result = await oncreatecompany();
+      if (result.ok) {
+        scopeMenuOpen = false;
+        return;
+      }
+      scopeEntryError = result.reason;
+    } catch (err) {
+      scopeEntryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      scopeEntryBusy = false;
+    }
+  }
+
   function selectScope(next: CompanyScope): void {
     scope = next;
     scopeMenuOpen = false;
@@ -770,6 +869,12 @@
     if (optionId === "personal") return "⌘P";
     if (companyIndex >= 0 && companyIndex < 5) return `⌘${companyIndex + 1}`;
     return "";
+  }
+
+  /** Presigned icon for a scope-menu option, or null (all/personal/no icon). */
+  function scopeOptionIcon(optionId: string): string | null {
+    if (optionId === "all" || optionId === "personal") return null;
+    return companyIcons.get(optionId) ?? null;
   }
 
   function scopeAvatarLabel(option: { id: string; label: string }): string {
@@ -1623,12 +1728,17 @@
               data-scope={option.id}
               onclick={() => selectScope(option.id)}
             >
-              <span
-                class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
-                aria-hidden="true"
-              >
-                {scopeAvatarLabel(option)}
-              </span>
+              {#if scopeOptionIcon(option.id)}
+                <!-- Real company favicon in place of the initials tile. -->
+                <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
+              {:else}
+                <span
+                  class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
+                  aria-hidden="true"
+                >
+                  {scopeAvatarLabel(option)}
+                </span>
+              {/if}
               <span class="chat-scope-row-label">
                 {option.id === "all" ? "All companies" : option.label}
               </span>
@@ -1639,6 +1749,39 @@
               {/if}
             </button>
           {/each}
+          {#if oncreatecompany}
+            <div class="chat-scope-sep" role="separator"></div>
+            <button
+              type="button"
+              class="chat-popover-row chat-scope-row chat-scope-new"
+              role="menuitem"
+              data-testid="chat-scope-new-company"
+              aria-busy={scopeEntryBusy ? "true" : undefined}
+              disabled={scopeEntryBusy}
+              onclick={() => void newCompanyFromSwitcher()}
+            >
+              <span class="chat-scope-avatar chat-scope-plus" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M8 3.5v9M3.5 8h9"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </span>
+              <span class="chat-scope-row-label">New company</span>
+            </button>
+            {#if scopeEntryError}
+              <p
+                class="chat-scope-error"
+                role="alert"
+                data-testid="chat-scope-new-company-error"
+              >
+                {scopeEntryError}
+              </p>
+            {/if}
+          {/if}
         </div>
       {/if}
     </div>
@@ -1649,8 +1792,12 @@
         class="chat-icon-btn"
         bind:this={plusBtnEl}
         data-testid="chat-new-message"
-        aria-label="New message or channel"
-        title="New message or channel"
+        aria-label={oncreatecompany || oncreateagent
+          ? "New message, channel, company, or agent"
+          : "New message or channel"}
+        title={oncreatecompany || oncreateagent
+          ? "New message, channel, company, or agent"
+          : "New message or channel"}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
         onclick={openCreate}
@@ -2353,6 +2500,9 @@
         void openRow(row);
       }}
       oncreated={onChannelCreated}
+      {oncreatecompany}
+      {oncreateagent}
+      {agentCompanies}
     />
   {/if}
 </aside>
@@ -2426,7 +2576,14 @@
     >
       {#if row.kind === "channel"}
         <span class="chat-glyph-wrap" aria-hidden="true">
-          <span class="chat-glyph">#</span>
+          {#if isCompanyScopedRow(row)}
+            <!-- A company channel is identified by its company, not by a
+                 generic `#`. Favicon when hq-pro resolved one, building glyph
+                 otherwise. Project/personal channels keep `#`. -->
+            <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
+          {:else}
+            <span class="chat-glyph">#</span>
+          {/if}
           {#if showProjectPresence}
             <span
               class="chat-presence-dot"
@@ -3315,6 +3472,37 @@
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  .chat-scope-sep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--line, var(--panel-border));
+  }
+
+  .chat-scope-plus {
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: 1px dashed var(--line2, var(--panel-border));
+    color: var(--t2);
+  }
+
+  .chat-scope-plus svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .chat-scope-new:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .chat-scope-error {
+    margin: 2px 0 0;
+    padding: 4px 8px;
+    color: var(--danger, #e5484d);
+    font-size: 11px;
   }
 
   .chat-popover-row:hover,

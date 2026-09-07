@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
  * from the shared label map rather than written inline.
  */
 const source = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/TaskChip.svelte'),
+  resolve(process.cwd(), 'src/chat/tasks/TaskChip.svelte'),
   'utf8',
 );
 
@@ -58,5 +58,16 @@ describe('TaskChip source contract', () => {
     // hashed catalogue address and never interpolates task-supplied text.
     expect(source).toContain('{@html mark.svg}');
     expect(source).toMatch(/No task field/i);
+  });
+});
+
+describe('TaskChip hover card', () => {
+  it('exposes a tooltip card wired by aria-describedby, shown on hover/focus', () => {
+    expect(source).toContain('data-testid="task-chip-card"');
+    expect(source).toContain('role="tooltip"');
+    expect(source).toContain('aria-describedby={cardId}');
+    expect(source).toContain('.task-chip-row:hover .card');
+    expect(source).toContain('.task-chip-row:focus-within .card');
+    expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
 
   export interface CommandPaletteItem {
     id: string;
@@ -18,6 +19,14 @@
      * what lets someone paste a `chn_…` / `agt_…` id and still find the row.
      */
     keywords?: string;
+    /**
+     * Presigned company icon for a conversation row in a company channel.
+     * When set the row shows the company's mark; absent rows keep the plain
+     * text layout, so nothing shifts for commands or DMs.
+     */
+    iconUrl?: string | null;
+    /** True to draw the company mark (favicon or building) for this row. */
+    showCompanyMark?: boolean;
   }
 
   interface Props {
@@ -325,6 +334,9 @@
                 }}
                 onclick={() => void execute(command)}
               >
+                {#if command.showCompanyMark}
+                  <CompanyIcon iconUrl={command.iconUrl ?? null} size={20} />
+                {/if}
                 <span class="command-copy">
                   <strong>{command.label}</strong>
                   <span

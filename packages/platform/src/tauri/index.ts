@@ -286,6 +286,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       }),
     listChannelMembers: (channelId) =>
       this.call("list_channel_members", { channelId }),
+    listChannelAgentTasks: (agentUid, channelId) =>
+      this.call("list_channel_agent_tasks", { agentUid, channelId }),
+    listAgentTasks: (agentUid) => this.call("list_agent_tasks", { agentUid }),
     sendChannelMessage: (channelId, body, extras) =>
       this.call("send_channel_message", {
         channelId,

@@ -8,6 +8,7 @@ pub mod banner;
 pub mod checksums;
 pub mod client_diagnostics;
 pub mod client_health;
+pub mod client_repair;
 pub mod cognito;
 pub mod compat;
 pub mod config;

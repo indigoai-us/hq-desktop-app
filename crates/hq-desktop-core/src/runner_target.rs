@@ -849,16 +849,16 @@ mod tests {
     #[test]
     fn npx_cache_key_is_sha512_of_the_input_spec_and_changes_with_the_floor() {
         assert_eq!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.3"),
-            "86e9387d78b4e731",
-        );
-        assert_eq!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             "36f3a23156e2fcea",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+            "a483dd3663414ee8",
+        );
         assert_ne!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.3"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
         );
     }
 
@@ -1027,16 +1027,16 @@ mod tests {
     fn runner_hq_cloud_version_reads_the_resolved_npx_entry_and_fails_soft() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("_npx");
-        let spec = "@indigoai-us/hq-cloud@~6.16.6";
+        let spec = "@indigoai-us/hq-cloud@~6.16.11";
         let entry = cache.join(npx_cache_entry_hash(spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
-        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.6");
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.11");
         assert_eq!(
             runner_hq_cloud_version(&RunnerSpawnTarget::Npx {
                 cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
             }),
-            "6.16.6",
+            "6.16.11",
             "the npx launch snapshot reports the version from its exact cache entry"
         );
 
@@ -1104,7 +1104,7 @@ mod tests {
         let spec = pinned_package_spec();
         let entry = cache.join(npx_cache_entry_hash(&spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
 
         let prior_local_runner = std::env::var_os("HQ_CLOUD_LOCAL_RUNNER");
         let prior_npm_cache = npm_cache_environment();
@@ -1126,7 +1126,7 @@ mod tests {
     #[test]
     fn attribution_refuses_a_unique_fallback_cache_entry_but_repair_keeps_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let spec = "@indigoai-us/hq-cloud@~6.16.6";
+        let spec = "@indigoai-us/hq-cloud@~6.16.11";
         let cache = tmp.path().join("_npx");
         let stale_entry = cache.join("4df8f075c5c7872e");
         write_runner(&stale_entry, 0o755);
@@ -1214,7 +1214,7 @@ mod tests {
             .join("_npx")
             .join(npx_cache_entry_hash(&pinned_package_spec()));
         write_runner(&entry, 0o644);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
 
         let attributed_version = runner_hq_cloud_version(&target);
         let repair_outcome = ensure_runner_target_runnable_for(&target);

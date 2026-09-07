@@ -16,7 +16,7 @@
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
   import AgentThinkingRow from './AgentThinkingRow.svelte';
-  import AgentTaskStrip from './AgentTaskStrip.svelte';
+  import { AgentTaskStrip } from '@hq/ui';
   import { AgentTaskFeedController } from '../../lib/agentTaskFeedController.svelte';
   import { AgentThinkingController } from '../../lib/agentThinkingController.svelte';
   import {

@@ -1074,7 +1074,12 @@ describe('US-103 embedded desktop window', () => {
                       name: 'owner-project',
                       scope: 'project',
                       companyUid: 'cmp_indigo',
-                      lastActivityAt: '2026-08-31T10:00:00.000Z',
+                      // Keep this recent relative to the wall clock: ChatSidebar
+                      // collapses rows older than 7 days under "Show all history…",
+                      // so a hardcoded past date makes this render assertion a
+                      // time-bomb (it started failing on 2026-09-07, a week after
+                      // the previous fixed date). Anchor to "now" instead.
+                      lastActivityAt: new Date(Date.now() - 60_000).toISOString(),
                     },
                   ],
                 }

@@ -33,13 +33,14 @@ use crate::util::client_info::build_client;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::meetings::{
-    build_notification_body, build_notification_title, build_set_company_body, dedupe_new,
-    encode_query_value, first_active_bot, is_recorded, is_unattributed, is_url_safe_id,
-    select_recorded, select_unattributed, set_company_error_message, AccountCalendars,
-    AccountsResponse, BotsResponse, CalendarsResponse, CancelBotResult, CompanyMembership,
-    EventTime, EventsResponse, GoogleAccount, GoogleCalendar, InviteBotBody, MeetingEvent,
-    NotifyDetectedPayload, OntologyParticipant, ScheduledBot, SelectedCalendarRef, SetCompanyBody,
-    SetCompanyErrorBody, SetCompanyResult,
+    build_notification_body, build_notification_title, build_set_company_body,
+    cap_unattributed_notifications, dedupe_new, encode_query_value, first_active_bot, is_recorded,
+    is_unattributed, is_url_safe_id, select_recorded, select_unattributed,
+    set_company_error_message, AccountCalendars, AccountsResponse, BotsResponse, CalendarsResponse,
+    CancelBotResult, CompanyMembership, EventTime, EventsResponse, GoogleAccount, GoogleCalendar,
+    InviteBotBody, MeetingEvent, NotifyDetectedPayload, OntologyParticipant, ScheduledBot,
+    SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody, SetCompanyResult,
+    UNATTRIBUTED_BANNER_CAP_PER_POLL,
 };
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
@@ -682,6 +683,18 @@ pub async fn poll_unattributed_once(app: AppHandle) {
             .unwrap_or_else(|p| p.into_inner());
         dedupe_new(&mut guard, &candidates)
     };
+    let surfaced = new_ids.len();
+    let new_ids =
+        cap_unattributed_notifications(new_ids, &parsed.bots, UNATTRIBUTED_BANNER_CAP_PER_POLL);
+    if surfaced > new_ids.len() {
+        crate::util::logfile::log(
+            "meetings",
+            &format!(
+                "unattributed poll: {surfaced} new meetings, notifying the newest {} (cap {UNATTRIBUTED_BANNER_CAP_PER_POLL}); the rest stay listed in Meetings",
+                new_ids.len()
+            ),
+        );
+    }
     for meeting_id in new_ids {
         let bot = parsed.bots.iter().find(|bot| bot.bot_id == meeting_id);
         if let Err(e) = crate::commands::banner::show_unattributed_meeting_banner(
