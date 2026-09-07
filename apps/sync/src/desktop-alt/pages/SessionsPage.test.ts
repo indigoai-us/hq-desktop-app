@@ -102,6 +102,7 @@ function deferred<T>() {
 }
 
 interface Backend {
+  preflight: typeof PREFLIGHT;
   /** Every spec handed to `agent_session_start`. */
   starts: SessionSpec[];
   sends: { sessionId: string; text: string; overrides: unknown }[];
@@ -123,6 +124,7 @@ let backend: Backend;
 
 function mockBackend() {
   backend = {
+    preflight: { ...PREFLIGHT },
     starts: [], sends: [], list: [], replay: [], observed: [], claudeCatalog: null,
     providerCatalog: null,
     historyPage: { events: [], before: null },
@@ -130,7 +132,7 @@ function mockBackend() {
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case 'agent_session_preflight':
-        return Promise.resolve(PREFLIGHT);
+        return Promise.resolve(backend.preflight);
       case 'agent_session_slash_commands': {
         if (args?.tool === 'codex') return Promise.resolve({ commands: [], models: CODEX_CATALOG });
         if (backend.claudeCatalog) return backend.claudeCatalog.promise;
@@ -239,6 +241,40 @@ afterEach(() => {
   resetLiveSessionStore();
   resetProbeCaches();
   stopSessionsStore();
+});
+
+describe('provider readiness', () => {
+  it('starts Codex without Claude and updates the blocker on provider switch', async () => {
+    backend.preflight.claudeAvailable = false;
+    backend.preflight.claudeLoggedIn = false;
+    remember(LAST_TOOL_KEY, 'codex');
+    render();
+    await settle();
+    expect(host.textContent).not.toContain('Claude Code is not installed');
+    chooseTool('Claude');
+    await settle();
+    expect(host.textContent).toContain('Claude Code is not installed');
+    chooseTool('Codex');
+    await settle();
+    send('provider readiness test');
+    await settle();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.starts[0].tool).toBe('codex');
+  });
+
+  it.each([
+    ['codexAvailable', 'Codex is not installed'],
+    ['codexLoggedIn', 'Codex is not signed in'],
+    ['hooksReady', 'HQ session hooks are not ready'],
+  ] as const)('blocks Codex when %s is false', async (field, message) => {
+    backend.preflight[field] = false;
+    remember(LAST_TOOL_KEY, 'codex');
+    render();
+    await settle();
+    expect(host.textContent).toContain(message);
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(backend.starts).toHaveLength(0);
+  });
 });
 
 describe('the model pill is per tool', () => {

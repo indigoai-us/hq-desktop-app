@@ -889,8 +889,16 @@ pub async fn codex_logged_in() -> bool {
     let Ok(Ok(output)) = tokio::time::timeout(LOGIN_PROBE_TIMEOUT, command.output()).await else {
         return false;
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.contains("Logged in")
+    login_status_succeeded(output.status.success(), &output.stdout, &output.stderr)
+}
+
+fn login_status_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
+    success && [stdout, stderr].iter().any(|stream| {
+        String::from_utf8_lossy(stream).lines().any(|line| {
+            let line = line.trim();
+            line == "Logged in" || line.starts_with("Logged in using ")
+        })
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -900,6 +908,14 @@ pub async fn codex_logged_in() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn login_status_accepts_both_streams_but_requires_success() {
+        assert!(login_status_succeeded(true, b"", b"Logged in using ChatGPT\n"));
+        assert!(login_status_succeeded(true, b"Logged in using an API key\n", b""));
+        assert!(!login_status_succeeded(false, b"", b"Logged in using ChatGPT\n"));
+        assert!(!login_status_succeeded(true, b"", b"Not logged in\n"));
+        assert!(!login_status_succeeded(true, b"", b""));
+    }
     use hq_desktop_core::agent_session::registry::{LiveSession, NeedsYou, PhaseChange};
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool, TurnOverrides,

@@ -668,10 +668,16 @@
    */
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
-    if (!preflight.claudeAvailable) {
+    if (tool === 'codex' && !preflight.codexAvailable) {
+      return 'Codex is not installed on this machine. Install it, then reopen Sessions.';
+    }
+    if (tool === 'codex' && !preflight.codexLoggedIn) {
+      return 'Codex is not signed in. Run `codex login` in a terminal, then reopen Sessions.';
+    }
+    if (tool === 'claude' && !preflight.claudeAvailable) {
       return 'Claude Code is not installed on this machine. Install it, then reopen Sessions.';
     }
-    if (!preflight.claudeLoggedIn) {
+    if (tool === 'claude' && !preflight.claudeLoggedIn) {
       return 'Claude Code is not signed in. Run `claude login` in a terminal, then reopen Sessions.';
     }
     if (!preflight.hooksReady) {
