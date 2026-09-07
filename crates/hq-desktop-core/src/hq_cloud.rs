@@ -448,37 +448,34 @@
 /// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
 /// cache key.
 ///
-/// **US-004 (sync-reconciliation-audit) — pin NOT moved here, deliberately.**
-/// The post-sync manifest-upload pass lands in hq-cloud's
-/// `src/bin/sync-runner-manifest.ts` and is UNPUBLISHED at the time of writing.
-/// Per the cache-key convention above, semver admission is not enough: even a
-/// manifest release that satisfies `~6.16.11` would not reach existing
-/// desktops, because npm keys `_npx` entries by the requested spec string and
-/// would keep serving the cached 6.16.11 runner. So the floor MUST be moved
-/// once the manifest runner publishes — but moving it now would pin a version
-/// npm cannot resolve, breaking `npx` for every install. Record the published
-/// version in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`] and bump this pin in a dedicated
-/// `fix(sync): bump hq-cloud runner pin ...` commit, matching the convention.
+/// `~6.16.11` -> `~6.16.21`: floors the runner at the first published release
+/// carrying the post-sync manifest-upload pass (US-004,
+/// sync-reconciliation-audit; hq-cloud `src/bin/sync-runner-manifest.ts`,
+/// published as 6.16.21 and recorded in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`]).
+/// Semver admission alone would NOT have been enough here: 6.16.21 already
+/// satisfies `~6.16.11`, but npm keys `_npx` entries by the requested spec
+/// string, so every existing desktop would keep serving its cached 6.16.11
+/// resolution. Changing the requested spec from `~6.16.11` to `~6.16.21` is
+/// what actually moves the cache key and delivers the manifest runner.
 ///
-/// Nothing else on the desktop side is required in the meantime: the manifest
-/// outcome arrives as an additive ndjson event that `events::parse_sync_line`
-/// already skips safely on both consumer paths, and its
-/// `HQ_SYNC_MANIFEST_DISABLED` kill switch reaches the runner by plain
-/// environment inheritance (see `commands::process::child_env_tests`).
-pub const HQ_CLOUD_VERSION: &str = "~6.16.11";
+/// Nothing else on the desktop side is required: the manifest outcome arrives
+/// as an additive ndjson event that `events::parse_sync_line` already skips
+/// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
+/// switch reaches the runner by plain environment inheritance (see
+/// `commands::process::child_env_tests`).
+pub const HQ_CLOUD_VERSION: &str = "~6.16.21";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
 ///
-/// `None` while that release is unpublished, which is the current state and
-/// the reason [`HQ_CLOUD_VERSION`] has not been bumped. **Release checklist:**
-/// when hq-cloud publishes the manifest runner, set this to the published
-/// version (e.g. `Some("6.16.12")`) and bump `HQ_CLOUD_VERSION` to
-/// `~<that version>` in the same commit. The
-/// `manifest_upload_floor_is_recorded_once_published` test below turns into a
-/// real floor guard the moment this is filled in, and until then names the
-/// outstanding bump in every test run.
-pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = None;
+/// Published as hq-cloud 6.16.21, so this is `Some("6.16.21")` and
+/// [`HQ_CLOUD_VERSION`] was bumped to `~6.16.21` in the same commit — the
+/// pairing the release checklist requires. With this filled in, the
+/// `manifest_upload_floor_is_recorded_once_published` test below is a REAL
+/// floor guard: it fails if the pin's lower bound ever drops below the
+/// manifest-upload release, which is the only thing that moves the npx cache
+/// key for desktops already on an older spec.
+pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.21");
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -546,23 +543,21 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.11");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.21");
     }
 
     /// Manifest-upload floor (US-004, sync-reconciliation-audit).
     ///
-    /// While `MANIFEST_UPLOAD_MIN_HQ_CLOUD` is `None` the manifest runner is
-    /// unpublished and the pin is deliberately unmoved; this asserts the pin is
-    /// still the pre-manifest one, so the outstanding bump stays visible rather
-    /// than being silently forgotten. Filling the constant in flips this into a
-    /// real guard that the pin floors at (not merely admits) the manifest
-    /// release — semver admission alone would leave desktops on a cached npx
-    /// entry that predates it.
+    /// The manifest runner published as hq-cloud 6.16.21, so the constant is
+    /// `Some` and this is a real guard that the pin FLOORS at (not merely
+    /// admits) the manifest release — semver admission alone would leave
+    /// desktops on a cached npx entry that predates it. The `None` arm is kept
+    /// as the fail-closed shape for any future unpublished-runner window.
     #[test]
     fn manifest_upload_floor_is_recorded_once_published() {
         match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
             None => assert_eq!(
-                HQ_CLOUD_VERSION, "~6.16.11",
+                HQ_CLOUD_VERSION, "~6.16.21",
                 "manifest runner is still unpublished; when it ships, set \
                  MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
             ),
