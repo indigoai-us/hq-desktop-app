@@ -115,13 +115,13 @@ describe('ProjectCreatedCard', () => {
 
     const shareCalls = invoke.mock.calls.filter(([cmd]) => cmd === 'session_share_to_channel');
     expect(shareCalls).toHaveLength(1);
-    expect(shareCalls[0]?.[1]).toEqual({
+    expect(shareCalls[0]?.[1]).toEqual({ args: {
       sessionId: 's1',
       company: 'indigo',
       target: { kind: 'new', name: '', projectPath: NOTICE.projectPath },
       inviteUids: [],
       includeTranscript: false,
-    });
+    } });
 
     expect(card()?.querySelector('[data-testid="session-project-channel"]')?.textContent).toBe('#p-draft');
     expect(card()?.textContent).toContain('has its channel');

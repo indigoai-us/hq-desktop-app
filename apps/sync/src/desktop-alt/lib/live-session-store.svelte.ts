@@ -1073,7 +1073,8 @@ function startedToolOf(sessionId: string): SessionTool | null {
  * its shape.
  */
 function shareToChannel(request: ShareToChannelRequest): Promise<ShareToChannelResult> {
-  return invoke<ShareToChannelResult>('session_share_to_channel', { ...request });
+  // Native command signature is session_share_to_channel(args: ShareArgs).
+  return invoke<ShareToChannelResult>('session_share_to_channel', { args: request });
 }
 
 /**

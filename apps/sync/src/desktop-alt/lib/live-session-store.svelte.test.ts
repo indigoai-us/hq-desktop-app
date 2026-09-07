@@ -1319,7 +1319,7 @@ describe('liveSessionStore.shareToChannel — the dialog’s one outward call', 
     await expect(liveSessionStore.shareToChannel(request)).resolves.toEqual(result);
 
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith('session_share_to_channel', request);
+    expect(invoke).toHaveBeenCalledWith('session_share_to_channel', { args: request });
   });
 
   it('lets a backend error through untouched for the dialog to show', async () => {

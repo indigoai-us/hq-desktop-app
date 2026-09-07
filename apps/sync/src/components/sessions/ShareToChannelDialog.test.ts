@@ -215,14 +215,14 @@ describe('ShareToChannelDialog', () => {
 
     click(confirm());
     expect(shareCalls()).toHaveLength(1);
-    expect(shareCalls()[0]![1]).toEqual({
+    expect(shareCalls()[0]![1]).toEqual({ args: {
       sessionId: 'sess-1',
       company: 'indigo',
       target: { kind: 'existing', channelId: 'ch_general' },
       inviteUids: ['usr_ann', 'agt_scout'],
       includeTranscript: false,
       note: 'Digest for the launch thread',
-    });
+    } });
     expect(confirm().getAttribute('aria-busy')).toBe('true');
 
     await settle();
@@ -244,13 +244,13 @@ describe('ShareToChannelDialog', () => {
     select.dispatchEvent(new Event('change', { bubbles: true }));
     flushSync();
     click(confirm());
-    expect(shareCalls()[0]![1]).toEqual({
+    expect(shareCalls()[0]![1]).toEqual({ args: {
       sessionId: 'sess-1',
       company: 'indigo',
       target: { kind: 'new', name: 'p-launch-week', projectPath: PROJECTS[0]!.path },
       inviteUids: [],
       includeTranscript: true,
-    });
+    } });
     await settle();
     expect(must('share-result-text').textContent).toBe('Created and shared to #p-launch-week');
   });
