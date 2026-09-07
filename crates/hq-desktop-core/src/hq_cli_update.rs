@@ -2,6 +2,7 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
+#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -120,6 +121,26 @@ const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
 
+#[cfg(unix)]
+fn read_probe_output(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    // The child inherits the same open file description. Seeking here would
+    // also rewind a descendant that is still writing during group shutdown.
+    let mut bytes = vec![0; VERSION_OUTPUT_LIMIT as usize];
+    let mut length = 0;
+    while length < bytes.len() {
+        match file.read_at(&mut bytes[length..], length as u64) {
+            Ok(0) => break,
+            Ok(count) => length += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    bytes.truncate(length);
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
 fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
@@ -7272,6 +7293,21 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "the descendant's inherited handle must not hold the caller open"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_probe_output_preserves_the_inherited_writer_position() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut writer = tempfile::tempfile().unwrap();
+        writer.write_all(b"5.103.34\n").unwrap();
+        writer.set_len(VERSION_OUTPUT_LIMIT + 10).unwrap();
+        writer.seek(SeekFrom::End(0)).unwrap();
+        let position = writer.stream_position().unwrap();
+        let bytes = read_probe_output(writer.try_clone().unwrap()).unwrap();
+        assert!(bytes.starts_with(b"5.103.34\n"));
+        assert_eq!(bytes.len(), VERSION_OUTPUT_LIMIT as usize);
+        assert_eq!(writer.stream_position().unwrap(), position);
     }
 
     #[cfg(unix)]
