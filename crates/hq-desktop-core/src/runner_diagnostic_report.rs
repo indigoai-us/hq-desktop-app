@@ -149,7 +149,18 @@ impl RunnerDiagnosticReport {
 /// a genuine fatal even when the event summary matched no specific stderr marker.
 /// Deliberately consults ONLY the Node-emitted trigger/event, never the free-form
 /// error message, so a user-controlled message cannot spoof a class.
+///
+/// A `Signal` trigger is refused outright (this reopen, HQ-DESKTOP-60): the app now
+/// arms `--report-on-signal` and sends the report signal to a LIVE runner to capture
+/// a memory-class decomposition just before a footprint pre-empt. That report shares
+/// the fixed report filename with the fatal-error channel, so it must never be
+/// adopted as a fatal cause by the HQ-DESKTOP-5W exit reader — even if its event
+/// summary happened to carry memory-ish text. Gating on the Node-emitted trigger
+/// keeps that boundary regardless of event content.
 fn classify_report_fatal(trigger: &str, event: &str) -> RunnerFatalClass {
+    if trigger.eq_ignore_ascii_case("Signal") {
+        return RunnerFatalClass::None;
+    }
     let probe = format!("{trigger} {event}");
     let class = classify_runner_fatal_class(&probe);
     if class != RunnerFatalClass::None {
@@ -228,6 +239,81 @@ pub fn parse_runner_diagnostic_report(bytes: &[u8]) -> RunnerDiagnosticReport {
         fatal_class,
         stack,
         read: RunnerReportRead::Read,
+    }
+}
+
+/// Hard cap on libuv handle entries counted from a report, so a hostile or runaway
+/// `libuv` array cannot drive unbounded work even within the byte cap.
+const RUNNER_REPORT_LIBUV_CAP: usize = 65_536;
+
+/// Bounded, content-safe memory decomposition extracted from a Node diagnostic
+/// report's `javascriptHeap` and `libuv` sections (this reopen, HQ-DESKTOP-60). A
+/// footprint pre-empt signals the LIVE runner for a report and reads this to NAME
+/// the memory class the tree total alone could not: JS old-space total/used (so the
+/// heap-bounded portion is known, and the non-heap excess can be inferred against
+/// the tree RSS), and the count of ACTIVE libuv handles (a direct leak signal for a
+/// file watcher). Every field is a bounded integer — MB or a count — never a path,
+/// argv, env value, or handle address, so it is egress-safe by construction. `None`
+/// on any field the report did not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunnerReportMemoryClass {
+    /// Reported V8 JS heap total memory, in MB (`javascriptHeap.totalMemory`).
+    pub js_heap_total_mb: Option<u64>,
+    /// Reported V8 JS heap used memory, in MB (`javascriptHeap.usedMemory`).
+    pub js_heap_used_mb: Option<u64>,
+    /// Count of libuv handles reported as active (`libuv[].is_active == true`).
+    pub libuv_active_handles: Option<u64>,
+}
+
+impl RunnerReportMemoryClass {
+    /// True when the report carried at least one bounded memory-class field, so the
+    /// caller can record `report_read` rather than a `report_unreadable` sentinel.
+    pub fn is_present(&self) -> bool {
+        self.js_heap_total_mb.is_some()
+            || self.js_heap_used_mb.is_some()
+            || self.libuv_active_handles.is_some()
+    }
+}
+
+/// Parse a Node diagnostic report's raw bytes into a bounded, content-safe memory
+/// decomposition. Pure. A truncated, oversized, non-JSON, or unrelated document
+/// yields the empty decomposition (all `None`) — never a fabricated number. The
+/// signal that made the report available is recorded separately by the caller as a
+/// fixed-vocabulary source token, so an empty decomposition here degrades honestly.
+pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass {
+    if bytes.is_empty() || bytes.len() > RUNNER_REPORT_MAX_BYTES {
+        return RunnerReportMemoryClass::default();
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return RunnerReportMemoryClass::default();
+    };
+    let bytes_to_mb = |section: Option<&Value>, key: &str| -> Option<u64> {
+        section
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_u64)
+            .map(|b| b / (1024 * 1024))
+    };
+    let heap = value.get("javascriptHeap");
+    let js_heap_total_mb = bytes_to_mb(heap, "totalMemory");
+    let js_heap_used_mb = bytes_to_mb(heap, "usedMemory");
+    let libuv_active_handles = value
+        .get("libuv")
+        .and_then(Value::as_array)
+        .map(|handles| {
+            handles
+                .iter()
+                .take(RUNNER_REPORT_LIBUV_CAP)
+                .filter(|h| {
+                    h.get("is_active")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .count() as u64
+        });
+    RunnerReportMemoryClass {
+        js_heap_total_mb,
+        js_heap_used_mb,
+        libuv_active_handles,
     }
 }
 
@@ -459,5 +545,101 @@ mod tests {
             assert_eq!(report.fatal_source(), "none");
             assert_eq!(report.stack.shape, "all_redacted");
         }
+    }
+
+    /// A realistic signal-triggered `--report-compact` report carrying the memory
+    /// decomposition the supervisor reads before a pre-empt (this reopen,
+    /// HQ-DESKTOP-60): `javascriptHeap` in bytes and a `libuv` handle array.
+    fn signal_report_with_memory_class() -> String {
+        serde_json::json!({
+            "header": { "trigger": "Signal", "event": "SIGUSR2" },
+            "javascriptHeap": {
+                "totalMemory": 3_758_096_384u64, // 3584 MB in bytes
+                "usedMemory": 3_221_225_472u64,  // 3072 MB in bytes
+                "memoryLimit": 3_758_096_384u64
+            },
+            "libuv": [
+                { "type": "fs_event", "is_active": true, "address": "0x1" },
+                { "type": "fs_event", "is_active": true, "address": "0x2" },
+                { "type": "timer", "is_active": false, "address": "0x3" },
+                { "type": "check", "is_active": true, "address": "0x4" }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parses_bounded_memory_class_from_a_signal_report() {
+        let m = parse_runner_report_memory_class(signal_report_with_memory_class().as_bytes());
+        assert_eq!(m.js_heap_total_mb, Some(3584));
+        assert_eq!(m.js_heap_used_mb, Some(3072));
+        // Three handles reported is_active:true (two fs_event + one check).
+        assert_eq!(m.libuv_active_handles, Some(3));
+        assert!(m.is_present());
+    }
+
+    #[test]
+    fn memory_class_degrades_to_empty_never_a_guess() {
+        for bytes in [
+            b"".as_slice(),
+            b"not json at all".as_slice(),
+            b"{\"unrelated\":true}".as_slice(),
+        ] {
+            let m = parse_runner_report_memory_class(bytes);
+            assert_eq!(m, RunnerReportMemoryClass::default());
+            assert!(!m.is_present());
+        }
+        // Oversized input is refused WITHOUT parsing.
+        let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
+        assert!(!parse_runner_report_memory_class(&oversized).is_present());
+    }
+
+    #[test]
+    fn memory_class_extraction_leaks_no_observed_bytes() {
+        // A poison-stuffed report yields only bounded integers; rendering the whole
+        // decomposition can contain none of the report's paths/argv/secret bytes.
+        let m = parse_runner_report_memory_class(poisoned_oom_report().as_bytes());
+        let rendered = format!("{m:?}");
+        for poison in [
+            "/Users/ada",
+            "Company Secrets",
+            "indigo-acme",
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI",
+            "secret",
+            ".npm",
+            ".pipe",
+        ] {
+            assert!(!rendered.contains(poison), "leaked {poison:?} in {rendered:?}");
+        }
+    }
+
+    #[test]
+    fn a_signal_triggered_report_never_names_a_fatal_cause_even_with_an_oom_event() {
+        // Step 7 pin (this reopen, HQ-DESKTOP-60, protecting HQ-DESKTOP-5W): the app
+        // now signals a LIVE runner for a report, so a Signal-triggered report can
+        // appear at the shared fatal filename. Even when its event summary carries an
+        // OOM marker it must NEVER be adopted as a fatal cause or flip
+        // runner_fatal_source to node_report — the trigger gate refuses it before
+        // classification. (Without the gate the OOM event would classify as HeapOom.)
+        let signal_oom = serde_json::json!({
+            "header": {
+                "trigger": "Signal",
+                "event": "Allocation failed - JavaScript heap out of memory"
+            },
+            "nativeStack": [
+                { "pc": "0x1", "symbol": "v8::internal::V8::FatalProcessOutOfMemory(char const*)" }
+            ]
+        })
+        .to_string();
+        let report = parse_runner_diagnostic_report(signal_oom.as_bytes());
+        assert_eq!(report.read, RunnerReportRead::Read);
+        assert_eq!(
+            report.fatal_class,
+            RunnerFatalClass::None,
+            "a Signal-triggered report must name no fatal class"
+        );
+        assert!(!report.named_cause());
+        assert_eq!(report.fatal_source(), "none");
     }
 }

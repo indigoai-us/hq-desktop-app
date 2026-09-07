@@ -4563,6 +4563,11 @@ struct ScopedRssSample {
     kind: RssSampleKind,
     tree_pid_count: Option<u32>,
     tree_largest_member_kb: Option<u64>,
+    /// The PID of the largest single tree member, for a comparable `Tree` sample on
+    /// a platform with a live-signal report path (POSIX). The supervisor signals
+    /// this PID for a memory-class decomposition just before a footprint pre-empt
+    /// (HQ-DESKTOP-60). `None` for a `Single` fallback and on the Windows job path.
+    tree_largest_member_pid: Option<u32>,
 }
 
 /// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
@@ -4794,6 +4799,11 @@ struct FootprintDecisionOutcome {
     decision: hq_desktop_core::daemon::FootprintCeilingDecision,
     prev_comparable_sample_kb: Option<u64>,
     sample_gap_secs: Option<u64>,
+    /// Seconds to wait before the NEXT footprint sample this tick, from the adaptive
+    /// cadence (HQ-DESKTOP-60). Base 30s when growth is absent or slow; shortens
+    /// toward the floor as the measured runaway rate rises, so a fast runaway is
+    /// caught mid-tick instead of racing the OS across a fixed 30s gap.
+    next_sample_delay_secs: u64,
 }
 
 fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisionOutcome {
@@ -4805,6 +4815,10 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
     let ceiling_kb = u64::from(
         hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
     ) * 1024;
+    // The declared V8 old-space ceiling gates the rate-aware projection: it may only
+    // fire once the footprint exceeds this, so a cold heap-bounded ramp is never
+    // projected away (the 2,776 MB-against-3,584 MB false kill, HQ-DESKTOP-60).
+    let heap_ceiling_kb = u64::from(heap_ceiling_mb) * 1024;
     let comparable = sample.kind == RssSampleKind::Tree;
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     // Read the PRIOR sample BEFORE note_watcher_rss overwrites last_rss_* for this
@@ -4816,11 +4830,19 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
         _ => None,
     };
     let sample_gap_secs = st.last_rss_at.map(|t| t.elapsed().as_secs());
-    let projection = hq_desktop_core::daemon::FootprintProjection {
-        prev_sample_kb: prev_comparable_sample_kb,
-        gap_secs: sample_gap_secs.unwrap_or(0),
-        cadence_secs: SUPERVISOR_INTERVAL.as_secs(),
-    };
+    // Build the projection AND the next-sample delay together: the projection's
+    // look-ahead horizon is set to that same delay, so it extrapolates exactly the
+    // gap it is covering rather than a fixed 30s (matched horizon, HQ-DESKTOP-60).
+    let (projection, next_sample_delay_secs) =
+        hq_desktop_core::daemon::footprint_projection_and_next_delay(
+            sample.kb,
+            comparable,
+            prev_comparable_sample_kb,
+            sample_gap_secs,
+            heap_ceiling_kb,
+            SUPERVISOR_INTERVAL.as_secs(),
+            hq_desktop_core::daemon::WATCHER_FOOTPRINT_MIN_WATCH_SECS,
+        );
     let (streak, decision) = hq_desktop_core::daemon::footprint_ceiling_step(
         Some(sample.kb),
         comparable,
@@ -4835,6 +4857,7 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
         prev_comparable_sample_kb,
         // Report a gap only when there was a usable prior comparable sample.
         sample_gap_secs: prev_comparable_sample_kb.and(sample_gap_secs),
+        next_sample_delay_secs,
     }
 }
 
@@ -4849,6 +4872,114 @@ struct SupervisorPreemptEvidence {
     tree_largest_member_kb: Option<u64>,
     prev_sample_kb: Option<u64>,
     gap_secs: Option<u64>,
+    /// Live memory-class decomposition read from a signal-triggered Node diagnostic
+    /// report just before this pre-empt (HQ-DESKTOP-60), naming the memory class the
+    /// tree total alone could not. Empty (all `None`) when no report was readable.
+    memory_class: hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    /// Why the memory-class decomposition is or is not present — a fixed-vocabulary
+    /// token so an absent report degrades honestly instead of guessing.
+    memory_class_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+}
+
+/// Hard ceiling on how long a supervisor pre-empt waits for a signal-triggered Node
+/// diagnostic report before giving up and terminating anyway (HQ-DESKTOP-60). The
+/// report is strictly best-effort: it never delays the terminate beyond this window.
+/// Unix-only — Windows has no live-signal report path.
+#[cfg(unix)]
+const SUPERVISOR_MEMORY_REPORT_WAIT: Duration = Duration::from_secs(2);
+
+/// Poll interval while waiting for the signal-triggered report to appear. Unix-only.
+#[cfg(unix)]
+const SUPERVISOR_MEMORY_REPORT_POLL: Duration = Duration::from_millis(50);
+
+/// Best-effort: signal the largest tree member for a LIVE Node diagnostic report and
+/// read the memory-class decomposition it writes, so a footprint pre-empt can NAME
+/// the memory class the tree total alone could not (HQ-DESKTOP-60). Strictly bounded
+/// by [`SUPERVISOR_MEMORY_REPORT_WAIT`] and best-effort: it never blocks the
+/// terminate beyond that window and degrades to a fixed-vocabulary source token when
+/// no report is readable. The report shares the fixed fatal filename, so a
+/// Signal-triggered report is refused as a fatal cause by the exit reader
+/// (`classify_report_fatal`), protecting HQ-DESKTOP-5W.
+#[cfg(unix)]
+fn resolve_watcher_memory_class(
+    sample: &ScopedRssSample,
+    generation: u64,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+    use hq_desktop_core::runner_diagnostic_report::{
+        parse_runner_report_memory_class, RunnerReportMemoryClass,
+    };
+    // Only a comparable tree sample yields a member PID to signal.
+    let Some(pid) = sample.tree_largest_member_pid.filter(|p| *p != 0) else {
+        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+    };
+    let Some(report_dir) = hq_desktop_core::daemon::runner_report_dir("watcher", generation) else {
+        return (RunnerReportMemoryClass::default(), Src::ReportNotRequested);
+    };
+    let report_path =
+        report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
+    // The report's modification time BEFORE signalling, so a fresh signal report is
+    // told apart from any stale file at the shared filename.
+    let before = std::fs::metadata(&report_path)
+        .and_then(|m| m.modified())
+        .ok();
+    // Send Node's report signal (default SIGUSR2) to the largest member. Best-effort:
+    // an ESRCH (already exited) or EPERM just degrades to ReportAbsent.
+    let signalled = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGUSR2,
+    )
+    .is_ok();
+    if !signalled {
+        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+    }
+    // Poll for a FRESH report within the hard-bounded window; never block beyond it.
+    let deadline = Instant::now() + SUPERVISOR_MEMORY_REPORT_WAIT;
+    while Instant::now() < deadline {
+        if let Ok(meta) = std::fs::metadata(&report_path) {
+            let modified = meta.modified().ok();
+            let is_fresh = match (before, modified) {
+                (Some(b), Some(m)) => m > b,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if is_fresh {
+                return match std::fs::read(&report_path) {
+                    Ok(bytes) => {
+                        let mc = parse_runner_report_memory_class(&bytes);
+                        if mc.is_present() {
+                            (mc, Src::ReportRead)
+                        } else {
+                            (mc, Src::ReportUnreadable)
+                        }
+                    }
+                    Err(_) => (RunnerReportMemoryClass::default(), Src::ReportUnreadable),
+                };
+            }
+        }
+        thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
+    }
+    (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+}
+
+/// Windows (and any non-signal platform) has no live-signal report path, so the
+/// memory-class decomposition is withheld with the unsupported-platform sentinel,
+/// mirroring how the Windows job path already withholds the tree decomposition.
+#[cfg(not(unix))]
+fn resolve_watcher_memory_class(
+    _sample: &ScopedRssSample,
+    _generation: u64,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    (
+        hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass::default(),
+        hq_desktop_core::daemon::WatcherMemoryClassSource::ReportUnsupportedPlatform,
+    )
 }
 
 /// Record a supervisor footprint pre-empt as an attributed memory-exhaustion
@@ -4918,6 +5049,21 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         Some(v) => sentry::protocol::Value::Number(v.into()),
         None => sentry::protocol::Value::String(String::new()),
     };
+    // A bounded integer extra (already in MB or a plain count) from an optional
+    // measurement: an unmeasured value ships as `""`, never a guess.
+    let opt_int = |v: Option<u64>| match v {
+        Some(v) => sentry::protocol::Value::Number(v.into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
+    // Named memory-class decomposition (HQ-DESKTOP-60): the JS old-space total/used,
+    // the inferred non-heap excess measured as tree RSS minus the reported JS heap
+    // total (a real measurement, unlike the rss-minus-declared-cap proxy above), and
+    // the active libuv handle count. Absent fields ship as `""`; the source token
+    // records exactly why an empty decomposition is empty.
+    let mc = evidence.memory_class;
+    let inferred_non_heap_mb = mc
+        .js_heap_total_mb
+        .map(|total| footprint_mb.saturating_sub(total));
     let tags = [
         ("sync_route", "watcher".to_string()),
         ("rss_scope", "tree".to_string()),
@@ -4927,6 +5073,10 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         ),
         ("watcher_tree_process_count", process_count),
         ("watcher_footprint_growth_bucket", growth_bucket),
+        (
+            "watcher_memory_class_source",
+            evidence.memory_class_source.as_str().to_string(),
+        ),
     ];
     let extras = [
         ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
@@ -4944,11 +5094,106 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             "watcher_footprint_sample_gap_secs",
             opt_secs(evidence.gap_secs),
         ),
+        ("watcher_js_heap_total_mb", opt_int(mc.js_heap_total_mb)),
+        ("watcher_js_heap_used_mb", opt_int(mc.js_heap_used_mb)),
+        ("watcher_inferred_non_heap_mb", opt_int(inferred_non_heap_mb)),
+        (
+            "watcher_libuv_active_handles",
+            opt_int(mc.libuv_active_handles),
+        ),
     ];
     // The RunnerMemory lifecycle transition (which retains the category so the app
     // can state background sync stopped and why) is owned by the terminate call
     // that immediately follows this — set here it would only double the breadcrumb.
     effects.capture(&message, &fingerprint, &tags, &extras);
+}
+
+/// Cap on footprint watch slices per supervisor tick, so the in-tick loop is bounded
+/// even if the clock does not advance and the adaptive cadence sits at its floor
+/// (HQ-DESKTOP-60). 30s budget / 2s floor is ~15 slices; 32 leaves headroom.
+const MAX_FOOTPRINT_SLICES_PER_TICK: u32 = 32;
+
+/// One footprint watch SLICE: sample the live runner, feed the pure supervisor
+/// decision, and on a pre-empt record the attributed memory outcome (with a
+/// best-effort live memory-class decomposition) and terminate. Returns whether it
+/// pre-empted (so the tick loop stops) and the adaptive delay until the next slice.
+/// Best-effort throughout — a missing PID, a failed sample, or a withheld/shim
+/// reading simply keeps the runner running on the base cadence.
+fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
+    let base = SUPERVISOR_INTERVAL.as_secs();
+    let Some(pid) = sample_pid else {
+        return (false, base);
+    };
+    let Some(sample) = sample_watcher_rss_scoped(pid) else {
+        return (false, base);
+    };
+    // Decide BEFORE recording this sample, so the pure projection measures growth
+    // from the PRIOR comparable sample (value + age) to this one, not from this
+    // sample to itself.
+    let footprint = note_watcher_footprint_and_decide(sample);
+    note_watcher_rss(sample.kb, sample.kind);
+    if footprint.decision != hq_desktop_core::daemon::FootprintCeilingDecision::Preempt {
+        return (false, footprint.next_sample_delay_secs);
+    }
+    // Supervisor footprint ceiling breach: the runner is in genuine runaway (well
+    // above any healthy set) and heading for a macOS jetsam SIGKILL or a Windows
+    // commit failure that would destroy the memory evidence. Pre-empt HERE so the
+    // app — not the host — decides the outcome; the existing crash-loop backoff
+    // bounds the respawn cadence.
+    let Some(generation) = generation_for_handle(DAEMON_HANDLE) else {
+        return (false, footprint.next_sample_delay_secs);
+    };
+    log(
+        "daemon.supervisor",
+        "watcher footprint over declared ceiling — pre-empting (runner_memory)",
+    );
+    // Best-effort, hard-bounded live memory-class decomposition BEFORE terminate, so
+    // the pre-empt names the memory class the tree total alone could not.
+    let (memory_class, memory_class_source) = resolve_watcher_memory_class(&sample, generation);
+    // Record the attributed memory outcome and set the respawn backoff BEFORE the
+    // deliberate terminate: its exit is suppressed as an app teardown, so it would
+    // otherwise emit no event and leave the runaway to be hot-respawned every ~60s.
+    record_supervisor_memory_preempt(SupervisorPreemptEvidence {
+        footprint_kb: sample.kb,
+        tree_pid_count: sample.tree_pid_count,
+        tree_largest_member_kb: sample.tree_largest_member_kb,
+        prev_sample_kb: footprint.prev_comparable_sample_kb,
+        gap_secs: footprint.sample_gap_secs,
+        memory_class,
+        memory_class_source,
+    });
+    terminate_daemon_generation_once(generation, DaemonFailureCategory::RunnerMemory);
+    (true, footprint.next_sample_delay_secs)
+}
+
+/// Spend one supervisor tick (`SUPERVISOR_INTERVAL`) watching the live runner's
+/// footprint at an ADAPTIVE cadence (HQ-DESKTOP-60): sample -> decide -> maybe
+/// pre-empt on each slice, re-sampling every `next_sample_delay_secs` rather than
+/// once per tick, so a fast runaway is caught mid-tick instead of racing the OS
+/// across a fixed 30s gap. Every OTHER supervisor responsibility (liveness, respawn,
+/// crash-loop backoff, settle, generation handling) stays on the outer 30s boundary;
+/// this loop re-enters ONLY sample -> decide -> pre-empt. Bounded: the per-slice
+/// delay is clamped to a floor by the pure cadence helper AND the slice count is
+/// capped, and it always consumes ~one tick of wall clock so the outer supervisor
+/// period is unchanged whether or not a pre-empt happened.
+fn supervise_watcher_footprint_for_tick(sample_pid: Option<u32>) {
+    let deadline = Instant::now() + SUPERVISOR_INTERVAL;
+    let mut slices = 0u32;
+    loop {
+        let (preempted, next_delay_secs) = watch_watcher_footprint_slice(sample_pid);
+        slices += 1;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if preempted || remaining.is_zero() || slices >= MAX_FOOTPRINT_SLICES_PER_TICK {
+            // Spend the rest of the tick budget so the outer supervisor period stays
+            // exactly one interval regardless of the in-tick cadence or a pre-empt.
+            if !remaining.is_zero() {
+                thread::sleep(remaining);
+            }
+            return;
+        }
+        let delay = Duration::from_secs(next_delay_secs.max(1)).min(remaining);
+        thread::sleep(delay);
+    }
 }
 
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
@@ -5033,12 +5278,14 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
             kind: RssSampleKind::Tree,
             tree_pid_count: Some(tree.pid_count),
             tree_largest_member_kb: Some(tree.largest_member_kb),
+            tree_largest_member_pid: Some(tree.largest_member_pid),
         }),
         None => sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
             kb,
             kind: RssSampleKind::Single,
             tree_pid_count: None,
             tree_largest_member_kb: None,
+            tree_largest_member_pid: None,
         }),
     }
 }
@@ -5066,6 +5313,10 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
             kind: RssSampleKind::Tree,
             tree_pid_count: None,
             tree_largest_member_kb: None,
+            // Windows withholds the per-member decomposition, so there is no largest
+            // member PID to signal; the memory-class source degrades to the
+            // unsupported-platform sentinel.
+            tree_largest_member_pid: None,
         });
     }
     // ANY failure — no generation, no job handle, query failure, the observed root
@@ -5078,6 +5329,7 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
         kind: RssSampleKind::Single,
         tree_pid_count: None,
         tree_largest_member_kb: None,
+        tree_largest_member_pid: None,
     })
 }
 
@@ -5140,6 +5392,10 @@ struct TreeRssSample {
     total_kb: u64,
     pid_count: u32,
     largest_member_kb: u64,
+    /// PID of the largest single member, so a pre-empt can signal it for a
+    /// memory-class decomposition (HQ-DESKTOP-60). `0` only when no member had a
+    /// positive RSS.
+    largest_member_pid: u32,
 }
 
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
@@ -5176,6 +5432,7 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     let mut total = 0_u64;
     let mut pid_count = 0_u32;
     let mut largest_member_kb = 0_u64;
+    let mut largest_member_pid = 0_u32;
     let mut visited: HashSet<u32> = HashSet::new();
     let mut queue: VecDeque<u32> = VecDeque::from([root]);
     while let Some(pid) = queue.pop_front() {
@@ -5185,7 +5442,13 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
         let member_kb = rss_by_pid.get(&pid).copied().unwrap_or(0);
         total = total.saturating_add(member_kb);
         pid_count = pid_count.saturating_add(1);
-        largest_member_kb = largest_member_kb.max(member_kb);
+        // Track the largest member AND its PID so a pre-empt can signal it. Strict
+        // `>` keeps the first PID seen on a tie, which is deterministic for a given
+        // `ps` ordering.
+        if member_kb > largest_member_kb {
+            largest_member_kb = member_kb;
+            largest_member_pid = pid;
+        }
         if let Some(kids) = children.get(&pid) {
             queue.extend(kids.iter().copied());
         }
@@ -5194,6 +5457,7 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
         total_kb: total,
         pid_count,
         largest_member_kb,
+        largest_member_pid,
     })
 }
 
@@ -5396,58 +5660,17 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // single transient liveness misread on a later tick would
                 // force-clear (SIGKILL) a healthy watcher.
                 note_daemon_guard_alive();
-                // Sample the live watcher's RSS so if it is later killed by
-                // signal=9, the crash capture can report the footprint it had
-                // shortly before death (jetsam/OOM vs kill -9). Scoped to the
-                // whole descendant tree so the runner's real footprint is seen
-                // through the npx launcher, with an honest single-PID fallback.
-                // Best-effort.
-                if let Some(pid) = sample_pid {
-                    if let Some(sample) = sample_watcher_rss_scoped(pid) {
-                        // Decide BEFORE recording this tick's sample, so the pure
-                        // projection measures growth from the PRIOR comparable sample
-                        // (value + age) to this one, not from this sample to itself.
-                        let footprint = note_watcher_footprint_and_decide(sample);
-                        note_watcher_rss(sample.kb, sample.kind);
-                        // Supervisor footprint ceiling: when a COMPARABLE whole-tree
-                        // footprint is at or above the declared ceiling on consecutive
-                        // samples — or a measured growth rate would carry it past the
-                        // hard ceiling within one interval — the runner is in genuine
-                        // runaway (well above any healthy set) and heading for a macOS
-                        // jetsam SIGKILL or a Windows commit failure that would destroy
-                        // the memory evidence. Pre-empt HERE so the app — not the host —
-                        // decides the outcome, recording an attributed memory-ceiling
-                        // lifecycle transition; the existing crash-loop backoff bounds
-                        // the respawn cadence. Best-effort — a withheld/shim sample or
-                        // a single spike never pre-empts.
-                        if footprint.decision
-                            == hq_desktop_core::daemon::FootprintCeilingDecision::Preempt
-                        {
-                            if let Some(generation) = generation_for_handle(DAEMON_HANDLE) {
-                                log(
-                                    "daemon.supervisor",
-                                    "watcher footprint over declared ceiling on consecutive samples — pre-empting (runner_memory)",
-                                );
-                                // Record the attributed memory outcome and set the
-                                // respawn backoff BEFORE the deliberate terminate:
-                                // its exit is suppressed as an app teardown, so it
-                                // would otherwise emit no event and leave the
-                                // runaway to be hot-respawned every ~60s.
-                                record_supervisor_memory_preempt(SupervisorPreemptEvidence {
-                                    footprint_kb: sample.kb,
-                                    tree_pid_count: sample.tree_pid_count,
-                                    tree_largest_member_kb: sample.tree_largest_member_kb,
-                                    prev_sample_kb: footprint.prev_comparable_sample_kb,
-                                    gap_secs: footprint.sample_gap_secs,
-                                });
-                                terminate_daemon_generation_once(
-                                    generation,
-                                    DaemonFailureCategory::RunnerMemory,
-                                );
-                            }
-                        }
-                    }
-                }
+                // Spend the rest of this tick watching the runner's footprint at an
+                // ADAPTIVE cadence (HQ-DESKTOP-60): re-sample every
+                // `next_sample_delay_secs` rather than once per 30s tick, so a fast
+                // runaway is caught mid-tick instead of racing the OS across a fixed
+                // gap; a cold heap-bounded ramp is never projected away. This spends
+                // the SAME 30s budget as the terminal sleep and re-enters ONLY
+                // sample -> decide -> pre-empt — every other supervisor responsibility
+                // above stays on the outer 30s boundary — so `continue` past the
+                // terminal sleep rather than sleeping the interval twice.
+                supervise_watcher_footprint_for_tick(sample_pid);
+                continue;
             } else if should_respawn_daemon_gated(
                 is_realtime_sync_enabled(),
                 is_autostart_enabled(),
@@ -5646,11 +5869,13 @@ mod tests {
             effective_watcher_footprint_ceiling_mb, OBSERVED_OS_KILL_FLOOR_MB,
             RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
             WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
-            WATCHER_FOOTPRINT_HARD_CEILING_MB,
+            WATCHER_FOOTPRINT_HARD_CEILING_MB, WATCHER_FOOTPRINT_MIN_WATCH_SECS,
+            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
         };
 
         // Pin the deliberate split: the ordinary backstop remains anti-spike,
-        // while the hard ceiling is the single-sample OS-kill safety guard.
+        // while the hard ceiling is the single-sample OS-kill safety guard. None of
+        // the safety thresholds move in this reopen.
         assert_eq!(WATCHER_FOOTPRINT_CEILING_CONSECUTIVE, 2);
         assert_eq!(WATCHER_FOOTPRINT_CEILING_MB, 4608);
         assert_eq!(
@@ -5658,16 +5883,50 @@ mod tests {
             5632
         );
         assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_MB, 5120);
-        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
 
-        // A 20 MB/s runaway may go unobserved for one full supervisor interval.
-        // Its next sample remains below the approximately observed OS-kill floor.
+        // Re-derived margin (HQ-DESKTOP-60). The prior pin sized the hard ceiling
+        // against an ASSUMED 20 MB/s runaway over a full 30s gap (5,120 + 20*30 =
+        // 5,720 < 5,900). Production measured 82.9 MB/s and 250 MB/s — 4x-12x faster —
+        // so a real runaway crossed the ceiling mid-gap and was pre-empted only at
+        // 7,949 MB, 2,049 MB ABOVE the OS-kill floor. The guard is now paired with an
+        // adaptive sampling cadence: once growth is measured the gap shortens so no
+        // more than one overshoot budget is added before the next sample. Pin the new
+        // constants and re-derive the inequality against the WORST OBSERVED rate and
+        // the armed sampling gap.
+        assert_eq!(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, 500);
+        assert_eq!(WATCHER_FOOTPRINT_MIN_WATCH_SECS, 2);
+        assert_eq!(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC, 250);
+
+        // The armed sampling gap (the floor) times the worst observed rate is exactly
+        // the overshoot budget, by construction.
+        assert_eq!(
+            WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                * u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC),
+            u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+        );
+        // The worst observed runaway, tracked at the armed sampling floor, is
+        // pre-empted below the OS-kill floor: hard ceiling + worst_rate * armed_gap
+        // (= hard ceiling + overshoot budget) < OS-kill floor.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC)
+                    * WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+            "the worst observed runaway, tracked at the armed sampling floor, must pre-empt below the OS-kill floor"
+        );
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB)
+        );
+        // The prior 20 MB/s assumption still holds as a lower bound and is retained
+        // for context; the guard no longer relies on a fixed full-tick gap for it.
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
         assert!(
             u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
                 + u64::from(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC)
                     * SUPERVISOR_INTERVAL.as_secs()
-                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
-            "the single-sample hard threshold must leave one full sampling interval of runaway growth below the OS-kill floor"
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB)
         );
     }
 
@@ -11667,13 +11926,15 @@ mod tests {
         // pid ppid rss — root=100 with children 200/300 and grandchild 400.
         let table = "100 1 10\n200 100 20\n300 100 30\n400 200 40\n999 1 99\n";
         // root + 200 + 300 + 400 = 100 KB over 4 PIDs; the unrelated 999 is excluded,
-        // and the largest single member is 400's 40 KB.
+        // and the largest single member is 400's 40 KB (so its PID is what a pre-empt
+        // would signal for a memory-class report).
         assert_eq!(
             sum_pid_tree_rss_kb(table, 100),
             Some(TreeRssSample {
                 total_kb: 100,
                 pid_count: 4,
-                largest_member_kb: 40
+                largest_member_kb: 40,
+                largest_member_pid: 400
             })
         );
         // A leaf sums only itself.
@@ -11682,7 +11943,8 @@ mod tests {
             Some(TreeRssSample {
                 total_kb: 40,
                 pid_count: 1,
-                largest_member_kb: 40
+                largest_member_kb: 40,
+                largest_member_pid: 400
             })
         );
         // A missing root -> None, which drives the single-PID fallback unchanged.
@@ -11694,7 +11956,8 @@ mod tests {
             Some(TreeRssSample {
                 total_kb: 10,
                 pid_count: 1,
-                largest_member_kb: 10
+                largest_member_kb: 10,
+                largest_member_pid: 100
             })
         );
     }
@@ -11709,7 +11972,8 @@ mod tests {
             Some(TreeRssSample {
                 total_kb: 30,
                 pid_count: 2,
-                largest_member_kb: 20
+                largest_member_kb: 20,
+                largest_member_pid: 200
             })
         );
     }
