@@ -197,11 +197,17 @@ describe('manual runner-exit attribution — shared classifier source', () => {
       '"ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker',
     );
 
+    // (3b) The one hq-cloud identity the ~6.16.21 (manifest-upload) pin added.
+    expect(shapeSource).toContain('"sync_manifest_contract"');
+    expect(shapeSource).toContain(
+      '"SyncManifestContractError" => RunnerErrorCause::SyncManifestContract',
+    );
+
     // (4) The pin now matches the runner floor, AND the guard fires at COMPILE
     // time (a const assertion, not only a #[test]) so a pin bump on ANY branch —
     // including one cut before the guard existed, the PR #533 defect — fails the
     // build instead of silently merging a mismatch.
-    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.11"');
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.21"');
     expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
 
     // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
