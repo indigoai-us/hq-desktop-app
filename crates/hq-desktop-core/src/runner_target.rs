@@ -860,9 +860,20 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
             "67dee2de97f5e14d",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            "1033876e3ec2f43e",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+        );
+        // The unrouted-overflow floor bump (hq-cloud#499): 6.16.24 SATISFIES
+        // `~6.16.23`, so every desktop holding a cached 6.16.23 would stay
+        // wedged forever on semver admission alone. The spec change is the fix.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
         );
         // The manifest-upload floor bump: 6.16.23 already SATISFIES `~6.16.11`,
         // so semver admission alone would have left every existing desktop on

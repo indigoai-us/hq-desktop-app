@@ -103,7 +103,14 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// + 413 backoff) and 6.16.23 (the failure-backoff rewrite of the
 /// non-success bookkeeping path) were each re-derived independently and add
 /// no further identity, so the vocabulary below covers the pin exactly.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.23";
+///
+/// The `~6.16.23` -> `~6.16.24` bump (the unrouted-key overflow, hq-cloud#499,
+/// plus #500's durable manifest failure reasons) was re-derived from both
+/// hq-cloud tags: the same 52 distinct `this.name` identities, no new class
+/// (the overflow routes keys instead of throwing, and the failure reasons are
+/// snapshot fields, not error identities), and `sync-runner-events.ts`
+/// `ERROR_TYPES` (`error`, `auth-error`) are unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.24";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
