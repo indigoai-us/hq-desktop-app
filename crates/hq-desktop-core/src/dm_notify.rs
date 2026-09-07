@@ -674,9 +674,7 @@ pub struct ThreadView {
 /// The DM-scope GET omits `replyCount`, so a missing/zero count with replies
 /// present must still report the loaded length.
 pub fn effective_reply_count(view: &ThreadView) -> u32 {
-    view.reply_count
-        .unwrap_or(0)
-        .max(view.replies.len() as u32)
+    view.reply_count.unwrap_or(0).max(view.replies.len() as u32)
 }
 
 /// One renderer's active reply thread. Several desktop windows can have a

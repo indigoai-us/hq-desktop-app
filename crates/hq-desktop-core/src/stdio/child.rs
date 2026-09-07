@@ -494,10 +494,7 @@ impl StdioChild {
     /// code for the transcript, not a kill. `None` means the child outlived the
     /// budget or was unwaitable — the caller should fall back to
     /// [`StdioChild::shutdown`], which is the guaranteed path.
-    pub async fn wait_for_exit(
-        &mut self,
-        budget: Duration,
-    ) -> Option<std::process::ExitStatus> {
+    pub async fn wait_for_exit(&mut self, budget: Duration) -> Option<std::process::ExitStatus> {
         match tokio::time::timeout(budget, self.child.wait()).await {
             Ok(Ok(status)) => {
                 self.release_to_host();
@@ -1305,7 +1302,10 @@ while IFS= read -r _line; do :; done
                 .is_none(),
             "a still-running child must not be reported as exited"
         );
-        assert!(child.shutdown_with_reap(REAP_TIMEOUT).await, "kill path still works");
+        assert!(
+            child.shutdown_with_reap(REAP_TIMEOUT).await,
+            "kill path still works"
+        );
     }
 
     // ── pure-logic tests (no process) ───────────────────────────────────────
@@ -1744,7 +1744,10 @@ while IFS= read -r line; do :; done
 
         let mut child = spawn_script(&script).await;
         let grandchild = wait_for_pidfile(&pidfile).await;
-        assert!(alive(grandchild), "grandchild must be alive before shutdown");
+        assert!(
+            alive(grandchild),
+            "grandchild must be alive before shutdown"
+        );
 
         child.shutdown().await;
 

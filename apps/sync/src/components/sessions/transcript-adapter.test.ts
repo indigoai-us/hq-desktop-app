@@ -943,6 +943,19 @@ describe('foldSessionEvents — hidden turns and context tags', () => {
     expect(blocks[0]).toMatchObject({ label: 'Starting work in indigo' });
   });
 
+  it('reconstructs an atomic first message from replay without optimistic metadata', () => {
+    const { blocks } = foldSessionEvents([
+      {
+        kind: 'userMessage',
+        text: '/startwork indigo\n\n/indigo:html-deck hello world deck',
+        imageCount: 0,
+      },
+    ]);
+    expect(types(blocks)).toEqual(['divider', 'userBubble']);
+    expect(blocks[0]).toMatchObject({ label: '/startwork indigo' });
+    expect(blocks[1]).toMatchObject({ text: '/indigo:html-deck hello world deck' });
+  });
+
   it('prefers the kept meta for a backend turn — the exact label survives the mirror', () => {
     const { blocks } = foldSessionEvents(
       [{ kind: 'userMessage', text: '/startwork sessions', imageCount: 0 }],

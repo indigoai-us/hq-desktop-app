@@ -11,6 +11,8 @@ import {
   rowKind,
   SCOPE_FILTERS,
   scopeFilterMatches,
+  replaceSlashQuery,
+  slashQueryAt,
   slashQueryFor,
 } from './slash-commands';
 import type { SessionCommand } from './session-events';
@@ -44,6 +46,32 @@ describe('slashQueryFor', () => {
   it('is not a query for ordinary prose or an empty draft', () => {
     expect(slashQueryFor('run the tests')).toBeNull();
     expect(slashQueryFor('')).toBeNull();
+  });
+
+  it('reads the slash token at the end of ordinary prose', () => {
+    expect(slashQueryFor('make a deck /ht')).toEqual({ prefix: 'ht' });
+  });
+});
+
+describe('slashQueryAt', () => {
+  it('finds a slash token at the caret anywhere in the draft', () => {
+    expect(slashQueryAt('before /ht after', 10)).toEqual({
+      start: 7,
+      end: 10,
+      prefix: 'ht',
+    });
+  });
+
+  it('does not open inside a URL or an ordinary word', () => {
+    expect(slashQueryAt('https://hq.com', 8)).toBeNull();
+    expect(slashQueryAt('and/or', 6)).toBeNull();
+  });
+
+  it('replaces only the active token and reports the restored caret', () => {
+    expect(replaceSlashQuery('before /ht after', { start: 7, end: 10 }, '')).toEqual({
+      draft: 'before after',
+      caret: 7,
+    });
   });
 });
 
@@ -115,12 +143,16 @@ import {
   applyPickerRow,
   cliRows,
   filterRows,
+  filterSkillRows,
+  groupOptions,
   groupByScope,
+  mergeSkillMetadata,
   pushRecentSlash,
   readRecentSlash,
   rememberRecentSlash,
   scopeLabel,
   scopeRank,
+  serializeComposerRoute,
   skillRows,
   tagUnion,
   workerRows,
@@ -221,6 +253,64 @@ describe('picker rows', () => {
     const groups = groupByScope(skillRows(HQ_CATALOG, 'indigo'), 'indigo');
     expect(groups.map((group) => group.label)).toEqual(['indigo', 'ridge', 'Personal', 'Core', 'Packages']);
     expect(groups[0]?.rows.map((row) => row.name)).toEqual(['/indigo:capture']);
+  });
+});
+
+describe('picker route contract', () => {
+  it('keeps local tags for offline use and carries Console tags separately', () => {
+    const merged = mergeSkillMetadata(HQ_CATALOG, [{
+      skillUid: 'skl_capture', tags: ['shared'], groupId: 'grp_ops',
+      groupName: 'Operations', companyWide: false,
+    }]);
+    // Fixture gains the stable id for this assertion only.
+    const local = { ...HQ_CATALOG, skills: HQ_CATALOG.skills.map((skill) =>
+      skill.invoke === '/indigo:capture' ? { ...skill, skillUid: 'skl_capture' } : skill) };
+    const enriched = mergeSkillMetadata(local, [{ skillUid: 'skl_capture', tags: ['shared'], groupId: 'grp_ops', groupName: 'Operations', companyWide: false }]);
+    expect(enriched.skills).toHaveLength(local.skills.length);
+    expect(enriched.skills.find((skill) => skill.skillUid === 'skl_capture')).toMatchObject({
+      tags: ['knowledge'], cloudTags: ['shared'], groupId: 'grp_ops', groupName: 'Operations', companyWide: false,
+    });
+    expect(merged.skills).toEqual(HQ_CATALOG.skills);
+  });
+
+  it('combines search, group, and tag filters with AND semantics', () => {
+    const catalog: SkillCatalog = { ...HQ_CATALOG, skills: HQ_CATALOG.skills.map((skill) =>
+      skill.invoke === '/indigo:capture' ? { ...skill, groupId: 'grp_ops', groupName: 'Operations', companyWide: false } : skill) };
+    const rows = skillRows(catalog, 'indigo');
+    expect(groupOptions(rows)).toEqual([{ id: 'grp_ops', name: 'Operations' }]);
+    expect(filterSkillRows(rows, 'knowledge', 'grp_ops', 'knowledge').map((row) => row.name)).toEqual(['/indigo:capture']);
+    expect(filterSkillRows(rows, '', 'grp_ops', 'people')).toEqual([]);
+  });
+
+  it('searches trigger phrases without exposing them as filter tags', () => {
+    const rows = skillRows({
+      workers: [],
+      skills: [{
+        name: 'Capture', description: 'Capture the screen', scope: 'company:indigo',
+        tags: ['html'], searchTerms: ['always do this'], invoke: '/indigo:capture',
+      }],
+    }, 'indigo');
+    expect(filterRows(rows, 'always do this').map((row) => row.name)).toEqual(['/indigo:capture']);
+    expect(tagUnion(rows)).toEqual(['html']);
+  });
+
+  it('uses only Console tags when cloud taxonomy is available', () => {
+    const rows = skillRows({
+      workers: [],
+      skills: [
+        { name: 'Capture', description: '', scope: 'company:indigo', tags: ['local'], cloudTags: ['html'], invoke: '/indigo:capture' },
+        { name: 'Handoff', description: '', scope: 'core', tags: ['session'], invoke: '/handoff' },
+      ],
+    }, 'indigo');
+    expect(tagUnion(rows.filter((row) => row.scope === 'company:indigo'), 24, true)).toEqual(['html']);
+    expect(filterSkillRows(rows, '', null, 'html', true).map((row) => row.name)).toEqual(['/indigo:capture']);
+    expect(filterSkillRows(rows, '', null, 'local', true)).toEqual([]);
+  });
+
+  it('serializes skills and natural worker prompts exactly', () => {
+    expect(serializeComposerRoute({ kind: 'skill', invoke: '/handoff', label: 'Handoff' }, '')).toBe('/handoff');
+    expect(serializeComposerRoute({ kind: 'skill', invoke: '/capture', label: 'Capture' }, 'one thing')).toBe('/capture one thing');
+    expect(serializeComposerRoute({ kind: 'worker', workerId: 'designer', label: 'Designer' }, 'Fix the flow')).toBe('/run designer -- Fix the flow');
   });
 });
 

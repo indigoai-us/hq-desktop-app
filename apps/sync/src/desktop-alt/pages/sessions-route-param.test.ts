@@ -42,4 +42,20 @@ describe('parseSessionsParam', () => {
       sessionId: 'newer-session',
     });
   });
+
+  it('decodes provider history metadata for a nested project session', () => {
+    expect(
+      parseSessionsParam(
+        'history?id=native-1&tool=codex&company=indigo&project=hq-agent-workspace&title=Test+session&startedAt=2026-09-04T00%3A13%3A26Z',
+      ),
+    ).toEqual({
+      kind: 'history',
+      sessionId: 'native-1',
+      tool: 'codex',
+      company: 'indigo',
+      project: 'hq-agent-workspace',
+      title: 'Test session',
+      startedAt: '2026-09-04T00:13:26Z',
+    });
+  });
 });

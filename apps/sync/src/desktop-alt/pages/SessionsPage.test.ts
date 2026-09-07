@@ -32,12 +32,15 @@ vi.mock('@tauri-apps/api/event', () => ({
 import { flushSync, mount, unmount } from 'svelte';
 import SessionsPage from './SessionsPage.svelte';
 import {
+  AGENT_SESSION_EVENT,
   resetLiveSessionStore,
   resetProbeCaches,
   type SessionSpec,
   type SessionSummary,
 } from '../lib/live-session-store.svelte';
 import type { SessionEvent } from '../../components/sessions/session-events';
+import type { AgentSession } from '../lib/sessions';
+import { stopSessionsStore } from '../lib/sessions-store.svelte';
 import {
   LAST_EFFORT_KEY,
   LAST_MODEL_KEY,
@@ -104,14 +107,26 @@ interface Backend {
   sends: { sessionId: string; text: string; overrides: unknown }[];
   list: SessionSummary[];
   replay: SessionEvent[];
+  observed: AgentSession[];
+  historyPage: { events: { receivedAtMs: number; event: SessionEvent }[]; before: number | null };
   /** Hold the Claude catalog until the test releases it. */
   claudeCatalog: ReturnType<typeof deferred<{ commands: never[]; models: unknown[] }>> | null;
+  /** Hold the provider session catalog to expose routed-history loading races. */
+  providerCatalog: ReturnType<typeof deferred<{
+    sessions: AgentSession[];
+    history: never[];
+    outpost: null;
+  }>> | null;
 }
 
 let backend: Backend;
 
 function mockBackend() {
-  backend = { starts: [], sends: [], list: [], replay: [], claudeCatalog: null };
+  backend = {
+    starts: [], sends: [], list: [], replay: [], observed: [], claudeCatalog: null,
+    providerCatalog: null,
+    historyPage: { events: [], before: null },
+  };
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case 'agent_session_preflight':
@@ -129,6 +144,11 @@ function mockBackend() {
           nextSeq: backend.replay.length,
           truncated: false,
         });
+      case 'list_agent_sessions':
+        if (backend.providerCatalog) return backend.providerCatalog.promise;
+        return Promise.resolve({ sessions: backend.observed, history: [], outpost: null });
+      case 'agent_session_history_page':
+        return Promise.resolve(backend.historyPage);
       case 'agent_session_start': {
         const spec = args?.spec as SessionSpec;
         backend.starts.push(spec);
@@ -206,6 +226,7 @@ beforeEach(() => {
   invoke.mockReset();
   resetLiveSessionStore();
   resetProbeCaches();
+  stopSessionsStore();
   mockBackend();
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -217,9 +238,50 @@ afterEach(() => {
   host.remove();
   resetLiveSessionStore();
   resetProbeCaches();
+  stopSessionsStore();
 });
 
 describe('the model pill is per tool', () => {
+  it.each(['codex', 'claude'] as const)('restores %s when last used provider differs, without forking the follow-up', async (tool) => {
+    remember(LAST_TOOL_KEY, tool === 'codex' ? 'claude' : 'codex');
+    const model = tool === 'codex' ? 'gpt-5.6-sol' : 'sonnet';
+    backend.list = [{
+      sessionId: 'restore-1', tool, phase: 'idle', company: 'indigo',
+      model, requestedModel: model, effort: null, permissionMode: 'prompt',
+      cwd: '/Users/x/HQ', startedAt: '2026-09-04T00:00:00Z',
+      lastActivityAt: '2026-09-04T00:00:00Z', lastSeq: 0, pendingCount: 0,
+    }];
+    render({ sessionId: 'restore-1' });
+    await vi.waitFor(() => expect(liveSessionStore.summary?.sessionId).toBe('restore-1'));
+    await settle();
+    expect(pill('session-pill-tool')).toBe(tool === 'codex' ? 'Codex' : 'Claude');
+    send('Continue the same conversation');
+    await settle();
+    expect(backend.starts).toHaveLength(0);
+    expect(backend.sends).toEqual([{sessionId: 'restore-1', text: 'Continue the same conversation', overrides: null, images: []}]);
+  });
+
+  it('ignores a slow catalog after switching back, then uses it for its own provider', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    backend.claudeCatalog = deferred();
+    render();
+    await settle();
+    chooseTool('Claude');
+    chooseTool('Codex');
+    await settle();
+    backend.claudeCatalog.resolve({ commands: [], models: CLAUDE_CATALOG });
+    await settle();
+    click(must('session-pill-model'));
+    expect(text('session-menu-model')).toContain('GPT');
+    expect(text('session-menu-model')).not.toContain('Fable');
+    click(must('session-pill-model'));
+    chooseTool('Claude');
+    await settle();
+    click(must('session-pill-model'));
+    expect(text('session-menu-model')).toContain('Fable');
+    expect(text('session-menu-model')).not.toContain('GPT');
+  });
+
   it('switching Codex → Claude drops the Codex model — and the spec sent is Default', async () => {
     remember(LAST_TOOL_KEY, 'codex');
     remember(lastModelKey('codex'), 'gpt-5.6-sol');
@@ -238,6 +300,12 @@ describe('the model pill is per tool', () => {
     expect(pill('session-pill-tool')).toContain('Claude');
     expect(pill('session-pill-model')).not.toContain('GPT');
     expect(pill('session-pill-effort')).toBe('Auto');
+
+    // The menu, not just the selected pill, must change while Claude is slow.
+    click(must('session-pill-model'));
+    expect(text('session-menu-model')).not.toContain('GPT');
+    expect(text('session-menu-model')).toContain('Opus');
+    click(must('session-pill-model'));
 
     send('hello');
     await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
@@ -406,6 +474,300 @@ describe('a live session', () => {
     backend.replay = [];
     render({ sessionId: 'sess-1' });
     await vi.waitFor(() => expect(text('sessions-strip-title')).toBe('indigo · Claude'));
+  });
+});
+
+describe('first-message orientation', () => {
+  it('sends orientation and user text atomically, presents them separately, and binds the route', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    const onopensession = vi.fn();
+    render({ onopensession });
+    await settle();
+
+    send('Show me the launch plan');
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+    expect(backend.sends[0]).toMatchObject({
+      sessionId: 'sess-1',
+      text: '/startwork indigo\n\nShow me the launch plan',
+    });
+    await vi.waitFor(() => expect(host.textContent).toContain('/startwork indigo'));
+    expect(host.textContent).toContain('Show me the launch plan');
+    expect(backend.sends).toHaveLength(1);
+    expect(onopensession).toHaveBeenCalledWith('sess-1');
+    expect(at('session-composer-notice')).toBeNull();
+  });
+
+  it('keeps a project-channel route bound when the project is outside the picker feed', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    render({ initialCompany: 'indigo', initialProject: 'hq-agent-workspace', initialChannelId: 'chn_workspace' });
+    await settle();
+
+    send('hi');
+
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+    expect(backend.starts[0]).toMatchObject({
+      company: 'indigo',
+      project: 'hq-agent-workspace',
+      projectChannelId: 'chn_workspace',
+    });
+    expect(invoke).toHaveBeenCalledWith('agent_session_start', expect.objectContaining({ projectChannelId: 'chn_workspace' }));
+    expect(backend.sends[0]).toMatchObject({
+      sessionId: 'sess-1',
+      text: '/startwork indigo hq-agent-workspace\n\nhi',
+    });
+  });
+});
+
+describe('resuming history', () => {
+  it('opens live replay without waiting for the global provider history scan', async () => {
+    backend.providerCatalog = deferred();
+    backend.list = [{
+      sessionId: 'live-fast', tool: 'codex', company: 'indigo', title: 'Speed check',
+      phase: 'idle', startedAt: '2026-09-04T21:55:44Z',
+      model: 'gpt-5.6-sol', requestedModel: 'gpt-5.6-sol',
+      permissionMode: 'prompt', pendingCount: 0,
+      effort: null, cwd: '/hq', lastActivityAt: '2026-09-04T21:55:44Z', lastSeq: 0,
+    }];
+    backend.replay = [{ kind: 'assistantMessage', text: 'Startup verified.' }];
+    render({ sessionId: 'live-fast' });
+    await vi.waitFor(() => expect(host.textContent).toContain('Startup verified.'));
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_history_page', expect.anything());
+  });
+
+  it('hydrates a project-linked history route even when the provider catalog has not caught up', async () => {
+    const nativeId = '01a069c3-31f3-74a0-ac6d-37d8f941b9d4';
+    const linkedHistory = {
+      id: nativeId,
+      tool: 'codex' as const,
+      origin: 'local' as const,
+      title: 'hi',
+      cwd: '',
+      project: 'hq-agent-workspace',
+      company: 'indigo',
+      model: null,
+      status: 'ended' as const,
+      startedAt: '2026-09-03T20:13:15.000Z',
+      lastActivityAt: '2026-09-03T20:13:15.000Z',
+      source: 'project-session-link',
+    };
+    backend.observed = [];
+    backend.providerCatalog = deferred();
+    backend.historyPage = {
+      events: [{ receivedAtMs: 1, event: { kind: 'assistantMessage', text: 'Durable linked history' } }],
+      before: null,
+    };
+
+    render({ sessionId: nativeId, initialHistorySession: linkedHistory });
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: nativeId,
+      before: null,
+      tool: 'codex',
+    }));
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_replay', expect.anything());
+    await vi.waitFor(() => expect(host.textContent).toContain('Durable linked history'));
+    expect(host.textContent).toContain('hi');
+  });
+
+  it('explains when an ended provider session has no visible dialogue', async () => {
+    const nativeId = '01a069c3-31f3-74a0-ac6d-37d8f941b9d4';
+    backend.observed = [];
+    backend.historyPage = { events: [], before: null };
+
+    render({
+      sessionId: nativeId,
+      initialHistorySession: {
+        id: nativeId,
+        tool: 'codex',
+        origin: 'local',
+        title: 'test test',
+        cwd: '',
+        project: 'hq-agent-workspace',
+        company: 'indigo',
+        model: null,
+        status: 'ended',
+        startedAt: '2026-09-03T20:13:15.000Z',
+        lastActivityAt: '2026-09-03T20:13:15.000Z',
+        source: 'project-session-link',
+      },
+    });
+
+    await vi.waitFor(() => expect(host.textContent).toContain(
+      'This session ended before any visible messages were saved.',
+    ));
+  });
+
+  it('hydrates a provider-history route instead of replaying it as an app-owned session', async () => {
+    const nativeId = '01a06438-29a6-7481-91b0-98e16fbffe94';
+    backend.observed = [{
+      id: nativeId,
+      tool: 'codex',
+      origin: 'local',
+      title: 'Project channel session',
+      cwd: '/Users/x/HQ',
+      project: 'agent-reply-targeting',
+      company: 'indigo',
+      model: 'gpt-5.6-sol',
+      status: 'ended',
+      startedAt: '2026-09-02T22:23:32.000Z',
+      lastActivityAt: '2026-09-02T22:30:00.000Z',
+      source: 'codex-rollout',
+    }];
+    backend.historyPage = {
+      events: [{ receivedAtMs: 1, event: { kind: 'assistantMessage', text: 'Linked history loaded' } }],
+      before: null,
+    };
+
+    render({ sessionId: nativeId });
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: nativeId,
+      before: null,
+      tool: 'codex',
+    }));
+    expect(invoke.mock.calls.some(([command, args]) =>
+      command === 'agent_session_replay' && args?.sessionId === nativeId,
+    )).toBe(false);
+    await vi.waitFor(() => expect(host.textContent).toContain('Linked history loaded'));
+    expect(pill('session-pill-tool')).toContain('Codex');
+  });
+
+  it('opens history with its provider without starting a process', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    remember(lastModelKey('codex'), 'gpt-5.6-sol');
+    remember(lastEffortKey('codex'), 'high');
+    backend.observed = [
+      {
+        id: 'claude-history-1',
+        tool: 'claude',
+        origin: 'local',
+        title: 'Continue launch work',
+        cwd: '/Users/x/HQ',
+        project: 'HQ',
+        company: 'indigo',
+        model: 'claude-opus-5',
+        status: 'ended',
+        startedAt: '2026-09-02T12:00:00.000Z',
+        lastActivityAt: '2026-09-02T13:00:00.000Z',
+        source: 'claude-jsonl',
+      },
+    ];
+    const onopensession = vi.fn();
+    backend.historyPage = {
+      events: [{ receivedAtMs: 1, event: { kind: 'assistantMessage', text: 'Previous answer' } }],
+      before: null,
+    };
+
+    render({ onopensession });
+    await settle();
+    expect(pill('session-pill-tool')).toContain('Codex');
+
+    click(must('sessions-drawer-toggle'));
+    await vi.waitFor(() => expect(at('session-resume')).not.toBeNull());
+    click(must('session-resume'));
+
+    await vi.waitFor(() => expect(onopensession).toHaveBeenCalledWith('claude-history-1'));
+    expect(backend.starts).toHaveLength(0);
+    expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: 'claude-history-1',
+      before: null,
+      tool: 'claude',
+    });
+    expect(pill('session-pill-tool')).toContain('Claude');
+    expect(readRemembered(LAST_TOOL_KEY)).toBe('claude');
+  });
+
+  it('opens a Codex history row directly and preserves its native task id', async () => {
+    remember(LAST_TOOL_KEY, 'claude');
+    remember(lastModelKey('claude'), 'sonnet');
+    backend.observed = [
+      {
+        id: '01a0640a-0c86-7a31-baad-f9d5cbfd379a',
+        tool: 'codex',
+        origin: 'local',
+        title: 'Build session history',
+        cwd: '/Users/x/HQ',
+        project: 'session-history',
+        company: 'indigo',
+        model: 'gpt-5.6-sol',
+        status: 'ended',
+        startedAt: '2026-09-02T17:32:55.000Z',
+        lastActivityAt: '2026-09-02T19:32:07.000Z',
+        source: 'codex-rollout',
+      },
+    ];
+
+    const onopensession = vi.fn();
+    render({ onopensession });
+    await settle();
+    click(must('sessions-drawer-toggle'));
+    await vi.waitFor(() => expect(at('session-resume')).not.toBeNull());
+    expect(must('session-list-panel').textContent).not.toContain('Live');
+    expect(must('session-list-panel').textContent).not.toContain('History');
+    expect(must('session-list-panel').textContent).not.toContain('Resume');
+    expect(at('session-history-row')?.textContent).toContain('Build session history');
+    expect(at('session-history-row')?.textContent).toContain('indigo');
+    click(must('session-resume'));
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: '01a0640a-0c86-7a31-baad-f9d5cbfd379a',
+      before: null,
+      tool: 'codex',
+    }));
+    expect(backend.starts).toHaveLength(0);
+    await vi.waitFor(() =>
+      expect(onopensession).toHaveBeenCalledWith('01a0640a-0c86-7a31-baad-f9d5cbfd379a'),
+    );
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_start', {
+      spec: expect.objectContaining({
+        resume: '01a0640a-0c86-7a31-baad-f9d5cbfd379a',
+      }),
+    });
+    await vi.waitFor(() => expect(at('session-list-panel')).toBeNull());
+    expect(pill('session-pill-tool')).toContain('Codex');
+  });
+
+  it('shows a resumed provider transcript only once in the unified list', async () => {
+    const nativeId = '01a0640a-0c86-7a31-baad-f9d5cbfd379a';
+    backend.list = [{
+      sessionId: 'app-owned-1',
+      title: 'Build session history',
+      tool: 'codex',
+      phase: 'idle',
+      company: 'indigo',
+      project: 'session-history',
+      model: 'gpt-5.6-sol',
+      requestedModel: null,
+      effort: null,
+      permissionMode: 'prompt',
+      cwd: '/Users/x/HQ',
+      startedAt: '2026-09-02T17:32:55.000Z',
+      lastActivityAt: '2026-09-02T19:32:07.000Z',
+      lastSeq: 0,
+      pendingCount: 0,
+      resumedFrom: nativeId,
+    }];
+    backend.observed = [{
+      id: nativeId,
+      tool: 'codex',
+      origin: 'local',
+      title: 'Build session history',
+      cwd: '/Users/x/HQ',
+      project: 'session-history',
+      company: 'indigo',
+      model: 'gpt-5.6-sol',
+      status: 'ended',
+      startedAt: '2026-09-02T17:32:55.000Z',
+      lastActivityAt: '2026-09-02T19:32:07.000Z',
+      source: 'codex-rollout',
+    }];
+
+    render({ sessionId: 'app-owned-1' });
+    await settle();
+    click(must('sessions-drawer-toggle'));
+    await vi.waitFor(() => expect(at('session-live-row')).not.toBeNull());
+    expect(host.querySelectorAll('[data-testid="session-live-row"]')).toHaveLength(1);
+    expect(at('session-resume')).toBeNull();
   });
 });
 

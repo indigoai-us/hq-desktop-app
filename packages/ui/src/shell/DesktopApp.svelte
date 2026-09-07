@@ -477,6 +477,8 @@
       {
         label: string;
         detail?: string;
+        /** Optional host-owned create action in the window header. */
+        createAction?: { label: string; param: () => string | null };
         component: Component<{
           param?: string | null;
           onnavigate?: (param: string | null) => void;
@@ -3816,6 +3818,13 @@
   <V4TitleBar
     {adapter}
     {version}
+    primaryAction={(() => {
+      const entry = Object.entries(extraPages ?? {}).find(([, page]) => page.createAction);
+      if (!entry) return undefined;
+      const [id, page] = entry;
+      const action = page.createAction!;
+      return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
+    })()}
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
@@ -3957,7 +3966,7 @@
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
-          {rowExtras}
+          rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
       {/if}

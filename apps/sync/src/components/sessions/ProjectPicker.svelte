@@ -338,7 +338,10 @@
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
     min-height: 0;
+    overflow: hidden;
     font-family: var(--font-sans);
   }
 
@@ -488,6 +491,8 @@
 
   .list {
     flex: 1;
+    width: 100%;
+    min-width: 0;
     min-height: 0;
     overflow-y: auto;
     padding: 4px 0 0;
@@ -498,6 +503,8 @@
     align-items: flex-start;
     gap: var(--v4-space-2);
     width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     padding: 6px var(--v4-space-2);
     border: 0;
     border-radius: var(--v4-radius-button);

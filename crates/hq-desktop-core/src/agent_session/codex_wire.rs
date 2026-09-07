@@ -626,16 +626,16 @@ mod tests {
         assert_eq!(models[0]["displayName"], "GPT-5.6-Sol");
         assert_eq!(models[0]["description"], "Balanced");
         assert_eq!(models[0]["defaultReasoningEffort"], "medium");
-        assert_eq!(models[0]["supportedReasoningEfforts"][1]["reasoningEffort"], "high");
+        assert_eq!(
+            models[0]["supportedReasoningEfforts"][1]["reasoningEffort"],
+            "high"
+        );
     }
 
     #[test]
     fn a_recorded_command_approval_parses_into_a_bash_request() {
         let frame = parse(APPROVAL_REQUEST);
-        let request = parse_approval_request(
-            frame["method"].as_str().unwrap(),
-            &frame["params"],
-        );
+        let request = parse_approval_request(frame["method"].as_str().unwrap(), &frame["params"]);
         assert_eq!(request.tool_name, "Bash");
         assert!(request.input["command"]
             .as_str()
@@ -665,7 +665,10 @@ mod tests {
 
     #[test]
     fn the_reply_we_send_for_an_approval_is_the_documented_decision_object() {
-        assert_eq!(approval_reply(true), serde_json::json!({"decision": "accept"}));
+        assert_eq!(
+            approval_reply(true),
+            serde_json::json!({"decision": "accept"})
+        );
         assert_eq!(
             approval_reply(false),
             serde_json::json!({"decision": "decline"})
@@ -692,7 +695,10 @@ mod tests {
         assert_eq!(questions[0].options[0].description.as_deref(), Some("fast"));
         assert_eq!(questions[0].options[1].label, "Go");
         assert!(questions[0].multi_select);
-        assert_eq!(questions[1].id, "q1", "a question with no id gets a positional one");
+        assert_eq!(
+            questions[1].id, "q1",
+            "a question with no id gets a positional one"
+        );
         assert_eq!(questions[1].header, "Codex question");
 
         let reply = user_input_reply(

@@ -27,6 +27,8 @@ const read = (relative: string): string =>
 
 const ROUTE = read('src/desktop-alt/route.ts');
 const APP = read('src/desktop-alt/DesktopApp.svelte');
+const WORK_HOST = read('src/desktop-alt/HqWorkWorkShell.svelte');
+const SHARED_APP = read('../../packages/ui/src/shell/DesktopApp.svelte');
 const PAGE = read('src/desktop-alt/pages/SessionsPage.svelte');
 const STORE = read('src/desktop-alt/lib/live-session-store.svelte.ts');
 const ADAPTER = read('src/components/sessions/transcript-adapter.ts');
@@ -91,10 +93,13 @@ describe('US-SESSIONS-A — DesktopApp wiring', () => {
   });
 
   it('gates the palette entry on the inAppSessions flag (dev builds included)', () => {
-    expect(APP).toContain('command-go-sessions');
-    expect(APP).toContain('inAppSessions');
-    expect(APP).toContain('inAppSessionsOn || import.meta.env.DEV');
-    expect(APP).toContain('sessionsEnabled');
+    expect(WORK_HOST).toContain('inAppSessions');
+    expect(WORK_HOST).toContain('inAppSessionsOn || import.meta.env.DEV');
+    expect(WORK_HOST).toContain('sessionsEnabled');
+    expect(WORK_HOST).toContain("sessions: {");
+    expect(WORK_HOST).toContain('{extraPages}');
+    expect(SHARED_APP).toContain('id: `command-go-${id}`');
+    expect(SHARED_APP).toContain('for (const [id, page] of Object.entries(extraPages ?? {}))');
   });
 
   it('navigates to a started session by id', () => {
@@ -508,8 +513,9 @@ describe('US-SESSIONS-A — @mentions: teammates and fleet agents from the compo
       body.indexOf('await onmentionsend(sessionId, text, mentions)'),
     );
     expect(body.indexOf('await liveSessionStore.startAndSend(')).toBeLessThan(
-      body.indexOf('if (started) await onmentionsend(started, text, mentions)'),
+      body.indexOf('if (started && messageAccepted) await onmentionsend(started, text, mentions)'),
     );
+    expect(body).toContain('let messageAccepted = false;');
     // A failed session send returns before any DM goes out.
     expect(body).toContain("actionError = err instanceof Error ? err.message : String(err);\n        return;");
   });
@@ -874,26 +880,37 @@ describe('company / project start-work — the first send orients the session', 
     expect(HQ_CONTEXT_RS).toContain('pub fn hq_company_projects(company: String)');
   });
 
-  it('the FIRST send is two sends: the hidden /startwork turn, then the user text', () => {
-    // Executed for real: the plan is the sequence.
+  it('the project pane is viewport-bounded and long descriptions cannot widen it', () => {
+    expect(COMPOSER).toContain('width: clamp(320px, 68vw, 560px);');
+    expect(COMPOSER).toContain('max-width: calc(100vw - 48px);');
+    expect(PICKER).toContain('overflow: hidden;');
+    expect(PICKER).toContain('text-overflow: ellipsis;');
+  });
+
+  it('the FIRST send atomically includes /startwork and the user text', () => {
     expect(planFirstSend('fix it', { company: 'indigo', project: null }, true)).toEqual([
-      { text: '/startwork indigo', hidden: true, label: 'Starting work in indigo' },
-      { text: 'fix it', hidden: false },
+      {
+        text: '/startwork indigo\n\nfix it',
+        hidden: false,
+        label: '/startwork indigo',
+        displayText: 'fix it',
+      },
     ]);
     expect(planFirstSend('fix it', { company: 'indigo', project: 'x' }, true)[0]?.text).toBe(
-      '/startwork x',
+      '/startwork indigo x\n\nfix it',
     );
-    // And the page follows it: startAndSend the orientation, then send the words.
     const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
     const body = fn.slice(0, fn.indexOf('\n  }\n'));
-    expect(body).toContain('planFirstSend(text, { company, project }, startworkEnabled)');
-    const orientAt = body.indexOf('liveSessionStore.startAndSend(specFrom(), orientation.text, [], {');
-    const wordsAt = body.indexOf('await liveSessionStore.send(wire, attachments, null, meta);');
-    const routeAt = body.indexOf('onopensession?.(started);');
-    expect(orientAt).toBeGreaterThan(-1);
-    expect(wordsAt).toBeGreaterThan(orientAt);
+    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
+    const planAt = body.indexOf('const first = planFirstSend(');
+    const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
+    const routeAt = body.indexOf('onopensession?.(started);', wordsAt);
+    expect(planAt).toBeGreaterThan(-1);
+    expect(wordsAt).toBeGreaterThan(planAt);
     expect(routeAt).toBeGreaterThan(wordsAt);
-    expect(body).toContain('hidden: true,');
+    expect(body).not.toContain('waitForTurnDone');
+    expect(body).toContain('contextLabel: first.label');
+    expect(COMPOSER).toContain('data-testid="session-orientation-preview"');
   });
 
   it('never double-sends and honours the opt-out toggle', () => {
@@ -906,7 +923,8 @@ describe('company / project start-work — the first send orients the session', 
   });
 
   it('a hidden turn is a quiet system divider, live and after the backend echo', () => {
-    expect(ADAPTER).toContain('const hidden = meta.hidden ?? isStartworkTurn(text);');
+    expect(ADAPTER).toContain('const hidden = meta.hidden ?? (envelope ? false : isStartworkTurn(text));');
+    expect(ADAPTER).toContain('const contextLabel = meta.contextLabel ?? envelope?.command;');
     expect(ADAPTER).toContain("type: 'divider',\n        id: `sys-${id}`,");
     expect(STORE).toContain('turnMeta: turnMetaById[entry.sessionId]');
     expect(STORE).toContain('function keepTurnMeta(');
@@ -927,7 +945,7 @@ describe('the `/` discovery picker replaces the flat list', () => {
   it('the composer mounts SlashPicker on a `/` draft and the flat popover is gone', () => {
     expect(COMPOSER).toContain("import SlashPicker from './SlashPicker.svelte'");
     expect(COMPOSER).toContain('<SlashPicker');
-    expect(COMPOSER).toContain('const slashQuery = $derived(suppressed ? null : slashQueryFor(draft));');
+    expect(COMPOSER).toContain('const slashQuery = $derived(suppressed ? null : slashQueryAt(draft, caret));');
     expect(COMPOSER).not.toContain('class="slash-menu"');
     expect(COMPOSER).not.toContain('filterSlashCommands');
     // Keyboard drives the picker from the textarea.
@@ -935,55 +953,42 @@ describe('the `/` discovery picker replaces the flat list', () => {
     expect(PICKER).toContain('export function handleKey(event: KeyboardEvent): boolean');
   });
 
-  it('groups Recent, Workers, Skills (by scope, company first) and Commands, with a scope/tag row and a cap', () => {
-    expect(PICKER).toContain('data-testid={`session-slash-tab-${entry.id}`}');
-    for (const tab of ['recent', 'workers', 'skills', 'cli']) {
-      expect(PICKER).toContain(`{ id: '${tab}', label:`);
-    }
-    expect(PICKER).toContain("{ id: 'cli', label: 'Commands' }");
-    expect(PICKER).toContain('data-testid="session-slash-tags"');
-    // The filter row shows on the overview as well as the Skills tab, and a
-    // chip picked from the overview lands on Skills.
-    expect(PICKER).toContain("const filtersVisible = $derived(!drilled && (tab === 'all' || tab === 'skills') && allSkills.length > 0);");
-    expect(PICKER).toContain('data-testid="session-slash-scope"');
-    expect(PICKER).toContain('data-testid="session-slash-tag"');
-    expect(PICKER).toContain("if (tab === 'all' && scope) tab = 'skills';");
-    expect(SLASH).toContain("{ id: 'company', label: 'Company' },");
-    expect(SLASH).toContain("{ id: 'package', label: 'Packages' },");
+  it('shows only searchable Skills and Workers, defaulting to Skills with group and tag selectors', () => {
+    expect(PICKER).toContain("type Tab = 'skills' | 'workers';");
+    expect(PICKER).toContain("let tab = $state<Tab>('skills');");
+    expect(PICKER).toContain('data-testid="session-slash-tab-skills"');
+    expect(PICKER).toContain('data-testid="session-slash-tab-workers"');
+    expect(PICKER).not.toContain('session-slash-tab-recent');
+    expect(PICKER).not.toContain('session-slash-tab-cli');
+    expect(PICKER).toContain('data-testid="session-slash-group"');
+    expect(PICKER).toContain('data-testid="session-slash-tag-filter"');
+    expect(PICKER).toContain('data-testid="session-slash-clear"');
+    expect(SLASH).toContain('export function filterSkillRows(');
     expect(PICKER).toContain('data-testid="session-slash-more"');
     expect(SLASH).toContain('export const PICKER_PAGE = 8;');
-    expect(SLASH).toContain('export const RECENT_SLASH_LIMIT = 8;');
-    expect(SLASH).toContain("export const RECENT_SLASH_KEY = 'hq.sessions.recentSlash';");
-    // Company (selected first) → Personal → Core → Packages.
-    expect(SLASH).toContain("return company && scope === `company:${company}` ? 0 : 1;");
-    expect(SLASH).toContain("if (scope === 'personal') return 2;");
-    expect(SLASH).toContain("if (scope === 'core') return 3;");
   });
 
-  it('a worker drills into its skills under a back link, and a skill inserts /run {worker} {skill}', () => {
-    expect(PICKER).toContain("drilled = catalog?.workers.find((worker) => worker.id === row.workerId) ?? null;");
-    expect(PICKER).toContain('data-testid="session-slash-back"');
-    expect(SLASH).toContain('insert: `${skill.invoke || `/run ${worker.id} ${skill.name}`} `,');
+  it('a worker selects directly and its natural prompt serializes through /run', () => {
+    expect(PICKER).not.toContain('session-slash-back');
+    expect(SLASH).toContain("route: { kind: 'worker', workerId: worker.id, label: worker.name || worker.id }");
+    expect(SLASH).toContain('return `/run ${route.workerId} -- ${text}`;');
+    expect(COMPOSER).toContain("if (commandToken?.route.kind === 'worker' && !prompt) return;");
   });
 
-  it('every row wears a kind pill, and a pick leaves the same pill as a chip above the draft', () => {
-    expect(SLASH).toContain("export type PickerKind = 'worker' | 'worker-skill' | 'skill' | 'cli';");
-    expect(PICKER).toContain('data-testid="session-slash-kind"');
-    expect(PICKER).toContain('class={`kind kind-${kind}`}');
-    for (const kind of ['worker', 'worker-skill', 'skill', 'cli']) {
-      expect(PICKER).toContain(`.kind-${kind} {`);
-    }
+  it('skill and worker rows leave distinct route pills while the draft stays natural language', () => {
+    expect(PICKER).toContain("tab === 'skills' ? 'skill' : 'worker'");
+    expect(PICKER).toContain("tab === 'skills' ? 'Skill' : 'Worker'");
     expect(COMPOSER).toContain('data-testid="session-command-chip"');
     expect(COMPOSER).toContain('data-testid="session-command-remove"');
-    expect(COMPOSER).toContain('commandToken = { insert: row.insert, kind, label: chipLabel(row.insert, kind) };');
-    // The chip is a label; the send is the draft verbatim.
+    expect(COMPOSER).toContain('commandToken = { route: row.route, kind, label: row.route.label };');
+    expect(COMPOSER).toContain("const text = commandToken ? serializeComposerRoute(commandToken.route, prompt) : prompt;");
     expect(COMPOSER).toContain('onsend?.(text, attached, chips, attachments);');
-    expect(COMPOSER).toContain("commandToken && draft.trimStart().startsWith(commandToken.insert.trimEnd())");
   });
 
-  it('CLI commands are what the CLI announced minus what HQ already names', () => {
-    expect(SLASH).toContain("!covered.has(`/${lowerCase(command.name)}`)");
-    expect(COMPOSER).toContain('cliCommands={commands}');
+  it('keeps manually typed slash commands without listing standalone CLI commands', () => {
+    expect(COMPOSER).toContain('const slashQuery = $derived(suppressed ? null : slashQueryAt(draft, caret));');
+    expect(COMPOSER).not.toContain('cliCommands={commands}');
+    expect(COMPOSER).toContain('const text = commandToken ? serializeComposerRoute(commandToken.route, prompt) : prompt;');
   });
 
   it('the catalog is loaded once per company through the store', () => {
@@ -1057,7 +1062,7 @@ describe('context attachments — the `+` menu', () => {
     expect(PAGE).toContain("composeWithContext(text, context, preflight?.hqRoot ?? '')");
     expect(TRANSCRIPT).toContain('data-testid="session-user-attachment"');
     expect(TRANSCRIPT).toContain('Attached: {attachmentLabel(attachment)}');
-    expect(ADAPTER).toContain('const split = splitContextBlocks(text);');
+    expect(ADAPTER).toContain('const split = splitContextBlocks(meta.displayText ?? envelope?.prompt ?? text);');
   });
 });
 

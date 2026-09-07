@@ -42,9 +42,7 @@ use hq_desktop_core::agent_session::codex_wire::{
     turn_interrupt_params, turn_start_params, turn_steer_params, user_input,
 };
 use hq_desktop_core::agent_session::registry::{decide_can_use_tool, AutoDecision};
-use hq_desktop_core::agent_session::types::{
-    SessionEvent, SessionSpec, SessionTool, SlashCommand,
-};
+use hq_desktop_core::agent_session::types::{SessionEvent, SessionSpec, SessionTool, SlashCommand};
 use hq_desktop_core::agent_session::CodexNormalizer;
 use hq_desktop_core::paths;
 use hq_desktop_core::stdio::child::REAP_TIMEOUT;
@@ -57,17 +55,9 @@ use tokio::time::Instant;
 use crate::util::logfile::log;
 
 use super::claude::{CommandCatalog, Outbound, SessionEventSink};
-use super::{now_iso, now_ms, SessionState};
+use super::{driver_idle_timeout, now_iso, now_ms, SessionState, SESSION_HARD_DEADLINE};
 
 const LOG_TAG: &str = "agent-session";
-
-/// Silence budget before we call a session dead. Same generosity as the Claude
-/// driver, for the same reason: a long command is silence.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// Absolute cap on one session's lifetime, so the read loop's hard deadline is
-/// a finite instant rather than "never".
-const SESSION_HARD_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long `turn/interrupt` gets to produce a turn end before we stop asking.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
@@ -151,7 +141,10 @@ pub async fn spawn_codex(cwd: PathBuf) -> Result<StdioChild, String> {
     let launch = codex_launch(codex_program(), cwd);
     log(
         LOG_TAG,
-        &format!("spawn codex program={} args={:?}", launch.program, launch.args),
+        &format!(
+            "spawn codex program={} args={:?}",
+            launch.program, launch.args
+        ),
     );
     StdioChild::spawn(&launch)
         .await
@@ -173,13 +166,15 @@ pub struct CodexHandshake {
     pub commands: Vec<SlashCommand>,
 }
 
-/// `initialize` → `initialized` → `thread/start` (or `thread/resume`) →
-/// `skills/list`.
+/// `initialize` → `initialized` → `thread/start` (or `thread/resume`).
 ///
 /// A resume that the server refuses falls back to a fresh thread: the user
 /// asked for a session, and refusing to give them one because a previous
 /// thread went missing would be the wrong trade.
-pub async fn handshake(child: &mut StdioChild, spec: &SessionSpec) -> Result<CodexHandshake, String> {
+pub async fn handshake(
+    child: &mut StdioChild,
+    spec: &SessionSpec,
+) -> Result<CodexHandshake, String> {
     let (approval_policy, sandbox) = policy_for(spec.permission_mode);
 
     child
@@ -194,7 +189,12 @@ pub async fn handshake(child: &mut StdioChild, spec: &SessionSpec) -> Result<Cod
 
     let model = spec.model.as_deref();
     let mut started = None;
-    if let Some(resume) = spec.resume.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(resume) = spec
+        .resume
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         let params = thread_resume_params(resume, &spec.cwd, approval_policy, sandbox, model);
         match child.send_request("thread/resume", params).await {
             Ok(result) => started = Some(parse_thread_started(&result)),
@@ -220,21 +220,14 @@ pub async fn handshake(child: &mut StdioChild, spec: &SessionSpec) -> Result<Cod
         return Err("Codex started a thread without an id.".into());
     }
 
-    // The command catalog is nice-to-have: a session with no slash-command
-    // autocomplete still works, so a failure here is logged, not fatal.
-    let commands = match child.send_request("skills/list", json!({})).await {
-        Ok(result) => parse_skills_list(&result),
-        Err(e) => {
-            log(LOG_TAG, &format!("codex skills/list failed: {e}"));
-            Vec::new()
-        }
-    };
-
     Ok(CodexHandshake {
         thread_id: started.thread_id,
         model: started.model,
         effort: started.reasoning_effort,
-        commands,
+        // Autocomplete is supplied independently by probe_command_catalog and
+        // merged by SessionsPage. Re-reading skills here scans the provider's
+        // filesystem again and delays every first send (3.1s in a live trace).
+        commands: Vec::new(),
     })
 }
 
@@ -337,6 +330,10 @@ pub async fn run_session_loop(
 
     loop {
         let force_at = interrupt_deadline.unwrap_or_else(|| Instant::now() + SESSION_HARD_DEADLINE);
+        let frame_idle_timeout = {
+            let guard = state.lock().await;
+            driver_idle_timeout(guard.registry.get(&session_id).map(|session| session.phase))
+        };
 
         let step = tokio::select! {
             biased;
@@ -344,7 +341,7 @@ pub async fn run_session_loop(
             _ = tokio::time::sleep_until(force_at), if interrupt_deadline.is_some() => {
                 Step::InterruptTimedOut
             }
-            frame = child.next_frame(IDLE_TIMEOUT, hard_deadline) => Step::Frame(frame),
+            frame = child.next_frame(frame_idle_timeout, hard_deadline) => Step::Frame(frame),
         };
 
         match step {
@@ -476,9 +473,7 @@ pub async fn run_session_loop(
             Step::Frame(Err(e)) => {
                 ending = Ending {
                     error: Some(match &e {
-                        StdioError::IdleTimeout(d) => {
-                            format!("Codex went quiet for {}s — ending the session.", d.as_secs())
-                        }
+                        StdioError::IdleTimeout(_) => "Codex stopped responding during this turn. You can resume it from session history.".into(),
                         other => format!("Codex stopped responding: {other}"),
                     }),
                     crash_class: e.is_crash_class(),
@@ -577,9 +572,9 @@ async fn handle_frame(
     // A response to one of OUR requests: no `method`, an `id` we minted.
     if method.is_none() {
         if let Some(id) = id.and_then(Value::as_u64) {
-            handle_response(child, turns, id, msg).await.map_err(|e| {
-                format!("Could not continue the Codex turn: {e}")
-            })?;
+            handle_response(child, turns, id, msg)
+                .await
+                .map_err(|e| format!("Could not continue the Codex turn: {e}"))?;
         }
         return Ok(false);
     }
@@ -616,7 +611,10 @@ async fn handle_frame(
     let mut turn_ended = false;
     match method {
         "turn/started" => {
-            if let Some(turn) = params.get("turn").and_then(|t| t.get("id")).and_then(Value::as_str)
+            if let Some(turn) = params
+                .get("turn")
+                .and_then(|t| t.get("id"))
+                .and_then(Value::as_str)
             {
                 turns.active = Some(turn.to_owned());
             }
@@ -951,6 +949,7 @@ mod tests {
     fn spec(mode: PermissionMode) -> SessionSpec {
         SessionSpec {
             session_id: "sess-cx".into(),
+            title: None,
             tool: SessionTool::Codex,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
@@ -982,8 +981,6 @@ take > /dev/null   # the `initialized` notification
 start=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-1\",\"sessionId\":\"th-1\",\"cwd\":\"/hq\"},\"model\":\"gpt-5.6-sol\",\"reasoningEffort\":\"medium\",\"approvalPolicy\":\"on-request\"}}"
 emit '{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-1"}}}'
-skills=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$skills"),\"result\":{\"data\":[{\"cwd\":\"/hq\",\"skills\":[{\"name\":\"plan\",\"description\":\"long\",\"interface\":{\"shortDescription\":\"Plan work\"},\"enabled\":true}]}]}}"
 
 # ── one turn ─────────────────────────────────────────────────────────────────
 turn=$(take)
@@ -1030,8 +1027,6 @@ emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"codexHome\":\"/
 take > /dev/null
 start=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-5\"},\"model\":\"gpt-5.6-sol\",\"reasoningEffort\":\"medium\"}}"
-skills=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$skills"),\"result\":{\"data\":[]}}"
 
 # ── the slow first turn ──────────────────────────────────────────────────────
 turn=$(take)
@@ -1082,8 +1077,6 @@ emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"codexHome\":\"/
 take > /dev/null
 start=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-2\"},\"model\":\"gpt-5.6-sol\"}}"
-skills=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$skills"),\"result\":{\"data\":[]}}"
 
 turn=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$turn"),\"result\":{\"turn\":{\"id\":\"tu-2\"}}}"
@@ -1112,8 +1105,6 @@ emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{}}"
 take > /dev/null
 start=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-3\"},\"model\":\"gpt-5.6-sol\"}}"
-skills=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$skills"),\"result\":{\"data\":[]}}"
 
 first=$(take)
 emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$first"),\"result\":{\"turn\":{\"id\":\"tu-3\"}}}"
@@ -1231,6 +1222,25 @@ exit 0
         }
     }
 
+    #[tokio::test]
+    async fn handshake_ready_without_waiting_for_optional_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let replies = dir.path().join("replies.jsonl");
+        // Answer only the required initialization and thread creation frames.
+        // A catalog read would stall forever, just as an unavailable skill
+        // filesystem can in the real provider. It must not gate first send.
+        let script = FAKE_CODEX.split("# ── one turn").next().unwrap().to_owned()
+            + "\nwhile IFS= read -r _line; do :; done\n";
+        let program = install_fake(dir.path(), &replies, &script);
+        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().into())).await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(1), handshake(&mut child, &spec(PermissionMode::Prompt)),
+        ).await;
+        child.shutdown_with_reap(REAP_TIMEOUT).await;
+        assert!(result.is_ok(), "optional catalog blocked session readiness");
+        assert_eq!(result.unwrap().unwrap().thread_id, "th-1");
+    }
+
     async fn until(label: &str, mut predicate: impl FnMut() -> bool) {
         for _ in 0..400 {
             if predicate() {
@@ -1246,16 +1256,13 @@ exit 0
         let h = start_with(PermissionMode::Prompt, FAKE_CODEX).await;
 
         // Started lands from the handshake, before any frame is read.
-        until("the handshake event", || {
-            !h.sink.events().is_empty()
-        })
-        .await;
+        until("the handshake event", || !h.sink.events().is_empty()).await;
         assert!(
             matches!(&h.sink.events()[0].1, SessionEvent::Started { session_id, tool, model, commands, .. }
                 if session_id == "th-1"
                     && *tool == SessionTool::Codex
                     && model == "gpt-5.6-sol"
-                    && commands.iter().any(|c| c.name == "plan" && c.description == "Plan work")),
+                    && commands.is_empty()),
             "first event should be Started: {:?}",
             h.sink.events()[0].1
         );
@@ -1337,13 +1344,20 @@ exit 0
         assert!(
             events.iter().any(|(_, e)| matches!(
                 e,
-                SessionEvent::Usage { input_tokens: 12, output_tokens: 34, .. }
+                SessionEvent::Usage {
+                    input_tokens: 12,
+                    output_tokens: 34,
+                    ..
+                }
             )),
             "usage came from `last`, not the running total: {events:?}"
         );
         assert!(events.iter().any(|(_, e)| matches!(
             e,
-            SessionEvent::TurnDone { status: DoneStatus::Success, .. }
+            SessionEvent::TurnDone {
+                status: DoneStatus::Success,
+                ..
+            }
         )));
         assert_eq!(
             h.state.lock().await.registry.get("sess-cx").unwrap().phase,
@@ -1363,9 +1377,13 @@ exit 0
         assert_eq!(sent[2]["method"], "thread/start");
         assert_eq!(sent[2]["params"]["approvalPolicy"], "on-request");
         assert_eq!(sent[2]["params"]["sandbox"], "workspace-write");
-        assert_eq!(sent[3]["method"], "skills/list");
+        assert_eq!(sent[3]["method"], "turn/start");
+        assert!(!sent.iter().any(|frame| frame["method"] == "skills/list"));
 
-        let turn = sent.iter().find(|m| m["method"] == "turn/start").expect("turn/start");
+        let turn = sent
+            .iter()
+            .find(|m| m["method"] == "turn/start")
+            .expect("turn/start");
         assert_eq!(turn["params"]["threadId"], "th-1");
         assert_eq!(turn["params"]["input"][0]["text"], "write a file");
         assert_eq!(turn["params"]["summary"], "auto");
@@ -1375,14 +1393,20 @@ exit 0
             .find(|m| m.get("method").is_none() && m.get("result").is_some())
             .expect("the approval reply");
         assert_eq!(reply["jsonrpc"], "2.0");
-        assert_eq!(reply["id"], 0, "the reply must land on the request's own id");
+        assert_eq!(
+            reply["id"], 0,
+            "the reply must land on the request's own id"
+        );
         assert_eq!(reply["result"]["decision"], "accept");
 
         h.tx.send(Outbound::End).expect("send end");
         h.join.await.expect("loop finished");
 
         let guard = h.state.lock().await;
-        let session = guard.registry.get("sess-cx").expect("session survives for replay");
+        let session = guard
+            .registry
+            .get("sess-cx")
+            .expect("session survives for replay");
         assert_eq!(session.phase, SessionPhase::Ended);
         assert!(session.pending.is_empty());
         assert!(!guard.has_channel("sess-cx"));
@@ -1465,7 +1489,11 @@ exit 0
         );
         assert_eq!(
             h.sink.phases(),
-            vec![SessionPhase::Idle, SessionPhase::Working, SessionPhase::Idle],
+            vec![
+                SessionPhase::Idle,
+                SessionPhase::Working,
+                SessionPhase::Idle
+            ],
             "one working span, with no flicker in the middle of it"
         );
 
@@ -1479,7 +1507,11 @@ exit 0
             .expect("send turn");
 
         until("the second turn/start", || {
-            h.sent().iter().filter(|m| m["method"] == "turn/start").count() == 2
+            h.sent()
+                .iter()
+                .filter(|m| m["method"] == "turn/start")
+                .count()
+                == 2
         })
         .await;
         let starts: Vec<Value> = h
@@ -1492,7 +1524,10 @@ exit 0
             "the first turn carried no override: {}",
             starts[0]
         );
-        assert_eq!(starts[1]["params"]["threadId"], "th-5", "same thread, not a fork");
+        assert_eq!(
+            starts[1]["params"]["threadId"], "th-5",
+            "same thread, not a fork"
+        );
         assert_eq!(starts[1]["params"]["model"], "gpt-5.6-codex");
         assert_eq!(starts[1]["params"]["effort"], "xhigh");
 
@@ -1521,7 +1556,11 @@ exit 0
             .expect("send turn");
 
         until("the second turn/start", || {
-            h.sent().iter().filter(|m| m["method"] == "turn/start").count() == 2
+            h.sent()
+                .iter()
+                .filter(|m| m["method"] == "turn/start")
+                .count()
+                == 2
         })
         .await;
         let starts: Vec<Value> = h
@@ -1635,7 +1674,11 @@ exit 0
         assert!(
             events.iter().any(|(_, e)| matches!(
                 e,
-                SessionEvent::TurnDone { status: DoneStatus::Interrupted, error: None, .. }
+                SessionEvent::TurnDone {
+                    status: DoneStatus::Interrupted,
+                    error: None,
+                    ..
+                }
             )),
             "an interrupted turn is Interrupted, not Error: {events:?}"
         );
@@ -1687,10 +1730,12 @@ exit 0
         h.tx.send(Outbound::Line("second".into())).expect("steer");
 
         until("the answer to both", || {
-            h.sink.events().iter().any(|(_, e)| matches!(
-                e,
-                SessionEvent::AssistantMessage { text, .. } if text == "Got both."
-            ))
+            h.sink.events().iter().any(|(_, e)| {
+                matches!(
+                    e,
+                    SessionEvent::AssistantMessage { text, .. } if text == "Got both."
+                )
+            })
         })
         .await;
 
@@ -1702,7 +1747,10 @@ exit 0
         assert_eq!(steer["params"]["expectedTurnId"], "tu-3");
         assert_eq!(steer["params"]["input"][0]["text"], "second");
 
-        let starts: Vec<&Value> = sent.iter().filter(|m| m["method"] == "turn/start").collect();
+        let starts: Vec<&Value> = sent
+            .iter()
+            .filter(|m| m["method"] == "turn/start")
+            .collect();
         assert_eq!(starts.len(), 2, "the rejected steer became its own turn");
         assert_eq!(starts[0]["params"]["input"][0]["text"], "first");
         assert_eq!(

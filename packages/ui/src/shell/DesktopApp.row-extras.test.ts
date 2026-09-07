@@ -112,12 +112,29 @@ function projectRowExtras(onselect: () => void): RowExtrasResolver {
       badge: "2 sessions",
       hoverCard: RowExtrasProbe,
       actions: [{ id: "new-session", label: "New session", onselect }],
+      childrenLabel: "Sessions for p-launch",
+      childrenExpandedByDefault: true,
+      children: [
+        {
+          id: "session:s-live",
+          label: "Launch QA",
+          meta: "Codex · Working",
+          status: "working",
+          onselect,
+        },
+        {
+          id: "new-session",
+          label: "New session",
+          kind: "action",
+          onselect,
+        },
+      ],
     };
     return extras;
   };
 }
 
-async function mountShell(rowExtras: RowExtrasResolver | null): Promise<void> {
+async function mountShell(rowExtras: RowExtrasResolver | null, pages = probePages): Promise<void> {
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
   document.body.appendChild(host);
@@ -134,7 +151,7 @@ async function mountShell(rowExtras: RowExtrasResolver | null): Promise<void> {
       },
       coreFixtures: false,
       seedDirectory: [projectRow, plainRow],
-      extraPages: probePages,
+      extraPages: pages,
       rowExtras,
     },
   });
@@ -156,6 +173,21 @@ async function waitForRows(): Promise<void> {
 }
 
 describe("DesktopApp rowExtras", () => {
+  it("opens a fresh host destination from the header on every click", async () => {
+    let draft = 0;
+    await mountShell(null, {
+      probe: { ...probePages.probe, createAction: { label: "New session", param: () => `new?draft=${++draft}` } },
+    } as typeof probePages);
+    const create = host.querySelector<HTMLButtonElement>('[data-testid="titlebar-primary-action"]');
+    expect(create).toBeTruthy();
+    create!.click();
+    await tick();
+    expect(host.querySelector('[data-testid="extra-page-probe-param"]')?.textContent).toBe("new?draft=1");
+    create!.click();
+    await tick();
+    expect(host.querySelector('[data-testid="extra-page-probe-param"]')?.textContent).toBe("new?draft=2");
+  });
+
   it("shows the host badge after the title, only on rows the host decorates", async () => {
     await mountShell(projectRowExtras(() => {}));
     await waitForRows();
@@ -170,6 +202,41 @@ describe("DesktopApp rowExtras", () => {
 
     const plain = rowButton("ch:chn_general");
     expect(plain.querySelector('[data-testid="chat-row-extra-badge"]')).toBeNull();
+  });
+
+  it("renders host children beneath the channel, opens them, and lets the parent collapse them", async () => {
+    const onselect = vi.fn();
+    await mountShell(projectRowExtras(onselect));
+    await waitForRows();
+
+    const parent = rowButton("ch:chn_launch");
+    const group = parent.closest<HTMLElement>('[data-testid="chat-row-group"]');
+    const children = group?.querySelector('[data-testid="chat-row-children"]');
+    expect(children?.getAttribute("aria-label")).toBe("Sessions for p-launch");
+
+    const session = children?.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-row-child"][data-child-id="session:s-live"]',
+    );
+    expect(session?.textContent).toContain("Launch QA");
+    expect(session?.textContent).toContain("Codex · Working");
+    expect(session?.querySelector('[data-status="working"]')).toBeTruthy();
+    session?.click();
+    expect(onselect).toHaveBeenCalledTimes(1);
+
+    const newSession = children?.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-row-child"][data-child-id="new-session"]',
+    );
+    expect(newSession?.textContent?.trim()).toBe("New session");
+    expect(newSession?.querySelector('[data-child-kind="action"]')).toBeTruthy();
+
+    const toggle = group?.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-row-children-toggle"]',
+    );
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    toggle?.click();
+    await tick();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(group?.querySelector('[data-testid="chat-row-children"]')).toBeNull();
   });
 
   it("mounts the host hover card with the hovered row, and only for decorated rows", async () => {

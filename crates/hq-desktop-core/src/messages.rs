@@ -996,8 +996,7 @@ mod tests {
                          "companyUid": "ent_co", "projectId": "hq-mobile" },
             "membership": { "joined": true }
         }"#;
-        let r: EnsureProjectChannelResponse =
-            serde_json::from_str(json).expect("response parses");
+        let r: EnsureProjectChannelResponse = serde_json::from_str(json).expect("response parses");
         assert!(r.created);
         assert_eq!(r.channel.as_ref().unwrap().channel_id, "chn_1");
     }

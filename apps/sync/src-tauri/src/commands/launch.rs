@@ -295,7 +295,10 @@ pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<()
     let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
     let output = Command::new(&comspec)
         .args(["/C", "codex", "app", &target.to_string_lossy()])
-        .env("PATH", crate::commands::install_deps::extended_search_path())
+        .env(
+            "PATH",
+            crate::commands::install_deps::extended_search_path(),
+        )
         .output()
         .map_err(|e| format!("failed to run codex app: {e}"))?;
     if !output.status.success() {
@@ -311,7 +314,9 @@ pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<()
         let comspec = comspec.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
-            let _ = Command::new(comspec).args(["/C", "start", "", &url]).status();
+            let _ = Command::new(comspec)
+                .args(["/C", "start", "", &url])
+                .status();
         });
     }
     Ok(())
@@ -626,12 +631,18 @@ mod codex_workspace_tests {
         // The onboarding parity case: "/setup" pre-typed, exactly as the
         // installer's Claude deep link does. Slash must be percent-encoded —
         // the app's router treats a raw slash as a path segment.
-        assert_eq!(codex_thread_url("/setup"), "codex://threads/new?prompt=%2Fsetup");
+        assert_eq!(
+            codex_thread_url("/setup"),
+            "codex://threads/new?prompt=%2Fsetup"
+        );
         assert_eq!(
             codex_thread_url("fix the build & ship"),
             "codex://threads/new?prompt=fix%20the%20build%20%26%20ship"
         );
         // Unreserved characters pass through untouched.
-        assert_eq!(codex_thread_url("hello-world_1.2~x"), "codex://threads/new?prompt=hello-world_1.2~x");
+        assert_eq!(
+            codex_thread_url("hello-world_1.2~x"),
+            "codex://threads/new?prompt=hello-world_1.2~x"
+        );
     }
 }

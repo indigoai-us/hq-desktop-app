@@ -81,7 +81,9 @@ pub(crate) fn validate_inside_root(path: &str, root: &Path) -> Result<PathBuf, S
         .components()
         .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
     {
-        return Err(format!("Path may not contain `.` or `..` segments: {trimmed}"));
+        return Err(format!(
+            "Path may not contain `.` or `..` segments: {trimmed}"
+        ));
     }
 
     let canonical_root = root
@@ -233,9 +235,7 @@ pub(crate) fn redact_share_urls(text: &str) -> String {
     while let Some(at) = rest.find("https://") {
         out.push_str(&rest[..at]);
         let tail = &rest[at..];
-        let end = tail
-            .find(char::is_whitespace)
-            .unwrap_or(tail.len());
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
         let url = &tail[..end];
         if let Some(idx) = url.find("/share-session/") {
             out.push_str(&url[..idx + "/share-session/".len()]);
@@ -375,7 +375,9 @@ mod tests {
         let dir = root_with(&[]);
         let root = dir.path().canonicalize().unwrap();
         let traversal = format!("{}/companies/../../etc/passwd", root.display());
-        assert!(validate_inside_root(&traversal, &root).unwrap_err().contains("`..`"));
+        assert!(validate_inside_root(&traversal, &root)
+            .unwrap_err()
+            .contains("`..`"));
         // `Path::components` folds an interior `.` away, so this form is not
         // an escape — it must still resolve INSIDE the root, never outside.
         let dotted = format!("{}/./companies/x", root.display());
@@ -407,9 +409,18 @@ mod tests {
             vault_relative(Path::new("/hq/companies/indigo/reports/q3.md"), root),
             Some(("indigo".into(), "reports/q3.md".into()))
         );
-        assert_eq!(vault_relative(Path::new("/hq/companies/indigo"), root), None);
-        assert_eq!(vault_relative(Path::new("/hq/workspace/out.html"), root), None);
-        assert_eq!(vault_relative(Path::new("/elsewhere/companies/x/a"), root), None);
+        assert_eq!(
+            vault_relative(Path::new("/hq/companies/indigo"), root),
+            None
+        );
+        assert_eq!(
+            vault_relative(Path::new("/hq/workspace/out.html"), root),
+            None
+        );
+        assert_eq!(
+            vault_relative(Path::new("/elsewhere/companies/x/a"), root),
+            None
+        );
     }
 
     #[test]
@@ -441,7 +452,9 @@ mod tests {
 
     #[test]
     fn deployable_extensions_are_the_agreed_set() {
-        for name in ["a.html", "a.HTM", "a.md", "a.pdf", "a.png", "a.jpg", "a.JPEG"] {
+        for name in [
+            "a.html", "a.HTM", "a.md", "a.pdf", "a.png", "a.jpg", "a.JPEG",
+        ] {
             assert!(deployable_file_name(name), "{name}");
         }
         for name in ["a.txt", "a.rs", "a.json", "Makefile", "a.svg"] {
@@ -457,7 +470,14 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            vec!["files", "--company", "indigo", "share", "reports/q3 draft.md", "--no-open"]
+            vec![
+                "files",
+                "--company",
+                "indigo",
+                "share",
+                "reports/q3 draft.md",
+                "--no-open"
+            ]
         );
         // A hostile name stays one argv entry — there is no shell to interpret it.
         let hostile = share_args("indigo", "a; rm -rf / && echo $(x)");
@@ -481,7 +501,10 @@ mod tests {
             .with_timezone(&chrono::Utc);
         assert_eq!(minutes_until(Some("2026-09-02T18:47:00Z"), now), 15);
         assert_eq!(minutes_until(Some("2026-09-02T18:00:00Z"), now), 0);
-        assert_eq!(minutes_until(Some("garbage"), now), DEFAULT_SHARE_TTL_MINUTES);
+        assert_eq!(
+            minutes_until(Some("garbage"), now),
+            DEFAULT_SHARE_TTL_MINUTES
+        );
         assert_eq!(minutes_until(None, now), DEFAULT_SHARE_TTL_MINUTES);
     }
 

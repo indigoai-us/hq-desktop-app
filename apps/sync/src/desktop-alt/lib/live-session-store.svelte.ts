@@ -46,6 +46,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { WEB_PATHS, skillMetadataFromShelf, type ShelfSkillMetadata } from '@hq/platform';
 import { safeUnlisten } from '../../lib/listener-registry';
 import type {
   ImageAttachment,
@@ -76,6 +77,7 @@ import type {
   ShareToChannelRequest,
   ShareToChannelResult,
 } from '../../components/sessions/share-channel';
+import type { AgentSession } from './sessions';
 
 // ---------------------------------------------------------------------------
 // Command surface types — the TS half of `crates/hq-desktop-core/agent_session`
@@ -92,8 +94,11 @@ export type PermissionMode = 'prompt' | 'bypassAll';
 
 /** Everything needed to launch (or resume) one session (Rust `SessionSpec`). */
 export interface SessionSpec {
+  projectChannelId?: string;
   /** Client-minted id; empty string asks the backend to mint one. */
   sessionId: string;
+  /** Native provider title retained when this wraps a resumed conversation. */
+  title?: string | null;
   tool: SessionTool;
   /** Ignored by the backend (it always runs from the HQ root) but part of the shape. */
   cwd: string;
@@ -140,6 +145,8 @@ export interface TurnOverrides {
 /** One session the app is driving (Rust `SessionSummary`). */
 export interface SessionSummary {
   sessionId: string;
+  /** Concise title derived from the first visible operator prompt. */
+  title?: string;
   tool: SessionTool;
   phase: SessionPhase;
   company: string | null;
@@ -158,12 +165,17 @@ export interface SessionSummary {
   lastActivityAt: string;
   lastSeq: number;
   pendingCount: number;
+  /** Provider-native id this app-owned row resumed from. */
+  resumedFrom?: string | null;
+  /** Exclusive provider transcript cursor for the next older page. */
+  historyBefore?: number | null;
 }
 
 /** A company the preflight offers as a session binding. */
 export interface PreflightCompany {
   slug: string;
   displayName: string;
+  cloudUid?: string | null;
 }
 
 /** Can this machine run an in-app session at all, and what is missing? */
@@ -217,6 +229,11 @@ interface ReplayPage {
   truncated: boolean;
 }
 
+interface DurableHistoryPage {
+  events: Array<{ receivedAtMs: number; event: SessionEvent }>;
+  before: number | null;
+}
+
 /** `agent-session:phase` payload. */
 interface SessionPhasePayload {
   sessionId: string;
@@ -243,6 +260,8 @@ export const AGENT_SESSION_NEEDS_YOU = 'agent-session:needs-you';
 /** Everything the store knows about ONE opened session. */
 interface SessionEntry {
   sessionId: string;
+  /** Provider metadata when this is a hydrated, dormant conversation. */
+  history: AgentSession | null;
   events: SessionEvent[];
   /**
    * Wall-clock ms each event was recorded by the backend, parallel to
@@ -261,6 +280,9 @@ interface SessionEntry {
   phaseObserved: boolean;
   /** The buffer dropped events before our window — the transcript has a hole. */
   truncated: boolean;
+  historyBefore: number | null;
+  historyCursorReady: boolean;
+  loadingEarlier: boolean;
   loading: boolean;
   error: string;
   /** requestId → the verb this client answered it with, so its card can retire. */
@@ -270,12 +292,16 @@ interface SessionEntry {
 function newEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
+    history: null,
     events: [],
     receivedAt: [],
     nextSeq: 0,
     phase: 'starting',
     phaseObserved: false,
     truncated: false,
+    historyBefore: null,
+    historyCursorReady: false,
+    loadingEarlier: false,
     loading: true,
     error: '',
     resolutions: {},
@@ -286,9 +312,23 @@ let entries = $state<Record<string, SessionEntry>>({});
 let activeId = $state<string | null>(null);
 let sessions = $state<SessionSummary[]>([]);
 let listError = $state('');
+let sharingErrors = $state<Record<string, string | null>>({});
 let needsYou = $state<NeedsYouNotice | null>(null);
 /** Bumped on every transcript-affecting mutation; the fold memo keys on it. */
 let revision = $state(0);
+
+interface HistoricalConversation {
+  session: AgentSession;
+  events: SessionEvent[];
+  receivedAt: (number | null)[];
+  before: number | null;
+}
+
+/**
+ * Hydrated provider transcripts survive the route remount caused by selecting
+ * a row. They are read-only until the first new send creates a live runtime.
+ */
+let historicalConversationsById: Record<string, HistoricalConversation> = {};
 
 /**
  * The operator's own turns, per session — the half of the transcript the
@@ -318,11 +358,21 @@ let turnSeq = 0;
 let unlistenEvent: UnlistenFn | null = null;
 let unlistenPhase: UnlistenFn | null = null;
 let unlistenNeedsYou: UnlistenFn | null = null;
+let unlistenSharing: UnlistenFn | null = null;
 let listenersStarting = false;
 
 let foldCache: { id: string; revision: number; value: TranscriptState } | null = null;
 /** Sessions whose fold errors have already been written to the console. */
 let foldErrorsReported = new Set<string>();
+
+type TurnDoneEvent = Extract<SessionEvent, { kind: 'turnDone' }>;
+interface TurnWaiter {
+  afterIndex: number;
+  resolve: (event: TurnDoneEvent) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+let turnWaiters = new Map<string, Set<TurnWaiter>>();
 
 /** Fold-cache key for the pre-session optimistic bubble. */
 const DRAFT_ID = '@draft';
@@ -361,22 +411,94 @@ function applyEvent(
   entry.receivedAt.push(receivedAtMs ?? Date.now());
   entry.nextSeq = seq + 1;
   adoptBackendTurns(sessionId, [event]);
+  resolveTurnWaiters(sessionId);
   revision += 1;
+}
+
+function resolveTurnWaiters(sessionId: string): void {
+  const entry = entries[sessionId];
+  const waiters = turnWaiters.get(sessionId);
+  if (!entry || !waiters) return;
+  for (const waiter of [...waiters]) {
+    const completed = entry.events
+      .slice(waiter.afterIndex)
+      .find((event): event is TurnDoneEvent => event.kind === 'turnDone');
+    if (!completed) continue;
+    clearTimeout(waiter.timer);
+    waiters.delete(waiter);
+    waiter.resolve(completed);
+  }
+  if (waiters.size === 0) turnWaiters.delete(sessionId);
+}
+
+/** Wait for the turn started after `afterIndex` to finish; used to sequence orientation. */
+function waitForTurnDone(
+  sessionId: string,
+  afterIndex = 0,
+  timeoutMs = 180_000,
+): Promise<TurnDoneEvent> {
+  const entry = entries[sessionId];
+  if (!entry) return Promise.reject(new Error('Session is not open.'));
+  const completed = entry.events
+    .slice(afterIndex)
+    .find((event): event is TurnDoneEvent => event.kind === 'turnDone');
+  if (completed) return Promise.resolve(completed);
+
+  return new Promise((resolve, reject) => {
+    const waiter = {} as TurnWaiter;
+    waiter.afterIndex = afterIndex;
+    waiter.resolve = resolve;
+    waiter.reject = reject;
+    waiter.timer = setTimeout(() => {
+      const waiters = turnWaiters.get(sessionId);
+      waiters?.delete(waiter);
+      if (waiters?.size === 0) turnWaiters.delete(sessionId);
+      reject(new Error('Session context took too long to load.'));
+    }, timeoutMs);
+    const waiters = turnWaiters.get(sessionId) ?? new Set<TurnWaiter>();
+    waiters.add(waiter);
+    turnWaiters.set(sessionId, waiters);
+    // Close the event-between-check-and-register race.
+    resolveTurnWaiters(sessionId);
+  });
 }
 
 /**
  * The backend's own record of the operator's turns has arrived — drop the
- * local mirror for this session so the bubble is not rendered twice.
+ * matching local mirrors so their bubbles are not rendered twice.
  *
  * The mirror exists only to paint a bubble before the round trip completes;
  * once a `userMessage` event is in the event log it is both authoritative and
- * correctly positioned, and the two would otherwise stack.
+ * correctly positioned, and the two would otherwise stack. Match one mirror
+ * per echo instead of clearing the whole queue: the first real prompt may
+ * already be visible while the hidden orientation turn is still finishing.
  */
 function adoptBackendTurns(sessionId: string, incoming: ReadonlyArray<SessionEvent>): void {
-  if (!incoming.some((event) => event.kind === 'userMessage')) return;
-  if (!(sessionId in userTurnsById)) return;
-  delete userTurnsById[sessionId];
+  const echoed = incoming
+    .filter((event): event is Extract<SessionEvent, { kind: 'userMessage' }> =>
+      event.kind === 'userMessage',
+    )
+    .map((event) => event.text);
+  const turns = userTurnsById[sessionId];
+  if (echoed.length === 0 || !turns) return;
+
+  const remaining = [...turns];
+  for (const text of echoed) {
+    const normalized = text.replace(/\r\n/g, '\n').trim();
+    let index = remaining.findIndex(
+      (turn) => turn.text.replace(/\r\n/g, '\n').trim() === normalized,
+    );
+    // A fresh session has one optimistic first turn. If the provider rewrote
+    // its whitespace, it is still the authoritative echo of that turn.
+    if (index < 0 && echoed.length === 1 && remaining.length === 1) index = 0;
+    if (index < 0) continue;
+    const [adopted] = remaining.splice(index, 1);
+    if (adopted) keepTurnMeta(sessionId, text, adopted);
+  }
+  if (remaining.length > 0) userTurnsById[sessionId] = remaining;
+  else delete userTurnsById[sessionId];
   foldCache = null;
+  revision += 1;
 }
 
 async function replayFrom(sessionId: string, sinceSeq: number): Promise<void> {
@@ -409,6 +531,7 @@ async function replayFrom(sessionId: string, sinceSeq: number): Promise<void> {
     target.truncated = target.truncated || replay.truncated;
     target.loading = false;
     target.error = '';
+    resolveTurnWaiters(sessionId);
     revision += 1;
   } catch (err) {
     const target = entries[sessionId];
@@ -422,7 +545,7 @@ async function ensureListeners(): Promise<void> {
   if (unlistenEvent || listenersStarting) return;
   listenersStarting = true;
   try {
-    const [onEvent, onPhase, onNeeds] = await Promise.all([
+    const [onEvent, onPhase, onNeeds, onSharing] = await Promise.all([
       listen<SessionEventPayload>(AGENT_SESSION_EVENT, ({ payload }) => {
         applyEvent(payload.sessionId, payload.seq, payload.receivedAtMs, payload.event);
       }),
@@ -439,10 +562,14 @@ async function ensureListeners(): Promise<void> {
       listen<NeedsYouNotice>(AGENT_SESSION_NEEDS_YOU, ({ payload }) => {
         needsYou = payload;
       }),
+      listen<{ sessionId: string; error: string | null }>('project-session:sharing-status', ({ payload }) => {
+        sharingErrors = { ...sharingErrors, [payload.sessionId]: payload.error };
+      }),
     ]);
     unlistenEvent = safeUnlisten(onEvent);
     unlistenPhase = safeUnlisten(onPhase);
     unlistenNeedsYou = safeUnlisten(onNeeds);
+    unlistenSharing = safeUnlisten(onSharing);
   } finally {
     listenersStarting = false;
   }
@@ -452,9 +579,11 @@ function teardownListeners(): void {
   unlistenEvent?.();
   unlistenPhase?.();
   unlistenNeedsYou?.();
+  unlistenSharing?.();
   unlistenEvent = null;
   unlistenPhase = null;
   unlistenNeedsYou = null;
+  unlistenSharing = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +597,13 @@ function newTurn(text: string, atIndex: number, meta: UserTurnMeta = {}): UserTu
 
 /** Keep a turn's meaning past the mirror, so the backend echo renders alike. */
 function keepTurnMeta(sessionId: string, text: string, meta: UserTurnMeta): void {
-  if (!meta.hidden && !meta.label && !(meta.attachments && meta.attachments.length > 0)) return;
+  if (
+    !meta.hidden &&
+    !meta.label &&
+    !meta.contextLabel &&
+    !meta.displayText &&
+    !(meta.attachments && meta.attachments.length > 0)
+  ) return;
   turnMetaById[sessionId] = { ...(turnMetaById[sessionId] ?? {}), [text]: meta };
 }
 
@@ -497,6 +632,10 @@ async function refreshList(): Promise<void> {
     for (const summary of sessions) {
       const entry = entries[summary.sessionId];
       if (entry && !entry.phaseObserved) entry.phase = summary.phase;
+      if (entry && !entry.historyCursorReady) {
+        entry.historyBefore = summary.historyBefore ?? null;
+        entry.historyCursorReady = true;
+      }
     }
   } catch (err) {
     listError = errorText(err);
@@ -509,6 +648,21 @@ async function refreshList(): Promise<void> {
  */
 async function open(sessionId: string): Promise<void> {
   activeId = sessionId;
+  const historical = historicalConversationsById[sessionId];
+  if (historical && !sessions.some((session) => session.sessionId === sessionId)) {
+    const entry = newEntry(sessionId);
+    entry.history = historical.session;
+    entry.events = [...historical.events];
+    entry.receivedAt = [...historical.receivedAt];
+    entry.phase = 'idle';
+    entry.loading = false;
+    entry.historyBefore = historical.before;
+    entry.historyCursorReady = true;
+    entries[sessionId] = entry;
+    foldCache = null;
+    revision += 1;
+    return;
+  }
   if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
   const known = sessions.find((s) => s.sessionId === sessionId);
   if (known) entries[sessionId]!.phase = known.phase;
@@ -522,6 +676,101 @@ async function open(sessionId: string): Promise<void> {
   // before that correction is a round trip the strip spends naming the wrong
   // state on a session that is mid-turn.
   await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+}
+
+/** Open a provider transcript without spawning or resuming its CLI process. */
+async function openHistory(session: AgentSession): Promise<void> {
+  activeId = session.id;
+  const cached = historicalConversationsById[session.id];
+  if (cached) {
+    await open(session.id);
+    return;
+  }
+
+  const entry = newEntry(session.id);
+  entry.history = session;
+  entry.phase = 'idle';
+  entries[session.id] = entry;
+  foldCache = null;
+  revision += 1;
+  try {
+    const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
+      sessionId: session.id,
+      before: null,
+      tool: session.tool,
+    });
+    const target = entries[session.id];
+    if (!target) return;
+    target.events = page.events.map((item) => item.event);
+    target.receivedAt = page.events.map((item) => item.receivedAtMs ?? null);
+    target.historyBefore = page.before;
+    target.historyCursorReady = true;
+    target.loading = false;
+    target.error = '';
+    historicalConversationsById[session.id] = {
+      session,
+      events: [...target.events],
+      receivedAt: [...target.receivedAt],
+      before: target.historyBefore,
+    };
+    revision += 1;
+  } catch (err) {
+    const target = entries[session.id];
+    if (!target) return;
+    target.loading = false;
+    target.error = errorText(err);
+  }
+}
+
+function sameDialogueEvent(left: SessionEvent | undefined, right: SessionEvent | undefined): boolean {
+  if (!left || !right || left.kind !== right.kind) return false;
+  if (left.kind === 'userMessage' && right.kind === 'userMessage') return left.text === right.text;
+  if (left.kind === 'assistantMessage' && right.kind === 'assistantMessage') return left.text === right.text;
+  return false;
+}
+
+/** Prepend one bounded page from the provider transcript without disturbing
+ * the live replay sequence. The caller preserves the reader's scroll anchor. */
+async function loadEarlier(): Promise<void> {
+  const sessionId = activeId;
+  const entry = activeEntry();
+  if (!sessionId || !entry || entry.loadingEarlier || entry.historyBefore === null) return;
+  entry.loadingEarlier = true;
+  entry.error = '';
+  try {
+    const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
+      sessionId,
+      before: entry.historyBefore,
+      ...(entry.history ? { tool: entry.history.tool } : {}),
+    });
+    const target = entries[sessionId];
+    if (!target) return;
+    const olderEvents = page.events.map((item) => item.event);
+    const olderStamps = page.events.map((item) => item.receivedAtMs ?? null);
+    if (sameDialogueEvent(olderEvents.at(-1), target.events[0])) {
+      olderEvents.pop();
+      olderStamps.pop();
+    }
+    target.events = [...olderEvents, ...target.events];
+    target.receivedAt = [...olderStamps, ...target.receivedAt];
+    target.historyBefore = page.before;
+    target.historyCursorReady = true;
+    target.loadingEarlier = false;
+    if (target.history) {
+      historicalConversationsById[sessionId] = {
+        session: target.history,
+        events: [...target.events],
+        receivedAt: [...target.receivedAt],
+        before: target.historyBefore,
+      };
+    }
+    revision += 1;
+  } catch (err) {
+    const target = entries[sessionId];
+    if (!target) return;
+    target.loadingEarlier = false;
+    target.error = errorText(err);
+  }
 }
 
 /**
@@ -542,7 +791,8 @@ function close(sessionId: string): void {
 
 /** Start a session and open it. Returns the backend-assigned session id. */
 async function start(spec: SessionSpec): Promise<string> {
-  const started = await invoke<{ sessionId: string }>('agent_session_start', { spec });
+  await ensureListeners();
+  const started = await invoke<{ sessionId: string }>('agent_session_start', { spec, ...(spec.projectChannelId ? { projectChannelId: spec.projectChannelId } : {}) });
   await open(started.sessionId);
   return started.sessionId;
 }
@@ -567,21 +817,101 @@ async function startAndSend(
   foldCache = null;
   revision += 1;
   try {
-    const sessionId = await start(spec);
-    const entry = entries[sessionId];
+    // A fresh session has no history to replay. Subscribe as soon as the
+    // backend mints its id, then write the first message before registry/list
+    // housekeeping; waiting for `open()` here delayed real sends by 30+ sec.
+    await ensureListeners();
+    const started = await invoke<{ sessionId: string }>('agent_session_start', { spec, ...(spec.projectChannelId ? { projectChannelId: spec.projectChannelId } : {}) });
+    const sessionId = started.sessionId;
+    activeId = sessionId;
+    if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
+    await ensureListeners();
+    const entry = entries[sessionId]!;
+    entry.loading = false;
     userTurnsById[sessionId] = [
       ...(userTurnsById[sessionId] ?? []),
-      { ...optimistic, atIndex: entry ? entry.events.length : 0 },
+      { ...optimistic, atIndex: entry.events.length },
     ];
     keepTurnMeta(sessionId, text, meta);
     draftTurns = [];
     foldCache = null;
     revision += 1;
     await invoke('agent_session_send', { sessionId, text, images, overrides: null });
+    void refreshList();
     return sessionId;
   } catch (err) {
     // The send never happened, so the bubble would be a lie. Take it back.
     draftTurns = [];
+    foldCache = null;
+    revision += 1;
+    throw err;
+  }
+}
+
+/**
+ * Continue a dormant provider conversation. Opening history is read-only;
+ * this first new turn is the precise point where a live runtime is needed.
+ */
+async function resumeAndSend(
+  text: string,
+  images: ImageAttachment[] = [],
+  permissionMode: PermissionMode = 'prompt',
+  meta: UserTurnMeta = {},
+): Promise<string> {
+  const dormantId = activeId;
+  const dormant = activeEntry()?.history;
+  if (!dormantId || !dormant) throw new Error('No historical session is open.');
+
+  const optimistic = newTurn(text, activeEntry()?.events.length ?? 0, meta);
+  userTurnsById[dormantId] = [...(userTurnsById[dormantId] ?? []), optimistic];
+  keepTurnMeta(dormantId, text, meta);
+  foldCache = null;
+  revision += 1;
+
+  try {
+    const started = await invoke<{ sessionId: string }>('agent_session_start', {
+      spec: {
+        sessionId: '',
+        title: dormant.title || null,
+        tool: dormant.tool,
+        cwd: dormant.cwd,
+        company: dormant.company || null,
+        project: dormant.project || null,
+        model: null,
+        effort: null,
+        resume: dormant.id,
+        permissionMode,
+      } satisfies SessionSpec,
+    });
+    const sessionId = started.sessionId;
+    activeId = sessionId;
+    if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
+    await ensureListeners();
+    await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+
+    const entry = entries[sessionId]!;
+    userTurnsById[sessionId] = [
+      ...(userTurnsById[sessionId] ?? []),
+      { ...optimistic, atIndex: entry.events.length },
+    ];
+    keepTurnMeta(sessionId, text, meta);
+    delete userTurnsById[dormantId];
+    foldCache = null;
+    revision += 1;
+    await invoke('agent_session_send', {
+      sessionId,
+      text,
+      images,
+      overrides: null,
+    });
+    void refreshList();
+    return sessionId;
+  } catch (err) {
+    const remaining = (userTurnsById[dormantId] ?? []).filter(
+      (turn) => turn.id !== optimistic.id,
+    );
+    if (remaining.length > 0) userTurnsById[dormantId] = remaining;
+    else delete userTurnsById[dormantId];
     foldCache = null;
     revision += 1;
     throw err;
@@ -715,6 +1045,13 @@ async function cliSessionIdOf(sessionId: string, tool: SessionTool): Promise<str
 async function openInApp(): Promise<OpenInAppOutcome> {
   const sessionId = activeId;
   if (!sessionId) throw new Error('No live session to open.');
+  const historical = entries[sessionId]?.history;
+  if (historical) {
+    return invoke<OpenInAppOutcome>('agent_session_open_in_app', {
+      tool: historical.tool,
+      cliSessionId: historical.id,
+    });
+  }
   const tool: SessionTool =
     sessions.find((s) => s.sessionId === sessionId)?.tool ?? startedToolOf(sessionId) ?? 'claude';
   const cliSessionId = await cliSessionIdOf(sessionId, tool);
@@ -790,6 +1127,7 @@ async function slashCommands(tool: SessionTool = 'claude'): Promise<CommandCatal
 // are cheap directory reads asked for on a click.
 
 let skillCatalogCache: Map<string, Promise<SkillCatalog>> = new Map();
+let skillMetadataCache: Map<string, Promise<ShelfSkillMetadata[]>> = new Map();
 
 /** Workers + skills the picker can offer, scoped to `company` when set. */
 function hqSkillCatalog(company: string | null): Promise<SkillCatalog> {
@@ -801,6 +1139,21 @@ function hqSkillCatalog(company: string | null): Promise<SkillCatalog> {
   promise.catch(() => {
     if (skillCatalogCache.get(key) === promise) skillCatalogCache.delete(key);
   });
+  return promise;
+}
+
+/** Cloud-only group/tag enrichment. Failure is intentionally separate from the local catalog. */
+function hqSkillMetadata(companyUid: string): Promise<ShelfSkillMetadata[]> {
+  const cached = skillMetadataCache.get(companyUid);
+  if (cached) return cached;
+  const promise = invoke<{ status: number; body: string }>('hq_pro_fetch', {
+    url: WEB_PATHS.skillsShelf(companyUid), method: 'GET', body: null,
+  }).then((response) => {
+    if (response.status < 200 || response.status >= 300) throw new Error(`Skill groups unavailable (${response.status})`);
+    return skillMetadataFromShelf(JSON.parse(response.body || '{}'));
+  });
+  skillMetadataCache.set(companyUid, promise);
+  promise.catch(() => { if (skillMetadataCache.get(companyUid) === promise) skillMetadataCache.delete(companyUid); });
   return promise;
 }
 
@@ -875,6 +1228,7 @@ export function resetProbeCaches(): void {
  * a lifetime singleton) — exported so tests start from a known board.
  */
 export function resetLiveSessionStore(): void {
+  sharingErrors = {};
   teardownListeners();
   entries = {};
   activeId = null;
@@ -888,6 +1242,14 @@ export function resetLiveSessionStore(): void {
   draftTurns = [];
   turnSeq = 0;
   foldErrorsReported = new Set();
+  historicalConversationsById = {};
+  for (const waiters of turnWaiters.values()) {
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('Session store reset.'));
+    }
+  }
+  turnWaiters = new Map();
 }
 
 // ---------------------------------------------------------------------------
@@ -983,8 +1345,21 @@ export const liveSessionStore = {
   get error(): string {
     return activeEntry()?.error ?? '';
   },
+  get sharingNotice(): string {
+    const id = activeId;
+    if (!id || !(id in sharingErrors)) return '';
+    return sharingErrors[id]
+      ? 'Project sharing paused. Your session is saved locally; HQ will retry automatically.'
+      : 'Shared read only with project chat members.';
+  },
   get truncated(): boolean {
     return activeEntry()?.truncated ?? false;
+  },
+  get hasEarlier(): boolean {
+    return activeEntry()?.historyBefore != null;
+  },
+  get loadingEarlier(): boolean {
+    return activeEntry()?.loadingEarlier ?? false;
   },
   /** Raw event log of the active session (oldest first). */
   get events(): SessionEvent[] {
@@ -1046,13 +1421,43 @@ export const liveSessionStore = {
   },
   /** The active session's registry summary, when the list knows about it. */
   get summary(): SessionSummary | null {
-    return sessions.find((s) => s.sessionId === activeId) ?? null;
+    const live = sessions.find((s) => s.sessionId === activeId);
+    if (live) return live;
+    const entry = activeEntry();
+    const historical = entry?.history;
+    if (!entry || !historical) return null;
+    return {
+      sessionId: historical.id,
+      title: historical.title || historical.project || 'Untitled session',
+      tool: historical.tool,
+      phase: 'idle',
+      company: historical.company || null,
+      project: historical.project || null,
+      model: historical.model || null,
+      requestedModel: null,
+      effort: null,
+      permissionMode: 'prompt',
+      cwd: historical.cwd,
+      startedAt: historical.startedAt,
+      lastActivityAt: historical.lastActivityAt,
+      lastSeq: entry.nextSeq,
+      pendingCount: 0,
+      resumedFrom: null,
+      historyBefore: entry.historyBefore,
+    };
+  },
+  get isHistorical(): boolean {
+    return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },
   open,
+  openHistory,
   close,
   refreshList,
+  loadEarlier,
   start,
   startAndSend,
+  resumeAndSend,
+  waitForTurnDone,
   send,
   setPermissionMode,
   respondPermission,
@@ -1064,6 +1469,7 @@ export const liveSessionStore = {
   preflight,
   slashCommands,
   hqSkillCatalog,
+  hqSkillMetadata,
   hqCompanyProjects,
   hqSelf,
   hqRecentMeetings,

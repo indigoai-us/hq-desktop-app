@@ -1,22 +1,7 @@
 <script lang="ts">
-  /**
-   * The sessions drawer: what this app is driving right now, and what it drove
-   * before.
-   *
-   * It is an OVERLAY, not a column. A chat surface earns its width by not
-   * spending it on navigation, so this slides over the conversation, closes on
-   * Escape or a scrim click, and closes itself the moment you pick something.
-   *
-   * TWO stores, deliberately, because they answer two different questions:
-   *   - `liveSessionStore.sessions` is the in-app registry — sessions THIS app
-   *     started and can still send to. Those rows are selectable.
-   *   - `sessionsStore.sessions` is Mission Control's best-effort observation of
-   *     every Claude/Codex session on the machine, in-app or not. Those rows are
-   *     read-only history here; a Claude row offers Resume, which starts a NEW
-   *     in-app session against that CLI transcript.
-   * A history row that is already live in-app is dropped from History so the
-   * same session never appears twice.
-   */
+  /** One chronological conversation list. A provider transcript and the
+   * app-owned process resuming it are two representations of the same session,
+   * so navigation merges them instead of inventing Live and History buckets. */
   import { onMount } from 'svelte';
   import { liveSessionStore, type SessionPhase } from '../lib/live-session-store.svelte';
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
@@ -25,16 +10,16 @@
   interface Props {
     activeSessionId?: string;
     onselect?: (sessionId: string) => void;
-    onresume?: (session: AgentSession) => void;
+    onopen?: (session: AgentSession) => Promise<boolean | void> | boolean | void;
     /** Dismiss the drawer — scrim, Escape, or a chosen row. */
     onclose?: () => void;
   }
 
-  let { activeSessionId, onselect, onresume, onclose }: Props = $props();
+  let { activeSessionId, onselect, onopen, onclose }: Props = $props();
 
-  /** How many history rows to show before the "show more" reveal. */
-  const HISTORY_PAGE = 12;
-  let historyLimit = $state(HISTORY_PAGE);
+  const SESSION_PAGE = 18;
+  let sessionLimit = $state(SESSION_PAGE);
+  let openingId = $state<string | null>(null);
 
   // Monotonic tick so relative labels age on their own between snapshots.
   let now = $state(Date.now());
@@ -59,19 +44,50 @@
 
   const live = $derived(liveSessionStore.sessions);
   const liveIds = $derived(new Set(live.map((session) => session.sessionId)));
+  const resumedIds = $derived(new Set(live.flatMap((session) => session.resumedFrom ? [session.resumedFrom] : [])));
   const history = $derived(
-    sessionsStore.sessions.filter((session) => !liveIds.has(session.id)),
+    sessionsStore.sessions.filter((session) => !liveIds.has(session.id) && !resumedIds.has(session.id)),
   );
-  const visibleHistory = $derived(history.slice(0, historyLimit));
+  const rows = $derived([
+    ...live.map((session) => ({
+      key: `live:${session.sessionId}`,
+      sessionId: session.sessionId,
+      history: null,
+      title: session.title || session.project || session.company || 'Untitled session',
+      company: session.company ?? '',
+      model: session.model ?? session.tool,
+      lastActivityAt: session.lastActivityAt,
+      phase: session.phase,
+      pendingCount: session.pendingCount,
+    })),
+    ...history.map((session) => ({
+      key: `history:${session.id}`,
+      sessionId: null,
+      history: session,
+      title: session.title || session.project || 'Untitled session',
+      company: session.company,
+      model: session.model || session.tool,
+      lastActivityAt: session.lastActivityAt,
+      phase: null,
+      pendingCount: 0,
+    })),
+  ].sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)));
+  const visibleRows = $derived(rows.slice(0, sessionLimit));
 
   function choose(sessionId: string) {
     onselect?.(sessionId);
     onclose?.();
   }
 
-  function resume(session: AgentSession) {
-    onresume?.(session);
-    onclose?.();
+  async function openHistory(session: AgentSession) {
+    if (openingId) return;
+    openingId = session.id;
+    try {
+      const opened = await onopen?.(session);
+      if (opened !== false) onclose?.();
+    } finally {
+      openingId = null;
+    }
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -91,85 +107,60 @@
   ></button>
 
   <aside class="drawer" aria-label="Sessions">
-    <section class="group" aria-labelledby="session-live-heading">
-      <h3 id="session-live-heading" class="group-head">
-        Live <span class="count">{live.length}</span>
+    <section class="group" aria-labelledby="sessions-heading">
+      <h3 id="sessions-heading" class="group-head">
+        Sessions <span class="count">{rows.length}</span>
       </h3>
 
       {#if liveSessionStore.listError}
         <p class="group-note" role="alert">{liveSessionStore.listError}</p>
-      {:else if live.length === 0}
-        <p class="group-note">No session running in the app yet.</p>
+      {:else if sessionsStore.loading && rows.length === 0}
+        <p class="group-note">Looking for sessions on this machine…</p>
+      {:else if rows.length === 0}
+        <p class="group-note">No sessions on this machine yet.</p>
       {:else}
         <ul class="rows">
-          {#each live as session (session.sessionId)}
-            <li>
+          {#each visibleRows as row (row.key)}
+            <li data-testid={row.history ? 'session-history-row' : undefined}>
               <button
                 type="button"
                 class="row"
-                class:selected={session.sessionId === activeSessionId}
-                data-testid="session-live-row"
-                data-session-id={session.sessionId}
-                aria-current={session.sessionId === activeSessionId ? 'true' : undefined}
-                onclick={() => choose(session.sessionId)}
+                class:selected={row.sessionId === activeSessionId}
+                data-testid={row.history ? 'session-resume' : 'session-live-row'}
+                data-session-id={row.sessionId ?? row.history?.id}
+                aria-current={row.sessionId === activeSessionId ? 'true' : undefined}
+                aria-busy={openingId === row.history?.id ? 'true' : undefined}
+                disabled={openingId !== null}
+                onclick={() => row.history ? void openHistory(row.history) : choose(row.sessionId!)}
               >
                 <span class="row-top">
-                  <span class={`dot phase-${session.phase}`} data-testid="session-phase-pill"
-                    aria-label={PHASE_LABEL[session.phase]}></span>
-                  <span class="row-title">{session.company ?? 'No company'}</span>
-                  {#if session.pendingCount > 0}
-                    <span class="pending-chip">{session.pendingCount}</span>
+                  {#if row.phase}
+                    <span class={`dot phase-${row.phase}`} data-testid="session-phase-pill"
+                      aria-label={PHASE_LABEL[row.phase]}></span>
+                  {/if}
+                  <span class="row-title">{row.title}</span>
+                  {#if row.pendingCount > 0}
+                    <span class="pending-chip">{row.pendingCount}</span>
                   {/if}
                 </span>
                 <span class="row-meta">
-                  <span class="mono">{session.model ?? 'default model'}</span>
-                  <span class="mono">{relativeActivity(session.lastActivityAt, now)}</span>
+                  {#if openingId === row.history?.id}
+                    <span>Opening…</span>
+                  {:else}
+                    {#if row.company}<span>{row.company}</span>{/if}
+                    <span class="mono">{row.model}</span>
+                    <span class="mono">{relativeActivity(row.lastActivityAt, now)}</span>
+                  {/if}
                 </span>
               </button>
             </li>
           {/each}
         </ul>
-      {/if}
-    </section>
-
-    <section class="group" aria-labelledby="session-history-heading">
-      <h3 id="session-history-heading" class="group-head">
-        History <span class="count">{history.length}</span>
-      </h3>
-
-      {#if sessionsStore.loading}
-        <p class="group-note">Looking for sessions on this machine…</p>
-      {:else if history.length === 0}
-        <p class="group-note">Nothing else on this machine.</p>
-      {:else}
-        <ul class="rows">
-          {#each visibleHistory as session (session.id)}
-            <li class="history-row" data-testid="session-history-row">
-              <span class="row-top">
-                <span class="row-title">{session.company || 'No company'}</span>
-                {#if session.tool === 'claude'}
-                  <button
-                    type="button"
-                    class="resume"
-                    data-testid="session-resume"
-                    onclick={() => resume(session)}
-                  >
-                    Resume
-                  </button>
-                {/if}
-              </span>
-              <span class="row-meta">
-                <span class="mono">{session.model || session.tool}</span>
-                <span class="mono">{relativeActivity(session.lastActivityAt, now)}</span>
-              </span>
-            </li>
-          {/each}
-        </ul>
-        {#if history.length > visibleHistory.length}
+        {#if rows.length > visibleRows.length}
           <button
             type="button"
             class="more"
-            onclick={() => (historyLimit += HISTORY_PAGE)}
+            onclick={() => (sessionLimit += SESSION_PAGE)}
           >
             Show more
           </button>
@@ -204,7 +195,11 @@
     width: 264px;
     max-width: 78%;
     height: 100%;
-    overflow-y: auto;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
     padding: var(--v4-space-3) var(--v4-space-2);
     border-right: 1px solid var(--v4-hairline);
     /* The v4 popover surface is deliberately translucent and expects its own
@@ -257,8 +252,7 @@
     list-style: none;
   }
 
-  .row,
-  .history-row {
+  .row {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -346,7 +340,6 @@
     white-space: nowrap;
   }
 
-  .resume,
   .more {
     flex: none;
     height: 20px;
@@ -357,13 +350,15 @@
     color: var(--v4-text-2);
     font-family: inherit;
     font-size: 11px;
-    cursor: pointer;
   }
 
-  .resume:hover,
   .more:hover {
     background: var(--v4-active-row);
     color: var(--v4-text-1);
+  }
+
+  .more {
+    cursor: pointer;
   }
 
   .more {

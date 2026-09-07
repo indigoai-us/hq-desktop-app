@@ -12,7 +12,7 @@
    * First send, in order:
    *   1. the bubble is mirrored in the store and painted immediately,
    *   2. `agent_session_start` mints a session id,
-   *   3. `agent_session_send` delivers `/startwork {company|project}` as a
+   *   3. `agent_session_send` delivers `/startwork {company} [project]` as a
    *      HIDDEN orientation turn (a system divider, not a bubble) — unless the
    *      company menu's toggle is off or the text already IS a `/startwork`,
    *   4. `agent_session_send` delivers the user's text (plus any context
@@ -26,7 +26,7 @@
    * strip, drawer, transcript and composer read it, the cards call back into
    * it, and every `agent_session_*` invoke lives inside it.
    */
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -40,6 +40,7 @@
   } from '../../components/sessions/mentions';
   import {
     mergeSlashCommands,
+    mergeSkillMetadata,
     type SkillCatalog,
   } from '../../components/sessions/slash-commands';
   import {
@@ -49,6 +50,7 @@
     readStartworkEnabled,
     rememberLastProject,
     rememberStartworkEnabled,
+    startworkCommand,
     type ProjectEntry,
     type ProjectViewer,
   } from '../../components/sessions/startwork';
@@ -105,6 +107,7 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
+  import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
   import { projectLinksStore } from '../lib/project-links-store.svelte';
   import {
@@ -125,6 +128,9 @@
     initialCompany?: string | null;
     /** …and to this project (directory slug), once the project list is in. */
     initialProject?: string | null;
+    initialChannelId?: string;
+    /** Durable metadata supplied by a nested project-session route. */
+    initialHistorySession?: AgentSession | null;
   }
 
   let {
@@ -133,6 +139,8 @@
     onopenchannel,
     initialCompany = null,
     initialProject = null,
+    initialChannelId,
+    initialHistorySession = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
@@ -156,6 +164,8 @@
   /** The catalog probe's own complaint, e.g. Codex not being wired up yet. */
   let catalogError = $state('');
   let openedId = $state<string | null>(null);
+  /** Last id observed from the route; distinct from a newly minted provisional id. */
+  let routedId: string | null = null;
 
   // --- @mentions ------------------------------------------------------------
   /** Who the composer's `@` can offer: the company pill's people + agents. */
@@ -220,28 +230,80 @@
     const slug = routeProjectPending;
     if (!slug || projectsLoading || projectsCompany !== company) return;
     routeProjectPending = null;
-    project = projectNameFor(projects, slug);
+    // A project-channel route is authoritative even when its older PRD falls
+    // outside the bounded project-picker feed. Keep the slug as the pill and
+    // wire value instead of silently degrading the session to company-only.
+    project = projectNameFor(projects, slug) ?? slug;
   });
 
   // --- the `/` picker's HQ catalog --------------------------------------------
   let catalog = $state<SkillCatalog | null>(null);
   let catalogLoading = $state(false);
   let skillCatalogError = $state('');
+  let groupMetadataAvailable = $state(true);
   let catalogCompany = $state<string | null | undefined>(undefined);
+
+  async function openRoutedSession(next: string) {
+    if (routedId !== next) return;
+
+    // Project-channel links already carry the authoritative provider history
+    // metadata. Open them immediately instead of blocking the transcript on
+    // the slower global session catalogs, which briefly rendered a generic
+    // blank session after every click or app restart.
+    if (initialHistorySession?.id === next) {
+      tool = initialHistorySession.tool;
+      model = null;
+      effort = null;
+      company = initialHistorySession.company || null;
+      remember(LAST_TOOL_KEY, tool);
+      rememberModel(tool, null);
+      rememberEffort(tool, null);
+      await liveSessionStore.openHistory(initialHistorySession);
+      return;
+    }
+
+    // Resolve the inexpensive in-memory registry first. A live session must
+    // not wait for a scan of every provider transcript before replaying.
+    await liveSessionStore.refreshList();
+    if (routedId !== next) return;
+
+    const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
+    if (appOwned) {
+      await liveSessionStore.open(next);
+      return;
+    }
+    await sessionsStore.refresh();
+    if (routedId !== next) return;
+    const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
+    if (providerHistory && !appOwned) {
+      tool = providerHistory.tool;
+      model = null;
+      effort = null;
+      company = providerHistory.company || null;
+      remember(LAST_TOOL_KEY, tool);
+      rememberModel(tool, null);
+      rememberEffort(tool, null);
+      await liveSessionStore.openHistory(providerHistory);
+      return;
+    }
+    await liveSessionStore.open(next);
+  }
 
   // Open / close the routed session. Runs on mount and whenever the route's id
   // changes; the previous session's buffer is dropped so a long transcript does
   // not sit in memory behind a session the user left.
   $effect(() => {
     const next = sessionId ?? null;
-    if (next === openedId) return;
-    const previous = openedId;
+    if (next === routedId) return;
+    const previous = untrack(() => openedId);
+    routedId = next;
     openedId = next;
-    if (previous) liveSessionStore.close(previous);
-    if (next) void liveSessionStore.open(next);
+    if (previous && previous !== next) liveSessionStore.close(previous);
+    if (next) void openRoutedSession(next);
   });
 
   onDestroy(() => {
+    routedId = null;
     if (openedId) liveSessionStore.close(openedId);
   });
 
@@ -275,6 +337,10 @@
     catalogTool = wanted;
     catalogLoaded = false;
     catalogError = '';
+    // Never leave the previous provider's selectable rows on screen while
+    // the new CLI probe is pending (which can take several seconds).
+    models = readSessionModels([], wanted);
+    probeCommands = [];
     void liveSessionStore
       .slashCommands(wanted)
       .then((catalog) => {
@@ -437,22 +503,36 @@
   /** The HQ skill catalog, once per company (the store caches it). */
   $effect(() => {
     const wanted = company;
-    if (catalogCompany === wanted) return;
-    catalogCompany = wanted;
+    const companyUid = preflight?.companies.find((entry) => entry.slug === wanted)?.cloudUid ?? null;
+    const cacheKey = `${wanted ?? ''}:${companyUid ?? ''}`;
+    if (catalogCompany === cacheKey) return;
+    catalogCompany = cacheKey;
     skillCatalogError = '';
+    groupMetadataAvailable = wanted === null || companyUid !== null;
     catalogLoading = true;
     void liveSessionStore
       .hqSkillCatalog(wanted)
-      .then((result) => {
-        if (catalogCompany === wanted) catalog = result;
+      .then(async (result) => {
+        if (catalogCompany !== cacheKey) return;
+        catalog = result;
+        if (!companyUid) return;
+        try {
+          const metadata = await liveSessionStore.hqSkillMetadata(companyUid);
+          if (catalogCompany === cacheKey) {
+            catalog = mergeSkillMetadata(result, metadata);
+            groupMetadataAvailable = true;
+          }
+        } catch {
+          if (catalogCompany === cacheKey) groupMetadataAvailable = false;
+        }
       })
       .catch((err: unknown) => {
-        if (catalogCompany !== wanted) return;
+        if (catalogCompany !== cacheKey) return;
         catalog = null;
         skillCatalogError = err instanceof Error ? err.message : String(err);
       })
       .finally(() => {
-        if (catalogCompany === wanted) catalogLoading = false;
+        if (catalogCompany === cacheKey) catalogLoading = false;
       });
   });
 
@@ -504,12 +584,13 @@
   let pillsDirty = $state(false);
   $effect(() => {
     const live = summary;
-    if (!live || pillsBoundTo === live.sessionId) return;
+    if (!live || live.sessionId !== sessionId || pillsBoundTo === live.sessionId) return;
     pillsBoundTo = live.sessionId;
     pillsDirty = false;
     companySeeded = true;
     company = live.company ?? null;
     permissionMode = live.permissionMode;
+    tool = live.tool;
     // The pills describe the session on screen, not the last one started —
     // otherwise opening an old chat would report a model change the user never
     // made, and the very first follow-up would send an override for it.
@@ -524,6 +605,11 @@
 
   /** The pills describe a different session than the live one — say so. */
   const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);
+  const orientationCommand = $derived(
+    (!sessionId || newSessionPending) && startworkEnabled
+      ? startworkCommand({ company, project })
+      : null,
+  );
 
   const companyLabel = $derived(
     preflight?.companies.find((option) => option.slug === company)?.displayName ??
@@ -533,7 +619,7 @@
 
   const title = $derived(
     sessionId && summary
-      ? `${summary.company ?? 'No company'} · ${sessionModelName(summary)}`
+      ? summary.title || `${summary.company ?? 'No company'} · ${sessionModelName(summary)}`
       : sessionId
         ? 'Session'
         : 'New session',
@@ -569,7 +655,9 @@
 
   const emptyHint = $derived(
     sessionId
-      ? ''
+      ? liveSessionStore.isHistorical
+        ? 'This session ended before any visible messages were saved.'
+        : ''
       : `Ask anything. Your first message starts a session in HQ for ${companyLabel}.`,
   );
 
@@ -606,7 +694,7 @@
    * moment the turn is mirrored until the fold sees that turn end.
    */
   const handoffState = $derived.by((): HandoffState => {
-    if (!sessionId) return 'hidden';
+    if (!sessionId || liveSessionStore.isHistorical) return 'hidden';
     if (transcript.handoff === 'running') return 'running';
     if (sendDisabled || phase !== 'idle') return 'disabled';
     return 'ready';
@@ -767,6 +855,11 @@
     );
   }
 
+  const sharingChannelId = $derived(
+    (company === initialCompany && projectSlugFor(projects, project) === initialProject ? initialChannelId : undefined)
+      || linkForProject(projectLinksStore.linksFor(company), projectSlugFor(projects, project))?.channelId,
+  );
+
   function specFrom(resume: string | null = null): SessionSpec {
     // A spec never carries a model the tool cannot run — validated here, on
     // the send path itself, not only by the effects that follow a pill move.
@@ -775,11 +868,15 @@
       // Empty id asks the backend to mint one; `cwd` is likewise the backend's
       // (it always runs from the HQ root) but the shape carries both.
       sessionId: '',
+      title: null,
       tool,
       cwd: '',
       company,
       // The pill holds a prd NAME; the session binds to the directory slug.
       project: projectSlugFor(projects, project),
+      // New project-bound drafts use that project's exact channel. Resuming
+      // an old conversation never enrolls it retroactively.
+      ...(!resume && sharingChannelId ? { projectChannelId: sharingChannelId } : {}),
       model,
       effort,
       resume,
@@ -858,6 +955,26 @@
     const wire = composeWithContext(text, context, preflight?.hqRoot ?? '');
     const meta = contextTurnMeta(context);
 
+    if (sessionId && !newSessionPending && liveSessionStore.isHistorical) {
+      starting = true;
+      try {
+        const started = await liveSessionStore.resumeAndSend(
+          wire,
+          attachments,
+          permissionMode,
+          meta,
+        );
+        openedId = started;
+        onopensession?.(started);
+        await onmentionsend(started, text, mentions);
+      } catch (err) {
+        actionError = err instanceof Error ? err.message : String(err);
+      } finally {
+        starting = false;
+      }
+      return;
+    }
+
     if (sessionId && !newSessionPending) {
       // The pills are validated BEFORE the overrides are read off them.
       ensureModelValid();
@@ -873,28 +990,35 @@
 
     starting = true;
     let started: string | null = null;
+    let messageAccepted = false;
     try {
-      // Two sends when orienting: the hidden `/startwork` turn starts the
-      // session, then the user's own words follow it on the same session.
-      const plan = planFirstSend(text, { company, project }, startworkEnabled);
-      const orientation = plan.length > 1 ? plan[0]! : null;
-      if (orientation) {
-        started = await liveSessionStore.startAndSend(specFrom(), orientation.text, [], {
-          hidden: true,
-          label: orientation.label,
-        });
-        await liveSessionStore.send(wire, attachments, null, meta);
-      } else {
-        started = await liveSessionStore.startAndSend(specFrom(), wire, attachments, meta);
-      }
-      openedId = started;
-      onopensession?.(started);
+      // Orientation, selected skill and natural-language prompt are one
+      // atomic first message. The transcript splits context from the visible
+      // prompt only as presentation; the CLI receives one send.
+      const first = planFirstSend(wire, { company, project }, startworkEnabled)[0]!;
+      const firstMeta: UserTurnMeta = first.label
+        ? { ...meta, hidden: false, contextLabel: first.label, displayText: first.displayText }
+        : meta;
+      started = await liveSessionStore.startAndSend(
+        specFrom(),
+        first.text,
+        attachments,
+        firstMeta,
+      );
+      messageAccepted = true;
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
     } finally {
       starting = false;
+      // Once the backend creates a session, every retry belongs to it even if
+      // orientation or the following send failed. Leaving the route as "new"
+      // is what made a follow-up accidentally start another conversation.
+      if (started) {
+        openedId = started;
+        onopensession?.(started);
+      }
     }
-    if (started) await onmentionsend(started, text, mentions);
+    if (started && messageAccepted) await onmentionsend(started, text, mentions);
   }
 
   /**
@@ -921,21 +1045,28 @@
     }
   }
 
-  async function handleResume(session: AgentSession) {
-    if (starting) return;
-    starting = true;
+  async function handleOpenHistory(session: AgentSession) {
+    if (starting) return false;
     actionError = '';
     try {
-      const started = await liveSessionStore.start({
-        ...specFrom(session.id),
-        company: session.company || company,
-      });
-      openedId = started;
-      onopensession?.(started);
+      // Selecting history is navigation, not execution. Hydrate the provider
+      // transcript now and create a live resume process only on the first new
+      // message the operator sends from it.
+      const resumeCompany = session.company || null;
+      tool = session.tool;
+      model = null;
+      effort = null;
+      company = resumeCompany;
+      remember(LAST_TOOL_KEY, tool);
+      rememberModel(tool, null);
+      rememberEffort(tool, null);
+      await liveSessionStore.openHistory(session);
+      openedId = session.id;
+      onopensession?.(session.id);
+      return true;
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
-    } finally {
-      starting = false;
+      return false;
     }
   }
 
@@ -1033,7 +1164,7 @@
   function choosePermission(mode: PermissionMode) {
     const changed = mode !== permissionMode;
     permissionMode = mode;
-    if (!changed || !sessionId) return;
+    if (!changed || !sessionId || liveSessionStore.isHistorical) return;
     void liveSessionStore.setPermissionMode(mode).catch((err: unknown) => {
       actionError = err instanceof Error ? err.message : String(err);
     });
@@ -1071,7 +1202,7 @@
     <SessionListPanel
       activeSessionId={sessionId}
       onselect={(id) => onopensession?.(id)}
-      onresume={handleResume}
+      onopen={handleOpenHistory}
       onclose={() => (drawerOpen = false)}
     />
   {/if}
@@ -1098,6 +1229,9 @@
     blocks={transcript.blocks}
     status={workStatus}
     loading={Boolean(sessionId) && liveSessionStore.loading}
+    hasEarlier={liveSessionStore.hasEarlier}
+    loadingEarlier={liveSessionStore.loadingEarlier}
+    onloadearlier={() => liveSessionStore.loadEarlier()}
     {emptyHint}
     {busyRequestId}
     {artifactActions}
@@ -1148,6 +1282,11 @@
   />
 
   <div class="composer-dock">
+    {#if liveSessionStore.sharingNotice}
+      <div class="sharing-notice" role="status">{liveSessionStore.sharingNotice}</div>
+    {:else if !sessionId && sharingChannelId}
+      <div class="sharing-notice">New sessions here are shared read only with project chat members.</div>
+    {/if}
     <SessionComposer
       bind:this={composer}
       autofocus
@@ -1163,9 +1302,11 @@
       {projectsError}
       {viewer}
       {startworkEnabled}
+      {orientationCommand}
       {catalog}
       {catalogLoading}
       catalogError={skillCatalogError}
+      {groupMetadataAvailable}
       context={liveSessionStore.contextLoaders}
       {models}
       {model}
@@ -1219,6 +1360,7 @@
   }
 
   /* One quiet line above the composer, aligned to its column. */
+  .sharing-notice { padding: 8px 12px; font-size: 13px; color: var(--session-muted, #999); }
   .checkpoint-notice {
     display: flex;
     align-items: center;

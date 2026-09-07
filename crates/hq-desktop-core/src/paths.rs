@@ -307,7 +307,10 @@ pub fn is_user_owned_prefix(prefix: &Path, managed_roots: &[PathBuf], home: Opti
     // fixtures) canonicalizes to itself, so the lexical semantics are unchanged.
     let prefix = canonicalize_or_self(prefix);
     let home = home.map(canonicalize_or_self);
-    let managed_roots: Vec<PathBuf> = managed_roots.iter().map(|r| canonicalize_or_self(r)).collect();
+    let managed_roots: Vec<PathBuf> = managed_roots
+        .iter()
+        .map(|r| canonicalize_or_self(r))
+        .collect();
 
     // HQ's own managed roots are driven by the managed path, never this one.
     if managed_roots
@@ -1645,11 +1648,7 @@ fn node_version_manager_dirs(home: &Path) -> Vec<PathBuf> {
     push_versioned_node_bins(&mut dirs, &mise.join("installs").join("node"), &["bin"]);
     dirs.push(mise.join("shims"));
     // nodenv — each version plus its shim dir.
-    push_versioned_node_bins(
-        &mut dirs,
-        &home.join(".nodenv").join("versions"),
-        &["bin"],
-    );
+    push_versioned_node_bins(&mut dirs, &home.join(".nodenv").join("versions"), &["bin"]);
     dirs.push(home.join(".nodenv").join("shims"));
     // Nix profiles.
     dirs.push(home.join(".nix-profile").join("bin"));
@@ -2967,7 +2966,9 @@ mod tests {
         )));
         // An `_npx` dir WITHOUT the cache's node_modules tree is an ordinary
         // directory (e.g. a home/prefix merely named `_npx`) and must resolve.
-        assert!(!is_npx_cache_path(Path::new("/Users/_npx/toolchain/bin/hq")));
+        assert!(!is_npx_cache_path(Path::new(
+            "/Users/_npx/toolchain/bin/hq"
+        )));
         assert!(!is_npx_cache_path(Path::new("/tmp/x/_npx/abc/hq")));
         // Substring matches must NOT trip it.
         assert!(!is_npx_cache_path(Path::new(
@@ -3021,7 +3022,9 @@ mod tests {
     #[test]
     fn the_hq_lookup_skips_an_npx_cache_candidate_and_falls_through_to_the_managed_install() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let npx_bin = tmp.path().join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin");
+        let npx_bin = tmp
+            .path()
+            .join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin");
         let managed_bin = tmp.path().join("toolchain/npm-global/bin");
         std::fs::create_dir_all(&npx_bin).unwrap();
         std::fs::create_dir_all(&managed_bin).unwrap();
@@ -3357,7 +3360,9 @@ mod tests {
         let settings = tmp.path().join("settings");
         std::fs::create_dir_all(&settings).unwrap();
         std::fs::write(settings.join("hq"), b"not executable\n").unwrap(); // no exec bit
-        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], None);
+        // Keep the executable-filter fixture isolated from real CLI installs.
+        // Search-directory construction (including system prefixes) is tested above.
+        let dirs = vec![settings.clone()];
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
         let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
@@ -3732,12 +3737,21 @@ mod tests {
         let f = tmp.path().join("hq");
         std::fs::write(&f, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(!is_runnable_shim(&f), "a non-executable file is not runnable");
+        assert!(
+            !is_runnable_shim(&f),
+            "a non-executable file is not runnable"
+        );
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(is_runnable_shim(&f), "an executable regular file is runnable");
+        assert!(
+            is_runnable_shim(&f),
+            "an executable regular file is runnable"
+        );
         let d = tmp.path().join("dir");
         std::fs::create_dir(&d).unwrap();
-        assert!(!is_runnable_shim(&d), "a directory is never a runnable shim");
+        assert!(
+            !is_runnable_shim(&d),
+            "a directory is never a runnable shim"
+        );
         assert!(!is_runnable_shim(&tmp.path().join("missing")));
     }
 
@@ -3839,9 +3853,18 @@ mod tests {
         };
 
         assert_eq!(classify("/s/bin/hq"), ResolutionSource::SettingsPath);
-        assert_eq!(classify("/m/node/bin/hq"), ResolutionSource::ManagedToolchain);
-        assert_eq!(classify("/u/.npm-global/bin/hq"), ResolutionSource::UserPrefix);
-        assert_eq!(classify("/usr/local/bin/hq"), ResolutionSource::SystemPrefix);
+        assert_eq!(
+            classify("/m/node/bin/hq"),
+            ResolutionSource::ManagedToolchain
+        );
+        assert_eq!(
+            classify("/u/.npm-global/bin/hq"),
+            ResolutionSource::UserPrefix
+        );
+        assert_eq!(
+            classify("/usr/local/bin/hq"),
+            ResolutionSource::SystemPrefix
+        );
         // A deterministic resolver dir (pnpm/Scoop) is a user-level install, not
         // the login-shell residual — this is the Windows misclassification fix.
         assert_eq!(classify("/pnpm/shims/hq"), ResolutionSource::UserPrefix);

@@ -1371,9 +1371,7 @@ pub async fn mark_dm_thread_read(app: AppHandle, with_person_uid: String) -> Res
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
         log(
             LOG_TAG,
-            &format!(
-                "DM_NOTIFY_THREAD_READ_ERROR uid={uid} status={status} msg={server_msg:?}"
-            ),
+            &format!("DM_NOTIFY_THREAD_READ_ERROR uid={uid} status={status} msg={server_msg:?}"),
         );
         return Err(
             server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))

@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 import {
   conventionalChannelName,
+  historySessionParam,
   linkForProject,
   linkForRow,
   newSessionParam,
@@ -19,6 +20,13 @@ import {
   sessionsBadge,
   type ProjectLink,
 } from './session-project-links';
+
+it.each(['starting', 'working', 'idle', 'needs-you'])('routes %s sessions to live replay, not provider history', (phase) => {
+  expect(historySessionParam('indigo', 'launch', {
+    sessionId: 'app-owned-id', tool: 'codex', phase,
+    startedAt: '2026-09-04T21:55:44Z', title: 'Startup check',
+  })).toBe('app-owned-id');
+});
 
 const launch: ProjectLink = {
   project: 'launch',
@@ -43,6 +51,20 @@ const empty: ProjectLink = {
   projectPath: '/hq/companies/indigo/projects/quiet',
   sessions: [],
 };
+
+it('encodes enough durable metadata to open a nested history row directly', () => {
+  expect(
+    historySessionParam('indigo', 'launch', {
+      sessionId: 'native-1',
+      tool: 'codex',
+      phase: 'ended',
+      startedAt: '2026-09-04T00:13:26Z',
+      title: 'Test session',
+    }),
+  ).toBe(
+    'history?id=native-1&tool=codex&company=indigo&project=launch&title=Test+session&startedAt=2026-09-04T00%3A13%3A26Z',
+  );
+});
 const links = [launch, onboarding, empty];
 
 function row(overrides: Partial<ConversationRow>): ConversationRow {
@@ -133,9 +155,9 @@ describe('linkForRow', () => {
 describe('badge + extras', () => {
   it('says how many are live, else how many there were, else nothing', () => {
     expect(sessionsBadge(launch)).toBe('1 live');
-    expect(sessionsBadge(onboarding)).toBe('1 session');
+    expect(sessionsBadge(onboarding)).toBe('1');
     expect(sessionsBadge({ ...onboarding, sessions: [...onboarding.sessions, ...onboarding.sessions] })).toBe(
-      '2 sessions',
+      '2',
     );
     expect(sessionsBadge(empty)).toBeNull();
   });
@@ -147,19 +169,78 @@ describe('badge + extras', () => {
     const chosen: ProjectLink[] = [];
     const onnew = (link: ProjectLink) => chosen.push(link);
 
-    const decorated = rowExtrasFor(row({ channelId: 'chn_launch' }), links, card, onnew);
+    const opened: Array<[ProjectLink, string]> = [];
+    const decorated = rowExtrasFor(
+      row({ channelId: 'chn_launch' }),
+      links,
+      card,
+      onnew,
+      (link, session) => opened.push([link, session.sessionId]),
+    );
     expect(decorated?.badge).toBe('1 live');
     expect(decorated?.hoverCard).toBe(card);
     expect(decorated?.actions?.map((a) => [a.id, a.label])).toEqual([['new-session', 'New session']]);
+    expect(decorated?.childrenExpandedByDefault).toBe(true);
+    expect(decorated?.childrenLabel).toBe('Sessions for Launch Q3');
+    const selected = rowExtrasFor(row({ channelId: 'chn_launch' }), links, card, onnew, () => {}, 's-old');
+    expect(selected?.children?.filter((child) => child.selected).map((child) => child.id)).toEqual(['session:s-old']);
+    expect(decorated?.children?.map((child) => ({
+      id: child.id,
+      label: child.label,
+      meta: child.meta,
+      status: child.status,
+      kind: child.kind,
+    }))).toEqual([
+      {
+        id: 'session:s-live',
+        label: 'Claude session',
+        meta: 'Working',
+        status: 'working',
+        kind: 'item',
+      },
+      {
+        id: 'session:s-old',
+        label: 'Codex session',
+        meta: null,
+        status: 'ended',
+        kind: 'item',
+      },
+      {
+        id: 'new-session',
+        label: 'New session',
+        meta: null,
+        status: undefined,
+        kind: 'action',
+      },
+    ]);
+
+    decorated?.children?.[0]?.onselect();
+    expect(opened).toEqual([[launch, 's-live']]);
     decorated?.actions?.[0]?.onselect();
     expect(chosen).toEqual([launch]);
 
-    const quiet = rowExtrasFor(row({ channelId: 'chn_q', title: 'p-quiet' }), links, card, onnew);
+    const quiet = rowExtrasFor(
+      row({ channelId: 'chn_q', title: 'p-quiet' }),
+      links,
+      card,
+      onnew,
+      () => {},
+    );
     expect(quiet?.badge).toBeNull();
     expect(quiet?.hoverCard).toBeNull();
     expect(quiet?.actions).toHaveLength(1);
+    expect(quiet?.childrenExpandedByDefault).toBe(false);
+    expect(quiet?.children?.map((child) => child.id)).toEqual(['new-session']);
 
-    expect(rowExtrasFor(row({ channelId: 'chn_general', title: 'general' }), links, card, onnew)).toBeNull();
+    expect(
+      rowExtrasFor(
+        row({ channelId: 'chn_general', title: 'general' }),
+        links,
+        card,
+        onnew,
+        () => {},
+      ),
+    ).toBeNull();
   });
 });
 

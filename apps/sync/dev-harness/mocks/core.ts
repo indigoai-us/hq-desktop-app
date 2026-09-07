@@ -1431,7 +1431,7 @@ This final paragraph verifies spacing after a thematic break.
     codexAvailable: true,
     codexLoggedIn: true,
     companies: [
-      { slug: 'indigo', displayName: 'Indigo' },
+      { slug: 'indigo', displayName: 'Indigo', cloudUid: 'cmp_indigo' },
       { slug: 'ridge', displayName: 'Ridge' },
       { slug: 'personal', displayName: 'Personal' },
     ],
@@ -1471,6 +1471,27 @@ This final paragraph verifies spacing after a thematic break.
         description: 'Fastest and cheapest for simple, well-scoped tasks.',
       },
     ],
+  }),
+  hq_skill_catalog: () => ({
+    workers: [
+      { id: 'frontend-dev', name: 'Frontend Developer', description: 'Builds polished product interfaces and interaction flows.', company: null, skills: [{ name: 'implement', description: 'Implement a frontend feature', tags: ['engineering', 'ui'], invoke: '/run frontend-dev implement' }] },
+      { id: 'product-designer', name: 'Product Designer', description: 'Designs and critiques clear, useful product experiences.', company: 'indigo', skills: [{ name: 'critique', description: 'Review an interface', tags: ['design', 'review'], invoke: '/run product-designer critique' }] },
+      { id: 'researcher', name: 'Researcher', description: 'Finds evidence and turns it into decisions.', company: null, skills: [] },
+    ],
+    skills: [
+      { name: 'Start work', description: 'Orient a session in company and project context.', scope: 'core', tags: ['session'], invoke: '/startwork' },
+      { name: 'Capture signal', description: 'Save an important decision or customer signal.', scope: 'company:indigo', tags: ['knowledge'], invoke: '/indigo:signal', skillUid: 'skl_signal' },
+      { name: 'Review launch', description: 'Run the Indigo launch-readiness review.', scope: 'company:indigo', tags: ['launch', 'review'], invoke: '/indigo:launch-review', skillUid: 'skl_launch' },
+      { name: 'Direct message', description: 'Send a message to an HQ teammate.', scope: 'personal', tags: ['people'], invoke: '/dm' },
+      { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
+    ],
+  }),
+  hq_pro_fetch: () => ({
+    status: 200,
+    body: JSON.stringify({ grouped: {
+      companyWide: [{ skillUid: 'skl_signal', name: 'Capture signal', tags: ['knowledge', 'company'] }],
+      departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
+    } }),
   }),
   agent_session_list: () => [
     {

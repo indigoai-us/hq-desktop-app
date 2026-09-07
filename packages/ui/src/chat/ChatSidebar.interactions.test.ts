@@ -67,6 +67,34 @@ afterEach(async () => {
 });
 
 describe("ChatSidebar right-click context menu", () => {
+  it("highlights the selected nested session, preserves its full title, and keeps disclosure independent", async () => {
+    const open = vi.fn();
+    const visibility = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(), seedDirectory: [seedRow], selectedId: 'ch:chn_proj',
+        rowExtras: (row) => row.id !== 'ch:chn_proj' ? null : ({ onChildrenVisibilityChange: visibility, childrenExpandedByDefault: true, childrenLabel: 'Sessions for launch', children: [
+          { id: 'session:one', label: 'A long saved session title that should remain readable on hover', selected: true, onselect: open },
+          { id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() },
+        ] }),
+      },
+    });
+    await vi.waitFor(() => expect(host.querySelector('[aria-current="page"]')).toBeTruthy());
+    const child = host.querySelector<HTMLButtonElement>('[data-child-id="session:one"]')!;
+    expect(child.classList.contains('selected')).toBe(true);
+    expect(child.title).toBe(child.textContent?.trim());
+    expect(child.querySelector('svg')).toBeTruthy();
+    expect(host.querySelector('[data-conversation-id="ch:chn_proj"]')?.classList.contains('active')).toBe(false);
+    child.click();
+    expect(open).toHaveBeenCalledOnce();
+    expect(visibility).toHaveBeenCalledWith(true);
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-row-children-toggle"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-child-id="session:one"]')).toBeNull());
+    expect(visibility).toHaveBeenLastCalledWith(false);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
   it("right-click opens a Pin menu instead of pinning outright; the menu pins on click", async () => {
     component = mount(ChatSidebar, {
       target: host,

@@ -18,6 +18,43 @@ export interface SlashQuery {
   prefix: string;
 }
 
+/** The slash token currently being edited at the caret. */
+export interface SlashQueryRange extends SlashQuery {
+  /** Index of the leading slash. */
+  start: number;
+  /** Caret position, immediately after the typed prefix. */
+  end: number;
+}
+
+const WHITESPACE = /\s/;
+
+/**
+ * Read the `/token` at the caret, anywhere in a draft.
+ *
+ * Like mentions, a slash starts a picker only at a word boundary. This keeps
+ * URLs and prose such as `and/or` from opening it while allowing `make this /`
+ * and a slash after a newline.
+ */
+export function slashQueryAt(draft: string, caret: number): SlashQueryRange | null {
+  const end = Math.max(0, Math.min(caret, draft.length));
+  let start = -1;
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const character = draft.charAt(index);
+    if (WHITESPACE.test(character)) return null;
+    if (character === '/') {
+      start = index;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  if (start > 0 && !WHITESPACE.test(draft.charAt(start - 1))) return null;
+  return {
+    start,
+    end,
+    prefix: draft.slice(start + 1, end).toLocaleLowerCase('en-US'),
+  };
+}
+
 /**
  * Read a composer draft as a slash query.
  *
@@ -27,11 +64,24 @@ export interface SlashQuery {
  * anything else (including an empty draft) is not a query.
  */
 export function slashQueryFor(draft: string): SlashQuery | null {
-  const trimmed = draft.trimStart();
-  if (!trimmed.startsWith('/')) return null;
-  const token = trimmed.slice(1);
-  if (/\s/.test(token)) return null;
-  return { prefix: token.toLocaleLowerCase('en-US') };
+  const query = slashQueryAt(draft, draft.length);
+  return query ? { prefix: query.prefix } : null;
+}
+
+/** Replace the active slash query while preserving all surrounding prose. */
+export function replaceSlashQuery(
+  draft: string,
+  range: Pick<SlashQueryRange, 'start' | 'end'>,
+  replacement: string,
+): { draft: string; caret: number } {
+  const head = draft.slice(0, range.start);
+  let tail = draft.slice(range.end);
+  if (replacement.length === 0) {
+    if (head.length === 0) tail = tail.replace(/^[\t ]/, '');
+    else if (/[\t ]$/.test(head)) tail = tail.replace(/^[\t ]/, '');
+  }
+  const nextHead = head + replacement;
+  return { draft: nextHead + tail, caret: nextHead.length };
 }
 
 /**
@@ -100,6 +150,7 @@ export interface WorkerSkill {
   name: string;
   description: string;
   tags: string[];
+  searchTerms?: string[];
   /** The literal `/run {worker} {skill}` form. */
   invoke: string;
 }
@@ -118,13 +169,50 @@ export interface SkillEntry {
   /** `core` | `personal` | `company:<slug>` | `package`. */
   scope: string;
   tags: string[];
+  searchTerms?: string[];
+  /** Console taxonomy for an installed company skill; absent while offline. */
+  cloudTags?: string[];
   /** The real slash form, e.g. `/handoff`, `/indigo:capture`. */
   invoke: string;
+  skillUid?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
+  companyWide?: boolean;
 }
 
 export interface SkillCatalog {
   workers: WorkerEntry[];
   skills: SkillEntry[];
+}
+
+export interface SkillMetadata {
+  skillUid: string;
+  tags: string[];
+  groupId: string | null;
+  groupName: string | null;
+  companyWide: boolean;
+}
+
+/** Enrich matching installed skills while preserving every local-only entry. */
+export function mergeSkillMetadata(
+  catalog: SkillCatalog,
+  metadata: ReadonlyArray<SkillMetadata>,
+): SkillCatalog {
+  const byUid = new Map(metadata.map((entry) => [entry.skillUid, entry]));
+  return {
+    ...catalog,
+    skills: catalog.skills.map((skill) => {
+      const cloud = skill.skillUid ? byUid.get(skill.skillUid) : undefined;
+      if (!cloud) return skill;
+      return {
+        ...skill,
+        cloudTags: [...new Set(cloud.tags)],
+        groupId: cloud.groupId,
+        groupName: cloud.groupName,
+        companyWide: cloud.companyWide,
+      };
+    }),
+  };
 }
 
 export type PickerGroup = 'recent' | 'workers' | 'skills' | 'cli';
@@ -146,11 +234,24 @@ export interface PickerRow {
   insert: string;
   group: PickerGroup;
   tags: string[];
+  searchTerms?: string[];
+  cloudTags?: string[];
   /** Skills only. */
   scope?: string;
   /** Worker rows: the worker to drill into. */
   workerId?: string;
+  skillUid?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
+  companyWide?: boolean;
+  route?: ComposerRoute;
 }
+
+export type ComposerRoute =
+  | { kind: 'skill'; invoke: string; label: string }
+  | { kind: 'worker'; workerId: string; label: string };
+
+export type GroupFilter = 'company-wide' | string | null;
 
 /** Rows shown per group before the "more…" affordance. */
 export const PICKER_PAGE = 8;
@@ -250,7 +351,14 @@ export function skillRows(catalog: SkillCatalog | null, company: string | null):
       insert: `${skill.invoke} `,
       group: 'skills',
       tags: skill.tags,
+      searchTerms: skill.searchTerms,
+      cloudTags: skill.cloudTags,
       scope: skill.scope,
+      skillUid: skill.skillUid,
+      groupId: skill.groupId,
+      groupName: skill.groupName,
+      companyWide: skill.companyWide,
+      route: { kind: 'skill', invoke: skill.invoke, label: skill.name || skill.invoke },
     }));
 }
 
@@ -266,8 +374,47 @@ export function workerRows(catalog: SkillCatalog | null): PickerRow[] {
       insert: '',
       group: 'workers',
       tags: worker.skills.flatMap((skill) => skill.tags),
+      searchTerms: worker.skills.flatMap((skill) => skill.searchTerms ?? []),
       workerId: worker.id,
+      route: { kind: 'worker', workerId: worker.id, label: worker.name || worker.id },
     }));
+}
+
+export function groupOptions(rows: ReadonlyArray<PickerRow>): Array<{ id: string; name: string }> {
+  const groups = new Map<string, string>();
+  for (const row of rows) {
+    if (row.groupId && row.groupName) groups.set(row.groupId, row.groupName);
+  }
+  return [...groups.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'en-US'));
+}
+
+/** Group and tag filters combine with AND semantics, matching HQ Console. */
+export function filterSkillRows(
+  rows: ReadonlyArray<PickerRow>,
+  query: string,
+  group: GroupFilter,
+  tag: string | null,
+  useCloudTaxonomy = false,
+): PickerRow[] {
+  return filterRows(rows, query).filter((row) => {
+    const groupMatch =
+      group === null
+        ? true
+        : group === 'company-wide'
+          ? row.companyWide === true
+          : row.groupId === group;
+    const tags = useCloudTaxonomy ? (row.cloudTags ?? []) : row.tags;
+    return groupMatch && (tag === null || tags.includes(tag));
+  });
+}
+
+/** Turn the route pill and natural-language draft into the exact CLI text. */
+export function serializeComposerRoute(route: ComposerRoute, prompt: string): string {
+  const text = prompt.trim();
+  if (route.kind === 'skill') return text ? `${route.invoke} ${text}` : route.invoke;
+  return `/run ${route.workerId} -- ${text}`;
 }
 
 /** A worker's skills, each inserting its `/run {worker} {skill}` form. */
@@ -279,6 +426,7 @@ export function workerSkillRows(worker: WorkerEntry): PickerRow[] {
     insert: `${skill.invoke || `/run ${worker.id} ${skill.name}`} `,
     group: 'workers',
     tags: skill.tags,
+    searchTerms: skill.searchTerms,
     workerId: worker.id,
   }));
 }
@@ -312,7 +460,9 @@ export function rowMatches(row: PickerRow, query: string): boolean {
   if (!needle) return true;
   if (lowerCase(row.name).includes(needle)) return true;
   if (lowerCase(row.description).includes(needle)) return true;
-  return row.tags.some((tag) => lowerCase(tag).includes(needle));
+  return [...row.tags, ...(row.cloudTags ?? []), ...(row.searchTerms ?? [])].some((term) =>
+    lowerCase(term).includes(needle),
+  );
 }
 
 /**
@@ -338,10 +488,14 @@ export function filterRows(rows: ReadonlyArray<PickerRow>, query: string): Picke
 }
 
 /** The union of tags across rows, most common first, capped. */
-export function tagUnion(rows: ReadonlyArray<PickerRow>, limit = 24): string[] {
+export function tagUnion(
+  rows: ReadonlyArray<PickerRow>,
+  limit = 24,
+  useCloudTaxonomy = false,
+): string[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    for (const tag of row.tags) {
+    for (const tag of useCloudTaxonomy ? (row.cloudTags ?? []) : row.tags) {
       const key = tag.trim();
       if (!key) continue;
       counts.set(key, (counts.get(key) ?? 0) + 1);

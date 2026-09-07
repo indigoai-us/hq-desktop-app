@@ -358,6 +358,7 @@ mod tests {
             tool: AgentTool::Claude,
             // Deliberately LOCAL on the wire so we prove the store re-stamps it.
             origin: AgentOrigin::Local,
+            title: "Thing session".to_string(),
             cwd: "/home/outpost/repos/thing".to_string(),
             project: "thing".to_string(),
             company: "indigo".to_string(),
@@ -443,8 +444,7 @@ mod tests {
 
     #[test]
     fn parse_heartbeat_accepts_nulls_inside_the_envelope_shape() {
-        let inner: serde_json::Value =
-            serde_json::from_slice(&payload_with_nulls()).unwrap();
+        let inner: serde_json::Value = serde_json::from_slice(&payload_with_nulls()).unwrap();
         let bytes = serde_json::to_vec(&serde_json::json!({ "sessions": inner })).unwrap();
         let sessions = parse_heartbeat(&bytes).expect("nulls must parse in envelope too");
         assert_eq!(sessions.len(), 1);
@@ -456,8 +456,7 @@ mod tests {
         // The regression that made this expensive: one unresolved field cost
         // the entire heartbeat, not just the session it appeared on.
         let mut batch = serde_json::to_value(vec![outpost_session("good")]).unwrap();
-        let nulls: serde_json::Value =
-            serde_json::from_slice(&payload_with_nulls()).unwrap();
+        let nulls: serde_json::Value = serde_json::from_slice(&payload_with_nulls()).unwrap();
         batch
             .as_array_mut()
             .unwrap()
@@ -477,8 +476,7 @@ mod tests {
         // publisher's contract. Loosening those too would silently swallow a
         // genuinely malformed heartbeat instead of surfacing it.
         for field in ["id", "tool", "origin", "status", "source"] {
-            let mut v: serde_json::Value =
-                serde_json::from_slice(&payload_with_nulls()).unwrap();
+            let mut v: serde_json::Value = serde_json::from_slice(&payload_with_nulls()).unwrap();
             v[0][field] = serde_json::Value::Null;
             let bytes = serde_json::to_vec(&v).unwrap();
             assert!(

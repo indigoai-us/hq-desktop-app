@@ -11,6 +11,7 @@
   import { projectLinksStore } from '../lib/project-links-store.svelte';
   import {
     linkForRow,
+    historySessionParam,
     newSessionParam,
     type LinkedSession,
   } from '../lib/session-project-links';
@@ -58,7 +59,12 @@
   }
 
   function openSession(session: LinkedSession): void {
-    dispatchEmbeddedNavigation({ kind: 'extra', page: 'sessions', param: session.sessionId });
+    if (!link || !companySlug) return;
+    dispatchEmbeddedNavigation({
+      kind: 'extra',
+      page: 'sessions',
+      param: historySessionParam(companySlug, link.project, session),
+    });
   }
 
   function newSession(): void {
@@ -66,7 +72,7 @@
     dispatchEmbeddedNavigation({
       kind: 'extra',
       page: 'sessions',
-      param: newSessionParam(companySlug, link.project),
+      param: newSessionParam(companySlug, link.project, link.channelId),
     });
   }
 </script>

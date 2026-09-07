@@ -74,6 +74,15 @@ pub struct ProjectLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRow {
     pub session_id: String,
+    /// HQ's app-owned workspace id when this row came from
+    /// `workspace/sessions/<id>/meta.yaml`. The provider-native id remains the
+    /// public `session_id` for history hydration, but this alias lets a live
+    /// registry row suppress its own durable twin.
+    pub workspace_session_id: Option<String>,
+    /// Provider-native id advertised directly by a live registry row. This is
+    /// distinct from the app-owned workspace id and makes identity resolution
+    /// independent of metadata write timing and the disk-history read limit.
+    pub provider_session_id: Option<String>,
     pub tool: String,
     pub phase: String,
     pub started_at: String,
@@ -175,10 +184,12 @@ fn phase_tag(phase: SessionPhase) -> &'static str {
 pub fn session_row_from_summary(summary: &SessionSummary) -> SessionRow {
     SessionRow {
         session_id: summary.session_id.clone(),
+        workspace_session_id: Some(summary.session_id.clone()),
+        provider_session_id: summary.cli_session_id.clone(),
         tool: tool_tag(summary.tool).to_string(),
         phase: phase_tag(summary.phase).to_string(),
         started_at: summary.started_at.clone(),
-        title: None,
+        title: (!summary.title.trim().is_empty()).then(|| summary.title.trim().to_string()),
         company: summary.company.clone(),
         project: summary.project.clone(),
     }
@@ -197,6 +208,11 @@ struct DiskMeta {
     started_at: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    /// Provider-native Claude/Codex identifier used to hydrate and resume the
+    /// transcript. The enclosing workspace directory is only HQ's local
+    /// bookkeeping id and is not necessarily understood by either provider.
+    #[serde(default)]
+    cli_session_id: Option<String>,
 }
 
 fn clean(value: Option<String>) -> Option<String> {
@@ -228,9 +244,7 @@ pub fn read_recent_session_rows(hq_root: &Path, limit: usize) -> Vec<SessionRow>
         if !metadata.is_file() {
             continue;
         }
-        let modified = metadata
-            .modified()
-            .unwrap_or(std::time::UNIX_EPOCH);
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
         candidates.push((modified, name, meta));
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
@@ -238,12 +252,15 @@ pub fn read_recent_session_rows(hq_root: &Path, limit: usize) -> Vec<SessionRow>
 
     candidates
         .into_iter()
-        .filter_map(|(_, session_id, meta)| {
+        .filter_map(|(_, workspace_session_id, meta)| {
             let raw = std::fs::read_to_string(meta).ok()?;
             let parsed: DiskMeta = serde_yaml::from_str(&raw).ok()?;
             let project = clean(parsed.project)?;
             Some(SessionRow {
-                session_id,
+                session_id: clean(parsed.cli_session_id)
+                    .unwrap_or_else(|| workspace_session_id.clone()),
+                workspace_session_id: Some(workspace_session_id),
+                provider_session_id: None,
                 tool: clean(parsed.tool)
                     .map(|t| t.to_ascii_lowercase())
                     .unwrap_or_else(|| "claude".to_string()),
@@ -257,17 +274,101 @@ pub fn read_recent_session_rows(hq_root: &Path, limit: usize) -> Vec<SessionRow>
         .collect()
 }
 
-/// Live rows win over their on-disk twins (same session id): the registry
-/// knows the phase, the file only knows the session once existed.
-pub fn merge_session_rows(live: Vec<SessionRow>, disk: Vec<SessionRow>) -> Vec<SessionRow> {
-    let mut seen: BTreeSet<String> = live.iter().map(|r| r.session_id.clone()).collect();
-    let mut out = live;
-    for row in disk {
-        if seen.insert(row.session_id.clone()) {
-            out.push(row);
+/// Return the root of one row's identity component, compressing the path.
+fn identity_root(parents: &mut [usize], index: usize) -> usize {
+    if parents[index] != index {
+        parents[index] = identity_root(parents, parents[index]);
+    }
+    parents[index]
+}
+
+fn union_identities(parents: &mut [usize], left: usize, right: usize) {
+    let left_root = identity_root(parents, left);
+    let right_root = identity_root(parents, right);
+    if left_root == right_root {
+        return;
+    }
+    // Keep the earliest row as the root so component order stays live-first
+    // and otherwise follows the disk reader's stable newest-first order.
+    let (root, child) = if left_root < right_root {
+        (left_root, right_root)
+    } else {
+        (right_root, left_root)
+    };
+    parents[child] = root;
+}
+
+/// Combine all representations of one conversation after its identity graph
+/// has been resolved. Active registry rows keep their app-owned id because it
+/// owns the live event stream. Once ended, a provider-native id wins because
+/// that is the id the history reader can hydrate.
+fn merge_identity_component(mut rows: Vec<SessionRow>) -> SessionRow {
+    let mut merged = rows.remove(0);
+    for row in rows {
+        if merged.phase == "ended"
+            && row.phase == "ended"
+            && merged.session_id != row.session_id
+        {
+            let existing = merged;
+            merged = row;
+            if merged.title.is_none() {
+                merged.title = existing.title;
+            }
+            if merged.started_at.is_empty() {
+                merged.started_at = existing.started_at;
+            }
+            continue;
+        }
+        if merged.title.is_none() && row.title.is_some() {
+            merged.title = row.title;
+        }
+        if merged.started_at.is_empty() && !row.started_at.is_empty() {
+            merged.started_at = row.started_at;
         }
     }
-    out
+    merged
+}
+
+/// Live rows win over their on-disk twins. A workspace session normally has
+/// two ids: the app-owned registry id and the provider-native Claude/Codex id
+/// used to hydrate history. Disk mtimes are independent, so the provider
+/// shadow can arrive before the app-owned bridge row. Resolve the complete
+/// identity graph first; a streaming `seen` map cannot coalesce two components
+/// after a later row reveals that they are the same conversation.
+pub fn merge_session_rows(live: Vec<SessionRow>, disk: Vec<SessionRow>) -> Vec<SessionRow> {
+    let mut rows = live;
+    rows.extend(disk);
+    if rows.is_empty() {
+        return rows;
+    }
+
+    let mut parents: Vec<usize> = (0..rows.len()).collect();
+    let mut owner_by_alias: HashMap<String, usize> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        let aliases = std::iter::once(&row.session_id)
+            .chain(row.workspace_session_id.iter())
+            .chain(row.provider_session_id.iter());
+        for alias in aliases {
+            if let Some(owner) = owner_by_alias.get(alias).copied() {
+                union_identities(&mut parents, owner, index);
+            } else {
+                owner_by_alias.insert(alias.clone(), index);
+            }
+        }
+    }
+
+    let mut components: HashMap<usize, Vec<SessionRow>> = HashMap::new();
+    for (index, row) in rows.into_iter().enumerate() {
+        let root = identity_root(&mut parents, index);
+        components.entry(root).or_default().push(row);
+    }
+
+    let mut components: Vec<(usize, Vec<SessionRow>)> = components.into_iter().collect();
+    components.sort_by_key(|(root, _)| *root);
+    components
+        .into_iter()
+        .map(|(_, rows)| merge_identity_component(rows))
+        .collect()
 }
 
 /// Live first (anything not `ended`), then newest start first.
@@ -304,8 +405,7 @@ pub fn join_project_links(
                 .filter(|row| {
                     row.company
                         .as_deref()
-                        .map(norm)
-                        .is_none_or(|c| c == company)
+                        .is_some_and(|row_company| norm(row_company) == company)
                 })
                 .filter(|row| {
                     row.project
@@ -334,23 +434,21 @@ pub fn join_project_links(
         .collect()
 }
 
-/// Which live session a project HQ just created belongs to: the most recently
-/// active non-ended session bound to that company. When the composer bound a
-/// session to `company`, that session's agent is the one that ran `/plan`.
-pub fn session_to_bind<'a>(
+/// Filesystem discovery carries no originating session identity. Notify only
+/// sessions already explicitly associated with this company and project;
+/// neither recency nor being unbound establishes ownership.
+pub fn sessions_for_project<'a>(
     summaries: &'a [SessionSummary],
     company: &str,
-) -> Option<&'a SessionSummary> {
+    project: &str,
+) -> Vec<&'a SessionSummary> {
     let company = norm(company);
     summaries
         .iter()
         .filter(|s| s.phase != SessionPhase::Ended)
         .filter(|s| s.company.as_deref().map(norm) == Some(company.clone()))
-        .max_by(|a, b| {
-            a.last_activity_at
-                .cmp(&b.last_activity_at)
-                .then_with(|| a.started_at.cmp(&b.started_at))
-        })
+        .filter(|s| s.project.as_deref().is_some_and(|p| project_matches(p, project, "")))
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,7 +532,7 @@ impl ProjectWatch {
 mod tests {
     use super::*;
     use crate::agent_session::types::PermissionMode;
-    use crate::hq_context::projects::StoryCounts;
+    use crate::hq_context::projects::{ProjectStatus, StoryCounts};
     use std::fs;
 
     fn entry(path: &str, name: &str) -> ProjectEntry {
@@ -445,12 +543,23 @@ mod tests {
             path: path.into(),
             story_counts: StoryCounts::default(),
             updated_at: None,
+            last_activity_at: None,
+            owner: None,
+            status: ProjectStatus::Active,
         }
     }
 
-    fn row(id: &str, phase: &str, started: &str, company: &str, project: Option<&str>) -> SessionRow {
+    fn row(
+        id: &str,
+        phase: &str,
+        started: &str,
+        company: &str,
+        project: Option<&str>,
+    ) -> SessionRow {
         SessionRow {
             session_id: id.into(),
+            workspace_session_id: Some(id.into()),
+            provider_session_id: None,
             tool: "claude".into(),
             phase: phase.into(),
             started_at: started.into(),
@@ -471,6 +580,8 @@ mod tests {
     fn summary(id: &str, phase: SessionPhase, company: &str, active: &str) -> SessionSummary {
         SessionSummary {
             session_id: id.into(),
+            cli_session_id: None,
+            title: id.into(),
             tool: SessionTool::Claude,
             phase,
             company: Some(company.into()),
@@ -484,13 +595,21 @@ mod tests {
             last_activity_at: active.into(),
             last_seq: 0,
             pending_count: 0,
+            resumed_from: None,
+            history_before: None,
         }
     }
 
     #[test]
     fn the_project_slug_is_the_directory_leaf() {
-        assert_eq!(project_slug("/hq/companies/indigo/projects/launch"), "launch");
-        assert_eq!(project_slug("/hq/companies/indigo/projects/launch/"), "launch");
+        assert_eq!(
+            project_slug("/hq/companies/indigo/projects/launch"),
+            "launch"
+        );
+        assert_eq!(
+            project_slug("/hq/companies/indigo/projects/launch/"),
+            "launch"
+        );
         assert_eq!(project_slug("C:\\hq\\projects\\Launch Q3\\"), "Launch Q3");
         assert_eq!(project_slug("   "), "");
     }
@@ -508,7 +627,10 @@ mod tests {
             Some("ch_bound")
         );
         // No bound channel → `p-<slug>`, case-insensitive, `#` ignored.
-        let channels = vec![chan("ch_general", "general", None), chan("ch_conv", "#P-Launch", None)];
+        let channels = vec![
+            chan("ch_general", "general", None),
+            chan("ch_conv", "#P-Launch", None),
+        ];
         assert_eq!(
             channel_for_project(&channels, "launch", "Launch").map(|c| c.channel_id.as_str()),
             Some("ch_conv")
@@ -530,11 +652,48 @@ mod tests {
             entry("/hq/companies/indigo/projects/onboarding", "Onboarding"),
         ];
         let sessions = vec![
-            row("s-old", "ended", "2026-09-01T10:00:00Z", "indigo", Some("launch")),
-            row("s-live", "working", "2026-09-01T09:00:00Z", "indigo", Some("launch")),
-            row("s-by-name", "ended", "2026-09-01T11:00:00Z", "indigo", Some("Launch")),
+            row(
+                "s-old",
+                "ended",
+                "2026-09-01T10:00:00Z",
+                "indigo",
+                Some("launch"),
+            ),
+            row(
+                "s-live",
+                "working",
+                "2026-09-01T09:00:00Z",
+                "indigo",
+                Some("launch"),
+            ),
+            row(
+                "s-by-name",
+                "ended",
+                "2026-09-01T11:00:00Z",
+                "indigo",
+                Some("Launch"),
+            ),
             // Same slug, different company: never links here.
-            row("s-other-co", "idle", "2026-09-01T12:00:00Z", "ridge", Some("launch")),
+            row(
+                "s-other-co",
+                "idle",
+                "2026-09-01T12:00:00Z",
+                "ridge",
+                Some("launch"),
+            ),
+            // Missing tenant identity is not permission to borrow the active
+            // company's project association.
+            SessionRow {
+                session_id: "s-no-company".into(),
+                workspace_session_id: Some("s-no-company".into()),
+                provider_session_id: None,
+                tool: "codex".into(),
+                phase: "ended".into(),
+                started_at: "2026-09-01T13:00:00Z".into(),
+                title: None,
+                company: None,
+                project: Some("launch".into()),
+            },
             // No binding at all.
             row("s-none", "idle", "2026-09-01T12:00:00Z", "indigo", None),
         ];
@@ -548,7 +707,11 @@ mod tests {
         assert_eq!(launch.project_name, "Launch");
         assert_eq!(launch.channel_id.as_deref(), Some("ch_launch"));
         assert_eq!(launch.channel_name.as_deref(), Some("p-launch"));
-        let ids: Vec<&str> = launch.sessions.iter().map(|s| s.session_id.as_str()).collect();
+        let ids: Vec<&str> = launch
+            .sessions
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
         // Live first, then newest start first.
         assert_eq!(ids, vec!["s-live", "s-by-name", "s-old"]);
 
@@ -559,7 +722,10 @@ mod tests {
         // Wire shape: camelCase, channel keys omitted when absent.
         let raw = serde_json::to_value(onboarding).expect("serialize");
         assert_eq!(raw["projectName"], "Onboarding");
-        assert_eq!(raw["projectPath"], "/hq/companies/indigo/projects/onboarding");
+        assert_eq!(
+            raw["projectPath"],
+            "/hq/companies/indigo/projects/onboarding"
+        );
         assert!(raw.get("channelId").is_none());
         let raw = serde_json::to_value(&launch.sessions[0]).expect("serialize");
         assert_eq!(raw["sessionId"], "s-live");
@@ -578,6 +744,167 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].phase, "working");
         assert_eq!(merged[1].session_id, "s2");
+    }
+
+    #[test]
+    fn live_project_rows_keep_the_conversation_title() {
+        let summary = summary(
+            "Plan the workspace launch",
+            SessionPhase::Working,
+            "indigo",
+            "2026-09-03T23:40:00Z",
+        );
+
+        let row = session_row_from_summary(&summary);
+
+        assert_eq!(row.title.as_deref(), Some("Plan the workspace launch"));
+    }
+
+    #[test]
+    fn live_app_row_suppresses_its_provider_native_disk_twin() {
+        let live = vec![row(
+            "app-owned-id",
+            "idle",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        )];
+        let mut disk_twin = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        );
+        disk_twin.workspace_session_id = Some("app-owned-id".into());
+
+        let merged = merge_session_rows(live, vec![disk_twin]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].session_id, "app-owned-id");
+        assert_eq!(merged[0].phase, "idle");
+    }
+
+    #[test]
+    fn live_provider_alias_suppresses_a_shadow_without_a_disk_bridge() {
+        let mut live_summary = summary(
+            "app-owned-id",
+            SessionPhase::Working,
+            "indigo",
+            "2026-09-04T18:10:39Z",
+        );
+        live_summary.cli_session_id = Some("native-codex-id".into());
+        live_summary.project = Some("launch".into());
+        let live = vec![session_row_from_summary(&live_summary)];
+
+        let provider_shadow = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-04T18:10:53Z",
+            "indigo",
+            Some("launch"),
+        );
+
+        let merged = merge_session_rows(live, vec![provider_shadow]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].session_id, "app-owned-id");
+        assert_eq!(merged[0].phase, "working");
+    }
+
+    #[test]
+    fn duplicate_aliases_form_one_identity_set_regardless_of_disk_order() {
+        let live = vec![row(
+            "app-owned-id",
+            "working",
+            "2026-09-04T18:10:39Z",
+            "indigo",
+            Some("launch"),
+        )];
+        let mut app_meta = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-04T18:10:39Z",
+            "indigo",
+            Some("launch"),
+        );
+        app_meta.workspace_session_id = Some("app-owned-id".into());
+        app_meta.title = Some("hey".into());
+        let mut provider_shadow = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-04T18:10:53Z",
+            "indigo",
+            Some("launch"),
+        );
+        provider_shadow.workspace_session_id = Some("native-codex-id".into());
+
+        // The provider catalog rewrites its native shadow independently of
+        // HQ's app-owned metadata, so either file may be newest. Identity
+        // merging must be invariant to the reader's mtime ordering.
+        for disk in [
+            vec![app_meta.clone(), provider_shadow.clone()],
+            vec![provider_shadow, app_meta],
+        ] {
+            let merged = merge_session_rows(live.clone(), disk);
+
+            assert_eq!(merged.len(), 1);
+            assert_eq!(merged[0].session_id, "app-owned-id");
+            assert_eq!(merged[0].title.as_deref(), Some("hey"));
+        }
+    }
+
+    #[test]
+    fn a_duplicate_durable_alias_can_supply_a_missing_title() {
+        let mut sparse = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        );
+        sparse.workspace_session_id = Some("native-codex-id".into());
+        let mut titled = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        );
+        titled.workspace_session_id = Some("app-owned-id".into());
+        titled.title = Some("Plan the launch".into());
+
+        let merged = merge_session_rows(vec![], vec![sparse, titled]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].title.as_deref(), Some("Plan the launch"));
+    }
+
+    #[test]
+    fn an_ended_registry_row_yields_to_its_provider_native_history_id() {
+        let mut ended = row(
+            "app-owned-id",
+            "ended",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        );
+        ended.workspace_session_id = Some("app-owned-id".into());
+        ended.title = Some("Inspect the launch".into());
+        let mut durable = row(
+            "native-codex-id",
+            "ended",
+            "2026-09-03T23:40:00Z",
+            "indigo",
+            Some("launch"),
+        );
+        durable.workspace_session_id = Some("app-owned-id".into());
+
+        let merged = merge_session_rows(vec![ended], vec![durable]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].session_id, "native-codex-id");
+        assert_eq!(merged[0].title.as_deref(), Some("Inspect the launch"));
     }
 
     #[test]
@@ -601,7 +928,11 @@ mod tests {
             "company_slug: indigo\nproject: launch\nstarted_at: 2026-09-02T00:00:00Z\n",
             2_000,
         );
-        write("s-unbound", "company_slug: indigo\nstarted_at: 2026-09-03T00:00:00Z\n", 3_000);
+        write(
+            "s-unbound",
+            "company_slug: indigo\nstarted_at: 2026-09-03T00:00:00Z\n",
+            3_000,
+        );
         write("s-blank", "company_slug: indigo\nproject: '  '\n", 4_000);
         // Scaffold noise is skipped without being opened.
         write(".DS_Store-ish", "project: launch\n", 5_000);
@@ -617,23 +948,73 @@ mod tests {
 
         // The limit bounds the FILES OPENED (newest first), not the rows kept.
         let rows = read_recent_session_rows(root, 2);
-        assert!(rows.is_empty(), "the two newest metas are unbound: {rows:?}");
+        assert!(
+            rows.is_empty(),
+            "the two newest metas are unbound: {rows:?}"
+        );
         assert!(read_recent_session_rows(&root.join("nowhere"), 10).is_empty());
     }
 
     #[test]
-    fn the_session_to_bind_is_the_companys_most_recently_active_live_one() {
-        let summaries = vec![
-            summary("ended", SessionPhase::Ended, "indigo", "2026-09-02T10:00:00Z"),
-            summary("quiet", SessionPhase::Idle, "indigo", "2026-09-02T08:00:00Z"),
-            summary("busy", SessionPhase::Working, "indigo", "2026-09-02T09:00:00Z"),
-            summary("other", SessionPhase::Working, "ridge", "2026-09-02T11:00:00Z"),
-        ];
+    fn on_disk_session_links_use_the_provider_native_resume_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_dir = root.join("workspace/sessions/app-owned-id");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("meta.yaml"),
+            "company_slug: indigo\nproject: launch\ntool: codex\ncli_session_id: native-codex-id\n",
+        )
+        .unwrap();
+
+        let rows = read_recent_session_rows(root, 10);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_id, "native-codex-id");
         assert_eq!(
-            session_to_bind(&summaries, "Indigo").map(|s| s.session_id.as_str()),
-            Some("busy")
+            rows[0].workspace_session_id.as_deref(),
+            Some("app-owned-id")
         );
-        assert!(session_to_bind(&summaries, "acme").is_none());
+    }
+
+    #[test]
+    fn project_observation_uses_explicit_ownership_not_activity_order() {
+        let mut summaries = vec![
+            summary(
+                "ended",
+                SessionPhase::Ended,
+                "indigo",
+                "2026-09-02T10:00:00Z",
+            ),
+            summary(
+                "quiet",
+                SessionPhase::Idle,
+                "indigo",
+                "2026-09-02T08:00:00Z",
+            ),
+            summary(
+                "busy",
+                SessionPhase::Working,
+                "indigo",
+                "2026-09-02T09:00:00Z",
+            ),
+            summary(
+                "other",
+                SessionPhase::Working,
+                "ridge",
+                "2026-09-02T11:00:00Z",
+            ),
+        ];
+        assert!(sessions_for_project(&summaries, "indigo", "draft").is_empty());
+        summaries[0].project = Some("draft".into()); // ended
+        summaries[1].project = Some("draft".into()); // quiet owner
+        summaries[2].project = Some("other-project".into()); // busy unrelated
+        summaries[3].project = Some("draft".into()); // other company
+        let ids = |co: &str, project: &str| sessions_for_project(&summaries, co, project)
+            .iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids("Indigo", "draft"), vec!["quiet"]);
+        assert!(ids("acme", "draft").is_empty());
+        assert!(ids("indigo", "unrelated").is_empty());
     }
 
     #[test]

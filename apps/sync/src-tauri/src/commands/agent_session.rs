@@ -21,6 +21,7 @@
 
 pub mod claude;
 pub mod codex;
+mod history_replay;
 pub mod notify;
 
 use std::collections::HashMap;
@@ -28,7 +29,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use hq_desktop_core::agent_session::claude_wire::{
-    answers_updated_input, allow_response, control_response_line, deny_response,
+    allow_response, answers_updated_input, control_response_line, deny_response,
     set_permission_mode_request_line, user_message_line, user_message_line_with_images,
 };
 use hq_desktop_core::agent_session::codex_wire::{approval_reply, user_input, user_input_reply};
@@ -41,7 +42,9 @@ use hq_desktop_core::agent_session::types::{
 };
 use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::claude_launch::check_hq_hooks_ready;
-use hq_desktop_core::workspaces::{discover_local_companies, humanize_slug, resolve_hq_folder_path};
+use hq_desktop_core::workspaces::{
+    discover_local_companies, humanize_slug, resolve_hq_folder_path,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
@@ -51,6 +54,24 @@ use crate::util::logfile::log;
 use self::claude::{Outbound, SessionEventSink};
 
 const LOG_TAG: &str = "agent-session";
+
+/// A running turn that emits nothing for ten minutes is plausibly wedged.
+const ACTIVE_TURN_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Absolute lifetime bound for one child. Parked sessions use a longer idle
+/// deadline so this hard bound, not ordinary inactivity, owns eventual cleanup.
+pub(super) const SESSION_HARD_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+const PARKED_SESSION_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(25 * 60 * 60);
+
+/// Idle and Needs You are healthy parked states, not stalled processes. Only a
+/// turn that is Starting or Working gets the short silence watchdog.
+pub(super) fn driver_idle_timeout(phase: Option<SessionPhase>) -> std::time::Duration {
+    match phase {
+        Some(SessionPhase::Idle | SessionPhase::NeedsYou) => PARKED_SESSION_IDLE_TIMEOUT,
+        _ => ACTIVE_TURN_IDLE_TIMEOUT,
+    }
+}
 
 /// How long `agent_session_end` waits for a graceful exit before killing.
 const END_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -149,6 +170,7 @@ pub fn now_ms() -> u64 {
 pub struct CompanyOption {
     pub slug: String,
     pub display_name: String,
+    pub cloud_uid: Option<String>,
 }
 
 /// Everything the UI needs to decide whether it can offer a session at all,
@@ -194,14 +216,16 @@ pub struct ImageAttachment {
 struct SessionMetaOut {
     company_slug: Option<String>,
     started_at: String,
+    /// Human conversation title derived from the first visible operator turn.
+    /// Project-channel rows use this after the live process exits.
+    title: Option<String>,
     /// Which CLI ran the session. The reader ignores unknown keys, so this is
     /// additive — but without it a Codex transcript on disk is indistinguishable
     /// from a Claude one.
     tool: String,
-    /// The CLI's OWN session handle — Codex's thread id — which is what a
-    /// resume needs and what our session id is not. `None` for Claude, whose
-    /// id is only known once the child's `init` frame lands, after this file
-    /// is written.
+    /// The CLI's OWN session handle, which is what a resume needs and what our
+    /// session id is not. Codex supplies it during its handshake; Claude fills
+    /// it when the child's `init` frame lands.
     cli_session_id: Option<String>,
     /// The company project the session is bound to (directory slug). The
     /// history reader already parses this key; the sidebar's project links
@@ -235,6 +259,7 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| humanize_slug(&entry.slug)),
             slug: entry.slug,
+            cloud_uid: entry.cloud_uid,
         })
         .collect();
 
@@ -255,6 +280,7 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
 pub async fn agent_session_start(
     app: tauri::AppHandle,
     spec: SessionSpec,
+    project_channel_id: Option<String>,
 ) -> Result<StartedSession, String> {
     ensure_in_app_sessions_allowed()?;
 
@@ -268,18 +294,42 @@ pub async fn agent_session_start(
     }
     let session_id = spec.session_id.clone();
 
+    // A provider resume restores the model's context, but neither CLI re-emits
+    // the conversation that preceded it. Seed the new app-owned replay ring
+    // from the provider's bounded on-disk transcript so Resume opens a visible
+    // conversation instead of an apparently empty chat.
+    let resumed_history = spec
+        .resume
+        .as_deref()
+        .map(str::trim)
+        .filter(|resume| !resume.is_empty())
+        .map(|resume| history_replay::load_resume_history(spec.tool, resume))
+        .unwrap_or_default();
+
     let state = state();
 
     // Reserve the slot BEFORE spawning: refusing after a child is already
     // running would leak a process for the length of the error message.
     {
         let mut guard = state.lock().await;
-        if guard.registry.get(&session_id).is_some_and(|s| !s.is_ended()) {
+        if guard
+            .registry
+            .get(&session_id)
+            .is_some_and(|s| !s.is_ended())
+        {
             return Err(format!("Session {session_id} is already running."));
         }
-        guard
-            .registry
-            .insert(LiveSession::new(spec.clone(), now_iso()))?;
+        let mut session = LiveSession::new(spec.clone(), now_iso());
+        session.history_before = resumed_history.before;
+        for historical in resumed_history.events {
+            if let SessionEvent::UserMessage { text, .. } = &historical.event {
+                session.adopt_title_from_prompt(text);
+            }
+            session
+                .buffer
+                .push(historical.event, historical.received_at_ms);
+        }
+        guard.registry.insert(session)?;
     }
 
     // Dispatch by tool. Both drivers own their child, their wire, and their
@@ -315,15 +365,40 @@ pub async fn agent_session_start(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     state.lock().await.set_channel(&session_id, tx);
 
+    if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
+        use tauri::Emitter;
+        // Sharing is independent of running the owner's local conversation.
+        let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+    }
+
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));
-    // Claude's own session id only exists once its `init` frame lands, which is
-    // after this function returns; Codex's is known now.
-    let mut cli_session_id: Option<String> = None;
+    // Persist the app-owned metadata before starting either read loop. Claude
+    // can announce its native id immediately, so writing after spawn creates a
+    // race where the link update has no file to update.
+    let cli_session_id = match &spawned {
+        Spawned::Claude(_) => None,
+        Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
+    };
+    if let Err(e) = write_session_meta(
+        &hq_root,
+        &session_id,
+        spec.company.as_deref(),
+        spec.tool,
+        cli_session_id.as_deref(),
+        spec.project.as_deref(),
+    ) {
+        log(
+            LOG_TAG,
+            &format!("session={session_id} meta write failed: {e}"),
+        );
+    }
+
     match spawned {
         Spawned::Claude(child) => {
             tokio::spawn(claude::run_session_loop(
                 child,
                 session_id.clone(),
+                hq_root.clone(),
                 state.clone(),
                 sink,
                 rx,
@@ -332,7 +407,6 @@ pub async fn agent_session_start(
         Spawned::Codex(child, handshake) => {
             // Codex's own thread id is the resume handle; the registry key
             // stays our session id, so nothing downstream has to know.
-            cli_session_id = Some(handshake.thread_id.clone());
             if let Some(session) = state.lock().await.registry.get_mut(&session_id) {
                 session.cli_session_id = Some(handshake.thread_id.clone());
             }
@@ -346,19 +420,6 @@ pub async fn agent_session_start(
                 rx,
             ));
         }
-    }
-
-    // Best-effort: the session works without it, but the existing history feed
-    // reads it to show the company and the true start time.
-    if let Err(e) = write_session_meta(
-        &hq_root,
-        &session_id,
-        spec.company.as_deref(),
-        spec.tool,
-        cli_session_id.as_deref(),
-        spec.project.as_deref(),
-    ) {
-        log(LOG_TAG, &format!("session={session_id} meta write failed: {e}"));
     }
 
     log(LOG_TAG, &format!("session={session_id} started"));
@@ -417,14 +478,37 @@ pub async fn agent_session_send(
         // intact across the string-shaped outbound channel.
         SessionTool::Codex => user_input(&text, &attachments).to_string(),
     };
-    record_and_queue_user_turn(
+    let result = record_and_queue_user_turn(
         &mut guard,
         &claude::AppSink(app),
         &session_id,
         &text,
         line,
         attachments.len() as u32,
-    )
+    );
+    let title = result.as_ref().ok().and_then(|_| {
+        guard
+            .registry
+            .get(&session_id)
+            .map(|session| session.summary().title)
+            .filter(|title| !title.trim().is_empty())
+    });
+    drop(guard);
+
+    if let Some(title) = title {
+        if let Ok(hq_root) = resolve_hq_folder_path() {
+            match update_session_meta_title(&hq_root, &session_id, &title) {
+                Ok(true) => crate::commands::session_project_links::invalidate_links_cache(),
+                Ok(false) => {}
+                Err(e) => log(
+                    LOG_TAG,
+                    &format!("session={session_id} title meta write failed: {e}"),
+                ),
+            }
+        }
+    }
+
+    result
 }
 
 /// Buffer the operator's turn, then queue the line that carries it.
@@ -639,7 +723,10 @@ pub async fn agent_session_end(session_id: String) -> Result<(), String> {
         // whose driver task is already gone is simply removed below.
         if guard.has_channel(&session_id) {
             if let Err(e) = guard.send(&session_id, Outbound::End) {
-                log(LOG_TAG, &format!("session={session_id} end not delivered: {e}"));
+                log(
+                    LOG_TAG,
+                    &format!("session={session_id} end not delivered: {e}"),
+                );
             }
         }
     }
@@ -678,6 +765,51 @@ pub async fn agent_session_replay(session_id: String, since_seq: u64) -> Result<
         .get(&session_id)
         .ok_or_else(|| format!("No session {session_id}."))?;
     Ok(session.buffer.replay(since_seq))
+}
+
+/// Load the page immediately before `before` from the provider's durable
+/// transcript. Live replay stays bounded and fast; the UI asks for older prose
+/// only when the reader scrolls back for it.
+#[tauri::command]
+pub async fn agent_session_history_page(
+    session_id: String,
+    before: Option<u64>,
+    tool: Option<SessionTool>,
+) -> Result<history_replay::HistoryPage, String> {
+    ensure_in_app_sessions_allowed()?;
+    // A dormant provider conversation is readable without becoming a live HQ
+    // process. Its native id and provider are already known by the history
+    // scanner, so no registry entry is needed just to render the transcript.
+    if let Some(tool) = tool {
+        return Ok(history_replay::load_resume_history_before(
+            tool,
+            &session_id,
+            before,
+        ));
+    }
+
+    let before = before.ok_or_else(|| "An earlier-history cursor is required.".to_string())?;
+    let state = state();
+    let guard = state.lock().await;
+    let session = guard
+        .registry
+        .get(&session_id)
+        .ok_or_else(|| format!("No session {session_id}."))?;
+    let resume = session
+        .spec
+        .resume
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "This session has no earlier provider transcript.".to_string())?
+        .to_owned();
+    let tool = session.spec.tool;
+    drop(guard);
+    Ok(history_replay::load_resume_history_before(
+        tool,
+        &resume,
+        Some(before),
+    ))
 }
 
 /// The id the CLI itself knows a session by — what `claude --resume` and
@@ -768,6 +900,7 @@ fn write_session_meta(
             .filter(|slug| !slug.is_empty())
             .map(str::to_owned),
         started_at: now_iso(),
+        title: None,
         tool: match tool {
             SessionTool::Claude => "claude".into(),
             SessionTool::Codex => "codex".into(),
@@ -812,6 +945,80 @@ fn update_session_meta_project(
     map.insert(
         serde_yaml::Value::String("project".into()),
         serde_yaml::Value::String(project.trim().to_string()),
+    );
+    let yaml = serde_yaml::to_string(&doc).map_err(|e| format!("serialize meta: {e}"))?;
+    std::fs::write(&path, yaml).map_err(|e| format!("write meta.yaml: {e}"))
+}
+
+/// Persist the session's human title without disturbing company, project, CLI
+/// id, or any future metadata keys. Returns true only when the file changed.
+fn update_session_meta_title(
+    hq_root: &Path,
+    session_id: &str,
+    title: &str,
+) -> Result<bool, String> {
+    if session_id.contains(['/', '\\']) || session_id == "." || session_id == ".." {
+        return Err("invalid session id".to_string());
+    }
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let path = hq_root
+        .join("workspace")
+        .join("sessions")
+        .join(session_id)
+        .join("meta.yaml");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read meta.yaml: {e}"))?;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(&raw).map_err(|e| format!("parse meta.yaml: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("meta.yaml is not a mapping".to_string());
+    };
+    let key = serde_yaml::Value::String("title".into());
+    if map
+        .get(&key)
+        .and_then(serde_yaml::Value::as_str)
+        .is_some_and(|current| current.trim() == title)
+    {
+        return Ok(false);
+    }
+    map.insert(key, serde_yaml::Value::String(title.to_string()));
+    let yaml = serde_yaml::to_string(&doc).map_err(|e| format!("serialize meta: {e}"))?;
+    std::fs::write(&path, yaml).map_err(|e| format!("write meta.yaml: {e}"))?;
+    Ok(true)
+}
+
+/// Link an app-owned session record to the provider-native transcript id once
+/// Claude announces it. This deliberately updates the existing app directory
+/// instead of creating a second metadata directory that would look like a
+/// duplicate session to project/channel joins.
+pub(super) fn update_session_meta_cli_session_id(
+    hq_root: &Path,
+    session_id: &str,
+    cli_session_id: &str,
+) -> Result<(), String> {
+    if session_id.contains(['/', '\\']) || session_id == "." || session_id == ".." {
+        return Err("invalid session id".to_string());
+    }
+    let cli_session_id = cli_session_id.trim();
+    if cli_session_id.is_empty() {
+        return Err("native session id is blank".to_string());
+    }
+    let path = hq_root
+        .join("workspace")
+        .join("sessions")
+        .join(session_id)
+        .join("meta.yaml");
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read meta.yaml: {e}"))?;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(&raw).map_err(|e| format!("parse meta.yaml: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("meta.yaml is not a mapping".to_string());
+    };
+    map.insert(
+        serde_yaml::Value::String("cli_session_id".into()),
+        serde_yaml::Value::String(cli_session_id.to_string()),
     );
     let yaml = serde_yaml::to_string(&doc).map_err(|e| format!("serialize meta: {e}"))?;
     std::fs::write(&path, yaml).map_err(|e| format!("write meta.yaml: {e}"))
@@ -867,6 +1074,20 @@ pub(crate) async fn bind_session_project(
 mod tests {
     use super::*;
 
+    #[test]
+    fn parked_sessions_do_not_expire_from_ten_minutes_of_silence() {
+        assert!(driver_idle_timeout(Some(SessionPhase::Idle)) > SESSION_HARD_DEADLINE);
+        assert!(driver_idle_timeout(Some(SessionPhase::NeedsYou)) > SESSION_HARD_DEADLINE);
+        assert_eq!(
+            driver_idle_timeout(Some(SessionPhase::Working)),
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            driver_idle_timeout(Some(SessionPhase::Starting)),
+            std::time::Duration::from_secs(600)
+        );
+    }
+
     /// "Open in Claude Code / Codex" needs the id the CLI knows the session
     /// by. It is `None` before the handshake and whatever `Started` announced
     /// after it — for Codex that is the thread id, which is not the app's own.
@@ -875,6 +1096,7 @@ mod tests {
         let mut registry = SessionRegistry::new();
         let spec = SessionSpec {
             session_id: "app-1".into(),
+            title: None,
             tool: SessionTool::Codex,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
@@ -936,19 +1158,32 @@ mod tests {
         // The composer's project pick lands under the key the history reader
         // and the project-links join both parse.
         assert_eq!(parsed["project"].as_str(), Some("launch"));
+        assert!(parsed["title"].is_null());
         assert!(
-            parsed["started_at"].as_str().is_some_and(|t| t.ends_with('Z')),
+            parsed["started_at"]
+                .as_str()
+                .is_some_and(|t| t.ends_with('Z')),
             "started_at must be ISO-8601 UTC: {raw}"
         );
 
         // A company-less session writes a null slug rather than omitting the
         // key, which the reader's `#[serde(default)]` handles either way.
-        write_session_meta(&root, "sess-2", Some("   "), SessionTool::Claude, None, Some(" "))
-            .expect("write");
+        write_session_meta(
+            &root,
+            "sess-2",
+            Some("   "),
+            SessionTool::Claude,
+            None,
+            Some(" "),
+        )
+        .expect("write");
         let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-2/meta.yaml"))
             .expect("read");
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
-        assert!(parsed["company_slug"].is_null(), "blank slug is not a company");
+        assert!(
+            parsed["company_slug"].is_null(),
+            "blank slug is not a company"
+        );
         assert!(parsed["project"].is_null(), "blank project is no project");
         assert_eq!(parsed["tool"].as_str(), Some("claude"));
         assert!(
@@ -983,8 +1218,15 @@ mod tests {
     fn a_late_project_binding_rewrites_only_the_project_key() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        write_session_meta(&root, "sess-4", Some("indigo"), SessionTool::Claude, None, None)
-            .expect("write");
+        write_session_meta(
+            &root,
+            "sess-4",
+            Some("indigo"),
+            SessionTool::Claude,
+            None,
+            None,
+        )
+        .expect("write");
         let path = root.join("workspace/sessions/sess-4/meta.yaml");
         let mut raw = std::fs::read_to_string(&path).expect("read");
         raw.push_str("repo: hq-desktop-app\n");
@@ -1008,6 +1250,65 @@ mod tests {
         assert!(update_session_meta_project(&root, "missing", "x").is_err());
     }
 
+    #[test]
+    fn a_session_title_is_persisted_without_losing_its_project_binding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_session_meta(
+            &root,
+            "sess-title",
+            Some("indigo"),
+            SessionTool::Codex,
+            Some("native-title"),
+            Some("hq-agent-workspace"),
+        )
+        .expect("write");
+
+        assert!(
+            update_session_meta_title(&root, "sess-title", "Plan agent workspace")
+                .expect("title update")
+        );
+        assert!(
+            !update_session_meta_title(&root, "sess-title", "Plan agent workspace")
+                .expect("same title")
+        );
+
+        let raw = std::fs::read_to_string(root.join("workspace/sessions/sess-title/meta.yaml"))
+            .expect("read");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
+        assert_eq!(parsed["title"].as_str(), Some("Plan agent workspace"));
+        assert_eq!(parsed["project"].as_str(), Some("hq-agent-workspace"));
+        assert_eq!(parsed["company_slug"].as_str(), Some("indigo"));
+        assert_eq!(parsed["cli_session_id"].as_str(), Some("native-title"));
+    }
+
+    #[test]
+    fn claude_init_links_the_native_id_without_losing_session_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        write_session_meta(
+            &root,
+            "app-session-1",
+            Some("indigo"),
+            SessionTool::Claude,
+            None,
+            Some("session-repairs"),
+        )
+        .expect("write");
+
+        update_session_meta_cli_session_id(&root, "app-session-1", "claude-native-1")
+            .expect("link native id");
+
+        let path = root.join("workspace/sessions/app-session-1/meta.yaml");
+        let raw = std::fs::read_to_string(path).expect("read");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse");
+        assert_eq!(parsed["cli_session_id"].as_str(), Some("claude-native-1"));
+        assert_eq!(parsed["company_slug"].as_str(), Some("indigo"));
+        assert_eq!(parsed["project"].as_str(), Some("session-repairs"));
+        assert_eq!(parsed["tool"].as_str(), Some("claude"));
+        assert!(parsed["started_at"].as_str().is_some());
+    }
+
     #[tokio::test]
     async fn binding_a_live_session_updates_the_registry_and_reports_changes() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1015,6 +1316,7 @@ mod tests {
         let session_id = format!("bind-{}", uuid::Uuid::new_v4());
         let spec = SessionSpec {
             session_id: session_id.clone(),
+            title: None,
             tool: SessionTool::Claude,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
@@ -1030,11 +1332,24 @@ mod tests {
             .registry
             .insert(LiveSession::new(spec, now_iso()))
             .expect("insert");
-        write_session_meta(&root, &session_id, Some("indigo"), SessionTool::Claude, None, None)
-            .expect("write");
+        write_session_meta(
+            &root,
+            &session_id,
+            Some("indigo"),
+            SessionTool::Claude,
+            None,
+            None,
+        )
+        .expect("write");
 
-        assert_eq!(bind_session_project(&root, &session_id, "draft").await, Ok(true));
-        assert_eq!(bind_session_project(&root, &session_id, "draft").await, Ok(false));
+        assert_eq!(
+            bind_session_project(&root, &session_id, "draft").await,
+            Ok(true)
+        );
+        assert_eq!(
+            bind_session_project(&root, &session_id, "draft").await,
+            Ok(false)
+        );
         let bound = live_session_summaries()
             .await
             .into_iter()
@@ -1042,7 +1357,9 @@ mod tests {
             .expect("listed");
         assert_eq!(bound.project.as_deref(), Some("draft"));
         let raw = std::fs::read_to_string(
-            root.join("workspace/sessions").join(&session_id).join("meta.yaml"),
+            root.join("workspace/sessions")
+                .join(&session_id)
+                .join("meta.yaml"),
         )
         .expect("read");
         assert!(raw.contains("project: draft"), "{raw}");

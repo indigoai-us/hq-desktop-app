@@ -48,6 +48,8 @@ pub struct WorkerSkill {
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
+    /// Natural-language trigger phrases help search, but are not filter tags.
+    pub search_terms: Vec<String>,
     pub invoke: String,
 }
 
@@ -73,8 +75,12 @@ pub struct SkillEntry {
     /// `"core"` | `"personal"` | `"company:<slug>"` | `"package"`.
     pub scope: String,
     pub tags: Vec<String>,
+    /// Natural-language trigger phrases help search, but are not filter tags.
+    pub search_terms: Vec<String>,
     /// The literal slash invocation, built from the directory name.
     pub invoke: String,
+    /// Stable HQ Pro identity preserved in installed company skill frontmatter.
+    pub skill_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,12 +280,13 @@ fn collect_worker_skills(worker_dir: &Path, worker_id: &str) -> Vec<WorkerSkill>
     candidates
         .into_iter()
         .map(|(name, path)| {
-            let (description, tags) = describe_markdown(&path);
+            let (description, tags, search_terms) = describe_markdown(&path);
             WorkerSkill {
                 invoke: format!("/run {worker_id} {name}"),
                 name,
                 description,
                 tags,
+                search_terms,
             }
         })
         .collect()
@@ -290,13 +297,14 @@ fn collect_worker_skills(worker_dir: &Path, worker_id: &str) -> Vec<WorkerSkill>
 #[derive(Debug, Default, Deserialize)]
 struct SkillFrontmatter {
     #[serde(default)]
+    skill_uid: Option<String>,
+    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
-    /// Some skills declare `triggers:` instead of / alongside `tags:`; both are
-    /// surfaced as tags so the composer can filter on either.
+    /// Trigger phrases are searchable aliases, not taxonomy tags.
     #[serde(default)]
     triggers: Vec<String>,
 }
@@ -359,12 +367,20 @@ fn collect_skills(hq_root: &Path, company: Option<&str>) -> Vec<SkillEntry> {
         let mut tags: Vec<String> = front
             .tags
             .into_iter()
-            .chain(front.triggers)
             .map(|tag| clamp(&tag, 60))
             .filter(|tag| !tag.is_empty())
             .collect();
         tags.dedup();
         tags.truncate(MAX_TAGS);
+
+        let mut search_terms: Vec<String> = front
+            .triggers
+            .into_iter()
+            .map(|term| clamp(&term, 120))
+            .filter(|term| !term.is_empty())
+            .collect();
+        search_terms.dedup();
+        search_terms.truncate(MAX_TAGS);
 
         out.push(SkillEntry {
             name,
@@ -374,7 +390,9 @@ fn collect_skills(hq_root: &Path, company: Option<&str>) -> Vec<SkillEntry> {
             ),
             scope: scope.to_string(),
             tags,
+            search_terms,
             invoke: format!("/{dir_name}"),
+            skill_uid: front.skill_uid.filter(|uid| !uid.trim().is_empty()),
         });
     }
     out
@@ -432,11 +450,11 @@ fn manifest_company_slugs(hq_root: &Path) -> BTreeSet<String> {
 
 // ── shared markdown description extraction ──────────────────────────────────
 
-/// `(description, tags)` for a worker skill file — frontmatter when present,
+/// `(description, tags, search terms)` for a worker skill file — frontmatter when present,
 /// otherwise the first prose paragraph under the leading heading.
-fn describe_markdown(path: &Path) -> (String, Vec<String>) {
+fn describe_markdown(path: &Path) -> (String, Vec<String>, Vec<String>) {
     let Some(raw) = read_head(path, HEAD_BYTES) else {
-        return (String::new(), Vec::new());
+        return (String::new(), Vec::new(), Vec::new());
     };
     let (front_yaml, body) = split_frontmatter(&raw);
     let front = front_yaml
@@ -446,18 +464,26 @@ fn describe_markdown(path: &Path) -> (String, Vec<String>) {
     let mut tags: Vec<String> = front
         .tags
         .into_iter()
-        .chain(front.triggers)
         .map(|tag| clamp(&tag, 60))
         .filter(|tag| !tag.is_empty())
         .collect();
     tags.dedup();
     tags.truncate(MAX_TAGS);
 
+    let mut search_terms: Vec<String> = front
+        .triggers
+        .into_iter()
+        .map(|term| clamp(&term, 120))
+        .filter(|term| !term.is_empty())
+        .collect();
+    search_terms.dedup();
+    search_terms.truncate(MAX_TAGS);
+
     let description = match front.description.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() => clamp(text, MAX_DESCRIPTION_CHARS),
         _ => clamp(first_paragraph(body), MAX_DESCRIPTION_CHARS),
     };
-    (description, tags)
+    (description, tags, search_terms)
 }
 
 /// First non-empty, non-heading line of a markdown body.
@@ -563,7 +589,7 @@ workers:
         );
         write(
             &skills.join("indigo:capture/SKILL.md"),
-            "---\nskill_uid: skl_01\ntags: [screen, capture]\nname: capture\ndescription: Toggle Screenpipe capture.\n---\n\nbody\n",
+            "---\nskill_uid: skl_01\ntags: [screen, capture]\ntriggers: [always do this]\nname: capture\ndescription: Toggle Screenpipe capture.\n---\n\nbody\n",
         );
         write(
             &skills.join("ridge:upsell-report/SKILL.md"),
@@ -657,6 +683,14 @@ workers:
         );
         // `vercel` is not a manifest company → package, not company.
         assert_eq!(scope_of("/vercel:deploy").as_deref(), Some("package"));
+        let capture = catalog
+            .skills
+            .iter()
+            .find(|skill| skill.invoke == "/indigo:capture")
+            .expect("capture present");
+        assert_eq!(capture.skill_uid.as_deref(), Some("skl_01"));
+        assert_eq!(capture.tags, vec!["screen", "capture"]);
+        assert_eq!(capture.search_terms, vec!["always do this"]);
     }
 
     #[test]

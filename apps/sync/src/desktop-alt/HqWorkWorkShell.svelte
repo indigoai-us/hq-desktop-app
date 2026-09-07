@@ -42,10 +42,11 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import ProjectSessionsHoverCard from './components/ProjectSessionsHoverCard.svelte';
+  import { parseSessionsParam } from './pages/sessions-route-param';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
+    historySessionParam,
     rowExtrasFor,
     PROJECT_CHANNEL_LINKED_EVENT,
     type ProjectChannelLinked,
@@ -120,12 +121,22 @@
           sessions: {
             label: 'Sessions',
             detail: 'Run a Codex or Claude session inside the app',
+            // A unique draft route also resets an already-open empty composer.
+            // Global creation is standalone; project actions bind explicitly.
+            createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
             component: SessionsExtraPage,
           },
         }
       : {},
   );
 
+  /**
+   * Project channels ↔ sessions. The shared sidebar paints a badge, nested
+   * session rows and a "New session" action on project-channel rows through the
+   * generic `rowExtras` seam; what those mean comes from this host's
+   * `session_project_links` store, keyed by company slug. A new resolver on
+   * every store change is what makes the rows repaint.
+   */
   const companySlugByUid = $derived(
     new Map(
       (companies ?? [])
@@ -145,18 +156,39 @@
     if (!sessionsEnabled || lifecycle !== 'ready') return null;
     const byCompany = projectLinksStore.byCompany;
     const slugByUid = companySlugByUid;
-    return (row: ConversationRow) => {
+    return (row: ConversationRow, destination) => {
+      const route = destination?.page === 'sessions' ? parseSessionsParam(destination.param) : null;
+      const selectedSessionId = route?.kind === 'session' || route?.kind === 'history' || route?.kind === 'shared' ? route.sessionId : null;
       const slug = row.companyUid ? slugByUid.get(row.companyUid) : undefined;
       const links = slug ? (byCompany[slug] ?? []) : Object.values(byCompany).flat();
-      return rowExtrasFor(row, links, ProjectSessionsHoverCard, (link) => {
-        const company = slug ?? companyOfLink(link, byCompany);
-        if (!company) return;
-        navigation.navigate({
-          kind: 'extra',
-          page: 'sessions',
-          param: newSessionParam(company, link.project),
-        });
-      });
+      return rowExtrasFor(
+        row,
+        links,
+        null,
+        (link) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: newSessionParam(company, link.project, link.channelId),
+          });
+        },
+        (_link, session) => {
+          const company = slug ?? companyOfLink(_link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: historySessionParam(company, _link.project, session),
+          });
+        },
+        selectedSessionId,
+        (link, visible) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (company) projectLinksStore.watchSharedChannel(company, link, visible);
+        },
+      );
     };
   });
 

@@ -92,7 +92,10 @@ pub async fn search_messages(
     })?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
         let snippet: String = body.chars().take(400).collect();
-        log(LOG_TAG, &format!("MSG_SEARCH_PARSE_FAIL {e} body={snippet}"));
+        log(
+            LOG_TAG,
+            &format!("MSG_SEARCH_PARSE_FAIL {e} body={snippet}"),
+        );
         format!("Could not parse response: {e}")
     })?;
     let mapped = map_search_response(value)?;

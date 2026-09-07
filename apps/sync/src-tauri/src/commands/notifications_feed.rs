@@ -96,12 +96,7 @@ pub struct NotificationActionEvent {
 }
 
 /// Pure helper: build the list query URL (unit-tested).
-pub fn build_list_url(
-    base: &str,
-    limit: u32,
-    cursor: Option<&str>,
-    unread_only: bool,
-) -> String {
+pub fn build_list_url(base: &str, limit: u32, cursor: Option<&str>, unread_only: bool) -> String {
     let base = base.trim_end_matches('/');
     let mut url = format!("{base}/v1/notify/notifications?limit={limit}");
     if unread_only {
@@ -150,11 +145,7 @@ async fn auth_and_base(code: &str) -> Result<(String, String), String> {
     Ok((base, token))
 }
 
-async fn get_feed(
-    url: &str,
-    token: &str,
-    code: &str,
-) -> Result<NotificationsFeedResponse, String> {
+async fn get_feed(url: &str, token: &str, code: &str) -> Result<NotificationsFeedResponse, String> {
     let resp = build_client()
         .get(url)
         .header("authorization", format!("Bearer {token}"))

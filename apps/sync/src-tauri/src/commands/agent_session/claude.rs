@@ -55,7 +55,7 @@ use tokio::time::Instant;
 
 use crate::util::logfile::log;
 
-use super::{now_iso, now_ms, SessionState};
+use super::{driver_idle_timeout, now_iso, now_ms, SessionState, SESSION_HARD_DEADLINE};
 
 /// Tauri event carrying one transcript event.
 pub const EVENT_SESSION_EVENT: &str = "agent-session:event";
@@ -65,15 +65,6 @@ pub const EVENT_SESSION_PHASE: &str = "agent-session:phase";
 pub const EVENT_SESSION_NEEDS_YOU: &str = "agent-session:needs-you";
 
 const LOG_TAG: &str = "agent-session";
-
-/// Silence budget before we call a session dead. Generous on purpose: a long
-/// Bash step or a slow MCP server is silence, and killing a working session is
-/// far worse than waiting.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// Absolute cap on one session's lifetime. Not a real product limit — it exists
-/// so `next_frame`'s hard deadline is a finite instant rather than "never".
-const SESSION_HARD_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long an interrupt gets to produce a `result` before we stop asking
 /// nicely. The spike measured the receipt + `result` pair arriving immediately.
@@ -109,6 +100,7 @@ pub struct AppSink(pub AppHandle);
 
 impl SessionEventSink for AppSink {
     fn emit_event(&self, session_id: &str, seq: u64, received_at_ms: u64, event: &SessionEvent) {
+        crate::commands::project_session_sharing::observe(session_id, event);
         let _ = self.0.emit(
             EVENT_SESSION_EVENT,
             serde_json::json!({
@@ -287,6 +279,7 @@ pub async fn spawn_claude(spec: &SessionSpec, cwd: PathBuf) -> Result<StdioChild
 pub async fn run_session_loop(
     mut child: StdioChild,
     session_id: String,
+    hq_root: PathBuf,
     state: Arc<Mutex<SessionState>>,
     sink: Arc<dyn SessionEventSink>,
     mut outbound: UnboundedReceiver<Outbound>,
@@ -303,6 +296,10 @@ pub async fn run_session_loop(
         // `sleep_until` needs an instant even when its arm is disabled; the
         // `if` guard is what actually keeps it from firing.
         let force_at = interrupt_deadline.unwrap_or_else(|| Instant::now() + SESSION_HARD_DEADLINE);
+        let frame_idle_timeout = {
+            let guard = state.lock().await;
+            driver_idle_timeout(guard.registry.get(&session_id).map(|session| session.phase))
+        };
 
         let step = tokio::select! {
             biased;
@@ -310,7 +307,7 @@ pub async fn run_session_loop(
             _ = tokio::time::sleep_until(force_at), if interrupt_deadline.is_some() => {
                 Step::InterruptTimedOut
             }
-            frame = child.next_frame(IDLE_TIMEOUT, hard_deadline) => Step::Frame(frame),
+            frame = child.next_frame(frame_idle_timeout, hard_deadline) => Step::Frame(frame),
         };
 
         match step {
@@ -392,6 +389,22 @@ pub async fn run_session_loop(
                 let question_input = raw_question_input(&frame);
 
                 for event in normalizer.normalize(frame) {
+                    if let SessionEvent::Started {
+                        session_id: cli_session_id,
+                        ..
+                    } = &event
+                    {
+                        if let Err(e) = super::update_session_meta_cli_session_id(
+                            &hq_root,
+                            &session_id,
+                            cli_session_id,
+                        ) {
+                            log(
+                                LOG_TAG,
+                                &format!("session={session_id} native id link failed: {e}"),
+                            );
+                        }
+                    }
                     if !handle_event(
                         &mut child,
                         &session_id,
@@ -424,9 +437,7 @@ pub async fn run_session_loop(
             Step::Frame(Err(e)) => {
                 ending = Ending {
                     error: Some(match &e {
-                        StdioError::IdleTimeout(d) => {
-                            format!("Claude went quiet for {}s — ending the session.", d.as_secs())
-                        }
+                        StdioError::IdleTimeout(_) => "Claude stopped responding during this turn. You can resume it from session history.".into(),
                         other => format!("Claude stopped responding: {other}"),
                     }),
                     crash_class: e.is_crash_class(),
@@ -642,6 +653,7 @@ pub struct CommandCatalog {
 pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, String> {
     let spec = SessionSpec {
         session_id: uuid::Uuid::new_v4().to_string(),
+        title: None,
         tool: hq_desktop_core::agent_session::types::SessionTool::Claude,
         cwd: cwd.to_string_lossy().into_owned(),
         company: None,
@@ -659,10 +671,7 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
     outcome
 }
 
-async fn probe_inner(
-    child: &mut StdioChild,
-    deadline: Instant,
-) -> Result<CommandCatalog, String> {
+async fn probe_inner(child: &mut StdioChild, deadline: Instant) -> Result<CommandCatalog, String> {
     let request_id = "init_1";
     write_line(child, &initialize_request_line(request_id))
         .await
@@ -746,6 +755,7 @@ mod tests {
     fn spec(mode: PermissionMode) -> SessionSpec {
         SessionSpec {
             session_id: "sess-e2e".into(),
+            title: None,
             tool: SessionTool::Claude,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
@@ -877,6 +887,15 @@ exit 0
         let program = install_fake(dir.path(), &replies, script);
 
         let spec = spec(mode);
+        super::super::write_session_meta(
+            dir.path(),
+            &spec.session_id,
+            spec.company.as_deref(),
+            spec.tool,
+            None,
+            spec.project.as_deref(),
+        )
+        .expect("write session metadata");
         let launch = claude_launch(program, &spec, dir.path().to_path_buf());
         // The fake is driven with the real argv, so a build_args regression
         // that broke the CLI invocation would show up here too.
@@ -901,6 +920,7 @@ exit 0
         let join = tokio::spawn(run_session_loop(
             child,
             spec.session_id.clone(),
+            dir.path().to_path_buf(),
             state.clone(),
             Arc::new(sink.clone()) as Arc<dyn SessionEventSink>,
             rx,
@@ -952,9 +972,9 @@ exit 0
             "the streamed text reached the sink"
         );
         assert!(
-            events
-                .iter()
-                .any(|(_, _, e)| matches!(e, SessionEvent::ToolCall { name, .. } if name == "Write")),
+            events.iter().any(
+                |(_, _, e)| matches!(e, SessionEvent::ToolCall { name, .. } if name == "Write")
+            ),
             "the tool call reached the sink"
         );
 
@@ -1012,18 +1032,15 @@ exit 0
         assert!(
             events.iter().any(|(_, _, e)| matches!(
                 e,
-                SessionEvent::TurnDone { status: DoneStatus::Success, .. }
+                SessionEvent::TurnDone {
+                    status: DoneStatus::Success,
+                    ..
+                }
             )),
             "turn ended successfully"
         );
         assert_eq!(
-            h.state
-                .lock()
-                .await
-                .registry
-                .get("sess-e2e")
-                .unwrap()
-                .phase,
+            h.state.lock().await.registry.get("sess-e2e").unwrap().phase,
             SessionPhase::Idle,
             "a finished turn returns to Idle"
         );
@@ -1042,7 +1059,10 @@ exit 0
         h.join.await.expect("loop finished");
 
         let guard = h.state.lock().await;
-        let session = guard.registry.get("sess-e2e").expect("session survives for replay");
+        let session = guard
+            .registry
+            .get("sess-e2e")
+            .expect("session survives for replay");
         assert_eq!(session.phase, SessionPhase::Ended);
         assert!(session.pending.is_empty());
         let exits = session
@@ -1057,6 +1077,27 @@ exit 0
             !guard.has_channel("sess-e2e"),
             "the write channel is released when the child is gone"
         );
+    }
+
+    #[tokio::test]
+    async fn claude_init_persists_the_native_resume_id_in_app_metadata() {
+        let h = start(PermissionMode::Prompt).await;
+        until("the started event", || {
+            h.sink
+                .events()
+                .iter()
+                .any(|(_, _, event)| matches!(event, SessionEvent::Started { .. }))
+        })
+        .await;
+
+        let raw =
+            std::fs::read_to_string(h._dir.path().join("workspace/sessions/sess-e2e/meta.yaml"))
+                .expect("read linked metadata");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse metadata");
+        assert_eq!(parsed["cli_session_id"].as_str(), Some("cli-abc"));
+
+        h.tx.send(Outbound::End).expect("send end");
+        h.join.await.expect("loop finished");
     }
 
     /// The operator's own turn is part of the transcript, and every buffered
@@ -1106,7 +1147,12 @@ exit 0
 
         let replay = {
             let guard = h.state.lock().await;
-            guard.registry.get("sess-e2e").expect("session").buffer.replay(0)
+            guard
+                .registry
+                .get("sess-e2e")
+                .expect("session")
+                .buffer
+                .replay(0)
         };
 
         let user_at = replay
@@ -1117,10 +1163,12 @@ exit 0
         let said_at = replay
             .events
             .iter()
-            .position(|entry| matches!(
-                &entry.event,
-                SessionEvent::AssistantMessage { text, .. } if text == "On it."
-            ))
+            .position(|entry| {
+                matches!(
+                    &entry.event,
+                    SessionEvent::AssistantMessage { text, .. } if text == "On it."
+                )
+            })
             .expect("the agent's answer is in the replay");
         assert!(
             user_at < said_at,
@@ -1280,7 +1328,11 @@ exit 0
         assert!(
             events.iter().any(|(_, _, e)| matches!(
                 e,
-                SessionEvent::TurnDone { status: DoneStatus::Interrupted, error: None, .. }
+                SessionEvent::TurnDone {
+                    status: DoneStatus::Interrupted,
+                    error: None,
+                    ..
+                }
             )),
             "an interrupted turn is Interrupted, not Error: {events:?}"
         );
@@ -1291,13 +1343,7 @@ exit 0
             "and produces no error event: {events:?}"
         );
         assert_eq!(
-            h.state
-                .lock()
-                .await
-                .registry
-                .get("sess-e2e")
-                .unwrap()
-                .phase,
+            h.state.lock().await.registry.get("sess-e2e").unwrap().phase,
             SessionPhase::Idle,
             "an interrupted turn returns to Idle, ready for the next prompt"
         );

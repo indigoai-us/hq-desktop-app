@@ -55,7 +55,7 @@ import {
   parsePolicyDigest,
   type PolicyDigest,
 } from './policy-digest';
-import { isStartworkTurn, startworkLabelFromText } from './startwork';
+import { isStartworkTurn, splitStartworkEnvelope, startworkLabelFromText } from './startwork';
 import { splitContextBlocks, type TurnAttachment } from './context-attachments';
 
 export const SESSION_SELF_UID = 'you';
@@ -412,6 +412,10 @@ export interface UserTurnMeta {
   hidden?: boolean;
   /** The divider's wording ("Starting work in indigo · project X"). */
   label?: string;
+  /** Optional context divider rendered before this same atomic user turn. */
+  contextLabel?: string;
+  /** Visible bubble text when the wire message contains hidden context. */
+  displayText?: string;
   /** The context chips that rode this turn. */
   attachments?: TurnAttachment[];
 }
@@ -814,24 +818,29 @@ export function foldSessionEvents(
    * everything else is a bubble whose words exclude the context block and
    * whose tags name what rode along.
    */
-  function userBlock(id: string, text: string, meta: UserTurnMeta, at: number | null): ChatBlock {
-    const hidden = meta.hidden ?? isStartworkTurn(text);
+  function userBlocks(id: string, text: string, meta: UserTurnMeta, at: number | null): ChatBlock[] {
+    const envelope = splitStartworkEnvelope(text);
+    const hidden = meta.hidden ?? (envelope ? false : isStartworkTurn(text));
     if (hidden) {
-      return {
+      return [{
         type: 'divider',
         id: `sys-${id}`,
         label: meta.label ?? (isStartworkTurn(text) ? startworkLabelFromText(text) : text),
         at,
-      };
+      }];
     }
-    const split = splitContextBlocks(text);
-    return {
+    const split = splitContextBlocks(meta.displayText ?? envelope?.prompt ?? text);
+    const bubble: ChatBlock = {
       type: 'userBubble',
       id: `user-${id}`,
       text: split.text,
       attachments: meta.attachments ?? split.attachments,
       at,
     };
+    const contextLabel = meta.contextLabel ?? envelope?.command;
+    return contextLabel
+      ? [{ type: 'divider', id: `sys-context-${id}`, label: contextLabel, at }, bubble]
+      : [bubble];
   }
 
   /** Emit every mirrored user turn that belongs before event `index`. */
@@ -847,7 +856,7 @@ export function foldSessionEvents(
       resetTurnErrors();
       const text = contentToText(turn.text);
       noteUserTurn(text);
-      push(userBlock(turn.id, text, turn, turn.at));
+      for (const block of userBlocks(turn.id, text, turn, turn.at)) push(block);
     }
   }
 
@@ -870,7 +879,7 @@ export function foldSessionEvents(
         retireThought();
         resetTurnErrors();
         noteUserTurn(text);
-        push(userBlock(`ev-${index}`, text, turnMeta[text] ?? {}, at));
+        for (const block of userBlocks(`ev-${index}`, text, turnMeta[text] ?? {}, at)) push(block);
         break;
       }
 

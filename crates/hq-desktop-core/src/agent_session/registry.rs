@@ -10,7 +10,7 @@
 //!   catches up from it instead of from the child (which cannot replay).
 //! * [`LiveSession`] — one running session: its phase, its parked requests,
 //!   its session-scoped tool allowlist, its buffer.
-//! * [`SessionRegistry`] — the small, capped set of them.
+//! * [`SessionRegistry`] — every session currently owned by the app.
 //!
 //! # Why the phase machine lives here and not in the UI
 //!
@@ -25,8 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::types::{
-    PermissionMode, Question, SessionEvent, SessionPhase, SessionSpec, SessionTool,
-    TurnOverrides,
+    PermissionMode, Question, SessionEvent, SessionPhase, SessionSpec, SessionTool, TurnOverrides,
 };
 use crate::stdio::SlotCircuit;
 
@@ -41,10 +40,6 @@ pub const RING_MAX_EVENTS: usize = 4_000;
 /// of large tool results hits this long before the count bound, which is
 /// exactly why both exist: 4 000 × a 2 MB `ToolResult` is not a bounded buffer.
 pub const RING_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-/// Maximum concurrently non-`Ended` sessions. Each one is a `claude` process
-/// with its own MCP servers; four is already a lot of RAM on a laptop.
-pub const MAX_LIVE_SESSIONS: usize = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Event ring
@@ -241,13 +236,16 @@ impl EventRing {
                 event: SessionEvent::Truncated { dropped },
             });
         }
-        events.extend(self.entries.iter().filter(|entry| entry.seq >= since_seq).map(
-            |entry| ReplayEntry {
-                seq: entry.seq,
-                received_at_ms: entry.received_at_ms,
-                event: entry.event.clone(),
-            },
-        ));
+        events.extend(
+            self.entries
+                .iter()
+                .filter(|entry| entry.seq >= since_seq)
+                .map(|entry| ReplayEntry {
+                    seq: entry.seq,
+                    received_at_ms: entry.received_at_ms,
+                    event: entry.event.clone(),
+                }),
+        );
         Replay {
             events,
             next_seq: self.next_seq,
@@ -346,6 +344,8 @@ pub enum AutoDecision {
 /// One agent session the app is currently driving.
 pub struct LiveSession {
     pub spec: SessionSpec,
+    /// Concise title derived from the first visible operator prompt.
+    pub title: String,
     pub phase: SessionPhase,
     /// Tool names the user chose "allow for this session" on. Client-side
     /// memory on purpose: the CLI's own `permission_suggestions` write durable
@@ -367,6 +367,9 @@ pub struct LiveSession {
     /// The CLI's own session id, once `init` reported it (equals the spec id on
     /// a fresh run; differs on a resume).
     pub cli_session_id: Option<String>,
+    /// Byte cursor for the provider transcript before the history page seeded
+    /// into `buffer`. `None` means the entire durable conversation is loaded.
+    pub history_before: Option<u64>,
     /// Latched by the first `Exited` so a second one cannot double-report.
     ended: bool,
 }
@@ -378,6 +381,10 @@ impl LiveSession {
     pub fn new(spec: SessionSpec, now: String) -> Self {
         Self {
             model: spec.model.clone(),
+            title: spec.title.clone().unwrap_or_default(),
+            // Resume already names the durable conversation. Publishing a
+            // second identity until the delayed provider init creates twins.
+            cli_session_id: spec.resume.clone(),
             spec,
             phase: SessionPhase::Starting,
             allow_session: HashSet::new(),
@@ -387,8 +394,14 @@ impl LiveSession {
             started_at: now.clone(),
             last_activity_at: now,
             interrupted: false,
-            cli_session_id: None,
+            history_before: None,
             ended: false,
+        }
+    }
+
+    pub fn adopt_title_from_prompt(&mut self, prompt: &str) {
+        if self.title.is_empty() {
+            self.title = session_title_from_prompt(prompt).unwrap_or_default();
         }
     }
 
@@ -438,7 +451,12 @@ impl LiveSession {
         let mut phase_target = None;
 
         match &event {
-            SessionEvent::Started { session_id, model, .. } => {
+            SessionEvent::UserMessage { text, .. } => {
+                self.adopt_title_from_prompt(text);
+            }
+            SessionEvent::Started {
+                session_id, model, ..
+            } => {
                 if !session_id.is_empty() {
                     self.cli_session_id = Some(session_id.clone());
                 }
@@ -612,6 +630,8 @@ impl LiveSession {
     pub fn summary(&self) -> SessionSummary {
         SessionSummary {
             session_id: self.spec.session_id.clone(),
+            cli_session_id: self.cli_session_id.clone(),
+            title: self.title.clone(),
             tool: self.spec.tool,
             phase: self.phase,
             company: self.spec.company.clone(),
@@ -625,6 +645,8 @@ impl LiveSession {
             last_activity_at: self.last_activity_at.clone(),
             last_seq: self.buffer.last_seq(),
             pending_count: self.pending.len(),
+            resumed_from: self.spec.resume.clone(),
+            history_before: self.history_before,
         }
     }
 }
@@ -659,6 +681,13 @@ pub fn decide_can_use_tool(session: &LiveSession, tool_name: &str) -> AutoDecisi
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub session_id: String,
+    /// Provider-native Claude/Codex id once the startup handshake completes.
+    /// The app-owned `session_id` remains the live event-routing key; exposing
+    /// both lets navigation identify the durable transcript as the same
+    /// conversation without waiting for a metadata bridge to reach disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_session_id: Option<String>,
+    pub title: String,
     pub tool: SessionTool,
     pub phase: SessionPhase,
     pub company: Option<String>,
@@ -680,21 +709,38 @@ pub struct SessionSummary {
     pub last_activity_at: String,
     pub last_seq: u64,
     pub pending_count: usize,
+    /// Provider-native id this app-owned session resumed from. Used to merge
+    /// the durable row and running row into one conversation in navigation.
+    pub resumed_from: Option<String>,
+    /// Cursor for loading the preceding durable transcript page.
+    pub history_before: Option<u64>,
 }
 
-/// Every session the app is driving, capped at [`MAX_LIVE_SESSIONS`] live ones.
+fn session_title_from_prompt(prompt: &str) -> Option<String> {
+    let candidate = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("/startwork "))?;
+    let candidate = candidate
+        .strip_prefix('/')
+        .and_then(|line| line.split_once(' ').map(|(_, rest)| rest))
+        .unwrap_or(candidate)
+        .trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate.chars().take(80).collect())
+}
+
+/// Every session the app is driving.
 ///
-/// `Ended` sessions stay addressable (their transcript is still replayable)
-/// but stop counting against the cap — otherwise a user who never closed four
-/// finished chats could not start a fifth.
+/// Session concurrency is intentionally not capped here. The operator can end
+/// sessions when they no longer want their CLI processes running, while each
+/// session's replay memory remains independently bounded by [`EventRing`].
 pub struct SessionRegistry {
     sessions: HashMap<String, LiveSession>,
-    max_live: usize,
 }
 
-/// Deliberately hand-written: a derived `Default` would give `max_live = 0`,
-/// which reads as "no sessions allowed at all" and is exactly the kind of
-/// silent zero a `#[derive]` makes easy to ship.
 impl Default for SessionRegistry {
     fn default() -> Self {
         Self::new()
@@ -703,13 +749,8 @@ impl Default for SessionRegistry {
 
 impl SessionRegistry {
     pub fn new() -> Self {
-        Self::with_max_live(MAX_LIVE_SESSIONS)
-    }
-
-    pub fn with_max_live(max_live: usize) -> Self {
         Self {
             sessions: HashMap::new(),
-            max_live,
         }
     }
 
@@ -721,18 +762,10 @@ impl SessionRegistry {
             .count()
     }
 
-    /// Admit a session, or refuse when the live cap is already reached.
-    /// Replacing an existing id is allowed (a resume of the same session).
+    /// Admit a session. Replacing an existing id is allowed when resuming the
+    /// same session.
     pub fn insert(&mut self, session: LiveSession) -> Result<(), String> {
         let id = session.spec.session_id.clone();
-        let replacing = self.sessions.contains_key(&id);
-        if !replacing && self.live_count() >= self.max_live {
-            return Err(format!(
-                "Too many live sessions ({} of {}). End one before starting another.",
-                self.live_count(),
-                self.max_live
-            ));
-        }
         self.sessions.insert(id, session);
         Ok(())
     }
@@ -756,7 +789,8 @@ impl SessionRegistry {
     /// The session list, newest-started first so the UI order is stable across
     /// calls (a `HashMap` iteration order is not).
     pub fn snapshot(&self) -> Vec<SessionSummary> {
-        let mut rows: Vec<SessionSummary> = self.sessions.values().map(LiveSession::summary).collect();
+        let mut rows: Vec<SessionSummary> =
+            self.sessions.values().map(LiveSession::summary).collect();
         rows.sort_by(|a, b| {
             b.started_at
                 .cmp(&a.started_at)
@@ -779,6 +813,7 @@ mod tests {
     fn spec(id: &str, mode: PermissionMode) -> SessionSpec {
         SessionSpec {
             session_id: id.into(),
+            title: None,
             tool: SessionTool::Claude,
             cwd: "/hq".into(),
             company: Some("indigo".into()),
@@ -791,7 +826,10 @@ mod tests {
     }
 
     fn session(id: &str) -> LiveSession {
-        LiveSession::new(spec(id, PermissionMode::Prompt), "2026-09-01T00:00:00Z".into())
+        LiveSession::new(
+            spec(id, PermissionMode::Prompt),
+            "2026-09-01T00:00:00Z".into(),
+        )
     }
 
     fn now() -> String {
@@ -869,7 +907,10 @@ mod tests {
 
         // The marker accumulates rather than resetting.
         let pushed = ring.push(text("t4"), ms(4));
-        assert_eq!(pushed.truncated, Some(SessionEvent::Truncated { dropped: 2 }));
+        assert_eq!(
+            pushed.truncated,
+            Some(SessionEvent::Truncated { dropped: 2 })
+        );
         assert_eq!(ring.dropped(), 2);
     }
 
@@ -885,7 +926,10 @@ mod tests {
             "byte bound held: {} bytes retained",
             ring.bytes()
         );
-        assert!(ring.len() < 40, "the byte bound evicted before the count bound");
+        assert!(
+            ring.len() < 40,
+            "the byte bound evicted before the count bound"
+        );
         assert!(ring.dropped() > 0);
     }
 
@@ -893,7 +937,11 @@ mod tests {
     fn the_ring_keeps_one_event_even_when_it_alone_exceeds_the_byte_bound() {
         let mut ring = EventRing::with_bounds(10, 8);
         ring.push(text(&"x".repeat(500)), ms(0));
-        assert_eq!(ring.len(), 1, "an over-large event is retained, not dropped to nothing");
+        assert_eq!(
+            ring.len(),
+            1,
+            "an over-large event is retained, not dropped to nothing"
+        );
         assert_eq!(ring.replay(0).events.len(), 1);
     }
 
@@ -908,7 +956,11 @@ mod tests {
         assert!(!first.truncated);
         assert_eq!(first.next_seq, 10);
         assert_eq!(first.events[0].seq, 0);
-        assert_eq!(first.events[0].received_at_ms, ms(0), "the stamp travels with the event");
+        assert_eq!(
+            first.events[0].received_at_ms,
+            ms(0),
+            "the stamp travels with the event"
+        );
 
         for i in 10..15 {
             ring.push(text(&format!("t{i}")), ms(i));
@@ -942,11 +994,34 @@ mod tests {
         assert_eq!(seqs, vec![2, 3, 4, 5], "monotonic even with the marker");
 
         let caught_up = ring.replay(3);
-        assert!(!caught_up.truncated, "a cursor inside the window lost nothing");
+        assert!(
+            !caught_up.truncated,
+            "a cursor inside the window lost nothing"
+        );
         assert_eq!(caught_up.events.len(), 3);
     }
 
     // ── phase machine ───────────────────────────────────────────────────────
+
+    #[test]
+    fn resumed_session_has_native_identity_before_any_provider_event() {
+        for tool in [SessionTool::Claude, SessionTool::Codex] {
+            let mut spec = session("new-app-id").spec;
+            spec.tool = tool;
+            spec.resume = Some("existing-native-id".into());
+            let resumed = LiveSession::new(spec, now());
+            assert_eq!(resumed.summary().cli_session_id.as_deref(), Some("existing-native-id"));
+            let live = crate::session_links::session_row_from_summary(&resumed.summary());
+            let mut stored = live.clone();
+            stored.session_id = "existing-native-id".into();
+            stored.workspace_session_id = Some("old-app-id".into());
+            stored.provider_session_id = None;
+            stored.phase = "ended".into();
+            let merged = crate::session_links::merge_session_rows(vec![live], vec![stored]);
+            assert_eq!(merged.len(), 1, "resume must never show a second row while waiting for init");
+            assert_eq!(merged[0].session_id, "new-app-id");
+        }
+    }
 
     #[test]
     fn a_late_started_never_downgrades_a_session_that_is_already_working() {
@@ -972,6 +1047,7 @@ mod tests {
         // It still carries what it announced — only the phase edge is refused.
         assert_eq!(s.cli_session_id.as_deref(), Some("cli-1"));
         assert_eq!(s.model.as_deref(), Some("claude-haiku-4-5"));
+        assert_eq!(s.summary().cli_session_id.as_deref(), Some("cli-1"));
 
         // The turn's own ending is what returns the session to Idle.
         let out = s.on_event(turn_done(), now(), now_ms()).expect("recorded");
@@ -1068,7 +1144,9 @@ mod tests {
         assert_eq!(out.phase_change, None);
         assert_eq!(s.phase, SessionPhase::Working);
 
-        let out = s.on_event(permission("req_1", "Write"), now(), now_ms()).expect("recorded");
+        let out = s
+            .on_event(permission("req_1", "Write"), now(), now_ms())
+            .expect("recorded");
         assert_eq!(
             out.phase_change,
             Some(PhaseChange {
@@ -1121,6 +1199,30 @@ mod tests {
     }
 
     #[test]
+    fn session_title_skips_hidden_startwork_prefix() {
+        let mut s = session("s1");
+        s.on_event(
+            SessionEvent::UserMessage {
+                text:
+                    "/startwork indigo project-slug\n\n/indigo:html-deck create a hello world deck"
+                        .into(),
+                image_count: 0,
+            },
+            now(),
+            ms(1),
+        );
+        assert_eq!(s.summary().title, "create a hello world deck");
+    }
+
+    #[test]
+    fn resumed_session_keeps_its_provider_native_title() {
+        let mut resumed = spec("resumed", PermissionMode::Prompt);
+        resumed.title = Some("Native Codex task title".into());
+        let session = LiveSession::new(resumed, now());
+        assert_eq!(session.summary().title, "Native Codex task title");
+    }
+
+    #[test]
     fn a_question_request_parks_with_its_header_as_the_summary() {
         let mut s = session("s1");
         s.on_event(started(), now(), now_ms());
@@ -1154,7 +1256,10 @@ mod tests {
         ));
 
         // The driver back-fills the raw tool input the allow payload must echo.
-        s.set_pending_question_input("req_q", json!({"questions": [{"question": "Pick a colour"}]}));
+        s.set_pending_question_input(
+            "req_q",
+            json!({"questions": [{"question": "Pick a colour"}]}),
+        );
         assert!(matches!(
             s.pending.get("req_q"),
             Some(PendingRequest::Question { input, .. }) if input["questions"].is_array()
@@ -1224,7 +1329,9 @@ mod tests {
             now(),
             now_ms(),
         );
-        let out = s.on_event(turn_done(), now(), now_ms()).expect("still buffered");
+        let out = s
+            .on_event(turn_done(), now(), now_ms())
+            .expect("still buffered");
         assert_eq!(out.phase_change, None);
         assert_eq!(s.phase, SessionPhase::Ended);
         assert_eq!(s.on_user_send(now()), None);
@@ -1260,38 +1367,22 @@ mod tests {
 
     #[test]
     fn a_default_registry_admits_sessions_rather_than_refusing_every_one() {
-        // A derived Default would set max_live = 0 and make every insert fail.
         let mut registry = SessionRegistry::default();
-        registry.insert(session("s1")).expect("default registry admits");
+        registry
+            .insert(session("s1"))
+            .expect("default registry admits");
         assert_eq!(registry.live_count(), 1);
     }
 
     #[test]
-    fn the_registry_caps_live_sessions_and_frees_the_slot_when_one_ends() {
-        let mut registry = SessionRegistry::with_max_live(2);
-        registry.insert(session("s1")).expect("first");
-        registry.insert(session("s2")).expect("second");
-        let err = registry.insert(session("s3")).expect_err("over the cap");
-        assert!(err.contains("Too many live sessions"), "{err}");
-
-        // Ending one frees a slot.
-        registry
-            .get_mut("s1")
-            .unwrap()
-            .on_event(
-                SessionEvent::Exited {
-                    code: Some(0),
-                    signal: None,
-                },
-                now(),
-                now_ms(),
-            )
-            .expect("recorded");
-        assert_eq!(registry.live_count(), 1);
-        registry.insert(session("s3")).expect("slot freed");
-
-        // Replacing an existing id is not a new live session.
-        registry.insert(session("s2")).expect("replace in place");
+    fn the_registry_does_not_cap_concurrent_live_sessions() {
+        let mut registry = SessionRegistry::new();
+        for index in 0..12 {
+            registry
+                .insert(session(&format!("s{index}")))
+                .expect("concurrent session admitted");
+        }
+        assert_eq!(registry.live_count(), 12);
     }
 
     #[test]
@@ -1429,6 +1520,7 @@ mod tests {
         // A user turn is transcript content, not a phase edge — `on_user_send`
         // is what moves the session to Working.
         assert_eq!(s.phase, SessionPhase::Working);
+        assert_eq!(s.summary().title, "do the thing");
     }
 
     #[test]

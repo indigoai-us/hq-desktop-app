@@ -78,20 +78,16 @@
     type MentionCandidate,
   } from './mentions';
   import {
-    applyPickerRow,
-    chipLabel,
     kindLabel,
-    pushRecentSlash,
-    readRecentSlash,
-    rememberRecentSlash,
-    rowKind,
-    slashQueryFor,
+    replaceSlashQuery,
+    serializeComposerRoute,
+    slashQueryAt,
+    type ComposerRoute,
     type PickerKind,
     type PickerRow,
-    type RecentSlash,
     type SkillCatalog,
   } from './slash-commands';
-  import type { ProjectEntry, ProjectViewer } from './startwork';
+  import { isStartworkTurn, type ProjectEntry, type ProjectViewer } from './startwork';
   import type { SessionCommand } from './session-events';
   import type {
     ComposerImage,
@@ -117,8 +113,7 @@
 
   /** The picked slash command, as the chip above the draft names it. */
   interface CommandToken {
-    /** Exactly what the picker inserted (with its trailing space). */
-    insert: string;
+    route: ComposerRoute;
     kind: PickerKind;
     label: string;
   }
@@ -138,6 +133,7 @@
     catalog?: SkillCatalog | null;
     catalogLoading?: boolean;
     catalogError?: string;
+    groupMetadataAvailable?: boolean;
     /** True while the agent is mid-turn — turns Send into Stop, never disables input. */
     working?: boolean;
     /** True when nothing can be sent at all (no CLI, ended session). */
@@ -159,6 +155,8 @@
     viewer?: ProjectViewer | null;
     /** "Run /startwork on first message". */
     startworkEnabled?: boolean;
+    /** The automatic orientation that will run before this fresh session's message. */
+    orientationCommand?: string | null;
     models?: SessionModel[];
     /** The selected model's `value` (`null` = the CLI's own default). */
     model?: string | null;
@@ -225,6 +223,7 @@
     catalog = null,
     catalogLoading = false,
     catalogError = '',
+    groupMetadataAvailable = true,
     working = false,
     disabled = false,
     notice = '',
@@ -238,6 +237,7 @@
     projectsError = '',
     viewer = null,
     startworkEnabled = true,
+    orientationCommand = null,
     models = [],
     model = null,
     resolvedModel = null,
@@ -278,8 +278,7 @@
 
   // --- / picker ---------------------------------------------------------------
   let slashPicker = $state<{ handleKey: (event: KeyboardEvent) => boolean } | null>(null);
-  let recent = $state<RecentSlash[]>(readRecentSlash());
-  /** The last pick; `commandChip` is it only while the draft still starts with it. */
+  /** A picked skill/worker route is independent from the natural-language draft. */
   let commandToken = $state<CommandToken | null>(null);
 
   // --- @mentions ------------------------------------------------------------
@@ -306,14 +305,13 @@
       : Math.min(Math.max(mentionHighlighted, 0), mentionMatches.length - 1),
   );
   const chips = $derived(pruneMentions(mentions, draft));
-  const commandChip = $derived(
-    commandToken && draft.trimStart().startsWith(commandToken.insert.trimEnd())
-      ? commandToken
-      : null,
+  const commandChip = $derived(commandToken);
+  const orientationPreview = $derived(
+    orientationCommand && !isStartworkTurn(draft) ? orientationCommand : null,
   );
 
-  /** The draft is ONE `/token` — the picker's query is what follows the slash. */
-  const slashQuery = $derived(suppressed ? null : slashQueryFor(draft));
+  /** The `/token` under the caret, wherever it appears in the draft. */
+  const slashQuery = $derived(suppressed ? null : slashQueryAt(draft, caret));
   // A mention token under the caret takes the slot; the slash picker yields.
   const pickerOpen = $derived(!mentionOpen && slashQuery !== null);
 
@@ -352,7 +350,10 @@
   const toolOption = $derived(
     TOOL_OPTIONS.find((option) => option.value === tool) ?? TOOL_OPTIONS[0],
   );
-  const canSend = $derived(!disabled && draft.trim().length > 0 && !contextLoading);
+  const canSend = $derived(
+    !disabled && !contextLoading &&
+      (commandToken?.route.kind === 'skill' || draft.trim().length > 0),
+  );
 
   onMount(() => {
     if (autofocus) textarea?.focus();
@@ -387,10 +388,6 @@
     suppressed = false;
     mentionSuppressed = false;
     mentionHighlighted = 0;
-    // A token edited out of the draft does not come back on the next keystroke.
-    if (commandToken && !draft.trimStart().startsWith(commandToken.insert.trimEnd())) {
-      commandToken = null;
-    }
   });
 
   /** Mirror the textarea's caret so the `@` query follows the cursor. */
@@ -426,8 +423,11 @@
     // Without this the window listener below would close the menu the same
     // click just opened.
     event.stopPropagation();
-    openMenu = openMenu === name ? null : name;
-    if (openMenu === 'company') companyPane = 'companies';
+    const opening = openMenu !== name;
+    openMenu = opening ? name : null;
+    // Once a company is bound, the useful next choice is its project. Changing
+    // company remains one explicit Back action away inside the same control.
+    if (name === 'company' && opening) companyPane = company ? 'projects' : 'companies';
   }
 
   function closeMenus() {
@@ -450,29 +450,28 @@
     }
   }
 
-  /** A picker row lands in the draft, as a chip above it, and at the top of Recent. */
-  function pickRow(row: PickerRow) {
-    const kind = rowKind(row);
-    draft = applyPickerRow(draft, row);
-    commandToken = { insert: row.insert, kind, label: chipLabel(row.insert, kind) };
-    recent = pushRecentSlash(recent, {
-      name: row.name,
-      description: row.description,
-      insert: row.insert,
-      kind,
-    });
-    rememberRecentSlash(recent);
+  /** A picker row becomes a route pill without discarding surrounding prose. */
+  async function pickRow(row: PickerRow) {
+    if (!row.route) return;
+    const query = slashQuery;
+    if (!query) return;
+    const kind: PickerKind = row.route.kind;
+    commandToken = { route: row.route, kind, label: row.route.label };
+    const next = replaceSlashQuery(draft, query, '');
+    draft = next.draft;
+    caret = next.caret;
     suppressed = true;
-    textarea?.focus();
+    await tick();
+    const el = textarea;
+    if (el) {
+      if (typeof el.setSelectionRange === 'function') el.setSelectionRange(next.caret, next.caret);
+      el.focus();
+    }
   }
 
-  /** The chip's ×: the token leaves the draft, whatever followed it stays. */
+  /** Removing the pill never removes the user's prompt. */
   function dropCommand() {
-    const token = commandToken;
-    if (!token) return;
-    const rest = draft.trimStart().slice(token.insert.trimEnd().length).trimStart();
     commandToken = null;
-    draft = rest;
     suppressed = true;
     textarea?.focus();
   }
@@ -499,7 +498,11 @@
 
   /** The picker's search box typed: the draft follows it. */
   function onPickerQuery(query: string) {
-    draft = `/${query}`;
+    const active = slashQuery;
+    if (!active) return;
+    const next = replaceSlashQuery(draft, active, `/${query}`);
+    draft = next.draft;
+    caret = next.caret;
   }
 
   // --- context chips ----------------------------------------------------------
@@ -548,8 +551,10 @@
   }
 
   function submit() {
-    const text = draft.trim();
-    if (!text || disabled || contextLoading) return;
+    const prompt = draft.trim();
+    if (disabled || contextLoading || (!commandToken && !prompt)) return;
+    if (commandToken?.route.kind === 'worker' && !prompt) return;
+    const text = commandToken ? serializeComposerRoute(commandToken.route, prompt) : prompt;
     const attachments: LoadedAttachment[] = loadedContext.map((chip) => ({
       kind: chip.kind,
       title: chip.title,
@@ -689,9 +694,8 @@
       {catalog}
       {catalogLoading}
       {catalogError}
-      cliCommands={commands}
       {company}
-      {recent}
+      {groupMetadataAvailable}
       onpick={pickRow}
       onquery={onPickerQuery}
       onclose={() => {
@@ -702,6 +706,13 @@
   {/if}
 
   <div class="box">
+    {#if orientationPreview}
+      <div class="orientation-preview" data-testid="session-orientation-preview">
+        <span class="orientation-preview-label">Session context</span>
+        <code>{orientationPreview}</code>
+      </div>
+    {/if}
+
     {#if attached.length > 0}
       <ul class="attachments" data-testid="session-composer-attachments">
         {#each attached as image (image.name)}
@@ -725,7 +736,7 @@
           class={`command-chip kind-${commandChip.kind}`}
           data-testid="session-command-chip"
           data-kind={commandChip.kind}
-          data-insert={commandChip.insert}
+          data-route={commandChip.route.kind}
         >
           <span class="command-chip-kind">{kindLabel(commandChip.kind)}</span>
           <span class="command-chip-name">{commandChip.label}</span>
@@ -999,8 +1010,9 @@
                   >
                     <span class="menu-label">
                       <span class="chev-left" aria-hidden="true">‹</span>
-                      {companyName}
+                      Change company
                     </span>
+                    <span class="menu-sub">Currently {companyName}</span>
                   </button>
                   <div class="menu-rule"></div>
                   <ProjectPicker
@@ -1251,6 +1263,32 @@
     border-color: var(--v4-control-border, var(--v4-hairline));
   }
 
+  .orientation-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 6px;
+    padding: 7px 9px;
+    border-radius: 10px;
+    background: var(--v4-active-row);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata);
+    line-height: 1.35;
+  }
+
+  .orientation-preview-label {
+    color: var(--v4-text-3);
+    white-space: nowrap;
+  }
+
+  .orientation-preview code {
+    overflow: hidden;
+    color: var(--v4-text-1);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .text-row {
     display: flex;
     align-items: flex-start;
@@ -1435,8 +1473,11 @@
   /* The project pane is a real list: wider, taller, and it scrolls its own
      rows under a fixed search + filter head. */
   .menu-projects {
-    min-width: 420px;
-    max-height: 480px;
+    box-sizing: border-box;
+    width: clamp(320px, 68vw, 560px);
+    min-width: 0;
+    max-width: calc(100vw - 48px);
+    max-height: min(480px, calc(100vh - 112px));
     overflow: hidden;
   }
 
@@ -1585,9 +1626,8 @@
 
   /* --- the command chip --------------------------------------------------- */
 
-  /* The picked slash command, named above the draft in the same kind colours
-     the picker used — worker: filled; worker skill: outlined; skill: secondary;
-     command: neutral. The draft underneath keeps the literal text. */
+  /* The picked route stays visually distinct from the user's prompt. Skills use
+     a quiet fill; workers use an outline. Both remain monochrome. */
   .command-row {
     display: flex;
     flex-wrap: wrap;
@@ -1604,7 +1644,7 @@
     max-width: 100%;
     padding: 0 4px 0 4px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
+    border-radius: 0;
     color: var(--v4-text-1);
     font-size: 12px;
   }
@@ -1615,9 +1655,9 @@
     height: 16px;
     padding: 0 6px;
     border: 1px solid transparent;
-    border-radius: var(--v4-radius-pill);
+    border-radius: 0;
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: 0.02em;
     line-height: 1;
     white-space: nowrap;
@@ -1625,16 +1665,17 @@
 
   .command-chip.kind-worker .command-chip-kind,
   .command-chip.kind-worker-skill .command-chip-kind {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    border-color: var(--v4-control-border, var(--v4-hairline));
+    background: transparent;
+    color: var(--v4-text-2);
   }
 
   .command-chip.kind-worker-skill {
-    border-color: var(--v4-primary-bg);
+    border-color: var(--v4-control-border, var(--v4-hairline));
   }
 
   .command-chip.kind-skill {
-    background: var(--v4-secondary-bg);
+    background: var(--v4-secondary-bg, rgba(255, 255, 255, 0.08));
     border-color: transparent;
     color: var(--v4-secondary-fg);
   }

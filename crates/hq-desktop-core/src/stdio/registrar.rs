@@ -96,7 +96,10 @@ mod tests {
                 .push(format!("register:{handle}:{pid}"));
         }
         fn deregister(&self, handle: &str) {
-            self.events.lock().unwrap().push(format!("deregister:{handle}"));
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("deregister:{handle}"));
         }
     }
 

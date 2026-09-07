@@ -374,7 +374,7 @@ fn read_session_meta(hq_root: &Path, session_id: &str) -> Option<Provenance> {
 /// Map a company slug to its `cmp_*` cloud UID via `companies/manifest.yaml`.
 /// Same rule as the share preflight — a local-only company has nothing to
 /// share to.
-fn company_cloud_uid(hq_root: &Path, company: &str) -> Option<String> {
+pub(super) fn company_cloud_uid(hq_root: &Path, company: &str) -> Option<String> {
     let company = company.trim();
     if company.is_empty() {
         return None;

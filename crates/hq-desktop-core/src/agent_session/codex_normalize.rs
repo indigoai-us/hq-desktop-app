@@ -23,9 +23,7 @@
 
 use serde_json::{json, Map, Value};
 
-use super::codex_wire::{
-    command_text, parse_approval_request, parse_user_input_request,
-};
+use super::codex_wire::{command_text, parse_approval_request, parse_user_input_request};
 use super::types::{cap_hook_text, DoneStatus, SessionEvent};
 
 /// Which half of an item's lifecycle a frame is.
@@ -491,10 +489,9 @@ mod tests {
         }
         // Our own turn, echoed back by the server, must not double the prompt.
         assert!(normalize(USER_MESSAGE_STARTED).is_empty());
-        assert!(normalize(
-            &USER_MESSAGE_STARTED.replace("item/started", "item/completed")
-        )
-        .is_empty());
+        assert!(
+            normalize(&USER_MESSAGE_STARTED.replace("item/started", "item/completed")).is_empty()
+        );
         // A response to one of OUR requests is the driver's business.
         assert!(normalize(r#"{"id":3,"result":{"turn":{"id":"tu"}}}"#).is_empty());
     }
@@ -520,10 +517,10 @@ mod tests {
         );
         assert!(normalize(HOOK_COMPLETED_EMPTY).is_empty());
         // `hook/started` never carries entries and stays bookkeeping.
-        assert!(normalize(
-            &HOOK_COMPLETED_WITH_CONTEXT.replace("hook/completed", "hook/started")
-        )
-        .is_empty());
+        assert!(
+            normalize(&HOOK_COMPLETED_WITH_CONTEXT.replace("hook/completed", "hook/started"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -570,7 +567,9 @@ mod tests {
             normalize(
                 r#"{"method":"item/reasoning/textDelta","params":{"itemId":"rs_1","textDelta":"more"}}"#
             ),
-            vec![SessionEvent::ThinkingDelta { text: "more".into() }]
+            vec![SessionEvent::ThinkingDelta {
+                text: "more".into()
+            }]
         );
     }
 
@@ -609,7 +608,10 @@ mod tests {
             "\"aggregatedOutput\":\"core.yaml\\ndocs\\nhook-tests\\n\"",
             "\"aggregatedOutput\":null",
         );
-        assert_ne!(null_output, COMMAND_COMPLETED, "fixture no longer carries the output");
+        assert_ne!(
+            null_output, COMMAND_COMPLETED,
+            "fixture no longer carries the output"
+        );
         assert_eq!(
             normalize(&null_output),
             vec![SessionEvent::ToolResult {
@@ -624,7 +626,10 @@ mod tests {
             "\"aggregatedOutput\":\"core.yaml\\ndocs\\nhook-tests\\n\",",
             "",
         );
-        assert_ne!(absent, COMMAND_COMPLETED, "fixture no longer carries the key");
+        assert_ne!(
+            absent, COMMAND_COMPLETED,
+            "fixture no longer carries the key"
+        );
         assert!(matches!(
             normalize(&absent).as_slice(),
             [SessionEvent::ToolResult { content: Value::String(s), is_error: false, .. }]
@@ -639,7 +644,8 @@ mod tests {
             normalize(&failed).as_slice(),
             [SessionEvent::ToolResult { is_error: true, .. }]
         ));
-        let aborted = COMMAND_COMPLETED.replace("\"status\":\"completed\"", "\"status\":\"failed\"");
+        let aborted =
+            COMMAND_COMPLETED.replace("\"status\":\"completed\"", "\"status\":\"failed\"");
         assert!(matches!(
             normalize(&aborted).as_slice(),
             [SessionEvent::ToolResult { is_error: true, .. }]
@@ -725,7 +731,10 @@ mod tests {
 
         let failed = TURN_COMPLETED
             .replace("\"status\":\"completed\"", "\"status\":\"failed\"")
-            .replace("\"error\":null", "\"error\":{\"message\":\"model overloaded\"}");
+            .replace(
+                "\"error\":null",
+                "\"error\":{\"message\":\"model overloaded\"}",
+            );
         assert_eq!(
             normalize(&failed),
             vec![SessionEvent::TurnDone {
@@ -740,8 +749,13 @@ mod tests {
             [SessionEvent::TurnDone { status: DoneStatus::Error, error: Some(e), .. }] if e == "boom"
         ));
         assert!(matches!(
-            normalize(r#"{"method":"turn/aborted","params":{"threadId":"th","turnId":"tu"}}"#).as_slice(),
-            [SessionEvent::TurnDone { status: DoneStatus::Interrupted, error: None, .. }]
+            normalize(r#"{"method":"turn/aborted","params":{"threadId":"th","turnId":"tu"}}"#)
+                .as_slice(),
+            [SessionEvent::TurnDone {
+                status: DoneStatus::Interrupted,
+                error: None,
+                ..
+            }]
         ));
     }
 
@@ -777,14 +791,17 @@ mod tests {
     #[test]
     fn an_approval_request_becomes_a_permission_request_keyed_by_its_jsonrpc_id() {
         let events = normalize(APPROVAL_REQUEST);
-        assert!(matches!(
-            events.as_slice(),
-            [SessionEvent::PermissionRequest { request_id, tool_name, input, suggestions }]
-                if request_id == "0"
-                    && tool_name == "Bash"
-                    && input["command"].as_str().unwrap().contains("echo hello")
-                    && suggestions[0] == "accept"
-        ), "{events:?}");
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SessionEvent::PermissionRequest { request_id, tool_name, input, suggestions }]
+                    if request_id == "0"
+                        && tool_name == "Bash"
+                        && input["command"].as_str().unwrap().contains("echo hello")
+                        && suggestions[0] == "accept"
+            ),
+            "{events:?}"
+        );
 
         // A string id round-trips as itself, not as a quoted string.
         let string_id = APPROVAL_REQUEST.replace("\"id\":0", "\"id\":\"req-7\"");

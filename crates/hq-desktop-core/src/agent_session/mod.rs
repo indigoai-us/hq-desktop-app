@@ -29,7 +29,6 @@ pub use policy_digest::{merge_policy_digest, parse_policy_digest, PolicyDigest, 
 pub use registry::{
     decide_can_use_tool, AutoDecision, EventOutcome, EventRing, LiveSession, NeedsYou,
     PendingRequest, PhaseChange, Replay, ReplayEntry, SessionRegistry, SessionSummary,
-    MAX_LIVE_SESSIONS,
 };
 pub use types::{
     DoneStatus, PermissionDecision, PermissionMode, Question, QuestionAnswer, QuestionOption,

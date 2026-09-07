@@ -3,18 +3,24 @@
 // The Rust command `session_project_links(company)` joins a company's projects
 // with their channels and the sessions bound to them. This module turns that
 // into what the HQ Work shell's `rowExtras` seam wants per sidebar row: a
-// "N sessions" badge, a hover card, and a "New session" action — and it owns
+// a compact count badge, a hover card, and a "New session" action — and it owns
 // the two conventions both sides of the boundary rely on: the project
 // directory slug (the binding key) and the `new?…` route param that pre-binds
 // a fresh chat to a company + project.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { ConversationRow, ConversationRowExtras } from '@hq/ui';
+import type {
+  ConversationRow,
+  ConversationRowChild,
+  ConversationRowExtras,
+} from '@hq/ui';
 
 import type { ProjectEntry } from '../../components/sessions/startwork';
 
 /** One session bound to a project (Rust `LinkedSession`). */
 export interface LinkedSession {
+  /** Present only for someone else's shared, read-only conversation. */
+  sharedChannelId?: string;
   sessionId: string;
   /** `claude` | `codex`. */
   tool: string;
@@ -57,8 +63,8 @@ export interface ProjectChannelLinked {
 }
 
 /** `session_project_links` — read-only; cached 10 s on the Rust side. */
-export function loadSessionProjectLinks(company: string): Promise<ProjectLink[]> {
-  return invoke<ProjectLink[]>('session_project_links', { company });
+export function loadSessionProjectLinks(company: string, localOnly = false): Promise<ProjectLink[]> {
+  return invoke<ProjectLink[]>('session_project_links', { company, ...(localOnly ? { localOnly: true } : {}) });
 }
 
 // ---------------------------------------------------------------------------
@@ -149,19 +155,75 @@ export function sessionsBadge(link: ProjectLink): string | null {
   if (count === 0) return null;
   const live = link.sessions.filter((session) => session.phase !== 'ended').length;
   if (live > 0) return `${live} live`;
-  return count === 1 ? '1 session' : `${count} sessions`;
+  return String(count);
+}
+
+const SESSION_PHASE_LABEL: Record<string, string> = {
+  starting: 'Starting',
+  idle: 'Idle',
+  working: 'Working',
+  needsYou: 'Needs you',
+  ended: 'Ended',
+};
+
+function sessionStatus(phase: string): ConversationRowChild['status'] {
+  if (
+    phase === 'starting' ||
+    phase === 'idle' ||
+    phase === 'working' ||
+    phase === 'needsYou' ||
+    phase === 'ended'
+  ) {
+    return phase;
+  }
+  return undefined;
+}
+
+function sessionLabel(session: LinkedSession): string {
+  const title = session.title?.trim();
+  if (title) return title;
+  return `${session.tool === 'codex' ? 'Codex' : 'Claude'} session`;
 }
 
 // ---------------------------------------------------------------------------
-// The `new?…` route param
+// The Sessions route params
 // ---------------------------------------------------------------------------
 
 /** The Sessions page param that pre-binds a fresh chat to a company + project. */
-export function newSessionParam(company: string, project: string | null): string {
+export function newSessionParam(company: string, project: string | null, channelId?: string): string {
   const query = new URLSearchParams();
   query.set('company', company);
   if (project?.trim()) query.set('project', project.trim());
+  if (channelId && project?.trim()) query.set('channel', channelId);
   return `new?${query.toString()}`;
+}
+
+/**
+ * A durable project-linked session carries enough metadata to open history
+ * without depending on the separately-scanned provider catalog. That catalog
+ * can lag a newly-ended Codex rollout; the project join is already holding the
+ * authoritative provider id, tool and title.
+ */
+export function historySessionParam(
+  company: string,
+  project: string,
+  session: LinkedSession,
+): string {
+  if (session.sharedChannelId) {
+    return `shared?${new URLSearchParams({ channel: session.sharedChannelId, id: session.sessionId })}`;
+  }
+  // Live rows retain the app-owned id for replay and event subscriptions.
+  // Passing it to the provider-history reader produces an empty transcript:
+  // only ended rows have been canonicalized to provider-native ids.
+  if (session.phase !== 'ended') return session.sessionId;
+  const query = new URLSearchParams();
+  query.set('id', session.sessionId);
+  query.set('tool', session.tool);
+  query.set('company', company);
+  query.set('project', project);
+  if (session.title?.trim()) query.set('title', session.title.trim());
+  if (session.startedAt.trim()) query.set('startedAt', session.startedAt.trim());
+  return `history?${query.toString()}`;
 }
 
 /** The chosen row extras for a project row, or null for any other row. */
@@ -170,13 +232,45 @@ export function rowExtrasFor(
   links: ProjectLink[],
   hoverCard: ConversationRowExtras['hoverCard'],
   onnewsession: (link: ProjectLink) => void,
+  onopensession: (link: ProjectLink, session: LinkedSession) => void,
+  selectedSessionId: string | null = null,
+  onvisibility?: (link: ProjectLink, visible: boolean) => void,
 ): ConversationRowExtras | null {
   const link = linkForRow(row, links);
   if (!link) return null;
   const badge = sessionsBadge(link);
+  const children: ConversationRowChild[] = [
+    ...link.sessions.map((session) => ({
+      id: `session:${session.sessionId}`,
+      label: sessionLabel(session),
+      selected: session.sessionId === selectedSessionId,
+      // Ended is the quiet/default state in history. Repeating it on every
+      // child makes the compact project sublist read like a status table.
+      meta:
+        session.phase === 'ended'
+          ? null
+          : (SESSION_PHASE_LABEL[session.phase] ?? session.phase),
+      status: sessionStatus(session.phase),
+      kind: 'item' as const,
+      onselect: () => onopensession(link, session),
+    })),
+    {
+      id: 'new-session',
+      label: 'New session',
+      meta: null,
+      kind: 'action' as const,
+      onselect: () => onnewsession(link),
+    },
+  ];
   return {
     badge,
     hoverCard: badge ? hoverCard : null,
     actions: [{ id: 'new-session', label: 'New session', onselect: () => onnewsession(link) }],
+    children,
+    childrenLabel: `Sessions for ${link.projectName}`,
+    // Keep populated associations visible, but do not turn every project in a
+    // large company into an always-open one-row "New session" tree.
+    childrenExpandedByDefault: link.sessions.length > 0,
+    ...(onvisibility ? { onChildrenVisibilityChange: (visible: boolean) => onvisibility(link, visible) } : {}),
   };
 }

@@ -209,7 +209,17 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionTranscript[\s/>]/.test(body))
       .map(([relative]) => relative)
       .sort();
-    expect(transcriptMounts).toEqual(['desktop-alt/pages/SessionsPage.svelte']);
+    expect(transcriptMounts).toEqual([
+      'desktop-alt/pages/SessionsPage.svelte',
+      'desktop-alt/pages/SharedSessionPage.svelte',
+    ]);
+    // Read-only shared transcripts use the same renderer and must remain in
+    // this already-granted window, never escape into another native surface.
+    const sharedPageMounts = sources
+      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SharedSessionPage[\s/>]/.test(body))
+      .map(([relative]) => relative)
+      .sort();
+    expect(sharedPageMounts).toEqual(['desktop-alt/pages/SessionsExtraPage.svelte']);
     const sessionsPageMounts = sources
       .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionsPage[\s/>]/.test(body))
       .map(([relative]) => relative)
@@ -222,12 +232,12 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .filter(([relative, body]) => relative.endsWith('.svelte') && /SessionsExtraPage[\s/>,]/.test(body))
       .map(([relative]) => relative)
       .sort();
-    expect(extraPageMounts).toEqual(['desktop-alt/HqWorkDesktopShell.svelte']);
+    expect(extraPageMounts).toEqual(['desktop-alt/HqWorkWorkShell.svelte']);
     const shellEntries = sources
       .filter(
         ([relative, body]) =>
           !relative.endsWith('.svelte') &&
-          /import\([\s'"./]*(?:HqWorkDesktopShell|DesktopApp)\.svelte['"\s)]/.test(body),
+          /import\([\s'"./]*(?:HqWorkWorkShell|DesktopApp)\.svelte['"\s)]/.test(body),
       )
       .map(([relative]) => relative)
       .sort();

@@ -716,6 +716,7 @@ fn main() {
             commands::agent_session::agent_session_end,
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
+            commands::agent_session::agent_session_history_page,
             commands::agent_session::agent_session_slash_commands,
             // Sessions composer `@`-mentions: the company directory + the DM
             // fan-out that runs after a mentioned message is sent.
@@ -735,6 +736,7 @@ fn main() {
             // Project channels ↔ sessions: the join behind the sidebar's
             // session badges / hover cards and the strip's project pill.
             commands::session_project_links::session_project_links,
+            commands::project_session_sharing::project_sessions_read,
             // Open / Share / Deploy on files a session produced.
             commands::session_artifacts::session_artifact_stat,
             commands::session_artifacts::session_artifact_open,
@@ -939,6 +941,7 @@ fn main() {
                 return Ok(());
             }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            commands::project_session_sharing::start_recovery(app.handle());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
             #[cfg(target_os = "macos")]

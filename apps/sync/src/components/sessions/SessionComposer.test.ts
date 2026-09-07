@@ -14,7 +14,7 @@ vi.mock('svelte', async () => {
   return await import('../../../node_modules/svelte/src/index-client.js');
 });
 
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 import SessionComposer from './SessionComposer.svelte';
 import { CODEX_EFFORT_OPTIONS, readSessionModels } from './session-models';
 
@@ -71,6 +71,16 @@ afterEach(() => {
 });
 
 describe('two rows: text on top, every control underneath', () => {
+  it('shows the automatic session context above the message', () => {
+    render({ orientationCommand: '/startwork indigo' });
+    const preview = must('session-orientation-preview');
+    expect(preview.textContent).toContain('Session context');
+    expect(preview.textContent).toContain('/startwork indigo');
+    expect(
+      preview.compareDocumentPosition(must('session-composer-input')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it('puts nothing beside the textarea but the ⏎ hint', () => {
     render();
     const textRow = must('session-composer-input').parentElement!;
@@ -219,6 +229,54 @@ describe('the permission pill says what it does', () => {
     click(must('session-pill-permission'));
     click(must('session-menu-permission').querySelectorAll<HTMLElement>('.menu-item')[1]!);
     expect(onpermission).toHaveBeenCalledWith('bypassAll');
+  });
+});
+
+describe('company and project selection flow', () => {
+  const companies = [
+    { slug: 'indigo', displayName: 'Indigo' },
+    { slug: 'ridge', displayName: 'Ridge' },
+  ];
+  const projects = [
+    {
+      name: 'sessions',
+      description: 'In-app sessions',
+      branchName: null,
+      path: '/hq/companies/indigo/projects/sessions',
+      storyCounts: { total: 4, done: 1 },
+      updatedAt: null,
+      owner: null,
+      lastActivityAt: null,
+      status: 'active',
+    },
+  ];
+
+  it('opens projects directly when a company is already selected', () => {
+    const onproject = vi.fn();
+    render({ company: 'indigo', companies, projects, onproject });
+
+    click(must('session-pill-company'));
+    expect(must('session-menu-company').getAttribute('data-pane')).toBe('projects');
+    expect(must('session-menu-project-back').textContent).toContain('Change company');
+
+    click(must('session-project-item'));
+    expect(onproject).toHaveBeenCalledWith('sessions');
+    expect(at('session-menu-company')).toBeNull();
+  });
+
+  it('keeps changing company one Back action away', () => {
+    const oncompany = vi.fn();
+    render({ company: 'indigo', companies, projects, oncompany });
+
+    click(must('session-pill-company'));
+    click(must('session-menu-project-back'));
+    expect(must('session-menu-company').getAttribute('data-pane')).toBe('companies');
+
+    const ridge = [...must('session-menu-company').querySelectorAll<HTMLElement>('[data-testid="session-menu-company-item"]')]
+      .find((row) => row.textContent?.includes('Ridge'))!;
+    click(ridge);
+    expect(oncompany).toHaveBeenCalledWith('ridge');
+    expect(must('session-menu-company').getAttribute('data-pane')).toBe('projects');
   });
 });
 
@@ -408,6 +466,58 @@ describe('@mentions — the picker, the chips, the promise', () => {
     render({ mentionStatus: { text: "Couldn't DM Atlas (Network error)", error: true } });
     expect(must('session-mention-status').getAttribute('role')).toBe('alert');
     expect(must('session-mention-status').className).toContain('error');
+  });
+});
+
+describe('slash picker at the caret', () => {
+  const catalog = {
+    workers: [],
+    skills: [
+      {
+        name: 'HTML Deck',
+        description: 'Create an HTML deck',
+        scope: 'company:indigo',
+        tags: ['html'],
+        invoke: '/indigo:html-deck',
+      },
+    ],
+  };
+
+  it('opens after existing prose and preserves that prose when a skill is picked', async () => {
+    render({ catalog, company: 'indigo' });
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'make a hello world deck /';
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    expect(at('session-slash-menu')).not.toBeNull();
+    click(must('session-slash-item'));
+    await Promise.resolve();
+    await tick();
+    flushSync();
+
+    expect(input.value).toBe('make a hello world deck ');
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(must('session-command-chip').textContent).toContain('HTML Deck');
+  });
+
+  it('opens at a slash under the caret in the middle and preserves later text', async () => {
+    render({ catalog, company: 'indigo' });
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'before / after';
+    input.setSelectionRange(8, 8);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    expect(at('session-slash-menu')).not.toBeNull();
+    click(must('session-slash-item'));
+    await Promise.resolve();
+    await tick();
+    flushSync();
+
+    expect(input.value).toBe('before after');
+    expect(input.selectionStart).toBe(7);
   });
 });
 

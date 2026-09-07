@@ -11,7 +11,9 @@
    */
   import { dispatchEmbeddedNavigation } from '@hq/ui';
   import SessionsPage from './SessionsPage.svelte';
+  import SharedSessionPage from './SharedSessionPage.svelte';
   import { parseSessionsParam } from './sessions-route-param';
+  import type { AgentSession } from '../lib/sessions';
 
   interface Props {
     /** The shell's opaque selection — here, the routed session id. */
@@ -23,6 +25,24 @@
   let { param = null, onnavigate }: Props = $props();
 
   const route = $derived(parseSessionsParam(param));
+  const historySession = $derived<AgentSession | null>(
+    route.kind === 'history'
+      ? {
+          id: route.sessionId,
+          tool: route.tool,
+          origin: 'local',
+          title: route.title || undefined,
+          cwd: '',
+          project: route.project,
+          company: route.company,
+          model: '',
+          status: 'ended',
+          startedAt: route.startedAt,
+          lastActivityAt: route.startedAt,
+          source: 'project-session-link',
+        }
+      : null,
+  );
 </script>
 
 <!--
@@ -30,10 +50,16 @@
   the same `{ kind: 'channel' }` an `hqwork://open?channel=<id>` deep link
   resolves to in hq-work-host's `routeTarget`.
 -->
+{#if route.kind === 'shared'}
+  <SharedSessionPage channelId={route.channelId} sessionId={route.sessionId} />
+{:else}
 <SessionsPage
-  sessionId={route.kind === 'session' ? route.sessionId : undefined}
+  sessionId={route.kind === 'session' || route.kind === 'history' ? route.sessionId : undefined}
+  initialHistorySession={historySession}
   initialCompany={route.kind === 'new' ? route.company : null}
   initialProject={route.kind === 'new' ? route.project : null}
+  initialChannelId={route.kind === 'new' ? route.channelId : undefined}
   onopensession={(id) => onnavigate?.(id || null)}
   onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}
 />
+{/if}

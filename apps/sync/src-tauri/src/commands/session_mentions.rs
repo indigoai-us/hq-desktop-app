@@ -184,7 +184,11 @@ pub fn compose_candidates(contacts: &[Contact], self_uid: Option<&str>) -> Vec<M
     out.sort_by(|a, b| {
         a.kind
             .cmp(&b.kind)
-            .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
+            .then_with(|| {
+                a.display_name
+                    .to_lowercase()
+                    .cmp(&b.display_name.to_lowercase())
+            })
             .then_with(|| a.uid.cmp(&b.uid))
     });
     out
@@ -261,9 +265,18 @@ fn safe_session_id(session_id: &str) -> String {
 /// the company slug and the session id — and clipped to `MAX_CONTEXT_CHARS`,
 /// so nothing from the transcript, the environment or the message itself can
 /// leak through it.
-pub fn build_context_line(sender: &str, tool: Option<&str>, company: &str, session_id: &str) -> String {
+pub fn build_context_line(
+    sender: &str,
+    tool: Option<&str>,
+    company: &str,
+    session_id: &str,
+) -> String {
     let company = clip(&single_line(company), MAX_NAME_CHARS);
-    let company = if company.is_empty() { "HQ".to_string() } else { company };
+    let company = if company.is_empty() {
+        "HQ".to_string()
+    } else {
+        company
+    };
     let mut line = format!(
         "From {} {} session in {}",
         possessive_first_name(sender),
@@ -438,8 +451,14 @@ pub async fn session_mention_candidates(company: String) -> Result<Vec<MentionCa
         LOG_TAG,
         &format!(
             "SESSION_MENTION_CANDIDATES_OK company={slug} humans={} agents={}",
-            candidates.iter().filter(|c| c.kind == MentionKind::Human).count(),
-            candidates.iter().filter(|c| c.kind == MentionKind::Agent).count(),
+            candidates
+                .iter()
+                .filter(|c| c.kind == MentionKind::Human)
+                .count(),
+            candidates
+                .iter()
+                .filter(|c| c.kind == MentionKind::Agent)
+                .count(),
         ),
     );
     cache().put(&slug, candidates.clone());
@@ -458,7 +477,9 @@ async fn sender_display_name() -> String {
         .as_deref()
         .and_then(|token| cognito::decode_id_token_claims(token).ok())
         .or_else(|| cognito::decode_id_token_claims(&tokens.access_token).ok());
-    claims.map(|claims| claims.display_name()).unwrap_or_default()
+    claims
+        .map(|claims| claims.display_name())
+        .unwrap_or_default()
 }
 
 /// Tauri command: DM every mentioned recipient the message text plus the
@@ -499,7 +520,10 @@ pub async fn session_mention_notify(
                 error: None,
             }),
             Err(error) => {
-                log(LOG_TAG, &format!("SESSION_MENTION_DM_FAIL uid={uid} err={error}"));
+                log(
+                    LOG_TAG,
+                    &format!("SESSION_MENTION_DM_FAIL uid={uid} err={error}"),
+                );
                 out.push(MentionDelivery {
                     uid,
                     ok: false,
@@ -524,6 +548,7 @@ mod tests {
             person_uid: uid.to_string(),
             email: email.to_string(),
             display_name: name.to_string(),
+            avatar_url: None,
             company_uid: None,
             source: None,
             connection_state: None,
@@ -610,7 +635,10 @@ mod tests {
     #[test]
     fn context_line_reads_as_specified() {
         let line = build_context_line("Jacob Posel", Some("claude"), "indigo", "abc-123");
-        assert_eq!(line, "From Jacob's Claude session in indigo · open: sessions:abc-123");
+        assert_eq!(
+            line,
+            "From Jacob's Claude session in indigo · open: sessions:abc-123"
+        );
         assert_eq!(
             build_context_line("Iris", Some("codex"), "ridge", "s1"),
             "From Iris' Codex session in ridge · open: sessions:s1"
@@ -635,7 +663,11 @@ mod tests {
         let huge_company = "c\n".repeat(3_000);
         let huge_id = "i".repeat(3_000);
         let line = build_context_line(&huge_name, Some("claude"), &huge_company, &huge_id);
-        assert!(line.chars().count() <= MAX_CONTEXT_CHARS, "{}", line.chars().count());
+        assert!(
+            line.chars().count() <= MAX_CONTEXT_CHARS,
+            "{}",
+            line.chars().count()
+        );
         assert!(!line.contains('\n'));
         assert!(!line.contains('\r'));
     }
@@ -657,7 +689,10 @@ mod tests {
         assert!(!line.contains(&fake_key), "{line}");
         assert!(!line.contains("rm -rf"), "{line}");
         assert!(!line.contains("$("), "{line}");
-        assert!(line.starts_with("From Jacob's Claude session in indigo · open: sessions:abc123"), "{line}");
+        assert!(
+            line.starts_with("From Jacob's Claude session in indigo · open: sessions:abc123"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -678,7 +713,9 @@ mod tests {
             .collect();
         assert_eq!(normalize_recipients(&raw), ["prs_a", "agt_b", "prs_d"]);
 
-        let many: Vec<String> = (0..(MAX_RECIPIENTS + 5)).map(|i| format!("prs_{i}")).collect();
+        let many: Vec<String> = (0..(MAX_RECIPIENTS + 5))
+            .map(|i| format!("prs_{i}"))
+            .collect();
         assert_eq!(normalize_recipients(&many).len(), MAX_RECIPIENTS);
     }
 
@@ -726,7 +763,10 @@ mod tests {
             email: None,
         }];
         cache.put_at("indigo", rows.clone(), t0);
-        assert_eq!(cache.get_at("indigo", t0 + Duration::from_secs(30)), Some(rows.clone()));
+        assert_eq!(
+            cache.get_at("indigo", t0 + Duration::from_secs(30)),
+            Some(rows.clone())
+        );
         assert_eq!(cache.get_at("ridge", t0), None);
         assert_eq!(cache.get_at("indigo", t0 + CACHE_TTL), None);
     }

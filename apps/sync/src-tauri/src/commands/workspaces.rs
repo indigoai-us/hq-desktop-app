@@ -56,7 +56,9 @@ use serde::Serialize;
 
 use crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG;
 use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
-use crate::commands::sync::{repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair};
+use crate::commands::sync::{
+    repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair,
+};
 use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::util::logfile::log;
 
@@ -943,10 +945,7 @@ where
 /// needed only to reach `sync::repair_managed_node`, which installs HQ's own
 /// Node when the provision fails purely because the machine has none.
 #[tauri::command]
-pub async fn connect_workspace_to_cloud(
-    app: tauri::AppHandle,
-    slug: String,
-) -> Result<(), String> {
+pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> Result<(), String> {
     log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
         let err = "slug is required".to_string();
@@ -1091,11 +1090,7 @@ mod node_self_repair_tests {
     async fn run(
         provision_outcomes: Vec<Result<CliProvisionResult, CliProvisionError>>,
         repair: ToolchainRepair,
-    ) -> (
-        Result<CliProvisionResult, CliProvisionError>,
-        usize,
-        usize,
-    ) {
+    ) -> (Result<CliProvisionResult, CliProvisionError>, usize, usize) {
         let mut queue = provision_outcomes.into_iter();
         let attempts = Cell::new(0usize);
         let repairs = Cell::new(0usize);
@@ -1133,8 +1128,11 @@ mod node_self_repair_tests {
     /// and the retry completes the Connect the user asked for.
     #[tokio::test]
     async fn node_missing_installs_managed_node_then_retries_exactly_once() {
-        let (out, attempts, repairs) =
-            run(vec![Err(node_missing()), Ok(ok_result())], ToolchainRepair::Repaired).await;
+        let (out, attempts, repairs) = run(
+            vec![Err(node_missing()), Ok(ok_result())],
+            ToolchainRepair::Repaired,
+        )
+        .await;
         assert!(out.is_ok(), "the retry after a successful repair must land");
         assert_eq!(attempts, 2, "exactly one re-spawn");
         assert_eq!(repairs, 1, "exactly one repair attempt");
@@ -1152,10 +1150,16 @@ mod node_self_repair_tests {
         .await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "node-missing",
+                ..
+            })
         ));
         assert_eq!(attempts, 2);
-        assert_eq!(repairs, 1, "the repair is attempted at most once per Connect");
+        assert_eq!(
+            repairs, 1,
+            "the repair is attempted at most once per Connect"
+        );
     }
 
     #[tokio::test]
@@ -1185,7 +1189,10 @@ mod node_self_repair_tests {
             run(vec![Err(node_missing())], ToolchainRepair::Skipped).await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "node-missing",
+                ..
+            })
         ));
         assert_eq!(attempts, 1);
         assert_eq!(repairs, 1);
@@ -1207,7 +1214,10 @@ mod node_self_repair_tests {
         .await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "npx-unavailable", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "npx-unavailable",
+                ..
+            })
         ));
         assert_eq!(attempts, 1);
         assert_eq!(repairs, 0);

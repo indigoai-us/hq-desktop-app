@@ -217,7 +217,6 @@ pub fn pick_release_for_channel(channel: ReleaseChannel, tags: &[String]) -> Opt
         .map(|(tag, _)| tag)
 }
 
-
 /// True when moving to `candidate_tag` from `installed_version` would be a
 /// DOWNGRADE (the selected channel's newest release is older than what is
 /// installed — e.g. installed `0.10.173-beta.2`, Stable's newest `0.10.172`).

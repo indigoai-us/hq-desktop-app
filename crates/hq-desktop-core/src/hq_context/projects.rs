@@ -286,17 +286,40 @@ pub fn list_company_projects(hq_root: &Path, company: &str) -> Vec<ProjectEntry>
 
     // Most recent activity first, then by path so equal mtimes (a fresh
     // clone, a restore) still order deterministically.
-    candidates.sort_by(|a, b| {
-        b.activity
-            .cmp(&a.activity)
-            .then_with(|| a.dir.cmp(&b.dir))
-    });
+    candidates.sort_by(|a, b| b.activity.cmp(&a.activity).then_with(|| a.dir.cmp(&b.dir)));
     candidates.truncate(MAX_PROJECTS);
 
     candidates
         .into_iter()
         .filter_map(|found| read_project(&found))
         .collect()
+}
+
+/// Read one project by its canonical directory slug without going through the
+/// bounded recent-project listing. Project-channel decoration uses this path:
+/// a visible cloud channel must not disappear merely because its local PRD is
+/// older than the project picker's [`MAX_PROJECTS`] window.
+pub fn find_company_project(
+    hq_root: &Path,
+    company: &str,
+    project_slug: &str,
+) -> Option<ProjectEntry> {
+    let company = company.trim();
+    let project_slug = project_slug.trim();
+    if company.is_empty()
+        || project_slug.is_empty()
+        || project_slug.contains(['/', '\\'])
+        || project_slug == "."
+        || project_slug == ".."
+        || is_skippable_entry_name(project_slug)
+    {
+        return None;
+    }
+
+    let projects_dir = hq_root.join("companies").join(company).join("projects");
+    candidate(projects_dir.join(project_slug), false)
+        .or_else(|| candidate(projects_dir.join(ARCHIVE_DIR).join(project_slug), true))
+        .and_then(|found| read_project(&found))
 }
 
 fn read_project(found: &Candidate) -> Option<ProjectEntry> {
@@ -318,12 +341,8 @@ fn read_project(found: &Candidate) -> Option<ProjectEntry> {
         .unwrap_or_default()
         .to_string();
 
-    let owner = owner_from_prd(&prd).or_else(|| {
-        found
-            .newest_journal
-            .as_deref()
-            .and_then(owner_from_journal)
-    });
+    let owner = owner_from_prd(&prd)
+        .or_else(|| found.newest_journal.as_deref().and_then(owner_from_journal));
 
     let status = if found.archived {
         ProjectStatus::Archived
@@ -413,6 +432,31 @@ mod tests {
     }
 
     #[test]
+    fn exact_project_lookup_is_not_limited_by_the_recent_picker_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = write_project(
+            tmp.path(),
+            "indigo",
+            "old-project-channel",
+            &prd("Old project channel", &[false]),
+        );
+        super::super::set_mtime(&old.join("prd.json"), 1_000);
+        for idx in 0..MAX_PROJECTS {
+            let slug = format!("recent-{idx:03}");
+            let dir = write_project(tmp.path(), "indigo", &slug, &prd(&slug, &[false]));
+            super::super::set_mtime(&dir.join("prd.json"), 2_000 + idx as u64);
+        }
+
+        assert!(list_company_projects(tmp.path(), "indigo")
+            .iter()
+            .all(|project| project.name != "Old project channel"));
+        let found = find_company_project(tmp.path(), "indigo", "old-project-channel")
+            .expect("channel-backed project must bypass the picker cap");
+        assert_eq!(found.name, "Old project channel");
+        assert!(find_company_project(tmp.path(), "indigo", "../other-company").is_none());
+    }
+
+    #[test]
     fn missing_or_absent_passes_counts_as_not_done() {
         let tmp = tempfile::tempdir().unwrap();
         write_project(
@@ -467,10 +511,8 @@ mod tests {
             &prd("conflict", &[true]),
         );
         let projects = list_company_projects(tmp.path(), "indigo");
-        let mut by_name: Vec<(String, ProjectStatus)> = projects
-            .into_iter()
-            .map(|p| (p.name, p.status))
-            .collect();
+        let mut by_name: Vec<(String, ProjectStatus)> =
+            projects.into_iter().map(|p| (p.name, p.status)).collect();
         by_name.sort();
         assert_eq!(
             by_name,
@@ -485,12 +527,18 @@ mod tests {
     fn status_is_done_only_when_every_story_passes() {
         let tmp = tempfile::tempdir().unwrap();
         write_project(tmp.path(), "indigo", "done", &prd("done", &[true, true]));
-        write_project(tmp.path(), "indigo", "partial", &prd("partial", &[true, false]));
+        write_project(
+            tmp.path(),
+            "indigo",
+            "partial",
+            &prd("partial", &[true, false]),
+        );
         write_project(tmp.path(), "indigo", "empty", &prd("empty", &[]));
-        let mut statuses: Vec<(String, ProjectStatus)> = list_company_projects(tmp.path(), "indigo")
-            .into_iter()
-            .map(|p| (p.name, p.status))
-            .collect();
+        let mut statuses: Vec<(String, ProjectStatus)> =
+            list_company_projects(tmp.path(), "indigo")
+                .into_iter()
+                .map(|p| (p.name, p.status))
+                .collect();
         statuses.sort();
         assert_eq!(
             statuses,
@@ -554,9 +602,15 @@ mod tests {
         assert_eq!(
             owners,
             vec![
-                ("created".to_string(), Some("jacob@getindigo.ai".to_string())),
+                (
+                    "created".to_string(),
+                    Some("jacob@getindigo.ai".to_string())
+                ),
                 ("kebab".to_string(), Some("kebab@x".to_string())),
-                ("meta".to_string(), Some("prs_01KQ695MZHZBYFMVMPRTGFW34B".to_string())),
+                (
+                    "meta".to_string(),
+                    Some("prs_01KQ695MZHZBYFMVMPRTGFW34B".to_string())
+                ),
                 ("mixed".to_string(), Some("meta@x".to_string())),
                 ("odd".to_string(), None),
                 ("top".to_string(), Some("hassaan@getindigo.ai".to_string())),
@@ -567,13 +621,26 @@ mod tests {
     #[test]
     fn owner_falls_back_to_the_newest_journal_entry() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = write_project(tmp.path(), "indigo", "journaled", &prd("journaled", &[false]));
+        let dir = write_project(
+            tmp.path(),
+            "indigo",
+            "journaled",
+            &prd("journaled", &[false]),
+        );
         let journal = dir.join("journal");
         fs::create_dir_all(&journal).unwrap();
         let older = journal.join("2026-05-01-0900-plan-adhoc.md");
         let newer = journal.join("2026-06-01-0900-plan-adhoc.md");
-        fs::write(&older, "---\nskill: plan\nauthor: old@x\n---\n## Decisions\n").unwrap();
-        fs::write(&newer, "---\nskill: plan\nauthor: \"new@x\"\nstatus: active\n---\n## Decisions\n").unwrap();
+        fs::write(
+            &older,
+            "---\nskill: plan\nauthor: old@x\n---\n## Decisions\n",
+        )
+        .unwrap();
+        fs::write(
+            &newer,
+            "---\nskill: plan\nauthor: \"new@x\"\nstatus: active\n---\n## Decisions\n",
+        )
+        .unwrap();
         super::super::set_mtime(&older, 1_700_000_000);
         super::super::set_mtime(&newer, 1_700_000_600);
         let projects = list_company_projects(tmp.path(), "indigo");
@@ -615,7 +682,10 @@ mod tests {
             Some("2023-11-14T22:33:20Z")
         );
         // `updated_at` stays the PRD's own mtime.
-        assert_eq!(projects[0].updated_at.as_deref(), Some("2023-11-14T22:13:20Z"));
+        assert_eq!(
+            projects[0].updated_at.as_deref(),
+            Some("2023-11-14T22:13:20Z")
+        );
         assert_eq!(
             projects[1].last_activity_at.as_deref(),
             Some("2023-11-14T22:23:20Z")

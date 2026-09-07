@@ -2294,7 +2294,8 @@ mod tests {
     fn dev_env_flag_parses_truthy_values_only() {
         // Pure parse over the value, so no process-env mutation is needed:
         // exercise the same predicate the flag reader applies.
-        let truthy = |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+        let truthy =
+            |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
         assert!(truthy("1"));
         assert!(truthy(" TRUE "));
         assert!(truthy("yes"));
@@ -2302,7 +2303,9 @@ mod tests {
         assert!(!truthy(""));
         assert!(!truthy("off"));
         // An unset variable never disables the checker on its own.
-        assert!(!dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE_DEFINITELY_UNSET_FOR_TEST"));
+        assert!(!dev_env_flag_set(
+            "HQ_DEV_NO_AUTO_UPDATE_DEFINITELY_UNSET_FOR_TEST"
+        ));
     }
 
     #[test]

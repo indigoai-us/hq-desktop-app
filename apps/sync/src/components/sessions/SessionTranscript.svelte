@@ -21,6 +21,7 @@
    *
    * Presentation-pure: blocks in, decisions out as callbacks. Nothing invokes.
    */
+  import { tick } from 'svelte';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
   import ToolGroupRow from './ToolGroupRow.svelte';
@@ -46,6 +47,9 @@
     status?: '' | 'starting' | 'thinking' | 'tools';
     /** Open / Share / Deploy on files a turn produced; absent → listed only. */
     artifactActions?: ArtifactActions | null;
+    hasEarlier?: boolean;
+    loadingEarlier?: boolean;
+    onloadearlier?: () => Promise<void> | void;
     onallowonce?: (requestId: string) => void;
     onallowsession?: (requestId: string) => void;
     ondenypermission?: (requestId: string, message: string) => void;
@@ -68,6 +72,9 @@
     busyRequestId = null,
     status = '',
     artifactActions = null,
+    hasEarlier = false,
+    loadingEarlier = false,
+    onloadearlier,
     onallowonce,
     onallowsession,
     ondenypermission,
@@ -148,6 +155,18 @@
     el.scrollTop = el.scrollHeight;
   }
 
+  async function loadEarlier() {
+    const el = scroller;
+    if (!el || loadingEarlier || !onloadearlier) return;
+    const oldHeight = el.scrollHeight;
+    const oldTop = el.scrollTop;
+    pinned = false;
+    await onloadearlier();
+    await tick();
+    // Keep the same message under the reader's eye as older blocks prepend.
+    el.scrollTop = oldTop + (el.scrollHeight - oldHeight);
+  }
+
   // Follow the stream while the reader is at the bottom. Reading `blocks`
   // (and the tail block's text) is what re-runs this on every delta.
   $effect(() => {
@@ -176,6 +195,17 @@
     </div>
   {:else}
     <div class="stream">
+      {#if hasEarlier}
+        <button
+          type="button"
+          class="load-earlier"
+          data-testid="session-load-earlier"
+          disabled={loadingEarlier}
+          onclick={() => void loadEarlier()}
+        >
+          {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
+        </button>
+      {/if}
       {#each blocks as block (block.id)}
         {#if block.type === 'userBubble'}
           <div class="user-row">
@@ -351,6 +381,27 @@
     text-align: center;
     font-size: var(--type-metadata);
     color: var(--v4-text-3);
+  }
+
+  .load-earlier {
+    align-self: center;
+    border: 0;
+    padding: 4px 8px;
+    background: transparent;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: var(--type-metadata);
+    cursor: pointer;
+  }
+
+  .load-earlier:hover:not(:disabled) {
+    color: var(--v4-text-1);
+    background: var(--v4-active-row);
+  }
+
+  .load-earlier:disabled {
+    cursor: default;
+    opacity: 0.7;
   }
 
   /* --- the operator ---------------------------------------------------- */

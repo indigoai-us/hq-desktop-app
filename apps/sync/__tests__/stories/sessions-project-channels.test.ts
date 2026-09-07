@@ -1,7 +1,7 @@
 /**
  * Project channels ↔ sessions — the story pins.
  *
- * Owner's ask: hover a project channel in the sidebar and see its sessions;
+ * Owner's ask: expand a project channel in the sidebar and see its sessions;
  * spawn a session from a channel, bound to that project; when a session
  * creates a project, a channel can appear and the session shows linked to it.
  *
@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import {
   linkForRow,
   newSessionParam,
+  rowExtrasFor,
   sessionsBadge,
   type ProjectLink,
 } from '../../src/desktop-alt/lib/session-project-links';
@@ -29,12 +30,11 @@ import { parseSessionsParam } from '../../src/desktop-alt/pages/sessions-route-p
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (rel: string) => readFileSync(resolve(ROOT, rel), 'utf8');
 
-const SHELL = read('src/desktop-alt/HqWorkDesktopShell.svelte');
+const SHELL = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const EXTRA = read('src/desktop-alt/pages/SessionsExtraPage.svelte');
 const PAGE = read('src/desktop-alt/pages/SessionsPage.svelte');
 const STRIP = read('src/components/sessions/SessionsStrip.svelte');
 const CARD = read('src/components/sessions/ProjectCreatedCard.svelte');
-const HOVER = read('src/desktop-alt/components/ProjectSessionsHoverCard.svelte');
 const STORE = read('src/desktop-alt/lib/project-links-store.svelte.ts');
 const UI_SIDEBAR = read('../../packages/ui/src/chat/ChatSidebar.svelte');
 const UI_DESKTOP = read('../../packages/ui/src/shell/DesktopApp.svelte');
@@ -56,13 +56,21 @@ const launch: ProjectLink = {
   ],
 };
 
-describe('hover a project channel → its sessions', () => {
+describe('expand a project channel → its nested sessions', () => {
   it('the shared sidebar gained ONE generic seam, registered as a vendored divergence', () => {
     expect(UI_ROW_EXTRAS).toContain('export type RowExtrasResolver');
+    expect(UI_ROW_EXTRAS).toContain('children?: ConversationRowChild[]');
     expect(UI_DESKTOP).toContain('rowExtras?: RowExtrasResolver | null');
-    expect(UI_DESKTOP).toContain('{rowExtras}');
+    expect(UI_DESKTOP).toContain('rowExtras?.(row, view === "extra"');
     expect(UI_SIDEBAR).toContain('data-testid="chat-row-extra-badge"');
-    expect(UI_SIDEBAR).toContain('data-testid="chat-row-hover-card"');
+    expect(UI_SIDEBAR).toContain('data-testid="chat-row-children-toggle"');
+    expect(UI_SIDEBAR).toContain('data-testid="chat-row-children"');
+    expect(UI_SIDEBAR).toContain('data-testid="chat-row-child"');
+    expect(UI_SIDEBAR).toContain('margin: 0 0 4px 16px');
+    expect(UI_SIDEBAR).toContain('grid-template-columns: 16px minmax(0, 1fr) auto');
+    expect(UI_SIDEBAR).toContain('aria-current={child.selected ? "page" : undefined}');
+    expect(UI_SIDEBAR).toContain('border: 0;');
+    expect(UI_SIDEBAR).not.toContain('border-left: 1px solid var(--line)');
     expect(UI_SIDEBAR).toContain('data-testid={`chat-context-action-${action.id}`}');
     // Tauri-free, session-free: the shell mounts what it is handed.
     for (const source of [UI_SIDEBAR, UI_DESKTOP, UI_ROW_EXTRAS]) {
@@ -73,7 +81,7 @@ describe('hover a project channel → its sessions', () => {
     expect(VENDORED).toContain('DesktopApp.row-extras.test.ts');
   });
 
-  it('the host resolves a sidebar row to its project and says how many sessions it has', () => {
+  it('the host resolves a sidebar row to its project and nests its sessions plus New session', () => {
     const row = {
       id: 'ch:chn_launch',
       kind: 'channel' as const,
@@ -86,16 +94,31 @@ describe('hover a project channel → its sessions', () => {
     };
     expect(linkForRow(row, [launch])).toBe(launch);
     expect(sessionsBadge(launch)).toBe('1 live');
-    // The hover card lists live first with a phase dot, and opens a session
-    // through the shell's own `extra` navigation.
-    expect(HOVER).toContain('data-testid="project-sessions-open"');
-    expect(HOVER).toContain('data-phase={session.phase}');
-    expect(HOVER).toContain("dispatchEmbeddedNavigation({ kind: 'extra', page: 'sessions', param: session.sessionId })");
+    const opened: string[] = [];
+    const spawned: string[] = [];
+    const extras = rowExtrasFor(
+      row,
+      [launch],
+      null,
+      (link) => spawned.push(link.project),
+      (_link, session) => opened.push(session.sessionId),
+    );
+    expect(extras?.children?.map((child) => child.id)).toEqual([
+      'session:s-live',
+      'session:s-done',
+      'new-session',
+    ]);
+    expect(extras?.children?.find((child) => child.id === 'session:s-done')?.meta).toBeNull();
+    extras?.children?.[0]?.onselect();
+    extras?.children?.at(-1)?.onselect();
+    expect(opened).toEqual(['s-live']);
+    expect(spawned).toEqual(['launch']);
   });
 
   it('the shell builds rowExtras from session_project_links and refreshes on phase edges + every 30 s', () => {
     expect(SHELL).toContain('const rowExtras = $derived.by<RowExtrasResolver | null>');
-    expect(SHELL).toContain('rowExtrasFor(row, links, ProjectSessionsHoverCard');
+    expect(SHELL).toContain('rowExtrasFor(');
+    expect(SHELL).toContain('param: historySessionParam(company, _link.project, session)');
     expect(SHELL).toContain('projectLinksStore.start(slugs)');
     expect(SHELL).toContain('return () => projectLinksStore.stop()');
     expect(STORE).toContain("invoke<ProjectLink[]>('session_project_links'".replace('invoke<ProjectLink[]>', '').slice(0, 0) + 'loadSessionProjectLinks(company)');
@@ -108,33 +131,35 @@ describe('hover a project channel → its sessions', () => {
 
 describe('spawn a session from a channel, bound to that project', () => {
   it('the "New session" action navigates to a pre-bound fresh chat the page decodes', () => {
-    const param = newSessionParam('indigo', 'launch');
-    expect(param).toBe('new?company=indigo&project=launch');
-    expect(parseSessionsParam(param)).toEqual({ kind: 'new', company: 'indigo', project: 'launch' });
-    expect(SHELL).toContain("page: 'sessions',\n          param: newSessionParam(company, link.project)");
+    const param = newSessionParam('indigo', 'launch', 'chn_launch');
+    expect(param).toBe('new?company=indigo&project=launch&channel=chn_launch');
+    expect(parseSessionsParam(param)).toEqual({ kind: 'new', company: 'indigo', project: 'launch', channelId: 'chn_launch' });
+    expect(SHELL).toContain('param: newSessionParam(company, link.project, link.channelId)');
     expect(EXTRA).toContain('parseSessionsParam(param)');
     expect(EXTRA).toContain("initialCompany={route.kind === 'new' ? route.company : null}");
     expect(EXTRA).toContain("initialProject={route.kind === 'new' ? route.project : null}");
+    expect(EXTRA).toContain("initialChannelId={route.kind === 'new' ? route.channelId : undefined}");
   });
 
   it('the page seeds the company + project pills from the route and binds the spec to the project', () => {
     expect(PAGE).toContain('initialCompany?: string | null');
     expect(PAGE).toContain('initialProject?: string | null');
     expect(PAGE).toContain('company = initialCompany;');
-    expect(PAGE).toContain('project = projectNameFor(projects, slug);');
-    // The first send still orients with `/startwork {project}` (unchanged),
-    // and the spec now carries the directory slug the channel is named from.
-    expect(PAGE).toContain('planFirstSend(text, { company, project }, startworkEnabled)');
+    expect(PAGE).toContain('project = projectNameFor(projects, slug) ?? slug;');
+    // The first send orients with `/startwork {company} {project}`, and the
+    // spec carries the directory slug the channel is named from.
+    expect(PAGE).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
     expect(PAGE).toContain('project: projectSlugFor(projects, project),');
     expect(AGENT_RS).toContain('spec.project.as_deref(),');
   });
 });
 
 describe('a project created in a session → a channel', () => {
-  it('Rust detects a NEW prd.json for a live-session company, binds the session, emits once', () => {
+  it('Rust detects a NEW prd.json and notifies only explicitly bound sessions without rebinding', () => {
     expect(LINKS_RS).toContain('pub const EVENT_PROJECT_CREATED: &str = "agent-session:project-created"');
     expect(LINKS_RS).toContain('WATCH_INTERVAL: Duration = Duration::from_secs(5)');
-    expect(LINKS_RS).toContain('bind_session_project(hq_root, &target.session_id, &slug)');
+    expect(LINKS_RS).toContain('sessions_for_project(');
+    expect(LINKS_RS.split('#[cfg(test)]')[0]).not.toContain('bind_session_project(');
     expect(MAIN_RS).toContain('commands::session_project_links::setup_project_watch(app.handle().clone());');
   });
 

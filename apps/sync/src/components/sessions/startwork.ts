@@ -1,11 +1,10 @@
 // Company / project start-work — the pure decisions behind the first send.
 //
-// The FIRST message of a new in-app session is preceded by an orientation
-// turn: `/startwork {company}` (or `/startwork {project}` when the company
-// pill's Project submenu picked one). The CLI runs HQ's startwork skill on
-// that turn, and the user's own text follows as a second send. This module
-// decides what that first turn IS, whether it should be sent at all, and how
-// the transcript names it — all as functions of (text, target, preference),
+// The FIRST message of a new in-app session includes its orientation command:
+// `/startwork {company}` (or `/startwork {company} {project}`), followed by the
+// selected skill and natural-language prompt in the same atomic send. This
+// module decides what that first message IS and how the transcript presents it,
+// all as functions of (text, target, preference),
 // so the whole contract is testable without a store, a page or Tauri.
 //
 // Persistence is localStorage under the same defensive reads the other pills
@@ -57,11 +56,14 @@ export interface StartworkTarget {
 
 /** One send the page will make, in order. */
 export interface PlannedTurn {
+  /** Exact atomic text sent to the CLI. */
   text: string;
-  /** Rendered as a quiet system divider rather than a bubble. */
+  /** Render the whole turn as a divider (manual bare /startwork only). */
   hidden: boolean;
-  /** The divider's wording, when hidden. */
+  /** A quiet context divider shown before the visible prompt. */
   label?: string;
+  /** The operator-authored portion shown in the bubble. */
+  displayText?: string;
 }
 
 export function lastProjectKey(company: string): string {
@@ -69,15 +71,16 @@ export function lastProjectKey(company: string): string {
 }
 
 /**
- * The orientation command for a target: the project wins over the company
- * because the skill resolves a project name to its company on its own. No
- * company and no project → nothing to orient on, so no command.
+ * The orientation command for a target. A project is always qualified by its
+ * company so identical project slugs in different tenants cannot be confused.
+ * A project without a company is retained as a defensive legacy fallback.
  */
 export function startworkCommand(target: StartworkTarget): string | null {
-  const project = target.project?.trim();
-  if (project) return `${STARTWORK_COMMAND} ${project}`;
   const company = target.company?.trim();
+  const project = target.project?.trim();
+  if (company && project) return `${STARTWORK_COMMAND} ${company} ${project}`;
   if (company) return `${STARTWORK_COMMAND} ${company}`;
+  if (project) return `${STARTWORK_COMMAND} ${project}`;
   return null;
 }
 
@@ -87,6 +90,19 @@ export function isStartworkTurn(text: string): boolean {
   if (!trimmed.startsWith(STARTWORK_COMMAND)) return false;
   const next = trimmed.charAt(STARTWORK_COMMAND.length);
   return next === '' || /\s/.test(next);
+}
+
+/** Split an atomic first message into its literal orientation and user work. */
+export function splitStartworkEnvelope(
+  text: string,
+): { command: string; prompt: string } | null {
+  const normalized = text.replace(/\r\n/g, '\n').trim();
+  const boundary = normalized.indexOf('\n\n');
+  if (boundary < 0) return null;
+  const command = normalized.slice(0, boundary).trim();
+  const prompt = normalized.slice(boundary + 2).trim();
+  if (!isStartworkTurn(command) || !prompt) return null;
+  return { command, prompt };
 }
 
 /** The system line the transcript shows instead of a raw `/startwork` bubble. */
@@ -104,13 +120,18 @@ export function startworkLabel(target: StartworkTarget): string {
  * backend recorded once the mirror (which carried the exact label) is gone.
  */
 export function startworkLabelFromText(text: string): string {
-  const argument = text.trimStart().slice(STARTWORK_COMMAND.length).trim();
-  return argument ? `Starting work in ${argument}` : 'Starting work';
+  const firstLine = text.replace(/\r\n/g, '\n').trimStart().split('\n', 1)[0] ?? '';
+  const argument = firstLine.slice(STARTWORK_COMMAND.length).trim();
+  if (!argument) return 'Starting work';
+  const [company, ...project] = argument.split(/\s+/);
+  return project.length > 0
+    ? `Starting work in ${company} · project ${project.join(' ')}`
+    : `Starting work in ${company}`;
 }
 
 /**
- * The sends a FIRST message expands into: the orientation turn (hidden) and
- * then the user's text — or just the text when the toggle is off, there is
+ * Build the ONE atomic first message: orientation, then the user's selected
+ * skill and prompt. Return the text alone when the toggle is off, there is
  * nothing to orient on, or the user already typed `/startwork` themselves
  * (never double-send the orientation).
  */
@@ -124,7 +145,12 @@ export function planFirstSend(
   if (isStartworkTurn(text)) return [user];
   const command = startworkCommand(target);
   if (!command) return [user];
-  return [{ text: command, hidden: true, label: startworkLabel(target) }, user];
+  return [{
+    text: `${command}\n\n${text}`,
+    hidden: false,
+    label: command,
+    displayText: text,
+  }];
 }
 
 // ---------------------------------------------------------------------------

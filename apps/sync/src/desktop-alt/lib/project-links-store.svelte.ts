@@ -4,12 +4,14 @@
 // decoration (badge, hover card), the Sessions strip's project pill, and the
 // project-created card's "does this project already have a channel?" check.
 // Refreshed on every session phase edge, on every project-created notice,
-// after a channel is linked, and every 30 s while running. Each load is
-// best-effort: a company that fails keeps its last known links.
+// after a channel is linked, and every 30 s while running. Local bindings
+// render first; bounded background requests enrich channel labels. A failed
+// cloud lookup never gates first paint or removes saved local sessions.
 
 import { listen } from '@tauri-apps/api/event';
 
 import { safeUnlisten } from '../../lib/listener-registry';
+import { loadSharedRows } from './shared-project-sessions';
 import {
   loadSessionProjectLinks,
   PROJECT_CHANNEL_LINKED_EVENT,
@@ -27,18 +29,112 @@ let watched: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let unlisteners: Array<() => void> = [];
 let generation = 0;
+const localRequests = new Map<string, object>();
+const remoteRequests = new Map<string, object>();
+const revisions = new Map<string, number>();
+let remoteQueue: Array<() => Promise<void>> = [];
+let activeRemote = 0;
+const sharedRequests = new Set<string>();
+const visibleSharedChannels = new Set<string>();
+
+// Use the same bounded queue as channel enrichment. Shared transcript reads
+// never delay local session first paint, nor replace the owner's local row.
+function refreshShared(company: string, links: ProjectLink[], mine: number): void {
+  for (const link of links) {
+    if (!link.channelId || !visibleSharedChannels.has(link.channelId) || sharedRequests.has(link.channelId)) continue;
+    const channelId = link.channelId;
+    sharedRequests.add(channelId);
+    remoteQueue.push(async () => {
+      try {
+        if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
+        const sessions = await loadSharedRows(link).catch(() => []);
+        if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
+        byCompany = { ...byCompany, [company]: (byCompany[company] ?? []).map(row => row.channelId !== channelId ? row : {
+          ...row, sessions: [...row.sessions.filter(session => !session.sharedChannelId), ...sessions],
+        }) };
+      } finally {
+        if (mine === generation) sharedRequests.delete(channelId);
+      }
+    });
+  }
+  drainRemote();
+}
+
+function watchSharedChannel(company: string, link: ProjectLink, visible: boolean): void {
+  if (!link.channelId) return;
+  if (!visible) { visibleSharedChannels.delete(link.channelId); return; }
+  if (visibleSharedChannels.has(link.channelId)) return;
+  visibleSharedChannels.add(link.channelId);
+  refreshShared(company, [link], generation);
+}
+
+function drainRemote(): void {
+  while (activeRemote < 4 && remoteQueue.length) {
+    const run = remoteQueue.shift()!;
+    activeRemote += 1;
+    void run().finally(() => { activeRemote -= 1; drainRemote(); });
+  }
+}
+
+function enrich(company: string, mine: number): void {
+  if (remoteRequests.has(company)) return;
+  const request = {};
+  remoteRequests.set(company, request);
+  remoteQueue.push(async () => {
+    if (mine !== generation) return;
+    const revision = revisions.get(company);
+    try {
+      const links = await loadSessionProjectLinks(company);
+      if (mine !== generation || !watched.includes(company)) return;
+      const current = byCompany[company] ?? [];
+      // An intervening phase refresh owns membership/status. A slow network
+      // response can enrich labels but cannot roll that newer state back.
+      byCompany = { ...byCompany, [company]: revision === revisions.get(company) ? [
+        ...links.map(link => ({ ...link, sessions: [...link.sessions,
+          ...(current.find(row => row.channelId === link.channelId)?.sessions.filter(session => session.sharedChannelId) ?? []),
+        ] })),
+        ...current.filter((link) => !links.some((row) => row.project === link.project)),
+      ] : [
+        ...current.map((link) => ({ ...link, ...links.find((row) => row.project === link.project), sessions: link.sessions })),
+        ...links.filter((link) => !current.some((row) => row.project === link.project)),
+      ] };
+      refreshShared(company, byCompany[company], mine);
+    } catch {
+      // Local links remain usable offline.
+    } finally {
+      if (remoteRequests.get(company) === request) remoteRequests.delete(company);
+    }
+  });
+  drainRemote();
+}
 
 async function refresh(): Promise<void> {
-  const mine = ++generation;
+  const mine = generation;
   const companies = watched.slice();
   await Promise.all(
     companies.map(async (company) => {
+      if (localRequests.has(company)) return;
+      const request = {};
+      localRequests.set(company, request);
       try {
-        const links = await loadSessionProjectLinks(company);
-        if (mine !== generation && !watched.includes(company)) return;
-        byCompany = { ...byCompany, [company]: links };
+        const links = await loadSessionProjectLinks(company, true);
+        if (mine !== generation || !watched.includes(company)) return;
+        revisions.set(company, (revisions.get(company) ?? 0) + 1);
+        const previous = byCompany[company] ?? [];
+        byCompany = { ...byCompany, [company]: [
+          ...links.map((link) => ({ ...link, ...previous.find((row) => row.project === link.project), sessions: [
+            ...link.sessions, ...(previous.find(row => row.project === link.project)?.sessions.filter(session => session.sharedChannelId) ?? []),
+          ] })),
+          ...previous.filter((link) => !links.some((row) => row.project === link.project)).map((link) => ({ ...link, sessions: link.sessions.filter(session => session.sharedChannelId) })),
+        ] };
       } catch {
         // Keep the last known links: the flag may be off, or hq-pro away.
+      } finally {
+        if (localRequests.get(company) === request) localRequests.delete(company);
+      }
+      if (mine === generation && watched.includes(company)) {
+        refreshShared(company, byCompany[company] ?? [], mine);
+        enrich(company, mine);
       }
     }),
   );
@@ -90,6 +186,12 @@ function stop(): void {
   timer = null;
   watched = [];
   generation += 1;
+  localRequests.clear();
+  remoteRequests.clear();
+  revisions.clear();
+  sharedRequests.clear();
+  visibleSharedChannels.clear();
+  remoteQueue = [];
   window.removeEventListener(PROJECT_CHANNEL_LINKED_EVENT, onLinked);
   for (const unlisten of unlisteners.splice(0)) unlisten();
   byCompany = {};
@@ -109,4 +211,5 @@ export const projectLinksStore = {
   start,
   stop,
   refresh,
+  watchSharedChannel,
 };

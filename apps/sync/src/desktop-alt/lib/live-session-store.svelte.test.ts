@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionEvent } from '../../components/sessions/session-events';
+import type { AgentSession } from './sessions';
 
 const invoke = vi.hoisted(() => vi.fn());
 const handlers = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
@@ -82,7 +83,11 @@ function page(
   };
 }
 
-function mockBackend(pages: Record<number, ReplayPage>, list: SessionSummary[] = [summary()]) {
+function mockBackend(
+  pages: Record<number, ReplayPage>,
+  list: SessionSummary[] = [summary()],
+  durable?: { events: { receivedAtMs: number; event: SessionEvent }[]; before: number | null },
+) {
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     if (command === 'agent_session_list') return Promise.resolve(list);
     if (command === 'agent_session_replay') {
@@ -91,6 +96,7 @@ function mockBackend(pages: Record<number, ReplayPage>, list: SessionSummary[] =
       if (!page) throw new Error(`Unexpected replay sinceSeq=${since}`);
       return Promise.resolve(page);
     }
+    if (command === 'agent_session_history_page') return Promise.resolve(durable);
     return Promise.resolve(undefined);
   });
 }
@@ -114,6 +120,27 @@ function emit(name: string, payload: unknown) {
   if (!handler) throw new Error(`No listener registered for ${name}`);
   handler({ payload });
 }
+
+describe('turn sequencing', () => {
+  it('waits for the orientation turnDone event before resolving', async () => {
+    mockBackend({ 0: page([], 0) });
+    await liveSessionStore.open(SESSION);
+    let resolved = false;
+    const waiting = liveSessionStore.waitForTurnDone(SESSION, 0, 1_000).then((event) => {
+      resolved = true;
+      return event;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: SESSION,
+      seq: 0,
+      receivedAtMs: T0,
+      event: { kind: 'turnDone', status: 'success', error: null, sessionId: SESSION },
+    });
+    await expect(waiting).resolves.toMatchObject({ kind: 'turnDone', status: 'success' });
+  });
+});
 
 beforeEach(() => {
   resetLiveSessionStore();
@@ -161,6 +188,28 @@ describe('liveSessionStore.open', () => {
     expect(liveSessionStore.startedCommands.map((c) => c.name)).toEqual(['handoff']);
   });
 
+  it('prepends older durable history a bounded page at a time', async () => {
+    const recent: SessionEvent = { kind: 'assistantMessage', text: 'recent' };
+    const older: SessionEvent = { kind: 'userMessage', text: 'older', imageCount: 0 };
+    mockBackend(
+      { 0: page([[0, recent]], 1) },
+      [summary({ historyBefore: 123 })],
+      { events: [{ receivedAtMs: T0 - 1_000, event: older }], before: null },
+    );
+
+    await liveSessionStore.open(SESSION);
+    expect(liveSessionStore.hasEarlier).toBe(true);
+    await liveSessionStore.loadEarlier();
+
+    expect(bubbleText()).toEqual(['older']);
+    expect(proseText()).toEqual(['recent']);
+    expect(liveSessionStore.hasEarlier).toBe(false);
+    expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: SESSION,
+      before: 123,
+    });
+  });
+
   it('ignores an event for a session it does not have open', async () => {
     mockBackend({ 0: page([[0, started]], 1) });
     await liveSessionStore.open(SESSION);
@@ -182,6 +231,137 @@ describe('liveSessionStore.open', () => {
 
     expect(liveSessionStore.events).toHaveLength(1);
     expect(liveSessionStore.nextSeq).toBe(1);
+  });
+});
+
+describe('historical conversations', () => {
+  const history: AgentSession = {
+    id: 'native-history-1',
+    tool: 'claude',
+    origin: 'local',
+    title: 'New hire onboarding to Indigo',
+    cwd: '/Users/x/HQ',
+    project: 'onboarding',
+    company: 'indigo',
+    model: 'claude-opus-5',
+    status: 'ended',
+    startedAt: '2026-09-02T12:00:00.000Z',
+    lastActivityAt: '2026-09-02T13:00:00.000Z',
+    source: 'claude-jsonl',
+  };
+
+  it('opens and pages a provider transcript without starting a process', async () => {
+    const recent = {
+      events: [
+        { receivedAtMs: T0, event: { kind: 'userMessage', text: '/new-hire bobby to indigo', imageCount: 0 } },
+        { receivedAtMs: T0 + 1, event: { kind: 'assistantMessage', text: 'I can help with that.' } },
+      ],
+      before: 81,
+    };
+    const older = {
+      events: [{ receivedAtMs: T0 - 1, event: { kind: 'userMessage', text: 'Earlier', imageCount: 0 } }],
+      before: null,
+    };
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'agent_session_history_page') {
+        return Promise.resolve(args?.before == null ? recent : older);
+      }
+      if (command === 'agent_session_list') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+
+    await liveSessionStore.openHistory(history);
+
+    expect(liveSessionStore.activeSessionId).toBe(history.id);
+    expect(liveSessionStore.isHistorical).toBe(true);
+    expect(liveSessionStore.phase).toBe('idle');
+    expect(liveSessionStore.summary).toMatchObject({
+      sessionId: history.id,
+      title: history.title,
+      tool: 'claude',
+      company: 'indigo',
+      project: 'onboarding',
+    });
+    expect(bubbleText()).toEqual(['/new-hire bobby to indigo']);
+    expect(proseText()).toEqual(['I can help with that.']);
+    expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: history.id,
+      before: null,
+      tool: 'claude',
+    });
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_start', expect.anything());
+
+    await liveSessionStore.loadEarlier();
+    expect(bubbleText()).toEqual(['Earlier', '/new-hire bobby to indigo']);
+    expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
+      sessionId: history.id,
+      before: 81,
+      tool: 'claude',
+    });
+  });
+
+  it('resumes the same native conversation once, only when the user sends', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_history_page') {
+        return Promise.resolve({ events: [], before: null });
+      }
+      if (command === 'agent_session_start') return Promise.resolve({ sessionId: 'app-live-1' });
+      if (command === 'agent_session_replay') return Promise.resolve(page([], 0));
+      if (command === 'agent_session_list') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    await liveSessionStore.openHistory(history);
+    invoke.mockClear();
+
+    const liveId = await liveSessionStore.resumeAndSend(
+      'Continue the onboarding',
+      [],
+      'prompt',
+    );
+
+    expect(liveId).toBe('app-live-1');
+    expect(invoke).toHaveBeenCalledWith('agent_session_start', {
+      spec: expect.objectContaining({
+        sessionId: '',
+        title: history.title,
+        tool: 'claude',
+        company: 'indigo',
+        project: 'onboarding',
+        model: null,
+        effort: null,
+        resume: history.id,
+        permissionMode: 'prompt',
+      }),
+    });
+    expect(invoke).toHaveBeenCalledWith('agent_session_send', {
+      sessionId: 'app-live-1',
+      text: 'Continue the onboarding',
+      images: [],
+      overrides: null,
+    });
+    expect(invoke.mock.calls.filter(([command]) => command === 'agent_session_start')).toHaveLength(1);
+  });
+
+  it('can close and reopen the selected transcript without launching it', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_history_page') {
+        return Promise.resolve({
+          events: [{ receivedAtMs: T0, event: { kind: 'assistantMessage', text: 'Persisted' } }],
+          before: null,
+        });
+      }
+      if (command === 'agent_session_list') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    await liveSessionStore.openHistory(history);
+    liveSessionStore.close(history.id);
+    invoke.mockClear();
+
+    await liveSessionStore.open(history.id);
+
+    expect(proseText()).toEqual(['Persisted']);
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_replay', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith('agent_session_start', expect.anything());
   });
 });
 
@@ -686,6 +866,24 @@ describe('liveSessionStore.startAndSend', () => {
     expect(bubbleText()).toEqual(['hello']);
   });
 
+  it('does not hold the first message behind a slow registry refresh', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_start') return Promise.resolve({ sessionId: 'fresh' });
+      if (command === 'agent_session_send') return Promise.resolve(undefined);
+      if (command === 'agent_session_list') return new Promise(() => {});
+      throw new Error(`unexpected ${command}`);
+    });
+
+    await liveSessionStore.startAndSend({ ...spec }, 'hello');
+
+    expect(invoke).toHaveBeenCalledWith('agent_session_send', {
+      sessionId: 'fresh',
+      text: 'hello',
+      images: [],
+      overrides: null,
+    });
+  });
+
   it('paints the bubble BEFORE the backend has minted an id', async () => {
     let duringStart: string[] = [];
     mockStart(() => {
@@ -694,6 +892,7 @@ describe('liveSessionStore.startAndSend', () => {
     await liveSessionStore.startAndSend({ ...spec }, 'hello');
     expect(duringStart).toEqual(['hello']);
   });
+
 
   it('takes the bubble back when the start fails — it would be a lie', async () => {
     invoke.mockImplementation((command: string) => {
@@ -816,8 +1015,8 @@ describe('probe memoization (preflight + catalog)', () => {
   });
 });
 
-describe('turn meta — hidden orientation turns and context tags', () => {
-  it('renders the hidden /startwork turn as a divider and keeps it one after the backend echo', async () => {
+describe('turn meta — atomic orientation and context tags', () => {
+  it('renders one wire message as a context divider plus the visible user prompt', async () => {
     mockBackend({ 0: page([], 0) });
     invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
       if (command === 'agent_session_start') return Promise.resolve({ sessionId: SESSION });
@@ -836,47 +1035,39 @@ describe('turn meta — hidden orientation turns and context tags', () => {
       resume: null,
       permissionMode: 'prompt' as const,
     };
-    await liveSessionStore.startAndSend(spec, '/startwork indigo', [], {
-      hidden: true,
-      label: 'Starting work in indigo · project sessions',
-    });
-    await liveSessionStore.send('fix the bug', [], null, {
+    const wire = '/startwork indigo sessions\n\n/indigo:html-deck fix the bug';
+    await liveSessionStore.startAndSend(spec, wire, [], {
+      hidden: false,
+      contextLabel: '/startwork indigo sessions',
+      displayText: '/indigo:html-deck fix the bug',
       attachments: [{ kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' }],
     });
 
-    // The two sends went out in order, startwork first.
+    // Context, skill, and prompt are one atomic CLI send.
     const sends = invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_send');
-    expect(sends.map(([, args]) => (args as { text: string }).text)).toEqual([
-      '/startwork indigo',
-      'fix the bug',
-    ]);
+    expect(sends.map(([, args]) => (args as { text: string }).text)).toEqual([wire]);
 
     // Mirrored: divider, then a bubble carrying the tag.
     let blocks = liveSessionStore.transcript.blocks;
     expect(blocks.map((block) => block.type)).toEqual(['divider', 'userBubble']);
-    expect((blocks[0] as { label: string }).label).toBe('Starting work in indigo · project sessions');
+    expect((blocks[0] as { label: string }).label).toBe('/startwork indigo sessions');
     expect((blocks[1] as { attachments: unknown[] }).attachments).toEqual([
       { kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' },
     ]);
 
-    // The backend's own record replaces the mirror — and renders identically,
-    // label and tag included, because the meta outlives the mirror.
+    // The backend's one record replaces the mirror and renders identically.
     emit(AGENT_SESSION_EVENT, {
       sessionId: SESSION,
       seq: 0,
       receivedAtMs: T0,
-      event: { kind: 'userMessage', text: '/startwork indigo', imageCount: 0 },
-    });
-    emit(AGENT_SESSION_EVENT, {
-      sessionId: SESSION,
-      seq: 1,
-      receivedAtMs: T0 + 1,
-      event: { kind: 'userMessage', text: 'fix the bug', imageCount: 0 },
+      // Providers may normalize the final newline. Metadata follows the
+      // adopted optimistic turn rather than relying on byte-identical text.
+      event: { kind: 'userMessage', text: `${wire}\n`, imageCount: 0 },
     });
     expect(liveSessionStore.userTurns).toEqual([]);
     blocks = liveSessionStore.transcript.blocks;
     expect(blocks.map((block) => block.type)).toEqual(['divider', 'userBubble']);
-    expect((blocks[0] as { label: string }).label).toBe('Starting work in indigo · project sessions');
+    expect((blocks[0] as { label: string }).label).toBe('/startwork indigo sessions');
     expect((blocks[1] as { attachments: unknown[] }).attachments).toEqual([
       { kind: 'meeting', title: 'Weekly sync', path: 'companies/indigo/m.md' },
     ]);
@@ -909,6 +1100,50 @@ describe('HQ context wrappers', () => {
     await expect(liveSessionStore.hqSkillCatalog('indigo')).rejects.toThrow('walk failed');
     await liveSessionStore.hqSkillCatalog('indigo');
     expect(invoke.mock.calls.filter(([cmd]) => cmd === 'hq_skill_catalog')).toHaveLength(5);
+  });
+
+  it('caches cloud skill metadata per company and parses the shelf response', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd !== 'hq_pro_fetch') return Promise.resolve(undefined);
+      return Promise.resolve({
+        status: 200,
+        body: JSON.stringify({
+          companyWide: [{ skillUid: 'skl_company', name: 'Capture signal', tags: ['knowledge'] }],
+          departments: [{
+            groupId: 'grp_product',
+            name: 'Product',
+            skills: [{ skillUid: 'skl_review', name: 'Review launch', tags: ['launch', 'review'] }],
+          }],
+        }),
+      });
+    });
+
+    const first = await liveSessionStore.hqSkillMetadata('cmp_indigo');
+    const second = await liveSessionStore.hqSkillMetadata('cmp_indigo');
+
+    expect(first).toEqual([
+      {
+        skillUid: 'skl_company',
+        tags: ['knowledge'],
+        groupId: null,
+        groupName: null,
+        companyWide: true,
+      },
+      {
+        skillUid: 'skl_review',
+        tags: ['launch', 'review'],
+        companyWide: false,
+        groupId: 'grp_product',
+        groupName: 'Product',
+      },
+    ]);
+    expect(second).toBe(first);
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'hq_pro_fetch')).toHaveLength(1);
+    expect(invoke).toHaveBeenCalledWith('hq_pro_fetch', {
+      url: '/v1/skills/cmp_indigo/shelf',
+      method: 'GET',
+      body: null,
+    });
   });
 
   it('passes camelCase args straight through to each hq_* command', async () => {

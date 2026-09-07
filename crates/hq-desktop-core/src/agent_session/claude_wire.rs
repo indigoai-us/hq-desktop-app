@@ -557,6 +557,7 @@ mod tests {
     fn spec(permission_mode: PermissionMode, resume: Option<&str>) -> SessionSpec {
         SessionSpec {
             session_id: "sess-1".into(),
+            title: None,
             tool: SessionTool::Claude,
             cwd: "/work".into(),
             company: None,

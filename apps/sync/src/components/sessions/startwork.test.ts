@@ -22,6 +22,7 @@ import {
   startworkCommand,
   startworkLabel,
   startworkLabelFromText,
+  splitStartworkEnvelope,
   storyPercent,
   storyProgress,
 } from './startwork';
@@ -31,9 +32,9 @@ describe('startworkCommand', () => {
     expect(startworkCommand({ company: 'indigo', project: null })).toBe('/startwork indigo');
   });
 
-  it('lets a chosen project override the company', () => {
+  it('qualifies a chosen project with its company', () => {
     expect(startworkCommand({ company: 'indigo', project: 'hq-desktop' })).toBe(
-      '/startwork hq-desktop',
+      '/startwork indigo hq-desktop',
     );
   });
 
@@ -57,23 +58,41 @@ describe('isStartworkTurn', () => {
   });
 });
 
-describe('planFirstSend — the exact first-send sequence', () => {
-  it('sends the hidden orientation turn, THEN the user text', () => {
+describe('splitStartworkEnvelope', () => {
+  it('recovers the literal context command and user work from one message', () => {
+    expect(splitStartworkEnvelope('/startwork indigo\n\n/indigo:html-deck hello world')).toEqual({
+      command: '/startwork indigo',
+      prompt: '/indigo:html-deck hello world',
+    });
+  });
+
+  it('does not split a bare manual command', () => {
+    expect(splitStartworkEnvelope('/startwork indigo')).toBeNull();
+  });
+});
+
+describe('planFirstSend — the exact atomic first message', () => {
+  it('combines orientation and user text into one send', () => {
     const plan = planFirstSend('fix the bug', { company: 'indigo', project: null }, true);
     expect(plan).toEqual([
-      { text: '/startwork indigo', hidden: true, label: 'Starting work in indigo' },
-      { text: 'fix the bug', hidden: false },
+      {
+        text: '/startwork indigo\n\nfix the bug',
+        hidden: false,
+        label: '/startwork indigo',
+        displayText: 'fix the bug',
+      },
     ]);
   });
 
   it('uses the project when one is chosen and labels it', () => {
     const plan = planFirstSend('go', { company: 'indigo', project: 'sessions' }, true);
     expect(plan[0]).toEqual({
-      text: '/startwork sessions',
-      hidden: true,
-      label: 'Starting work in indigo · project sessions',
+      text: '/startwork indigo sessions\n\ngo',
+      hidden: false,
+      label: '/startwork indigo sessions',
+      displayText: 'go',
     });
-    expect(plan[1]).toEqual({ text: 'go', hidden: false });
+    expect(plan).toHaveLength(1);
   });
 
   it('respects the opt-out: one send, the text alone', () => {
@@ -107,6 +126,9 @@ describe('labels', () => {
 
   it('derives a label from a bare command once the mirror is gone', () => {
     expect(startworkLabelFromText('/startwork indigo')).toBe('Starting work in indigo');
+    expect(startworkLabelFromText('/startwork indigo sessions')).toBe(
+      'Starting work in indigo · project sessions',
+    );
     expect(startworkLabelFromText('/startwork')).toBe('Starting work');
   });
 

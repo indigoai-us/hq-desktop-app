@@ -55,6 +55,10 @@ pub enum SessionPhase {
 pub struct SessionSpec {
     /// Client-minted id. Used as `--session-id` on a fresh run.
     pub session_id: String,
+    /// Provider-native title supplied when wrapping a resumed conversation.
+    /// Fresh sessions derive this from their first visible operator prompt.
+    #[serde(default)]
+    pub title: Option<String>,
     pub tool: SessionTool,
     pub cwd: String,
     /// Active HQ company, when the session is bound to one.
@@ -181,10 +185,7 @@ pub enum SessionEvent {
     /// Only the count of attached images is kept. The bytes are megabytes of
     /// base64 that the ring would evict real transcript to hold, and the model
     /// has already seen them.
-    UserMessage {
-        text: String,
-        image_count: u32,
-    },
+    UserMessage { text: String, image_count: u32 },
     /// A streamed fragment of assistant text.
     TextDelta {
         text: String,
@@ -622,6 +623,7 @@ mod tests {
     fn session_spec_and_question_shapes_round_trip() {
         let spec = SessionSpec {
             session_id: "s1".into(),
+            title: None,
             tool: SessionTool::Claude,
             cwd: "/x".into(),
             company: Some("indigo".into()),
@@ -640,7 +642,9 @@ mod tests {
         let mut legacy = raw.clone();
         legacy.as_object_mut().expect("object").remove("project");
         assert_eq!(
-            serde_json::from_value::<SessionSpec>(legacy).expect("parse").project,
+            serde_json::from_value::<SessionSpec>(legacy)
+                .expect("parse")
+                .project,
             None
         );
         assert!(raw["resume"].is_null());

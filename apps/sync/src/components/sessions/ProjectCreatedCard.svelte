@@ -2,8 +2,9 @@
   /**
    * "Project X was created · Create its channel?"
    *
-   * The Rust project watch notices a `prd.json` HQ wrote while THIS session
-   * was live, binds the session to it, and emits `agent-session:project-created`.
+   * The Rust project watch notices a new `prd.json` for a project THIS session
+   * already belongs to and emits `agent-session:project-created`.
+   * Discovery never establishes or changes session ownership.
    * This card is the offer that follows. Creating a channel is outward-facing
    * — a channel other people can see — so it happens only on the confirm
    * click, through the same `session_share_to_channel` path the share dialog

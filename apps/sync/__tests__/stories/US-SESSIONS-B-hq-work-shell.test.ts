@@ -36,7 +36,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (relative: string): string =>
   readFileSync(resolve(HERE, '../../', relative), 'utf8');
 
-const SHELL = read('src/desktop-alt/HqWorkDesktopShell.svelte');
+const SHELL = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const WRAPPER = read('src/desktop-alt/pages/SessionsExtraPage.svelte');
 const HOST = read('src/desktop-alt/hq-work-host.ts');
 
@@ -160,7 +160,7 @@ describe('US-SESSIONS-B — the shell registers the destination', () => {
       SHELL.indexOf('async function refreshSessionsPreference'),
       SHELL.indexOf('async function hydrateSession'),
     );
-    expect(fn).toContain('if (request !== hydration || generation !== authGeneration) return;');
+    expect(fn).toContain('if (request !== hydration || generation !== authGeneration || !result.ok) return;');
   });
 });
 
@@ -172,7 +172,8 @@ describe('US-SESSIONS-B — the wrapper adapts the shell contract', () => {
     // (see `sessions-route-param.ts`). Either way the page never sees the
     // raw param.
     expect(WRAPPER).toContain('const route = $derived(parseSessionsParam(param))');
-    expect(WRAPPER).toContain("sessionId={route.kind === 'session' ? route.sessionId : undefined}");
+    expect(WRAPPER).toContain("sessionId={route.kind === 'session' || route.kind === 'history' ? route.sessionId : undefined}");
+    expect(WRAPPER).toContain('initialHistorySession={historySession}');
     expect(WRAPPER).not.toContain('sessionId={param');
     expect(WRAPPER).toContain('onopensession={(id) => onnavigate?.(id || null)}');
   });

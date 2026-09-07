@@ -328,7 +328,7 @@ describe('the company pill: project level and the /startwork toggle', () => {
   it('picking a company opens the Project pane; "No project" is first and rows show done/total', () => {
     const oncompany = vi.fn();
     const onproject = vi.fn();
-    render({ projects: PROJECTS, oncompany, onproject });
+    render({ company: null, projects: PROJECTS, oncompany, onproject });
     click(must('session-pill-company'));
     expect(must('session-menu-company').getAttribute('data-pane')).toBe('companies');
     click(all('session-menu-company-item')[1]!);
@@ -350,7 +350,6 @@ describe('the company pill: project level and the /startwork toggle', () => {
     render({ projects: PROJECTS, project: 'sessions', onproject });
     expect(must('session-pill-company').textContent).toContain('Indigo · sessions');
     click(must('session-pill-company'));
-    click(must('session-menu-project-open'));
     click(must('session-project-none'));
     expect(onproject).toHaveBeenCalledWith(null);
   });
@@ -359,6 +358,7 @@ describe('the company pill: project level and the /startwork toggle', () => {
     const onstartworktoggle = vi.fn();
     render({ startworkEnabled: true, onstartworktoggle });
     click(must('session-pill-company'));
+    click(must('session-menu-project-back'));
     const toggle = must('session-menu-startwork-toggle');
     expect(toggle.getAttribute('aria-checked')).toBe('true');
     expect(toggle.textContent).toContain('Run /startwork on first message');
@@ -370,19 +370,16 @@ describe('the company pill: project level and the /startwork toggle', () => {
   it('shows loading, error and empty states in the project pane', () => {
     render({ projects: [], projectsLoading: true });
     click(must('session-pill-company'));
-    click(must('session-menu-project-open'));
     expect(at('session-project-loading')).not.toBeNull();
     if (component) unmount(component);
     component = null;
     render({ projects: [], projectsError: 'no manifest' });
     click(must('session-pill-company'));
-    click(must('session-menu-project-open'));
     expect(must('session-project-error').textContent).toContain('no manifest');
     if (component) unmount(component);
     component = null;
     render({ projects: [] });
     click(must('session-pill-company'));
-    click(must('session-menu-project-open'));
     expect(at('session-project-empty')).not.toBeNull();
     click(must('session-menu-project-back'));
     expect(must('session-menu-company').getAttribute('data-pane')).toBe('companies');

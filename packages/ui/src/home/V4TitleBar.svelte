@@ -61,6 +61,7 @@
     onOpenSettings?: (tab?: SettingsTab) => void;
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
+    primaryAction?: { label: string; onselect: () => void };
     /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
     cloudPaused?: boolean;
@@ -114,6 +115,7 @@
     ontogglesidebar,
     onopenMeetings,
     onopenNotifications,
+    primaryAction,
     unreadCount = 0,
     cloudPaused = false,
     conflicts = [],
@@ -566,6 +568,14 @@
   ></div>
 
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
+    {#if primaryAction}
+      <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
+        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" />
+        </svg>
+        {primaryAction.label}
+      </button>
+    {/if}
     <div class="v4-launch-wrap" bind:this={launchContainer}>
       <Tooltip label="Open your HQ folder in an AI tool" align="start">
         {#snippet trigger(describedBy: string)}

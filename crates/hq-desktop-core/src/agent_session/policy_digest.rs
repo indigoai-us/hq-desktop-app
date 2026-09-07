@@ -129,7 +129,10 @@ pub fn parse_policy_digest(text: &str) -> PolicyDigest {
     for (index, raw) in lines.iter().enumerate() {
         let line = raw.trim();
 
-        if let Some(after) = line.find(DIGEST_OPEN).map(|at| &line[at + DIGEST_OPEN.len()..]) {
+        if let Some(after) = line
+            .find(DIGEST_OPEN)
+            .map(|at| &line[at + DIGEST_OPEN.len()..])
+        {
             if let Some(end) = after.find('"') {
                 let co = after[..end].trim();
                 if !co.is_empty() {
@@ -302,21 +305,19 @@ mod tests {
             PolicyDigest::default()
         );
         // A quote line that merely mentions the word is not an entry.
-        assert!(parse_policy_digest("> Read the full rule(s) at `core/policies/{slug}.md`.")
-            .entries
-            .is_empty());
+        assert!(
+            parse_policy_digest("> Read the full rule(s) at `core/policies/{slug}.md`.")
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
     fn a_full_text_policy_with_no_body_keeps_its_parenthetical() {
-        let digest =
-            parse_policy_digest("> Policy `lonely` (HARD — binding rule from `x.md`):\n");
+        let digest = parse_policy_digest("> Policy `lonely` (HARD — binding rule from `x.md`):\n");
         assert_eq!(digest.entries.len(), 1);
         assert!(digest.entries[0].hard);
-        assert_eq!(
-            digest.entries[0].excerpt,
-            "HARD — binding rule from `x.md`"
-        );
+        assert_eq!(digest.entries[0].excerpt, "HARD — binding rule from `x.md`");
     }
 
     #[test]
@@ -330,7 +331,8 @@ mod tests {
 
     #[test]
     fn merging_dedupes_by_slug_and_keeps_hard_sticky() {
-        let mut acc = parse_policy_digest("> Policy `a` applies here: first\n> Policy `b` applies here: b\n");
+        let mut acc =
+            parse_policy_digest("> Policy `a` applies here: first\n> Policy `b` applies here: b\n");
         merge_policy_digest(
             &mut acc,
             parse_policy_digest(
@@ -344,7 +346,10 @@ mod tests {
         assert_eq!(acc.company.as_deref(), Some("indigo"));
 
         // A merge with no company leaves the bound one alone.
-        merge_policy_digest(&mut acc, parse_policy_digest("> Policy `d` applies here: d"));
+        merge_policy_digest(
+            &mut acc,
+            parse_policy_digest("> Policy `d` applies here: d"),
+        );
         assert_eq!(acc.company.as_deref(), Some("indigo"));
         assert_eq!(slugs(&acc), vec!["a", "b", "c", "d"]);
     }

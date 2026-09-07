@@ -2061,7 +2061,10 @@ mod tests {
             Some(512)
         );
         // A lone/mismatched quote is not stripped and stays unparsed, not a panic.
-        assert_eq!(parse_max_old_space_mb(Some("--max-old-space-size=\"128")), None);
+        assert_eq!(
+            parse_max_old_space_mb(Some("--max-old-space-size=\"128")),
+            None
+        );
     }
 
     #[test]

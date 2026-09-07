@@ -402,6 +402,28 @@
   let hoverCard = $state<{ row: ConversationRow; x: number; y: number } | null>(null);
   let hoverHideTimer: ReturnType<typeof setTimeout> | null = null;
   const HOVER_HIDE_DELAY_MS = 180;
+  /** Explicit expansion choices for host-owned child rows. Missing means the
+   * host's default still applies, so fresh project channels can open eagerly. */
+  let childRowsOpen = $state<Record<string, boolean>>({});
+
+  function childrenAreOpen(rowId: string, defaultOpen: boolean): boolean {
+    return childRowsOpen[rowId] ?? defaultOpen;
+  }
+
+  function observeChildGroup(_node: HTMLElement, callback: ((visible: boolean) => void) | undefined) {
+    callback?.(true);
+    return {
+      update(next: typeof callback) { callback = next; callback?.(true); },
+      destroy() { callback?.(false); },
+    };
+  }
+
+  function toggleChildren(rowId: string, defaultOpen: boolean): void {
+    childRowsOpen = {
+      ...childRowsOpen,
+      [rowId]: !childrenAreOpen(rowId, defaultOpen),
+    };
+  }
 
   function showHoverCard(row: ConversationRow, anchor: HTMLElement): void {
     if (!rowExtras?.(row)?.hoverCard) return;
@@ -2555,127 +2577,187 @@
       Boolean((row.projectId ?? "").trim())) &&
     projectHasPresence(row)}
   {@const extras = rowExtras?.(row) ?? null}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    role="listitem"
-    class="chat-li"
-    onmouseenter={(event) => showHoverCard(row, event.currentTarget)}
-    onmouseleave={scheduleHoverCardHide}
-  >
-    <button
-      type="button"
-      class="chat-row"
-      class:unread={!!row.unreadCount || row.unreadDot}
-      class:active={activeId === row.id}
-      class:has-badge={hasBadge}
-      data-kind={row.kind}
-      data-conversation-id={row.id}
-      title={scopeLabel?.text}
-      onclick={() => void openRow(row)}
-      oncontextmenu={(e) => openContextMenu(row, e)}
+  {@const hasChildren = Boolean(extras?.children?.length)}
+  {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
+  <div class="chat-row-group" data-testid="chat-row-group">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      role="listitem"
+      class="chat-li"
+      onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
+      onmouseleave={scheduleHoverCardHide}
     >
-      {#if row.kind === "channel"}
-        <span class="chat-glyph-wrap" aria-hidden="true">
-          {#if isCompanyScopedRow(row)}
-            <!-- A company channel is identified by its company, not by a
-                 generic `#`. Favicon when hq-pro resolved one, building glyph
-                 otherwise. Project/personal channels keep `#`. -->
-            <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
-          {:else}
-            <span class="chat-glyph">#</span>
-          {/if}
-          {#if showProjectPresence}
-            <span
-              class="chat-presence-dot"
-              data-testid="chat-presence-dot"
-              aria-label="Someone online"
-            ></span>
-          {/if}
-        </span>
-      {:else if row.kind === "group"}
-        <span
-          class="chat-avatar group"
-          aria-hidden="true"
-          data-testid="chat-group-avatar"
+      {#if hasChildren}
+        <button
+          type="button"
+          class="chat-row-children-toggle"
+          class:open={childrenOpen}
+          data-testid="chat-row-children-toggle"
+          aria-label={`${childrenOpen ? 'Collapse' : 'Expand'} ${extras?.childrenLabel ?? row.title}`}
+          aria-expanded={childrenOpen}
+          onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
         >
-          {row.memberCount ?? row.members?.length ?? 0}
-        </span>
-      {:else}
-        {@const avatar = rowAvatar(row, avatarByUid)}
-        <span
-          class="chat-avatar"
-          aria-hidden="true"
-          data-testid="chat-dm-avatar"
-          data-avatar={avatar.kind}
-        >
-          {#if avatar.src}
-            <img src={avatar.src} alt="" />
-          {:else}
-            {avatar.initials}
-          {/if}
-        </span>
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
       {/if}
-      {#if draftIdSet.has(row.id)}
-        {@render draftMark()}
-      {/if}
-      <span class="chat-row-copy">
-        <span class="chat-row-title">{row.title}</span>
-        {#if extras?.badge}
-          <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
-            {extras.badge}
+      <button
+        type="button"
+        class="chat-row"
+        class:unread={!!row.unreadCount || row.unreadDot}
+        class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
+        class:has-badge={hasBadge}
+        data-kind={row.kind}
+        data-conversation-id={row.id}
+        title={scopeLabel?.text}
+        onclick={() => void openRow(row)}
+        oncontextmenu={(e) => openContextMenu(row, e)}
+      >
+        {#if row.kind === "channel"}
+          <span class="chat-glyph-wrap" aria-hidden="true">
+            {#if isCompanyScopedRow(row)}
+              <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
+            {:else if !hasChildren}
+              <span class="chat-glyph">#</span>
+            {/if}
+            {#if showProjectPresence}
+              <span
+                class="chat-presence-dot"
+                data-testid="chat-presence-dot"
+                aria-label="Someone online"
+              ></span>
+            {/if}
+          </span>
+        {:else if row.kind === "group"}
+          <span
+            class="chat-avatar group"
+            aria-hidden="true"
+            data-testid="chat-group-avatar"
+          >
+            {row.memberCount ?? row.members?.length ?? 0}
+          </span>
+        {:else}
+          {@const avatar = rowAvatar(row, avatarByUid)}
+          <span
+            class="chat-avatar"
+            aria-hidden="true"
+            data-testid="chat-dm-avatar"
+            data-avatar={avatar.kind}
+          >
+            {#if avatar.src}
+              <img src={avatar.src} alt="" />
+            {:else}
+              {avatar.initials}
+            {/if}
           </span>
         {/if}
+        {#if draftIdSet.has(row.id)}
+          {@render draftMark()}
+        {/if}
+        <span class="chat-row-copy">
+          <span class="chat-row-title">{row.title}</span>
+          {#if extras?.badge}
+            <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
+              {extras.badge}
+            </span>
+          {/if}
+          {#if scopeLabel}
+            <span
+              class="chat-row-scope"
+              data-testid="chat-row-scope"
+              data-kind={scopeLabel.kind}
+              title={scopeLabel.text}>{scopeLabel.text}</span
+            >
+          {/if}
+        </span>
         {#if scopeLabel}
           <span
-            class="chat-row-scope"
-            data-testid="chat-row-scope"
-            data-kind={scopeLabel.kind}
-            title={scopeLabel.text}>{scopeLabel.text}</span
+            class="chat-row-reveal"
+            data-testid="chat-row-reveal"
+            aria-hidden="true">{scopeLabel.text}</span
           >
         {/if}
-      </span>
-      {#if scopeLabel}
-        <span
-          class="chat-row-reveal"
-          data-testid="chat-row-reveal"
-          aria-hidden="true">{scopeLabel.text}</span
-        >
-      {/if}
-      {#if row.unreadCount != null && row.unreadCount > 0}
-        <span
-          class="chat-unread-badge"
-          data-testid="chat-unread-badge"
-          aria-label={`${row.unreadCount} unread`}
-        >
-          {row.unreadCount > 99 ? "99+" : row.unreadCount}
-        </span>
-      {:else if row.unreadDot}
-        <span
-          class="chat-unread-dot"
-          data-testid="chat-unread-dot"
-          aria-label="Unread"
-        ></span>
-      {/if}
-    </button>
-    <button
-      type="button"
-      class="chat-pin-btn"
-      class:pinned={row.pinned}
-      aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
-      aria-pressed={row.pinned}
-      data-testid="chat-pin"
-      onclick={() => handlePin(row)}
-    >
-      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
+        {#if row.unreadCount != null && row.unreadCount > 0}
+          <span
+            class="chat-unread-badge"
+            data-testid="chat-unread-badge"
+            aria-label={`${row.unreadCount} unread`}
+          >
+            {row.unreadCount > 99 ? "99+" : row.unreadCount}
+          </span>
+        {:else if row.unreadDot}
+          <span
+            class="chat-unread-dot"
+            data-testid="chat-unread-dot"
+            aria-label="Unread"
+          ></span>
+        {/if}
+      </button>
+      <button
+        type="button"
+        class="chat-pin-btn"
+        class:pinned={row.pinned}
+        aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
+        aria-pressed={row.pinned}
+        data-testid="chat-pin"
+        onclick={() => handlePin(row)}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+    {#if hasChildren && childrenOpen}
+      <div
+        class="chat-row-children"
+        use:observeChildGroup={extras?.onChildrenVisibilityChange}
+        role="list"
+        aria-label={extras?.childrenLabel ?? `Items for ${row.title}`}
+        data-testid="chat-row-children"
+      >
+        {#each extras?.children ?? [] as child (child.id)}
+          <button
+            type="button"
+            class="chat-row-child"
+            class:action={child.kind === "action"}
+            class:selected={child.selected === true}
+            aria-current={child.selected ? "page" : undefined}
+            title={child.meta ? `${child.label} · ${child.meta}` : child.label}
+            data-testid="chat-row-child"
+            data-child-id={child.id}
+            onclick={child.onselect}
+          >
+            <span
+              class="chat-row-child-mark"
+              data-child-kind={child.kind ?? "item"}
+              data-status={child.status ?? undefined}
+              aria-hidden="true"
+            >
+              {#if child.kind === "action"}
+                <svg width="12" height="12" viewBox="0 0 10 10">
+                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+                  <path d="M3 3h10v7H7l-4 3V3Z" />
+                </svg>
+              {/if}
+            </span>
+            <span class="chat-row-child-label">{child.label}</span>
+            {#if child.meta}
+              <span class="chat-row-child-meta">{child.meta}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -2983,11 +3065,140 @@
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
+  .chat-row-group {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
   .chat-li {
     position: relative;
     display: flex;
     align-items: center;
     min-width: 0;
+  }
+
+  .chat-row-children-toggle {
+    position: absolute;
+    left: 8px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    cursor: pointer;
+  }
+
+  .chat-row-children-toggle svg {
+    transition: transform 120ms ease;
+  }
+
+  .chat-row-children-toggle.open svg {
+    transform: rotate(90deg);
+  }
+
+  .chat-row-children-toggle:hover,
+  .chat-row-children-toggle:focus-visible {
+    color: var(--t1);
+  }
+
+  .chat-row-children {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 4px 16px;
+    padding: 0;
+    border: 0;
+  }
+
+  .chat-row-child {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 28px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .chat-row-child:hover,
+  .chat-row-child:focus-visible {
+    background: var(--hover);
+    color: var(--t1);
+  }
+
+  .chat-row-child.action {
+    color: var(--t2);
+  }
+
+  .chat-row-child.selected {
+    background: var(--sel);
+    color: var(--t1);
+  }
+
+  .chat-row-child:focus-visible {
+    outline: 1px solid var(--t2);
+    outline-offset: -1px;
+  }
+
+  .chat-row-child-mark {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--t3);
+  }
+
+  .chat-row-child-mark[data-status="working"] {
+    color: var(--v4-accent, #7c9cff);
+  }
+
+  .chat-row-child-mark[data-status="needsYou"] {
+    color: var(--v4-warning, #e0a33b);
+  }
+
+  .chat-row-child-mark[data-status="starting"],
+  .chat-row-child-mark[data-status="idle"] {
+    color: var(--v4-success, #5fbf7a);
+  }
+
+  .chat-row-child-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child-meta {
+    color: var(--t3);
+    font: inherit;
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child.action {
+    opacity: 1;
+  }
+
+  .chat-row-child.action:hover,
+  .chat-row-child.action:focus-visible {
+    opacity: 1;
   }
 
   .chat-collapse-left {
@@ -3421,13 +3632,12 @@
      card the host mounts beside the hovered row. */
   .chat-row-extra-badge {
     flex: none;
-    margin-left: 4px;
-    padding: 0 5px;
-    border-radius: 999px;
+    margin-left: 2px;
+    padding: 0;
     font-size: 10px;
-    line-height: 16px;
+    line-height: 1;
     color: var(--v4-text-3, var(--text-3));
-    background: var(--v4-active-row, rgba(127, 127, 127, 0.14));
+    background: transparent;
     white-space: nowrap;
   }
 

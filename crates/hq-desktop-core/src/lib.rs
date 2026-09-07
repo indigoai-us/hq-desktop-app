@@ -74,5 +74,5 @@ pub mod workspaces;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub mod agent_session_flags;
 pub mod agent_session;
+pub mod agent_session_flags;
