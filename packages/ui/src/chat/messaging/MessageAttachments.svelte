@@ -97,6 +97,8 @@
             <img
               src={srcFor(item)}
               alt={item.name}
+              loading="lazy"
+              decoding="async"
               onerror={() => markBroken(item)}
             />
           {:else}

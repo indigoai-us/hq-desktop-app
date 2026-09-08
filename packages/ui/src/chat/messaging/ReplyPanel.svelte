@@ -267,7 +267,10 @@
 
   onMount(() => {
     const handle = window.setInterval(() => {
-      agentThinking = tick(agentThinking, Date.now());
+      // `tick` returns the same reference when nothing flipped/expired; only
+      // touch $state when it actually minted a new array.
+      const next = tick(agentThinking, Date.now());
+      if (next !== agentThinking) agentThinking = next;
     }, AGENT_THINKING_TICK_MS);
     return () => clearInterval(handle);
   });

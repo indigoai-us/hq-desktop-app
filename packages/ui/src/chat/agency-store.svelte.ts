@@ -46,7 +46,56 @@ let error = $state("");
 let started = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-const REFRESH_MS = 4000;
+const REFRESH_MS = 15000;
+
+// Per-field fingerprints of the last applied payloads. Reassigning `teams` /
+// `questions` / `messages` mints a new array identity that invalidates every
+// derived and re-renders every mounted panel; doing that on every poll even
+// when nothing changed was a periodic main-thread stall. We only write the
+// reactive field whose serialized value actually changed (same pattern as
+// sessions-store, but per field so a new chat message does not also re-render
+// the teams list).
+let teamsKey = "";
+let questionsKey = "";
+let messagesKey = "";
+
+function fingerprint(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    // Non-serializable payload: force a write rather than silently dropping.
+    return `\u0000${Math.random()}`;
+  }
+}
+
+/** Pause the interval while the document is hidden (background window/tab);
+ *  resume with an immediate refresh once it becomes visible again. */
+function isHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function onVisibilityChange(): void {
+  if (!started) return;
+  if (isHidden()) {
+    stopTimer();
+    return;
+  }
+  void refresh();
+  startTimer();
+}
+
+function startTimer(): void {
+  if (timer) return;
+  timer = setInterval(() => {
+    if (isHidden()) return;
+    void refresh();
+  }, REFRESH_MS);
+}
+
+function stopTimer(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
 
 /** Keep `selected` pointing at a team that still exists (default: the first). */
 function reconcileSelection(): void {
@@ -69,14 +118,29 @@ async function refresh(): Promise<void> {
   }
   try {
     const [t, q] = await Promise.all([api.listTeams(), api.listQuestions()]);
-    teams = t ?? [];
-    questions = q ?? [];
+    const nextTeams = t ?? [];
+    const nextTeamsKey = fingerprint(nextTeams);
+    if (nextTeamsKey !== teamsKey) {
+      teamsKey = nextTeamsKey;
+      teams = nextTeams;
+    }
+    const nextQuestions = q ?? [];
+    const nextQuestionsKey = fingerprint(nextQuestions);
+    if (nextQuestionsKey !== questionsKey) {
+      questionsKey = nextQuestionsKey;
+      questions = nextQuestions;
+    }
     reconcileSelection();
-    messages = selected
+    const nextMessages = selected
       ? ((await api.listChat(selected.company, selected.team)) ?? [])
       : [];
-    error = "";
-    loading = false;
+    const nextMessagesKey = fingerprint(nextMessages);
+    if (nextMessagesKey !== messagesKey) {
+      messagesKey = nextMessagesKey;
+      messages = nextMessages;
+    }
+    if (error !== "") error = "";
+    if (loading) loading = false;
   } catch (err) {
     console.error("agency refresh failed:", err);
     error = "Could not load agency teams.";
@@ -89,13 +153,21 @@ export function startAgencyStore(): void {
   if (started) return;
   started = true;
   void refresh();
-  timer = setInterval(() => void refresh(), REFRESH_MS);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (!isHidden()) startTimer();
 }
 
 export function stopAgencyStore(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
+  stopTimer();
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
   started = false;
+  teamsKey = "";
+  questionsKey = "";
+  messagesKey = "";
 }
 
 /** Answer a question — writes back to the manager inbox, then refreshes so the

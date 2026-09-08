@@ -80,6 +80,24 @@
   );
 
   const installed = $derived(view?.packs?.installed ?? []);
+  /** Occurrence-suffixed keys: identical rows get `#1`, `#2`… instead of a
+   *  positional index, so removing/reordering one row does not re-key all of
+   *  the rows after it. */
+  function keyedRows<T>(rows: T[], keyOf: (row: T) => string) {
+    const seen = new Map<string, number>();
+    return rows.map((row) => {
+      const base = keyOf(row);
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { key: n === 0 ? base : `${base}#${n}`, row };
+    });
+  }
+  const installedRows = $derived(
+    keyedRows(
+      installed,
+      (p) => `installed:${p.name}:${p.source ?? p.transport ?? ""}`,
+    ),
+  );
   const installedIdentities = $derived(
     new Set(
       installed
@@ -98,6 +116,12 @@
       const identity = packIdentity(pack.slug);
       return identity !== "" && !installedIdentities.has(identity);
     }),
+  );
+  const availableRows = $derived(
+    keyedRows(available, (a) => `available:${a.source}`),
+  );
+  const registryRows = $derived(
+    keyedRows(registryAvailable, (r) => `registry:${r.slug}`),
   );
   const hasPackSnapshot = $derived(Boolean(view?.packs));
   const updatesCount = $derived(
@@ -542,7 +566,7 @@
         Svelte identities. Include origin + position so duplicate rows remain
         inspectable instead of crashing the entire Library surface.
       -->
-        {#each installed as p, index (`installed:${p.name}:${p.source ?? p.transport ?? ""}:${index}`)}
+        {#each installedRows as { key, row: p } (key)}
           <div class="row" data-testid="installed-row">
             <div class="row-main">
               <div class="row-title">
@@ -723,7 +747,7 @@
       {#if available.length > 0 || registryAvailable.length > 0}
         <section class="group" data-testid="installed-available-group">
           <h2 class="group-title">Available from packs.yaml</h2>
-          {#each available as a, index (`available:${a.source}:${index}`)}
+          {#each availableRows as { key, row: a } (key)}
             <div class="row">
               <div class="row-main">
                 <div class="row-title">
@@ -750,7 +774,7 @@
               </div>
             </div>
           {/each}
-          {#each registryAvailable as r, index (`registry:${r.slug}:${index}`)}
+          {#each registryRows as { key, row: r } (key)}
             <div class="row">
               <div class="row-main">
                 <div class="row-title">

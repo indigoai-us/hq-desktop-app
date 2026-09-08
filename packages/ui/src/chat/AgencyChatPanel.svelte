@@ -35,10 +35,37 @@
       : null,
   );
 
-  // Stick to the bottom as the conversation grows.
+  /** Within this many px of the bottom still counts as pinned. */
+  const STICK_THRESHOLD_PX = 48;
+  // Follow the newest message as the conversation grows — but only while the
+  // reader is pinned to the bottom, so a poll never yanks them out of history.
+  let stickToBottom = true;
+  function onThreadScroll(): void {
+    if (!scroller) return;
+    const distance =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottom = distance <= STICK_THRESHOLD_PX;
+  }
   $effect(() => {
     void messages.length;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    if (scroller && stickToBottom) scroller.scrollTop = scroller.scrollHeight;
+  });
+  // Switching teams shows a different conversation: land at its bottom.
+  $effect(() => {
+    void selected;
+    stickToBottom = true;
+  });
+
+  /** Stable keys: ts + inbox, with an occurrence suffix only for duplicates
+   *  (no positional index, so a prepend/removal does not re-key every row). */
+  const keyedMessages = $derived.by(() => {
+    const seen = new Map<string, number>();
+    return messages.map((m) => {
+      const base = `${m.ts}/${m.inbox}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { key: n === 0 ? base : `${base}#${n}`, m };
+    });
   });
 
   const KIND_BADGE: Record<string, string> = {
@@ -126,11 +153,11 @@
   {#if !selected}
     <p class="empty">No team selected.</p>
   {:else}
-    <div class="thread" bind:this={scroller}>
+    <div class="thread" bind:this={scroller} onscroll={onThreadScroll}>
       {#if messages.length === 0}
         <p class="empty">No messages yet.</p>
       {/if}
-      {#each messages as m, i (m.ts + "/" + m.inbox + "/" + i)}
+      {#each keyedMessages as { key, m } (key)}
         <div class="msg">
           <span class={`dot ${senderTone(m.from)}`} aria-hidden="true"></span>
           <div class="mbody">

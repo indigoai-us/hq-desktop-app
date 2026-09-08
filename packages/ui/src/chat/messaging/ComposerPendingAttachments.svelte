@@ -50,6 +50,18 @@
     pendingPreviewUrls.clear();
   });
 
+  /** Stable per-file keys (name + size + lastModified, occurrence-suffixed
+   *  for exact duplicates) so removing one file does not re-key the rest. */
+  const keyedFiles = $derived.by(() => {
+    const seen = new Map<string, number>();
+    return files.map((file, i) => {
+      const base = `${file.name}:${file.size}:${file.lastModified}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { key: n === 0 ? base : `${base}#${n}`, file, i };
+    });
+  });
+
   function onRemoveKey(event: KeyboardEvent, index: number): void {
     if (event.key !== "Backspace" && event.key !== "Delete") return;
     event.preventDefault();
@@ -58,7 +70,7 @@
 </script>
 
 <div class="composer-pending" data-testid={testid}>
-  {#each files as file, i (file.name + file.size + i)}
+  {#each keyedFiles as { key, file, i } (key)}
     {#if isImageFile(file)}
       <span
         class="composer-thumb"

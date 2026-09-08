@@ -33,6 +33,18 @@
     type LifecycleCardActionEvent,
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
+
+  // Hoisted once per module: constructing an Intl.DateTimeFormat (what
+  // toLocaleTimeString/DateString do under the hood) per row per render was a
+  // measurable share of timeline paint time on long channels.
+  const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  });
   import WorkMeshActivityRow from "./WorkMeshActivityRow.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
   import { presenceStatus } from "../presence-store.svelte.js";
@@ -305,13 +317,24 @@
     }
   }
 
+  // The host's safety catch-up hands down a fresh `messages` array every few
+  // seconds; only the NEWEST event id is a real "the conversation moved"
+  // signal. Track it in a plain variable so an identity-only refresh does not
+  // collapse the user's "Show N earlier" expansion or drop optimistic sends.
+  let lastSeenNewestId: string | undefined;
+  let lastSeenInitialized = false;
   $effect(() => {
-    void messages.at(-1)?.eventId;
-    extraOlder = 0;
-    // untrack: reading localSends here would make this effect re-run on its
-    // own `localSends = []` write (effect depth explosion).
-    untrack(() => revokeLocalPreviews(localSends));
-    localSends = [];
+    const newestId = messages.at(-1)?.eventId;
+    untrack(() => {
+      if (lastSeenInitialized && newestId === lastSeenNewestId) return;
+      lastSeenInitialized = true;
+      lastSeenNewestId = newestId;
+      extraOlder = 0;
+      // untrack: reading localSends here would make this effect re-run on its
+      // own `localSends = []` write (effect depth explosion).
+      revokeLocalPreviews(localSends);
+      localSends = [];
+    });
   });
   const rootMessages = $derived(messages.filter((msg) => !isReplyMessage(msg)));
   const windowed = $derived(
@@ -371,14 +394,41 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  /** Recompute stickiness from the user's actual position on every scroll. */
-  function onThreadScroll(): void {
+  /** Recompute stickiness from the user's actual position. Reads layout
+   *  (scrollHeight/scrollTop/clientHeight) and writes `$state` only when a
+   *  flag actually flips, so a scroll burst does not invalidate the tree. */
+  function measureStickiness(): void {
     if (!scroller) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    stickToBottom = distance <= STICK_THRESHOLD_PX;
-    if (stickToBottom) hasUnseenBelow = false;
+    const pinned = distance <= STICK_THRESHOLD_PX;
+    if (pinned !== stickToBottom) stickToBottom = pinned;
+    if (pinned && hasUnseenBelow) hasUnseenBelow = false;
   }
+
+  /** Throttle to one measurement per animation frame: the first event in a
+   *  frame measures immediately (leading edge, keeps the pill responsive),
+   *  later events in the same frame coalesce into a single trailing
+   *  measurement when the frame fires. */
+  let scrollFrame = 0;
+  let scrollTrailing = false;
+  function onThreadScroll(): void {
+    if (scrollFrame !== 0) {
+      scrollTrailing = true;
+      return;
+    }
+    measureStickiness();
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (scrollTrailing) {
+        scrollTrailing = false;
+        measureStickiness();
+      }
+    });
+  }
+  onDestroy(() => {
+    if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
+  });
 
   function jumpToLatest(): void {
     stickToBottom = true;
@@ -607,9 +657,7 @@
 
   function formatTime(iso: string): string {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime())
-      ? ""
-      : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return Number.isNaN(d.getTime()) ? "" : TIME_FORMAT.format(d);
   }
 
   function formatRelative(iso: string): string {
@@ -662,15 +710,6 @@
     return Number.isNaN(d.getTime()) ? "" : d.toDateString();
   }
 
-  /** True when this row opens a new calendar day (drives the TODAY divider). */
-  function startsNewDay(index: number): boolean {
-    if (index === 0) return true;
-    return (
-      dayKey(timeline[index - 1].createdAt) !==
-      dayKey(timeline[index].createdAt)
-    );
-  }
-
   /** Divider label — Today / Yesterday / "Aug 15" (the CSS uppercases it). */
   function formatDateSeparator(iso: string): string {
     const d = new Date(iso);
@@ -680,7 +719,7 @@
     yesterday.setDate(today.getDate() - 1);
     if (d.toDateString() === today.toDateString()) return "Today";
     if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    return DATE_FORMAT.format(d);
   }
 
   /** Bursts group only within this window; older same-author rows re-header. */
@@ -706,9 +745,13 @@
   function messagesShareGroup(
     prev: ConversationMessageWire | undefined,
     cur: ConversationMessageWire | undefined,
+    /** Precomputed `isSpecialTimelineRow` results (renderRows already has
+     *  the system models in hand; avoids re-deriving them per pair). */
+    prevSpecial: boolean = prev ? isSpecialTimelineRow(prev) : false,
+    curSpecial: boolean = cur ? isSpecialTimelineRow(cur) : false,
   ): boolean {
     if (!prev || !cur) return false;
-    if (isSpecialTimelineRow(prev) || isSpecialTimelineRow(cur)) return false;
+    if (prevSpecial || curSpecial) return false;
     if ((prev.direction ?? "in") !== (cur.direction ?? "in")) return false;
     if (senderKey(prev) !== senderKey(cur)) return false;
     if (dayKey(prev.createdAt) !== dayKey(cur.createdAt)) return false;
@@ -721,10 +764,50 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
-  function startsGroup(index: number): boolean {
-    if (index === 0) return true;
-    return !messagesShareGroup(timeline[index - 1], timeline[index]);
+  /**
+   * Everything the row template needs that is a pure function of the
+   * timeline, computed ONCE per timeline change instead of per row per
+   * render: system-event model (was called up to 3x per row via
+   * `startsGroup` → `messagesShareGroup` → `isSpecialTimelineRow`), the
+   * work-session JSON parse, group/day boundaries, and the Date +
+   * Intl-formatted labels.
+   */
+  interface RenderRow {
+    msg: ConversationMessageWire;
+    systemModel: ReturnType<typeof systemModelForMessage>;
+    workActivity: ReturnType<typeof parseWorkSessionEvent>;
+    groupStart: boolean;
+    startsNewDay: boolean;
+    timeLabel: string;
+    dateLabel: string;
   }
+  const renderRows = $derived.by((): RenderRow[] => {
+    const out: RenderRow[] = [];
+    let prev: ConversationMessageWire | undefined;
+    let prevSpecial = false;
+    let prevDay = "";
+    for (const msg of timeline) {
+      const day = dayKey(msg.createdAt);
+      const startsNewDay = prev === undefined || day !== prevDay;
+      const systemModel = systemModelForMessage(msg);
+      const special = systemModel !== null;
+      out.push({
+        msg,
+        systemModel,
+        workActivity: parseWorkSessionEvent(msg.body ?? ""),
+        groupStart:
+          prev === undefined ||
+          !messagesShareGroup(prev, msg, prevSpecial, special),
+        startsNewDay,
+        timeLabel: formatTime(msg.createdAt),
+        dateLabel: startsNewDay ? formatDateSeparator(msg.createdAt) : "",
+      });
+      prev = msg;
+      prevSpecial = special;
+      prevDay = day;
+    }
+    return out;
+  });
 
   function toggle(messageId: string, emoji: string): void {
     localReactions = {
@@ -1014,17 +1097,18 @@
             {windowed.hidden === 1 ? "message" : "messages"}
           </button>
         {/if}
-        {#each timeline as msg, index (msg.eventId)}
-          {@const systemModel = systemModelForMessage(msg)}
-          {@const workActivity = parseWorkSessionEvent(msg.body ?? "")}
-          {@const groupStart = startsGroup(index)}
-          {#if startsNewDay(index)}
+        {#each renderRows as row (row.msg.eventId)}
+          {@const msg = row.msg}
+          {@const systemModel = row.systemModel}
+          {@const workActivity = row.workActivity}
+          {@const groupStart = row.groupStart}
+          {#if row.startsNewDay}
             <div
               class="date-separator"
               data-testid="date-separator"
-              aria-label={formatDateSeparator(msg.createdAt)}
+              aria-label={row.dateLabel}
             >
-              <span>{formatDateSeparator(msg.createdAt)}</span>
+              <span>{row.dateLabel}</span>
             </div>
           {/if}
           {#if systemModel?.kind === "work_session_card"}
@@ -1046,7 +1130,7 @@
               systemModel.type === "work_session_finished"
                 ? null
                 : messageAuthor(msg)}
-              time={formatTime(msg.createdAt)}
+              time={row.timeLabel}
             />
           {:else if systemModel?.kind === "run_complete"}
             <div
@@ -1067,7 +1151,7 @@
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
                   <span class="dm-msg-header-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </div>
                 <RunCompleteCard model={systemModel} {onopenurl} />
@@ -1099,7 +1183,7 @@
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
                   <span class="dm-msg-header-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </div>
                 <LifecycleCard
@@ -1123,7 +1207,7 @@
                 ...workActivity,
                 actor: resolveWorkActor(workActivity.actor, msg),
               }}
-              time={formatTime(msg.createdAt)}
+              time={row.timeLabel}
             />
           {:else if msg.body?.trim() || msg.prompt?.trim() || msg.details?.trim() || parseMessageAttachments(msg).length > 0}
             {@const rich = richContentForMessage(msg)}
@@ -1159,7 +1243,7 @@
               {:else}
                 <span class="dm-msg-avatar-spacer" aria-hidden="true">
                   <span class="dm-msg-gutter-time"
-                    >{formatTime(msg.createdAt)}</span
+                    >{row.timeLabel}</span
                   >
                 </span>
               {/if}
@@ -1178,7 +1262,7 @@
                       <span class="dm-msg-author">{messageAuthor(msg)}</span>
                     {/if}
                     <span class="dm-msg-header-time"
-                      >{formatTime(msg.createdAt)}</span
+                      >{row.timeLabel}</span
                     >
                   </div>
                 {/if}
@@ -1638,6 +1722,9 @@
     min-width: 0;
     overflow-x: hidden;
     overflow-y: auto;
+    /* The scroller is an independent layout/paint island: a row re-render or
+       hover-chrome fade cannot invalidate layout outside the thread. */
+    contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
     padding: 8px 16px 16px;
@@ -2203,21 +2290,30 @@
     background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
     box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
     opacity: 0;
+    /* visibility:hidden at rest so the large box-shadow is not rasterized on
+       every row while invisible (opacity:0 alone still paints the layer).
+       The fade-in still works: visibility flips instantly, opacity eases. */
+    visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.12s ease;
+    transition:
+      opacity 0.12s ease,
+      visibility 0s linear 0.12s;
   }
 
   .dm-msg:hover .dm-quick-react,
   .dm-msg:focus-within .dm-quick-react,
   .dm-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    transition-delay: 0s;
   }
 
   /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
   @media (hover: none) {
     .dm-quick-react {
       opacity: 1;
+      visibility: visible;
       pointer-events: auto;
     }
   }
