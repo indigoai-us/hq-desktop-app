@@ -23,6 +23,7 @@
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
+    isAgentUid,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -66,6 +67,7 @@
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
   import type { DecisionOption } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -291,6 +293,57 @@
       );
     }
   }
+
+  /**
+   * Start the working indicator for the agent this thread is addressed to, even
+   * when the reply carries no @mention — answering a decision card (or any plain
+   * reply in an agent DM thread / on an agent-authored root) is inherently
+   * addressed to that agent, mirroring the DM branch in DesktopApp.persistSend.
+   * The mention path above already covers channel threads with an explicit
+   * @agent, so this only fires when no agent mention was present.
+   */
+  function startThinkingForThreadAgent(mentions: MentionTarget[]): void {
+    if (mentions.some((m) => m.participantType === "agent")) return;
+    // A 1:1 agent DM thread: the counterpart uid is the agent.
+    if (scope === "dm" && withPersonUid && isAgentUid(withPersonUid.trim())) {
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: withPersonUid.trim(),
+          agentName: root ? messageAuthor(root) : "Agent",
+        },
+        Date.now(),
+      );
+      return;
+    }
+    // Otherwise wake the agent that authored the root (e.g. a decision card the
+    // agent posted into a channel thread).
+    const rootUid = (root?.fromPersonUid ?? "").trim();
+    if (root && isAgentUid(rootUid)) {
+      agentThinking = startThinking(
+        agentThinking,
+        { agentUid: rootUid, agentName: messageAuthor(root) },
+        Date.now(),
+      );
+    }
+  }
+
+  // Persisted answered-decision state for this thread (root + replies, oldest →
+  // newest) so cards lock + highlight their choice across reload / reopen.
+  const answeredDecisions = $derived(
+    decisionAnswersFromMessages([
+      ...(root ? [root] : []),
+      ...replies,
+    ]),
+  );
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
+  });
 
   /** Timestamp-aware: `load()` re-fetches the WHOLE thread on every
    *  reply:new wake, so a historical agent reply must not clear a row that
@@ -612,6 +665,7 @@
       );
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
+      startThinkingForThreadAgent(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
@@ -823,7 +877,12 @@
             </div>
           {/if}
           {#if rootRich.rich}
-            <RichMessageContent content={rootRich.rich} ondecision={handleDecision} />
+            <RichMessageContent
+              content={rootRich.rich}
+              ondecision={handleDecision}
+              {answeredQuestionIds}
+              {answeredChoices}
+            />
           {/if}
           {#if root.details?.trim()}
             <ArtifactCard
@@ -981,7 +1040,12 @@
                 </div>
               {/if}
               {#if replyRich.rich}
-                <RichMessageContent content={replyRich.rich} ondecision={handleDecision} />
+                <RichMessageContent
+                  content={replyRich.rich}
+                  ondecision={handleDecision}
+                  {answeredQuestionIds}
+                  {answeredChoices}
+                />
               {/if}
               <MessageAttachments
                     {previewCache}

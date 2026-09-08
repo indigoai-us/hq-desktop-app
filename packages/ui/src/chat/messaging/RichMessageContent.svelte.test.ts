@@ -309,4 +309,52 @@ describe("RichMessageContent — decision block interactivity", () => {
     await tick();
     expect(calls).toHaveLength(0);
   });
+
+  it("highlights the persisted choice (reload) from answeredChoices, not local state", async () => {
+    // No click happened this session — the choice comes purely from the thread
+    // answer (derived by decision-answers.ts and passed as answeredChoices).
+    const { el } = renderDecision(
+      {},
+      {
+        answeredChoices: new Map([["clarify_abc123", "Yes, append it"]]),
+      },
+    );
+    await tick();
+    // Locked.
+    el.querySelectorAll<HTMLButtonElement>("button").forEach((b) =>
+      expect(b.disabled).toBe(true),
+    );
+    // The matching option is marked chosen with a check; the other is inactive.
+    const options = el.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="rich-decision-option"]',
+    );
+    const chosen = [...options].find(
+      (b) => b.dataset.chosen === "true",
+    );
+    expect(chosen?.textContent).toContain("Yes, append it");
+    expect(chosen?.querySelector(".rich-decision-check")).not.toBeNull();
+    expect(chosen?.getAttribute("aria-pressed")).toBe("true");
+    const other = [...options].find((b) => b.dataset.chosen !== "true");
+    expect(other?.classList.contains("is-inactive")).toBe(true);
+    // Answered caption echoes the persisted choice.
+    expect(
+      el.querySelector('[data-testid="rich-decision-answered"]')?.textContent,
+    ).toContain("Yes, append it");
+  });
+
+  it("drops the recommended accent once answered so only the choice stands out", async () => {
+    const { el } = renderDecision(
+      {},
+      {
+        // Chose the NON-recommended option; the recommended one must not keep
+        // its accent (which would read like a second selected state).
+        answeredChoices: new Map([["clarify_abc123", "No, cancel"]]),
+      },
+    );
+    await tick();
+    const recommended = el.querySelector('[data-testid="rich-decision-option"]');
+    expect(recommended?.classList.contains("is-recommended")).toBe(false);
+    // The RECOMMENDED badge itself is informational and remains.
+    expect(recommended?.querySelector(".rich-decision-tag")).not.toBeNull();
+  });
 });

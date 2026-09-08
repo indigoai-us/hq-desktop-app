@@ -58,6 +58,7 @@
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
     handleLinkActivate,
@@ -341,6 +342,20 @@
       out.push(msg);
     }
     return out;
+  });
+
+  // Persisted answered-decision state, derived from the whole injected message
+  // set (root + replies, oldest → newest) so a card locks + highlights its
+  // chosen option across reload and thread reopen — not just optimistically
+  // after a click. See decision-answers.ts for the correlation rules.
+  const answeredDecisions = $derived(decisionAnswersFromMessages(messages));
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
   });
 
   // One-shot restore of the stored draft — `draftKey`/`draftStorage` are fixed
@@ -1239,7 +1254,12 @@
                     </div>
                   {/if}
                   {#if rich.rich}
-                    <RichMessageContent content={rich.rich} ondecision={handleDecision} />
+                    <RichMessageContent
+                      content={rich.rich}
+                      ondecision={handleDecision}
+                      {answeredQuestionIds}
+                      {answeredChoices}
+                    />
                   {/if}
                   {#if msg.details?.trim()}
                     <ArtifactCard
