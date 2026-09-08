@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -216,17 +217,19 @@
       localNotificationRows = localNotificationRows.map((row) =>
         row.id === id ? { ...row, status: "read" } : row,
       );
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
     },
     readAllLocalNotifications: () => {
       localNotificationRows = localNotificationRows.map((row) => ({
         ...row,
         status: "read",
       }));
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
     },
   });
   let localNotificationWakeSeq = $state(0);
   const notificationWakeSeq = $derived(
-    hostNotificationWakeSeq ?? localNotificationWakeSeq,
+    (hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq,
   );
   let externalLinkError = $state<string | null>(null);
 
@@ -262,6 +265,10 @@
       { accountId: effectiveTenantAccountId, companyId: "all" },
     ),
   );
+  $effect(() => {
+    void personUid;
+    localNotificationRows = personUid ? readChannelNotifications(conversationCacheStorage) : [];
+  });
   $effect(() => {
     shallow = readShallowCache(personUid);
   });
@@ -453,23 +460,13 @@
   // Channel unread deltas arrive through the desktop poller independently of
   // the NOTIF store. Bridge that wake into the visible feed immediately.
   onMount(() =>
-    wakes.on("channel:new-message", ({ channelId, eventId, createdAt }) => {
-      const id = `local:channel:${eventId?.trim() || `${channelId}:${createdAt || Date.now()}`}`;
-      if (localNotificationRows.some((row) => row.id === id)) return;
-      const channel = shallow.directory.find((row) => row.channelId === channelId);
-      const channelName = channel?.name?.trim() || channelId;
-      localNotificationRows = [
-        {
-          id,
-          type: "channel_message",
-          status: "unread",
-          createdAt: createdAt || new Date().toISOString(),
-          actorName: `#${channelName}`,
-          title: "Sent a message",
-          targetRef: `/channels/${channelId}`,
-        },
-        ...localNotificationRows,
-      ].slice(0, 50);
+    wakes.on("channel:new-message", (wake) => {
+      if (!personUid) return;
+      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+      const next = addChannelNotification(localNotificationRows, wake, personUid, channel?.name?.trim() || "");
+      if (next === localNotificationRows) return;
+      localNotificationRows = next;
+      saveChannelNotifications(conversationCacheStorage, next);
       localNotificationWakeSeq += 1;
     }),
   );

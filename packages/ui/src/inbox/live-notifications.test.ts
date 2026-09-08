@@ -9,6 +9,15 @@ import {
 } from "./live-notifications";
 
 describe("live-notifications", () => {
+  it("replaces a local wake with its durable notification without double counting", () => {
+    const feed = composeLiveNotifications({
+      store: {notifications: [{id: "durable", type: "channel_message", sourceEventId: "event", status: "unread"}], unreadCount: 1},
+      local: [{id: "local:channel:chan:event", type: "channel_message", sourceEventId: "event", status: "unread"}],
+    });
+    expect(feed.notifications).toHaveLength(1);
+    expect(feed.notifications[0].id).toBe("durable");
+    expect(feed.unreadCount).toBe(1);
+  });
   describe("classifyNotificationAck", () => {
     it("routes synthetic ids to the v1 inboxes and store ids to NOTIF ack", () => {
       expect(classifyNotificationAck("dm:evt-1")).toEqual({

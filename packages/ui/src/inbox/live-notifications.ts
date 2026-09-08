@@ -261,7 +261,8 @@ export function composeLiveNotifications(args: {
     extras.push({ ...mapped, status: "read" });
   }
 
-  const local = args.local ?? [];
+  const durableSources = new Set(store.rows.map(row => asString(row.sourceEventId)).filter(Boolean));
+  const local = (args.local ?? []).filter(row => !asString(row.sourceEventId) || !durableSources.has(asString(row.sourceEventId)));
   const merged = [...local, ...bySource.values(), ...extras];
   const unreadCount = store.unreadCount === null
     ? merged.filter(isUnreadRow).length

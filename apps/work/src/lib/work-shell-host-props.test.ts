@@ -48,7 +48,7 @@ const hostProps = [
   {
     name: "notificationWakeSeq",
     declaration: "notificationWakeSeq: hostNotificationWakeSeq,",
-    forwarding: "hostNotificationWakeSeq ?? localNotificationWakeSeq",
+    forwarding: "(hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq",
     desktopAppProp: "{notificationWakeSeq}",
   },
   {
