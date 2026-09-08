@@ -4,6 +4,7 @@ import {
   applyMentionMarkup,
   collapseDuplicateMentionTargets,
   filterMentionCandidates,
+  mergeMentionTargets,
   mentionSpansForBody,
   mentionRowPill,
   mentionRowSubtitle,
@@ -296,6 +297,18 @@ describe("channel mentions", () => {
         [],
       ).map((row) => row.displayName),
     ).toEqual(["Deacon"]);
+  });
+
+  it("allows the same person to be mentioned twice while deduplicating notification targets", () => {
+    const roster = mentionTargetsFromContacts([
+      { personUid: "agt_deacon", displayName: "Deacon" },
+    ]);
+    const selected = mergeMentionTargets([], roster[0]!);
+    expect(filterMentionCandidates(roster, "dea", selected)).toEqual(roster);
+    const body = replaceActiveMention("@Deacon please ask @dea", "@Deacon");
+    expect(body).toBe("@Deacon please ask @Deacon ");
+    expect(mergeMentionTargets(selected, roster[0]!)).toHaveLength(1);
+    expect(mentionSpansForBody(body, selected)).toHaveLength(2);
   });
 
   it("marks @DisplayName spans for composer and bubble formatting", () => {

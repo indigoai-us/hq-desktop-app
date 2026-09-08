@@ -4,12 +4,14 @@
    * conversation's assets without taking a sidebar column.
    */
   import { onDestroy, onMount } from "svelte";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import AttachmentPreview from "./AttachmentPreview.svelte";
 
   interface Props {
     items: FileAttachmentModel[];
+    previewCache?: ImagePreviewCache | null;
     selectedId: string | null;
     onselect: (id: string) => void;
     onclose: () => void;
@@ -19,7 +21,7 @@
     onopenurl?: (url: string) => void;
   }
 
-  let { items, selectedId, onselect, onclose, resolveUrl, onreleaseurl }: Props = $props();
+  let { items, selectedId, onselect, onclose, resolveUrl, onreleaseurl, previewCache }: Props = $props();
 
   const selected = $derived(
     items.find((item) => (item.id || item.vaultPath) === selectedId) ??
@@ -29,13 +31,14 @@
 
   let urls = $state<Record<string, string>>({});
   const resolving = new Set<string>();
+  const leases = new Map<string, () => void>();
   let modalEl = $state<HTMLDivElement | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
   let mounted = true;
 
   onDestroy(() => {
     mounted = false;
-    for (const url of Object.values(urls)) onreleaseurl?.(url);
+    for (const release of leases.values()) release();
   });
 
   $effect(() => {
@@ -45,14 +48,14 @@
     if (item.previewUrl || urls[key] || resolving.has(key)) return;
     if (!resolveUrl) return;
     resolving.add(key);
-    void resolveUrl(item)
-      .then((url) => {
-        if (!url) return;
-        if (!mounted) {
-          onreleaseurl?.(url);
-          return;
-        }
-        urls = { ...urls, [key]: url };
+    const work = previewCache && item.kind === "image" && item.contentType !== "image/svg+xml" && !/\.svg$/i.test(item.name)
+      ? previewCache.acquire(item.companyUid, item.vaultPath)
+      : resolveUrl(item).then((url) => url ? { url, release: () => onreleaseurl?.(url) } : null);
+    void work.then((lease) => {
+        if (!lease) return;
+        if (!mounted) { lease.release(); return; }
+        leases.set(key, lease.release);
+        urls = { ...urls, [key]: lease.url };
       })
       .catch(() => {
         // The preview pane renders the actionable error state for this item.
@@ -61,7 +64,8 @@
   });
 
   function srcFor(item: FileAttachmentModel): string {
-    return item.previewUrl || urls[item.id || item.vaultPath] || "";
+    const resolved = urls[item.id || item.vaultPath];
+    return item.previewUrl || previewCache?.peek(item.companyUid, item.vaultPath)?.url || resolved || "";
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -127,7 +131,7 @@
         <p class="att-tray-empty">No attachments in this conversation.</p>
       {:else}
         {#key selected.id || selected.vaultPath}
-          <AttachmentPreview item={selected} {resolveUrl} {onreleaseurl} />
+          <AttachmentPreview item={selected} thumbnailUrl={previewCache ? srcFor(selected) : null} {resolveUrl} {onreleaseurl} />
         {/key}
       {/if}
     </div>

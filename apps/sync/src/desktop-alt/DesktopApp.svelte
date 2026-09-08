@@ -31,6 +31,7 @@
   import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import AtlasPage from './pages/AtlasPage.svelte';
+  import SessionsPage from './pages/SessionsPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
@@ -1891,6 +1892,14 @@
                   <span>Browse the HQ files in the sidebar — or filter to a company.</span>
                 </div>
               {/if}
+            </div>
+          {:else if route.kind === 'sessions'}
+            <div class="page">
+              <SessionsPage
+                sessionId={route.id}
+                onopensession={(id) => navigate({ kind: 'sessions', id: id || undefined })}
+                onopenchannel={() => navigate({ kind: 'messages' })}
+              />
             </div>
           {:else if activeCompany}
             <div class="page">

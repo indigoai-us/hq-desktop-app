@@ -82,6 +82,7 @@ mod tests {
             widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
+            in_app_sessions: None,
             system_notifications: None,
             native_notify_direct_messages: None,
             native_notify_shares: None,
@@ -141,6 +142,7 @@ mod tests {
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
             // Retired. Always None so Settings cannot resurrect the classic shell.
             hq_work_handoff: None,
+            in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
             system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
             native_notify_direct_messages: Some(
                 prefs.native_notify_direct_messages.unwrap_or(true),
@@ -239,6 +241,7 @@ mod tests {
             widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
+            in_app_sessions: Some(true),
             system_notifications: Some(true),
             native_notify_direct_messages: Some(false),
             native_notify_shares: Some(false),
@@ -316,6 +319,7 @@ mod tests {
             widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
+            in_app_sessions: Some(false),
             system_notifications: Some(false),
             native_notify_direct_messages: Some(true),
             native_notify_shares: Some(true),
@@ -644,5 +648,15 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert!(v.get("hqWorkHandoff").is_none());
         assert_eq!(v["machineId"], "keep-me");
+    }
+
+    #[test]
+    fn test_in_app_sessions_defaults_false_and_preserves_true() {
+        assert_eq!(apply_defaults(empty_prefs()).in_app_sessions, Some(false));
+        let prefs = MenubarPrefs {
+            in_app_sessions: Some(true),
+            ..empty_prefs()
+        };
+        assert_eq!(apply_defaults(prefs).in_app_sessions, Some(true));
     }
 }

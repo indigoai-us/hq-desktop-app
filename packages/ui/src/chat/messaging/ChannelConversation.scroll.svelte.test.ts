@@ -93,6 +93,75 @@ function scrollTo(el: HTMLElement, top: number): void {
 }
 
 describe("ChannelConversation scroll ownership", () => {
+  it("loads the next history page when the user reaches the top", async () => {
+    mountConversation(messages(60));
+    await tick();
+    const el = stubLayout(20);
+
+    // Loading more messages keeps the current first row anchored, so the
+    // user's next upward scroll continues naturally into the new page.
+    scrollTo(el, 0);
+    rowCountRef.value = 40;
+    await tick();
+    await tick();
+
+    expect(el.scrollTop).toBe(20 * ROW_HEIGHT);
+    expect(
+      host.querySelector('[data-testid="conversation-load-earlier"]')?.textContent,
+    ).toContain("20 earlier");
+  });
+
+  it("requests remote history once, shows loading, and allows retry after failure", async () => {
+    let calls = 0;
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, { target: host, props: {
+      messages: messages(10), hasEarlier: true,
+      onloadearlier: () => {
+        calls++;
+        return new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+      },
+    }});
+    await tick();
+    const el = stubLayout(10);
+    scrollTo(el, 0);
+    await tick();
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Loading earlier messages");
+    scrollTo(el, 0);
+    expect(calls).toBe(1);
+    fail(new Error("offline"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await tick();
+    const retry = host.querySelector('[data-testid="conversation-load-earlier"]') as HTMLButtonElement;
+    expect(retry.textContent).toContain("Retry");
+    retry.click();
+    await tick();
+    expect(calls).toBe(2);
+    finish();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await tick();
+    expect(host.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("keeps automatically loaded history when a live refresh arrives", async () => {
+    const props = mountConversation(messages(60));
+    await tick();
+    const el = stubLayout(20);
+    scrollTo(el, 0);
+    rowCountRef.value = 40;
+    await tick();
+
+    // A new message must not reset the user's already-open history page.
+    rowCountRef.value = 41;
+    props.messages = messages(61);
+    await tick();
+    expect(
+      host.querySelector('[data-testid="conversation-load-earlier"]')?.textContent,
+    ).toContain("21 earlier");
+  });
+
   it("lands at the bottom on initial mount", async () => {
     mountConversation(messages(10));
     await tick();

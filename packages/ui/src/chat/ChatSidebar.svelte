@@ -112,6 +112,7 @@
     type SortMode,
     type ScopeCompany,
   } from "./sidebar-model";
+  import type { RowExtrasResolver } from "./row-extras.js";
   import {
     filterSwitcher,
     switcherInitials,
@@ -232,6 +233,8 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
+    /** Host decoration per row: badge, hover card, context-menu actions. */
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -265,6 +268,7 @@
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    rowExtras = null,
   }: Props = $props();
 
   interface PairUnreadEntry {
@@ -396,6 +400,8 @@
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
+  let searchButton = $state<HTMLButtonElement | null>(null);
+  let activeSearchIndex = $state(0);
   let searchQuery = $state("");
   let filterOpen = $state(false);
   let scopeMenuOpen = $state(false);
@@ -407,7 +413,6 @@
    * once per idle window instead of on every keystroke. The inputs stay bound
    * to the raw values, so typing/cursor/IME are unaffected.
    */
-  let searchQueryDebounced = $state("");
   let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
@@ -415,6 +420,54 @@
     x: number;
     y: number;
   } | null>(null);
+  /** The row whose host hover card is showing, anchored to the row's box. */
+  let hoverCard = $state<{ row: ConversationRow; x: number; y: number } | null>(null);
+  let hoverHideTimer: ReturnType<typeof setTimeout> | null = null;
+  const HOVER_HIDE_DELAY_MS = 180;
+  /** Explicit expansion choices for host-owned child rows. Missing means the
+   * host's default still applies, so fresh project channels can open eagerly. */
+  let childRowsOpen = $state<Record<string, boolean>>({});
+
+  function childrenAreOpen(rowId: string, defaultOpen: boolean): boolean {
+    return childRowsOpen[rowId] ?? defaultOpen;
+  }
+
+  function observeChildGroup(_node: HTMLElement, callback: ((visible: boolean) => void) | undefined) {
+    callback?.(true);
+    return {
+      update(next: typeof callback) { callback = next; callback?.(true); },
+      destroy() { callback?.(false); },
+    };
+  }
+
+  function toggleChildren(rowId: string, defaultOpen: boolean): void {
+    childRowsOpen = {
+      ...childRowsOpen,
+      [rowId]: !childrenAreOpen(rowId, defaultOpen),
+    };
+  }
+
+  function showHoverCard(row: ConversationRow, anchor: HTMLElement): void {
+    if (!rowExtras?.(row)?.hoverCard) return;
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+    const box = anchor.getBoundingClientRect();
+    hoverCard = { row, x: box.right + 6, y: box.top };
+  }
+
+  /** Delayed so the pointer can cross the gap into the card itself. */
+  function scheduleHoverCardHide(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = setTimeout(() => {
+      hoverCard = null;
+      hoverHideTimer = null;
+    }, HOVER_HIDE_DELAY_MS);
+  }
+
+  function keepHoverCard(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+  }
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
@@ -431,15 +484,11 @@
     activeId = selectedId;
   });
 
-  // Debounce the search/history queries (~110ms). Collapses fast keystroke
-  // bursts into a single roster scan. One effect: any keystroke reschedules;
-  // the other is an idempotent no-op when unchanged. (The create modal owns its
-  // own 110ms debounce.)
+  // History searches are debounced; conversation completion stays synchronous
+  // so Enter can never open a result from the previous query.
   $effect(() => {
-    const s = searchQuery;
     const h = historyQuery;
     const timer = setTimeout(() => {
-      searchQueryDebounced = s;
       historyQueryDebounced = h;
     }, 110);
     return () => clearTimeout(timer);
@@ -697,8 +746,34 @@
     }),
   );
   const switcherResults = $derived(
-    filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
+    filterSwitcher(liveSwitcherRows, searchQuery).slice(0, 200),
   );
+  $effect(() => {
+    switcherResults;
+    activeSearchIndex = 0;
+  });
+
+  function closeSearch(): void {
+    searchOpen = false;
+    searchButton?.focus();
+  }
+
+  function searchKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!switcherResults.length) return;
+      activeSearchIndex = (activeSearchIndex + (event.key === "ArrowDown" ? 1 : -1) + switcherResults.length) % switcherResults.length;
+      document.getElementById(`conversation-search-${activeSearchIndex}`)?.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter" && switcherResults[activeSearchIndex]) {
+      event.preventDefault();
+      selectSwitcherRow(switcherResults[activeSearchIndex]);
+    }
+  }
   const historyRows = $derived(
     searchHistory(filteredRows, historyQueryDebounced),
   );
@@ -825,7 +900,7 @@
   }
 
   function selectSwitcherRow(row: SwitcherRow): void {
-    searchOpen = false;
+    closeSearch();
     searchQuery = "";
     jumpToSwitcherRow(row);
   }
@@ -1436,6 +1511,19 @@
         }),
       );
 
+      track(wakes.on("conversation:read", ({ id }) => {
+        const row = allRows.find((row) => row.id === id);
+        if (row?.kind === "dm" && row.personUid) {
+          dmDots = clearDmDot(dmDots, row.personUid);
+          saveDmDots(dmDots, storage);
+          pairUnreads = clearPairUnread(pairUnreads, row.personUid);
+          contacts = contacts.map((contact) => contact.personUid === row.personUid
+            ? { ...contact, unreadCount: 0 } : contact);
+        } else if (row?.channelId) {
+          channels = clearChannelUnread(channels, row.channelId);
+        }
+      }));
+
       // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
       track(
         wakes.on("dm:pair-unreads", (payload) => {
@@ -1810,6 +1898,7 @@
         aria-label="Search or jump to a conversation"
         title="Search or jump to…"
         onclick={openSearch}
+        bind:this={searchButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle
@@ -2201,7 +2290,39 @@
           ? "Unpin conversation"
           : "Pin conversation"}
       </button>
+      {#each rowExtras?.(contextMenu.row)?.actions ?? [] as action (action.id)}
+        <button
+          type="button"
+          class="chat-popover-row"
+          role="menuitem"
+          data-testid={`chat-context-action-${action.id}`}
+          onclick={() => {
+            contextMenu = null;
+            action.onselect();
+          }}
+        >
+          {action.label}
+        </button>
+      {/each}
     </div>
+  {/if}
+
+  {#if hoverCard}
+    {@const HoverCard = rowExtras?.(hoverCard.row)?.hoverCard}
+    {#if HoverCard}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="chat-row-hover-card"
+        data-testid="chat-row-hover-card"
+        data-conversation-id={hoverCard.row.id}
+        use:portal
+        style="left:{hoverCard.x}px; top:{hoverCard.y}px;"
+        onmouseenter={keepHoverCard}
+        onmouseleave={scheduleHoverCardHide}
+      >
+        <HoverCard row={hoverCard.row} />
+      </div>
+    {/if}
   {/if}
 
   {#if historyOpen}
@@ -2414,14 +2535,24 @@
             placeholder="Search or jump to…"
             bind:value={searchQuery}
             aria-label="Search or jump to a conversation"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="conversation-search-results"
+            aria-autocomplete="list"
+            aria-activedescendant={switcherResults.length ? `conversation-search-${activeSearchIndex}` : undefined}
+            onkeydown={searchKeydown}
           />
         </div>
-        <div class="chat-switcher-list" role="list">
-          {#each switcherResults as row (row.id)}
+        <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
+          {#each switcherResults as row, index (row.id)}
             <button
               type="button"
               class="chat-switcher-row"
-              role="listitem"
+              role="option"
+              id={`conversation-search-${index}`}
+              aria-selected={index === activeSearchIndex}
+              class:active={index === activeSearchIndex}
+              tabindex="-1"
               onclick={() => selectSwitcherRow(row)}
             >
               {#if row.kind === "channel"}
@@ -2514,116 +2645,188 @@
     ((row.channelScope ?? "").trim() === "project" ||
       Boolean((row.projectId ?? "").trim())) &&
     projectHasPresence(row)}
-  <div role="listitem" class="chat-li">
-    <button
-      type="button"
-      class="chat-row"
-      class:unread={!!row.unreadCount || row.unreadDot}
-      class:active={activeId === row.id}
-      class:has-badge={hasBadge}
-      data-kind={row.kind}
-      data-conversation-id={row.id}
-      title={scopeLabel?.text}
-      onclick={() => void openRow(row)}
-      oncontextmenu={(e) => openContextMenu(row, e)}
+  {@const extras = rowExtras?.(row) ?? null}
+  {@const hasChildren = Boolean(extras?.children?.length)}
+  {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
+  <div class="chat-row-group" data-testid="chat-row-group">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      role="listitem"
+      class="chat-li"
+      onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
+      onmouseleave={scheduleHoverCardHide}
     >
-      {#if row.kind === "channel"}
-        <span class="chat-glyph-wrap" aria-hidden="true">
-          {#if isCompanyScopedRow(row)}
-            <!-- A company channel is identified by its company, not by a
-                 generic `#`. Favicon when hq-pro resolved one, building glyph
-                 otherwise. Project/personal channels keep `#`. -->
-            <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
-          {:else}
-            <span class="chat-glyph">#</span>
+      {#if hasChildren}
+        <button
+          type="button"
+          class="chat-row-children-toggle"
+          class:open={childrenOpen}
+          data-testid="chat-row-children-toggle"
+          aria-label={`${childrenOpen ? 'Collapse' : 'Expand'} ${extras?.childrenLabel ?? row.title}`}
+          aria-expanded={childrenOpen}
+          onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="chat-row"
+        class:unread={!!row.unreadCount || row.unreadDot}
+        class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
+        class:has-badge={hasBadge}
+        data-kind={row.kind}
+        data-conversation-id={row.id}
+        title={scopeLabel?.text}
+        onclick={() => void openRow(row)}
+        oncontextmenu={(e) => openContextMenu(row, e)}
+      >
+        {#if row.kind === "channel"}
+          <span class="chat-glyph-wrap" aria-hidden="true">
+            {#if !hasChildren && isCompanyScopedRow(row)}
+              <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
+            {:else if !hasChildren}
+              <span class="chat-glyph">#</span>
+            {/if}
+            {#if showProjectPresence}
+              <span
+                class="chat-presence-dot"
+                data-testid="chat-presence-dot"
+                aria-label="Someone online"
+              ></span>
+            {/if}
+          </span>
+        {:else if row.kind === "group"}
+          <span
+            class="chat-avatar group"
+            aria-hidden="true"
+            data-testid="chat-group-avatar"
+          >
+            {row.memberCount ?? row.members?.length ?? 0}
+          </span>
+        {:else}
+          {@const avatar = rowAvatar(row, avatarByUid)}
+          <span
+            class="chat-avatar"
+            aria-hidden="true"
+            data-testid="chat-dm-avatar"
+            data-avatar={avatar.kind}
+          >
+            {#if avatar.src}
+              <img src={avatar.src} alt="" />
+            {:else}
+              {avatar.initials}
+            {/if}
+          </span>
+        {/if}
+        {#if draftIdSet.has(row.id)}
+          {@render draftMark()}
+        {/if}
+        <span class="chat-row-copy">
+          <span class="chat-row-title">{row.title}</span>
+          {#if extras?.badge}
+            <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
+              {extras.badge}
+            </span>
           {/if}
-          {#if showProjectPresence}
+          {#if scopeLabel}
             <span
-              class="chat-presence-dot"
-              data-testid="chat-presence-dot"
-              aria-label="Someone online"
-            ></span>
+              class="chat-row-scope"
+              data-testid="chat-row-scope"
+              data-kind={scopeLabel.kind}
+              title={scopeLabel.text}>{scopeLabel.text}</span
+            >
           {/if}
         </span>
-      {:else if row.kind === "group"}
-        <span
-          class="chat-avatar group"
-          aria-hidden="true"
-          data-testid="chat-group-avatar"
-        >
-          {row.memberCount ?? row.members?.length ?? 0}
-        </span>
-      {:else}
-        {@const avatar = rowAvatar(row, avatarByUid)}
-        <span
-          class="chat-avatar"
-          aria-hidden="true"
-          data-testid="chat-dm-avatar"
-          data-avatar={avatar.kind}
-        >
-          {#if avatar.src}
-            <img src={avatar.src} alt="" />
-          {:else}
-            {avatar.initials}
-          {/if}
-        </span>
-      {/if}
-      {#if draftIdSet.has(row.id)}
-        {@render draftMark()}
-      {/if}
-      <span class="chat-row-copy">
-        <span class="chat-row-title">{row.title}</span>
         {#if scopeLabel}
           <span
-            class="chat-row-scope"
-            data-testid="chat-row-scope"
-            data-kind={scopeLabel.kind}
-            title={scopeLabel.text}>{scopeLabel.text}</span
+            class="chat-row-reveal"
+            data-testid="chat-row-reveal"
+            aria-hidden="true">{scopeLabel.text}</span
           >
         {/if}
-      </span>
-      {#if scopeLabel}
-        <span
-          class="chat-row-reveal"
-          data-testid="chat-row-reveal"
-          aria-hidden="true">{scopeLabel.text}</span
-        >
-      {/if}
-      {#if row.unreadCount != null && row.unreadCount > 0}
-        <span
-          class="chat-unread-badge"
-          data-testid="chat-unread-badge"
-          aria-label={`${row.unreadCount} unread`}
-        >
-          {row.unreadCount > 99 ? "99+" : row.unreadCount}
-        </span>
-      {:else if row.unreadDot}
-        <span
-          class="chat-unread-dot"
-          data-testid="chat-unread-dot"
-          aria-label="Unread"
-        ></span>
-      {/if}
-    </button>
-    <button
-      type="button"
-      class="chat-pin-btn"
-      class:pinned={row.pinned}
-      aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
-      aria-pressed={row.pinned}
-      data-testid="chat-pin"
-      onclick={() => handlePin(row)}
-    >
-      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
+        {#if row.unreadCount != null && row.unreadCount > 0}
+          <span
+            class="chat-unread-badge"
+            data-testid="chat-unread-badge"
+            aria-label={`${row.unreadCount} unread`}
+          >
+            {row.unreadCount > 99 ? "99+" : row.unreadCount}
+          </span>
+        {:else if row.unreadDot}
+          <span
+            class="chat-unread-dot"
+            data-testid="chat-unread-dot"
+            aria-label="Unread"
+          ></span>
+        {/if}
+      </button>
+      <button
+        type="button"
+        class="chat-pin-btn"
+        class:pinned={row.pinned}
+        aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
+        aria-pressed={row.pinned}
+        data-testid="chat-pin"
+        onclick={() => handlePin(row)}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+    {#if hasChildren && childrenOpen}
+      <div
+        class="chat-row-children"
+        use:observeChildGroup={extras?.onChildrenVisibilityChange}
+        role="list"
+        aria-label={extras?.childrenLabel ?? `Items for ${row.title}`}
+        data-testid="chat-row-children"
+      >
+        {#each extras?.children ?? [] as child (child.id)}
+          <button
+            type="button"
+            class="chat-row-child"
+            class:action={child.kind === "action"}
+            class:selected={child.selected === true}
+            aria-current={child.selected ? "page" : undefined}
+            title={child.meta ? `${child.label} · ${child.meta}` : child.label}
+            data-testid="chat-row-child"
+            data-child-id={child.id}
+            onclick={child.onselect}
+          >
+            <span
+              class="chat-row-child-mark"
+              data-child-kind={child.kind ?? "item"}
+              data-status={child.status ?? undefined}
+              aria-hidden="true"
+            >
+              {#if child.kind === "action"}
+                <svg width="12" height="12" viewBox="0 0 10 10">
+                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+                  <path d="M3 3h10v7H7l-4 3V3Z" />
+                </svg>
+              {/if}
+            </span>
+            <span class="chat-row-child-label">{child.label}</span>
+            {#if child.meta}
+              <span class="chat-row-child-meta">{child.meta}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -2935,11 +3138,140 @@
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
+  .chat-row-group {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
   .chat-li {
     position: relative;
     display: flex;
     align-items: center;
     min-width: 0;
+  }
+
+  .chat-row-children-toggle {
+    position: absolute;
+    left: 8px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    cursor: pointer;
+  }
+
+  .chat-row-children-toggle svg {
+    transition: transform 120ms ease;
+  }
+
+  .chat-row-children-toggle.open svg {
+    transform: rotate(90deg);
+  }
+
+  .chat-row-children-toggle:hover,
+  .chat-row-children-toggle:focus-visible {
+    color: var(--t1);
+  }
+
+  .chat-row-children {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 4px 16px;
+    padding: 0;
+    border: 0;
+  }
+
+  .chat-row-child {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 28px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .chat-row-child:hover,
+  .chat-row-child:focus-visible {
+    background: var(--hover);
+    color: var(--t1);
+  }
+
+  .chat-row-child.action {
+    color: var(--t2);
+  }
+
+  .chat-row-child.selected {
+    background: var(--sel);
+    color: var(--t1);
+  }
+
+  .chat-row-child:focus-visible {
+    outline: 1px solid var(--t2);
+    outline-offset: -1px;
+  }
+
+  .chat-row-child-mark {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--t3);
+  }
+
+  .chat-row-child-mark[data-status="working"] {
+    color: var(--v4-accent, #7c9cff);
+  }
+
+  .chat-row-child-mark[data-status="needsYou"] {
+    color: var(--v4-warning, #e0a33b);
+  }
+
+  .chat-row-child-mark[data-status="starting"],
+  .chat-row-child-mark[data-status="idle"] {
+    color: var(--v4-success, #5fbf7a);
+  }
+
+  .chat-row-child-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child-meta {
+    color: var(--t3);
+    font: inherit;
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child.action {
+    opacity: 1;
+  }
+
+  .chat-row-child.action:hover,
+  .chat-row-child.action:focus-visible {
+    opacity: 1;
   }
 
   .chat-collapse-left {
@@ -3369,6 +3701,31 @@
     bottom: calc(100% + 4px);
     left: 8px;
     right: 8px;
+  }
+
+  /* Host row decoration (`rowExtras`): a quiet badge after the title, and a
+     card the host mounts beside the hovered row. */
+  .chat-row-extra-badge {
+    flex: none;
+    margin-left: 2px;
+    padding: 0;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--v4-text-3, var(--text-3));
+    background: transparent;
+    white-space: nowrap;
+  }
+
+  .chat-row-hover-card {
+    position: fixed;
+    z-index: 60;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--side-bg, var(--v4-glass-bg, #1c1f24));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
   }
 
   /* Cursor-anchored right-click menu (portaled to .desktop-shell). */
@@ -3852,7 +4209,8 @@
     cursor: pointer;
   }
 
-  .chat-switcher-row:hover {
+  .chat-switcher-row:hover,
+  .chat-switcher-row.active {
     background: var(--hover);
   }
 

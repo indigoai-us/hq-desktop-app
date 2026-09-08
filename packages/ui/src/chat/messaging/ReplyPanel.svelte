@@ -12,6 +12,7 @@
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
@@ -22,6 +23,7 @@
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
+    isAgentUid,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -65,6 +67,7 @@
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
   import type { DecisionOption } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -119,6 +122,7 @@
      */
     onuploadfiles?: (files: File[]) => Promise<ChatAttachmentWire[]>;
     /** Presign a vault GET so reply image thumbs can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -162,6 +166,7 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
   }
@@ -177,7 +182,9 @@
     reactions = {},
     ontogglereaction,
     selfDisplayName = null,
+    selfPersonUid = null,
     onuploadfiles = undefined,
+    previewCache,
     onpresign = undefined,
     onopenattachment = undefined,
     onopenartifact = undefined,
@@ -289,6 +296,57 @@
       );
     }
   }
+
+  /**
+   * Start the working indicator for the agent this thread is addressed to, even
+   * when the reply carries no @mention — answering a decision card (or any plain
+   * reply in an agent DM thread / on an agent-authored root) is inherently
+   * addressed to that agent, mirroring the DM branch in DesktopApp.persistSend.
+   * The mention path above already covers channel threads with an explicit
+   * @agent, so this only fires when no agent mention was present.
+   */
+  function startThinkingForThreadAgent(mentions: MentionTarget[]): void {
+    if (mentions.some((m) => m.participantType === "agent")) return;
+    // A 1:1 agent DM thread: the counterpart uid is the agent.
+    if (scope === "dm" && withPersonUid && isAgentUid(withPersonUid.trim())) {
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: withPersonUid.trim(),
+          agentName: root ? messageAuthor(root) : "Agent",
+        },
+        Date.now(),
+      );
+      return;
+    }
+    // Otherwise wake the agent that authored the root (e.g. a decision card the
+    // agent posted into a channel thread).
+    const rootUid = (root?.fromPersonUid ?? "").trim();
+    if (root && isAgentUid(rootUid)) {
+      agentThinking = startThinking(
+        agentThinking,
+        { agentUid: rootUid, agentName: messageAuthor(root) },
+        Date.now(),
+      );
+    }
+  }
+
+  // Persisted answered-decision state for this thread (root + replies, oldest →
+  // newest) so cards lock + highlight their choice across reload / reopen.
+  const answeredDecisions = $derived(
+    decisionAnswersFromMessages([
+      ...(root ? [root] : []),
+      ...replies,
+    ]),
+  );
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
+  });
 
   /** Timestamp-aware: `load()` re-fetches the WHOLE thread on every
    *  reply:new wake, so a historical agent reply must not clear a row that
@@ -610,6 +668,7 @@
       );
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
+      startThinkingForThreadAgent(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
@@ -821,7 +880,12 @@
             </div>
           {/if}
           {#if rootRich.rich}
-            <RichMessageContent content={rootRich.rich} ondecision={handleDecision} />
+            <RichMessageContent
+              content={rootRich.rich}
+              ondecision={handleDecision}
+              {answeredQuestionIds}
+              {answeredChoices}
+            />
           {/if}
           {#if root.details?.trim()}
             <ArtifactCard
@@ -840,6 +904,8 @@
             />
           {/if}
           <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
             attachments={parseMessageAttachments(root)}
             onopen={onopenattachment}
             resolveUrl={resolveAttachmentUrl}
@@ -848,6 +914,8 @@
         </div>
         {#if reactionsFor(rootId).length > 0}
           <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
             messageId={rootId}
             reactions={reactionsFor(rootId)}
             ontoggle={toggle}
@@ -975,9 +1043,16 @@
                 </div>
               {/if}
               {#if replyRich.rich}
-                <RichMessageContent content={replyRich.rich} ondecision={handleDecision} />
+                <RichMessageContent
+                  content={replyRich.rich}
+                  ondecision={handleDecision}
+                  {answeredQuestionIds}
+                  {answeredChoices}
+                />
               {/if}
               <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                 attachments={parseMessageAttachments(msg)}
                 onopen={onopenattachment}
                 resolveUrl={resolveAttachmentUrl}
@@ -985,6 +1060,8 @@
               />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                   messageId={msg.eventId}
                   reactions={reactionsFor(msg.eventId)}
                   ontoggle={toggle}

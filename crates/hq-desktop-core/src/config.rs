@@ -303,6 +303,10 @@ pub struct MenubarPrefs {
     /// strip in `merge_prefs_over_existing`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
+    /// In-app Claude/Codex sessions. Absent defaults off; local development can
+    /// force it on through the existing agent-session feature gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_app_sessions: Option<bool>,
     /// Master switch for **native** (OS) notification banners. When true
     /// (default), DM / share / meeting events may fire an OS banner (subject to
     /// the per-event and focus rules below). When false, no OS banner fires at

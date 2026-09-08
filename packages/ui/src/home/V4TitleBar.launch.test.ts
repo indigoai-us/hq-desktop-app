@@ -98,6 +98,21 @@ async function openMenuAndClick(
 }
 
 describe("V4TitleBar Launch menu", () => {
+  it("offers a labeled host create action without launching an external tool", async () => {
+    const onselect = vi.fn();
+    const adapter = makeAdapter({});
+    await mountBar(adapter, { primaryAction: { label: "New session", onselect } });
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="titlebar-primary-action"]');
+    expect(button?.textContent).toContain("New session");
+    button?.click();
+    expect(onselect).toHaveBeenCalledTimes(1);
+    expect(adapter.shell.launchCodexWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("does not expose creation when the host has no session capability", async () => {
+    await mountBar(makeAdapter({}));
+    expect(host.querySelector('[data-testid="titlebar-primary-action"]')).toBeNull();
+  });
   it("applies the shared window-controls inset so tokens.css owns height and gutter", async () => {
     await mountBar(makeAdapter({}));
     const header = host.querySelector<HTMLElement>(".v4-titlebar");

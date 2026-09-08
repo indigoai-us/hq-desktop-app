@@ -28,7 +28,9 @@ use crate::commands::session_end_attribution::{
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
-use hq_desktop_core::sync_outcome::{runner_assertion_for_class, RUNNER_PHASE_PRE_PROTOCOL};
+use crate::commands::windows_teardown_probe::{
+    sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
+};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -40,35 +42,62 @@ use hq_desktop_core::runner_error_shape::{
     classify_runner_stack_input, RunnerErrorCause, RunnerErrorSite,
 };
 use hq_desktop_core::runner_target::RunnerTargetState;
+use hq_desktop_core::sync_outcome::{
+    DeferredSessionEndOutcome,
+    MemoryExhaustionEvidence,
+    RUNNER_PHASE_PRE_PROTOCOL,
+    RunnerErrorClass,
+    RunnerFatalClass,
+    SESSION_END_GRACE_MS,
+    SessionEndLatchReading,
+    SpawnFailureCapturePolicy,
+    SyncCancelCause,
+    TeardownLogReading,
+    TeardownShuttingDown,
+    TerminationHost,
+    WINDOWS_SESSION_TERMINATE_EXIT,
+    WatcherExitCapturePolicy,
+    WindowsTeardownProbeReading,
+    WindowsTeardownVerdict,
+    WindowsTermination,
+    WindowsTerminatorAttribution,
+    classify_runner_fatal_signature,
+    classify_windows_exit_status,
+    current_termination_host,
+    deferred_session_end_confirmed,
+    deferred_session_end_outcome,
+    describe_exit,
+    is_crash_signal,
+    is_windows_console_control_exit,
+    is_windows_fault_exit,
+    normalized_abort_description,
+    resolved_session_end_attribution,
+    runner_assertion_for_class,
+    runner_fault_is_disk_exhaustion_content,
+    runner_fault_is_file_lock_content,
+    runner_phase_elapsed_bucket,
+    runner_phase_from_event,
+    runner_stack_shape,
+    runner_stack_shape_for_exit,
+    session_end_grace_waited_bucket,
+    should_capture_watcher_exit,
+    spawn_failure_capture_policy,
+    spawn_failure_fingerprint_token,
+    termination_fingerprint_token,
+    termination_fingerprint_token_for_host,
+    watcher_exit_attributed_to_app_teardown,
+    watcher_exit_capture_policy,
+    watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class,
+    watcher_termination_fingerprint_token,
+    windows_exit_status_hex,
+    windows_fault_symbol,
+    windows_teardown_verdict,
+};
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
     WATCHER_FAULT_UNAVAILABLE,
 };
-use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
-    MemoryExhaustionEvidence, RunnerErrorClass, RunnerFatalClass,
-    deferred_session_end_confirmed, deferred_session_end_outcome, describe_exit, is_crash_signal,
-    is_windows_console_control_exit, is_windows_fault_exit,
-    normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
-    runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
-    runner_phase_from_event, runner_stack_shape,
-    runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
-    spawn_failure_capture_policy,
-    spawn_failure_fingerprint_token, termination_fingerprint_token,
-    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
-    watcher_termination_fingerprint_token,
-    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    watcher_exit_signal_class,
-    windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
-    DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
-    TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
-    WindowsTeardownProbeReading, WindowsTeardownVerdict, WindowsTermination,
-    WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
-};
-use crate::commands::windows_teardown_probe::{
-    sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
-};
-
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
 #[cfg(target_os = "windows")]
@@ -852,12 +881,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
-    // V2 Cloud Off (US-001 / US-016): while the user has Cloud paused, NO watch
-    // daemon may start — renderer request, app-launch autostart, or supervisor
-    // respawn. Instant/event push is an argument of this watcher, so gating
+    // Spawn preflight for all three watch-daemon origins (renderer request,
+    // app-launch autostart, supervisor respawn), which all funnel through this
+    // function. Refuses when the dev kill switch `HQ_DEV_NO_SYNC` is set (a dev
+    // build must never run a second sync runner over the same HQ folder as the
+    // installed app), and when V2 Cloud Off (US-001 / US-016) has the user's
+    // sync paused. Instant/event push is an argument of this watcher, so gating
     // here pauses it too. Checked before taking the singleton guard so a
-    // paused refusal never wedges a later, unpaused start.
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+    // refusal never wedges a later, allowed start.
+    hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
     // Generation-scoped registration: every later release/terminate/cancel this
     // start performs is bound to the generation it acquired here, so a stale
     // actor can never operate on a replacement watcher (HQ-DESKTOP-3J).
@@ -1087,8 +1119,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             // Count only parsed protocol lines (mirrors the
                             // manual route): a blank or unparseable teardown line
                             // is not protocol output, so it must not read as work.
-                            watcher_stdout_line_count =
-                                watcher_stdout_line_count.saturating_add(1);
+                            watcher_stdout_line_count = watcher_stdout_line_count.saturating_add(1);
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
@@ -1252,8 +1283,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         let job_sample =
                             crate::commands::process::take_watcher_job_sample(daemon_generation);
                         if job_sample.images.images_tag().is_some() {
-                            exit_context.watcher_fault_job_images =
-                                job_sample.images.images_tag();
+                            exit_context.watcher_fault_job_images = job_sample.images.images_tag();
                             exit_context.watcher_fault_job_culprit_candidate =
                                 Some(job_sample.images.culprit_candidate_token().to_string());
                             exit_context.watcher_fault_job_image_provenance =
@@ -1307,8 +1337,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                 // Seed the honest "not read yet" provenance; the
                                 // deferred worker upgrades it, or a teardown flush
                                 // emits it as-is.
-                                let fault_window_end = now_unix_ms()
-                                    .saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
+                                let fault_window_end =
+                                    now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
                                 let fault_window_start = generation_started_ms.max(
                                     fault_window_end
                                         .saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS),
@@ -2949,7 +2979,11 @@ fn finalize_watcher_fault_payload(
             "watcher_fault_faulting_module",
             outcome.module_token().to_string(),
         );
-        set_payload_tag(&mut payload.tags, "watcher_fault_read", outcome.counters_tag());
+        set_payload_tag(
+            &mut payload.tags,
+            "watcher_fault_read",
+            outcome.counters_tag(),
+        );
         set_payload_string_extra(
             &mut payload.extras,
             "watcher_fault_exception_code",
@@ -3036,7 +3070,12 @@ trait WatcherProcessEffects {
     fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory);
     fn watcher_exit_diagnostics(
         &self,
-    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>);
+    ) -> (
+        Option<Duration>,
+        Option<u64>,
+        Option<Duration>,
+        Option<RssSampleKind>,
+    );
     fn log(&mut self, target: &str, message: &str);
     fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String);
     fn capture(
@@ -3100,7 +3139,12 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
 
     fn watcher_exit_diagnostics(
         &self,
-    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
+    ) -> (
+        Option<Duration>,
+        Option<u64>,
+        Option<Duration>,
+        Option<RssSampleKind>,
+    ) {
         watcher_exit_diagnostics()
     }
 
@@ -3431,9 +3475,9 @@ fn watcher_memory_exhaustion_evidence<E: WatcherProcessEffects>(
     // declared default this is exactly WATCHER_FOOTPRINT_CEILING_MB, so the 5.9GB
     // OS-kill case is unchanged).
     let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
-    let footprint_ceiling_kb = u64::from(
-        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
-    ) * 1024;
+    let footprint_ceiling_kb =
+        u64::from(hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb))
+            * 1024;
     MemoryExhaustionEvidence {
         heap_oom_class,
         // Only a COMPARABLE whole-tree sample counts — a shim/withheld footprint is
@@ -3668,19 +3712,19 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let last_stderr_signature = last_stderr
         .map(classify_runner_fatal_signature)
         .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) =
-        match last_stderr_signature {
-            Some(signature) => (
-                signature.class.as_str().to_string(),
-                signature.syscall.map(|syscall| syscall.to_string()),
-                signature.errno,
-            ),
-            None => (
-                context.runner_fatal_class.clone(),
-                context.runner_fatal_syscall.clone(),
-                context.runner_fatal_errno,
-            ),
-        };
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = match last_stderr_signature
+    {
+        Some(signature) => (
+            signature.class.as_str().to_string(),
+            signature.syscall.map(|syscall| syscall.to_string()),
+            signature.errno,
+        ),
+        None => (
+            context.runner_fatal_class.clone(),
+            context.runner_fatal_syscall.clone(),
+            context.runner_fatal_errno,
+        ),
+    };
     let runner_fatal_class_seen = runner_fatal_class != "none";
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
@@ -5002,8 +5046,12 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
         footprint_at_or_above_ceiling: true,
         supervisor_preempt: true,
     };
-    let fingerprint_token =
-        watcher_termination_fingerprint_token(None, None, current_termination_host(), memory_evidence);
+    let fingerprint_token = watcher_termination_fingerprint_token(
+        None,
+        None,
+        current_termination_host(),
+        memory_evidence,
+    );
     let fingerprint = [
         "sync",
         "auto-sync-watcher-termination",
@@ -5411,8 +5459,7 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in ps_table.lines() {
         let mut columns = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(kb)) =
-            (columns.next(), columns.next(), columns.next())
+        let (Some(pid), Some(ppid), Some(kb)) = (columns.next(), columns.next(), columns.next())
         else {
             continue;
         };
@@ -5585,7 +5632,12 @@ fn exit_diagnostic_suffix(
 /// clause; every other (non-runner single-PID) scope withholds the number as
 /// `unattributed:<scope>`. `age` present means "(sampled … before exit)".
 fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
-    let sampled = age.map(|age| format!(" (sampled {} before exit)", format_duration_secs(age.as_secs())));
+    let sampled = age.map(|age| {
+        format!(
+            " (sampled {} before exit)",
+            format_duration_secs(age.as_secs())
+        )
+    });
     match rss_scope {
         "runner" => match &sampled {
             Some(clause) => format!("last_rss={}{clause}", format_rss_kb(kb)),
@@ -6618,7 +6670,12 @@ mod tests {
 
         fn watcher_exit_diagnostics(
             &self,
-        ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
+        ) -> (
+            Option<Duration>,
+            Option<u64>,
+            Option<Duration>,
+            Option<RssSampleKind>,
+        ) {
             (Some(Duration::from_secs(1)), None, None, None)
         }
 
@@ -7271,7 +7328,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "abort:sigabrt",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(windows_capture.message.starts_with(
@@ -7382,7 +7440,14 @@ mod tests {
         let unknown_capture = posix_unknown.captures.first().expect("exit 221 captures");
         assert_eq!(
             unknown_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:221", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:221",
+                "none",
+                "none",
+                "none"
+            ]
         );
         // Post-fix: the plain exit code is named by describe_exit rather than
         // dumped as a raw Debug tuple. Grouping is unchanged (fingerprint above).
@@ -7416,7 +7481,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(windows_capture.message.contains("0xC0000409 (fault)"));
@@ -7444,7 +7510,14 @@ mod tests {
         let posix_134_capture = posix_134.captures.first().expect("POSIX 134 captures");
         assert_eq!(
             posix_134_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:134", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:134",
+                "none",
+                "none",
+                "none"
+            ]
         );
         // Post-fix: named by describe_exit (a bare exit 134 is only a Node abort
         // on Windows; on POSIX it stays a plain exit code). Grouping unchanged.
@@ -7494,7 +7567,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -7540,12 +7614,18 @@ mod tests {
             recorded_tag(capture, "watcher_job_peak_commit_bucket"),
             "unknown"
         );
-        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "unknown");
+        assert_eq!(
+            recorded_tag(capture, "watcher_job_process_count"),
+            "unknown"
+        );
         // `npx` is a direct launcher, not the runner, so its RSS is scoped away.
         assert_eq!(recorded_tag(capture, "watcher_child_kind"), "launcher");
         assert_eq!(recorded_tag(capture, "rss_scope"), "launcher");
         assert!(
-            capture.tags.iter().all(|(k, _)| k != "runner_fatal_syscall"),
+            capture
+                .tags
+                .iter()
+                .all(|(k, _)| k != "runner_fatal_syscall"),
             "no libuv line -> no syscall tag"
         );
         assert!(capture.tags.iter().all(|(k, _)| k != "runner_fatal_errno"));
@@ -7595,7 +7675,10 @@ mod tests {
             recorded_tag(capture, "runner_unmatched_stderr_shapes"),
             "ndjson_record:6,stack_frame:2"
         );
-        assert_eq!(recorded_number_extra(capture, "runner_stderr_line_count"), 8);
+        assert_eq!(
+            recorded_number_extra(capture, "runner_stderr_line_count"),
+            8
+        );
         assert_eq!(
             recorded_string_extra(capture, "watcher_fault_exception_code"),
             "3221226505"
@@ -7612,7 +7695,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -7925,12 +8009,18 @@ mod tests {
             .first()
             .expect("fault capture deferred off the exit path");
         assert_eq!(recorded_tag(held, "watcher_fault_provenance"), "deferred");
-        assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_faulting_image"),
+            "unavailable"
+        );
         assert_eq!(
             recorded_tag(held, "watcher_fault_read"),
             "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
-        assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_job_images"),
+            "node_exe,cmd_exe"
+        );
         assert_eq!(
             recorded_tag(held, "watcher_fault_job_culprit_candidate"),
             "node_exe"
@@ -7948,14 +8038,15 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         // Lifecycle recovery ran synchronously and is unaffected by the deferral.
-        assert!(effects
-            .lifecycle
-            .iter()
-            .any(|(state, _)| matches!(state, WatchDaemonState::Stopped | WatchDaemonState::Backoff)));
+        assert!(effects.lifecycle.iter().any(|(state, _)| matches!(
+            state,
+            WatchDaemonState::Stopped | WatchDaemonState::Backoff
+        )));
     }
 
     #[test]
@@ -7968,7 +8059,12 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:fault:0xC0000409",
+                    "none",
+                ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -7982,7 +8078,10 @@ mod tests {
         };
         let first = register_pending_watcher_fault_capture(make());
         let second = register_pending_watcher_fault_capture(make());
-        assert!(first.is_ok() && second.is_ok(), "registrations queue before shutdown");
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "registrations queue before shutdown"
+        );
         let mut sent: Vec<DeferredWatcherFaultCapture> = Vec::new();
         assert_eq!(
             flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
@@ -8009,7 +8108,12 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:fault:0xC0000409",
+                    "none",
+                ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -8050,7 +8154,12 @@ mod tests {
         };
         let base = DeferredWatcherFaultCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+            &[
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none",
+            ],
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
@@ -8087,7 +8196,8 @@ mod tests {
             faulting_pid: Some(6700),
             event_time_unix_ms: Some(1_000_500),
         };
-        let resolved = attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        let resolved =
+            attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
         let out = finalize_watcher_fault_payload(base.clone(), Some(resolved), "read_resolved");
         assert_eq!(tag(&out, "watcher_fault_provenance"), "pid_matched");
         assert_eq!(tag(&out, "watcher_fault_faulting_image"), "node_exe");
@@ -8192,12 +8302,18 @@ mod tests {
         let capture = effects.captures.first().expect("captures");
         assert_eq!(recorded_tag(capture, "sync_route"), "watcher");
         assert_eq!(recorded_tag(capture, "runner_fatal_class"), "libuv_assert");
-        assert_eq!(recorded_tag(capture, "runner_assert_source"), "libuv_win_async");
+        assert_eq!(
+            recorded_tag(capture, "runner_assert_source"),
+            "libuv_win_async"
+        );
         let signature = recorded_tag(capture, "runner_assert_signature");
         assert_eq!(signature.len(), 16);
         assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(recorded_number_extra(capture, "runner_assert_line"), 76);
-        assert_eq!(recorded_number_extra(capture, "runner_stdout_line_count"), 5);
+        assert_eq!(
+            recorded_number_extra(capture, "runner_stdout_line_count"),
+            5
+        );
         assert_eq!(recorded_string_extra(capture, "runner_node_major"), "20");
 
         // The private tail never reaches the wire through any new field.
@@ -8704,7 +8820,14 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
@@ -8954,7 +9077,14 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(
             event.extra["cancellation_record_present"],
@@ -9078,7 +9208,14 @@ mod tests {
             .contains("auto-sync watcher exited unexpectedly"));
         assert_eq!(
             external_kill.captures[0].fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert!(external_kill.captures[0]
             .tags
@@ -9264,7 +9401,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
@@ -9321,7 +9459,11 @@ mod tests {
             "http_403",
         ] {
             assert_eq!(safe_runner_error_fingerprint_token(bad), "none", "{bad:?}");
-            assert_eq!(safe_runner_error_cause_fingerprint_token(bad), "none", "{bad:?}");
+            assert_eq!(
+                safe_runner_error_cause_fingerprint_token(bad),
+                "none",
+                "{bad:?}"
+            );
         }
     }
 
@@ -9360,7 +9502,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "auth",
-                "vault_permission_denied", "none"
+                "vault_permission_denied",
+                "none"
             ]
         );
     }
@@ -9454,7 +9597,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "enoent",
-                "enoent", "none"
+                "enoent",
+                "none"
             ]
         );
     }
@@ -9506,7 +9650,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -9516,7 +9661,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "auth",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -9607,7 +9753,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(event.message.contains("0x40010004 (session terminate)"));
@@ -9968,7 +10115,10 @@ mod tests {
             recorded_string_tag(&sent, "windows_terminator"),
             "unattributed_no_teardown"
         );
-        assert_eq!(recorded_deferred_extra(&sent, "session_end_latch"), "absent");
+        assert_eq!(
+            recorded_deferred_extra(&sent, "session_end_latch"),
+            "absent"
+        );
         assert_eq!(
             recorded_deferred_extra(&sent, "windows_teardown_probe_verdict"),
             "teardown_absent"
@@ -10642,8 +10792,10 @@ mod tests {
                 "{attribution:?} with a latch must suppress with no capture and no deferral"
             );
             assert!(
-                latched_effects.logs.iter().any(|(_, message)| message
-                    .starts_with("session-end-latched watcher exit")),
+                latched_effects
+                    .logs
+                    .iter()
+                    .any(|(_, message)| message.starts_with("session-end-latched watcher exit")),
                 "{attribution:?} with a latch must self-diagnose as session_end_latched"
             );
         }
@@ -10673,7 +10825,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(effects.captures[0]
@@ -10805,7 +10958,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -10855,7 +11009,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -10904,7 +11059,14 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:126",
+                "none",
+                "none",
+                "none"
+            ]
         );
     }
 
@@ -11071,10 +11233,23 @@ mod tests {
         );
         assert_eq!(
             first.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
-        assert_eq!(recorded_string_extra(first, "runner_exec_resolution"), "npx_cache");
-        assert_eq!(recorded_string_extra(first, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(first, "runner_exec_resolution"),
+            "npx_cache"
+        );
+        assert_eq!(
+            recorded_string_extra(first, "runner_exec_target_exists"),
+            "false"
+        );
         assert!(
             !first
                 .extras
@@ -11091,10 +11266,20 @@ mod tests {
         );
         assert_eq!(
             fifth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
-        assert_eq!(recorded_string_extra(fifth, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(fifth, "runner_exec_target_exists"),
+            "false"
+        );
 
         // #9 — a 127 leg at exec streak 8.
         assert!(
@@ -11104,7 +11289,14 @@ mod tests {
         );
         assert_eq!(
             ninth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
@@ -11174,7 +11366,14 @@ mod tests {
         for capture in &effects.captures {
             assert_eq!(
                 capture.fingerprint,
-                vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+                vec![
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "signal:9",
+                    "none",
+                    "none",
+                    "none"
+                ]
             );
         }
     }
@@ -11299,7 +11498,9 @@ mod tests {
             "the LocalLogOnly burst must not capture and must not mute the SIGKILL"
         );
         assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
-        assert!(effects.captures[0].message.contains("consecutive failure #1"));
+        assert!(effects.captures[0]
+            .message
+            .contains("consecutive failure #1"));
         assert!(!effects.captures[0].message.contains("episode failure"));
     }
 
@@ -11343,7 +11544,9 @@ mod tests {
             "the 126/127 exits must not capture (streak < 4) nor mute the SIGKILL"
         );
         assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
-        assert!(effects.captures[0].message.contains("consecutive failure #1"));
+        assert!(effects.captures[0]
+            .message
+            .contains("consecutive failure #1"));
     }
 
     /// A cancelled exit stays silent AND never touches the episode streak (it
@@ -11409,18 +11612,33 @@ mod tests {
             .expect("a 190 launcher fast-fail captures at #1");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
-        assert_eq!(recorded_string_extra(event, "runner_exec_resolution"), "npx_cache");
-        assert_eq!(recorded_string_extra(event, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_resolution"),
+            "npx_cache"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_exists"),
+            "false"
+        );
         assert_eq!(
             recorded_string_extra(event, "runner_exec_target_executable"),
             "false"
         );
         assert!(
-            event.extras.iter().any(|(key, value)| key
-                == "runner_target_repair_attempted"
-                && *value == sentry::protocol::Value::Bool(true)),
+            event
+                .extras
+                .iter()
+                .any(|(key, value)| key == "runner_target_repair_attempted"
+                    && *value == sentry::protocol::Value::Bool(true)),
             "the spawn-time repair outcome rides alongside the exit-time probe"
         );
 
@@ -11442,7 +11660,14 @@ mod tests {
         let direct_event = direct.captures.first().expect("still captured at #1");
         assert_eq!(
             direct_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert!(
             !direct_event
@@ -11499,13 +11724,23 @@ mod tests {
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
         assert_eq!(
             exec_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
             "false"
         );
-        assert_eq!(recorded_number_extra(exec_event, "exec_not_runnable_streak"), 4);
+        assert_eq!(
+            recorded_number_extra(exec_event, "exec_not_runnable_streak"),
+            4
+        );
     }
 
     #[test]
@@ -11803,7 +12038,12 @@ mod tests {
             " [uptime=2m0s; last_rss=48MB (tree, sampled 8s before exit)]"
         );
         assert_eq!(
-            exit_diagnostic_suffix(Some(Duration::from_secs(120)), Some(48 * 1024), None, "tree"),
+            exit_diagnostic_suffix(
+                Some(Duration::from_secs(120)),
+                Some(48 * 1024),
+                None,
+                "tree"
+            ),
             " [uptime=2m0s; last_rss=48MB (tree)]"
         );
         // A launcher/shim single-PID sample WITHHOLDS the number — neither the
@@ -11840,7 +12080,10 @@ mod tests {
         );
         assert_eq!(resolve_rss_scope(None, "/opt/homebrew/bin/npx"), "launcher");
         // Only a command whose registered child IS the runner keeps `runner`.
-        assert_eq!(resolve_rss_scope(Some(RssSampleKind::Single), "node"), "runner");
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Single), "node"),
+            "runner"
+        );
     }
 
     #[test]
@@ -11872,7 +12115,10 @@ mod tests {
         // Only the root (shim) was readable — the runner/descendants all raced out
         // of their per-PID reads — so the "tree" would be just the ~6MB shim.
         // Withhold (None) instead of mislabeling the shim as the complete tree.
-        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100), None);
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100),
+            None
+        );
         assert_eq!(sum_job_working_set_kb(&[(100, Some(6144))], 100), None);
         // A single readable descendant is enough to trust the tree even when other
         // members raced out — no over-withholding on worker churn.
@@ -12117,13 +12363,25 @@ mod tests {
             recorded_tag(heap_capture, "runner_heap_peak_used_bucket"),
             "2_5gb_to_3gb"
         );
-        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
-        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
-        assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_heap_used_mb"),
+            48
+        );
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_heap_total_mb"),
+            81
+        );
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_oom_frame_count"),
+            3
+        );
 
         // The baseline (no heap evidence) carries none of them — absence never
         // renders as evidence.
-        assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_oom_banner"));
         assert!(base_capture
             .tags
             .iter()
@@ -12138,10 +12396,7 @@ mod tests {
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
         assert_eq!(heap_capture.fingerprint.len(), 6);
         assert_eq!(heap_capture.fingerprint[0], "sync");
-        assert_eq!(
-            heap_capture.fingerprint[1],
-            "auto-sync-watcher-termination"
-        );
+        assert_eq!(heap_capture.fingerprint[1], "auto-sync-watcher-termination");
     }
 
     fn assert_signed_out_entry_point_records_origin(
@@ -12225,7 +12480,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             0,
-&[],
+            &[],
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -12266,7 +12521,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             0,
-&tail,
+            &tail,
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -12369,7 +12624,7 @@ mod tests {
             &phase_context,
             &generation,
             0,
-&tail,
+            &tail,
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -12437,7 +12692,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none",
+                "none",
+                "none",
             ],
             "grouping continuity: neither cluster issue may regroup"
         );
@@ -12484,7 +12740,7 @@ mod tests {
             }),
             &generation,
             0,
-&[],
+            &[],
             None,
             SessionEndLatchReading::Unavailable,
             None,

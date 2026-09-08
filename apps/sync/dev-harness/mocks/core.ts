@@ -536,6 +536,33 @@ const HARNESS_WORKSPACES: Workspace[] = [
   ),
 ];
 
+
+// --- in-app sessions (?view=sessions) --------------------------------------
+// A scripted transcript that exercises every block the chat surface renders:
+// operator bubbles, prose, a folded tool group, an open permission card, one
+// already answered, and the usage line the composer footer reads.
+const SESSION_ID = 'sess_7f3ab21c';
+
+/** A fixed wall clock so the scripted transcript is deterministic. */
+const AGENT_SESSION_T0 = Date.parse('2026-09-02T14:00:00Z');
+
+const AGENT_SESSION_EVENTS: [number, unknown][] = [
+  [0, { kind: 'started', sessionId: SESSION_ID, tool: 'claude', model: 'claude-fable-5-1[1m]', cwd: '/Users/corey/Documents/HQ', tools: ['Bash', 'Read', 'Edit'], commands: [{ name: 'handoff', description: 'End the session cleanly' }] }],
+  [1, { kind: 'userMessage', text: 'Make the composer one bar — company, model and effort as pills on it.', imageCount: 0 }],
+  [2, { kind: 'toolCall', id: 't1', name: 'Bash', input: { command: 'git -C repos/private/hq-desktop-app status --short' } }],
+  [3, { kind: 'toolResult', id: 't1', isError: false, content: ' M apps/sync/src/desktop-alt/pages/SessionsPage.svelte' }],
+  [4, { kind: 'toolCall', id: 't2', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionTranscript.svelte' } }],
+  [5, { kind: 'toolResult', id: 't2', isError: false, content: '143 lines read' }],
+  [6, { kind: 'toolCall', id: 't3', name: 'Read', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [7, { kind: 'toolResult', id: 't3', isError: false, content: '313 lines read' }],
+  [8, { kind: 'toolCall', id: 't4', name: 'Edit', input: { file_path: 'apps/sync/src/components/sessions/SessionComposer.svelte' } }],
+  [9, { kind: 'toolResult', id: 't4', isError: false, content: 'edited' }],
+  [10, { kind: 'assistantMessage', text: "The composer is now a single rounded bar. Company, model and effort are **pills on the bar itself**, so there is no setup step before the first message.\n\nOne thing to confirm before I keep going: the permission pill defaults to `Prompt`." }],
+  [11, { kind: 'permissionRequest', requestId: 'req_written', toolName: 'Write', input: { file_path: 'apps/sync/src/components/sessions/ToolGroupRow.svelte' }, suggestions: [] }],
+  [12, { kind: 'usage', inputTokens: 2, outputTokens: 17, costUsd: 0.68 }],
+];
+
+
 const handlers: Record<string, Handler> = {
   // Deterministic full-desktop route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
@@ -1394,6 +1421,112 @@ This final paragraph verifies spacing after a thematic break.
   messages_window_ready: () => null,
   open_messages_window: () => null,
   take_pending_messages_target: () => null,
+
+  agent_session_preflight: () => ({
+    hqRoot: '/Users/corey/Documents/HQ',
+    hooksReady: true,
+    hooksError: null,
+    claudeAvailable: true,
+    claudeLoggedIn: true,
+    codexAvailable: true,
+    codexLoggedIn: true,
+    companies: [
+      { slug: 'indigo', displayName: 'Indigo', cloudUid: 'cmp_indigo' },
+      { slug: 'ridge', displayName: 'Ridge' },
+      { slug: 'personal', displayName: 'Personal' },
+    ],
+  }),
+  agent_session_slash_commands: () => ({
+    commands: [
+      { name: 'handoff', description: 'End the session cleanly' },
+      { name: 'checkpoint', description: 'Write a checkpoint and continue' },
+      { name: 'plan', description: 'Plan the work first', argumentHint: '<goal>' },
+    ],
+    // The exact shape the real CLI handshake sends, descriptions included —
+    // the model menu renders the first sentence of each as its subline.
+    models: [
+      {
+        value: 'default',
+        displayName: 'Default (recommended)',
+        description: 'Use the default model (currently Opus 5 (1M context))',
+      },
+      {
+        value: 'opus[1m]',
+        displayName: 'Opus (1M context)',
+        description: 'Most capable for your hardest and longest-running tasks. Slower.',
+      },
+      {
+        value: 'claude-fable-5-1[1m]',
+        displayName: 'Fable',
+        description: 'Fast and sharp for everyday work. A good default for coding.',
+      },
+      {
+        value: 'claude-sonnet-4-6',
+        displayName: 'Sonnet',
+        description: 'Balanced speed and depth.',
+      },
+      {
+        value: 'claude-haiku-4-5',
+        displayName: 'Haiku',
+        description: 'Fastest and cheapest for simple, well-scoped tasks.',
+      },
+    ],
+  }),
+  hq_skill_catalog: () => ({
+    workers: [
+      { id: 'frontend-dev', name: 'Frontend Developer', description: 'Builds polished product interfaces and interaction flows.', company: null, skills: [{ name: 'implement', description: 'Implement a frontend feature', tags: ['engineering', 'ui'], invoke: '/run frontend-dev implement' }] },
+      { id: 'product-designer', name: 'Product Designer', description: 'Designs and critiques clear, useful product experiences.', company: 'indigo', skills: [{ name: 'critique', description: 'Review an interface', tags: ['design', 'review'], invoke: '/run product-designer critique' }] },
+      { id: 'researcher', name: 'Researcher', description: 'Finds evidence and turns it into decisions.', company: null, skills: [] },
+    ],
+    skills: [
+      { name: 'Start work', description: 'Orient a session in company and project context.', scope: 'core', tags: ['session'], invoke: '/startwork' },
+      { name: 'Capture signal', description: 'Save an important decision or customer signal.', scope: 'company:indigo', tags: ['knowledge'], invoke: '/indigo:signal', skillUid: 'skl_signal' },
+      { name: 'Review launch', description: 'Run the Indigo launch-readiness review.', scope: 'company:indigo', tags: ['launch', 'review'], invoke: '/indigo:launch-review', skillUid: 'skl_launch' },
+      { name: 'Direct message', description: 'Send a message to an HQ teammate.', scope: 'personal', tags: ['people'], invoke: '/dm' },
+      { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
+    ],
+  }),
+  hq_pro_fetch: () => ({
+    status: 200,
+    body: JSON.stringify({ grouped: {
+      companyWide: [{ skillUid: 'skl_signal', name: 'Capture signal', tags: ['knowledge', 'company'] }],
+      departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
+    } }),
+  }),
+  agent_session_list: () => [
+    {
+      sessionId: SESSION_ID,
+      tool: 'claude',
+      phase: 'working',
+      company: 'indigo',
+      model: 'claude-fable-5-1[1m]',
+      cwd: '/Users/corey/Documents/HQ',
+      startedAt: '2026-09-02T14:00:00Z',
+      lastActivityAt: '2026-09-02T14:06:00Z',
+      lastSeq: AGENT_SESSION_EVENTS.length,
+      pendingCount: 1,
+      effort: null,
+      permissionMode: 'prompt',
+    },
+  ],
+  agent_session_replay: (args) => {
+    const since = Number(args?.sinceSeq ?? 0);
+    return {
+      events: AGENT_SESSION_EVENTS.filter(([seq]) => seq >= since).map(([seq, event]) => ({
+        seq,
+        receivedAtMs: AGENT_SESSION_T0 + seq * 30_000,
+        event,
+      })),
+      nextSeq: AGENT_SESSION_EVENTS.length,
+      truncated: false,
+    };
+  },
+  agent_session_start: () => ({ sessionId: SESSION_ID }),
+  agent_session_send: () => null,
+  agent_session_interrupt: () => null,
+  agent_session_end: () => null,
+  agent_session_respond_permission: () => null,
+  agent_session_answer_question: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

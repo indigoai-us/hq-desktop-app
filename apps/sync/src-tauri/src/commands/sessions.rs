@@ -78,6 +78,16 @@ pub const EVENT_SESSIONS_UPDATED: &str = "sessions:updated";
 /// Diagnostic-log tag for the sessions polling loop.
 pub(crate) const LOG_TAG: &str = "sessions";
 
+fn observed_sessions() -> &'static std::sync::Mutex<Vec<AgentSession>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<AgentSession>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Non-blocking enrichment for the sidebar; discovery remains owned by the poller.
+pub(crate) fn cached_agent_sessions() -> Vec<AgentSession> {
+    observed_sessions().lock().map(|rows| rows.clone()).unwrap_or_default()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Snapshot assembly (async, real I/O)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +129,9 @@ fn collect_snapshot_blocking() -> MissionControlSnapshot {
     // against them (their processes live on the VM, not this box).
     let outpost_view = outpost::outpost_view(now);
     let sessions = append_outpost_sessions(local, outpost_view.sessions);
+    if let Ok(mut cache) = observed_sessions().lock() {
+        *cache = sessions.clone();
+    }
 
     let history = history::derive_local_session_history();
 
@@ -415,6 +428,7 @@ mod tests {
             id: id.to_string(),
             tool,
             origin: AgentOrigin::Local,
+            title: id.to_string(),
             cwd: "/tmp".to_string(),
             project: "p".to_string(),
             company: "indigo".to_string(),

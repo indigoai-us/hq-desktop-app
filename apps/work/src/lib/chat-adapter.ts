@@ -12,6 +12,7 @@
 import type { AdapterResult, PlatformAdapter } from "@hq/platform";
 import {
   createLiveNotificationsApi,
+  type LiveNotificationsOptions,
   normalizeDirectoryFeed,
   type AgencyApi,
   type AgencyMessage,
@@ -495,8 +496,9 @@ export async function fetchWorkspaces(
 
 export function createNotificationsApi(
   adapter: PlatformAdapter,
+  options?: LiveNotificationsOptions,
 ): NotificationsApi {
-  return createLiveNotificationsApi(adapter);
+  return createLiveNotificationsApi(adapter, options);
 }
 
 export function createAgencyApi(adapter: PlatformAdapter): AgencyApi {

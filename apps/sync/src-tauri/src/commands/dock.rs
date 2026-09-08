@@ -322,6 +322,7 @@ mod tests {
             widget_show_needs_action: None,
             dock_icon,
             hq_work_handoff: None,
+            in_app_sessions: None,
             system_notifications: None,
             native_notify_direct_messages: None,
             native_notify_shares: None,

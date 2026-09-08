@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -25,6 +26,7 @@
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
   import ShortcutCheatSheet from "../common/ShortcutCheatSheet.svelte";
   import {
     formatShortcut,
@@ -35,6 +37,9 @@
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
   } from "./sidebar-layout.js";
+  import { ImagePreviewCache } from "../chat/messaging/image-preview-cache";
+  import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
+  import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
@@ -149,7 +154,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, tick as svelteTick, untrack } from "svelte";
+  import { onDestroy, onMount, tick as svelteTick, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -479,6 +484,22 @@
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
+    /** Host-registered full-column destinations keyed by page id. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        detail?: string;
+        /** Optional host-owned create action in the window header. */
+        createAction?: { label: string; param: () => string | null };
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (param: string | null) => void;
+        }>;
+      }
+    >;
+    /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -528,6 +549,8 @@
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    extraPages,
+    rowExtras = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -618,7 +641,10 @@
     | "atlas"
     | "library"
     | "shared-files"
+    | "extra"
   >("conversation");
+  let extraPageId = $state<string | null>(null);
+  let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -822,6 +848,14 @@
       shortcut: shortcutLabel("view.settings"),
       action: () => openSettings(),
     });
+    for (const [id, page] of Object.entries(extraPages ?? {})) {
+      nav.push({
+        id: `command-go-${id}`,
+        label: page.label,
+        detail: page.detail ?? page.label,
+        action: () => openExtraPage(id),
+      });
+    }
     if (!isWeb) {
       nav.push({
         id: "command-go-marketplace",
@@ -1206,6 +1240,23 @@
     }
   }
 
+  let historyCursors = $state<Record<string, string | null>>({});
+
+  async function loadEarlierTimeline(): Promise<void> {
+    const row = selectedRow;
+    if (!row) return;
+    const generation = tenantGeneration;
+    const cursor = historyCursors[row.id];
+    if (!cursor) return;
+    const raw = row.channelId
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
+      : null;
+    if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
+    const page = timelinePageFromPayload(raw);
+    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
@@ -1217,6 +1268,7 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
+    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
     const incoming = messagesForDisplay(raw);
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
@@ -1232,12 +1284,12 @@
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
     const incoming = messagesForDisplay(raw);
-    commitTimeline(
-      row,
-      existing.length > 0
-        ? mergeFetchedTimeline(existing, raw)
-        : incoming,
-    );
+    // History may have loaded while this refresh was in flight. Merge into
+    // the current timeline so its newly prepended page is not discarded.
+    const current = liveTimelineId === row.id
+      ? liveTimeline
+      : (timelineCache.get(row.id) ?? []);
+    commitTimeline(row, mergeFetchedTimeline(current, raw));
     clearThinkingFromIncoming(incoming);
   }
 
@@ -1449,9 +1501,58 @@
   const boardHasCards = $derived(
     Boolean(overlayBoard?.columns.some((column) => column.cards.length > 0)),
   );
-  const board = $derived<BoardTabData | null>(
-    boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard),
-  );
+  let createdTasks = $state<Record<string, BoardTabData>>({});
+  $effect(() => {
+    self?.uid;
+    createdTasks = {};
+  });
+  $effect(() => {
+    const key = selectedRow ? activityKeyForRow(selectedRow) : "";
+    const pending = createdTasks[key];
+    const base = boardHasCards ? overlayBoard : liveTabs?.board;
+    if (!pending || !base) return;
+    const remaining = Object.fromEntries(Object.entries(pending.stories).filter(([id]) => !base.stories[id]));
+    if (Object.keys(remaining).length === Object.keys(pending.stories).length) return;
+    const next = {...createdTasks};
+    if (!Object.keys(remaining).length) delete next[key];
+    else next[key] = {...pending, stories: remaining, columns: pending.columns.map(column => ({...column, cards: column.cards.filter(card => remaining[card.storyId])}))};
+    createdTasks = next;
+  });
+  const board = $derived.by((): BoardTabData | null => {
+    const base = boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard);
+    const added = selectedRow ? createdTasks[activityKeyForRow(selectedRow)] : null;
+    if (!added) return base;
+    if (!base) return added;
+    return { ...base, stories: {...added.stories, ...base.stories}, columns: base.columns.map(column => ({
+      ...column, cards: [...column.cards, ...(added.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => !base.stories[card.storyId])],
+    })) };
+  });
+
+  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const create = adapter.workMesh.createProjectStory;
+    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
+    const key = activityKeyForRow(row);
+    const account = self?.uid;
+    // A retry after a lost response must not append the same task twice.
+    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
+    const existing = before.stories.find(story => story.id === task.id);
+    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
+    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
+    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    const story = saved?.stories.find(story => story.id === task.id);
+    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
+    if (self?.uid !== account) return;
+    const prior = createdTasks[key];
+    const added = projectViewToBoard({...saved, stories: [story]});
+    createdTasks = {...createdTasks, [key]: prior ? {
+      ...added, stories: {...prior.stories, ...added.stories},
+      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
+    } : added};
+  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -3281,7 +3382,8 @@
     }
     const isDm = row.kind === "dm" && !!row.personUid;
     const selfUid = self?.uid?.trim() ?? "";
-    return uploadChatAttachments({
+    const cache = imagePreviewCache;
+    const uploaded = await uploadChatAttachments({
       files,
       companyUid,
       scope: isDm ? "dm" : "chan",
@@ -3302,6 +3404,13 @@
               })
           : putAttachmentObject,
     });
+    // Preserve the local upload preview under its final immutable vault path.
+    void Promise.all(uploaded.map(async (item, index) => {
+      if (item.kind !== "image" || !cache) return;
+      try { await cache.warm(item.companyUid, item.vaultPath, files[index]); }
+      catch (error) { console.warn("[image-preview] Upload preview unavailable", error); }
+    }));
+    return uploaded;
   }
 
   async function persistSend(
@@ -3405,6 +3514,58 @@
       agentThinking = [];
       throw err;
     }
+  }
+
+  let imagePreviewCache = $state<ImagePreviewCache | null>(null);
+  const imagePreviewStore = createImagePreviewStore();
+  let previousPreviewAccount = "";
+  let previousPreviewCache: ImagePreviewCache | null = null;
+  $effect(() => {
+    const account = self?.uid?.trim() || tenantAccountId?.trim() || "";
+    void tenantGeneration;
+    if (previousPreviewAccount && previousPreviewAccount !== account) {
+      void previousPreviewCache?.clearAccount().catch((error) => {
+        console.warn("[image-preview] Account cache cleanup failed", error);
+      });
+    }
+    previousPreviewAccount = account;
+    const cache = account ? new ImagePreviewCache({
+      account,
+      store: imagePreviewStore,
+      load: async (scope, path) => {
+        const signed = await adapter.files.presignVaultGet(scope, path);
+        if (!signed.ok) throw new Error("Image unavailable");
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) throw new Error("Image URL missing");
+        const response = await getVaultBytesForHost(url, 25 * 1024 * 1024);
+        if (!response.ok) throw new Error("Image unavailable");
+        return response.blob();
+      },
+    }) : null;
+    imagePreviewCache = cache;
+    previousPreviewCache = cache;
+    return () => cache?.dispose();
+  });
+
+  // Warm only a small recent slice; the cache limits concurrent byte/decode work.
+  $effect(() => {
+    const cache = imagePreviewCache;
+    const scope = attachmentCompanyUid(selectedRow);
+    const images = liveTimeline.slice(-20).flatMap(parseMessageAttachments)
+      .filter((item) => item.kind === "image" && item.contentType !== "image/svg+xml" && !/\.svg$/i.test(item.name)).slice(-8);
+    if (!cache || !scope) return;
+    for (const item of images) {
+      void cache.warm(item.companyUid || scope, item.vaultPath).catch(() => {
+        // The visible attachment owns the accessible retry/error state.
+      });
+    }
+  });
+
+  async function signOutWithImageCleanup(): Promise<void> {
+    const cache = imagePreviewCache;
+    await onsignout?.();
+    try { await cache?.clearAccount(); }
+    catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }
   }
 
   async function presignAttachment(
@@ -3590,6 +3751,10 @@
       membersOpen = false;
       projectAboutOpen = false;
     }
+    if (dest.kind === "channel") {
+      const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
+      if (row) handleSelect(row);
+    }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {
@@ -3614,6 +3779,21 @@
     membersOpen = false;
     projectAboutOpen = false;
     onOpenSettings?.();
+  }
+
+  function openExtraPage(id: string, param: string | null = null): void {
+    if (!extraPages?.[id]) {
+      embeddedNavigationError = `Unknown destination: ${id}`;
+      return;
+    }
+    extraPageId = id;
+    extraPageParam = param;
+    view = "extra";
+    settingsSection = null;
+    meetingFocusRequest = null;
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -3693,6 +3873,9 @@
           displayName: "",
           replyRootEventId: target.replyRootEventId,
         });
+        return;
+      case "extra":
+        openExtraPage(target.page, target.param ?? null);
         return;
       case "unsupported":
         embeddedNavigationError = `${target.reason}: ${target.route}`;
@@ -4045,6 +4228,13 @@
   <V4TitleBar
     {adapter}
     {version}
+    primaryAction={(() => {
+      const entry = Object.entries(extraPages ?? {}).find(([, page]) => page.createAction);
+      if (!entry) return undefined;
+      const [id, page] = entry;
+      const action = page.createAction!;
+      return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
+    })()}
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
@@ -4134,7 +4324,7 @@
         {version}
         initialSection={settingsSection}
         onback={closeSettings}
-        onsignout={onsignout}
+        onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
@@ -4179,7 +4369,7 @@
             meetingFocusRequest = null;
           }}
           onopenSettings={() => openSettings()}
-          onsignout={onsignout}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           onrows={(rows) => (railRows = rows)}
@@ -4188,6 +4378,7 @@
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
       {/if}
@@ -4217,6 +4408,18 @@
               meetingFocusRequest = null;
             }}
           />
+        {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
+          {@const Page = extraPages[extraPageId].component}
+          <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
+            {#key `${extraPageId}:${extraPageParam ?? ""}`}
+              <Page
+                param={extraPageParam}
+                onnavigate={(next: string | null) => {
+                  extraPageParam = next;
+                }}
+              />
+            {/key}
+          </div>
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
@@ -4741,6 +4944,18 @@
                 {/snippet}
                 <ChannelConversation
                   messages={timelineWithActivity}
+                  onseen={async () => {
+                    const row = selectedRow;
+                    if (!row) return;
+                    if (row.kind === "dm" && row.personUid) {
+                      await sidebarApi.markDmThreadRead(row.personUid);
+                    } else if (row.channelId && !row.browseOnly && row.membership !== "invited") {
+                      await sidebarApi.markChannelRead(row.channelId);
+                    } else return;
+                    wakes?.emit?.("conversation:read", { id: row.id });
+                  }}
+                  hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  onloadearlier={loadEarlierTimeline}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
@@ -4752,6 +4967,7 @@
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
+                  previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
@@ -4858,7 +5074,9 @@
                     reactions={rowReactions}
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
+                    selfPersonUid={self?.uid ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
+                    previewCache={imagePreviewCache}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
                     onopenartifact={openArtifact}
@@ -4879,6 +5097,7 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
+              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
               onOpenInChannel={() => (tab = "chat")}
@@ -4935,6 +5154,7 @@
 
   {#if attachTray}
     <AttachmentTray
+      previewCache={imagePreviewCache}
       items={attachTray.items}
       selectedId={attachTray.selectedId}
       onselect={(id) => {
@@ -5013,6 +5233,15 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .extra-page-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .conversation-boot-error {

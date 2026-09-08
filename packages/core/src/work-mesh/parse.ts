@@ -148,6 +148,7 @@ export function parseCachedReactions(raw: unknown): MeshCachedReaction[] {
       emoji,
       count: asNumber(item.count) ?? 0,
       reactedByMe: Boolean(item.reactedByMe ?? item.reacted_by_me),
+      ...(Array.isArray(item.reactors) ? {reactors: item.reactors.filter(isRecord).map(person => ({personUid: asString(person.personUid), displayName: asString(person.displayName)})).filter(person => person.personUid)} : {}),
     });
   }
   return out;

@@ -11,7 +11,8 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { onDestroy, untrack, type Snippet } from "svelte";
+  import { onDestroy, tick, untrack, type Snippet } from "svelte";
+  import { observeConversationRead } from "./observe-conversation-read";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -23,6 +24,7 @@
   import MentionPicker from "./MentionPicker.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -68,6 +70,7 @@
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
     handleLinkActivate,
@@ -104,6 +107,8 @@
   interface Props {
     /** Timeline, oldest → newest. Injected — never fetched here. */
     messages: ConversationMessageWire[];
+    /** The focused user has reached the newest rendered message. */
+    onseen?: () => Promise<void>;
     /** messageId → reaction aggregates. */
     reactions?: ReactionMap;
     /** Composer placeholder (host supplies "Message # … — or type / to run…"). */
@@ -128,6 +133,7 @@
        *  reconciles against the echo exactly rather than by content. */
     ) => void | string | Promise<void | string>;
     /** Presign a vault GET so image thumbs and the tray can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -171,6 +177,8 @@
     activeRootEventId?: string | null;
     /** Host is fetching history — do not flash “No messages yet”. */
     loading?: boolean;
+    hasEarlier?: boolean;
+    onloadearlier?: () => Promise<void>;
     /**
      * Empty-state copy. A project channel with zero chat AND zero work-mesh
      * events is empty of ACTIVITY, so the host passes "No activity yet" there.
@@ -219,6 +227,7 @@
 
   let {
     messages,
+    onseen,
     reactions = {},
     placeholder = "Reply…",
     onopenurl,
@@ -226,6 +235,7 @@
     oncardaction,
     ontogglereaction,
     onsend,
+    previewCache,
     onpresign,
     mentionCandidates = [],
     onreply,
@@ -237,6 +247,8 @@
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
+    hasEarlier = false,
+    onloadearlier,
     emptyLabel = "No messages yet",
     selfDisplayName = null,
     selfPersonUid = null,
@@ -310,6 +322,8 @@
   /** Monotonic so a temp id is never reused after a row is removed. */
   let sendSeq = 1;
   let extraOlder = $state(0);
+  /** Avoid scheduling the same history page twice from a burst of top scrolls. */
+  let loadingEarlier = $state(false);
   /** Release blob: previews created for optimistic sends (leak guard). */
   function revokeLocalPreviews(rows: ConversationMessageWire[]): void {
     for (const row of rows) {
@@ -397,24 +411,17 @@
     for (const row of rows) sendMeta.delete(row.eventId ?? "");
   }
 
-  // The host's safety catch-up hands down a fresh `messages` array every few
-  // seconds; only the NEWEST event id is a real "the conversation moved"
-  // signal for the "Show N earlier" expansion, so an identity-only refresh does
-  // not collapse it. Optimistic rows are a separate concern: they are removed
-  // on positive reconciliation against the echo, never on id identity.
-  let lastSeenNewestId: string | undefined;
-  let lastSeenInitialized = false;
+  // Optimistic rows are removed on POSITIVE reconciliation against the server
+  // echo (body + author + timestamp window), never on newest-id identity: a
+  // synthetic local id can never match the echo, and the echo does not always
+  // land as the newest row. `extraOlder` is deliberately NOT reset here — once
+  // the reader has opened older history (locally windowed or fetched through
+  // `onloadearlier`) a live refresh must not collapse it back.
   $effect(() => {
     const rows = messages;
-    const newestId = rows.at(-1)?.eventId;
     // untrack: reading/writing localSends here would make this effect re-run on
     // its own write (effect depth explosion).
     untrack(() => {
-      if (!lastSeenInitialized || newestId !== lastSeenNewestId) {
-        lastSeenInitialized = true;
-        lastSeenNewestId = newestId;
-        extraOlder = 0;
-      }
       if (localSends.length === 0) return;
       const kept = reconcileLocalSends(localSends, rows);
       if (kept.length === localSends.length) return;
@@ -438,6 +445,20 @@
       out.push(msg);
     }
     return out;
+  });
+
+  // Persisted answered-decision state, derived from the whole injected message
+  // set (root + replies, oldest → newest) so a card locks + highlights its
+  // chosen option across reload and thread reopen — not just optimistically
+  // after a click. See decision-answers.ts for the correlation rules.
+  const answeredDecisions = $derived(decisionAnswersFromMessages(messages));
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
   });
 
   // One-shot restore of the stored draft — `draftKey`/`draftStorage` are fixed
@@ -490,6 +511,17 @@
     const pinned = distance <= STICK_THRESHOLD_PX;
     if (pinned !== stickToBottom) stickToBottom = pinned;
     if (pinned && hasUnseenBelow) hasUnseenBelow = false;
+    // Reaching the top pulls the next history page (local window first, then
+    // the host's remote fetch). `showEarlier` self-guards with `loadingEarlier`,
+    // so a scroll burst still requests exactly one page. `earlierError` gates
+    // the AUTOMATIC pull only: because this measurement is rAF-throttled, a
+    // single burst can deliver a trailing measurement after a failed load
+    // resolved, which would silently re-request (and keep re-requesting) a
+    // page the host just failed to serve. After a failure the reader retries
+    // explicitly through the button, which clears the flag.
+    if (!earlierError && scroller.scrollTop <= STICK_THRESHOLD_PX) {
+      void showEarlier();
+    }
   }
 
   /** Throttle to one measurement per animation frame: the first event in a
@@ -523,9 +555,25 @@
   }
 
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
-  function showEarlier(): void {
+  let earlierError = $state(false);
+  async function showEarlier(): Promise<void> {
+    if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
+    loadingEarlier = true;
+    earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
-    extraOlder += TIMELINE_WINDOW;
+    try {
+      if (windowed.hidden === 0) await onloadearlier?.();
+      extraOlder += TIMELINE_WINDOW;
+    } catch {
+      earlierError = true;
+    } finally {
+      await tick();
+      if (scroller && prependAnchorHeight > 0) {
+        scroller.scrollTop += scroller.scrollHeight - prependAnchorHeight;
+      }
+      prependAnchorHeight = 0;
+      loadingEarlier = false;
+    }
   }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -1130,13 +1178,7 @@
       const grew = length > prevTimelineLength;
       prevTimelineLength = length;
       if (!el) return;
-      if (prependAnchorHeight > 0) {
-        // Older history was prepended: hold the user's VISUAL position by
-        // shifting scrollTop by exactly the height the prepend added.
-        el.scrollTop += el.scrollHeight - prependAnchorHeight;
-        prependAnchorHeight = 0;
-        return;
-      }
+      if (loadingEarlier) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
       } else if (grew) {
@@ -1172,6 +1214,7 @@
       <div
         class="dm-thread"
         bind:this={scroller}
+        use:observeConversationRead={{ key: messages.at(-1)?.eventId ?? "", onseen }}
         onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
@@ -1185,15 +1228,16 @@
             {emptyLabel}
           </div>
         {/if}
-        {#if windowed.hidden > 0}
+        {#if loadingEarlier}
+          <div role="status" class="dm-load-earlier">Loading earlier messages…</div>
+        {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
             onclick={showEarlier}
           >
-            Show {windowed.hidden} earlier
-            {windowed.hidden === 1 ? "message" : "messages"}
+            {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
         {#each renderRows as row (row.msg.eventId)}
@@ -1256,6 +1300,8 @@
                 <RunCompleteCard model={systemModel} {onopenurl} />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1293,6 +1339,8 @@
                 />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1393,7 +1441,12 @@
                     </div>
                   {/if}
                   {#if rich.rich}
-                    <RichMessageContent content={rich.rich} ondecision={handleDecision} />
+                    <RichMessageContent
+                      content={rich.rich}
+                      ondecision={handleDecision}
+                      {answeredQuestionIds}
+                      {answeredChoices}
+                    />
                   {/if}
                   {#if msg.details?.trim()}
                     <ArtifactCard
@@ -1412,6 +1465,8 @@
                     />
                   {/if}
                   <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                     attachments={parseMessageAttachments(msg)}
                     onopen={openAttachment}
                     resolveUrl={resolveAttachmentUrl}
@@ -1511,6 +1566,8 @@
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1727,6 +1784,7 @@
   </div>
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
+      {previewCache}
       items={conversationAttachments}
       selectedId={traySelectedId}
       onselect={(id) => (traySelectedId = id)}

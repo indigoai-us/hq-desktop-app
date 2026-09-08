@@ -170,6 +170,18 @@ describe("notifications-model (US-012)", () => {
       );
       expect(dest).toEqual({ kind: "files" });
     });
+
+    it("opens a channel notification from its channel target", () => {
+      expect(
+        notificationDestination(
+          item({
+            id: "local:channel:evt_1",
+            serverType: "channel_message",
+            targetRef: "/channels/chn_123",
+          }),
+        ),
+      ).toEqual({ kind: "channel", channelId: "chn_123" });
+    });
   });
 
   describe("verb + actor", () => {

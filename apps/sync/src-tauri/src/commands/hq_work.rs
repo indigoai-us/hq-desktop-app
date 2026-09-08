@@ -427,9 +427,7 @@ pub fn embedded_conversation_route(
     build_hqwork_open_url(channel, person, reply)
 }
 
-fn hqwork_query_tokens(
-    url: &str,
-) -> Option<(Option<&str>, Option<&str>, Option<&str>)> {
+fn hqwork_query_tokens(url: &str) -> Option<(Option<&str>, Option<&str>, Option<&str>)> {
     let query = url.split_once('?')?.1;
     let query = query.split_once('#').map(|(q, _)| q).unwrap_or(query);
     let mut channel = None;

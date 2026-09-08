@@ -406,6 +406,8 @@ pub struct ReactionAggregate {
     pub count: u32,
     #[serde(default)]
     pub reacted_by_me: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactors: Option<serde_json::Value>,
 }
 
 /// The aggregate set for one message. The GET endpoint returns THIS object
@@ -774,7 +776,10 @@ mod tests {
         ] }"#;
         let photos: ChannelMembersResponse =
             serde_json::from_str(with_photos).expect("members with avatars parse");
-        assert_eq!(photos.members[0].avatar_url.as_deref(), Some("https://cdn/o.jpg"));
+        assert_eq!(
+            photos.members[0].avatar_url.as_deref(),
+            Some("https://cdn/o.jpg")
+        );
         assert!(photos.members[1].avatar_url.is_none());
         let out = serde_json::to_value(&photos).expect("members serialize");
         assert_eq!(out["members"][0]["avatarUrl"], "https://cdn/o.jpg");
@@ -964,12 +969,21 @@ mod tests {
                 emoji: "👍".to_string(),
                 count: 2,
                 reacted_by_me: true,
+                reactors: Some(
+                    serde_json::json!([{ "personUid": "prs_ada", "displayName": "Ada" }]),
+                ),
             }],
         };
         let v = serde_json::to_value(&mr).unwrap();
         assert_eq!(v["messageScope"], "dm:prs_x");
         assert_eq!(v["messageId"], "evt_1");
         assert_eq!(v["reactions"][0]["reactedByMe"], true);
+        let roundtrip: MessageReactions = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(roundtrip).unwrap()["reactions"][0]["reactors"],
+            v["reactions"][0]["reactors"]
+        );
+        assert_eq!(v["reactions"][0]["reactors"][0]["displayName"], "Ada");
     }
 
     #[test]
@@ -996,8 +1010,7 @@ mod tests {
                          "companyUid": "ent_co", "projectId": "hq-mobile" },
             "membership": { "joined": true }
         }"#;
-        let r: EnsureProjectChannelResponse =
-            serde_json::from_str(json).expect("response parses");
+        let r: EnsureProjectChannelResponse = serde_json::from_str(json).expect("response parses");
         assert!(r.created);
         assert_eq!(r.channel.as_ref().unwrap().channel_id, "chn_1");
     }

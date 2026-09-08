@@ -2253,9 +2253,7 @@ impl ProvisionAttempt {
     pub(crate) fn into_start_sync_result(self) -> Result<(), String> {
         match self {
             ProvisionAttempt::Provisioned => Ok(()),
-            ProvisionAttempt::Deferred(message) | ProvisionAttempt::Failed(message) => {
-                Err(message)
-            }
+            ProvisionAttempt::Deferred(message) | ProvisionAttempt::Failed(message) => Err(message),
         }
     }
 }
@@ -2381,11 +2379,12 @@ fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
 ///   ndjson lines arrive.
 /// - Hard timeout of 1 hour; the sync is cancelled if it exceeds this.
 ///
-/// V2 Cloud Off gate for `start_sync` (first statement of the command).
-/// Extracted `pub(crate)` so the unit test exercises the exact function the
-/// command calls against a real menubar.json.
+/// Spawn gate for `start_sync` (first statement of the command): the dev kill
+/// switch `HQ_DEV_NO_SYNC` first, then V2 Cloud Off. Extracted `pub(crate)` so
+/// the unit test exercises the exact function the command calls against a real
+/// menubar.json.
 pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()
+    hq_desktop_core::daemon::ensure_sync_spawn_allowed()
 }
 
 /// Returns the handle string on success (always `"hq-sync"`).
@@ -2493,8 +2492,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 "no Node runtime found — provisioning HQ managed Node",
             );
-            let (attempt, provisioned_major) =
-                provision_unprovisioned_node_with_major(&app).await;
+            let (attempt, provisioned_major) = provision_unprovisioned_node_with_major(&app).await;
             if let Err(message) = attempt.into_start_sync_result() {
                 log("sync", &format!("BAIL: {message}"));
                 let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
@@ -2515,8 +2513,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         .unwrap_or_default()
                 ),
             );
-            let (attempt, provisioned_major) =
-                provision_unprovisioned_node_with_major(&app).await;
+            let (attempt, provisioned_major) = provision_unprovisioned_node_with_major(&app).await;
             if let Err(message) = attempt.into_start_sync_result() {
                 log("sync", &format!("BAIL: {message}"));
                 let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
@@ -4704,8 +4701,14 @@ mod tests {
             .expect("real fake runner should run");
 
             let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let context =
-                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            let context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                sequence,
+                0,
+                None,
+            );
             capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
         });
 
@@ -4730,7 +4733,10 @@ mod tests {
         // (the AWS name is named; the lower-cased pull-leg prose has no class name,
         // so it reads `unknown_unnamed`).
         assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
-        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:160,access_denied:8");
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "unknown_unnamed:160,access_denied:8"
+        );
         // No unlisted (uppercase-initial, unmatched) identity appears in this
         // flood, so the signature axis attaches no tag at all.
         assert!(event
@@ -4779,7 +4785,14 @@ mod tests {
         // after the cause without disturbing the first five.
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "other", "unknown_unnamed", "file"]
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "other",
+                "unknown_unnamed",
+                "file"
+            ]
         );
         assert_eq!(
             event.extra["saw_alertable_error"],
@@ -5192,8 +5205,14 @@ mod tests {
                 &spawn,
                 |event| match event {
                     ProcessEvent::Stdout(line) => {
-                        if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line)
-                        {
+                        if handle_sync_line(
+                            &handle,
+                            hq_folder_path,
+                            &totals,
+                            &phase,
+                            "test-jwt",
+                            &line,
+                        ) {
                             stdout_sequence = stdout_sequence.saturating_add(1);
                         }
                     }
@@ -5259,7 +5278,10 @@ mod tests {
             event.extra["runner_error_scope"],
             sentry::protocol::Value::String("company:0,file:0,local_state:1".to_string())
         );
-        assert!(event.tags.iter().all(|(key, _)| key != "runner_error_path_roots"));
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_path_roots"));
         assert_eq!(
             event.fingerprint,
             vec![
@@ -5322,7 +5344,8 @@ mod tests {
         let captures = sentry::test::with_captured_events(|| {
             run_process_impl("manual-runner-runner-exit-1", &spawn, |event| match event {
                 ProcessEvent::Stdout(line) => {
-                    if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line) {
+                    if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line)
+                    {
                         stdout_sequence = stdout_sequence.saturating_add(1);
                     }
                 }
@@ -5458,28 +5481,38 @@ mod tests {
         let mut terminal = None;
 
         let captures = sentry::test::with_captured_events(|| {
-            run_process_impl("manual-runner-unlisted-identity", &spawn, |event| match event {
-                ProcessEvent::Stderr(line) => {
-                    sequence = sequence.saturating_add(1);
-                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
-                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
-                    push_runner_stderr_tail(
-                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
-                        line,
-                    );
-                }
-                ProcessEvent::Exit {
-                    code,
-                    signal,
-                    success,
-                } => terminal = Some((code, signal, success)),
-                ProcessEvent::Stdout(_) => {}
-            })
+            run_process_impl(
+                "manual-runner-unlisted-identity",
+                &spawn,
+                |event| match event {
+                    ProcessEvent::Stderr(line) => {
+                        sequence = sequence.saturating_add(1);
+                        sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                        assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                        push_runner_stderr_tail(
+                            &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                            line,
+                        );
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => terminal = Some((code, signal, success)),
+                    ProcessEvent::Stdout(_) => {}
+                },
+            )
             .expect("real fake runner should run");
 
             let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let context =
-                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            let context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                sequence,
+                0,
+                None,
+            );
             capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
         });
 
@@ -5499,9 +5532,10 @@ mod tests {
         );
         // The unlisted identity carries a stable 12-hex signature — the production
         // classifier's own digest of the leading class name — un-[Filtered].
-        let expected_signature =
-            hq_desktop_core::runner_error_shape::runner_error_cause_signature("MysteryFleetError x")
-                .expect("an unlisted uppercase identity is signed");
+        let expected_signature = hq_desktop_core::runner_error_shape::runner_error_cause_signature(
+            "MysteryFleetError x",
+        )
+        .expect("an unlisted uppercase identity is signed");
         assert_eq!(
             event.tags["runner_error_cause_signature"],
             format!("{expected_signature}:3")
@@ -5850,7 +5884,14 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "eperm", "eperm", "file"]
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "eperm",
+                "eperm",
+                "file"
+            ]
         );
         for forbidden in [
             "secret-plan.md",
@@ -5910,9 +5951,30 @@ mod tests {
             vec![
                 // The per-file eperm and auth errors carry the `file` site; the
                 // error-free capture carries the `none` site sentinel (HQ-DESKTOP-5M).
-                vec!["sync", "runner-termination", "exit:2", "eperm", "eperm", "file"],
-                vec!["sync", "runner-termination", "exit:2", "auth", "unknown_unnamed", "file"],
-                vec!["sync", "runner-termination", "exit:2", "none", "none", "none"],
+                vec![
+                    "sync",
+                    "runner-termination",
+                    "exit:2",
+                    "eperm",
+                    "eperm",
+                    "file"
+                ],
+                vec![
+                    "sync",
+                    "runner-termination",
+                    "exit:2",
+                    "auth",
+                    "unknown_unnamed",
+                    "file"
+                ],
+                vec![
+                    "sync",
+                    "runner-termination",
+                    "exit:2",
+                    "none",
+                    "none",
+                    "none"
+                ],
             ]
         );
     }
@@ -6189,7 +6251,10 @@ mod tests {
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("event remains sendable");
         assert!(event.tags.iter().all(|(k, _)| k != "runner_assert_source"));
-        assert!(event.tags.iter().all(|(k, _)| k != "runner_assert_signature"));
+        assert!(event
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_assert_signature"));
         assert!(event.extra.iter().all(|(k, _)| k != "runner_assert_line"));
         assert_eq!(
             event.extra["runner_stdout_line_count"],
@@ -6350,7 +6415,10 @@ mod tests {
     /// unchanged.
     #[test]
     fn node_floor_is_sourced_from_the_core_crate() {
-        assert_eq!(MIN_NODE_MAJOR, hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR);
+        assert_eq!(
+            MIN_NODE_MAJOR,
+            hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR
+        );
         assert_eq!(MIN_NODE_MAJOR, 20);
     }
 
@@ -6717,9 +6785,11 @@ mod tests {
         assert!(provision_attempt(ToolchainRepair::Skipped, true)
             .into_start_sync_result()
             .is_err());
-        assert!(provision_attempt(ToolchainRepair::Failed("boom".into()), true)
-            .into_start_sync_result()
-            .is_err());
+        assert!(
+            provision_attempt(ToolchainRepair::Failed("boom".into()), true)
+                .into_start_sync_result()
+                .is_err()
+        );
     }
 
     #[test]
@@ -6956,7 +7026,10 @@ mod tests {
         )
         .expect("error event");
         observe_manual_runner_phase(&ctx, &error);
-        assert_eq!(ctx.lock().unwrap_or_else(|e| e.into_inner()).phase, "unknown");
+        assert_eq!(
+            ctx.lock().unwrap_or_else(|e| e.into_inner()).phase,
+            "unknown"
+        );
 
         // A later phase-bearing event still wins and pins the real phase.
         let push: SyncEvent = serde_json::from_str(

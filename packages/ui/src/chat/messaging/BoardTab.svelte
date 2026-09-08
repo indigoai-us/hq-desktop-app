@@ -9,6 +9,7 @@
    * from the injected `stories` lookup. Empty stage columns stay visible;
    * the column filter defaults to To do / Doing / Done.
    */
+  import { focusOnMount } from "../portal.js";
   import {
     BOARD_STAGE_ORDER,
     BOARD_STAGE_TITLES,
@@ -21,13 +22,44 @@
   } from "./channelTabModels";
 
   interface Props {
+    onCreateTask?: (task: {id: string; title: string; description: string; status: BoardStageId}) => Promise<void>;
     columns: BoardColumnModel[];
     stories: Record<string, BoardStoryPanelModel>;
     /** Bubbled "Open in channel" — the host flips back to the Chat tab. */
     onOpenInChannel?: () => void;
   }
 
-  let { columns, stories, onOpenInChannel }: Props = $props();
+  let { columns, stories, onOpenInChannel, onCreateTask }: Props = $props();
+
+  let createStage = $state<BoardStageId | null>(null);
+  let taskTitle = $state("");
+  let taskDescription = $state("");
+  let createPending = $state(false);
+  let createError = $state("");
+  let createId = "";
+
+  function beginCreate(stage: string): void {
+    const valid = BOARD_STAGE_ORDER.find(value => value === stage);
+    if (!valid) return;
+    createStage = valid;
+    taskTitle = "";
+    taskDescription = "";
+    createError = "";
+    createId = crypto.randomUUID();
+  }
+  async function createTask(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!taskTitle.trim() || !createStage || !onCreateTask || createPending) return;
+    createPending = true;
+    createError = "";
+    try {
+      await onCreateTask({id: createId, title: taskTitle.trim(), description: taskDescription.trim(), status: createStage});
+      selectedStoryId = createId;
+      createStage = null;
+    } catch {
+      createError = "Could not create the task. Your draft is saved here; try again.";
+    } finally { createPending = false; }
+  }
 
   let selectedStoryId = $state<string | null>(null);
   let visibleStages = $state<BoardStageId[]>([...DEFAULT_VISIBLE_BOARD_STAGES]);
@@ -106,6 +138,16 @@
     </div>
   </div>
 
+  {#if createStage}
+    <form class="board-create" onsubmit={createTask} aria-label="Create task">
+      <h3>Create task · {BOARD_STAGE_TITLES[createStage]}</h3>
+      <label>Title <input use:focusOnMount required maxlength="300" bind:value={taskTitle} disabled={createPending} /></label>
+      <label>Description <textarea maxlength="2000" bind:value={taskDescription} disabled={createPending}></textarea></label>
+      {#if createError}<p role="alert">{createError}</p>{/if}
+      <button type="submit" disabled={createPending || !taskTitle.trim()}>{createPending ? "Creating…" : "Create task"}</button>
+      <button type="button" disabled={createPending} onclick={() => (createStage = null)}>Cancel</button>
+    </form>
+  {/if}
   {#if visibleColumns.length === 0}
     <div class="board-empty" role="status">Select at least one column.</div>
   {:else}
@@ -127,6 +169,7 @@
                   >{column.title}</span
                 >
                 <span class="column-count">{column.cards.length}</span>
+                {#if onCreateTask}<button class="board-add" type="button" aria-label={`Create task in ${column.title}`} disabled={createPending} onclick={() => beginCreate(column.id)}>+</button>{/if}
               </div>
               <div class="column-body">
                 {#if column.cards.length === 0}
@@ -284,6 +327,11 @@
 </div>
 
 <style>
+  .board-add { margin-left: auto; color: var(--pop-text); background: transparent; border: 0; font-size: 20px; cursor: pointer; }
+  .board-create { padding: 12px 16px; border-bottom: 1px solid var(--pop-border); }
+  .board-create label { display: block; margin: 8px 0; }
+  .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
+
   .board-tab {
     display: flex;
     flex-direction: column;

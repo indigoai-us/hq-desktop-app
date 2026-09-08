@@ -25,10 +25,12 @@
     toSelfIdentity,
     workspacesFromMembershipRows,
     common,
+    type ConversationRow,
+    type RowExtrasResolver,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick } from 'svelte';
+  import { flushSync, onMount, tick, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -40,6 +42,17 @@
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
+  import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
+  import { parseSessionsParam } from './pages/sessions-route-param';
+  import { projectLinksStore } from './lib/project-links-store.svelte';
+  import {
+    newSessionParam,
+    historySessionParam,
+    rowExtrasFor,
+    PROJECT_CHANNEL_LINKED_EVENT,
+    type ProjectChannelLinked,
+    type ProjectLink,
+  } from './lib/session-project-links';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -100,6 +113,94 @@
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
   let updateWakeSeq = $state(0);
+  let inAppSessionsOn = $state(false);
+  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
+  type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
+  const extraPages = $derived<HostExtraPages>(
+    sessionsEnabled
+      ? {
+          sessions: {
+            label: 'Sessions',
+            detail: 'Run a Codex or Claude session inside the app',
+            // A unique draft route also resets an already-open empty composer.
+            // Global creation is standalone; project actions bind explicitly.
+            createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
+            component: SessionsExtraPage,
+          },
+        }
+      : {},
+  );
+
+  /**
+   * Project channels ↔ sessions. The shared sidebar paints a badge, nested
+   * session rows and a "New session" action on project-channel rows through the
+   * generic `rowExtras` seam; what those mean comes from this host's
+   * `session_project_links` store, keyed by company slug. A new resolver on
+   * every store change is what makes the rows repaint.
+   */
+  const companySlugByUid = $derived(
+    new Map(
+      (companies ?? [])
+        .filter((company) => company.cloudUid)
+        .map((company) => [company.cloudUid as string, company.slug]),
+    ),
+  );
+
+  function companyOfLink(
+    link: ProjectLink,
+    byCompany: Record<string, ProjectLink[]>,
+  ): string | null {
+    return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
+  }
+
+  const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
+    if (!sessionsEnabled || lifecycle !== 'ready') return null;
+    const byCompany = projectLinksStore.byCompany;
+    const slugByUid = companySlugByUid;
+    return (row: ConversationRow, destination) => {
+      const route = destination?.page === 'sessions' ? parseSessionsParam(destination.param) : null;
+      const selectedSessionId = route?.kind === 'session' || route?.kind === 'history' || route?.kind === 'shared' ? route.sessionId : null;
+      const slug = row.companyUid ? slugByUid.get(row.companyUid) : undefined;
+      const links = slug ? (byCompany[slug] ?? []) : Object.values(byCompany).flat();
+      return rowExtrasFor(
+        row,
+        links,
+        null,
+        (link) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: newSessionParam(company, link.project, link.channelId),
+          });
+        },
+        (_link, session) => {
+          const company = slug ?? companyOfLink(_link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: historySessionParam(company, _link.project, session),
+          });
+        },
+        selectedSessionId,
+        (link, visible) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (company) projectLinksStore.watchSharedChannel(company, link, visible);
+        },
+      );
+    };
+  });
+
+  $effect(() => {
+    if (lifecycle !== 'ready' || !sessionsEnabled) return;
+    const slugs = (companies ?? [])
+      .filter((company) => company.kind === 'company' && company.slug !== 'personal')
+      .map((company) => company.slug);
+    projectLinksStore.start(slugs);
+    return () => projectLinksStore.stop();
+  });
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -235,6 +336,19 @@
     }
   }
 
+  async function refreshSessionsPreference(
+    request: number,
+    generation = authGeneration,
+  ): Promise<void> {
+    try {
+      const result = await bounded(adapter.settings.getSettings(), 'Settings lookup');
+      if (request !== hydration || generation !== authGeneration || !result.ok) return;
+      inAppSessionsOn = result.value?.inAppSessions === true;
+    } catch {
+      // Best effort: keep the last known machine preference.
+    }
+  }
+
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
     lifecycle = 'loading';
@@ -295,6 +409,7 @@
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
       void refreshWorkspaces(request, expectedGeneration);
+      void refreshSessionsPreference(request, expectedGeneration);
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -606,6 +721,24 @@
     };
     window.addEventListener('keydown', onKeyDown);
 
+    const onProjectChannelLinked = (event: Event) => {
+      if (cancelled) return;
+      const detail = (event as CustomEvent<ProjectChannelLinked>).detail;
+      const companyUid =
+        (companies ?? []).find((company) => company.slug === detail?.company)?.cloudUid ?? null;
+      if (detail?.channelId && detail.channelName) {
+        wakes.emit?.('channel:updated', {
+          channelId: detail.channelId,
+          name: detail.channelName,
+          scope: 'company',
+          companyUid,
+          membership: 'joined',
+        });
+      }
+      wakes.emit?.('channel:unread-changed', undefined);
+    };
+    window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
+
     const revalidateOnRecovery = () => {
       if (!cancelled) requestRevalidation({ automatic: true });
     };
@@ -641,6 +774,7 @@
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
       window.removeEventListener('pageshow', revalidateOnRecovery);
@@ -718,6 +852,8 @@
         onopenurl={openBrowserUrl}
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
+        {extraPages}
+        {rowExtras}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
