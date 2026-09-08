@@ -4,16 +4,14 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
-const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
-describe('packaged native WebDriver isolation', () => {
-  it('requires an explicit Cargo feature and preserves production security', () => {
-    const cargo = read('../../src-tauri/Cargo.toml');
-    expect(cargo).toContain('tauri-plugin-wdio-webdriver = { version = "=1.4.0", optional = true }');
-    expect(cargo).toContain('meet-native-webdriver = ["dep:tauri-plugin-wdio-webdriver"]');
-    expect(cargo).not.toMatch(/^default\s*=.*meet-native-webdriver/m);
-    const main = read('../../src-tauri/src/main.rs');
-    expect(main).toContain('#[cfg(feature = "meet-native-webdriver")]\n    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init_with_port(4445));');
-    expect(main.indexOf('tauri_plugin_single_instance::init')).toBeLessThan(main.indexOf('init_with_port(4445)'));
+describe('packaged native WebDriver build isolation', () => {
+  it('keeps the native driver dependency behind a non-default feature', () => {
+    const result = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps', '--manifest-path', new URL('../../src-tauri/Cargo.toml', import.meta.url).pathname], { encoding: 'utf8', timeout: 10000 });
+    expect(result.status).toBe(0);
+    const pkg = JSON.parse(result.stdout).packages.find((p: { name: string }) => p.name === 'hq-sync-menubar');
+    expect(pkg.dependencies.find((d: { name: string }) => d.name === 'tauri-plugin-wdio-webdriver').optional).toBe(true);
+    expect(pkg.features['meet-native-webdriver']).toEqual(['dep:tauri-plugin-wdio-webdriver']);
+    expect(pkg.features.default ?? []).not.toContain('meet-native-webdriver');
   });
 });
 

@@ -3,6 +3,9 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+#[cfg(feature = "meet-native-webdriver")]
+mod meet_native;
+
 mod boot_watchdog;
 mod commands;
 mod deep_link;
@@ -257,6 +260,12 @@ where
     terminate();
 }
 
+#[cfg(feature = "meet-native-webdriver")]
+fn main() {
+    meet_native::run();
+}
+
+#[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
@@ -386,10 +395,6 @@ fn main() {
 
             surface_existing_instance(app);
         }));
-    // Explicit test-only feature: the plugin binds 127.0.0.1, never a LAN
-    // address. Keep single-instance first and preserve production CSP/ACLs.
-    #[cfg(feature = "meet-native-webdriver")]
-    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init_with_port(4445));
 
     builder
         .plugin(tauri_plugin_deep_link::init())
