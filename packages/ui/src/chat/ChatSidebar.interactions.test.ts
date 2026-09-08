@@ -491,6 +491,11 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
 
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
     expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
+    // The focused conversation reports a successful read without another rail click.
+    wakes.emit("conversation:read", { id: "dm:agt_deacon" });
+    await tick();
+    expect(row?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(row?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
   });
 });
 

@@ -1427,6 +1427,19 @@
         }),
       );
 
+      track(wakes.on("conversation:read", ({ id }) => {
+        const row = allRows.find((row) => row.id === id);
+        if (row?.kind === "dm" && row.personUid) {
+          dmDots = clearDmDot(dmDots, row.personUid);
+          saveDmDots(dmDots, storage);
+          pairUnreads = clearPairUnread(pairUnreads, row.personUid);
+          contacts = contacts.map((contact) => contact.personUid === row.personUid
+            ? { ...contact, unreadCount: 0 } : contact);
+        } else if (row?.channelId) {
+          channels = clearChannelUnread(channels, row.channelId);
+        }
+      }));
+
       // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
       track(
         wakes.on("dm:pair-unreads", (payload) => {

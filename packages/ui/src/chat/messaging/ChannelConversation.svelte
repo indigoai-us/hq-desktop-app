@@ -12,6 +12,7 @@
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
+  import { observeConversationRead } from "./observe-conversation-read";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -93,6 +94,8 @@
   interface Props {
     /** Timeline, oldest → newest. Injected — never fetched here. */
     messages: ConversationMessageWire[];
+    /** The focused user has reached the newest rendered message. */
+    onseen?: () => Promise<void>;
     /** messageId → reaction aggregates. */
     reactions?: ReactionMap;
     /** Composer placeholder (host supplies "Message # … — or type / to run…"). */
@@ -209,6 +212,7 @@
 
   let {
     messages,
+    onseen,
     reactions = {},
     placeholder = "Reply…",
     onopenurl,
@@ -1009,6 +1013,7 @@
       <div
         class="dm-thread"
         bind:this={scroller}
+        use:observeConversationRead={{ key: messages.at(-1)?.eventId ?? "", onseen }}
         onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >

@@ -4598,6 +4598,16 @@
                 {/snippet}
                 <ChannelConversation
                   messages={timelineWithActivity}
+                  onseen={async () => {
+                    const row = selectedRow;
+                    if (!row) return;
+                    if (row.kind === "dm" && row.personUid) {
+                      await sidebarApi.markDmThreadRead(row.personUid);
+                    } else if (row.channelId && !row.browseOnly && row.membership !== "invited") {
+                      await sidebarApi.markChannelRead(row.channelId);
+                    } else return;
+                    wakes?.emit?.("conversation:read", { id: row.id });
+                  }}
                   hasEarlier={Boolean(historyCursors[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
                   emptyLabel={conversationEmptyLabel}
