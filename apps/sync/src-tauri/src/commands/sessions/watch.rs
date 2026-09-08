@@ -11,8 +11,12 @@
 //! readers scan, and a relevant file change wakes the *same* snapshot path the
 //! timer uses ([`super::refresh_and_emit`]) within roughly
 //! [`SESSIONS_WATCH_DEBOUNCE_MS`]. The periodic poll stays on as a slow safety
-//! net (see `SESSIONS_POLL_INTERVAL_SECS`) for the changes no file records —
-//! chiefly a `claude`/`codex` process exiting.
+//! net (see `SESSIONS_POLL_INTERVAL_SECS`) for the changes no file event
+//! records: time-based status decay, and re-resolving these watch roots so a
+//! session directory created after startup is picked up (see
+//! [`refresh_sessions_watch_roots`] — root resolution is live, not one-shot). A
+//! `claude`/`codex` process *exiting* has its own faster, cheaper timer,
+//! `sessions::setup_sessions_liveness_ticker`.
 //!
 //! Everything decidable without a real filesystem lives in
 //! [`hq_desktop_core::sessions::watch`]; this file is only the impure wiring.
@@ -25,20 +29,36 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use tauri::{AppHandle, Runtime};
 
 use hq_desktop_core::sessions::watch::{
-    is_relevant_session_path, plan_watch_roots, session_watch_requests, WakeCoalescer, WatchRoot,
-    SESSIONS_WATCH_DEBOUNCE_MS,
+    diff_watch_plans, is_relevant_session_path, plan_watch_roots, session_watch_requests,
+    WakeCoalescer, WatchRoot, SESSIONS_WATCH_DEBOUNCE_MS,
 };
 
 use crate::util::logfile::log;
 
 use super::LOG_TAG;
 
+/// The live watcher plus the plan it is currently registered against.
+///
+/// The plan is retained because root resolution is *live*: the safety tick
+/// re-resolves and [`reconcile_watch_roots`] diffs the result against this, so
+/// we need to know what `notify` was actually told, not just what we once
+/// wanted.
+struct WatcherState {
+    watcher: RecommendedWatcher,
+    /// The roots currently registered with [`Self::watcher`]. Only roots whose
+    /// `watch` call succeeded are recorded, so a failed registration is retried
+    /// on the next tick instead of being remembered as live.
+    roots: Vec<WatchRoot>,
+}
+
 /// Retains the watcher for the life of the process.
 ///
 /// `notify` stops delivering the moment the watcher is dropped, so this must
 /// outlive `setup`. `OnceLock` also makes setup idempotent: a second call sees
 /// an occupied slot and returns rather than registering a duplicate watcher.
-static WATCHER: OnceLock<Mutex<Option<RecommendedWatcher>>> = OnceLock::new();
+/// Re-resolution mutates the state *in place* through this same slot, so it
+/// never creates a second watcher.
+static WATCHER: OnceLock<Mutex<Option<WatcherState>>> = OnceLock::new();
 
 /// Resolve the directories to watch from the same helpers the readers use, so
 /// the watcher can never drift from what is actually scanned.
@@ -60,6 +80,14 @@ fn resolve_watch_roots() -> Vec<WatchRoot> {
 /// Filtering happens inside the callback (which runs on the notify thread) so
 /// the noisy majority of events — editor scratch files, `.DS_Store`, lock files
 /// — never reach the debouncer, let alone a snapshot.
+fn recursive_mode(root: &WatchRoot) -> RecursiveMode {
+    if root.recursive {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    }
+}
+
 fn build_watcher<F>(roots: &[WatchRoot], sink: F) -> Result<RecommendedWatcher, String>
 where
     F: Fn(PathBuf) + Send + 'static,
@@ -85,12 +113,7 @@ where
 
     let mut watched = 0usize;
     for root in roots {
-        let mode = if root.recursive {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
-        match watcher.watch(&root.path, mode) {
+        match watcher.watch(&root.path, recursive_mode(root)) {
             Ok(()) => watched += 1,
             Err(e) => log(
                 LOG_TAG,
@@ -102,6 +125,100 @@ where
         return Err("no session directories could be watched".to_string());
     }
     Ok(watcher)
+}
+
+/// Reconcile a live watcher against a freshly resolved plan.
+///
+/// This is the recovery path for the ancestor fallback. At startup a session
+/// directory that does not exist yet resolves to a **shallow** watch on its
+/// nearest existing ancestor, and that registration is blind twice over: the
+/// directory's own create event is a directory (rejected by
+/// [`is_relevant_session_path`], which requires a `.jsonl`/`.json` extension),
+/// and every later write inside it is nested, so it never reaches a
+/// non-recursive watch. Without re-resolution the watcher stays permanently
+/// blind to that store for the life of the process — exactly the fresh-install
+/// case, where `~/.claude/projects` does not exist until the user first runs
+/// Claude Code.
+///
+/// Re-registering (rather than watching ancestors recursively) is deliberate:
+/// the fallback ancestors here are `$HOME`, `~/.claude`, `~/.codex` and the HQ
+/// workspace root, and subscribing recursively to any of those means an FSEvents
+/// subscription over an unbounded tree — the HQ workspace alone contains
+/// worktrees and `node_modules`. The diff costs a handful of `is_dir` calls once
+/// per safety tick.
+///
+/// Best-effort: every failure logs and is retried on the next tick. Returns the
+/// number of roots newly registered, for logging and tests.
+fn reconcile_watch_roots(state: &mut WatcherState, next: Vec<WatchRoot>) -> usize {
+    let diff = diff_watch_plans(&state.roots, &next);
+    if diff.is_empty() {
+        return 0;
+    }
+
+    // Unwatch first: a root whose recursion mode changed appears in both lists,
+    // and `notify` must lose the old registration before it gains the new one.
+    for root in &diff.removed {
+        if let Err(e) = state.watcher.unwatch(&root.path) {
+            log(
+                LOG_TAG,
+                &format!("SESSIONS_WATCH_UNWATCH_FAILED {} {e}", root.path.display()),
+            );
+        }
+    }
+
+    let mut failed: Vec<PathBuf> = Vec::new();
+    let mut added = 0usize;
+    for root in &diff.added {
+        match state.watcher.watch(&root.path, recursive_mode(root)) {
+            Ok(()) => added += 1,
+            Err(e) => {
+                log(
+                    LOG_TAG,
+                    &format!("SESSIONS_WATCH_ROOT_FAILED {} {e}", root.path.display()),
+                );
+                failed.push(root.path.clone());
+            }
+        }
+    }
+
+    state.roots = next
+        .into_iter()
+        .filter(|r| !failed.contains(&r.path))
+        .collect();
+
+    log(
+        LOG_TAG,
+        &format!(
+            "SESSIONS_WATCH_ROOTS_CHANGED added={added} removed={} roots={}",
+            diff.removed.len(),
+            state.roots.len()
+        ),
+    );
+    added
+}
+
+/// Re-resolve the watch roots and re-register the watcher if they changed.
+///
+/// Called from the sessions safety poll (`super::setup_sessions_poller`), which
+/// is why that timer still matters even though freshness is event-driven: it is
+/// the only thing that notices a session directory being created after startup.
+///
+/// A no-op when the watcher never started, when nothing changed, or when
+/// resolution comes back empty (a transient failure to read `$HOME` must not
+/// unwatch everything we have).
+pub(crate) fn refresh_sessions_watch_roots() {
+    let Some(slot) = WATCHER.get() else {
+        return;
+    };
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    let next = resolve_watch_roots();
+    if next.is_empty() {
+        return;
+    }
+    reconcile_watch_roots(state, next);
 }
 
 /// Start the event-driven session watcher. Called from `main.rs` setup next to
@@ -138,7 +255,10 @@ pub fn setup_sessions_watcher<R: Runtime>(app: AppHandle<R>) {
             return;
         }
     };
-    *guard = Some(watcher);
+    *guard = Some(WatcherState {
+        watcher,
+        roots: roots.clone(),
+    });
     drop(guard);
 
     log(
@@ -224,6 +344,140 @@ mod tests {
             relevant.load(Ordering::SeqCst) > 0,
             "a .jsonl write under a watched root must reach the callback"
         );
+    }
+
+    /// Wait until `seen` is non-zero, or give up. Returns whether a wake landed.
+    fn wake_arrived(seen: &Arc<AtomicUsize>) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while seen.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        seen.load(Ordering::SeqCst) > 0
+    }
+
+    /// The fresh-install regression: `~/.claude/projects` does not exist when
+    /// the watcher starts, so the plan falls back to a SHALLOW watch on the
+    /// parent. The directory is then created and a nested transcript written —
+    /// neither of which a shallow ancestor watch can see.
+    ///
+    /// Before live re-resolution this test fails: the watcher stays blind for
+    /// the life of the process and the only refresh left is the 90s safety
+    /// poll. It passes once the safety tick re-resolves and re-registers.
+    #[test]
+    fn a_directory_created_after_setup_is_watched_once_roots_are_re_resolved() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = home.path().join("projects");
+
+        // Startup plan, resolved against the REAL filesystem: `projects` does
+        // not exist yet, so this is the shallow fallback onto `home`.
+        let requests = session_watch_requests(&[projects.clone()], None, None);
+        let startup = plan_watch_roots(&requests, &|p: &std::path::Path| p.is_dir());
+        assert_eq!(
+            startup,
+            vec![WatchRoot {
+                path: home.path().to_path_buf(),
+                recursive: false,
+                fallback: true,
+            }],
+            "precondition: a missing session dir falls back to a shallow ancestor"
+        );
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        let sink = seen.clone();
+        let watcher = build_watcher(&startup, move |_path| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("watcher starts on the fallback ancestor");
+        let mut state = WatcherState {
+            watcher,
+            roots: startup,
+        };
+        std::thread::sleep(Duration::from_millis(200));
+
+        // The user runs Claude Code for the first time: the store appears.
+        std::fs::create_dir_all(projects.join("-repo")).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        // A safety tick re-resolves and re-registers.
+        let next = plan_watch_roots(&requests, &|p: &std::path::Path| p.is_dir());
+        let added = reconcile_watch_roots(&mut state, next);
+        assert_eq!(added, 1, "the real projects dir must be newly registered");
+        assert_eq!(
+            state.roots,
+            vec![WatchRoot {
+                path: projects.clone(),
+                recursive: true,
+                fallback: false,
+            }],
+            "the blind shallow fallback is replaced by a recursive real watch"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Only now write the transcript. Nested under the new root, so a
+        // shallow ancestor watch could never deliver it.
+        seen.store(0, Ordering::SeqCst);
+        std::fs::write(projects.join("-repo").join("session.jsonl"), b"{}\n").unwrap();
+
+        assert!(
+            wake_arrived(&seen),
+            "a transcript written into a directory created AFTER setup must wake the snapshot"
+        );
+    }
+
+    /// Re-resolution is idempotent: a second tick with an unchanged filesystem
+    /// must not churn the watcher (an unwatch/watch pair drops events).
+    #[test]
+    fn re_resolving_an_unchanged_plan_registers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![WatchRoot {
+            path: dir.path().to_path_buf(),
+            recursive: true,
+            fallback: false,
+        }];
+        let watcher = build_watcher(&roots, |_| {}).expect("watcher starts");
+        let mut state = WatcherState {
+            watcher,
+            roots: roots.clone(),
+        };
+        assert_eq!(reconcile_watch_roots(&mut state, roots.clone()), 0);
+        assert_eq!(state.roots, roots, "an unchanged plan leaves the state alone");
+    }
+
+    /// A root that cannot be registered is NOT recorded as live, so the next
+    /// safety tick retries it rather than believing it is watched.
+    #[test]
+    fn a_failed_registration_is_not_recorded_and_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![WatchRoot {
+            path: dir.path().to_path_buf(),
+            recursive: true,
+            fallback: false,
+        }];
+        let watcher = build_watcher(&roots, |_| {}).expect("watcher starts");
+        let mut state = WatcherState {
+            watcher,
+            roots: roots.clone(),
+        };
+
+        let mut next = roots.clone();
+        let missing = PathBuf::from("/definitely/not/a/real/dir/hq-sessions-reconcile-test");
+        next.push(WatchRoot {
+            path: missing.clone(),
+            recursive: true,
+            fallback: false,
+        });
+
+        assert_eq!(reconcile_watch_roots(&mut state, next), 0, "nothing registered");
+        assert_eq!(
+            state.roots, roots,
+            "the unwatchable root is dropped from the recorded plan so it is retried"
+        );
+    }
+
+    /// The live entry point is safe to call before (and independently of) setup.
+    #[test]
+    fn refresh_sessions_watch_roots_is_a_no_op_without_a_watcher() {
+        refresh_sessions_watch_roots();
     }
 
     #[test]

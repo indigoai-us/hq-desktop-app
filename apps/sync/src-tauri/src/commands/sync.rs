@@ -1379,18 +1379,38 @@ impl ProgressCoalescer {
 
 /// One coalescer per HQ folder (a sync run is scoped to one folder), so
 /// independent runs — and independent tests — never share an emit window.
+///
+/// Entries are **per run**, not per folder for the life of the process:
+/// [`end_progress_coalescer`] removes the entry when a run ends. Leaving it
+/// behind would carry that run's `last_emit` into the next one, so the next
+/// sync's very first progress event could be held for up to
+/// [`SYNC_PROGRESS_EMIT_INTERVAL`] — visible as a progress bar that does not
+/// move when a sync starts — and the map would grow one entry per distinct HQ
+/// folder forever.
 static SYNC_PROGRESS_COALESCERS: OnceLock<Mutex<HashMap<String, ProgressCoalescer>>> =
     OnceLock::new();
+
+fn progress_coalescers() -> &'static Mutex<HashMap<String, ProgressCoalescer>> {
+    SYNC_PROGRESS_COALESCERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn with_progress_coalescer<T>(
     hq_folder: &str,
     f: impl FnOnce(&mut ProgressCoalescer) -> T,
 ) -> T {
-    let mut map = SYNC_PROGRESS_COALESCERS
-        .get_or_init(|| Mutex::new(HashMap::new()))
+    let mut map = progress_coalescers()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     f(map.entry(hq_folder.to_string()).or_default())
+}
+
+/// Drop this HQ folder's coalescer, returning whether one existed.
+fn drop_progress_coalescer(hq_folder: &str) -> bool {
+    progress_coalescers()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(hq_folder)
+        .is_some()
 }
 
 /// Emit any held per-file progress event for this HQ folder's run. Called
@@ -1402,6 +1422,24 @@ pub(crate) fn flush_pending_sync_progress<R: tauri::Runtime>(app: &AppHandle<R>,
     if let Some(payload) = pending {
         let _ = app.emit(EVENT_SYNC_PROGRESS, payload);
     }
+}
+
+/// End-of-run cleanup: flush the held progress, then drop the coalescer.
+///
+/// Called from **every** terminal path of a manual run — the normal exit, a
+/// non-zero exit, a cancelled/killed runner, and the spawn failure where no
+/// child ever existed. That matters because a runner torn down abnormally never
+/// reaches the protocol events that flush; without the drop its `last_emit`
+/// timestamp survives, and the *next* run's first progress event is silently
+/// held for up to [`SYNC_PROGRESS_EMIT_INTERVAL`]. A fresh run must always emit
+/// its first progress immediately.
+///
+/// Idempotent: dropping an absent entry is a no-op, and a later
+/// [`with_progress_coalescer`] simply re-creates a default (`last_emit: None`)
+/// one — which is exactly the "emit immediately" state a new run wants.
+pub(crate) fn end_progress_coalescer<R: tauri::Runtime>(app: &AppHandle<R>, hq_folder: &str) {
+    flush_pending_sync_progress(app, hq_folder);
+    drop_progress_coalescer(hq_folder);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3025,8 +3063,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     success,
                 } => {
                     // The runner is done: release any coalesced per-file
-                    // progress so the final file of the sync reaches the UI.
-                    flush_pending_sync_progress(&app_bg, &hq_folder_for_handler);
+                    // progress so the final file of the sync reaches the UI,
+                    // then drop the coalescer so the next run starts with a
+                    // clean emit window. This branch covers every runner exit —
+                    // clean, non-zero, and killed — so an abnormally terminated
+                    // run cannot leave a stale `last_emit` behind.
+                    end_progress_coalescer(&app_bg, &hq_folder_for_handler);
                     let exit_desc = describe_exit(code, signal);
                     log(
                         "sync",
@@ -3175,6 +3217,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
+            // Terminal path too: on a spawn error no child existed, so the Exit
+            // branch above never ran and never cleaned up. Safe to repeat when
+            // it did (the drop is idempotent).
+            end_progress_coalescer(&app_bg, &hq_folder_for_handler);
             // Only a typed Spawn error means no child existed. Stream/wait
             // errors have already sent ProcessEvent::Exit{code:None}, whose
             // handler owns the single terminal capture.
@@ -3280,6 +3326,86 @@ mod tests {
         assert!(c.offer(progress("b"), t0 + Duration::from_millis(1)).is_none());
         assert_eq!(c.offer(progress("c"), t1), Some(progress("c")));
         assert!(c.flush(t1).is_none(), "the due emit drops the stale held event");
+    }
+
+    #[test]
+    fn ending_a_run_prunes_the_coalescer_so_the_next_run_emits_immediately() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let folder = hq_folder.path().to_str().unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_PROGRESS, move |event| {
+            let p: SyncProgressEvent = serde_json::from_str(event.payload()).unwrap();
+            seen_w.lock().unwrap().push(p.path);
+        });
+
+        // Run 1 emits one file and then is killed — no Complete, so nothing
+        // flushes through the protocol path. `last_emit` is now set.
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let line = r#"{"type":"progress","company":"indigo","path":"run1.md","bytes":1}"#;
+        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line));
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["run1.md"]);
+
+        // The abnormal-exit cleanup.
+        assert!(
+            drop_progress_coalescer(folder),
+            "the killed run left an entry behind"
+        );
+        assert!(
+            !drop_progress_coalescer(folder),
+            "the drop is idempotent — a second terminal path is harmless"
+        );
+
+        // Run 2 starts immediately, well inside SYNC_PROGRESS_EMIT_INTERVAL of
+        // run 1's emit. Without the prune its first progress would be HELD.
+        let line2 = r#"{"type":"progress","company":"indigo","path":"run2.md","bytes":1}"#;
+        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line2));
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["run1.md", "run2.md"],
+            "a fresh run must emit its first progress event immediately"
+        );
+    }
+
+    #[test]
+    fn end_progress_coalescer_flushes_a_held_event_before_pruning() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let folder = hq_folder.path().to_str().unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_PROGRESS, move |event| {
+            let p: SyncProgressEvent = serde_json::from_str(event.payload()).unwrap();
+            seen_w.lock().unwrap().push(p.path);
+        });
+
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        for path in ["a.md", "b.md"] {
+            let line =
+                format!(r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#);
+            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"], "b.md is held");
+
+        // Pruning must not swallow the final progress of the run.
+        end_progress_coalescer(&handle, folder);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["a.md", "b.md"]);
+        assert!(!drop_progress_coalescer(folder), "entry already removed");
     }
 
     #[test]

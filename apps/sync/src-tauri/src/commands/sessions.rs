@@ -59,8 +59,10 @@ pub mod watch;
 
 pub use hq_desktop_core::sessions::{
     merge_sessions, plan_poll, resolve_poll_interval, AgentOrigin, AgentSession, AgentTool,
-    SessionStatus,
+    SessionStatus, SESSIONS_LIVENESS_TICK_SECS,
 };
+
+use hq_desktop_core::sessions::liveness::RunningAgents;
 
 pub type MissionControlSnapshot =
     hq_desktop_core::sessions::MissionControlSnapshot<HistoryEvent, outpost::OutpostStatus>;
@@ -188,9 +190,23 @@ pub async fn list_agent_sessions() -> Result<MissionControlSnapshot, String> {
 /// cadence while a window is visible, a slow heartbeat while everything is hidden,
 /// and an immediate catch-up emit the moment a window becomes visible. Freshness
 /// while the user is looking is unchanged.
+///
+/// ## Live watch roots
+///
+/// Every emitting tick also re-resolves the watcher's roots
+/// ([`watch::refresh_sessions_watch_roots`]). Root resolution is otherwise a
+/// one-shot at startup, which leaves the watcher permanently blind to a session
+/// directory created afterwards — the fresh-install case, where
+/// `~/.claude/projects` does not exist until Claude Code first runs. This is the
+/// only place that recovery happens, and it is why [`SESSIONS_POLL_INTERVAL_SECS`]
+/// bounds how long the blindness can last.
+///
+/// This function also spawns the cheap process-only liveness ticker
+/// ([`setup_sessions_liveness_ticker`]), so `main.rs` keeps one setup call.
 pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
     let interval =
         resolve_poll_interval(std::env::var("HQ_SYNC_SESSIONS_POLL_SECS").ok().as_deref());
+    setup_sessions_liveness_ticker(app.clone());
     tauri::async_runtime::spawn(async move {
         // Launch delay — give the app a moment to finish setup before the first
         // scan (mirrors the share/updater pollers' settle delay).
@@ -205,12 +221,75 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
             was_visible = visible;
 
             if plan.emit {
+                // Re-resolve before the scan: a root that just appeared is
+                // registered now, and the snapshot below already reflects it.
+                // Cheap (a handful of `is_dir` calls) and a no-op when nothing
+                // changed, so it rides the emitting ticks rather than the
+                // 2-second visibility checks.
+                watch::refresh_sessions_watch_roots();
                 refresh_and_emit(&app).await;
                 last_emit = Instant::now();
             }
             tokio::time::sleep(plan.sleep).await;
         }
     });
+}
+
+/// Spawn the process-only liveness ticker.
+///
+/// A session **ending** is the one Mission Control change that writes no file:
+/// the transcript is simply never appended to again, so the filesystem watcher
+/// has nothing to deliver and only the `pgrep` scan can see it. Before this,
+/// that signal rode the safety poll, which means moving the poll 15s → 90s
+/// would have made "this session ended" up to six times slower to appear.
+///
+/// So exits get their own timer at [`SESSIONS_LIVENESS_TICK_SECS`] that does the
+/// cheap half only — one `pgrep` fork, no filesystem walk — and escalates to the
+/// shared [`refresh_and_emit`] (and therefore the same dedup and the same typed
+/// event) *only* when the live-process set actually changed. On a quiet machine
+/// the steady-state cost is one fork every 15 seconds and no emit at all.
+///
+/// [`RunningAgents`] is exactly the input `merge_sessions` uses to decide
+/// `Ended`, so "liveness changed" is precisely the condition under which a
+/// process event can alter the snapshot — this cannot miss an exit the full poll
+/// would have caught, and it cannot fire spuriously either.
+///
+/// Visibility-gated like every other refresh path: while all windows are hidden
+/// we skip even the fork, and [`plan_poll`]'s hidden→visible catch-up emit covers
+/// anything that changed in the meantime.
+pub fn setup_sessions_liveness_ticker<R: Runtime>(app: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        let tick = Duration::from_secs(SESSIONS_LIVENESS_TICK_SECS);
+        let mut last: Option<RunningAgents> = None;
+        loop {
+            tokio::time::sleep(tick).await;
+            if !any_window_visible(&app) {
+                continue;
+            }
+            // `pgrep` is a fork — off the tokio workers like every other
+            // blocking call in this module.
+            let Ok(agents) = tauri::async_runtime::spawn_blocking(scan_running_agents).await else {
+                continue;
+            };
+            let previous = last.replace(agents);
+            if liveness_refresh_needed(previous, agents) {
+                refresh_and_emit(&app).await;
+            }
+        }
+    });
+}
+
+/// Pure policy for the liveness ticker: refresh only when the live-process set
+/// changed relative to a previous observation.
+///
+/// The first observation (`previous == None`) never refreshes — the poller's
+/// launch snapshot already covered it, and re-running a full snapshot 15s into
+/// startup for a set we have never compared against would be pure waste.
+fn liveness_refresh_needed(previous: Option<RunningAgents>, current: RunningAgents) -> bool {
+    match previous {
+        None => false,
+        Some(before) => before != current,
+    }
 }
 
 /// Is any app window currently visible?
@@ -461,6 +540,36 @@ mod tests {
         // the "no window → hidden" default rather than the HUD filter alone.
         let app = tauri::test::mock_app();
         assert!(!any_window_visible(app.handle()));
+    }
+
+    // ── Process-only liveness tick ──────────────────────────────────────────
+
+    #[test]
+    fn liveness_tick_refreshes_only_when_the_live_process_set_changes() {
+        let none = RunningAgents::default();
+        let claude = RunningAgents { claude: true, codex: false };
+        let both = RunningAgents { claude: true, codex: true };
+
+        // First observation is a baseline, not a reason to re-snapshot.
+        assert!(!liveness_refresh_needed(None, claude));
+        // Steady state on a quiet machine: no emit, just a fork.
+        assert!(!liveness_refresh_needed(Some(claude), claude));
+        assert!(!liveness_refresh_needed(Some(none), none));
+        // A session ENDING — the signal no file records, and the whole reason
+        // this ticker exists.
+        assert!(liveness_refresh_needed(Some(claude), none));
+        // …and a session starting, or the other tool appearing.
+        assert!(liveness_refresh_needed(Some(none), claude));
+        assert!(liveness_refresh_needed(Some(claude), both));
+    }
+
+    #[test]
+    fn liveness_tick_is_faster_than_the_safety_poll() {
+        // The point of the ticker: exit latency must not follow the poll to 90s.
+        assert!(
+            SESSIONS_LIVENESS_TICK_SECS < hq_desktop_core::sessions::SESSIONS_POLL_INTERVAL_SECS
+        );
+        assert_eq!(SESSIONS_LIVENESS_TICK_SECS, 15);
     }
 
     // ── Emit dedup ──────────────────────────────────────────────────────────

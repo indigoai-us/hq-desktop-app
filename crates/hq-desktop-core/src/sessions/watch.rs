@@ -7,6 +7,9 @@
 //! * [`is_relevant_session_path`] — which filesystem events are worth a wake.
 //! * [`resolve_watch_root`] / [`plan_watch_roots`] — where to point the watcher,
 //!   including the "directory does not exist yet" ancestor fallback.
+//! * [`diff_watch_plans`] — what changed between the registered plan and a
+//!   freshly resolved one, so the watcher can be re-registered when a session
+//!   directory finally appears (or disappears).
 //! * [`WakeCoalescer`] — the ~300ms debounce that collapses an append storm
 //!   (a CLI writing a transcript fires many events per second) into one wake.
 
@@ -66,9 +69,18 @@ pub struct WatchRoot {
     /// Whether to watch it recursively.
     pub recursive: bool,
     /// True when [`path`](Self::path) is a stand-in ancestor because the
-    /// requested directory does not exist yet. The requested directory
-    /// appearing later fires a create event under the ancestor, which wakes the
-    /// snapshot; the next safety tick re-resolves and registers the real root.
+    /// requested directory does not exist yet.
+    ///
+    /// A fallback watch is deliberately weak: it is non-recursive, and the
+    /// create event for the requested directory is a *directory* create, which
+    /// [`is_relevant_session_path`] rejects (no `.jsonl`/`.json` extension). So
+    /// the directory appearing does **not** wake the snapshot, and nothing
+    /// written inside it ever reaches a non-recursive watch.
+    ///
+    /// Recovery is therefore the safety tick's job, not the event stream's: the
+    /// poller re-runs root resolution, [`diff_watch_plans`] reports the fallback
+    /// as removed and the real directory as added, and the watcher is
+    /// re-registered onto it. See `commands/sessions/watch.rs`.
     pub fallback: bool,
 }
 
@@ -151,6 +163,61 @@ pub fn plan_watch_roots(
         }
     }
     out
+}
+
+/// A change between the currently registered watch plan and a freshly resolved
+/// one, expressed as the `notify` calls needed to reconcile them.
+///
+/// Registration identity is `(path, recursive)`: those are the only two things
+/// handed to `notify::Watcher::watch`, so a root whose *only* difference is the
+/// [`WatchRoot::fallback`] bookkeeping flag needs no re-registration, while a
+/// directory that switched between shallow and recursive does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchPlanDiff {
+    /// Roots to `watch` (new directories, or a changed recursion mode).
+    pub added: Vec<WatchRoot>,
+    /// Roots to `unwatch` (gone, or superseded by a different recursion mode).
+    pub removed: Vec<WatchRoot>,
+}
+
+impl WatchPlanDiff {
+    /// True when the plans are registration-equivalent and nothing must change.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+fn registration_key(root: &WatchRoot) -> (&Path, bool) {
+    (root.path.as_path(), root.recursive)
+}
+
+/// Diff the registered plan against a freshly resolved one.
+///
+/// This is what makes root resolution *live*: at startup a directory that does
+/// not exist yet resolves to a shallow ancestor fallback, and when it is later
+/// created a re-resolution produces the real recursive root. Diffing the two
+/// plans yields exactly the `unwatch`/`watch` pair that swaps the blind fallback
+/// for a real watch, without tearing down and rebuilding the whole watcher.
+///
+/// `removed` is emitted before `added` is applied by the caller, so a path that
+/// appears in both (recursion mode changed) is unwatched first and then
+/// re-registered.
+pub fn diff_watch_plans(current: &[WatchRoot], next: &[WatchRoot]) -> WatchPlanDiff {
+    let current_keys: BTreeSet<(&Path, bool)> = current.iter().map(registration_key).collect();
+    let next_keys: BTreeSet<(&Path, bool)> = next.iter().map(registration_key).collect();
+
+    WatchPlanDiff {
+        added: next
+            .iter()
+            .filter(|r| !current_keys.contains(&registration_key(r)))
+            .cloned()
+            .collect(),
+        removed: current
+            .iter()
+            .filter(|r| !next_keys.contains(&registration_key(r)))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// Build the watch requests for the local session stores.
@@ -427,6 +494,86 @@ mod tests {
         let dir = PathBuf::from("/home/u/.claude/projects");
         let requests = session_watch_requests(&[dir.clone(), dir.clone()], None, None);
         assert_eq!(requests.len(), 1);
+    }
+
+    // ── Live re-resolution (plan diffing) ───────────────────────────────────
+
+    #[test]
+    fn diff_detects_a_root_that_appeared_after_startup() {
+        // Startup: `~/.claude/projects` does not exist, so the request falls
+        // back to a SHALLOW watch on `~/.claude` — which can never see a nested
+        // transcript write.
+        let requests = session_watch_requests(&[PathBuf::from("/home/u/.claude/projects")], None, None);
+        let at_startup = plan_watch_roots(&requests, &existing(&["/home/u", "/home/u/.claude"]));
+        assert_eq!(at_startup.len(), 1);
+        assert_eq!(at_startup[0].path, PathBuf::from("/home/u/.claude"));
+        assert!(at_startup[0].fallback && !at_startup[0].recursive);
+
+        // The user runs Claude Code for the first time and `projects/` appears.
+        let now = plan_watch_roots(
+            &requests,
+            &existing(&["/home/u", "/home/u/.claude", "/home/u/.claude/projects"]),
+        );
+
+        let diff = diff_watch_plans(&at_startup, &now);
+        assert!(!diff.is_empty(), "an appearing root must force a re-registration");
+        assert_eq!(
+            diff.added,
+            vec![WatchRoot {
+                path: PathBuf::from("/home/u/.claude/projects"),
+                recursive: true,
+                fallback: false,
+            }],
+            "the real projects dir is registered recursively"
+        );
+        assert_eq!(
+            diff.removed,
+            vec![WatchRoot {
+                path: PathBuf::from("/home/u/.claude"),
+                recursive: false,
+                fallback: true,
+            }],
+            "the blind ancestor fallback is dropped"
+        );
+    }
+
+    #[test]
+    fn diff_is_empty_when_nothing_changed() {
+        let requests = session_watch_requests(&[], Some(Path::new("/home/u/.codex")), None);
+        let exists = existing(&["/home/u", "/home/u/.codex", "/home/u/.codex/sessions"]);
+        let a = plan_watch_roots(&requests, &exists);
+        let b = plan_watch_roots(&requests, &exists);
+        let diff = diff_watch_plans(&a, &b);
+        assert!(diff.is_empty(), "a stable filesystem must not churn the watcher");
+        assert_eq!(diff, WatchPlanDiff::default());
+    }
+
+    #[test]
+    fn diff_ignores_the_fallback_flag_alone_but_not_the_recursion_mode() {
+        let path = PathBuf::from("/home/u/.codex");
+        let as_fallback = vec![WatchRoot { path: path.clone(), recursive: false, fallback: true }];
+        let as_real = vec![WatchRoot { path: path.clone(), recursive: false, fallback: false }];
+        assert!(
+            diff_watch_plans(&as_fallback, &as_real).is_empty(),
+            "same (path, mode) → notify is already registered correctly"
+        );
+
+        let recursive = vec![WatchRoot { path: path.clone(), recursive: true, fallback: false }];
+        let diff = diff_watch_plans(&as_real, &recursive);
+        assert_eq!(diff.removed, as_real, "shallow registration must be unwatched first");
+        assert_eq!(diff.added, recursive, "…then re-registered recursively");
+    }
+
+    #[test]
+    fn diff_reports_a_disappearing_root_as_removed() {
+        let present = vec![WatchRoot {
+            path: PathBuf::from("/hq/workspace/threads"),
+            recursive: false,
+            fallback: false,
+        }];
+        let diff = diff_watch_plans(&present, &[]);
+        assert_eq!(diff.removed, present);
+        assert!(diff.added.is_empty());
     }
 
     // ── Debounce ────────────────────────────────────────────────────────────

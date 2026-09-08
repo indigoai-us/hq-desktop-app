@@ -101,16 +101,48 @@ pub struct MissionControlSnapshot<HistoryEvent, OutpostStatus> {
 /// Codex, and HQ `workspace` stores, so a transcript being appended wakes the
 /// snapshot within ~300ms regardless of this value.
 ///
-/// What the timer still covers is the one change that writes no file — a
-/// `claude`/`codex` **process exiting**, which only the `pgrep` liveness scan can
-/// observe — plus re-resolving watch roots that did not exist at startup. That
-/// is a slow-moving concern, so the cadence went 15s → 90s: a full snapshot
-/// walks thousands of session files and forks `pgrep`, and doing that four times
-/// a minute for a signal the watcher already delivers was pure battery cost.
+/// What the timer covers is what the event stream cannot:
+///
+/// 1. **Re-resolving the watch roots.** A session directory that did not exist
+///    at startup resolved to a shallow ancestor fallback, which is blind to it
+///    (see `watch::WatchRoot::fallback`). Each tick re-resolves and, on a
+///    change, re-registers the watcher — so a fresh install that creates
+///    `~/.claude/projects` later recovers within one tick instead of needing an
+///    app restart.
+/// 2. **Time-based status decay** — a session ageing out of the
+///    [`liveness::RUNNING_WINDOW_SECS`] window into `Awaiting`/`Idle`. No file
+///    changes when that happens.
+///
+/// A full snapshot walks thousands of session files and forks `pgrep`; doing
+/// that four times a minute for signals the watcher already delivers was pure
+/// battery cost, so the cadence went 15s → 90s.
+///
+/// **Session exit is not on that list**, because 90s of latency for "a session
+/// ended" would be a real regression from the old 15s poll. A process exiting
+/// writes no file, so the watcher cannot see it — instead it gets its own cheap
+/// timer at [`SESSIONS_LIVENESS_TICK_SECS`], which forks `pgrep` and nothing
+/// else. Worst-case exit latency is therefore unchanged at ~15s while a window
+/// is visible.
 ///
 /// The poller also skips the emit when the snapshot is unchanged, and
 /// `HQ_SYNC_SESSIONS_POLL_SECS` can still lower it (floor 2s) for debugging.
 pub const SESSIONS_POLL_INTERVAL_SECS: u64 = 90;
+
+/// Cadence of the **process-only** liveness tick while a window is visible.
+///
+/// A `claude`/`codex` process exiting is the one Mission Control change that
+/// leaves no filesystem trace, so neither the watcher nor a file re-scan can
+/// observe it — only [`liveness::RunningAgents`], via a `pgrep` fork. Tying that
+/// to the 90s safety poll would have made "session ended" up to six times slower
+/// to show than it was under the old 15s poll.
+///
+/// So it gets its own timer that does the cheap half only: one `pgrep` fork,
+/// compared against the previous result, and a full refresh **only when
+/// liveness actually changed**. That is roughly a thousandth of a snapshot's
+/// cost (a snapshot `stat`s every transcript on the box *and* forks `pgrep`), so
+/// running it at the old interactive cadence is affordable in a way the full
+/// poll was not. Gated on window visibility like every other refresh path.
+pub const SESSIONS_LIVENESS_TICK_SECS: u64 = 15;
 pub const SESSIONS_POLL_FLOOR_SECS: u64 = 2;
 
 pub fn resolve_poll_interval(env_value: Option<&str>) -> Duration {
