@@ -3215,7 +3215,9 @@ mod tests {
         let foreign = settings.join("hq");
         write_unix_exec(&foreign);
 
-        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], None);
+        // Test selection only within the fixture; system search expansion is
+        // covered separately and must not probe the host-installed HQ CLI.
+        let dirs = vec![settings.clone()];
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
         let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
@@ -3245,7 +3247,8 @@ mod tests {
             CandidateBacking::Indeterminate
         );
 
-        let dirs = unix_hq_search_dirs_in(vec![prefix.join("bin")], None);
+        // Keep selection hermetic; search-directory expansion has its own test.
+        let dirs = vec![prefix.join("bin")];
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
         let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
@@ -3357,7 +3360,9 @@ mod tests {
         let settings = tmp.path().join("settings");
         std::fs::create_dir_all(&settings).unwrap();
         std::fs::write(settings.join("hq"), b"not executable\n").unwrap(); // no exec bit
-        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], None);
+        // Test selection only within the fixture; system search expansion is
+        // covered separately and must not probe the host-installed HQ CLI.
+        let dirs = vec![settings.clone()];
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
         let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);

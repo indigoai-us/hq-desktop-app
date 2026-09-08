@@ -38,5 +38,7 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>HQ uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>HQ uses your camera when you choose to share video in a meeting.</string>
 </dict>
 </plist>

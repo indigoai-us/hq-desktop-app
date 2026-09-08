@@ -208,3 +208,23 @@ configured bandwidth; an incomplete transfer is a failure, never a success label
 ladder rung covers both. It executes twelve collection runs; it does not claim that
 an external network profile has been applied just because the profile was selected.
 Host fault/shaping evidence remains necessary for a verified receipt.
+
+### Embedded native WebDriver test build
+
+The optional Cargo feature `meet-native-webdriver` embeds
+`tauri-plugin-wdio-webdriver` 1.4.0 on **127.0.0.1:4445**. Normal builds do
+not compile or initialize this dependency. Never enable it for distribution.
+This bridge executes the existing W3C native probe inside WKWebView/WebView2;
+it needs no future Meet UI, IPC mocking plugin, CSP change, or permission bypass.
+
+Prepare `pnpm --filter hq-sync sidecar:install` and
+`pnpm --filter hq-sync build`, then from `apps/sync` build a test bundle with
+`pnpm tauri build --features meet-native-webdriver --bundles app` on macOS
+(or the appropriate packaged Windows target). Use a test config with a version
+above production, and place the build output outside the synced HQ tree.
+Sign the finished macOS bundle using the company test identity;
+`scripts/sign-bundle.sh` accepts `HQ_SIGN_KEYCHAIN` for an ephemeral keychain
+without changing the user's keychain search list. Launch the bundle with `open`
+on the headed Tart test Mac. Grant permissions through the real OS prompts.
+A successfully compiled bridge is not native media acceptance evidence: run
+the harness against the endpoint and retain its actual per-peer receipts.

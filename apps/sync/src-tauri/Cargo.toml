@@ -13,6 +13,8 @@ hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 hq-platform = { path = "../../../crates/hq-platform" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
+# Test-only embedded loopback WebDriver; absent from normal builds.
+tauri-plugin-wdio-webdriver = { version = "=1.4.0", optional = true }
 tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
@@ -209,6 +211,8 @@ mac-notification-sys = "0.6"
 objc2-core-foundation = "0.3"
 
 [features]
+# Explicit opt-in for packaged native QA only. Never enable for distribution.
+meet-native-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
 journal-cli = []
 
 # CI-only probe compiled into the production menubar binary. It is off by

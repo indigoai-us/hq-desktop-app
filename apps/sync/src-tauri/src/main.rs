@@ -340,7 +340,7 @@ fn main() {
         }
     }
 
-    crate::recovery::register_protocol(tauri::Builder::default())
+    let builder = crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -385,7 +385,13 @@ fn main() {
             }
 
             surface_existing_instance(app);
-        }))
+        }));
+    // Explicit test-only feature: the plugin binds 127.0.0.1, never a LAN
+    // address. Keep single-instance first and preserve production CSP/ACLs.
+    #[cfg(feature = "meet-native-webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init_with_port(4445));
+
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
