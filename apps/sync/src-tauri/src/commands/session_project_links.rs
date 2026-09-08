@@ -254,6 +254,7 @@ fn local_links_from_rows(hq_root: &std::path::Path, company: &str, rows: &[Sessi
                 links.len() - 1
             });
         links[index].sessions.push(LinkedSession {
+            channel_id: None,
             session_id: row.session_id.clone(), tool: row.tool.clone(), phase: row.phase.clone(),
             started_at: row.started_at.clone(), title: row.title.clone(),
         });
@@ -269,7 +270,7 @@ fn local_links_from_rows(hq_root: &std::path::Path, company: &str, rows: &[Sessi
 
 /// Every project of `company` with its channel and its sessions.
 #[tauri::command]
-pub async fn session_project_links(company: String, local_only: Option<bool>) -> Result<Vec<ProjectLink>, String> {
+pub async fn session_project_links(app: AppHandle, company: String, local_only: Option<bool>) -> Result<Vec<ProjectLink>, String> {
     ensure_in_app_sessions_allowed()?;
     let company = company.trim().to_string();
     if company.is_empty() {
@@ -279,16 +280,19 @@ pub async fn session_project_links(company: String, local_only: Option<bool>) ->
         let started = Instant::now();
         let root = resolve_hq_folder_path()?;
         let rows = linked_session_rows(&root).await?;
-        let links = local_links_from_rows(&root, &company, &rows);
+        let mut links = local_links_from_rows(&root, &company, &rows);
+        super::project_session_sharing::attach_channel_bindings(&app, &mut links).await;
         if !links.is_empty() {
             log(LOG_TAG, &format!("LOCAL_LINKS_READY company={company} projects={} elapsed_ms={}", links.len(), started.elapsed().as_millis()));
         }
         return Ok(links);
     }
-    if let Some(links) = cached(&company) {
+    if let Some(mut links) = cached(&company) {
+        super::project_session_sharing::attach_channel_bindings(&app, &mut links).await;
         return Ok(links);
     }
-    let links = build_links(&company).await?;
+    let mut links = build_links(&company).await?;
+    super::project_session_sharing::attach_channel_bindings(&app, &mut links).await;
     remember(&company, &links);
     Ok(links)
 }

@@ -11,6 +11,8 @@ import {
   conventionalChannelName,
   historySessionParam,
   linkForProject,
+  linkForSession,
+  mergeLocalProjectLinks,
   linkForRow,
   newSessionParam,
   projectNameFor,
@@ -121,6 +123,25 @@ describe('project keys', () => {
 });
 
 describe('linkForRow', () => {
+  it('keeps explicit session enrollment under its channel and in the header', () => {
+    const first = { ...launch, sessions: [{ ...launch.sessions[0], channelId: 'chn_second' }] };
+    const second = { ...launch, channelId: 'chn_second', sessions: [] };
+    expect(linkForRow(row({ channelId: 'chn_launch' }), [first, second])?.sessions).toEqual([]);
+    expect(linkForRow(row({ channelId: 'chn_second' }), [first, second])?.sessions).toHaveLength(1);
+    expect(linkForSession([first, second], 's-live', 'launch')?.channelId).toBe('chn_second');
+    expect(linkForSession([first, second], 'app-routing-id', 'launch', 's-live')?.channelId).toBe('chn_second');
+    expect(linkForRow(row({ channelId: 'chn_unrelated', title: 'p-launch' }), [first])).toBeNull();
+  });
+
+  it('preserves both channel identities across local refresh and does not duplicate unbound history', () => {
+    const second = { ...launch, channelId: 'chn_second', sessions: [] };
+    const local = { ...launch, channelId: undefined, sessions: [
+      { ...launch.sessions[0], channelId: 'chn_second' }, launch.sessions[1],
+    ] };
+    const merged = mergeLocalProjectLinks([local], [launch, second]);
+    expect(merged.map(link => link.channelId)).toEqual(['chn_launch', 'chn_second']);
+    expect(merged.map(link => link.sessions.map(session => session.sessionId))).toEqual([['s-old'], ['s-live']]);
+  });
   it('resolves by channel id first', () => {
     expect(linkForRow(row({ channelId: 'chn_launch', title: 'renamed' }), links)).toBe(launch);
   });

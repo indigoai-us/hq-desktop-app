@@ -42,6 +42,9 @@ pub const MAX_SESSIONS_PER_PROJECT: usize = 20;
 #[serde(rename_all = "camelCase")]
 pub struct LinkedSession {
     pub session_id: String,
+    /// Explicit channel enrollment, when this session was created in a chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
     /// `claude` | `codex`.
     pub tool: String,
     /// A [`SessionPhase`] tag (`starting` | `idle` | `working` | `needsYou`)
@@ -414,6 +417,7 @@ pub fn join_project_links(
                 })
                 .map(|row| LinkedSession {
                     session_id: row.session_id.clone(),
+                    channel_id: None,
                     tool: row.tool.clone(),
                     phase: row.phase.clone(),
                     started_at: row.started_at.clone(),

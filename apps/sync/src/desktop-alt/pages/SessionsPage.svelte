@@ -112,6 +112,7 @@
   import { projectLinksStore } from '../lib/project-links-store.svelte';
   import {
     linkForProject,
+    linkForSession,
     projectNameFor,
     projectSlugFor,
   } from '../lib/session-project-links';
@@ -554,7 +555,7 @@
 
   /** The live session's project link (channel + siblings), for the strip pill. */
   const projectLink = $derived(
-    linkForProject(projectLinksStore.linksFor(summary?.company ?? company), summary?.project ?? null),
+    linkForSession(projectLinksStore.linksFor(summary?.company ?? company), summary?.sessionId, summary?.project ?? null, summary?.cliSessionId ?? summary?.resumedFrom),
   );
 
   /**

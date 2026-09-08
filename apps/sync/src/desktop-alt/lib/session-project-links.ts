@@ -19,6 +19,7 @@ import type { ProjectEntry } from '../../components/sessions/startwork';
 
 /** One session bound to a project (Rust `LinkedSession`). */
 export interface LinkedSession {
+  channelId?: string;
   /** Present only for someone else's shared, read-only conversation. */
   sharedChannelId?: string;
   sessionId: string;
@@ -117,7 +118,11 @@ export function linkForRow(row: ConversationRow, links: ProjectLink[]): ProjectL
   if (row.kind !== 'channel') return null;
   if (row.channelId) {
     const byId = links.find((link) => link.channelId === row.channelId);
-    if (byId) return byId;
+    if (byId) {
+      const additional = links.filter(link => link !== byId && link.project === byId.project)
+        .flatMap(link => link.sessions).filter(session => (session.channelId || session.sharedChannelId) === row.channelId);
+      return scopedLink(additional.length ? { ...byId, sessions: [...byId.sessions, ...additional] } : byId, row.channelId);
+    }
   }
   const projectId = row.projectId?.trim().toLowerCase();
   if (projectId) {
@@ -129,16 +134,57 @@ export function linkForRow(row: ConversationRow, links: ProjectLink[]): ProjectL
     // Project metadata may be shared by several channels. The selected row,
     // not a cached project's previous channel, owns the launch/read scope.
     if (byProject) return row.channelId
-      ? { ...byProject, channelId: row.channelId, channelName: row.title }
+      ? scopedLink({ ...byProject, channelId: row.channelId, channelName: row.title }, row.channelId)
       : byProject;
   }
   const title = normalizeChannelName(row.title);
   if (!title.startsWith('p-')) return null;
   return (
     links.find(
-      (link) => normalizeChannelName(conventionalChannelName(link.project)) === title,
+      (link) => (!link.channelId || link.channelId === row.channelId)
+        && normalizeChannelName(conventionalChannelName(link.project)) === title,
     ) ?? null
   );
+}
+
+function scopedLink(link: ProjectLink, channelId: string): ProjectLink {
+  const seen = new Set<string>();
+  const sessions = link.sessions.filter(session => {
+    if ((session.sharedChannelId || session.channelId) && (session.sharedChannelId || session.channelId) !== channelId) return false;
+    if (seen.has(session.sessionId)) return false;
+    seen.add(session.sessionId);
+    return true;
+  });
+  return sessions.length === link.sessions.length ? link : { ...link, sessions };
+}
+
+/** Refresh local membership without replacing distinct channel identities. */
+export function mergeLocalProjectLinks(local: ProjectLink[], previous: ProjectLink[]): ProjectLink[] {
+  const result = previous.map(link => ({ ...link, sessions: [
+    ...local.filter(row => row.project === link.project).flatMap(row => row.sessions).filter(session =>
+      !session.sharedChannelId && (session.channelId ? session.channelId === link.channelId
+        : previous.find(row => row.project === link.project) === link)),
+    ...link.sessions.filter(session => session.sharedChannelId),
+  ] }));
+  for (const link of local) {
+    if (!previous.some(row => row.project === link.project)) result.push(link);
+    else {
+      // Keep explicitly bound sessions whose channel has not arrived yet.
+      const missing = link.sessions.filter(session => session.channelId && !previous.some(row => row.channelId === session.channelId));
+      if (missing.length) result.push({ ...link, channelId: undefined, sessions: missing });
+    }
+  }
+  return result;
+}
+
+/** Use the durable session enrollment for the header, never a project's first channel. */
+export function linkForSession(links: ProjectLink[], sessionId: string | undefined, project: string | null, nativeId?: string | null): ProjectLink | null {
+  const base = linkForProject(links, project);
+  const session = links.flatMap(link => link.sessions).find(row => row.sessionId === sessionId || (nativeId && row.sessionId === nativeId));
+  const channelId = session?.channelId;
+  if (!channelId) return base;
+  return links.find(link => link.channelId === channelId)
+    ?? (base ? { ...base, channelId, channelName: undefined } : null);
 }
 
 /** The link for a session's own binding, for the strip's project pill. */

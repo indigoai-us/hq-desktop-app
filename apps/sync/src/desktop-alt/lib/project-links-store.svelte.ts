@@ -14,6 +14,7 @@ import { safeUnlisten } from '../../lib/listener-registry';
 import { loadSharedRows } from './shared-project-sessions';
 import {
   loadSessionProjectLinks,
+  mergeLocalProjectLinks,
   PROJECT_CHANNEL_LINKED_EVENT,
   PROJECT_CREATED_EVENT,
   type ProjectLink,
@@ -95,8 +96,7 @@ function enrich(company: string, mine: number): void {
         ] })),
         ...current.filter((link) => !links.some((row) => row.project === link.project)),
       ] : [
-        ...current.map((link) => ({ ...link, ...links.find((row) => row.project === link.project), sessions: link.sessions })),
-        ...links.filter((link) => !current.some((row) => row.project === link.project)),
+        ...mergeLocalProjectLinks(current, links),
       ] };
       refreshShared(company, byCompany[company], mine);
     } catch {
@@ -121,12 +121,7 @@ async function refresh(): Promise<void> {
         if (mine !== generation || !watched.includes(company)) return;
         revisions.set(company, (revisions.get(company) ?? 0) + 1);
         const previous = byCompany[company] ?? [];
-        byCompany = { ...byCompany, [company]: [
-          ...links.map((link) => ({ ...link, ...previous.find((row) => row.project === link.project), sessions: [
-            ...link.sessions, ...(previous.find(row => row.project === link.project)?.sessions.filter(session => session.sharedChannelId) ?? []),
-          ] })),
-          ...previous.filter((link) => !links.some((row) => row.project === link.project)).map((link) => ({ ...link, sessions: link.sessions.filter(session => session.sharedChannelId) })),
-        ] };
+        byCompany = { ...byCompany, [company]: mergeLocalProjectLinks(links, previous) };
       } catch {
         // Keep the last known links: the flag may be off, or hq-pro away.
       } finally {

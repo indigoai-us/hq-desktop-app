@@ -51,6 +51,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use futures_util::{stream, StreamExt, TryStreamExt};
 
 use serde::Serialize;
 
@@ -505,7 +506,9 @@ type CloudOutcome = Result<
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
-    let (mut local_companies, manifest_error) = discover_local_companies(&hq_root);
+    let root_for_discovery = hq_root.clone();
+    let (mut local_companies, manifest_error) = tokio::task::spawn_blocking(move || discover_local_companies(&root_for_discovery))
+        .await.map_err(|e| e.to_string())?;
 
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
@@ -570,13 +573,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
             });
         }
 
-        let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
-        for mem in &memberships {
-            if entities.contains_key(&mem.company_uid) {
-                continue;
+        let ids = memberships.iter().map(|mem| mem.company_uid.clone()).collect();
+        let fetched = fetch_workspace_entities(ids, |uid| async {
+            match vault.find_entity_by_uid(&uid).await {
+                Ok(entity) => Ok((uid, entity)),
+                Err(error) => {
+                    let membership = memberships.iter().find(|mem| mem.company_uid == uid)
+                        .map(|mem| mem.display_id()).unwrap_or_else(|| uid.clone());
+                    Err(format!("fetch entity {uid} for membership {membership}: {error}"))
+                }
             }
-            match vault.find_entity_by_uid(&mem.company_uid).await {
-                Ok(Some(e)) => {
+        }).await?;
+        let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
+        for (uid, entity) in fetched {
+            if let Some(e) = entity {
                     // Tombstoned (DELETE /entity/{uid} via hq-console) — the
                     // vault still returns the row but the company is "gone"
                     // from the user's perspective. Drop it so downstream
@@ -592,16 +602,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                         );
                         continue;
                     }
-                    entities.insert(mem.company_uid.clone(), e);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Err(format!(
-                        "fetch entity {} for membership {}: {e}",
-                        mem.company_uid,
-                        mem.display_id()
-                    ));
-                }
+                    entities.insert(uid, e);
             }
         }
 
@@ -673,6 +674,13 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         hq_folder_path,
         manifest_error,
     })
+}
+
+/// Bound fan-out while avoiding one network round trip per membership in series.
+async fn fetch_workspace_entities<T, F, Fut>(ids: Vec<String>, fetch: F) -> Result<Vec<T>, String>
+where F: Fn(String) -> Fut, Fut: std::future::Future<Output = Result<T, String>> {
+    let ids: std::collections::BTreeSet<_> = ids.into_iter().collect();
+    stream::iter(ids).map(fetch).buffer_unordered(8).try_collect().await
 }
 
 #[tauri::command]
@@ -1275,6 +1283,32 @@ mod tests {
     use crate::commands::workspaces::*;
     use tempfile::TempDir;
     use PERSONAL_VAULT_JOURNAL_SLUG;
+
+    #[tokio::test]
+    async fn workspace_entity_fetch_is_deduplicated_and_concurrent_but_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let ids = (0..20).map(|i| (i % 12).to_string()).collect();
+        let rows = fetch_workspace_entities(ids, |id| async {
+            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(count, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(id)
+        }).await.unwrap();
+        assert_eq!(rows.len(), 12);
+        assert!(peak.load(Ordering::SeqCst) > 1);
+        assert!(peak.load(Ordering::SeqCst) <= 8);
+    }
+
+    #[tokio::test]
+    async fn workspace_entity_failure_is_not_reported_as_complete_membership() {
+        let result = fetch_workspace_entities(vec!["broken".into()], |_| async {
+            Err::<String, _>("network unavailable".to_string())
+        }).await;
+        assert_eq!(result.unwrap_err(), "network unavailable");
+    }
 
     fn person(uid: &str, bucket: Option<&str>) -> EntityInfo {
         EntityInfo {

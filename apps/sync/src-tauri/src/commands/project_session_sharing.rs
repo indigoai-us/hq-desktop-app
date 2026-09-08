@@ -44,6 +44,39 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() < 150 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The explicit account-owned enrollment is the channel authority, including
+/// after a restart when the sidebar uses the provider-native session ID.
+pub async fn attach_channel_bindings(app: &tauri::AppHandle, links: &mut [hq_desktop_core::session_links::ProjectLink]) {
+    let Ok(Some(tokens)) = cognito::get_tokens().await else { return; };
+    let Ok(account_id) = account(&tokens) else { return; };
+    if !valid_id(&account_id) { return; }
+    let Ok(base) = app.path().app_local_data_dir() else { return; };
+    let bindings = tokio::time::timeout(Duration::from_secs(2), tokio::task::spawn_blocking(move || {
+        let mut bindings = HashMap::new();
+        let Ok(entries) = std::fs::read_dir(base.join("project-session-outbox-v1").join(&account_id)) else { return bindings; };
+        for entry in entries.filter_map(Result::ok) {
+            if entry.path().extension().is_none_or(|ext| ext != "json") { continue; }
+            let Ok(raw) = std::fs::read(entry.path()) else { continue; };
+            let Ok(row) = serde_json::from_slice::<Outbox>(&raw) else { continue; };
+            add_channel_binding(&mut bindings, &row, &account_id);
+        }
+        bindings
+    })).await.ok().and_then(Result::ok).unwrap_or_default();
+    for link in links {
+        for session in &mut link.sessions {
+            session.channel_id = bindings.get(&(link.project.clone(), session.tool.clone(), session.session_id.clone())).cloned();
+        }
+    }
+}
+
+fn add_channel_binding(bindings: &mut HashMap<(String, String, String), String>, row: &Outbox, account: &str) {
+    if row.version != 1 || row.account != account { return; }
+    bindings.insert((row.project.clone(), row.tool.clone(), row.session_id.clone()), row.channel_id.clone());
+    if let Some(native) = &row.native_id {
+        bindings.insert((row.project.clone(), row.tool.clone(), native.clone()), row.channel_id.clone());
+    }
+}
+
 fn matches_resume(row: &Outbox, account: &str, company: &str, project: &str, tool: &str, native: &str) -> bool {
     row.version == 1 && row.account == account && row.company_uid == company && row.project == project
         && row.tool == tool && row.native_id.as_deref() == Some(native)
@@ -302,6 +335,18 @@ mod tests {
         Outbox { version: 1, account: "owner".into(), channel_id: "channel".into(), company_uid: "company".into(), project: "launch".into(),
             session_id: "session".into(), native_id: Some("native".into()), tool: "codex".into(), title: "Launch".into(), sent: 0,
             registered: true, pending: vec![Message { role: "user".into(), text: "First".into() }], in_flight: None }
+    }
+    #[test] fn channel_binding_survives_native_id_transition_without_crossing_account_project_or_provider() {
+        let mut bindings = HashMap::new();
+        let row = outbox();
+        add_channel_binding(&mut bindings, &row, "other");
+        assert!(bindings.is_empty());
+        add_channel_binding(&mut bindings, &row, "owner");
+        for id in ["session", "native"] {
+            assert_eq!(bindings.get(&("launch".into(), "codex".into(), id.into())), Some(&"channel".to_string()));
+            assert!(!bindings.contains_key(&("other".into(), "codex".into(), id.into())));
+            assert!(!bindings.contains_key(&("launch".into(), "claude".into(), id.into())));
+        }
     }
     #[test] fn resume_requires_the_original_account_company_project_tool_and_native_id() {
         let row = outbox();

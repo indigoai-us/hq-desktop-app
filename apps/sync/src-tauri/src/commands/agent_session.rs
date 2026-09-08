@@ -781,11 +781,9 @@ pub async fn agent_session_history_page(
     // process. Its native id and provider are already known by the history
     // scanner, so no registry entry is needed just to render the transcript.
     if let Some(tool) = tool {
-        return Ok(history_replay::load_resume_history_before(
-            tool,
-            &session_id,
-            before,
-        ));
+        return tokio::time::timeout(std::time::Duration::from_secs(5), tokio::task::spawn_blocking(move || history_replay::load_resume_history_before(
+            tool, &session_id, before,
+        ))).await.map_err(|_| "Transcript read timed out. Please retry.".to_string())?.map_err(|e| e.to_string());
     }
 
     let before = before.ok_or_else(|| "An earlier-history cursor is required.".to_string())?;
@@ -805,11 +803,11 @@ pub async fn agent_session_history_page(
         .to_owned();
     let tool = session.spec.tool;
     drop(guard);
-    Ok(history_replay::load_resume_history_before(
+    tokio::time::timeout(std::time::Duration::from_secs(5), tokio::task::spawn_blocking(move || history_replay::load_resume_history_before(
         tool,
         &resume,
         Some(before),
-    ))
+    ))).await.map_err(|_| "Transcript read timed out. Please retry.".to_string())?.map_err(|e| e.to_string())
 }
 
 /// The id the CLI itself knows a session by — what `claude --resume` and

@@ -105,13 +105,22 @@ pub async fn session_share_to_channel(args: ShareArgs) -> Result<ShareResult, St
         }
     }
     let digest = if args.include_transcript {
-        let replay = agent_session_replay(session_id.clone(), 0)
-            .await
-            .map_err(|e| format!("Transcript unavailable: {e}"))?;
-        let events: Vec<_> = replay.events.into_iter().map(|entry| entry.event).collect();
+        let events = match agent_session_replay(session_id.clone(), 0).await {
+            Ok(replay) => replay.events.into_iter().map(|entry| entry.event).collect(),
+            Err(_) => {
+                let tool = match provenance.tool.as_str() {
+                    "codex" => SessionTool::Codex,
+                    "claude" => SessionTool::Claude,
+                    _ => return Err("Unknown transcript provider".into()),
+                };
+                super::agent_session::agent_session_history_page(session_id.clone(), None, Some(tool))
+                    .await.map_err(|e| format!("Transcript unavailable: {e}"))?
+                    .events.into_iter().map(|entry| entry.event).collect::<Vec<_>>()
+            }
+        };
         let rendered = render_digest(&digest_turns(&events));
         if rendered.is_empty() {
-            None
+            return Err("Transcript unavailable. Nothing was shared; reopen the session and retry.".into());
         } else {
             Some(rendered)
         }
@@ -342,7 +351,27 @@ async fn resolve_provenance(hq_root: &Path, session_id: &str) -> Result<Provenan
             });
         }
     }
-    read_session_meta(hq_root, session_id).ok_or_else(|| format!("No session {session_id}."))
+    let root = hq_root.to_path_buf();
+    let id = session_id.to_string();
+    let meta = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::task::spawn_blocking(move || read_session_meta(&root, &id)))
+        .await.map_err(|_| "Session metadata read timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let observed = super::sessions::cached_agent_sessions();
+    historical_provenance(meta, observed.iter().find(|row| row.id == session_id))
+        .ok_or_else(|| format!("Provider metadata unavailable for session {session_id}. Reopen history and retry."))
+}
+
+fn historical_provenance(meta: Option<Provenance>, observed: Option<&hq_desktop_core::sessions::AgentSession>) -> Option<Provenance> {
+    if let Some(row) = observed {
+        use hq_desktop_core::sessions::{AgentOrigin, AgentTool};
+        if row.origin != AgentOrigin::Local { return None; }
+        return Some(Provenance {
+            tool: match row.tool { AgentTool::Claude => "claude", AgentTool::Codex => "codex" }.into(),
+            model: (!row.model.trim().is_empty()).then(|| row.model.clone()),
+            company: meta.and_then(|m| m.company).or_else(|| (!row.company.trim().is_empty()).then(|| row.company.clone())),
+        });
+    }
+    meta.filter(|row| matches!(row.tool.as_str(), "claude" | "codex"))
 }
 
 fn tool_label(tool: SessionTool) -> &'static str {
@@ -378,7 +407,7 @@ fn read_session_meta(hq_root: &Path, session_id: &str) -> Option<Provenance> {
             .tool
             .map(|t| t.trim().to_ascii_lowercase())
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "claude".to_string()),
+            .unwrap_or_default(),
         model: None,
         company: meta
             .company_slug
@@ -547,14 +576,14 @@ mod tests {
                 company: Some("indigo".into()),
             })
         );
-        // Missing keys default: tool falls back to claude, company absent.
+        // Missing provider is unknown, never silently classified as Claude.
         let bare = tmp.path().join("workspace/sessions/sess-2");
         fs::create_dir_all(&bare).unwrap();
         fs::write(bare.join("meta.yaml"), "session_id: sess-2\n").unwrap();
         assert_eq!(
             read_session_meta(tmp.path(), "sess-2"),
             Some(Provenance {
-                tool: "claude".into(),
+                tool: "".into(),
                 model: None,
                 company: None,
             })
@@ -562,6 +591,20 @@ mod tests {
         assert_eq!(read_session_meta(tmp.path(), "nope"), None);
         assert_eq!(read_session_meta(tmp.path(), "../sess-1"), None);
         assert_eq!(read_session_meta(tmp.path(), ".."), None);
+    }
+
+    #[test]
+    fn sparse_historical_metadata_uses_native_provider_not_claude_default() {
+        let row: hq_desktop_core::sessions::AgentSession = serde_json::from_value(serde_json::json!({
+            "id":"native", "tool":"codex", "origin":"local", "title":"Test", "status":"ended",
+            "company":"awesomeco", "model":"codex-test", "source":"test"
+        })).unwrap();
+        let sparse = Provenance { tool: String::new(), company: Some("awesomeco".into()), model: None };
+        assert!(historical_provenance(Some(sparse.clone()), None).is_none());
+        let resolved = historical_provenance(Some(sparse), Some(&row)).unwrap();
+        assert_eq!(resolved.tool, "codex");
+        assert_eq!(resolved.model.as_deref(), Some("codex-test"));
+        assert_eq!(resolved.company.as_deref(), Some("awesomeco"));
     }
 
     #[test]

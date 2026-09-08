@@ -145,6 +145,8 @@ export interface TurnOverrides {
 /** One session the app is driving (Rust `SessionSummary`). */
 export interface SessionSummary {
   sessionId: string;
+  /** Durable provider ID from the native session handshake. */
+  cliSessionId?: string | null;
   /** Concise title derived from the first visible operator prompt. */
   title?: string;
   tool: SessionTool;
