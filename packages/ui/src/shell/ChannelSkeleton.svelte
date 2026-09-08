@@ -50,32 +50,48 @@
     min-height: 0;
   }
 
+  /* Base tint is static; the sheen is a translated pseudo-element so the
+     shimmer stays on the compositor (transform) instead of repainting a
+     background-position every frame on every block. */
   .sk {
+    position: relative;
     display: inline-block;
+    overflow: hidden;
     border-radius: 6px;
+    background: color-mix(in srgb, var(--t1, #fff) 6%, transparent);
+  }
+
+  .sk::after {
+    content: "";
+    position: absolute;
+    inset: 0;
     background: linear-gradient(
       100deg,
-      color-mix(in srgb, var(--t1, #fff) 6%, transparent) 40%,
-      color-mix(in srgb, var(--t1, #fff) 11%, transparent) 50%,
-      color-mix(in srgb, var(--t1, #fff) 6%, transparent) 60%
+      transparent 40%,
+      color-mix(in srgb, var(--t1, #fff) 5%, transparent) 50%,
+      transparent 60%
     );
-    background-size: 200% 100%;
+    transform: translateX(-100%);
     animation: sk-shimmer 1.4s ease-in-out infinite;
+    will-change: transform;
   }
 
   @keyframes sk-shimmer {
     from {
-      background-position: 120% 0;
+      transform: translateX(-100%);
     }
     to {
-      background-position: -80% 0;
+      transform: translateX(100%);
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .sk {
-      animation: none;
       background: color-mix(in srgb, var(--t1, #fff) 7%, transparent);
+    }
+    .sk::after {
+      animation: none;
+      content: none;
     }
   }
 

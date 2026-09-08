@@ -388,8 +388,6 @@
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
     transition:
       background 140ms ease,
       color 140ms ease,

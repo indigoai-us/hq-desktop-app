@@ -217,9 +217,9 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
+    /* No backdrop-filter here: the native glass view behind the transparent
+       window already blurs; a second CSS blur only adds compositor cost. */
     background: var(--v4-sidebar, var(--v4-chrome));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
     box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
