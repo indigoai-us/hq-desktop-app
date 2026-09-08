@@ -1101,10 +1101,25 @@
     agentThinking = clearFromMessages(agentThinking, messages);
   }
 
+  /** Same messages (by reference) in the same order — nothing to repaint. */
+  function sameTimeline(
+    a: ConversationMessageWire[],
+    b: ConversationMessageWire[],
+  ): boolean {
+    if (a === b) return true;
+    if (a.length !== b.length || a.length === 0) return false;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   function commitTimeline(
     row: ConversationRow,
     next: ConversationMessageWire[],
   ): void {
+    // The 8s safety poll re-merges an unchanged page; `mergeFetchedTimeline`
+    // hands back the same array when nothing moved, so skip the assignment
+    // (and the wake fan-out) instead of re-rendering an identical thread.
+    if (liveTimelineId === row.id && sameTimeline(liveTimeline, next)) return;
     liveTimeline = next;
     liveTimelineId = row.id;
     timelineCache.set(row.id, next);
@@ -1497,15 +1512,54 @@
    *  roster, the contacts list, the signed-in user's own profile, and any
    *  just-saved override. Feeds chat/thread/panel photos — including agent
    *  DMs whose photo arrived on a channel roster or contacts. */
-  const avatarByUid = $derived(
-    composeAvatarByUid({
-      rosters: Object.values(channelRosterById).flat(),
+  let avatarMemo: {
+    rosterKeys: string;
+    rosters: unknown[];
+    contacts: unknown;
+    selfUid: unknown;
+    selfAvatarUrl: unknown;
+    overrides: unknown;
+    value: Record<string, string>;
+  } | null = null;
+  const avatarByUid = $derived.by((): Record<string, string> => {
+    // Memoised on input identity: a roster load replaces one channel's array,
+    // and every other input is compared by reference, so the map keeps its
+    // identity (and downstream props stay stable) when nothing changed.
+    const rosterKeys = Object.keys(channelRosterById);
+    const rosters = rosterKeys.map((key) => channelRosterById[key]);
+    const rosterFingerprint = rosterKeys.join("\u0000");
+    const selfUid = self?.uid;
+    const memo = avatarMemo;
+    if (
+      memo &&
+      memo.rosterKeys === rosterFingerprint &&
+      memo.contacts === contactAvatarByUid &&
+      memo.selfUid === selfUid &&
+      memo.selfAvatarUrl === selfAvatarUrl &&
+      memo.overrides === avatarOverridesByUid &&
+      memo.rosters.length === rosters.length &&
+      memo.rosters.every((roster, i) => roster === rosters[i])
+    ) {
+      return memo.value;
+    }
+    const value = composeAvatarByUid({
+      rosters: rosters.flat(),
       contacts: contactAvatarByUid,
-      selfUid: self?.uid,
+      selfUid,
       selfAvatarUrl,
       overrides: avatarOverridesByUid,
-    }),
-  );
+    });
+    avatarMemo = {
+      rosterKeys: rosterFingerprint,
+      rosters,
+      contacts: contactAvatarByUid,
+      selfUid,
+      selfAvatarUrl,
+      overrides: avatarOverridesByUid,
+      value,
+    };
+    return value;
+  });
 
   const canEditOpenAgent = $derived(
     canEditAgentProfile({
@@ -2141,7 +2195,10 @@
     };
   }
 
-  const conversationApi = $derived<ConversationApi>({
+  // Built once: only closes over the platform adapter, which is fixed for
+  // the life of the shell (the host remounts on adapter change).
+  // svelte-ignore state_referenced_locally
+  const conversationApi: ConversationApi = {
     fetchChannel: async (args) => {
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
@@ -2243,7 +2300,7 @@
           };
         }
       : undefined,
-  });
+  };
 
   // ── Lifecycle entry points (New company / New agent) ─────────────────────
 
@@ -5017,7 +5074,8 @@
     min-height: 0;
     border-left: 1px solid var(--line);
     background: var(--v4-ground, #161618);
-    transition: width 150ms ease;
+    /* No width transition: animating a flex column's width relayouts the
+       whole conversation pane every frame while the thread opens. */
   }
 
   /* Thread pane (not the profile panel): open at half the conversation
@@ -5028,12 +5086,6 @@
     width: auto;
     flex: 1 1 0;
     min-width: 360px;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .reply-column {
-      transition: none;
-    }
   }
 
   .reply-column.overlay {

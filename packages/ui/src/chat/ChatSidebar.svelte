@@ -2643,9 +2643,10 @@
     height: auto;
     overflow: hidden;
     border-right: 1px solid var(--line);
+    /* No backdrop-filter here: the rail sits directly on the native window
+       glass, and a second 28px blur on top of it cost a full-rail repaint on
+       every hover/scroll. --side-bg carries the extra alpha instead. */
     background: var(--side-bg);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
     box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-ui);
     color: var(--t1);
@@ -2874,6 +2875,9 @@
     flex-direction: column;
     min-height: 0;
     overflow-y: auto;
+    /* Row hover/unread churn stays inside the scroller's paint + layout;
+       overlays that must escape it are portaled (see portal.ts). */
+    contain: layout paint;
     margin-right: -8px;
     padding: 0 8px 12px 0;
     scrollbar-color: var(--line) transparent;
