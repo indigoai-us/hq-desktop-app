@@ -77,12 +77,29 @@ const LOG_TAG: &str = "sessions";
 /// liveness, and derive the history feed. Best-effort — a reader that errors
 /// contributes an empty list rather than failing the whole snapshot, so one bad
 /// store can't blank the fleet.
+///
+/// Every reader is blocking filesystem/process work (thousands of `stat`s plus
+/// a `pgrep` fork), so the whole assembly runs on a blocking thread via
+/// `spawn_blocking` rather than stalling a tokio worker.
 async fn collect_snapshot() -> MissionControlSnapshot {
+    match tauri::async_runtime::spawn_blocking(collect_snapshot_blocking).await {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            log(LOG_TAG, &format!("SESSIONS_SNAPSHOT_TASK_FAILED {e}"));
+            MissionControlSnapshot {
+                sessions: Vec::new(),
+                history: Vec::new(),
+                outpost: None,
+            }
+        }
+    }
+}
+
+/// Synchronous body of [`collect_snapshot`]. Must not run on a tokio worker.
+fn collect_snapshot_blocking() -> MissionControlSnapshot {
     let now = SystemTime::now();
-    let claude = claude::list_local_claude_sessions()
-        .await
-        .unwrap_or_default();
-    let codex = codex::list_local_codex_sessions().await.unwrap_or_default();
+    let claude = claude::scan_local_claude_sessions();
+    let codex = codex::scan_local_codex_sessions();
     let agents = scan_running_agents();
     let local = merge_sessions(claude, codex, agents, now);
 
@@ -94,7 +111,7 @@ async fn collect_snapshot() -> MissionControlSnapshot {
     let outpost_view = outpost::outpost_view(now);
     let sessions = append_outpost_sessions(local, outpost_view.sessions);
 
-    let history = history::list_session_history().await.unwrap_or_default();
+    let history = history::derive_local_session_history();
 
     MissionControlSnapshot {
         sessions,
@@ -171,7 +188,8 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
         // Launch delay — give the app a moment to finish setup before the first
         // scan (mirrors the share/updater pollers' settle delay).
         tokio::time::sleep(Duration::from_secs(3)).await;
-        emit_snapshot(&app).await;
+        let mut last_snapshot: Option<MissionControlSnapshot> = None;
+        emit_snapshot_if_changed(&app, &mut last_snapshot).await;
 
         let mut last_emit = Instant::now();
         let mut was_visible = any_window_visible(&app);
@@ -181,7 +199,7 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
             was_visible = visible;
 
             if plan.emit {
-                emit_snapshot(&app).await;
+                emit_snapshot_if_changed(&app, &mut last_snapshot).await;
                 last_emit = Instant::now();
             }
             tokio::time::sleep(plan.sleep).await;
@@ -195,17 +213,62 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
 /// interactive cadence while every window is hidden was the app's largest source
 /// of idle CPU. This reads Tauri's in-memory window state only — no I/O — so it is
 /// safe to call on every wake-up. A window we cannot query counts as hidden.
+///
+/// Always-on HUD windows (the desktop widget, the DM banner) are excluded: the
+/// widget is `always_on_top` + visible on every workspace and shown at startup,
+/// so counting it would make this permanently true and the idle gating would
+/// never engage. Only windows a user actually opens (`main` popover,
+/// `desktop-alt`, `messages`, ...) count.
 fn any_window_visible<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.webview_windows()
-        .values()
-        .any(|window| window.is_visible().unwrap_or(false))
+        .iter()
+        .filter(|(label, _)| counts_as_user_window(label))
+        .any(|(_, window)| window.is_visible().unwrap_or(false))
+}
+
+/// Window labels that are always-on HUD surfaces rather than user-opened
+/// windows. They never drive the interactive poll cadence.
+const HUD_WINDOW_LABELS: &[&str] = &[
+    crate::commands::widget::WINDOW_LABEL,
+    crate::commands::banner::WINDOW_LABEL,
+];
+
+/// Does a visible window with this label mean a user is looking at the app?
+fn counts_as_user_window(label: &str) -> bool {
+    !HUD_WINDOW_LABELS.contains(&label)
 }
 
 /// Assemble one snapshot and emit it to the frontend as [`EVENT_SESSIONS_UPDATED`].
 /// Best-effort: a failed emit (e.g. no webview yet) is logged, never fatal.
 async fn emit_snapshot<R: Runtime>(app: &AppHandle<R>) {
     let snapshot = collect_snapshot().await;
-    if let Err(e) = app.emit(EVENT_SESSIONS_UPDATED, &snapshot) {
+    emit_snapshot_payload(app, &snapshot);
+}
+
+/// Assemble one snapshot and emit it only when it differs from the last one
+/// this poller sent. The frontend store keeps the previous payload, so an
+/// identical re-emit is pure serialisation + IPC + Svelte reconciliation waste
+/// on every tick of a quiet machine.
+async fn emit_snapshot_if_changed<R: Runtime>(
+    app: &AppHandle<R>,
+    last: &mut Option<MissionControlSnapshot>,
+) {
+    let snapshot = collect_snapshot().await;
+    if !snapshot_changed(last.as_ref(), &snapshot) {
+        return;
+    }
+    emit_snapshot_payload(app, &snapshot);
+    *last = Some(snapshot);
+}
+
+/// Pure dedup predicate: emit when there is no previous snapshot or the new one
+/// differs structurally (`MissionControlSnapshot: PartialEq`).
+fn snapshot_changed(last: Option<&MissionControlSnapshot>, next: &MissionControlSnapshot) -> bool {
+    last != Some(next)
+}
+
+fn emit_snapshot_payload<R: Runtime>(app: &AppHandle<R>, snapshot: &MissionControlSnapshot) {
+    if let Err(e) = app.emit(EVENT_SESSIONS_UPDATED, snapshot) {
         log(LOG_TAG, &format!("SESSIONS_EMIT_FAILED {e}"));
     }
 }
@@ -327,6 +390,97 @@ mod tests {
         let obj = value.as_object().unwrap();
         assert!(obj.contains_key("sessions"));
         assert!(obj.contains_key("history"));
+    }
+
+    // ── Idle gating: HUD windows never count as "visible" ───────────────────
+
+    #[test]
+    fn hud_window_labels_do_not_count_as_user_windows() {
+        // The always-on widget and the DM banner must not keep the interactive
+        // cadence alive — that was the bug that stopped idle gating engaging.
+        assert!(!counts_as_user_window("widget"));
+        assert!(!counts_as_user_window("dm-banner"));
+        // Real user surfaces do count.
+        for label in ["main", "desktop-alt", "messages", "drift-detail"] {
+            assert!(counts_as_user_window(label), "{label} should count");
+        }
+    }
+
+    #[test]
+    fn any_window_visible_ignores_hud_windows_on_a_mock_app() {
+        // The mock app has no windows at all, so nothing is visible — this pins
+        // the "no window → hidden" default rather than the HUD filter alone.
+        let app = tauri::test::mock_app();
+        assert!(!any_window_visible(app.handle()));
+    }
+
+    // ── Emit dedup ──────────────────────────────────────────────────────────
+
+    fn empty_snapshot() -> MissionControlSnapshot {
+        MissionControlSnapshot {
+            sessions: Vec::new(),
+            history: Vec::new(),
+            outpost: None,
+        }
+    }
+
+    #[test]
+    fn snapshot_changed_only_when_payload_differs() {
+        let a = empty_snapshot();
+        // First emit always goes out.
+        assert!(snapshot_changed(None, &a));
+        // Identical → skip.
+        assert!(!snapshot_changed(Some(&a), &a));
+        // Any structural difference → emit.
+        let mut b = empty_snapshot();
+        b.outpost = Some(outpost::OutpostStatus {
+            up: false,
+            runtime: "claude".to_string(),
+            relay_connected: false,
+            ip: String::new(),
+            region: String::new(),
+            last_seen_at: String::new(),
+            stale: true,
+        });
+        assert!(snapshot_changed(Some(&a), &b));
+    }
+
+    #[tokio::test]
+    async fn emit_snapshot_if_changed_skips_identical_payloads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_w = count.clone();
+        handle.listen(EVENT_SESSIONS_UPDATED, move |_| {
+            count_w.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Seed `last` with exactly what the collector will produce on a box with
+        // no sessions is not deterministic, so instead drive two back-to-back
+        // cycles: the first must emit, the second (same fleet, nothing changed
+        // in a few ms) must not.
+        let mut last = None;
+        emit_snapshot_if_changed(&handle, &mut last).await;
+        assert!(last.is_some(), "first cycle records the emitted snapshot");
+        let first = last.clone();
+        emit_snapshot_if_changed(&handle, &mut last).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        if last == first {
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "an unchanged snapshot must not be re-emitted"
+            );
+        } else {
+            // A session mutated between the two scans on this machine; the
+            // second emit is then legitimately required.
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+        }
     }
 
     #[tokio::test]

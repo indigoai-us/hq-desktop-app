@@ -52,8 +52,11 @@ pub fn apply_compact_communications_glass_window(window: &tauri::WebviewWindow) 
 
 /// Insert the role-appropriate native material behind a transparent WKWebView.
 ///
-/// Idempotent enough for our use — each caller invokes it once immediately
-/// after building a fresh window.
+/// Idempotent: the inserted backing view is tagged with
+/// [`GLASS_VIEW_IDENTIFIER`], and a second call on the same content view returns
+/// early instead of stacking another material behind the webview. Reveal paths
+/// (`desktop_alt` re-opens, first-load refresh) may all call this on the same
+/// window.
 #[cfg(target_os = "macos")]
 fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole) {
     use crate::util::logfile::log;
@@ -82,13 +85,23 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
     // SAFETY: invoked on the main thread (run_on_main_thread); every selector
     // here is a standard AppKit message sent to a live object, and the pointers
     // are validated non-null before use.
-    unsafe {
+    let content: *mut AnyObject = unsafe {
         let content: *mut AnyObject = msg_send![ns_win, contentView];
         if content.is_null() {
             log(LOG_TAG, "liquid-glass: window has no contentView");
             return;
         }
+        if content_has_glass_backing(content) {
+            log(
+                LOG_TAG,
+                "liquid-glass: backing view already present, skipping re-apply",
+            );
+            return;
+        }
+        content
+    };
 
+    unsafe {
         if let Some(class) = glass_class {
             let bounds: CGRect = msg_send![content, bounds];
             let glass: *mut AnyObject = msg_send![class, alloc];
@@ -97,6 +110,7 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
                 log(LOG_TAG, "liquid-glass: NSGlassEffectView init returned nil");
                 return;
             }
+            tag_as_glass_backing(glass);
             // Fill the content view and track it as the window resizes:
             // NSViewWidthSizable (1<<1) | NSViewHeightSizable (1<<4).
             let autoresize: usize = (1 << 1) | (1 << 4);
@@ -141,8 +155,18 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
         GlassWindowRole::LargeWindow => NSVisualEffectMaterial::UnderWindowBackground,
         GlassWindowRole::CompactCommunications => NSVisualEffectMaterial::Popover,
     };
-    match apply_vibrancy(window, material, Some(NSVisualEffectState::Active), None) {
+    // FollowsWindowActiveState: a background desktop window must not keep
+    // re-sampling what is behind it on every frame.
+    match apply_vibrancy(
+        window,
+        material,
+        Some(NSVisualEffectState::FollowsWindowActiveState),
+        None,
+    ) {
         Ok(()) => {
+            // `apply_vibrancy` inserts an untagged NSVisualEffectView; tag it so
+            // the idempotency guard above also covers the fallback path.
+            unsafe { tag_untagged_visual_effect_subview(content) };
             let message = match role {
                 GlassWindowRole::LargeWindow => {
                     "liquid-glass: vibrancy fallback applied (UnderWindowBackground)"
@@ -157,6 +181,116 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
             LOG_TAG,
             &format!("liquid-glass: vibrancy fallback FAILED: {e}"),
         ),
+    }
+}
+
+/// `NSUserInterfaceItemIdentifier` stamped on the backing view we insert, so a
+/// re-apply on the same content view can find it and return early.
+#[cfg(target_os = "macos")]
+const GLASS_VIEW_IDENTIFIER: &std::ffi::CStr = c"hq.liquid-glass";
+
+/// Build an autoreleased `NSString` for [`GLASS_VIEW_IDENTIFIER`].
+#[cfg(target_os = "macos")]
+unsafe fn glass_identifier_nsstring() -> *mut objc2::runtime::AnyObject {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    let Some(ns_string) = AnyClass::get(c"NSString") else {
+        return std::ptr::null_mut();
+    };
+    let s: *mut AnyObject =
+        msg_send![ns_string, stringWithUTF8String: GLASS_VIEW_IDENTIFIER.as_ptr()];
+    s
+}
+
+/// Stamp `view.identifier = GLASS_VIEW_IDENTIFIER`.
+///
+/// SAFETY: `view` must be a live NSView; main thread only.
+#[cfg(target_os = "macos")]
+unsafe fn tag_as_glass_backing(view: *mut objc2::runtime::AnyObject) {
+    use objc2::msg_send;
+    let ident = glass_identifier_nsstring();
+    if !ident.is_null() {
+        let _: () = msg_send![view, setIdentifier: ident];
+    }
+}
+
+/// Does `content` already hold a direct subview tagged as our glass backing?
+///
+/// SAFETY: `content` must be a live NSView; main thread only.
+#[cfg(target_os = "macos")]
+unsafe fn content_has_glass_backing(content: *mut objc2::runtime::AnyObject) -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let marker = glass_identifier_nsstring();
+    if marker.is_null() {
+        return false;
+    }
+    let subviews: *mut AnyObject = msg_send![content, subviews];
+    if subviews.is_null() {
+        return false;
+    }
+    let count: usize = msg_send![subviews, count];
+    for index in 0..count {
+        let view: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+        if view.is_null() {
+            continue;
+        }
+        let ident: *mut AnyObject = msg_send![view, identifier];
+        if ident.is_null() {
+            continue;
+        }
+        let same: bool = msg_send![ident, isEqualToString: marker];
+        if same {
+            return true;
+        }
+    }
+    false
+}
+
+/// After `window_vibrancy::apply_vibrancy`, find the `NSVisualEffectView` it
+/// inserted (a direct, still-untagged subview) and stamp it with our identifier.
+///
+/// SAFETY: `content` must be a live NSView; main thread only.
+#[cfg(target_os = "macos")]
+unsafe fn tag_untagged_visual_effect_subview(content: *mut objc2::runtime::AnyObject) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    let Some(effect_class) = AnyClass::get(c"NSVisualEffectView") else {
+        return;
+    };
+    let subviews: *mut AnyObject = msg_send![content, subviews];
+    if subviews.is_null() {
+        return;
+    }
+    let count: usize = msg_send![subviews, count];
+    for index in 0..count {
+        let view: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+        if view.is_null() {
+            continue;
+        }
+        let is_effect: bool = msg_send![view, isKindOfClass: effect_class];
+        if !is_effect {
+            continue;
+        }
+        let ident: *mut AnyObject = msg_send![view, identifier];
+        if ident.is_null() {
+            tag_as_glass_backing(view);
+            return;
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::GLASS_VIEW_IDENTIFIER;
+
+    #[test]
+    fn glass_identifier_is_a_stable_non_empty_marker() {
+        // The identifier is what makes re-apply idempotent; it must be a real,
+        // stable string (a nil/empty identifier would match every untagged view).
+        let s = GLASS_VIEW_IDENTIFIER.to_str().unwrap();
+        assert_eq!(s, "hq.liquid-glass");
+        assert!(!s.is_empty());
     }
 }
 

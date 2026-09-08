@@ -74,7 +74,7 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
 use crate::events::{
     SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
-    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
+    SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
     EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
@@ -1330,6 +1330,81 @@ pub fn build_sync_spawn_args(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Per-file progress coalescing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimum spacing between `EVENT_SYNC_PROGRESS` emits to the renderer. The
+/// runner reports every file; a large pull can produce hundreds of events per
+/// second, each of which is IPC + a Svelte store write + a re-render. Mirrors
+/// `PROGRESS_EMIT_INTERVAL` in `commands/content.rs`.
+const SYNC_PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(120);
+
+/// Time-based coalescer for per-file progress. Pure over `Instant`s so the
+/// policy is unit-testable: the first event in a window goes out immediately,
+/// later ones inside the window are held (latest wins), and [`Self::flush`]
+/// releases the held one — callers flush before any non-progress event and at
+/// runner exit so the final progress of a sync always reaches the UI.
+#[derive(Debug, Default)]
+struct ProgressCoalescer {
+    last_emit: Option<Instant>,
+    pending: Option<SyncProgressEvent>,
+}
+
+impl ProgressCoalescer {
+    /// Offer a progress event; returns the event to emit now, if any.
+    fn offer(&mut self, event: SyncProgressEvent, now: Instant) -> Option<SyncProgressEvent> {
+        let due = match self.last_emit {
+            None => true,
+            Some(last) => now.duration_since(last) >= SYNC_PROGRESS_EMIT_INTERVAL,
+        };
+        if due {
+            self.last_emit = Some(now);
+            self.pending = None;
+            Some(event)
+        } else {
+            self.pending = Some(event);
+            None
+        }
+    }
+
+    /// Release any held event (the latest one seen inside the window).
+    fn flush(&mut self, now: Instant) -> Option<SyncProgressEvent> {
+        let pending = self.pending.take();
+        if pending.is_some() {
+            self.last_emit = Some(now);
+        }
+        pending
+    }
+}
+
+/// One coalescer per HQ folder (a sync run is scoped to one folder), so
+/// independent runs — and independent tests — never share an emit window.
+static SYNC_PROGRESS_COALESCERS: OnceLock<Mutex<HashMap<String, ProgressCoalescer>>> =
+    OnceLock::new();
+
+fn with_progress_coalescer<T>(
+    hq_folder: &str,
+    f: impl FnOnce(&mut ProgressCoalescer) -> T,
+) -> T {
+    let mut map = SYNC_PROGRESS_COALESCERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    f(map.entry(hq_folder.to_string()).or_default())
+}
+
+/// Emit any held per-file progress event for this HQ folder's run. Called
+/// before every non-progress protocol event (so ordering relative to
+/// Complete/Error is preserved) and at runner exit, guaranteeing the last
+/// progress of a sync is never dropped.
+pub(crate) fn flush_pending_sync_progress<R: tauri::Runtime>(app: &AppHandle<R>, hq_folder: &str) {
+    let pending = with_progress_coalescer(hq_folder, |c| c.flush(Instant::now()));
+    if let Some(payload) = pending {
+        let _ = app.emit(EVENT_SYNC_PROGRESS, payload);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ndjson line handler (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1363,6 +1438,12 @@ fn handle_sync_line<R: tauri::Runtime>(
 
     observe_manual_runner_phase(phase_context, &event);
 
+    // Any non-progress event releases a held progress emit first so the
+    // renderer never sees Complete/Error before the last file it covered.
+    if !matches!(event, SyncEvent::Progress(_)) {
+        flush_pending_sync_progress(app, hq_folder);
+    }
+
     // Accumulate per-run counters before emitting. Poisoned locks shouldn't
     // happen in practice (no panics while the mutex is held), but we recover
     // by using the inner value rather than crashing the sync thread.
@@ -1390,7 +1471,14 @@ fn handle_sync_line<R: tauri::Runtime>(
             // Record into the session activity log (uploaded/downloaded with a
             // timestamp) and live-append to the Recent Changes window if open.
             crate::commands::activity::record_progress(app, payload);
-            app.emit(EVENT_SYNC_PROGRESS, payload.clone())
+            // Coalesce: at most one renderer emit per SYNC_PROGRESS_EMIT_INTERVAL;
+            // held events are released by the flush above or at runner exit.
+            let due =
+                with_progress_coalescer(hq_folder, |c| c.offer(payload.clone(), Instant::now()));
+            match due {
+                Some(p) => app.emit(EVENT_SYNC_PROGRESS, p),
+                None => Ok(()),
+            }
         }
         // A parsed no-op by design: returning true from this handler refreshes
         // the process watchdog, while keeping local journal maintenance out of
@@ -2936,6 +3024,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     signal,
                     success,
                 } => {
+                    // The runner is done: release any coalesced per-file
+                    // progress so the final file of the sync reaches the UI.
+                    flush_pending_sync_progress(&app_bg, &hq_folder_for_handler);
                     let exit_desc = describe_exit(code, signal);
                     log(
                         "sync",
@@ -3148,6 +3239,100 @@ mod tests {
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use tempfile::TempDir;
+
+    // ── Per-file progress coalescing ────────────────────────────────────────
+
+    fn progress(path: &str) -> SyncProgressEvent {
+        serde_json::from_str(&format!(
+            r#"{{"company":"indigo","path":"{path}","bytes":1}}"#
+        ))
+        .expect("progress payload")
+    }
+
+    #[test]
+    fn progress_coalescer_emits_first_event_immediately() {
+        let mut c = ProgressCoalescer::default();
+        let t0 = Instant::now();
+        assert_eq!(c.offer(progress("a"), t0), Some(progress("a")));
+        assert!(c.flush(t0).is_none(), "nothing held after an immediate emit");
+    }
+
+    #[test]
+    fn progress_coalescer_holds_events_inside_the_window_latest_wins() {
+        let mut c = ProgressCoalescer::default();
+        let t0 = Instant::now();
+        assert!(c.offer(progress("a"), t0).is_some());
+        let t1 = t0 + SYNC_PROGRESS_EMIT_INTERVAL / 2;
+        assert!(c.offer(progress("b"), t1).is_none(), "inside window → held");
+        assert!(c.offer(progress("c"), t1).is_none());
+        // The flush releases only the latest held event — the terminal one.
+        assert_eq!(c.flush(t1), Some(progress("c")));
+        assert!(c.flush(t1).is_none(), "flush is one-shot");
+    }
+
+    #[test]
+    fn progress_coalescer_emits_again_once_the_window_elapses() {
+        let mut c = ProgressCoalescer::default();
+        let t0 = Instant::now();
+        assert!(c.offer(progress("a"), t0).is_some());
+        let t1 = t0 + SYNC_PROGRESS_EMIT_INTERVAL;
+        // A held event is superseded by the due one (the UI wants the newest).
+        assert!(c.offer(progress("b"), t0 + Duration::from_millis(1)).is_none());
+        assert_eq!(c.offer(progress("c"), t1), Some(progress("c")));
+        assert!(c.flush(t1).is_none(), "the due emit drops the stale held event");
+    }
+
+    #[test]
+    fn handle_sync_line_flushes_held_progress_before_a_terminal_event() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(RunnerPhaseContext::default());
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SYNC_PROGRESS, move |event| {
+            let p: SyncProgressEvent = serde_json::from_str(event.payload()).unwrap();
+            seen_w.lock().unwrap().push(p.path);
+        });
+        let completes = Arc::new(AtomicUsize::new(0));
+        let completes_w = completes.clone();
+        handle.listen(EVENT_SYNC_COMPLETE, move |_| {
+            completes_w.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Coalescers are keyed by HQ folder, so this fresh TempDir gets its own
+        // emit window regardless of other tests running in parallel.
+        let folder = hq_folder.path().to_str().unwrap();
+        // Three per-file events back-to-back (well inside 120ms): only the first
+        // is emitted immediately; the rest are coalesced.
+        for path in ["a.md", "b.md", "c.md"] {
+            let line = format!(
+                r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#
+            );
+            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"]);
+
+        // The company Complete must release the held final progress ("c.md")
+        // BEFORE the complete itself is emitted.
+        let complete = r#"{"type":"complete","company":"indigo","filesDownloaded":3,"bytesDownloaded":3,"filesSkipped":0,"conflicts":0,"aborted":false}"#;
+        handle_sync_line(&handle, folder, &totals, &phase, "jwt", complete);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().as_slice(), ["a.md", "c.md"]);
+        assert_eq!(completes.load(Ordering::SeqCst), 1);
+
+        // Nothing left to flush.
+        flush_pending_sync_progress(&handle, folder);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
 
     #[test]
     fn resolve_vault_api_url_defaults_to_hq_computer() {

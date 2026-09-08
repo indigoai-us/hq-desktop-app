@@ -119,7 +119,9 @@ pub async fn open_drift_detail(app: AppHandle, report: DriftReport) -> Result<()
             if let Err(e) = apply_vibrancy(
                 &window,
                 NSVisualEffectMaterial::Popover,
-                Some(NSVisualEffectState::Active),
+                // FollowsWindowActiveState: stop re-sampling the desktop behind a
+                // background window; Active keeps the blur live even when unfocused.
+                Some(NSVisualEffectState::FollowsWindowActiveState),
                 Some(18.0),
             ) {
                 log("drift-detail", &format!("apply_vibrancy FAILED: {e}"));

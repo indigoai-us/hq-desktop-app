@@ -93,7 +93,12 @@ pub struct MissionControlSnapshot<HistoryEvent, OutpostStatus> {
     pub outpost: Option<OutpostStatus>,
 }
 
-pub const SESSIONS_POLL_INTERVAL_SECS: u64 = 5;
+/// Interactive cadence while a user window is visible. 15s: a full snapshot
+/// walks thousands of session files and forks `pgrep`; 5s was measurably hurting
+/// UI smoothness while the desktop window was open. The poller also skips the
+/// emit when the snapshot is unchanged, and `HQ_SYNC_SESSIONS_POLL_SECS` can
+/// still lower it (floor 2s) for debugging.
+pub const SESSIONS_POLL_INTERVAL_SECS: u64 = 15;
 pub const SESSIONS_POLL_FLOOR_SECS: u64 = 2;
 
 pub fn resolve_poll_interval(env_value: Option<&str>) -> Duration {
