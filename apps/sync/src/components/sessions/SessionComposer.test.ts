@@ -37,6 +37,29 @@ const CATALOG = readSessionModels([
 let host: HTMLElement;
 let component: Record<string, unknown> | null = null;
 
+it('puts the startwork setting before all company rows', () => {
+  render();
+  click(must('session-pill-company'));
+  const menu = must('session-menu-company');
+  expect(menu.querySelector('button')?.getAttribute('data-testid')).toBe('session-menu-startwork-toggle');
+});
+
+it('shows only an animated loading status, never model options while loading', () => {
+  render({ modelsLoading: true });
+  click(must('session-pill-model'));
+  expect(must('session-menu-model').textContent).toContain('Loading available models');
+  expect(at('session-menu-model-item')).toBeNull();
+  expect(must('session-menu-model').querySelector('.model-spinner')).not.toBeNull();
+  expect(must('session-pill-model').textContent).toContain('Loading models');
+});
+
+it('does not offer fallback models when the live catalog failed', () => {
+  render({ modelsError: 'Unavailable' });
+  click(must('session-pill-model'));
+  expect(at('session-menu-model-item')).toBeNull();
+  expect(must('session-menu-model').textContent).toContain('Please retry');
+});
+
 function render(props: Record<string, unknown> = {}) {
   component = mount(SessionComposer, {
     target: host,

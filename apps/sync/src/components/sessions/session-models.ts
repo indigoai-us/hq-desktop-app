@@ -28,6 +28,8 @@ export interface SessionModel {
   /** The pill label. */
   label: string;
   description?: string;
+  /** Provider-resolved alias, used for display without changing the requested id. */
+  resolvedModel?: string;
   /**
    * The reasoning efforts this row says it takes, in the CLI's own order.
    * Claude announces `supportedEffortLevels: ["low", …]`; Codex announces
@@ -128,11 +130,12 @@ export function readSessionModels(
         : ['displayName', 'display_name', 'label', 'name'];
     const label = firstString(record, labelKeys) ?? id;
     const description = firstString(record, ['description']) ?? undefined;
+    const resolvedModel = firstString(record, ['resolvedModel', 'resolved_model']) ?? undefined;
     const efforts = readEfforts(record);
     models.push(
       efforts.length > 0
-        ? { value, label: shortenModelLabel(label), description, efforts }
-        : { value, label: shortenModelLabel(label), description },
+        ? { value, label: shortenModelLabel(label), description, efforts, ...(resolvedModel ? { resolvedModel } : {}) }
+        : { value, label: shortenModelLabel(label), description, ...(resolvedModel ? { resolvedModel } : {}) },
     );
   }
 
@@ -525,7 +528,7 @@ export function firstSentence(text?: string | null): string {
  * user a chance to un-choose rather than to choose.
  */
 export function selectableModels(models: ReadonlyArray<SessionModel>): SessionModel[] {
-  return models.filter((entry) => entry.value !== null);
+  return models.filter((entry) => entry.value !== null || !!entry.resolvedModel);
 }
 
 /**
@@ -551,7 +554,7 @@ export function modelRowLabel(
     const display = shortenModelLabel(entry.label);
     if (display && display !== entry.value) return display;
   }
-  return friendlyModelName(entry.value) || shortenModelLabel(entry.label);
+  return friendlyModelName(entry.resolvedModel ?? entry.value) || shortenModelLabel(entry.label);
 }
 
 /**
@@ -593,7 +596,8 @@ export function modelMenuRows(
  * ugly but never ambiguous.
  */
 function idSuffix(value: string | null): string {
-  if (!value) return '';
+  if (!value) return 'recommended';
+  if (/\[1m\]$/i.test(value)) return '1M context';
   const parts = value
     .split(/[-_.]/)
     .filter(Boolean)
@@ -631,7 +635,10 @@ export function modelPillLabel(
   const resolved = friendlyModelName(resolvedModel);
   if (resolved) return resolved;
   if (resolvedModel) return resolvedModel;
-  const hint = defaultModelHint(models.find((entry) => entry.value === null)?.description);
+  const defaultEntry = models.find((entry) => entry.value === null);
+  const resolvedDefault = friendlyModelName(defaultEntry?.resolvedModel);
+  if (resolvedDefault) return resolvedDefault;
+  const hint = defaultModelHint(defaultEntry?.description);
   if (hint) return hint;
   return 'Recommended';
 }

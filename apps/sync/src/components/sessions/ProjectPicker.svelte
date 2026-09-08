@@ -348,6 +348,10 @@
   /* --- head: search + filters ------------------------------------------ */
 
   .head {
+    min-width: 0;
+    flex-shrink: 0;
+    max-height: 45%;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-2);
@@ -490,6 +494,7 @@
   /* --- rows --------------------------------------------------------------- */
 
   .list {
+    overflow-x: hidden;
     flex: 1;
     width: 100%;
     min-width: 0;
@@ -561,6 +566,7 @@
   }
 
   .line {
+    flex-wrap: wrap;
     display: flex;
     align-items: baseline;
     gap: 6px;
@@ -603,6 +609,7 @@
   }
 
   .progress {
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 6px;

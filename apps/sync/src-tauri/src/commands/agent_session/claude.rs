@@ -663,7 +663,10 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
         resume: None,
         permission_mode: hq_desktop_core::agent_session::types::PermissionMode::Prompt,
     };
-    let mut child = spawn_claude(&spec, cwd).await?;
+    let mut launch = claude_launch(paths::resolve_bin("claude"), &spec, cwd);
+    launch.args.extend(catalog_probe_args());
+    let mut child = StdioChild::spawn(&launch).await
+        .map_err(|e| format!("Could not start Claude model discovery: {e}"))?;
 
     let deadline = Instant::now() + PROBE_BUDGET;
     let outcome = probe_inner(&mut child, deadline).await;
@@ -686,12 +689,37 @@ async fn probe_inner(child: &mut StdioChild, deadline: Instant) -> Result<Comman
             return Err("Claude exited before answering the command probe.".into());
         };
         if let Frame::ControlResponse { response } = frame_from_value(value) {
-            return Ok(CommandCatalog {
-                commands: parse_initialize_commands(&response),
-                models: parse_initialize_models(&response),
-            });
+            if response.get("request_id").and_then(Value::as_str) != Some(request_id) {
+                continue;
+            }
+            return catalog_from_initialize(&response);
         }
     }
+}
+
+fn catalog_probe_args() -> Vec<String> {
+    // Discovery sends only initialize, never a user turn. Do not start MCP
+    // services or user hooks just to populate a picker. Real sessions retain
+    // their unmodified launch configuration and policy enforcement.
+    ["--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+     "--settings", "{\"disableAllHooks\":true}", "--no-session-persistence"]
+        .into_iter().map(String::from).collect()
+}
+
+fn catalog_from_initialize(response: &Value) -> Result<CommandCatalog, String> {
+    if response.get("subtype").and_then(Value::as_str) == Some("error") {
+        return Err(
+            "Claude could not initialize its model catalog. Check its sign-in and retry.".into(),
+        );
+    }
+    let models = parse_initialize_models(response);
+    if models.is_empty() {
+        return Err("Claude returned no available models. Check its sign-in and retry.".into());
+    }
+    Ok(CommandCatalog {
+        commands: parse_initialize_commands(response),
+        models,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -701,6 +729,37 @@ async fn probe_inner(child: &mut StdioChild, deadline: Instant) -> Result<Comman
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_suppresses_integration_startup_without_changing_session_args() {
+        let args = catalog_probe_args();
+        assert!(args.contains(&"--strict-mcp-config".to_owned()));
+        assert!(args.contains(&"--no-session-persistence".to_owned()));
+        let settings = args.iter().position(|arg| arg == "--settings").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&args[settings + 1]).unwrap()["disableAllHooks"], true);
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_owned()));
+        let session = claude_launch("claude".into(), &spec(PermissionMode::Prompt), PathBuf::from("/tmp"));
+        for flag in ["--strict-mcp-config", "--mcp-config", "--settings", "--no-session-persistence"] {
+            assert!(!session.args.contains(&flag.to_owned()));
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_initialize_failure_instead_of_caching_empty_models() {
+        assert!(catalog_from_initialize(
+            &serde_json::json!({"subtype":"error", "request_id":"init_1"})
+        )
+        .is_err());
+        assert!(catalog_from_initialize(
+            &serde_json::json!({"subtype":"success", "response":{"models":[]}})
+        )
+        .is_err());
+        let live = serde_json::json!({"subtype":"success", "response":{"models":[{"value":"future-model", "displayName":"Future Model"}]}});
+        assert_eq!(
+            catalog_from_initialize(&live).unwrap().models[0]["value"],
+            "future-model"
+        );
+    }
     use hq_desktop_core::agent_session::claude_wire::user_message_line;
     use hq_desktop_core::agent_session::registry::LiveSession;
     use hq_desktop_core::agent_session::types::{

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProviderConnect from '../../components/sessions/ProviderConnect.svelte';
   /**
    * Sessions — a chat with a Claude Code session running inside the app.
    *
@@ -162,6 +163,9 @@
    * a model can be validated against.
    */
   let catalogLoaded = $state(false);
+  let modelsLoading = $state(false);
+  let catalogRefresh = $state(0);
+  let consumedCatalogRefresh = 0;
   /** The catalog probe's own complaint, e.g. Codex not being wired up yet. */
   let catalogError = $state('');
   let openedId = $state<string | null>(null);
@@ -334,8 +338,12 @@
    */
   $effect(() => {
     const wanted = tool;
-    if (catalogTool === wanted) return;
+    const refresh = catalogRefresh;
+    const forceRefresh = refresh !== consumedCatalogRefresh;
+    consumedCatalogRefresh = refresh;
+    let cancelled = false;
     catalogTool = wanted;
+    modelsLoading = true;
     catalogLoaded = false;
     catalogError = '';
     // Never leave the previous provider's selectable rows on screen while
@@ -343,27 +351,32 @@
     models = readSessionModels([], wanted);
     probeCommands = [];
     void liveSessionStore
-      .slashCommands(wanted)
+      .slashCommands(wanted, forceRefresh)
       .then((catalog) => {
         // The pill may have moved again while this probe ran; a stale catalog
         // must not validate the new tool's model against the old tool's rows.
-        if (catalogTool !== wanted) return;
+        if (cancelled) return;
         probeCommands = catalog.commands;
         const rows = readSessionModels(catalog.models, wanted);
         models = rows;
-        catalogLoaded = !isFallbackCatalog(rows, wanted);
+        const available = !isFallbackCatalog(rows, wanted);
+        catalogLoaded = available;
+        if (!available) catalogError = 'Live model list unavailable';
       })
       // A missing catalog costs autocomplete and a rich model list, never the
       // session — the composer falls back and still sends whatever was typed.
       // The backend's own words are kept: "In-app Codex sessions aren't
       // supported yet" is the useful half of this failure.
       .catch((err: unknown) => {
-        if (catalogTool !== wanted) return;
+        if (cancelled) return;
         probeCommands = [];
         models = readSessionModels([], wanted);
         catalogLoaded = false;
         catalogError = err instanceof Error ? err.message : String(err);
+      }).finally(() => {
+        if (!cancelled) modelsLoading = false;
       });
+    return () => { cancelled = true; };
   });
 
   /** The current tool's catalog is on screen and real. */
@@ -690,9 +703,18 @@
     return '';
   });
 
-  const notice = $derived(blocker || actionError || catalogError || liveSessionStore.error);
+  const needsProvider = $derived(Boolean(preflight) && (tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn : !preflight?.codexAvailable || !preflight?.codexLoggedIn));
+  function providerConnected(provider: SessionToolId) {
+    if (preflight) preflight = provider === 'claude'
+      ? { ...preflight, claudeAvailable: true, claudeLoggedIn: true }
+      : { ...preflight, codexAvailable: true, codexLoggedIn: true };
+    liveSessionStore.invalidatePreflight();
+    chooseTool(provider);
+    catalogRefresh += 1;
+  }
+  const notice = $derived(needsProvider ? '' : blocker || actionError || liveSessionStore.error);
   const ended = $derived(phase === 'ended' || transcript.ended);
-  const sendDisabled = $derived(Boolean(blocker) || starting || ended);
+  const sendDisabled = $derived(!preflight || Boolean(blocker) || starting || ended);
 
   /**
    * "Hand off" is a `/handoff` turn the strip can send for you. It is offered
@@ -1232,6 +1254,15 @@
     </p>
   {/if}
 
+  {#if needsProvider && preflight}
+    <div class="provider-connect-scroll">
+      <ProviderConnect selected={tool}
+        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable}
+        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn}
+        onconnected={providerConnected} onchoose={chooseTool}
+        onrefresh={async () => { liveSessionStore.invalidatePreflight(); preflight = await liveSessionStore.preflight(); }} />
+    </div>
+  {/if}
   <SessionTranscript
     blocks={transcript.blocks}
     status={workStatus}
@@ -1239,7 +1270,7 @@
     hasEarlier={liveSessionStore.hasEarlier}
     loadingEarlier={liveSessionStore.loadingEarlier}
     onloadearlier={() => liveSessionStore.loadEarlier()}
-    {emptyHint}
+    emptyHint={needsProvider ? '' : emptyHint}
     {busyRequestId}
     {artifactActions}
     onallowonce={(requestId) =>
@@ -1316,6 +1347,9 @@
       {groupMetadataAvailable}
       context={liveSessionStore.contextLoaders}
       {models}
+      {modelsLoading}
+      modelsError={catalogError}
+      onrefreshmodels={() => catalogRefresh += 1}
       {model}
       {resolvedModel}
       {effort}
@@ -1343,19 +1377,25 @@
 </div>
 
 <style>
+  .provider-connect-scroll { min-height: 0; overflow-y: auto; flex: 0 1 auto; }
   .sessions {
+    --session-column-width: 760px;
+    --session-gutter: clamp(12px, 2vw, 24px);
+    container-type: inline-size;
     position: relative;
     display: flex;
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    min-width: 0;
     height: 100%;
     font-family: var(--font-sans);
   }
 
   .composer-dock {
     flex: none;
-    padding: var(--v4-space-2) var(--v4-space-4) var(--v4-space-3);
+    min-width: 0;
+    padding: var(--v4-space-2) var(--session-gutter) var(--v4-space-3);
   }
 
   .session-note {
@@ -1375,7 +1415,7 @@
     flex: none;
     box-sizing: border-box;
     width: 100%;
-    max-width: calc(760px + 2 * var(--v4-space-4));
+    max-width: calc(var(--session-column-width) + 2 * var(--session-gutter));
     margin: 0 auto;
     padding: var(--v4-space-2) var(--v4-space-4) 0;
     font-size: var(--type-metadata);

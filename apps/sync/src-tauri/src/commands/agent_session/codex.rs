@@ -119,21 +119,23 @@ fn inherited_agent_env() -> Vec<String> {
 
 /// Where the `codex` binary lives.
 ///
-/// `paths::resolve_bin` first (an installed CLI on the user's own PATH wins),
-/// then the copy bundled inside ChatGPT.app — a machine with the desktop app
-/// needs nothing installed.
+/// Prefer the desktop-managed runtime, which updates with Codex desktop. An
+/// independently installed PATH CLI can lag behind and expose an older model
+/// catalog. Session execution and discovery must use the same runtime.
 pub fn codex_program() -> String {
     // Through the launch allowlist even though the name is a literal here:
     // the allowlist is the one place a tool name becomes a program to run, and
     // a second spelling of that rule is a second place to get it wrong.
     let binary = crate::commands::launch::cli_binary_for("codex").unwrap_or("codex");
-    let resolved = paths::resolve_bin(binary);
-    if resolved != "codex" {
-        return resolved;
-    }
-    crate::commands::launch::bundled_codex_bin()
+    select_codex_program(crate::commands::launch::bundled_codex_bin(), || {
+        paths::resolve_bin(binary)
+    })
+}
+
+fn select_codex_program(bundled: Option<PathBuf>, fallback: impl FnOnce() -> String) -> String {
+    bundled
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or(resolved)
+        .unwrap_or_else(fallback)
 }
 
 /// Spawn the real `codex app-server`.
@@ -850,55 +852,70 @@ async fn probe_inner(child: &mut StdioChild) -> Result<CommandCatalog, String> {
         .await
         .map_err(|e| format!("Could not ask Codex for its commands: {e}"))?;
 
-    // Neither half is worth failing the whole probe over: a composer with
-    // models and no commands is still a usable composer.
-    let commands = match child.send_request("skills/list", json!({})).await {
-        Ok(result) => parse_skills_list(&result),
-        Err(e) => {
-            log(LOG_TAG, &format!("codex skills/list probe failed: {e}"));
-            Vec::new()
-        }
-    };
-    let models = match child.send_request("model/list", json!({})).await {
-        Ok(result) => parse_model_list(&result),
-        Err(e) => {
-            log(LOG_TAG, &format!("codex model/list probe failed: {e}"));
-            Vec::new()
-        }
+    // Fetch models first: optional skill discovery can stall on workspace
+    // integrations and must not discard an otherwise usable live model list.
+    let models = probe_models(child).await?;
+    let commands = match tokio::time::timeout(
+        Duration::from_secs(3),
+        child.send_request("skills/list", json!({})),
+    )
+    .await
+    {
+        Ok(Ok(result)) => parse_skills_list(&result),
+        _ => Vec::new(),
     };
     Ok(CommandCatalog { commands, models })
+}
+
+async fn probe_models(child: &mut StdioChild) -> Result<Vec<Value>, String> {
+    let mut models = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let mut params = json!({});
+        if let Some(cursor) = &cursor {
+            params["cursor"] = json!(cursor);
+        }
+        let result = child
+            .send_request("model/list", params)
+            .await
+            .map_err(|e| format!("Could not load Codex models: {e}"))?;
+        for model in parse_model_list(&result) {
+            if !models
+                .iter()
+                .any(|old: &Value| old["value"] == model["value"])
+            {
+                models.push(model);
+            }
+        }
+        cursor = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .filter(|cursor| !cursor.is_empty())
+            .map(str::to_owned);
+        let Some(next) = &cursor else { break };
+        if !seen.insert(next.clone()) || seen.len() > 100 {
+            return Err("Codex returned an invalid model pagination cursor.".into());
+        }
+    }
+    if models.is_empty() {
+        return Err("Codex returned no available models. Check its sign-in and retry.".into());
+    }
+    Ok(models)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Login probe
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// How long `codex login status` gets before we call it unknown.
-const LOGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
-
-/// Is the Codex CLI signed in?
-///
-/// `codex login status` prints "Logged in using ChatGPT" when it is. Like the
-/// Claude login check this is a first-class preflight signal, not a detail: a
-/// signed-out CLI spawns fine and then fails at the model call, which reads to
-/// the user as "the app is broken".
-pub async fn codex_logged_in() -> bool {
-    let program = codex_program();
-    let mut command = paths::tokio_spawn_command(&program, &["login", "status"]);
-    command.env("PATH", paths::child_path());
-    let Ok(Ok(output)) = tokio::time::timeout(LOGIN_PROBE_TIMEOUT, command.output()).await else {
-        return false;
-    };
-    login_status_succeeded(output.status.success(), &output.stdout, &output.stderr)
-}
-
-fn login_status_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
-    success && [stdout, stderr].iter().any(|stream| {
-        String::from_utf8_lossy(stream).lines().any(|line| {
-            let line = line.trim();
-            line == "Logged in" || line.starts_with("Logged in using ")
+pub(super) fn login_status_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
+    success
+        && [stdout, stderr].iter().any(|stream| {
+            String::from_utf8_lossy(stream).lines().any(|line| {
+                let line = line.trim();
+                line == "Logged in" || line.starts_with("Logged in using ")
+            })
         })
-    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -908,11 +925,78 @@ fn login_status_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_runtime_prefers_desktop_over_stale_path_cli() {
+        let bundled = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex");
+        assert_eq!(
+            select_codex_program(Some(bundled.clone()), || panic!("PATH must not win")),
+            bundled.to_string_lossy()
+        );
+        assert_eq!(
+            select_codex_program(None, || "/usr/local/bin/codex".into()),
+            "/usr/local/bin/codex"
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_loads_all_model_pages_before_optional_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let replies = dir.path().join("replies.jsonl");
+        let script = r#"
+id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"
+  id=$(id_of "$line")
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"model/list"'*)
+      case "$line" in
+        *'"cursor":"page2"'*) printf '{"id":%s,"result":{"data":[{"id":"future-model"}],"nextCursor":null}}\n' "$id" ;;
+        *) printf '{"id":%s,"result":{"data":[{"id":"existing-model"}],"nextCursor":"page2"}}\n' "$id" ;;
+      esac ;;
+    *'"method":"skills/list"'*) printf '{"id":%s,"result":{"data":[]}}\n' "$id" ;;
+  esac
+done
+"#;
+        let program = install_fake(dir.path(), &replies, script);
+        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), probe_inner(&mut child))
+            .await
+            .unwrap()
+            .unwrap();
+        child.shutdown_with_reap(REAP_TIMEOUT).await;
+        assert_eq!(
+            result
+                .models
+                .iter()
+                .map(|m| m["value"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["existing-model", "future-model"]
+        );
+        let sent = std::fs::read_to_string(replies).unwrap();
+        assert!(sent.find("model/list").unwrap() < sent.find("skills/list").unwrap());
+        assert!(sent.contains("\"cursor\":\"page2\""));
+    }
     #[test]
     fn login_status_accepts_both_streams_but_requires_success() {
-        assert!(login_status_succeeded(true, b"", b"Logged in using ChatGPT\n"));
-        assert!(login_status_succeeded(true, b"Logged in using an API key\n", b""));
-        assert!(!login_status_succeeded(false, b"", b"Logged in using ChatGPT\n"));
+        assert!(login_status_succeeded(
+            true,
+            b"",
+            b"Logged in using ChatGPT\n"
+        ));
+        assert!(login_status_succeeded(
+            true,
+            b"Logged in using an API key\n",
+            b""
+        ));
+        assert!(!login_status_succeeded(
+            false,
+            b"",
+            b"Logged in using ChatGPT\n"
+        ));
         assert!(!login_status_succeeded(true, b"", b"Not logged in\n"));
         assert!(!login_status_succeeded(true, b"", b""));
     }
@@ -1248,10 +1332,14 @@ exit 0
         let script = FAKE_CODEX.split("# ── one turn").next().unwrap().to_owned()
             + "\nwhile IFS= read -r _line; do :; done\n";
         let program = install_fake(dir.path(), &replies, &script);
-        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().into())).await.unwrap();
+        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().into()))
+            .await
+            .unwrap();
         let result = tokio::time::timeout(
-            Duration::from_secs(1), handshake(&mut child, &spec(PermissionMode::Prompt)),
-        ).await;
+            Duration::from_secs(1),
+            handshake(&mut child, &spec(PermissionMode::Prompt)),
+        )
+        .await;
         child.shutdown_with_reap(REAP_TIMEOUT).await;
         assert!(result.is_ok(), "optional catalog blocked session readiness");
         assert_eq!(result.unwrap().unwrap().thread_id, "th-1");

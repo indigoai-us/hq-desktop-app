@@ -28,17 +28,33 @@ use serde::{Deserialize, Serialize};
 /// result is cached in-process for 60 s (invalidated early when
 /// `core/workers/registry.yaml` or `.claude/skills` changes).
 #[tauri::command]
-pub fn hq_skill_catalog(company: Option<String>) -> Result<SkillCatalog, String> {
-    let hq_root = resolve_hq_folder_path()?;
-    Ok(build_skill_catalog_cached(&hq_root, company.as_deref()))
+pub async fn hq_skill_catalog(company: Option<String>) -> Result<SkillCatalog, String> {
+    read_context_for_ui(move || {
+        let hq_root = resolve_hq_folder_path()?;
+        Ok(build_skill_catalog_cached(&hq_root, company.as_deref()))
+    }, std::time::Duration::from_secs(5), "Skill catalog").await
 }
 
 /// A company's projects, most recent activity (`prd.json` or journal) first,
 /// archived ones included and flagged, capped at 200.
 #[tauri::command]
-pub fn hq_company_projects(company: String) -> Result<Vec<ProjectEntry>, String> {
-    let hq_root = resolve_hq_folder_path()?;
-    Ok(list_company_projects(&hq_root, &company))
+pub async fn hq_company_projects(company: String) -> Result<Vec<ProjectEntry>, String> {
+    read_context_for_ui(move || {
+        let hq_root = resolve_hq_folder_path()?;
+        Ok(list_company_projects(&hq_root, &company))
+    }, std::time::Duration::from_secs(5), "Project lookup").await
+}
+
+/// A protected or network-backed HQ folder may stall even a small directory
+/// read. Keep that work off the UI executor and return an honest retryable error.
+async fn read_context_for_ui<T: Send + 'static>(
+    read: impl FnOnce() -> Result<T, String> + Send + 'static,
+    deadline: std::time::Duration,
+    label: &'static str,
+) -> Result<T, String> {
+    tokio::time::timeout(deadline, tauri::async_runtime::spawn_blocking(read))
+        .await.map_err(|_| format!("{label} timed out. Check HQ folder access and retry."))?
+        .map_err(|_| format!("{label} failed. Please retry."))?
 }
 
 /// A company's most recent meeting transcripts, newest first.
@@ -223,6 +239,35 @@ fn as_usize(value: Option<u32>) -> usize {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn company_projects_read_runs_off_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let worker = read_context_for_ui(|| Ok(std::thread::current().id()), std::time::Duration::from_secs(1), "Project lookup").await.unwrap();
+        assert_ne!(caller, worker);
+    }
+
+    #[tokio::test]
+    async fn company_projects_stalled_read_returns_retryable_timeout() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let result = read_context_for_ui(move || {
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+            Ok(())
+        }, std::time::Duration::from_millis(20), "Project lookup").await;
+        let _ = release.send(());
+        assert_eq!(result.unwrap_err(), "Project lookup timed out. Check HQ folder access and retry.");
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_stalled_read_is_an_error_not_an_empty_catalog() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let result = read_context_for_ui(move || {
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+            Ok(())
+        }, std::time::Duration::from_millis(20), "Skill catalog").await;
+        let _ = release.send(());
+        assert_eq!(result.unwrap_err(), "Skill catalog timed out. Check HQ folder access and retry.");
+    }
 
     #[test]
     fn principal_kind_splits_agents_from_humans() {

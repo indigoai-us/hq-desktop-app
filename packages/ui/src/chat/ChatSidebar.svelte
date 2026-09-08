@@ -2616,7 +2616,7 @@
       >
         {#if row.kind === "channel"}
           <span class="chat-glyph-wrap" aria-hidden="true">
-            {#if isCompanyScopedRow(row)}
+            {#if !hasChildren && isCompanyScopedRow(row)}
               <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
             {:else if !hasChildren}
               <span class="chat-glyph">#</span>

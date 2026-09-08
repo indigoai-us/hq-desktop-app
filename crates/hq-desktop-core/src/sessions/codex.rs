@@ -192,7 +192,7 @@ struct RolloutPayload {
     #[serde(default)]
     content: Option<Vec<RolloutContent>>,
     #[serde(default)]
-    source: Option<String>,
+    source: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -214,7 +214,7 @@ struct HeadInfo {
     company: Option<String>,
     project: Option<String>,
     first_user_message: Option<String>,
-    source: Option<String>,
+    source: Option<serde_json::Value>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -292,14 +292,27 @@ pub fn scan_codex_sessions_with_hq(
         // Memoised: an append-only rollout's head never changes, so this is one
         // open + parse per rollout for the life of the process, not one per tick.
         let head = HEAD_CACHE
-            .get_or_compute(&rollout.path, || Some(read_head_info(&rollout.path)))
-            .unwrap_or_default();
+            .get_or_compute(&rollout.path, || {
+                let head = read_head_info(&rollout.path);
+                // A rollout may be observed before its first JSON line has
+                // finished writing. Only cache classified heads permanently.
+                head.source.is_some().then_some(head)
+            })
+            .unwrap_or_else(|| read_head_info(&rollout.path));
 
         // `codex exec` rollouts are internal executions (including sub-agents),
         // not user-owned Desktop tasks. They share the same rollout store but
         // have no task in Codex's native session index and must not appear as
         // resumable conversations in HQ.
-        if head.source.as_deref() == Some("exec") {
+        if head.source.as_ref().is_some_and(|source| {
+            matches!(source.as_str(), Some("exec" | "subagent"))
+                || source.get("subagent").is_some()
+        }) {
+            continue;
+        }
+        // Keep legacy index-backed main threads, but do not invent a task from
+        // an unclassified, partially written background rollout.
+        if head.source.is_none() && !index.contains_key(file_id) {
             continue;
         }
 
@@ -1037,6 +1050,42 @@ mod tests {
         let nonexistent = root.join("does-not-exist");
         let sessions = scan_codex_sessions(&nonexistent, SystemTime::now());
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn incomplete_helper_header_is_not_cached_as_a_main_thread() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30c";
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, "");
+        let first = scan_codex_sessions(&root, SystemTime::now());
+        let meta = session_meta_line_with_source(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z", "exec");
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty(), "completed exec metadata must be re-read");
+        assert!(first.is_empty(), "unclassified rollouts must not flash as main threads");
+    }
+
+    #[test]
+    fn structured_subagent_source_is_excluded_even_with_an_index_title() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30c";
+        let mut meta: serde_json::Value = serde_json::from_str(&session_meta_line(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z")).unwrap();
+        meta["payload"]["source"] = serde_json::json!({"subagent":{"thread_spawn":{"parent_thread_id":"parent", "depth":1}}});
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        fs::write(root.join("session_index.jsonl"), index_line(id, "Helper", "2026-06-15T18:05:00.000Z")).unwrap();
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty());
+    }
+
+    #[test]
+    fn incomplete_main_thread_appears_when_metadata_arrives() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30b";
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, "");
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty());
+        let meta = session_meta_line(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z");
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        let sessions = scan_codex_sessions(&root, SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
     }
 
     #[test]

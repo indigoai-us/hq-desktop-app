@@ -997,13 +997,13 @@ describe('probe memoization (preflight + catalog)', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('spawns the catalog probe once for the process lifetime, and retries only after a failure', async () => {
+  it('caches successful model catalogs and retries after a failure', async () => {
     let attempts = 0;
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd !== 'agent_session_slash_commands') throw new Error(`unexpected ${cmd}`);
       attempts += 1;
       if (attempts === 1) throw new Error('probe failed');
-      return { commands: [], models: [] };
+      return { commands: [], models: [{ value: 'opus' }] };
     });
     await expect(liveSessionStore.slashCommands('claude')).rejects.toThrow('probe failed');
     await liveSessionStore.slashCommands('claude');
@@ -1012,6 +1012,22 @@ describe('probe memoization (preflight + catalog)', () => {
     resetProbeCaches();
     await liveSessionStore.slashCommands('claude');
     expect(attempts).toBe(3);
+  });
+
+  it('retries empty catalogs and refreshes successful catalogs explicitly or after five minutes', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+    invoke.mockResolvedValueOnce({ commands: [], models: [] });
+    invoke.mockResolvedValue({ commands: [], models: [{ value: 'gpt-6-astra' }] });
+    await liveSessionStore.slashCommands('codex');
+    await liveSessionStore.slashCommands('codex');
+    await liveSessionStore.slashCommands('codex');
+    expect(invoke).toHaveBeenCalledTimes(2);
+    await liveSessionStore.slashCommands('codex', true);
+    expect(invoke).toHaveBeenCalledTimes(3);
+    now.mockReturnValue(300_001);
+    await liveSessionStore.slashCommands('codex');
+    expect(invoke).toHaveBeenCalledTimes(4);
+    now.mockRestore();
   });
 });
 

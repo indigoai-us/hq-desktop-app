@@ -88,6 +88,7 @@
     type SkillCatalog,
   } from './slash-commands';
   import { isStartworkTurn, type ProjectEntry, type ProjectViewer } from './startwork';
+  import { positionPicker } from './picker-position';
   import type { SessionCommand } from './session-events';
   import type {
     ComposerImage,
@@ -187,6 +188,9 @@
      * Default for Claude"). One footer line, cleared on the next pick.
      */
     modelNote?: string;
+    modelsLoading?: boolean;
+    modelsError?: string;
+    onrefreshmodels?: () => void;
 
     /** Footer: the HQ folder's basename. The whole footer. */
     hqFolder?: string;
@@ -249,6 +253,9 @@
     newSessionPending = false,
     overridesDeferred = false,
     modelNote = '',
+    modelsLoading = false,
+    modelsError = '',
+    onrefreshmodels,
     hqFolder = '',
     mentionCandidates = [],
     mentionStatus = null,
@@ -944,8 +951,27 @@
                 role="menu"
                 data-testid="session-menu-company"
                 data-pane={companyPane}
+                use:positionPicker={companyPane === 'projects'}
               >
                 {#if companyPane === 'companies'}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={startworkEnabled}
+                    class="menu-item"
+                    data-testid="session-menu-startwork-toggle"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onstartworktoggle?.(!startworkEnabled);
+                    }}
+                  >
+                    <span class="menu-label">
+                      <span class="check" aria-hidden="true">{startworkEnabled ? '✓' : ''}</span>
+                      Run /startwork on first message
+                    </span>
+                    <span class="menu-sub">Orients the session in HQ before your first message</span>
+                  </button>
+                  <div class="menu-rule"></div>
                   {#each companies as option (option.slug)}
                     <button
                       type="button"
@@ -980,23 +1006,6 @@
                       <span class="menu-value">{project ?? 'None'}</span>
                       <span class="chev-right" aria-hidden="true">›</span>
                     </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={startworkEnabled}
-                    class="menu-item"
-                    data-testid="session-menu-startwork-toggle"
-                    onclick={(event) => {
-                      event.stopPropagation();
-                      onstartworktoggle?.(!startworkEnabled);
-                    }}
-                  >
-                    <span class="menu-label">
-                      <span class="check" aria-hidden="true">{startworkEnabled ? '✓' : ''}</span>
-                      Run /startwork on first message
-                    </span>
-                    <span class="menu-sub">Orients the session in HQ before your first message</span>
                   </button>
                 {:else}
                   <button
@@ -1085,11 +1094,16 @@
             data-testid="session-pill-model"
             onclick={(event) => toggleMenu('model', event)}
           >
-            <span class="pill-face">{modelLabel}</span>
+            <span class="pill-face">{modelsLoading ? 'Loading models…' : modelLabel}</span>
             <span class="chev" aria-hidden="true">⌄</span>
           </button>
           {#if openMenu === 'model'}
-            <div class="menu menu-right menu-wide" role="menu" data-testid="session-menu-model">
+            <div class="menu menu-right menu-wide" use:positionPicker={false} role="menu" data-testid="session-menu-model">
+              {#if modelsLoading}
+                <div class="model-loading" role="status"><span class="model-spinner" aria-hidden="true"></span>Loading available models…</div>
+              {:else if modelsError}
+                <div class="model-loading" role="status">Could not load models. Please retry.</div>
+              {:else}
               {#each pickable as option (option.value)}
                 <button
                   type="button"
@@ -1109,6 +1123,10 @@
                   {/if}
                 </button>
               {/each}
+              {/if}
+              {#if onrefreshmodels}
+                <button type="button" role="menuitem" class="menu-item" disabled={modelsLoading} onclick={onrefreshmodels}>Refresh models</button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1226,13 +1244,18 @@
 </div>
 
 <style>
+  .model-loading { display:flex; align-items:center; gap:10px; padding:20px 12px; font-size:13px; color:var(--v4-text-2); }
+  .model-spinner { width:14px; height:14px; flex-shrink:0; border:2px solid var(--v4-hairline); border-top-color:currentColor; border-radius:50%; animation:model-spin .8s linear infinite; }
+  @keyframes model-spin { to { transform:rotate(360deg); } }
+  @media(prefers-reduced-motion:reduce) { .model-spinner { animation:none; } }
   .composer {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 6px;
     width: 100%;
-    max-width: 760px;
+    min-width: 0;
+    max-width: var(--session-column-width, 760px);
     margin: 0 auto;
     font-family: var(--font-sans);
   }
@@ -1442,6 +1465,7 @@
   /* --- popovers --------------------------------------------------------- */
 
   .menu {
+    box-sizing: border-box;
     position: absolute;
     bottom: calc(100% + 6px);
     left: 0;

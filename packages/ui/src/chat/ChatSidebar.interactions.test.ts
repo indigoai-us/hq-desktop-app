@@ -67,6 +67,22 @@ afterEach(async () => {
 });
 
 describe("ChatSidebar right-click context menu", () => {
+  it('uses only the disclosure arrow when a company-style channel has nested sessions', async () => {
+    const companyRow = { ...seedRow, type: 'company' as const, scope: 'company' as const };
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(), seedDirectory: [companyRow],
+        rowExtras: () => ({ children: [{ id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() }] }),
+      },
+    });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-row-children-toggle"]')).toBeTruthy());
+    const row = host.querySelector('[data-conversation-id="ch:chn_proj"]')!;
+    expect(row.querySelector('.chat-glyph-wrap')?.children).toHaveLength(0);
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-row-children-toggle"]')!.click();
+    await tick();
+    expect(row.querySelector('.chat-glyph-wrap')?.children).toHaveLength(0);
+  });
   it("highlights the selected nested session, preserves its full title, and keeps disclosure independent", async () => {
     const open = vi.fn();
     const visibility = vi.fn();

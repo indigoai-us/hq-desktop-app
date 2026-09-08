@@ -708,6 +708,9 @@ fn main() {
             // In-app agent sessions (feature-flagged dark by
             // `agent_session_flags`): the live registry + Claude driver.
             commands::agent_session::agent_session_preflight,
+            commands::agent_session::provider_auth::agent_provider_login_start,
+            commands::agent_session::provider_auth::agent_provider_login_status,
+            commands::agent_session::provider_auth::agent_provider_login_cancel,
             commands::agent_session::agent_session_start,
             commands::agent_session::agent_session_send,
             commands::agent_session::agent_session_respond_permission,

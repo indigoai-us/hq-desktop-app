@@ -1085,12 +1085,17 @@ function shareToChannel(request: ShareToChannelRequest): Promise<ShareToChannelR
  * catalog probe spawns a real `claude` process that runs every HQ SessionStart
  * hook. The page remounts on every session navigation (it is keyed by session
  * id), so without memoization each first send paid for both again. Cache at
- * module scope: preflight for a short window, the catalog for the process
- * lifetime (the CLI's command list does not change while the app runs).
+ * module scope with bounded freshness. Providers can introduce models while
+ * the app runs, and an empty probe must never pin fallback options in place.
  */
 const PREFLIGHT_TTL_MS = 60_000;
+export interface ProviderLoginState {
+  state: 'disconnected' | 'waiting' | 'connected' | 'error';
+  message?: string;
+}
 let preflightCache: { at: number; promise: Promise<Preflight> } | null = null;
-let catalogCache: Map<SessionTool, Promise<CommandCatalog>> = new Map();
+const CATALOG_TTL_MS = 5 * 60_000;
+let catalogCache = new Map<SessionTool, { at: number; promise: Promise<CommandCatalog> }>();
 
 /** Can this machine run an in-app session, and what is missing if not? */
 async function preflight(): Promise<Preflight> {
@@ -1108,14 +1113,17 @@ async function preflight(): Promise<Preflight> {
 }
 
 /** The CLI's slash-command catalog + model list. */
-async function slashCommands(tool: SessionTool = 'claude'): Promise<CommandCatalog> {
+async function slashCommands(tool: SessionTool = 'claude', refresh = false): Promise<CommandCatalog> {
   const cached = catalogCache.get(tool);
-  if (cached) return cached;
+  if (!refresh && cached && Date.now() - cached.at < CATALOG_TTL_MS) return cached.promise;
   const promise = invoke<CommandCatalog>('agent_session_slash_commands', { tool });
-  catalogCache.set(tool, promise);
-  promise.catch(() => {
-    if (catalogCache.get(tool) === promise) catalogCache.delete(tool);
-  });
+  catalogCache.set(tool, { at: Date.now(), promise });
+  const evict = () => {
+    if (catalogCache.get(tool)?.promise === promise) catalogCache.delete(tool);
+  };
+  void promise.then((catalog) => {
+    if (!catalog.models.length) evict();
+  }, evict);
   return promise;
 }
 
@@ -1470,6 +1478,10 @@ export const liveSessionStore = {
   openInApp,
   shareToChannel,
   preflight,
+  providerLoginStart: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_start', { tool }),
+  providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
+  providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
+  invalidatePreflight: () => { preflightCache = null; },
   slashCommands,
   hqSkillCatalog,
   hqSkillMetadata,

@@ -244,6 +244,31 @@ afterEach(() => {
 });
 
 describe('provider readiness', () => {
+  it('connects the selected provider and preserves the draft through verified sign-in', async () => {
+    backend.preflight.codexLoggedIn = false;
+    remember(LAST_TOOL_KEY, 'codex');
+    const normalInvoke = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command, args) => command === 'agent_provider_login_start'
+      ? Promise.resolve({ state: 'connected' }) : normalInvoke(command, args));
+    render();
+    await settle();
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'Keep this draft through login';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    const connect = [...host.querySelectorAll('button')].find(button => button.textContent === 'Connect Codex')!;
+    click(connect);
+    await settle();
+    expect(invoke).toHaveBeenCalledWith('agent_provider_login_start', { tool: 'codex' });
+    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
+    expect(input.value).toBe('Keep this draft through login');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+    click(must('session-composer-send'));
+    await settle();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.starts[0].tool).toBe('codex');
+  });
   it('starts Codex without Claude and updates the blocker on provider switch', async () => {
     backend.preflight.claudeAvailable = false;
     backend.preflight.claudeLoggedIn = false;
@@ -253,7 +278,8 @@ describe('provider readiness', () => {
     expect(host.textContent).not.toContain('Claude Code is not installed');
     chooseTool('Claude');
     await settle();
-    expect(host.textContent).toContain('Claude Code is not installed');
+    expect(host.textContent).toContain('Install Claude Code, then check again.');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     chooseTool('Codex');
     await settle();
     send('provider readiness test');
@@ -263,8 +289,8 @@ describe('provider readiness', () => {
   });
 
   it.each([
-    ['codexAvailable', 'Codex is not installed'],
-    ['codexLoggedIn', 'Codex is not signed in'],
+    ['codexAvailable', 'Install Codex, then check again.'],
+    ['codexLoggedIn', 'Connect Codex'],
     ['hooksReady', 'HQ session hooks are not ready'],
   ] as const)('blocks Codex when %s is false', async (field, message) => {
     backend.preflight[field] = false;
@@ -278,6 +304,50 @@ describe('provider readiness', () => {
 });
 
 describe('the model pill is per tool', () => {
+  it('keeps catalog diagnostics out of the chat notice and offers a picker retry', async () => {
+    remember(LAST_TOOL_KEY, 'claude');
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command, args) => command === 'agent_session_slash_commands'
+      ? Promise.reject(new Error('Claude did not answer the command probe: Hard timeout exceeded'))
+      : original(command, args));
+    render();
+    await settle();
+    expect(at('session-composer-notice')).toBeNull();
+    click(must('session-pill-model'));
+    expect(text('session-menu-model')).toContain('Could not load models. Please retry.');
+    expect(text('session-menu-model')).toContain('Refresh models');
+    expect(host.textContent).not.toContain('Hard timeout');
+  });
+  it('reuses fresh provider catalogs after an explicit refresh', async () => {
+    remember(LAST_TOOL_KEY, 'claude');
+    render();
+    await settle();
+    click(must('session-pill-model'));
+    click([...must('session-menu-model').querySelectorAll('button')].find(button => button.textContent?.includes('Refresh models'))!);
+    await settle();
+    click(must('session-pill-model'));
+    chooseTool('Codex');
+    await settle();
+    chooseTool('Claude');
+    await settle();
+    expect(invoke.mock.calls.filter(([command, args]) => command === 'agent_session_slash_commands' && args?.tool === 'claude')).toHaveLength(2);
+  });
+  it('labels a pending catalog and exposes a live refresh without reopening the session', async () => {
+    remember(LAST_TOOL_KEY, 'claude');
+    backend.claudeCatalog = deferred();
+    render();
+    await settle();
+    click(must('session-pill-model'));
+    expect(text('session-menu-model')).toContain('Loading available models');
+    backend.claudeCatalog.resolve({ commands: [], models: CLAUDE_CATALOG });
+    await settle();
+    expect(text('session-menu-model')).toContain('Fable');
+    const before = invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_slash_commands').length;
+    const refresh = [...must('session-menu-model').querySelectorAll('button')].find((button) => button.textContent?.includes('Refresh models'))!;
+    click(refresh);
+    await settle();
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_slash_commands')).toHaveLength(before + 1);
+  });
   it.each(['codex', 'claude'] as const)('restores %s when last used provider differs, without forking the follow-up', async (tool) => {
     remember(LAST_TOOL_KEY, tool === 'codex' ? 'claude' : 'codex');
     const model = tool === 'codex' ? 'gpt-5.6-sol' : 'sonnet';
@@ -340,7 +410,8 @@ describe('the model pill is per tool', () => {
     // The menu, not just the selected pill, must change while Claude is slow.
     click(must('session-pill-model'));
     expect(text('session-menu-model')).not.toContain('GPT');
-    expect(text('session-menu-model')).toContain('Opus');
+    expect(text('session-menu-model')).toContain('Loading available models');
+    expect(host.querySelector('[data-testid="session-menu-model-item"]')).toBeNull();
     click(must('session-pill-model'));
 
     send('hello');

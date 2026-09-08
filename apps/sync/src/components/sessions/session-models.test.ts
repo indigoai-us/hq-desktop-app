@@ -81,6 +81,24 @@ afterEach(() => {
 });
 
 describe('readSessionModels — the real catalog', () => {
+  it('uses readable qualifiers for resolved default and explicit context aliases', () => {
+    const rows = modelMenuRows(readSessionModels([
+      { value: 'default', displayName: 'Default', resolvedModel: 'claude-opus-5' },
+      { value: 'opus[1m]', displayName: 'Opus', resolvedModel: 'claude-opus-5' },
+    ]));
+    expect(rows.map(row => row.label)).toEqual(['Opus 5 (recommended)', 'Opus 5 (1M context)']);
+    expect(rows.map(row => row.value)).toEqual([null, 'opus[1m]']);
+  });
+  it('offers the resolved default as a versioned choice when the provider only exposes that alias', () => {
+    const models = readSessionModels([{ value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' }]);
+    expect(modelPillLabel(models, null)).toBe('Opus 5');
+    expect(modelMenuRows(models)).toEqual([expect.objectContaining({ value: null, label: 'Opus 5' })]);
+  });
+  it('shows the live resolved version for a provider alias while preserving its launch value', () => {
+    const [entry] = readSessionModels([{ value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }]);
+    expect(entry.value).toBe('sonnet');
+    expect(modelRowLabel(entry, 'claude')).toBe('Sonnet 5');
+  });
   it('labels every row by displayName', () => {
     expect(readSessionModels(REAL_CATALOG).map((m) => m.label)).toEqual([
       'Default',

@@ -221,16 +221,16 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
 
   it('carries the tool choice into the spec and refetches that CLI’s catalog', () => {
     expect(PAGE).toContain('LAST_TOOL_KEY');
-    expect(PAGE).toContain('.slashCommands(wanted)');
+    expect(PAGE).toContain('.slashCommands(wanted, forceRefresh)');
     expect(PAGE).toContain('function chooseTool');
     expect(PAGE).toContain('codexAvailable');
     // `tool` is the page's state, not a hard-coded literal in the spec.
     const spec = PAGE.slice(PAGE.indexOf('function specFrom'));
     expect(spec.slice(0, spec.indexOf('\n  }'))).not.toContain("tool: 'claude'");
-    // A rejected Codex probe surfaces in the one notice line, and the pill
-    // stays selectable.
+    // Catalog failures stay in the retryable picker, not the chat banner.
     expect(PAGE).toContain('catalogError');
-    expect(PAGE).toContain('blocker || actionError || catalogError');
+    expect(PAGE).toContain('modelsError={catalogError}');
+    expect(PAGE).not.toContain('blocker || actionError || catalogError');
   });
 
   it('remembers the last company under the agreed localStorage key', () => {
@@ -877,7 +877,8 @@ describe('company / project start-work — the first send orients the session', 
     expect(STORE).toContain("invoke<SkillCatalog>('hq_skill_catalog'");
     expect(MAIN_RS).toContain('commands::hq_context::hq_company_projects');
     expect(MAIN_RS).toContain('commands::hq_context::hq_skill_catalog');
-    expect(HQ_CONTEXT_RS).toContain('pub fn hq_company_projects(company: String)');
+    expect(HQ_CONTEXT_RS).toContain('pub async fn hq_company_projects(company: String)');
+    expect(HQ_CONTEXT_RS).toContain('spawn_blocking');
   });
 
   it('the project pane is viewport-bounded and long descriptions cannot widen it', () => {

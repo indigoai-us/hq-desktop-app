@@ -10,9 +10,8 @@
    * line once answered.
    *
    * Assistant prose goes through the app's CSP-safe `renderMessageBodyMarkdown`
-   * (no new dependency, no raw source HTML). Operator bubbles are plain text on
-   * purpose — echoing your own message back as rendered markdown is a
-   * surprising place to find a heading.
+   * (no new dependency, no raw source HTML). Operator bubbles use the same
+   * renderer so pasted Markdown links remain readable and clickable.
    *
    * Scrolling: the transcript pins itself to the bottom while output streams,
    * UNLESS you have scrolled up to read something — then it holds still and
@@ -22,6 +21,7 @@
    * Presentation-pure: blocks in, decisions out as callbacks. Nothing invokes.
    */
   import { tick } from 'svelte';
+  import { readQuestionReplies } from './question-replies';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
   import ToolGroupRow from './ToolGroupRow.svelte';
@@ -208,9 +208,25 @@
       {/if}
       {#each blocks as block (block.id)}
         {#if block.type === 'userBubble'}
+          {@const replies = readQuestionReplies(block.text)}
           <div class="user-row">
             <div class="user-column">
-              <div class="user-bubble" data-testid="session-user-bubble">{block.text}</div>
+              <div class="user-bubble prose" data-testid="session-user-bubble">
+                {#if replies}
+                  <div class="question-replies" data-testid="session-question-replies">
+                    {#each replies as reply}
+                      <section class="question-reply" aria-label="Answered question">
+                        <div class="reply-label">Question</div>
+                        <div class="reply-question">{@html renderMessageBodyMarkdown(reply.question)}</div>
+                        <div class="reply-label">Your answer</div>
+                        <div class="reply-answer">{@html renderMessageBodyMarkdown(reply.answer)}</div>
+                      </section>
+                    {/each}
+                  </div>
+                {:else}
+                  {@html renderMessageBodyMarkdown(block.text)}
+                {/if}
+              </div>
               {#if block.attachments.length > 0}
                 <!-- The context block itself never renders; only what rode along. -->
                 <div class="user-attachments" data-testid="session-user-attachments">
@@ -341,6 +357,7 @@
     min-height: 0;
     min-width: 0;
     overflow-y: auto;
+    scrollbar-gutter: stable both-edges;
     padding: var(--v4-space-4) 0 var(--v4-space-3);
     font-family: var(--font-sans);
   }
@@ -353,9 +370,10 @@
     gap: var(--v4-space-3);
     box-sizing: border-box;
     width: 100%;
-    max-width: calc(760px + 2 * var(--v4-space-4));
+    min-width: 0;
+    max-width: calc(var(--session-column-width, 760px) + 2 * var(--session-gutter, 16px));
     margin: 0 auto;
-    padding: 0 var(--v4-space-4);
+    padding: 0 var(--session-gutter, 16px);
   }
 
   .empty {
@@ -408,15 +426,24 @@
 
   .user-row {
     display: flex;
+    min-width: 0;
     justify-content: flex-end;
   }
+
+  .question-replies { display: grid; gap: 20px; }
+  .question-reply { min-width: 0; }
+  .question-reply + .question-reply { border-top: 1px solid var(--v4-border); padding-top: 16px; }
+  .reply-label { font-size: 12px; font-weight: 600; color: var(--v4-text-3); margin-bottom: 6px; }
+  .reply-question { color: var(--v4-text-2); margin-bottom: 16px; }
+  .reply-answer { color: var(--v4-text-1); }
 
   .user-column {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 4px;
-    max-width: 70%;
+    min-width: 0;
+    max-width: 85%;
   }
 
   .user-attachments {
@@ -437,6 +464,7 @@
   }
 
   .user-bubble {
+    box-sizing: border-box;
     max-width: 100%;
     padding: 8px 12px;
     border-radius: 14px;
@@ -444,13 +472,14 @@
     color: var(--v4-text-1);
     font-size: var(--type-body);
     line-height: 1.5;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
 
   /* --- the agent ------------------------------------------------------- */
 
   .prose {
+    min-width: 0;
+    max-width: 100%;
     font-size: var(--type-body);
     line-height: 1.62;
     color: var(--v4-text-1);
@@ -466,6 +495,8 @@
   }
 
   .prose :global(pre) {
+    box-sizing: border-box;
+    max-width: 100%;
     margin: 0.7em 0;
     padding: var(--v4-space-2);
     overflow-x: auto;
@@ -473,6 +504,25 @@
     background: var(--v4-control-faint);
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: var(--type-metadata);
+  }
+
+  .prose :global(pre code) {
+    white-space: pre;
+    overflow-wrap: normal;
+  }
+
+  .prose :global(a) {
+    overflow-wrap: anywhere;
+  }
+
+  .prose :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  @container (max-width: 520px) {
+    .user-column { max-width: 95%; }
   }
 
   .prose :global(code) {

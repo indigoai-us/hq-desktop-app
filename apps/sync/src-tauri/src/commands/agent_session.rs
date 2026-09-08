@@ -23,6 +23,7 @@ pub mod claude;
 pub mod codex;
 mod history_replay;
 pub mod notify;
+pub mod provider_auth;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -238,19 +239,33 @@ struct SessionMetaOut {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Can this device run an in-app session, and against which companies?
+async fn preflight_local_lookup<T: Send + 'static>(
+    read: impl FnOnce() -> Result<T, String> + Send + 'static,
+    deadline: std::time::Duration,
+) -> Result<T, String> {
+    tokio::time::timeout(deadline, tauri::async_runtime::spawn_blocking(read))
+        .await.map_err(|_| "Session setup lookup timed out. Please retry.".to_owned())?
+        .map_err(|_| "Session setup lookup failed. Please retry.".to_owned())?
+}
+
 #[tauri::command]
 pub async fn agent_session_preflight() -> Result<Preflight, String> {
     ensure_in_app_sessions_allowed()?;
-    let hq_root = resolve_hq_folder_path()?;
-
-    let hooks_error = check_hq_hooks_ready(&hq_root).err();
-    let tools = crate::commands::ai_tools::detect_ai_tools();
-    let ready = crate::commands::ai_tools::detect_claude_ready();
-
-    // Only worth a subprocess when there is a CLI to ask.
-    let codex_logged_in = tools.codex_cli && codex::codex_logged_in().await;
-
-    let (entries, _manifest_error) = discover_local_companies(&hq_root);
+    let (hq_root, hooks_error, tools, entries) = preflight_local_lookup(
+        || {
+            let hq_root = resolve_hq_folder_path()?;
+            let hooks_error = check_hq_hooks_ready(&hq_root).err();
+            let tools = crate::commands::ai_tools::detect_ai_tools();
+            let (entries, _) = discover_local_companies(&hq_root);
+            Ok::<_, String>((hq_root, hooks_error, tools, entries))
+        },
+        std::time::Duration::from_secs(8),
+    ).await?;
+    // Ask each provider, not stale account markers left behind after sign-out.
+    let (claude_logged_in, codex_logged_in) = tokio::join!(
+        async { tools.claude_cli && provider_auth::logged_in(SessionTool::Claude).await },
+        async { tools.codex_cli && provider_auth::logged_in(SessionTool::Codex).await },
+    );
     let companies = entries
         .into_iter()
         .map(|entry| CompanyOption {
@@ -268,7 +283,7 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         hooks_ready: hooks_error.is_none(),
         hooks_error,
         claude_available: tools.claude_cli,
-        claude_logged_in: ready.logged_in,
+        claude_logged_in,
         codex_available: tools.codex_cli,
         codex_logged_in,
         companies,
@@ -1071,6 +1086,24 @@ pub(crate) async fn bind_session_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn preflight_filesystem_lookup_is_off_thread() {
+        let caller = std::thread::current().id();
+        let worker = preflight_local_lookup(|| Ok(std::thread::current().id()), std::time::Duration::from_secs(1)).await.unwrap();
+        assert_ne!(caller, worker);
+    }
+
+    #[tokio::test]
+    async fn preflight_filesystem_lookup_is_bounded() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let result = preflight_local_lookup(move || {
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+            Ok(())
+        }, std::time::Duration::from_millis(20)).await;
+        let _ = release.send(());
+        assert!(result.unwrap_err().contains("timed out"));
+    }
 
     #[test]
     fn parked_sessions_do_not_expire_from_ten_minutes_of_silence() {
