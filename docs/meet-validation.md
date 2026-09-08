@@ -40,9 +40,10 @@ Generate public speech audio with the `fixtures` CLI mode below. It uses
 `SPEECH_SCRIPT`, installed macOS Samantha via `say`/`afconvert`, or Windows
 `System.Speech`, recording engine/voice, OS version and the actual WAV SHA-256. The runner requires a 5–120
 second audio file and records its actual digest. Do not use real call audio.
-The probe requests microphone permission, immediately stops that track, and sends
-only the generated public speech plus sequence-coded tones. Camera permission is requested and its track immediately stopped; transmitted
-video comes from a generated public canvas. A full-viewport opaque fixture surface
+The probe sends generated public speech plus sequence-coded tones and video from
+a generated public canvas. It does not open a physical microphone or camera;
+observations explicitly record `physicalCaptureTested: false`. Real capture and
+OS permission verification remain separate acceptance work. A full-viewport opaque fixture surface
 hides the existing HQ UI during collection and is removed on cleanup. Screenshots
 still need review before sharing. Only participant zero sends
 the generated 1280×720 screen (14pt text, sequence pixels). This exercises WebRTC
