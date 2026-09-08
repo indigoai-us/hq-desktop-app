@@ -1043,6 +1043,7 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
                     result.initial_sync.files_uploaded,
                 ),
             );
+            crate::commands::provision_retry::note_manual_provision_success(&slug);
             Ok(())
         }
         Err(e) => {

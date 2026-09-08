@@ -576,6 +576,10 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // the payload contains only the existing non-secret auth state.
     app.emit("auth:session-ready", &state)
         .map_err(|err| err.to_string())?;
+    // US-039: a company whose provisioning was deferred (or failed with the
+    // vault/auth exit code) before this sign-in gets retried now, not on some
+    // later manual sync.
+    crate::commands::provision_retry::on_auth_available(&app);
     Ok(state)
 }
 

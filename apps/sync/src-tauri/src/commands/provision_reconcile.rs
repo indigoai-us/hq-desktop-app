@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::commands::provision::{write_company_config, CompanyConfig};
-use crate::commands::run_cli_provision::{
-    run_cli_provision, CliProvisionError, CliProvisionResult,
-};
+use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
 use crate::commands::vault_client::{ActivateCloudAck, EntityInfo, VaultClient};
 use crate::commands::workspaces::{
     add_manifest_entry_for_synced_company, patch_manifest_with_cloud_info,
@@ -64,7 +62,8 @@ fn try_enter_single_flight() -> Option<InFlightGuard> {
 }
 
 /// Production wrapper: single-flight; Path C / initial sync goes through
-/// `hq cloud provision company`.
+/// `hq cloud provision company` behind the per-launch retry ledger (US-039:
+/// never spawned without stored auth; exit 1 backs off and is capped).
 pub async fn reconcile_server_activated_companies(
     hq_root: &Path,
     vault: &VaultClient,
@@ -74,7 +73,14 @@ pub async fn reconcile_server_activated_companies(
         hq_root,
         vault,
         vault_api_url,
-        |slug, name, root| async move { run_cli_provision(&slug, name.as_deref(), &root).await },
+        |slug, name, root| async move {
+            crate::commands::provision_retry::guarded_run_cli_provision(
+                &slug,
+                name.as_deref(),
+                &root,
+            )
+            .await
+        },
     )
     .await
 }
@@ -183,6 +189,17 @@ where
                             return Err(format!("provision '{slug}' via hq CLI: {message}"));
                         }
                     }
+                    Err(CliProvisionError::Deferred(reason)) => {
+                        // US-039: held back by the retry ledger. Skip this
+                        // company for the pass (nothing acked, no config
+                        // written) so the other companies still reconcile;
+                        // a later pass or sign-in retries it.
+                        log(
+                            "provision-reconcile",
+                            &format!("provision '{slug}' deferred this pass: {reason}"),
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         return Err(format!("provision '{slug}' via hq CLI: {e}"));
                     }
@@ -209,6 +226,12 @@ where
                         log(
                             "provision-reconcile",
                             &format!("initial sync '{slug}' failed (local files written): {message}"),
+                        );
+                    }
+                    Err(CliProvisionError::Deferred(reason)) => {
+                        log(
+                            "provision-reconcile",
+                            &format!("provisioner '{slug}' deferred after local write: {reason}"),
                         );
                     }
                     Err(e) => {
@@ -614,6 +637,50 @@ mod tests {
         let reqs = server.received_requests().await.unwrap();
         assert!(reqs.iter().any(|r| r.url.path()
             == "/v1/companies/cmp_acme/activate-cloud/ack"));
+    }
+
+    /// US-039: a server-activated company with no bucket yet needs the CLI to
+    /// provision it. When the retry ledger holds that attempt back (no auth,
+    /// backoff, or cap) the pass must skip the company — no config, no ack,
+    /// no error — instead of aborting the whole reconcile.
+    #[tokio::test]
+    async fn deferred_provisioner_skips_company_without_failing_pass() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "arbium";
+        let uid = "cmp_arbium";
+        write_manifest(tmp.path(), slug);
+
+        let server = MockServer::start().await;
+        mount_owner_company(&server, uid, slug, None, true, 200).await;
+
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls_clone = calls.clone();
+        let result = reconcile_server_activated_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            move |s, _n, _r| {
+                calls_clone.lock().unwrap().push(s.clone());
+                async move {
+                    Err(CliProvisionError::Deferred(format!("slug={s}: waiting for sign-in")))
+                }
+            },
+        )
+        .await
+        .expect("a deferred attempt must not fail the reconcile pass");
+
+        assert!(result.is_empty(), "the deferred company is not reported as reconciled");
+        assert_eq!(calls.lock().unwrap().as_slice(), &[slug.to_string()]);
+        let dir = tmp.path().join("companies").join(slug);
+        assert!(
+            !dir.join(".hq").join("config.json").exists(),
+            "no config.json without a real provision"
+        );
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            !reqs.iter().any(|r| r.url.path().ends_with("/activate-cloud/ack")),
+            "nothing to ack when nothing was provisioned"
+        );
     }
 
     #[tokio::test]

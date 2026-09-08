@@ -62,6 +62,7 @@ pub mod process;
 pub mod projects_local;
 pub mod provision;
 pub mod provision_reconcile;
+pub mod provision_retry;
 pub mod realtime_mutation;
 pub mod recall_sdk;
 pub mod run_cli_provision;
