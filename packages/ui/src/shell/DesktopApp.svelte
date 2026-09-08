@@ -1168,12 +1168,12 @@
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
     const incoming = messagesForDisplay(raw);
-    commitTimeline(
-      row,
-      existing.length > 0
-        ? mergeFetchedTimeline(existing, raw)
-        : incoming,
-    );
+    // History may have loaded while this refresh was in flight. Merge into
+    // the current timeline so its newly prepended page is not discarded.
+    const current = liveTimelineId === row.id
+      ? liveTimeline
+      : (timelineCache.get(row.id) ?? []);
+    commitTimeline(row, mergeFetchedTimeline(current, raw));
     clearThinkingFromIncoming(incoming);
   }
 
