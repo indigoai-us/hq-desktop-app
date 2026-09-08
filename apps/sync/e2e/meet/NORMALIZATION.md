@@ -12,3 +12,15 @@ The receiver/source clock offsets come from intersecting repeated WebDriver requ
 Remote WebDriver tunnels must use a matching URL/port mapping for the separately collected local binding; differing mappings currently fail closed. A normalization failure preserves the raw diagnostics for investigation.
 
 This does not yet attest host-observation JSON, verify screenshot legibility, certify actual microphone/speaker or display capture paths, or implement OS network fault injection. The existing signed-evidence verifier is separate and does not gain native certification merely from this diagnostic normalization.
+
+## Scoped network controller
+
+`collect` and `ladder` accept `networkScope`: `{namespace, runId, deviceId, auditPath}`. `runId` is exactly 16 lowercase hexadecimal characters; namespace must equal `hq-meet-<runId>`. This controller runs only on a disposable Linux router host with `ip` and `tc` already installed. It does not provision namespaces, guests, routes, privileges, or paid resources.
+
+The existing namespace must contain only `lo`, `uplink`, and `guest`. Both data interfaces must be veth links with aliases `hq-meet:<runId>:<deviceId>:<interface>`. They must have no existing shaping. The target test guest's traffic must already route exclusively through this namespace; application and final traffic counters are checked, but independent topology/throughput verification remains necessary.
+
+Rules use `ip netns exec <namespace> tc ...` exclusively. Constrained settings are 2/10 Mbit egress, 75 ms delay each direction, 30 ms jitter, and 2% per-direction loss. Sleep/reconnect is a network interruption, not OS suspension: after collection starts it waits 10 seconds, verifies 100% loss on both links, waits 3 seconds, then restores and verifies normal settings. WebDriver control must remain on an independent management path.
+
+An exclusive JSONL audit records command execution, applied settings, actual byte-counter progress, fault boundaries and cleanup. Failed application/capture cancels the fault task and removes owned handle `712:` from both interfaces. Cleanup failure rejects the run. `ladder` stores separate audits alongside each scenario. Constrained and reconnect collection now reject missing controllers; no profile name alone claims an applied impairment.
+
+Only command-boundary regression tests have run on the development Mac. Linux namespace execution and real guest traversal are still unverified. Command syntax follows the upstream iproute2 [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) and [network namespace](https://man7.org/linux/man-pages/man8/ip-netns.8.html) manuals.

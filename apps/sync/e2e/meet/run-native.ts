@@ -31,12 +31,12 @@ async function main(): Promise<void> {
   } else if (mode === 'ladder') {
     const iceServers = process.env.HQ_MEET_TEST_ICE_SERVERS ? JSON.parse(process.env.HQ_MEET_TEST_ICE_SERVERS) : undefined;
     result = await runLadder({ endpoints: config.endpoints, outputDirectory: config.outputDirectory,
-      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers });
+      networkScope: config.networkScope, durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers });
   } else if (mode === 'collect') {
     // Secret value never enters the persisted config or output. Resolve through hq secrets exec.
     const iceServers = process.env.HQ_MEET_TEST_ICE_SERVERS ? JSON.parse(process.env.HQ_MEET_TEST_ICE_SERVERS) : undefined;
     result = await collectNativeDiagnostics({ endpoints: config.endpoints, profile: config.profile as Profile,
-      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers,
+      networkScope: config.networkScope, durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers,
       onProbeStarted: config.bindingDirectory ? async binding => {
         await mkdir(resolve(config.bindingDirectory), { recursive: true });
         await writeFile(resolve(config.bindingDirectory, `${binding.id}.json`), JSON.stringify(binding), { flag: 'wx', mode: 0o600 });

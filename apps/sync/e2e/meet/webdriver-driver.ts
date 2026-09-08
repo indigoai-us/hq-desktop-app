@@ -1,4 +1,5 @@
 /** Concrete adapter for existing native WebDriver sessions. Never launches a browser. */
+import { withNetworkProfile, type NetworkScope } from './network-controller';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,7 @@ import { SCREEN_LINES, profiles, sha256, type Profile } from './fixtures';
 export interface Endpoint { id: string; webdriverUrl: string; sessionId: string }
 export interface NativeDiagnostic {
   schema: 'hq-meet-native-diagnostic/v1'; provenance: 'unattested-native-probe';
+  networkArtifact?: { path: string; kind: 'network-shaping'; status: 'verified-and-cleaned'; deviceId: string };
   profile: Profile; durationMs: number; speechSha256: string; fileSizeBytes: number;
   endpoints: { id: string; sessionId?: string; webdriverUrl?: string; probeNonce?: string; samples: unknown[]; screenshotPngBase64: string }[];
 }
@@ -55,11 +57,22 @@ class Driver {
 }
 
 /** Collect actual remote tracks. Output remains diagnostic until independent host attestation. */
-export async function collectNativeDiagnostics(options: {
+interface CollectionOptions {
   endpoints: unknown; profile: Profile; durationMs: number; speechWav: Uint8Array;
   iceServers?: RTCIceServer[]; fileSizeBytes?: number; signal?: AbortSignal;
+  networkScope?: NetworkScope;
   onProbeStarted?: (binding: Endpoint & { probeNonce: string }) => Promise<void>;
-}): Promise<NativeDiagnostic> {
+}
+export async function collectNativeDiagnostics(options: CollectionOptions): Promise<NativeDiagnostic> {
+  if (options.networkScope) {
+    const { result, networkArtifact } = await withNetworkProfile({ scope: options.networkScope, profile: options.profile, durationMs: options.durationMs, signal: options.signal },
+      control => collectRaw({ ...options, signal: control.signal }, control.collectionStarted));
+    return { ...result, networkArtifact };
+  }
+  if (options.profile === 'constrained' || options.profile === 'sleep-reconnect') throw new Error('profile requires verified isolated network controller');
+  return collectRaw(options);
+}
+async function collectRaw(options: CollectionOptions, collectionStarted?: () => void): Promise<NativeDiagnostic> {
   const endpoints = parseEndpoints(options.endpoints);
   const fileSizeBytes = options.fileSizeBytes ?? 1_000_000;
   if (!Number.isInteger(fileSizeBytes) || fileSizeBytes < 1 || fileSizeBytes > 100_000_000) throw new Error('invalid file workload size');
@@ -90,6 +103,7 @@ export async function collectNativeDiagnostics(options: {
     }
     await drivers[0].call('startFile', endpoints[1].id, fileSizeBytes);
     const start = performance.now();
+    collectionStarted?.();
     while (performance.now() - start < options.durationMs) {
       if (signal.aborted) throw new Error('native collection cancelled');
       await Promise.all(drivers.map(async (driver, i) => {

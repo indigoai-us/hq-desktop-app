@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { collectNativeDiagnostics, parseEndpoints, type NativeDiagnostic } from './webdriver-driver';
+import { type NetworkScope } from './network-controller';
 import { scenarios } from './fixtures';
 
 export interface LadderResult {
@@ -10,7 +11,7 @@ export interface LadderResult {
 /** Executes the entire declared ladder; earlier artifacts survive a later failure. */
 export async function runLadder(options: {
   endpoints: unknown; speechWav: Uint8Array; outputDirectory: string; durationMs?: number;
-  fileSizeBytes?: number; iceServers?: RTCIceServer[]; signal?: AbortSignal;
+  networkScope?: NetworkScope; fileSizeBytes?: number; iceServers?: RTCIceServer[]; signal?: AbortSignal;
 }, collect: typeof collectNativeDiagnostics = collectNativeDiagnostics): Promise<LadderResult> {
   const endpoints = parseEndpoints(options.endpoints);
   if (endpoints.length !== 8 || !isAbsolute(options.outputDirectory)) throw new Error('full ladder requires eight native endpoints and absolute output directory');
@@ -22,7 +23,8 @@ export async function runLadder(options: {
     const diagnostic: NativeDiagnostic = await collect({ endpoints: endpoints.slice(0, scenario.participants),
       profile: scenario.profile, durationMs: options.durationMs ?? scenario.durationMs,
       speechWav: options.speechWav, fileSizeBytes: options.fileSizeBytes,
-      iceServers: options.iceServers, signal: options.signal });
+      iceServers: options.iceServers, signal: options.signal,
+      networkScope: options.networkScope ? { ...options.networkScope, auditPath: join(options.outputDirectory, `${scenario.participants}-${scenario.profile}-network.jsonl`) } : undefined });
     await writeFile(join(options.outputDirectory, artifact), `${JSON.stringify(diagnostic)}\n`, { flag: 'wx', mode: 0o600 });
     result.completed.push({ participants: scenario.participants, profile: scenario.profile, artifact });
   }
