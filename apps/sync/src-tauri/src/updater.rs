@@ -1490,6 +1490,35 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
+    // View menu: native accelerators for the app-wide shortcuts. AppKit
+    // consumes these keys before the webview sees them, so every item emits
+    // `shortcut:invoke` and the UI dispatches the same binding id through its
+    // keyboard-shortcut registry (packages/ui common/keyboard-shortcuts.ts).
+    let next_conversation_item =
+        MenuItemBuilder::with_id(MENU_SHORTCUT_NEXT_CONVERSATION_ID, "Next Conversation")
+            .accelerator("CmdOrCtrl+Shift+]")
+            .build(app)?;
+    let previous_conversation_item = MenuItemBuilder::with_id(
+        MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID,
+        "Previous Conversation",
+    )
+    .accelerator("CmdOrCtrl+Shift+[")
+    .build(app)?;
+    let new_chat_item = MenuItemBuilder::with_id(MENU_SHORTCUT_NEW_CHAT_ID, "New Chat")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let shortcuts_item =
+        MenuItemBuilder::with_id(MENU_SHORTCUT_CHEAT_SHEET_ID, "Keyboard Shortcuts")
+            .accelerator("CmdOrCtrl+/")
+            .build(app)?;
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&next_conversation_item)
+        .item(&previous_conversation_item)
+        .separator()
+        .item(&new_chat_item)
+        .separator()
+        .item(&shortcuts_item)
+        .build()?;
     let window_menu = SubmenuBuilder::new(app, "Window")
         .minimize()
         .maximize()
@@ -1497,7 +1526,7 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         .close_window()
         .build()?;
     let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &edit_menu, &window_menu])
+        .items(&[&app_menu, &edit_menu, &view_menu, &window_menu])
         .build()?;
     app.set_menu(menu)?;
 
@@ -1505,6 +1534,10 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         let id = event.id().as_ref();
         if id == MENU_RECOVERY_ID {
             crate::recovery::spawn_tray_open_recovery(handle.clone());
+            return;
+        }
+        if let Some(shortcut_id) = shortcut_id_for_menu_item(id) {
+            emit_shortcut_invoke(handle, shortcut_id);
             return;
         }
         if id != MENU_CHECK_FOR_UPDATES_ID {
@@ -1532,6 +1565,49 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         });
     });
     Ok(())
+}
+
+/// View-menu item ids (native accelerators) → registry binding ids.
+#[cfg(target_os = "macos")]
+const MENU_SHORTCUT_NEXT_CONVERSATION_ID: &str = "view-next-conversation";
+#[cfg(target_os = "macos")]
+const MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID: &str = "view-previous-conversation";
+#[cfg(target_os = "macos")]
+const MENU_SHORTCUT_NEW_CHAT_ID: &str = "view-new-chat";
+#[cfg(target_os = "macos")]
+const MENU_SHORTCUT_CHEAT_SHEET_ID: &str = "view-keyboard-shortcuts";
+
+/// Event carrying `{ id }` to the desktop-alt window; the UI runs the binding
+/// with that id (`runShortcut`) so menu and key share one handler.
+#[cfg(target_os = "macos")]
+pub const EVENT_SHORTCUT_INVOKE: &str = "shortcut:invoke";
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Serialize)]
+struct ShortcutInvokePayload {
+    id: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+fn shortcut_id_for_menu_item(menu_id: &str) -> Option<&'static str> {
+    match menu_id {
+        MENU_SHORTCUT_NEXT_CONVERSATION_ID => Some("conversation.next"),
+        MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID => Some("conversation.previous"),
+        MENU_SHORTCUT_NEW_CHAT_ID => Some("chat.new"),
+        MENU_SHORTCUT_CHEAT_SHEET_ID => Some("help.shortcuts"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
+    if let Err(e) = app.emit_to(
+        crate::commands::desktop_alt::WINDOW_LABEL,
+        EVENT_SHORTCUT_INVOKE,
+        ShortcutInvokePayload { id },
+    ) {
+        log("updater", &format!("shortcut:invoke emit failed ({id}): {e}"));
+    }
 }
 
 #[cfg(target_os = "macos")]

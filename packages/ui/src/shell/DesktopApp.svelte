@@ -22,7 +22,15 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
-  import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import ChatSidebar, {
+    type ChatSidebarActions,
+  } from "../chat/ChatSidebar.svelte";
+  import ShortcutCheatSheet from "../common/ShortcutCheatSheet.svelte";
+  import {
+    formatShortcut,
+    registerShortcuts,
+    type ShortcutBinding,
+  } from "../common/keyboard-shortcuts.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -141,7 +149,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick as svelteTick, untrack } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -249,6 +257,7 @@
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
     isStrictlyRicherConversationRow,
+    stepConversation,
     type ConversationRow,
   } from "../chat/sidebar-model.js";
   import {
@@ -648,6 +657,11 @@
   let sidebarCollapsed = $state(startsAsOverlay);
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  /** Rail rows in display order (pinned → days → expanded last week). */
+  let displayRows = $state<ConversationRow[]>([]);
+  /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
+  let sidebarActions = $state<ChatSidebarActions | null>(null);
+  let cheatSheetOpen = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -746,12 +760,29 @@
    */
   const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
 
+  /** Palette `shortcut` label for a registered binding id. */
+  function shortcutLabel(id: string): string | undefined {
+    const binding = shellShortcuts.find((b) => b.id === id);
+    return binding ? formatShortcut(binding.keys) : undefined;
+  }
+
+  /** Companies eligible for "Show only …" scope rows (cloud-backed, non-personal). */
+  const scopeCompanies = $derived(
+    (companies ?? [])
+      .filter((w) => w.kind !== "personal" && (w.cloudUid ?? "").trim())
+      .map((w) => ({
+        companyUid: (w.cloudUid as string).trim(),
+        label: w.displayName?.trim() || w.slug,
+      })),
+  );
+
   const paletteCommands = $derived.by((): CommandPaletteItem[] => {
     const nav: CommandPaletteItem[] = [
       {
         id: "command-go-notifications",
         label: "Notifications",
         detail: "Open the notifications feed",
+        shortcut: shortcutLabel("view.notifications"),
         action: () => {
           view = "notifications";
         },
@@ -760,6 +791,7 @@
         id: "command-go-meetings",
         label: "Meetings",
         detail: "Open the meetings agenda",
+        shortcut: shortcutLabel("view.meetings"),
         action: () => {
           view = "meetings";
         },
@@ -779,12 +811,14 @@
       id: "command-go-library",
       label: "Library",
       detail: "Open skills available to you",
+      shortcut: shortcutLabel("view.library"),
       action: () => openLibrary("skills"),
     });
     nav.push({
       id: "command-go-settings",
       label: "Settings",
       detail: "Open settings",
+      shortcut: shortcutLabel("view.settings"),
       action: () => openSettings(),
     });
     if (!isWeb) {
@@ -792,8 +826,44 @@
         id: "command-go-marketplace",
         label: "Marketplace",
         detail: "Open marketplace in the library",
+        shortcut: shortcutLabel("view.marketplace"),
         action: () => openLibrary("marketplace"),
       });
+    }
+    nav.push({
+      id: "command-new-chat",
+      label: "New chat",
+      detail: "Start a channel or direct message",
+      shortcut: shortcutLabel("chat.new"),
+      action: () => openNewChat(),
+    });
+    nav.push({
+      id: "command-keyboard-shortcuts",
+      label: "Keyboard shortcuts",
+      detail: "Show every shortcut",
+      shortcut: shortcutLabel("help.shortcuts"),
+      action: () => {
+        cheatSheetOpen = true;
+      },
+    });
+    // Company scope moved out of ⌘0/⌘1–5 (those keys switch main views now);
+    // the palette keeps scope switching one keystroke away.
+    if (scopeCompanies.length > 0) {
+      nav.push({
+        id: "command-scope-all",
+        label: "Show all companies",
+        detail: "Conversations from every company",
+        action: () => changeTenantCompany(null),
+      });
+      for (const company of scopeCompanies) {
+        nav.push({
+          id: `command-scope-${company.companyUid}`,
+          label: `Show only ${company.label}`,
+          detail: "Conversations from this company",
+          keywords: company.companyUid,
+          action: () => changeTenantCompany(company.companyUid),
+        });
+      }
     }
     // Human labels only. `paletteConversationItems` resolves the channel
     // display name / person name / project title for the primary line and the
@@ -3572,6 +3642,169 @@
     }
   }
 
+  const goChord = createGoChord((letter) => {
+    if (letter !== "a") return false;
+    view = "atlas";
+    meetingFocusRequest = null;
+    return true;
+  });
+
+  /** Run a sidebar entry point, mounting the rail first if it is collapsed. */
+  function withSidebar(fn: (actions: ChatSidebarActions) => void): void {
+    if (sidebarActions) {
+      fn(sidebarActions);
+      return;
+    }
+    sidebarCollapsed = false;
+    void svelteTick().then(() => {
+      if (sidebarActions) fn(sidebarActions);
+    });
+  }
+
+  function openNewChat(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    withSidebar((actions) => actions.openCreate());
+  }
+
+  function stepSelectedConversation(delta: 1 | -1): void {
+    const next = stepConversation(displayRows, selectedRow?.id, delta);
+    if (!next) return;
+    cheatSheetOpen = false;
+    handleSelect(next);
+  }
+
+  /**
+   * App-wide bindings. Ids double as the native View-menu payload ids
+   * (`shortcut:invoke` → `runShortcut(id)`), so keep them stable.
+   */
+  // svelte-ignore state_referenced_locally
+  const shellShortcuts: ShortcutBinding[] = [
+    {
+      id: "palette.toggle",
+      keys: "Mod+K",
+      label: "Command palette",
+      group: "General",
+      run: () => {
+        cheatSheetOpen = false;
+        paletteOpen = !paletteOpen;
+        goChord.reset();
+      },
+    },
+    {
+      id: "view.settings",
+      keys: "Mod+,",
+      label: "Settings",
+      group: "General",
+      run: () => openSettings(),
+    },
+    {
+      id: "help.shortcuts",
+      keys: "Mod+/",
+      label: "Keyboard shortcuts",
+      group: "General",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = !cheatSheetOpen;
+      },
+    },
+    {
+      id: "help.close",
+      keys: "Escape",
+      label: "Close this sheet",
+      group: "General",
+      allowInInput: true,
+      // Escape belongs to whichever overlay is open; only claim it for the
+      // cheat sheet, otherwise decline so other components keep it.
+      run: () => {
+        if (!cheatSheetOpen) return false;
+        cheatSheetOpen = false;
+        return true;
+      },
+    },
+    {
+      id: "view.notifications",
+      keys: "Mod+1",
+      label: "Notifications",
+      group: "Views",
+      run: () => {
+        view = "notifications";
+        meetingFocusRequest = null;
+      },
+    },
+    {
+      id: "view.meetings",
+      keys: "Mod+2",
+      label: "Meetings",
+      group: "Views",
+      run: () => {
+        view = "meetings";
+        meetingFocusRequest = null;
+      },
+    },
+    ...(adapter.kind !== "web"
+      ? [
+          {
+            id: "view.marketplace",
+            keys: "Mod+3",
+            label: "Marketplace",
+            group: "Views",
+            run: () => openLibrary("marketplace"),
+          } satisfies ShortcutBinding,
+        ]
+      : []),
+    {
+      id: "view.library",
+      keys: "Mod+4",
+      label: "Library",
+      group: "Views",
+      run: () => openLibrary("skills"),
+    },
+    {
+      id: "conversation.next",
+      keys: "Mod+Shift+]",
+      label: "Next conversation",
+      group: "Conversations",
+      run: () => stepSelectedConversation(1),
+    },
+    {
+      id: "conversation.previous",
+      keys: "Mod+Shift+[",
+      label: "Previous conversation",
+      group: "Conversations",
+      run: () => stepSelectedConversation(-1),
+    },
+    {
+      id: "chat.new",
+      keys: "Mod+N",
+      label: "New chat",
+      group: "Conversations",
+      run: () => openNewChat(),
+    },
+    {
+      id: "search.messages",
+      keys: "Mod+F",
+      label: "Search messages",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openHistory());
+      },
+    },
+    {
+      id: "search.conversations",
+      keys: "Mod+Shift+F",
+      label: "Jump to conversation",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openSearch());
+      },
+    },
+  ];
+
   function sweepStaleAttachmentTrays(reason: string): void {
     if (attachTray) return;
     const leftovers = document.querySelectorAll(
@@ -3635,44 +3868,15 @@
     startMeetingsStore();
     void prefetchMeetings();
 
-    // US-016: `g a` opens Atlas (Slack-style go chord).
-    const goChord = createGoChord((letter) => {
-      if (letter !== "a") return false;
-      view = "atlas";
-      meetingFocusRequest = null;
-      return true;
-    });
+    // Modifier shortcuts live in the shared registry (one capture-phase
+    // listener; also the target of native View-menu `shortcut:invoke`).
+    const unregisterShortcuts = registerShortcuts(shellShortcuts);
 
+    // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
+    // are not a registry concern, so they keep a bubble-phase listener.
     function onKey(event: KeyboardEvent) {
-      const meta = event.metaKey || event.ctrlKey;
-      if (meta) {
-        const key = event.key.toLowerCase();
-        if (key === "k") {
-          event.preventDefault();
-          paletteOpen = !paletteOpen;
-          goChord.reset();
-        } else if (key === ",") {
-          // macOS-standard ⌘, opens Settings.
-          event.preventDefault();
-          openSettings();
-        } else if (key === "1") {
-          event.preventDefault();
-          view = "notifications";
-          meetingFocusRequest = null;
-        } else if (key === "2") {
-          event.preventDefault();
-          view = "meetings";
-          meetingFocusRequest = null;
-        } else if (adapter.kind !== "web" && key === "3") {
-          event.preventDefault();
-          openLibrary("marketplace");
-        } else if (key === "4") {
-          event.preventDefault();
-          openLibrary("skills");
-        }
-        return;
-      }
-      if (paletteOpen) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (paletteOpen || cheatSheetOpen) return;
       if (goChord.handleKeydown(event)) {
         event.preventDefault();
       }
@@ -3744,6 +3948,7 @@
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
+      unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
@@ -3907,6 +4112,8 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           onrows={(rows) => (railRows = rows)}
+          ondisplayrows={(rows) => (displayRows = rows)}
+          onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
@@ -4649,6 +4856,10 @@
       commands={paletteCommands}
       onclose={() => (paletteOpen = false)}
     />
+  {/if}
+
+  {#if cheatSheetOpen}
+    <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
   {/if}
 
   {#if attachTray}

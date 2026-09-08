@@ -43,7 +43,8 @@ import {
   savePins,
   saveSetupPinDismissed,
   saveShowFilter,
-  scopeFromHotkey,
+  stepConversation,
+  flattenGrouped,
   scopePillLabel,
   searchCompanyUidFromScope,
   searchHistory,
@@ -60,6 +61,7 @@ import {
   titlebarDayDate,
   togglePin,
   type ConversationRow,
+  type GroupedConversations,
   type DmContactInput,
   type MessageSearchHit,
 } from "./sidebar-model";
@@ -993,16 +995,6 @@ describe("scope pill helpers", () => {
     expect(nextScope("all", companies)).toBe("cmp_1");
     expect(nextScope("cmp_2", companies)).toBe("personal");
     expect(nextScope("personal", companies)).toBe("all");
-  });
-
-  it("scopeFromHotkey maps 0 / 1..5 / p", () => {
-    expect(scopeFromHotkey("0", companies)).toBe("all");
-    expect(scopeFromHotkey("1", companies)).toBe("cmp_1");
-    expect(scopeFromHotkey("2", companies)).toBe("cmp_2");
-    expect(scopeFromHotkey("3", companies)).toBeNull(); // only 2 companies
-    expect(scopeFromHotkey("p", companies)).toBe("personal");
-    expect(scopeFromHotkey("P", companies)).toBe("personal");
-    expect(scopeFromHotkey("x", companies)).toBeNull();
   });
 
   it("scopePillLabel resolves company names", () => {
@@ -2269,5 +2261,61 @@ describe("rowAvatar", () => {
       rowAvatar({ kind: "channel", personUid: "agt_parker", title: "ops" }),
     ).toEqual({ kind: "initials", initials: "OP" });
     expect(rowAvatar(human, {})).toEqual({ kind: "initials", initials: "AL" });
+  });
+});
+
+describe("display-order stepping", () => {
+  const row = (id: string, pinned = false): ConversationRow =>
+    ({
+      id,
+      kind: "channel",
+      title: id,
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 0,
+      pinned,
+      channelId: id,
+    }) as ConversationRow;
+
+  const grouped: GroupedConversations = {
+    pinned: [row("p1", true)],
+    sections: [
+      { key: "today", label: "TODAY", rows: [row("t1"), row("t2")] },
+      { key: "yday", label: "YESTERDAY", rows: [row("y1")] },
+    ],
+    lastWeek: [row("w1"), row("w2")],
+    all: [],
+  };
+
+  it("flattenGrouped keeps pinned → sections → (last week when expanded)", () => {
+    expect(flattenGrouped(grouped, false).map((r) => r.id)).toEqual([
+      "p1",
+      "t1",
+      "t2",
+      "y1",
+    ]);
+    expect(flattenGrouped(grouped, true).map((r) => r.id)).toEqual([
+      "p1",
+      "t1",
+      "t2",
+      "y1",
+      "w1",
+      "w2",
+    ]);
+  });
+
+  it("stepConversation wraps in both directions", () => {
+    const rows = flattenGrouped(grouped, false);
+    expect(stepConversation(rows, "t1", 1)?.id).toBe("t2");
+    expect(stepConversation(rows, "y1", 1)?.id).toBe("p1");
+    expect(stepConversation(rows, "p1", -1)?.id).toBe("y1");
+    expect(stepConversation(rows, "t2", -1)?.id).toBe("t1");
+  });
+
+  it("stepConversation falls back to the first row and handles empties", () => {
+    const rows = flattenGrouped(grouped, false);
+    expect(stepConversation(rows, "missing", 1)?.id).toBe("p1");
+    expect(stepConversation(rows, null, -1)?.id).toBe("p1");
+    expect(stepConversation([], "p1", 1)).toBeNull();
   });
 });
