@@ -103,11 +103,46 @@ describe("ChannelConversation scroll ownership", () => {
     scrollTo(el, 0);
     rowCountRef.value = 40;
     await tick();
+    await tick();
 
     expect(el.scrollTop).toBe(20 * ROW_HEIGHT);
     expect(
       host.querySelector('[data-testid="conversation-load-earlier"]')?.textContent,
     ).toContain("20 earlier");
+  });
+
+  it("requests remote history once, shows loading, and allows retry after failure", async () => {
+    let calls = 0;
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, { target: host, props: {
+      messages: messages(10), hasEarlier: true,
+      onloadearlier: () => {
+        calls++;
+        return new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+      },
+    }});
+    await tick();
+    const el = stubLayout(10);
+    scrollTo(el, 0);
+    await tick();
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Loading earlier messages");
+    scrollTo(el, 0);
+    expect(calls).toBe(1);
+    fail(new Error("offline"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await tick();
+    const retry = host.querySelector('[data-testid="conversation-load-earlier"]') as HTMLButtonElement;
+    expect(retry.textContent).toContain("Retry");
+    retry.click();
+    await tick();
+    expect(calls).toBe(2);
+    finish();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await tick();
+    expect(host.querySelector('[role="status"]')).toBeNull();
   });
 
   it("keeps automatically loaded history when a live refresh arrives", async () => {

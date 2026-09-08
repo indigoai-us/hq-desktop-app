@@ -1124,6 +1124,23 @@
     }
   }
 
+  let historyCursors = $state<Record<string, string | null>>({});
+
+  async function loadEarlierTimeline(): Promise<void> {
+    const row = selectedRow;
+    if (!row) return;
+    const generation = tenantGeneration;
+    const cursor = historyCursors[row.id];
+    if (!cursor) return;
+    const raw = row.channelId
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
+      : null;
+    if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
+    const page = timelinePageFromPayload(raw);
+    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
@@ -1135,6 +1152,7 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
+    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
     const incoming = messagesForDisplay(raw);
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
@@ -4580,6 +4598,8 @@
                 {/snippet}
                 <ChannelConversation
                   messages={timelineWithActivity}
+                  hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  onloadearlier={loadEarlierTimeline}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}

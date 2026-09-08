@@ -11,7 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { onDestroy, untrack, type Snippet } from "svelte";
+  import { onDestroy, tick, untrack, type Snippet } from "svelte";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -159,6 +159,8 @@
     activeRootEventId?: string | null;
     /** Host is fetching history — do not flash “No messages yet”. */
     loading?: boolean;
+    hasEarlier?: boolean;
+    onloadearlier?: () => Promise<void>;
     /**
      * Empty-state copy. A project channel with zero chat AND zero work-mesh
      * events is empty of ACTIVITY, so the host passes "No activity yet" there.
@@ -226,6 +228,8 @@
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
+    hasEarlier = false,
+    onloadearlier,
     emptyLabel = "No messages yet",
     selfDisplayName = null,
     selfPersonUid = null,
@@ -392,11 +396,25 @@
   }
 
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
-  function showEarlier(): void {
-    if (loadingEarlier || windowed.hidden === 0) return;
+  let earlierError = $state(false);
+  async function showEarlier(): Promise<void> {
+    if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
     loadingEarlier = true;
+    earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
-    extraOlder += TIMELINE_WINDOW;
+    try {
+      if (windowed.hidden === 0) await onloadearlier?.();
+      extraOlder += TIMELINE_WINDOW;
+    } catch {
+      earlierError = true;
+    } finally {
+      await tick();
+      if (scroller && prependAnchorHeight > 0) {
+        scroller.scrollTop += scroller.scrollHeight - prependAnchorHeight;
+      }
+      prependAnchorHeight = 0;
+      loadingEarlier = false;
+    }
   }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -955,14 +973,7 @@
       const grew = length > prevTimelineLength;
       prevTimelineLength = length;
       if (!el) return;
-      if (prependAnchorHeight > 0) {
-        // Older history was prepended: hold the user's VISUAL position by
-        // shifting scrollTop by exactly the height the prepend added.
-        el.scrollTop += el.scrollHeight - prependAnchorHeight;
-        prependAnchorHeight = 0;
-        loadingEarlier = false;
-        return;
-      }
+      if (loadingEarlier) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
       } else if (grew) {
@@ -1011,15 +1022,16 @@
             {emptyLabel}
           </div>
         {/if}
-        {#if windowed.hidden > 0}
+        {#if loadingEarlier}
+          <div role="status" class="dm-load-earlier">Loading earlier messages…</div>
+        {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
             onclick={showEarlier}
           >
-            Show {windowed.hidden} earlier
-            {windowed.hidden === 1 ? "message" : "messages"}
+            {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
         {#each timeline as msg, index (msg.eventId)}
