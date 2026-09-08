@@ -109,7 +109,9 @@ pub async fn project_sessions_read(channel_id: String, session_id: Option<String
 
 fn save(path: &PathBuf, state: &Outbox) -> Result<(), String> {
     use std::io::Write;
-    let bytes = serde_json::to_vec(state).map_err(|e| e.to_string())?;
+    let mut sanitized = state.clone();
+    sanitize_titles(&mut sanitized);
+    let bytes = serde_json::to_vec(&sanitized).map_err(|e| e.to_string())?;
     let temp = path.with_extension("pending");
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
@@ -154,6 +156,8 @@ pub async fn prepare(app: &tauri::AppHandle, spec: &SessionSpec, channel_id: Opt
 }
 
 fn start_actor(app: &tauri::AppHandle, mut state: Outbox, path: PathBuf, app_id: &str) -> Result<(), String> {
+    // Resume and recovery may load outboxes written before title redaction.
+    sanitize_titles(&mut state);
     let (tx, mut rx) = unbounded_channel();
     {
         let mut actors = actors().lock().map_err(|_| "Session sharing unavailable")?;
@@ -182,7 +186,7 @@ fn start_actor(app: &tauri::AppHandle, mut state: Outbox, path: PathBuf, app_id:
                         SessionEvent::Started { session_id, .. } => state.native_id = Some(session_id),
                         SessionEvent::UserMessage { text, .. } => {
                             let text = visible_prompt(&text);
-                            if state.title == "New session" && !text.is_empty() { state.title = text.chars().take(120).collect(); }
+                            if state.title == "New session" && !text.is_empty() { state.title = shared_title(&text); }
                             append_text(&mut state.pending, "user", &text);
                         },
                         SessionEvent::AssistantMessage { text, parent_tool_use_id: None } => append_text(&mut state.pending, "assistant", &text),
@@ -280,12 +284,38 @@ fn append_text(messages: &mut Vec<Message>, role: &str, raw: &str) {
     if !chunk.is_empty() { messages.push(Message { role: role.into(), text: chunk }); }
 }
 
+fn shared_title(raw: &str) -> String {
+    // Detect credentials before truncation can cut off their identifying suffix.
+    let mut redacted = redact_secrets(raw);
+    // The common redactor treats REDACTED after `password=` as another value.
+    // Collapse only nested replacement markers so repeated saves/retries stay
+    // byte-identical without exempting any credential from secret detection.
+    while redacted.contains("[[REDACTED]]") {
+        redacted = redacted.replace("[[REDACTED]]", "[REDACTED]");
+    }
+    redacted.chars().take(120).collect()
+}
+
+fn sanitize_titles(state: &mut Outbox) {
+    state.title = shared_title(&state.title);
+    if let Some(batch) = state.in_flight.as_mut() {
+        if let Some(title) = batch.get("title").and_then(Value::as_str) {
+            batch["title"] = json!(shared_title(title));
+        }
+    }
+}
+
+fn registration_body(state: &Outbox) -> Value {
+    json!({
+        "sessionId": state.session_id, "title": shared_title(&state.title), "tool": state.tool,
+        "visibility": "project-members-v1", "companyUid": state.company_uid, "projectId": state.project
+    })
+}
+
 async fn flush(state: &mut Outbox, path: &PathBuf) -> Result<(), String> {
+    sanitize_titles(state);
     if !state.registered {
-        let response = request(reqwest::Method::POST, &state.channel_id, None, Some(&json!({
-            "sessionId": state.session_id, "title": state.title, "tool": state.tool, "visibility": "project-members-v1",
-            "companyUid": state.company_uid, "projectId": state.project
-        })), None, Some(&state.account)).await?;
+        let response = request(reqwest::Method::POST, &state.channel_id, None, Some(&registration_body(state)), None, Some(&state.account)).await?;
         if response["companyUid"].as_str() != Some(&state.company_uid) || response["projectId"].as_str() != Some(&state.project) {
             return Err("Project channel does not match the session".into());
         }
@@ -299,6 +329,7 @@ async fn flush(state: &mut Outbox, path: &PathBuf) -> Result<(), String> {
 }
 
 fn freeze_batch(state: &mut Outbox) {
+    sanitize_titles(state);
     if state.in_flight.is_none() {
         let count = state.pending.len().min(24);
         state.in_flight = Some(json!({ "title": state.title, "from": state.sent, "messages": &state.pending[..count] }));
@@ -335,6 +366,48 @@ mod tests {
         Outbox { version: 1, account: "owner".into(), channel_id: "channel".into(), company_uid: "company".into(), project: "launch".into(),
             session_id: "session".into(), native_id: Some("native".into()), tool: "codex".into(), title: "Launch".into(), sent: 0,
             registered: true, pending: vec![Message { role: "user".into(), text: "First".into() }], in_flight: None }
+    }
+    #[test] fn titles_redact_before_truncation_and_before_registration_or_batch_upload() {
+        // A token beginning near the boundary would evade prefix matching if
+        // the original prompt were truncated to 120 characters first.
+        let secret = ["sk", "-", &"a".repeat(40)].concat();
+        let prompt = format!("{}{}", "x ".repeat(52), secret);
+        let expected: String = redact_secrets(&prompt).chars().take(120).collect();
+        assert_eq!(shared_title(&prompt), expected);
+        assert!(!expected.contains("sk-"));
+        let mut state = outbox();
+        state.title = prompt;
+        assert_eq!(registration_body(&state)["title"], expected);
+        freeze_batch(&mut state);
+        assert_eq!(state.title, expected);
+        assert_eq!(state.in_flight.as_ref().unwrap()["title"], expected);
+    }
+    #[test] fn legacy_outbox_titles_are_scrubbed_on_recovery_and_persistence() {
+        let mut legacy = outbox();
+        legacy.title = "Use password=example-private-value".into();
+        legacy.in_flight = Some(json!({ "title": legacy.title, "from": 0, "messages": legacy.pending }));
+        let raw = serde_json::to_vec(&legacy).unwrap();
+        let mut restored: Outbox = serde_json::from_slice(&raw).unwrap();
+        let expected = shared_title(&legacy.title);
+        assert!(!expected.contains("example-private-value"));
+        sanitize_titles(&mut restored);
+        assert_eq!(restored.title, expected);
+        assert_eq!(restored.in_flight.as_ref().unwrap()["title"], expected);
+        let sanitized = serde_json::to_vec(&restored).unwrap();
+        sanitize_titles(&mut restored);
+        freeze_batch(&mut restored);
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), sanitized);
+        assert_eq!(restored.in_flight.as_ref().unwrap()["messages"], legacy.in_flight.as_ref().unwrap()["messages"]);
+        assert_eq!(restored.in_flight.as_ref().unwrap()["from"], 0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("outbox.json");
+        save(&path, &legacy).unwrap();
+        let persisted = std::fs::read(&path).unwrap();
+        assert!(!String::from_utf8_lossy(&persisted).contains("example-private-value"));
+        let persisted: Outbox = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(persisted.title, expected);
+        assert_eq!(persisted.in_flight.as_ref().unwrap()["title"], expected);
     }
     #[test] fn channel_binding_survives_native_id_transition_without_crossing_account_project_or_provider() {
         let mut bindings = HashMap::new();
