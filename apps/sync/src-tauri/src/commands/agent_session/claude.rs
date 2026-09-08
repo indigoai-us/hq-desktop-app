@@ -765,7 +765,6 @@ mod tests {
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool,
     };
-    use std::io::Write;
     use tokio::sync::mpsc;
 
     /// A sink that records everything, so a test can assert on the exact
@@ -835,22 +834,14 @@ mod tests {
     /// name on `PATH` instead would mean mutating process-global `PATH` from a
     /// test that runs in parallel with every other test in this binary.)
     const FAKE_CLAUDE: &str = r#"
-set -u
-# init
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"cli-abc","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash","Read","Write"],"slash_commands":["hq-whoami","plan"],"permissionMode":"default","capabilities":["interrupt_receipt_v1"]}'
-# one streamed text delta
-printf '%s\n' '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Writing the file."}}}'
-# the tool call, then the permission request the CLI blocks on
-printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"/tmp/hello.txt","content":"hi"}}]}}'
-printf '%s\n' '{"type":"control_request","request_id":"req_perm_1","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"/tmp/hello.txt","content":"hi"},"permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"toolu_01"}}'
-# block until the client answers
-IFS= read -r reply
-printf '%s\n' "$reply" >> "$HQ_FAKE_REPLIES"
-printf '%s\n' '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"File created successfully"}]}}'
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":12,"output_tokens":34},"session_id":"cli-abc","total_cost_usd":0.0012,"duration_ms":2418}'
-# stay alive until the client closes stdin, exactly like the real CLI
-while IFS= read -r _line; do :; done
-exit 0
+emit({"type":"system","subtype":"init","session_id":"cli-abc","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash","Read","Write"],"slash_commands":["hq-whoami","plan"],"permissionMode":"default","capabilities":["interrupt_receipt_v1"]});
+emit({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Writing the file."}}});
+emit({"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"/tmp/hello.txt","content":"hi"}}]}});
+emit({"type":"control_request","request_id":"req_perm_1","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"/tmp/hello.txt","content":"hi"},"permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"toolu_01"}});
+await take();
+emit({"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"File created successfully"}]}});
+emit({"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":12,"output_tokens":34},"session_id":"cli-abc","total_cost_usd":0.0012,"duration_ms":2418});
+await drain();
 "#;
 
     /// The `result` frame the real CLI emits for a turn the client interrupted,
@@ -869,58 +860,54 @@ exit 0
     /// The deltas are paced so the interrupt is written into a turn that is
     /// genuinely mid-stream rather than into an already-idle child.
     const FAKE_CLAUDE_INTERRUPT: &str = r#"
-set -u
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"cli-int","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":["interrupt_receipt_v1"]}'
-for i in 1 2 3 4; do
-  printf '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tick %s "}}}\n' "$i"
-  sleep 0.2
-done
-# The client's interrupt is waiting in the pipe by now.
-IFS= read -r reply
-printf '%s\n' "$reply" >> "$HQ_FAKE_REPLIES"
-id=$(printf '%s' "$reply" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
-printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"still_queued":[]}}}\n' "$id"
-printf '%s\n' "$HQ_FAKE_RESULT"
-# stay alive until the client closes stdin, exactly like the real CLI
-while IFS= read -r _line; do :; done
-exit 0
+emit({"type":"system","subtype":"init","session_id":"cli-int","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":["interrupt_receipt_v1"]});
+for (let i = 1; i <= 4; i++) {
+  emit({type:"stream_event",parent_tool_use_id:null,event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:`tick ${i} `}}});
+  await sleep(200);
+}
+const reply = await take();
+emit({type:"control_response",response:{subtype:"success",request_id:reply.request_id,response:{still_queued:[]}}});
+emit(interruptedResult);
+await drain();
 "#;
 
     /// A fake `claude` that blocks on the operator's turn before answering, so
     /// the ordering the buffer records is the ordering that actually happened
     /// rather than a race the test won by luck.
     const FAKE_CLAUDE_ECHO: &str = r#"
-set -u
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"cli-echo","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":[]}'
-# Say nothing until the user has said something.
-IFS= read -r turn
-printf '%s\n' "$turn" >> "$HQ_FAKE_REPLIES"
-printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"On it."}]}}'
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"On it.","usage":{"input_tokens":3,"output_tokens":4},"session_id":"cli-echo","total_cost_usd":0.0001,"duration_ms":11}'
-while IFS= read -r _line; do :; done
-exit 0
+emit({"type":"system","subtype":"init","session_id":"cli-echo","model":"claude-haiku-4-5-20251001","cwd":"/hq","tools":["Bash"],"slash_commands":[],"permissionMode":"default","capabilities":[]});
+await take();
+emit({"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"On it."}]}});
+emit({"type":"result","subtype":"success","is_error":false,"result":"On it.","usage":{"input_tokens":3,"output_tokens":4},"session_id":"cli-echo","total_cost_usd":0.0001,"duration_ms":11});
+await drain();
 "#;
 
-    /// Write `script` to disk as the fake CLI and return its path.
-    /// `HQ_FAKE_REPLIES` is where it records what the driver sent back, so the
-    /// test can assert on the exact control-response payload.
+    /// Node executes the fixture on every host; the production provider argv
+    /// remains after the script path, without shell parsing or global env edits.
     fn install_fake(dir: &std::path::Path, replies: &std::path::Path, script: &str) -> String {
-        let path = dir.join("fake-claude.sh");
-        let mut file = std::fs::File::create(&path).expect("create fake");
-        write!(
-            file,
-            "#!/bin/bash\nexport HQ_FAKE_REPLIES={}\nexport HQ_FAKE_RESULT='{}'\n{script}",
-            replies.display(),
-            INTERRUPTED_RESULT
-        )
-        .expect("write fake");
-        drop(file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake");
-        }
+        let path = dir.join("fake-claude.cjs");
+        let runtime = r#"
+const fs = require("node:fs");
+const readline = require("node:readline");
+const input = readline.createInterface({input: process.stdin});
+const queue = [];
+let waiter;
+let closed = false;
+input.on("line", line => { if (waiter) { const resolve = waiter; waiter = null; resolve(line); } else queue.push(line); });
+input.on("close", () => { closed = true; if (waiter) process.exit(0); });
+async function take() {
+  const line = queue.length ? queue.shift() : closed ? process.exit(0) : await new Promise(resolve => waiter = resolve);
+  fs.appendFileSync(replies, line + "\n");
+  return JSON.parse(line);
+}
+const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function drain() { while (!closed || queue.length) await take(); }
+"#;
+        std::fs::write(&path, format!(
+            "const replies = {};\nconst interruptedResult = {};\n{runtime}\n(async () => {{\n{script}\n}})().catch(error => {{ console.error(error); process.exit(1); }});\n",
+            serde_json::to_string(&replies.to_string_lossy()).unwrap(), INTERRUPTED_RESULT,
+        )).expect("write fake");
         path.to_string_lossy().into_owned()
     }
 
@@ -955,11 +942,12 @@ exit 0
             spec.project.as_deref(),
         )
         .expect("write session metadata");
-        let launch = claude_launch(program, &spec, dir.path().to_path_buf());
+        let mut launch = claude_launch(paths::resolve_bin("node"), &spec, dir.path().to_path_buf());
         // The fake is driven with the real argv, so a build_args regression
         // that broke the CLI invocation would show up here too.
         assert!(launch.args.contains(&"--input-format".to_string()));
         assert!(launch.args.contains(&"stream-json".to_string()));
+        launch.args.insert(0, program);
 
         let child = StdioChild::spawn(&launch).await.expect("spawn fake");
         let pid = child.pid();

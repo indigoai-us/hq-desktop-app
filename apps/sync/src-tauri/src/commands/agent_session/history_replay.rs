@@ -474,11 +474,8 @@ mod tests {
 
     #[test]
     fn long_transcripts_page_back_to_the_beginning_without_a_fixed_tail() {
-        let path = std::env::temp_dir().join(format!(
-            "hq-history-page-{}-{}.jsonl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("history-page.jsonl");
         let contents = (0..300)
             .flat_map(|index| {
                 let visible = serde_json::json!({

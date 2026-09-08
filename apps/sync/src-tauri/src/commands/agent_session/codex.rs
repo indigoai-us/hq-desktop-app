@@ -944,23 +944,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let replies = dir.path().join("replies.jsonl");
         let script = r#"
-id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
-while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"
-  id=$(id_of "$line")
-  case "$line" in
-    *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
-    *'"method":"model/list"'*)
-      case "$line" in
-        *'"cursor":"page2"'*) printf '{"id":%s,"result":{"data":[{"id":"future-model"}],"nextCursor":null}}\n' "$id" ;;
-        *) printf '{"id":%s,"result":{"data":[{"id":"existing-model"}],"nextCursor":"page2"}}\n' "$id" ;;
-      esac ;;
-    *'"method":"skills/list"'*) printf '{"id":%s,"result":{"data":[]}}\n' "$id" ;;
-  esac
-done
+while (!closed || queue.length) {
+  const request = await take();
+  if (request.method === "initialize") respond(request, {});
+  else if (request.method === "model/list") {
+    respond(request, request.params?.cursor === "page2"
+      ? {data:[{id:"future-model"}],nextCursor:null}
+      : {data:[{id:"existing-model"}],nextCursor:"page2"});
+  } else if (request.method === "skills/list") respond(request, {data:[]});
+}
 "#;
         let program = install_fake(dir.path(), &replies, script);
-        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().to_path_buf()))
+        let mut child = StdioChild::spawn(&fake_launch(program, dir.path().to_path_buf()))
             .await
             .unwrap();
         let result = tokio::time::timeout(Duration::from_secs(5), probe_inner(&mut child))
@@ -1004,7 +999,6 @@ done
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool, TurnOverrides,
     };
-    use std::io::Write;
     use tokio::sync::mpsc;
 
     /// A sink that records everything, so a test can assert on the exact
@@ -1069,42 +1063,25 @@ done
     /// Every line it reads is appended to `$HQ_FAKE_REPLIES`, so the test can
     /// assert on the exact JSON-RPC bytes the driver put on the wire.
     const FAKE_CODEX: &str = r#"
-set -u
-emit() { printf '%s\n' "$1"; }
-id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
-take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"; printf '%s' "$line"; }
-
-# ── handshake ────────────────────────────────────────────────────────────────
-init=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"userAgent\":\"fake/0.144.1\",\"codexHome\":\"/tmp/codex\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}"
-take > /dev/null   # the `initialized` notification
-start=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-1\",\"sessionId\":\"th-1\",\"cwd\":\"/hq\"},\"model\":\"gpt-5.6-sol\",\"reasoningEffort\":\"medium\",\"approvalPolicy\":\"on-request\"}}"
-emit '{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-1"}}}'
-
-# ── one turn ─────────────────────────────────────────────────────────────────
-turn=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$turn"),\"result\":{\"turn\":{\"id\":\"tu-1\",\"status\":\"inProgress\"}}}"
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"inProgress"}}}'
-emit '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-1","turnId":"tu-1","itemId":"m1","delta":"Writing the file."}}'
-emit '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th-1","turnId":"tu-1","item":{"type":"commandExecution","id":"exec-1","command":"/bin/zsh -lc '"'"'echo hi > /tmp/hello.txt'"'"'","cwd":"/hq","status":"inProgress"}}}'
-emit '{"jsonrpc":"2.0","id":0,"method":"item/commandExecution/requestApproval","params":{"threadId":"th-1","turnId":"tu-1","itemId":"exec-1","reason":"Allow writing outside the sandbox?","command":"/bin/zsh -lc '"'"'echo hi > /tmp/hello.txt'"'"'","cwd":"/hq","availableDecisions":["accept","cancel"]}}'
-
-# block until the client answers the approval
-reply=$(take)
-case "$reply" in
-  *'"decision":"accept"'*) exitcode=0 ;;
-  *) exitcode=1 ;;
-esac
-emit '{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"th-1","requestId":0}}'
-emit "{\"jsonrpc\":\"2.0\",\"method\":\"item/completed\",\"params\":{\"threadId\":\"th-1\",\"turnId\":\"tu-1\",\"item\":{\"type\":\"commandExecution\",\"id\":\"exec-1\",\"command\":\"echo hi\",\"status\":\"completed\",\"aggregatedOutput\":\"\",\"exitCode\":$exitcode}}}"
-emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m1","text":"Wrote the file.","phase":"final_answer"}}}'
-emit '{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th-1","turnId":"tu-1","tokenUsage":{"total":{"inputTokens":99,"outputTokens":99},"last":{"inputTokens":12,"outputTokens":34}}}}'
-emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"completed","error":null}}}'
-
-# stay alive until the client closes stdin, exactly like the real app server
-while IFS= read -r _line; do :; done
-exit 0
+await initialize({"userAgent":"fake/0.144.1","codexHome":"/tmp/codex","platformFamily":"unix","platformOs":"macos"});
+const start = await take();
+respond(start, {thread:{id:"th-1",sessionId:"th-1",cwd:"/hq"},model:"gpt-5.6-sol",reasoningEffort:"medium",approvalPolicy:"on-request"});
+emit({"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-1"}}});
+// ── one turn
+const turn = await take();
+respond(turn, {turn:{id:"tu-1",status:"inProgress"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"inProgress"}}});
+emit({"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-1","turnId":"tu-1","itemId":"m1","delta":"Writing the file."}});
+emit({"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th-1","turnId":"tu-1","item":{"type":"commandExecution","id":"exec-1","command":"/bin/zsh -lc 'echo hi > /tmp/hello.txt'","cwd":"/hq","status":"inProgress"}}});
+emit({"jsonrpc":"2.0","id":0,"method":"item/commandExecution/requestApproval","params":{"threadId":"th-1","turnId":"tu-1","itemId":"exec-1","reason":"Allow writing outside the sandbox?","command":"/bin/zsh -lc 'echo hi > /tmp/hello.txt'","cwd":"/hq","availableDecisions":["accept","cancel"]}});
+const reply = await take();
+const exitcode = reply.result?.decision === "accept" ? 0 : 1;
+emit({"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"th-1","requestId":0}});
+emit({jsonrpc:"2.0",method:"item/completed",params:{threadId:"th-1",turnId:"tu-1",item:{type:"commandExecution",id:"exec-1",command:"echo hi",status:"completed",aggregatedOutput:"",exitCode:exitcode}}});
+emit({"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m1","text":"Wrote the file.","phase":"final_answer"}}});
+emit({"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th-1","turnId":"tu-1","tokenUsage":{"total":{"inputTokens":99,"outputTokens":99},"last":{"inputTokens":12,"outputTokens":34}}}});
+emit({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"completed","error":null}}});
+await drain();
 "#;
 
     /// A fake that reproduces the SHAPE of a real first Codex turn: the
@@ -1117,138 +1094,114 @@ exit 0
     /// It also blocks until a second line arrives, so the test can prove the
     /// pill overrides ride the `turn/start` that follows.
     const FAKE_CODEX_SLOW_FIRST_TURN: &str = r#"
-set -u
-emit() { printf '%s\n' "$1"; }
-id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
-take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"; printf '%s' "$line"; }
-
-init=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"codexHome\":\"/tmp/codex\"}}"
-take > /dev/null
-start=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-5\"},\"model\":\"gpt-5.6-sol\",\"reasoningEffort\":\"medium\"}}"
-
-# ── the slow first turn ──────────────────────────────────────────────────────
-turn=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$turn"),\"result\":{\"turn\":{\"id\":\"tu-5\",\"status\":\"inProgress\"}}}"
-emit '{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-5"}}}'
-for i in 1 2 3 4 5; do
-  emit '{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"server":"hq"}}'
-done
-emit '{"jsonrpc":"2.0","method":"thread/settings/updated","params":{"threadId":"th-5"}}'
-emit '{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"th-5","status":"running"}}'
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"inProgress"}}}'
-emit '{"jsonrpc":"2.0","method":"warning","params":{"message":"a warning is not a turn ending"}}'
-for i in 1 2 3 4 5; do
-  emit '{"jsonrpc":"2.0","method":"hook/started","params":{"threadId":"th-5","hook":{"name":"hq"}}}'
-  emit '{"jsonrpc":"2.0","method":"hook/completed","params":{"threadId":"th-5","hook":{"name":"hq"}}}'
-done
-emit '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}}'
-emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}}'
-
-# A marker the test can wait on: everything above produced NO transcript at all,
-# so without it there is nothing to observe but the passage of time.
-emit '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-5","turnId":"tu-5","itemId":"m1","delta":"Hi."}}'
-# Hold the turn open long enough for the test to observe the phase mid-flight;
-# a real first turn spends 30-50s here.
-sleep 1
-emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"agentMessage","id":"m1","text":"Hi.","phase":"final_answer"}}}'
-emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"completed","error":null}}}'
-
-# ── a second turn, after the operator moved the model / effort pills ─────────
-second=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$second"),\"result\":{\"turn\":{\"id\":\"tu-6\"}}}"
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-6"}}}'
-emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-6","status":"completed","error":null}}}'
-while IFS= read -r _line; do :; done
-exit 0
+await initialize({"codexHome":"/tmp/codex"});
+const start = await take();
+respond(start, {thread:{id:"th-5"},model:"gpt-5.6-sol",reasoningEffort:"medium"});
+const turn = await take();
+respond(turn, {turn:{id:"tu-5",status:"inProgress"}});
+emit({"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"th-5"}}});
+for (let i = 0; i < 5; i++) { emit({"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"server":"hq"}}); }
+emit({"jsonrpc":"2.0","method":"thread/settings/updated","params":{"threadId":"th-5"}});
+emit({"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"th-5","status":"running"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"inProgress"}}});
+emit({"jsonrpc":"2.0","method":"warning","params":{"message":"a warning is not a turn ending"}});
+for (let i = 0; i < 5; i++) {
+  emit({"jsonrpc":"2.0","method":"hook/started","params":{"threadId":"th-5","hook":{"name":"hq"}}});
+  emit({"jsonrpc":"2.0","method":"hook/completed","params":{"threadId":"th-5","hook":{"name":"hq"}}});
+}
+emit({"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}});
+emit({"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"userMessage","id":"u1","content":[{"type":"text","text":"hello"}]}}});
+emit({"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-5","turnId":"tu-5","itemId":"m1","delta":"Hi."}});
+await sleep(1000);
+emit({"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-5","turnId":"tu-5","item":{"type":"agentMessage","id":"m1","text":"Hi.","phase":"final_answer"}}});
+emit({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-5","status":"completed","error":null}}});
+const second = await take();
+respond(second, {turn:{id:"tu-6"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-5","turn":{"id":"tu-6"}}});
+emit({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-5","turn":{"id":"tu-6","status":"completed","error":null}}});
+await drain();
 "#;
 
     /// A fake that starts a long turn, honours `turn/interrupt` with
     /// `turn/aborted`, and stays alive — the interrupt path end to end.
     const FAKE_CODEX_INTERRUPT: &str = r#"
-set -u
-emit() { printf '%s\n' "$1"; }
-id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
-take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"; printf '%s' "$line"; }
-
-init=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{\"codexHome\":\"/tmp/codex\"}}"
-take > /dev/null
-start=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-2\"},\"model\":\"gpt-5.6-sol\"}}"
-
-turn=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$turn"),\"result\":{\"turn\":{\"id\":\"tu-2\"}}}"
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-2","turn":{"id":"tu-2"}}}'
-for i in 1 2 3 4; do
-  printf '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"th-2","turnId":"tu-2","itemId":"m1","delta":"tick %s "}}\n' "$i"
-  sleep 0.2
-done
-int=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$int"),\"result\":{}}"
-emit '{"jsonrpc":"2.0","method":"turn/aborted","params":{"threadId":"th-2","turnId":"tu-2"}}'
-while IFS= read -r _line; do :; done
-exit 0
+await initialize({"codexHome":"/tmp/codex"});
+const start = await take();
+respond(start, {thread:{id:"th-2"},model:"gpt-5.6-sol"});
+const turn = await take();
+respond(turn, {turn:{id:"tu-2"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-2","turn":{"id":"tu-2"}}});
+for (let i = 1; i <= 4; i++) {
+  emit({jsonrpc:"2.0",method:"item/agentMessage/delta",params:{threadId:"th-2",turnId:"tu-2",itemId:"m1",delta:`tick ${i} `}});
+  await sleep(200);
+}
+respond(await take(), {});
+emit({"jsonrpc":"2.0","method":"turn/aborted","params":{"threadId":"th-2","turnId":"tu-2"}});
+await drain();
 "#;
 
     /// A fake that REJECTS `turn/steer` (the "you lost the race" case), then
     /// ends the turn — the driver must re-deliver the text as its own turn.
     const FAKE_CODEX_STEER_REJECT: &str = r#"
-set -u
-emit() { printf '%s\n' "$1"; }
-id_of() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
-take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >> "$HQ_FAKE_REPLIES"; printf '%s' "$line"; }
-
-init=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$init"),\"result\":{}}"
-take > /dev/null
-start=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$start"),\"result\":{\"thread\":{\"id\":\"th-3\"},\"model\":\"gpt-5.6-sol\"}}"
-
-first=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$first"),\"result\":{\"turn\":{\"id\":\"tu-3\"}}}"
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-3","turn":{"id":"tu-3"}}}'
-
-# The second line arrives as a steer; refuse it the way a finished turn does.
-steer=$(take)
-case "$steer" in
-  *'"method":"turn/steer"'*)
-    emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$steer"),\"error\":{\"code\":-32602,\"message\":\"expectedTurnId no longer active\"}}" ;;
-  *)
-    emit '{"jsonrpc":"2.0","method":"turn/failed","params":{"turn":{"id":"tu-3","error":{"message":"expected turn/steer"}}}}'
-    while IFS= read -r _line; do :; done
-    exit 0 ;;
-esac
-emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-3","turn":{"id":"tu-3","status":"completed","error":null}}}'
-
-# The re-queued text must arrive as a fresh turn/start.
-second=$(take)
-emit "{\"jsonrpc\":\"2.0\",\"id\":$(id_of "$second"),\"result\":{\"turn\":{\"id\":\"tu-4\"}}}"
-emit '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-3","turn":{"id":"tu-4"}}}'
-emit '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-3","turnId":"tu-4","item":{"type":"agentMessage","id":"m2","text":"Got both.","phase":"final_answer"}}}'
-emit '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-3","turn":{"id":"tu-4","status":"completed","error":null}}}'
-while IFS= read -r _line; do :; done
-exit 0
+await initialize({"codexHome":"/tmp/codex"});
+const start = await take();
+respond(start, {thread:{id:"th-3"},model:"gpt-5.6-sol"});
+const first = await take();
+respond(first, {turn:{id:"tu-3"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-3","turn":{"id":"tu-3"}}});
+const steer = await take();
+if (steer.method === "turn/steer") {
+  emit({jsonrpc:"2.0",id:steer.id,error:{code:-32602,message:"expectedTurnId no longer active"}});
+} else {
+  emit({"jsonrpc":"2.0","method":"turn/failed","params":{"turn":{"id":"tu-3","error":{"message":"expected turn/steer"}}}});
+  await drain();
+  return;
+}
+emit({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-3","turn":{"id":"tu-3","status":"completed","error":null}}});
+const second = await take();
+respond(second, {turn:{id:"tu-4"}});
+emit({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-3","turn":{"id":"tu-4"}}});
+emit({"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th-3","turnId":"tu-4","item":{"type":"agentMessage","id":"m2","text":"Got both.","phase":"final_answer"}}});
+emit({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-3","turn":{"id":"tu-4","status":"completed","error":null}}});
+await drain();
 "#;
 
+    /// Node executes the fixture on every host; the production provider argv
+    /// remains after the script path, without shell parsing or global env edits.
     fn install_fake(dir: &std::path::Path, replies: &std::path::Path, script: &str) -> String {
-        let path = dir.join("fake-codex.sh");
-        let mut file = std::fs::File::create(&path).expect("create fake");
-        write!(
-            file,
-            "#!/bin/bash\nexport HQ_FAKE_REPLIES={}\n{script}",
-            replies.display()
-        )
-        .expect("write fake");
-        drop(file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake");
-        }
+        let path = dir.join("fake-codex.cjs");
+        let runtime = r#"
+const fs = require("node:fs");
+const readline = require("node:readline");
+const input = readline.createInterface({input: process.stdin});
+const queue = [];
+let waiter;
+let closed = false;
+input.on("line", line => { if (waiter) { const resolve = waiter; waiter = null; resolve(line); } else queue.push(line); });
+input.on("close", () => { closed = true; if (waiter) process.exit(0); });
+async function take() {
+  const line = queue.length ? queue.shift() : closed ? process.exit(0) : await new Promise(resolve => waiter = resolve);
+  fs.appendFileSync(replies, line + "\n");
+  return JSON.parse(line);
+}
+const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
+const respond = (request, result) => emit({jsonrpc:"2.0",id:request.id,result});
+async function initialize(result) { respond(await take(), result); await take(); }
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function drain() { while (!closed || queue.length) await take(); }
+"#;
+        std::fs::write(&path, format!(
+            "const replies = {};\n{runtime}\n(async () => {{\n{script}\n}})().catch(error => {{ console.error(error); process.exit(1); }});\n",
+            serde_json::to_string(&replies.to_string_lossy()).unwrap(),
+        )).expect("write fake");
         path.to_string_lossy().into_owned()
+    }
+
+    fn fake_launch(script: String, cwd: PathBuf) -> StdioLaunch {
+        let mut launch = codex_launch(paths::resolve_bin("node"), cwd);
+        assert_eq!(launch.args, vec!["app-server".to_string()]);
+        launch.args.insert(0, script);
+        launch
     }
 
     struct Harness {
@@ -1279,10 +1232,10 @@ exit 0
         let program = install_fake(dir.path(), &replies, script);
 
         let spec = spec(mode);
-        let launch = codex_launch(program, dir.path().to_path_buf());
+        let launch = fake_launch(program, dir.path().to_path_buf());
         // The fake is driven with the real argv, so a regression that stopped
         // asking for the app server would show up here too.
-        assert_eq!(launch.args, vec!["app-server".to_string()]);
+        assert_eq!(&launch.args[1..], &["app-server".to_string()]);
 
         let mut child = StdioChild::spawn(&launch).await.expect("spawn fake");
         let pid = child.pid();
@@ -1329,10 +1282,10 @@ exit 0
         // Answer only the required initialization and thread creation frames.
         // A catalog read would stall forever, just as an unavailable skill
         // filesystem can in the real provider. It must not gate first send.
-        let script = FAKE_CODEX.split("# ── one turn").next().unwrap().to_owned()
-            + "\nwhile IFS= read -r _line; do :; done\n";
+        let script = FAKE_CODEX.split("// ── one turn").next().unwrap().to_owned()
+            + "\nawait drain();\n";
         let program = install_fake(dir.path(), &replies, &script);
-        let mut child = StdioChild::spawn(&codex_launch(program, dir.path().into()))
+        let mut child = StdioChild::spawn(&fake_launch(program, dir.path().into()))
             .await
             .unwrap();
         let result = tokio::time::timeout(

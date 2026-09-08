@@ -372,15 +372,18 @@ mod tests {
 
     #[test]
     fn rejects_traversal_relative_and_empty() {
-        let dir = root_with(&[]);
+        let dir = root_with(&["companies/x"]);
         let root = dir.path().canonicalize().unwrap();
-        let traversal = format!("{}/companies/../../etc/passwd", root.display());
+        // Use a normal absolute input path, not Windows' canonical verbatim
+        // prefix, whose component parser treats forward slashes literally.
+        let sep = std::path::MAIN_SEPARATOR;
+        let traversal = format!("{}{sep}companies{sep}..{sep}..{sep}etc{sep}passwd", dir.path().display());
         assert!(validate_inside_root(&traversal, &root)
             .unwrap_err()
             .contains("`..`"));
         // `Path::components` folds an interior `.` away, so this form is not
         // an escape — it must still resolve INSIDE the root, never outside.
-        let dotted = format!("{}/./companies/x", root.display());
+        let dotted = format!("{}{sep}.{sep}companies{sep}x", dir.path().display());
         let resolved = validate_inside_root(&dotted, &root).unwrap();
         assert!(resolved.starts_with(&root));
         assert!(!resolved.to_string_lossy().contains("/./"));

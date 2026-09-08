@@ -541,7 +541,8 @@ mod tests {
         assert_eq!(created[0].session_id, session_id);
         assert_eq!(created[0].company, company);
         assert_eq!(created[0].project, "draft");
-        assert!(created[0].project_path.ends_with("projects/draft"));
+        assert!(std::path::Path::new(&created[0].project_path)
+            .ends_with(std::path::Path::new("projects").join("draft")));
 
         // Bound in the registry and on disk.
         let bound = live_session_summaries()
