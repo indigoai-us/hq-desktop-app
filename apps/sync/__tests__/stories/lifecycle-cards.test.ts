@@ -28,7 +28,8 @@ describe("lifecycle cards desktop harness", () => {
     const src = readUi("shell/DesktopApp.svelte");
     expect(src).toContain("CompanyTabs");
     expect(src).toContain("TeamTab");
-    expect(src).toContain("IntegrationsTab");
+    // The Integrations tab was removed — apps connect in the HQ console only.
+    expect(src).not.toContain("IntegrationsTab");
     expect(src).toContain("SettingsTab");
     expect(src).toContain("AtlasTab");
     expect(src).toContain("CompanyHero");

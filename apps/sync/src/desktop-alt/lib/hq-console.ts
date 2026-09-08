@@ -42,6 +42,16 @@ export function companyInviteUrl(slug: string): string {
   return `${companyConsoleUrl(slug)}/team/invites`;
 }
 
+/**
+ * A company's Integrations page in the console — `/companies/{slug}/integrations`
+ * (route `companies/[slug]/integrations`), the only place apps get connected.
+ * The desktop app never hosts an integrations UI of its own; the company
+ * operations "Integrations" destination opens this.
+ */
+export function companyIntegrationsUrl(slug: string): string {
+  return `${companyConsoleUrl(slug)}/integrations`;
+}
+
 /** Console Integrations page (calendar / meeting-bot connect). */
 export const HQ_CONSOLE_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/integrations`;
 

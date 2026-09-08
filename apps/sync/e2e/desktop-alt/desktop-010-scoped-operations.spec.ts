@@ -42,11 +42,12 @@ describe('DESKTOP-010: scoped company operations', () => {
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
   const consoleLib = readRepoFile('src/desktop-alt/lib/hq-console.ts');
 
-  it('groups Activity, Deployments, Secrets, and Settings under one operations workspace', () => {
+  it('groups Activity, Deployments, Secrets, Integrations, and Settings under one operations workspace', () => {
     expect(COMPANY_OPERATIONS_SECTIONS.map((s) => s.id)).toEqual([
       'activity',
       'deployments',
       'secrets',
+      'integrations',
       'settings',
     ]);
     expect(ops).toContain('data-testid="company-operations-panel"');
@@ -139,6 +140,11 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('data-testid="operations-settings-members"');
     expect(consoleLib).toContain("return `${companyConsoleUrl(slug)}/settings`");
     expect(companyPage).toContain('void openExternal(companySettingsUrl(company.slug));');
+    // Integrations: the desktop never hosts an integrations UI — it opens the
+    // console's company Integrations page (the only place apps get connected).
+    expect(ops).toContain('companyIntegrationsUrl(slug)');
+    expect(ops).toContain('data-testid="operations-integrations"');
+    expect(ops).toContain('data-testid="operations-open-console-integrations"');
   });
 
   it('keeps secrets metadata-only with no reveal, copy-value, or credential fields', () => {

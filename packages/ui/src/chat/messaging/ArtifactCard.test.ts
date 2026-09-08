@@ -41,6 +41,71 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
+const MARKDOWN = [
+  "# Work Mesh Live — engineering handoff",
+  "",
+  "Rollout is complete on every surface.",
+  "",
+  "## Where things stand",
+  "",
+  "- **hq-pro production** deployed and quiet.",
+  "- Fleet daemons idle under 1 percent CPU.",
+  "",
+  "| Check | Expected |",
+  "| --- | --- |",
+  "| Session status | bound |",
+  "",
+  "line 14",
+  "line 15",
+  "line 16",
+  "line 17",
+  "line 18",
+  "TAIL — only in the pane",
+].join("\n");
+
+describe("ArtifactCard collapsed summary", () => {
+  it("shows a one-line plain-text summary with markdown syntax stripped", () => {
+    mountCard({ text: MARKDOWN });
+    const summary = host.querySelector<HTMLElement>(
+      "[data-testid='artifact-card-preview']",
+    );
+    expect(summary?.textContent).toBe("Rollout is complete on every surface.");
+    expect(summary?.textContent).not.toContain("#");
+    expect(summary?.textContent).not.toContain("**");
+    // The card is a handle — no preview body, no fade, no rendered blocks.
+    expect(host.querySelector(".artifact-card-fade")).toBeNull();
+    expect(host.querySelector("h2, ul, table, pre")).toBeNull();
+    expect(host.textContent).not.toContain("TAIL");
+  });
+
+  it("starts the summary after the title line for plain artifacts", () => {
+    mountCard({ text: LONG });
+    const summary =
+      host.querySelector("[data-testid='artifact-card-preview']")?.textContent ??
+      "";
+    expect(summary).toContain("The terms of service must say");
+    expect(summary).not.toContain("Legal page change request");
+    expect(summary).not.toContain("TAIL");
+  });
+
+  it("omits the summary line when the artifact is only a title", () => {
+    mountCard({ text: "# Just a heading" });
+    expect(host.querySelector("[data-testid='artifact-card-preview']")).toBeNull();
+    expect(
+      host.querySelector("[data-testid='artifact-card-title']")?.textContent,
+    ).toBe("Just a heading");
+  });
+
+  it("renders a kind-tinted mesh tile with an icon", () => {
+    mountCard({ text: LONG, kind: "prompt" });
+    expect(host.querySelector(".artifact-tile .artifact-tile-mesh")).not.toBeNull();
+    expect(host.querySelector(".artifact-tile svg")).not.toBeNull();
+    expect(
+      host.querySelector("[data-artifact-card='true']")?.getAttribute("data-kind"),
+    ).toBe("prompt");
+  });
+});
+
 describe("ArtifactCard chrome", () => {
   it("renders a title, a kind label and a size hint", () => {
     mountCard({ text: LONG });
@@ -55,24 +120,6 @@ describe("ArtifactCard chrome", () => {
       "";
     expect(size).toContain("7 lines");
     expect(size).toMatch(/chars/);
-  });
-
-  it("previews a few lines, faded — not hard-clamped with a bare ellipsis", () => {
-    mountCard({ text: LONG });
-    const preview =
-      host.querySelector("[data-testid='artifact-card-preview']")
-        ?.textContent ?? "";
-    expect(preview).toContain("Legal page change request");
-    expect(preview).not.toContain("…");
-    expect(preview).not.toContain("TAIL");
-    // A fade element stands in for the removed truncation marker.
-    expect(host.querySelector(".artifact-card-fade")).not.toBeNull();
-    expect(host.querySelector(".artifact-card.has-more")).not.toBeNull();
-  });
-
-  it("omits the fade when the whole artifact already fits", () => {
-    mountCard({ text: "one\ntwo" });
-    expect(host.querySelector(".artifact-card-fade")).toBeNull();
   });
 
   it("exposes an accessible button role plus an explicit Open control", () => {

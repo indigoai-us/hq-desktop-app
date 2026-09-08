@@ -1,18 +1,17 @@
 <script lang="ts">
   /**
-   * ArtifactCard — the compact card under a chat bubble for a long structured
-   * artifact (`hq dm --details` / `--prompt`, delegation + handoff cards).
+   * ArtifactCard — the collapsed tile under a chat bubble for a long
+   * structured artifact (`hq dm --details` / `--prompt`, delegation + handoff
+   * cards).
    *
-   * Replaces the old hard 180-char clamp that ended in a bare "…" with no way
-   * to read the rest: the preview fades and the whole card opens the FULL
-   * content in the host's right side pane (artifact mode).
-   *
-   * Desktop-alt chrome: 13px, hairline border, muted uppercase labels, one
-   * violet accent, ghost styling. Monospace is for the preview only.
+   * Deliberately small: a kind-tinted mesh tile with an icon, the title, a
+   * one-line plain-text summary, and the size. No preview body — the card is
+   * a handle; the host's right side pane (artifact mode) shows the FULL
+   * content. Copy / Open surface on hover and focus, and the whole card is a
+   * keyboard-reachable button.
    */
   import {
-    artifactHasMore,
-    artifactPreview,
+    artifactSummary,
     chatArtifact,
     type ArtifactKind,
     type ChatArtifact,
@@ -29,8 +28,7 @@
   let { text, eventId, kind = "prompt", onopen }: Props = $props();
 
   const artifact = $derived(chatArtifact({ text, eventId, kind }));
-  const preview = $derived(artifactPreview(text));
-  const hasMore = $derived(artifactHasMore(text));
+  const summary = $derived(artifactSummary(text, kind));
 
   let copied = $state(false);
   let copying = $state(false);
@@ -66,7 +64,6 @@
 
 <div
   class="artifact-card chat-shell"
-  class:has-more={hasMore}
   data-testid={kind === "details" ? "message-details" : "message-prompt"}
   data-artifact-card="true"
   data-kind={kind}
@@ -78,148 +75,249 @@
   onclick={open}
   onkeydown={onKeydown}
 >
-  <div class="artifact-card-head">
-    <span class="artifact-card-icon" aria-hidden="true">
-      <svg viewBox="0 0 12 12" width="12" height="12" focusable="false">
+  <span class="artifact-tile" aria-hidden="true">
+    <span class="artifact-tile-mesh"></span>
+    {#if kind === "prompt"}
+      <svg viewBox="0 0 16 16" width="16" height="16" focusable="false">
         <path
-          d="M2.5 1.5h4.2L9.5 4.3v6.2h-7z"
+          d="M3.5 4.75l3.5 3.25-3.5 3.25M8.5 11.25h4"
           fill="none"
           stroke="currentColor"
-          stroke-width="1"
+          stroke-width="1.5"
+          stroke-linecap="round"
           stroke-linejoin="round"
         />
-        <path d="M6.6 1.6v2.8h2.8" fill="none" stroke="currentColor" stroke-width="1" />
       </svg>
-    </span>
+    {:else}
+      <svg viewBox="0 0 16 16" width="16" height="16" focusable="false">
+        <path
+          d="M4 2h5.2L12.5 5.3V14H4z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.3"
+          stroke-linejoin="round"
+        />
+        <path d="M9.2 2.2v3.3h3.3" fill="none" stroke="currentColor" stroke-width="1.3" />
+        <path d="M6 8.25h4.5M6 10.75h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      </svg>
+    {/if}
+  </span>
+  <span class="artifact-copy">
     <span class="artifact-card-title" data-testid="artifact-card-title"
       >{artifact.title}</span
     >
-    <span class="artifact-card-kind" data-testid="artifact-card-kind"
-      >{artifact.kindLabel}</span
-    >
-    <span class="artifact-card-size" data-testid="artifact-card-size"
-      >{artifact.sizeLabel}</span
-    >
-    <span class="artifact-card-actions">
-      <button
-        type="button"
-        class="artifact-card-btn"
-        data-testid={kind === "details"
-          ? "message-details-copy"
-          : "message-prompt-copy"}
-        onclick={copy}
-        disabled={copying}
-        aria-label={copied
-          ? `${artifact.kindLabel} copied`
-          : `Copy ${artifact.kindLabel.toLowerCase()}`}
+    {#if summary}
+      <span class="artifact-card-summary" data-testid="artifact-card-preview"
+        >{summary}</span
       >
-        {copied ? "Copied!" : "Copy"}
-      </button>
-      <button
-        type="button"
-        class="artifact-card-btn artifact-card-open"
-        data-testid="artifact-card-open"
-        onclick={(e) => {
-          e.stopPropagation();
-          open();
-        }}
-        aria-label={`Open ${artifact.kindLabel.toLowerCase()} in side pane`}
-      >
-        Open
-      </button>
-    </span>
-  </div>
-  <div class="artifact-card-body">
-    <pre class="artifact-card-preview" data-testid="artifact-card-preview">{preview}</pre>
-    {#if hasMore}
-      <span class="artifact-card-fade" aria-hidden="true"></span>
     {/if}
-  </div>
+    <span class="artifact-card-meta">
+      <span class="artifact-card-kind" data-testid="artifact-card-kind"
+        >{artifact.kindLabel}</span
+      >
+      <span class="artifact-card-dot" aria-hidden="true">·</span>
+      <span class="artifact-card-size" data-testid="artifact-card-size"
+        >{artifact.sizeLabel}</span
+      >
+    </span>
+  </span>
+  <span class="artifact-card-actions">
+    <button
+      type="button"
+      class="artifact-card-btn"
+      data-testid={kind === "details"
+        ? "message-details-copy"
+        : "message-prompt-copy"}
+      onclick={copy}
+      disabled={copying}
+      aria-label={copied
+        ? `${artifact.kindLabel} copied`
+        : `Copy ${artifact.kindLabel.toLowerCase()}`}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+    <button
+      type="button"
+      class="artifact-card-btn artifact-card-open"
+      data-testid="artifact-card-open"
+      onclick={(e) => {
+        e.stopPropagation();
+        open();
+      }}
+      aria-label={`Open ${artifact.kindLabel.toLowerCase()} in side pane`}
+    >
+      Open
+    </button>
+  </span>
 </div>
 
 <style>
   .artifact-card {
+    /* Kind-tinted mesh. Details = violet/ice; prompt = ice/emerald. Hue
+       tokens are the shell's own accents so light + dark both hold. */
+    --mesh-a: var(--vio, #c084fc);
+    --mesh-b: #5b8def;
+    --mesh-c: #f472b6;
+    --mesh-base: #2a2340;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 2px;
-    padding: 8px 10px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: transparent;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: 520px;
+    box-sizing: border-box;
+    margin-top: 4px;
+    padding: 8px 10px 8px 8px;
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.07));
+    border-radius: 12px;
+    background: var(--elevated, #1e1e24);
     font-size: 13px;
     cursor: pointer;
     text-align: left;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease;
   }
 
-  .artifact-card:hover,
+  .artifact-card[data-kind="prompt"] {
+    --mesh-a: #7dd3fc;
+    --mesh-b: #34d399;
+    --mesh-c: #a78bfa;
+    --mesh-base: #1f2f3a;
+  }
+
+  .artifact-card:hover {
+    border-color: var(--line2, rgba(255, 255, 255, 0.12));
+  }
+
   .artifact-card:focus-visible {
     border-color: var(--vio-ink, #854dee);
     outline: none;
   }
 
-  .artifact-card-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
+  .artifact-card:active {
+    transform: scale(0.995);
   }
 
-  .artifact-card-icon {
-    display: inline-flex;
+  /* Mesh tile — layered soft radial gradients, subtly animated on hover. */
+  .artifact-tile {
+    position: relative;
+    display: inline-grid;
     flex: 0 0 auto;
-    color: var(--vio-ink, #854dee);
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    overflow: hidden;
+    border-radius: 9px;
+    background: var(--mesh-base);
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+
+  .artifact-tile-mesh {
+    position: absolute;
+    inset: -30%;
+    background:
+      radial-gradient(closest-side at 28% 26%, var(--mesh-a) 0%, transparent 100%),
+      radial-gradient(closest-side at 78% 34%, var(--mesh-b) 0%, transparent 100%),
+      radial-gradient(closest-side at 50% 88%, var(--mesh-c) 0%, transparent 100%);
+    opacity: 0.9;
+    filter: saturate(115%);
+    transition: transform 600ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .artifact-card:hover .artifact-tile-mesh {
+    transform: rotate(12deg) scale(1.08);
+  }
+
+  .artifact-tile svg {
+    position: relative;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+  }
+
+  .artifact-copy {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
   }
 
   .artifact-card-title {
-    flex: 0 1 auto;
-    min-width: 0;
     overflow: hidden;
     color: var(--t1, rgba(255, 255, 255, 0.95));
-    font-size: 13px;
+    font-size: 13.5px;
     font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .artifact-card-kind,
-  .artifact-card-size {
-    flex: 0 0 auto;
+  .artifact-card-summary {
+    overflow: hidden;
     color: var(--t2, rgba(255, 255, 255, 0.56));
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 12.5px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .artifact-card-size {
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: none;
+  .artifact-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    margin-top: 2px;
+    color: var(--t3, rgba(255, 255, 255, 0.32));
+    font-size: 11px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .artifact-card-kind {
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
   .artifact-card-actions {
     display: inline-flex;
     flex: 0 0 auto;
-    gap: 4px;
-    margin-left: auto;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .artifact-card:hover .artifact-card-actions,
+  .artifact-card:focus-within .artifact-card-actions {
+    opacity: 1;
   }
 
   .artifact-card-btn {
     appearance: none;
-    padding: 2px 7px;
+    padding: 3px 8px;
     border: 0;
-    border-radius: 5px;
+    border-radius: 6px;
     background: transparent;
     color: var(--t2, rgba(255, 255, 255, 0.56));
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 18px;
     cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
   }
 
   .artifact-card-btn:hover:not(:disabled) {
     background: var(--hover, rgba(255, 255, 255, 0.08));
     color: var(--t1, rgba(255, 255, 255, 0.95));
+  }
+
+  .artifact-card-btn:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .artifact-card-btn:disabled {
@@ -231,33 +329,14 @@
     color: var(--vio-ink, #854dee);
   }
 
-  /* Faded preview — never a hard cut with a bare ellipsis. */
-  .artifact-card-body {
-    position: relative;
-    overflow: hidden;
-  }
-
-  .artifact-card-preview {
-    margin: 0;
-    color: var(--t1, rgba(255, 255, 255, 0.88));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    line-height: 16px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  .artifact-card-fade {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    height: 28px;
-    background: linear-gradient(
-      to bottom,
-      transparent,
-      var(--bubble-bg, var(--bg, rgba(20, 20, 24, 0.96)))
-    );
-    pointer-events: none;
+  @media (prefers-reduced-motion: reduce) {
+    .artifact-tile-mesh,
+    .artifact-card,
+    .artifact-card-btn {
+      transition: none;
+    }
+    .artifact-card:hover .artifact-tile-mesh {
+      transform: none;
+    }
   }
 </style>

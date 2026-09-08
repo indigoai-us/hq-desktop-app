@@ -860,9 +860,28 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
             "67dee2de97f5e14d",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            "1033876e3ec2f43e",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            "838c2f33a5cf6d2a",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            "478e3736ac567ec3",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+        );
+        // The unrouted-overflow floor bump (hq-cloud#499): 6.16.24 SATISFIES
+        // `~6.16.23`, so every desktop holding a cached 6.16.23 would stay
+        // wedged forever on semver admission alone. The spec change is the fix.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
         );
         // The manifest-upload floor bump: 6.16.23 already SATISFIES `~6.16.11`,
         // so semver admission alone would have left every existing desktop on
@@ -870,6 +889,23 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+        );
+        // The root-`bin/` exclusion floor bump (hq-cloud#501): 6.16.25
+        // SATISFIES `~6.16.24`, so a desktop that already resolved 6.16.24
+        // would keep re-pulling the stray `bin/` forever on semver admission
+        // alone. Moving the requested spec is what delivers the exclusion.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+        );
+        // The area-collision heal floor bump (hq-cloud#502): 6.16.26 SATISFIES
+        // `~6.16.25`, so a desktop that already resolved 6.16.25 would stay on
+        // it — and 6.16.25 carries the wedge, because the overflow area that
+        // causes it shipped in 6.16.24. This is the one bump where semver
+        // admission alone leaves the user with a vault that cannot be opened.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
         );
     }
 

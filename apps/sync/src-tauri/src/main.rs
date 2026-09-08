@@ -630,6 +630,7 @@ fn main() {
             commands::install_stages::import_existing_setup,
             commands::install_stages::install_menubar_app,
             commands::install_stages::install_work_mesh,
+            commands::install_stages::ensure_work_mesh_daemon,
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,

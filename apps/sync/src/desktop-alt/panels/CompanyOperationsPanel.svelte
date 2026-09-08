@@ -3,17 +3,18 @@
    * CompanyOperationsPanel — DESKTOP-010 company-scoped operations workspace.
    *
    * Opened from the primary sidebar More child. Compact internal destinations
-   * (Activity · Deployments · Secrets · Settings) stay under the selected
-   * company; More remains the active sidebar child for all four. Does not
+   * (Activity · Deployments · Secrets · Integrations · Settings) stay under the
+   * selected company; More remains the active sidebar child for all of them. Does not
    * restore a permanent company secondary sidebar.
    *
    * Operational panels retain existing actions, loading/error/empty states,
    * direction/date behavior, deploy open workflow, and metadata-only secrets.
    * Settings opens the HQ console company settings surface (identity / sync /
-   * membership) — no in-app credential fields.
+   * membership) — no in-app credential fields. Integrations likewise opens the
+   * console's company Integrations page — apps are connected there, never here.
    */
   import { open as openExternal } from '@tauri-apps/plugin-shell';
-  import { companySettingsUrl } from '../lib/hq-console';
+  import { companyIntegrationsUrl, companySettingsUrl } from '../lib/hq-console';
   import {
     COMPANY_OPERATIONS_SECTIONS,
     type CompanyOperationsTab,
@@ -48,6 +49,8 @@
   );
   let settingsBusy = $state(false);
   let settingsError = $state<string | null>(null);
+  let integrationsBusy = $state(false);
+  let integrationsError = $state<string | null>(null);
 
   function selectDestination(id: CompanyOperationsTab): void {
     if (id === activeDestination) return;
@@ -65,6 +68,20 @@
       settingsError = 'Could not open company settings in the HQ console.';
     } finally {
       settingsBusy = false;
+    }
+  }
+
+  async function openCompanyIntegrations(): Promise<void> {
+    if (integrationsBusy) return;
+    integrationsBusy = true;
+    integrationsError = null;
+    try {
+      await openExternal(companyIntegrationsUrl(slug));
+    } catch (err) {
+      console.error('Open company integrations failed:', err);
+      integrationsError = 'Could not open Integrations in the HQ console.';
+    } finally {
+      integrationsBusy = false;
     }
   }
 
@@ -184,6 +201,48 @@
         <DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />
       {:else if activeDestination === 'secrets'}
         <SecretsPanel {slug} {cloudBacked} {syncEnabled} />
+      {:else if activeDestination === 'integrations'}
+        <section
+          class="ops-settings"
+          aria-labelledby="ops-integrations-title"
+          data-testid="operations-integrations"
+        >
+          <header class="ops-settings-header">
+            <div class="title-stack">
+              <h2 id="ops-integrations-title" class="ops-settings-title">Integrations</h2>
+              <span class="ops-settings-meta">
+                Connect apps like Slack, Notion, and Airtable in the HQ console
+              </span>
+            </div>
+            <div
+              class="ops-settings-actions detail-primary-actions primary-actions"
+              data-testid="operations-integrations-actions"
+            >
+              <button
+                type="button"
+                class="ops-settings-button"
+                data-testid="operations-open-console-integrations"
+                aria-label="Open company integrations in HQ console"
+                onclick={() => void openCompanyIntegrations()}
+                disabled={integrationsBusy}
+                aria-busy={integrationsBusy}
+              >
+                {integrationsBusy ? 'Opening…' : 'Open console'}
+              </button>
+            </div>
+          </header>
+
+          <p class="ops-settings-meta" data-testid="operations-integrations-copy">
+            Apps are connected and managed in the console, so agents can use them
+            everywhere HQ runs. This opens your company's Integrations page in your
+            browser.
+          </p>
+          {#if integrationsError}
+            <p class="ops-settings-error" role="alert" data-testid="operations-integrations-error">
+              {integrationsError}
+            </p>
+          {/if}
+        </section>
       {:else}
         <section
           class="ops-settings"

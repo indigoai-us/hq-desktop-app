@@ -2316,6 +2316,11 @@
     if (authenticated && !isOnboardingState(lifecycleState)) {
       void checkConsentReprompt();
     }
+    // Already-onboarded machines never re-enter the mesh onboarding stage, so
+    // ensure the Work Mesh Live daemon on SteadyState launch (fail-quiet).
+    if (lifecycleState === 'SteadyState') {
+      void invoke('ensure_work_mesh_daemon').catch(() => {});
+    }
   }
 
   /**

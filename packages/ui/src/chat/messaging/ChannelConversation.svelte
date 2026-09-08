@@ -1722,7 +1722,7 @@
     width: 100%;
     max-width: none;
     margin-top: 0;
-    padding: var(--msg-row-pad-y, 1px) 8px;
+    padding: var(--msg-row-pad-y, 3px) 8px;
     border-radius: 6px;
   }
 
@@ -1732,8 +1732,8 @@
   }
 
   .dm-msg-group-start {
-    margin-top: var(--msg-group-gap, 8px);
-    padding-top: 2px;
+    margin-top: var(--msg-group-gap, 12px);
+    padding-top: 3px;
   }
 
   .date-separator + .dm-msg {
@@ -1779,7 +1779,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
-    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
     min-width: 0;
   }
 
@@ -1787,8 +1787,10 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 14px;
+    /* 600 is the heaviest Geist face the shell ships; asking for 700 only
+       rounds down (or synthesizes a smeared bold on fallback fonts). */
+    font-weight: 600;
     line-height: var(--msg-author-line-height, 1.3);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1871,10 +1873,11 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Match the sidebar row size (13px) — 15px made timeline text visibly
-       larger than the rest of the shell. */
-    font-size: 13px;
-    line-height: 1.5;
+    /* Reading size. The shell chrome stays 13px; the timeline is prose and
+       sits one step up (14px) with a slightly looser leading so the light
+       weight on a dark ground reads crisp rather than heavy. */
+    font-size: 14px;
+    line-height: 1.55;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -1914,7 +1917,7 @@
   .dm-bubble-body :global(h6) {
     margin: 1rem 0 0.4rem;
     color: var(--message-markdown-text);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1.18;
     letter-spacing: -0.02em;
   }
@@ -1986,7 +1989,7 @@
 
   .dm-bubble-body :global(strong) {
     color: var(--message-markdown-text);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .dm-bubble-body :global(del) {
@@ -2092,7 +2095,7 @@
 
   .dm-bubble-body :global(th) {
     color: var(--message-markdown-text);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .dm-bubble-body :global(.markdown-align-center) {
@@ -2298,7 +2301,7 @@
     word-wrap: break-word;
     overflow: hidden;
     color: transparent;
-    font: 400 13px/1.5 var(--font-ui);
+    font: 400 14px/1.5 var(--font-ui);
   }
 
   .composer-mention {
@@ -2317,7 +2320,7 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.5 var(--font-ui);
+    font: 400 14px/1.5 var(--font-ui);
     caret-color: var(--t1, #f4f4f5);
   }
 

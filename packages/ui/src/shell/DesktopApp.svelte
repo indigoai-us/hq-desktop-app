@@ -77,7 +77,6 @@
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import TeamTab from "../chat/tabs/TeamTab.svelte";
-  import IntegrationsTab from "../chat/tabs/IntegrationsTab.svelte";
   import SettingsTab from "../chat/tabs/SettingsTab.svelte";
   import AtlasTab from "../chat/tabs/AtlasTab.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
@@ -4446,16 +4445,6 @@
                 }}
                 onaction={handleTeamAction}
               />
-            {:else if companyTab === "integrations"}
-              <IntegrationsTab
-                data={companyTabData ?? {
-                  tab: "integrations",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
             {:else if companyTab === "atlas"}
               <AtlasTab
                 graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
@@ -4590,6 +4579,7 @@
                   <ArtifactPanel
                     artifact={openArtifactView}
                     onclose={closeArtifact}
+                    {onopenurl}
                   />
                 </div>
               {:else if openAgentMember}

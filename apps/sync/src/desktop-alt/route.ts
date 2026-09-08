@@ -53,10 +53,16 @@ export type CompanyTab =
   | 'activity'
   | 'deployments'
   | 'secrets'
+  | 'integrations'
   | 'settings';
 
 /** Internal destinations of the company-scoped operations workspace (DESKTOP-010). */
-export type CompanyOperationsTab = 'activity' | 'deployments' | 'secrets' | 'settings';
+export type CompanyOperationsTab =
+  | 'activity'
+  | 'deployments'
+  | 'secrets'
+  | 'integrations'
+  | 'settings';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
 export const DEFAULT_COMPANY_OPERATIONS_TAB: CompanyOperationsTab = 'activity';
@@ -96,7 +102,13 @@ export function normalizeCompanyTab(value: string | undefined | null): CompanyTa
 export function isCompanyOperationsTab(
   tab: CompanyTab | undefined | null,
 ): tab is CompanyOperationsTab {
-  return tab === 'activity' || tab === 'deployments' || tab === 'secrets' || tab === 'settings';
+  return (
+    tab === 'activity' ||
+    tab === 'deployments' ||
+    tab === 'secrets' ||
+    tab === 'integrations' ||
+    tab === 'settings'
+  );
 }
 
 /**
@@ -120,6 +132,7 @@ export function companyPrimarySectionForTab(
     case 'activity':
     case 'deployments':
     case 'secrets':
+    case 'integrations':
     case 'settings':
       return 'more';
     default:
@@ -205,6 +218,7 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
+  { id: 'integrations', label: 'Integrations' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -221,6 +235,7 @@ export const COMPANY_OPERATIONS_SECTIONS: ReadonlyArray<{
   { id: 'activity', label: 'Activity', meta: 'Events and edits' },
   { id: 'deployments', label: 'Deployments', meta: 'Artifacts and services' },
   { id: 'secrets', label: 'Secrets', meta: 'Metadata only' },
+  { id: 'integrations', label: 'Integrations', meta: 'Connect apps in the console' },
   { id: 'settings', label: 'Settings', meta: 'Console workflows' },
 ];
 

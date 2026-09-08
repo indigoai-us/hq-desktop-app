@@ -11,7 +11,11 @@ const LONG = `${"Paragraph one.\n\n"}${"word ".repeat(400)}\n\nTAIL LINE`;
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-function mountPanel(text = LONG, onclose = vi.fn()) {
+function mountPanel(
+  text = LONG,
+  onclose = vi.fn(),
+  onopenurl?: (url: string) => void,
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(ArtifactPanel, {
@@ -19,6 +23,7 @@ function mountPanel(text = LONG, onclose = vi.fn()) {
     props: {
       artifact: chatArtifact({ text, eventId: "evt-1", kind: "details" }),
       onclose,
+      onopenurl,
     },
   });
   flushSync();
@@ -30,6 +35,77 @@ afterEach(async () => {
   component = null;
   host?.remove();
   vi.clearAllMocks();
+});
+
+const MARKDOWN = [
+  "# Handoff",
+  "",
+  "Paragraph with `code` and **bold**.",
+  "",
+  "1. first",
+  "2. second",
+  "",
+  "```sh",
+  "hq mesh session status",
+  "```",
+  "",
+  "TAIL LINE",
+].join("\n");
+
+describe("ArtifactPanel markdown", () => {
+  it("renders a markdown artifact as a full document", () => {
+    mountPanel(MARKDOWN);
+    const body = host.querySelector<HTMLElement>(
+      "[data-testid='artifact-panel-content']",
+    );
+    expect(body?.tagName).toBe("ARTICLE");
+    expect(body?.getAttribute("data-render")).toBe("markdown");
+    expect(body?.classList.contains("artifact-md")).toBe(true);
+    expect(body?.querySelector("h1")?.textContent).toBe("Handoff");
+    expect(body?.querySelectorAll("ol li").length).toBe(2);
+    expect(body?.querySelector("pre code")?.textContent).toContain(
+      "hq mesh session status",
+    );
+    expect(body?.querySelector("strong")?.textContent).toBe("bold");
+    expect(body?.textContent).toContain("TAIL LINE");
+    expect(body?.textContent).not.toContain("**");
+  });
+
+  it("copies the raw markdown source, not the rendered text", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mountPanel(MARKDOWN);
+    host
+      .querySelector<HTMLElement>("[data-testid='artifact-panel-copy']")
+      ?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith(MARKDOWN);
+  });
+
+  it("routes markdown links through the host opener instead of navigating", () => {
+    const onopenurl = vi.fn();
+    mountPanel("# Doc\n\nSee [the runbook](https://example.test/runbook).", vi.fn(), onopenurl);
+    const a = host.querySelector<HTMLAnchorElement>(
+      "[data-testid='artifact-panel-content'] a",
+    );
+    expect(a?.getAttribute("href")).toBe("https://example.test/runbook");
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    a?.dispatchEvent(ev);
+    expect(onopenurl).toHaveBeenCalledWith("https://example.test/runbook");
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("skips the markdown pass for oversized dumps", () => {
+    mountPanel(`# Big\n\n${"- line\n".repeat(40_000)}`);
+    expect(
+      host.querySelector("[data-testid='artifact-panel-content']")
+        ?.getAttribute("data-render"),
+    ).toBe("plain");
+  });
 });
 
 describe("ArtifactPanel body", () => {

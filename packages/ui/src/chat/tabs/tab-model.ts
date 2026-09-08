@@ -1,7 +1,7 @@
 /**
  * Company-channel tab models (US-015).
  *
- * Chat is the feed. Atlas / Team / Integrations / Settings swap the feed
+ * Chat is the feed. Atlas / Team / Settings swap the feed
  * for current-state rows returned by GET /v1/companies/{uid}/tabs/{tab}.
  */
 
@@ -16,7 +16,8 @@ export const COMPANY_CHANNEL_TABS = [
   { id: "chat", label: "Chat" },
   { id: "atlas", label: "Atlas" },
   { id: "team", label: "Team" },
-  { id: "integrations", label: "Integrations" },
+  // Integrations deliberately has no desktop tab: apps are connected in the
+  // HQ console (companies/{slug}/integrations), never inside the desktop app.
   { id: "settings", label: "Settings" },
 ] as const;
 

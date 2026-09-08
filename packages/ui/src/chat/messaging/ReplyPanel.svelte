@@ -1250,8 +1250,8 @@
 
   .reply-root-author,
   .reply-author {
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 14px;
+    font-weight: 600;
     line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
   }
@@ -1315,9 +1315,9 @@
     --message-markdown-muted: var(--t3, #a0a0a0);
     min-width: 0;
     margin: 0;
-    /* Match the sidebar/timeline 13px text size. */
-    font-size: 13px;
-    line-height: 1.5;
+    /* Match the timeline reading size. */
+    font-size: 14px;
+    line-height: 1.55;
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }
@@ -1474,7 +1474,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
-    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
     min-width: 0;
   }
 
@@ -1561,7 +1561,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.45 var(--font-ui, inherit);
+    font: 400 14px/1.5 var(--font-ui, inherit);
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

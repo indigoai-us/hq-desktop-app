@@ -35,6 +35,20 @@ describe("isMeshCacheReady", () => {
       false,
     );
   });
+
+  it("is not ready when the host reports the daemon is not installed", () => {
+    // Old pack cache can exist on machines onboarded before mesh daemon install.
+    expect(isMeshCacheReady({ ...readyDisk, daemonInstalled: false })).toBe(
+      false,
+    );
+  });
+
+  it("keeps backward compatibility when daemonInstalled is absent", () => {
+    expect(isMeshCacheReady(readyDisk)).toBe(true);
+    expect(isMeshCacheReady({ ...readyDisk, daemonInstalled: true })).toBe(
+      true,
+    );
+  });
 });
 
 describe("evaluateMeshSetup", () => {
@@ -53,6 +67,16 @@ describe("evaluateMeshSetup", () => {
       ready: true,
       reason: "ready",
     });
+  });
+
+  it("gates when the pack cache exists but the daemon is not installed", () => {
+    const verdict = evaluateMeshSetup(
+      { ...readyDisk, daemonInstalled: false },
+      live,
+    );
+    expect(verdict.needed).toBe(true);
+    expect(verdict.ready).toBe(false);
+    expect(verdict.reason).toBe("not-installed");
   });
 
   it("FORCE_SETUP mocks a missing cache even when disk is ready", () => {

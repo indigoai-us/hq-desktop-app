@@ -1,6 +1,7 @@
 <script lang="ts">
   /**
-   * Company channel header tabs (US-015): Chat · Atlas · Team · Integrations · Settings.
+   * Company channel header tabs (US-015): Chat · Atlas · Team · Settings.
+   * (Integrations was removed — apps are connected in the HQ console.)
    */
   import {
     COMPANY_CHANNEL_TABS,

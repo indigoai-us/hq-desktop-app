@@ -23,6 +23,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'activity',
       'deployments',
       'secrets',
+      'integrations',
       'settings',
     ]);
     expect(ids).not.toContain('accounts');
