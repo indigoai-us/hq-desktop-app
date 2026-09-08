@@ -134,6 +134,7 @@ describe('US-002 V4 desktop routes', () => {
       'activity',
       'deployments',
       'secrets',
+      'integrations',
       'settings',
     ]);
     expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'accounts')).toBe(false);
