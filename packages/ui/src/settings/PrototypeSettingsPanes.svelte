@@ -57,6 +57,8 @@
   } from "./live-sync-status.js";
   import {
     APPEARANCE_CHANGE_EVENT,
+    MAX_SLIDER_WINDOW_OPACITY,
+    MIN_SLIDER_WINDOW_OPACITY,
     type ColorTheme,
   } from "./appearance-seam.js";
   import {
@@ -1111,7 +1113,7 @@
     {#if canTray}
       <div class="set-row">
         <div><div class="sn">Window opacity</div><div class="sd">Visual treatment for this embedded Work view</div></div>
-        <div class="range-wrap"><input type="range" min="50" max="100" value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
+        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">

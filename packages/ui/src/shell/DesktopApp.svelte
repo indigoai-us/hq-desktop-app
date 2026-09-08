@@ -154,6 +154,7 @@
     applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
+    hasAppearanceHost,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
@@ -3760,6 +3761,10 @@
       keys: "Mod+/",
       label: "Keyboard shortcuts",
       group: "General",
+      // The composer holds focus for most of a session; the cheat sheet is
+      // exactly what someone reaches for while typing, so it must not be
+      // gated behind blurring the input first.
+      allowInInput: true,
       run: () => {
         paletteOpen = false;
         cheatSheetOpen = !cheatSheetOpen;
@@ -3885,7 +3890,11 @@
     applyColorTheme(readStoredTheme());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
-    applyWindowOpacity(prefs.windowOpacity);
+    // With the desktop appearance host installed, its persisted preference is
+    // already live; re-applying the local pref would round-trip a stale copy
+    // through the host and clobber the user's theme. Same guard as
+    // PrototypeSettingsPanes' onMount.
+    if (!hasAppearanceHost()) applyWindowOpacity(prefs.windowOpacity);
     const overlayQuery = window.matchMedia(
       `(max-width: ${REPLY_OVERLAY_MAX_PX}px)`,
     );
@@ -4017,10 +4026,15 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- `data-shell-focus-fallback` + tabindex="-1": stable focus destination for
+     modals whose trigger unmounted while the modal was open (policy
+     indigo-app-wide-modal-focus-return-survives-trigger-unmount). -->
 <div
   class="desktop-shell chat-shell"
   class:has-window-controls={hasWindowControls}
   data-testid="desktop-shell"
+  data-shell-focus-fallback
+  tabindex="-1"
   onclick={onShellLinkEvent}
   onauxclick={onShellLinkEvent}
   oncontextmenu={onShellLinkEvent}

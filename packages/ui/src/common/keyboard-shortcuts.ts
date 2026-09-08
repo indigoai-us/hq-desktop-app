@@ -14,6 +14,13 @@
 
 import { isMac } from "./platform";
 
+/**
+ * Selector for a focusable shell-level element that outlives every modal
+ * trigger. Modals restore focus here when their opener has unmounted (policy
+ * `indigo-app-wide-modal-focus-return-survives-trigger-unmount`).
+ */
+export const SHELL_FOCUS_FALLBACK = "[data-shell-focus-fallback]";
+
 export interface ShortcutBinding {
   /** Stable id, e.g. "conversation.next". Also the native-menu payload id. */
   id: string;
@@ -115,13 +122,25 @@ function resolvedModifiers(
   };
 }
 
-/** Key name derived from the event, preferring `code` for punctuation. */
-function eventKeyName(event: KeyboardEvent): string {
+/**
+ * Every key name this event could stand for, in preference order.
+ *
+ * `code` names the PHYSICAL key, so on a US layout ⌘⇧] is `BracketRight`. On a
+ * German layout that same physical key is `+`, and the key actually labelled
+ * `]` reports `code: "Digit9"` with `key: "]"`. Matching on `code` alone made
+ * the shortcut fire from the wrong (unlabelled) key there and left the labelled
+ * one dead, so we accept EITHER: `code` keeps WebKit's shifted-bracket and
+ * Alt+digit cases working, `key` keeps non-US layouts reachable by label.
+ */
+export function eventKeyNames(event: KeyboardEvent): string[] {
+  const names: string[] = [];
   const fromCode = event.code ? CODE_TO_KEY[event.code] : undefined;
-  if (fromCode) return fromCode;
+  if (fromCode) names.push(fromCode);
   // Digit1..Digit9 keep working with Shift/Alt held (e.g. Alt+3 → "£").
-  if (event.code && /^Digit\d$/.test(event.code)) return event.code.slice(5);
-  return normalizeKeyName(event.key ?? "");
+  if (event.code && /^Digit\d$/.test(event.code)) names.push(event.code.slice(5));
+  const raw = normalizeKeyName(event.key ?? "");
+  if (raw && !names.includes(raw)) names.push(raw);
+  return names;
 }
 
 /** True when `event` matches the binding's key + exact modifier set. */
@@ -140,7 +159,7 @@ export function matchesShortcut(
     Boolean(event.shiftKey) !== want.shift
   )
     return false;
-  if (eventKeyName(event) === parsed.key) return true;
+  if (eventKeyNames(event).includes(parsed.key)) return true;
   // WebKit may report "{" / "}" for shifted brackets; `code` already covers
   // that above, but fall back to the raw key for synthetic events.
   const raw = normalizeKeyName(event.key ?? "");
@@ -208,6 +227,10 @@ function allBindings(): ShortcutBinding[] {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.defaultPrevented) return;
+  // Mid-IME composition: every keystroke belongs to the input method, and
+  // `key`/`code` describe the raw key rather than the user's intent. WebKit
+  // also reports keyCode 229 for composition keys on older paths.
+  if (event.isComposing || event.keyCode === 229) return;
   const editable = isEditableTarget(event.target ?? null);
   // Later registrations win so a modal can shadow a shell binding.
   for (let g = registrations.length - 1; g >= 0; g -= 1) {

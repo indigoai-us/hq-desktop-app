@@ -1599,13 +1599,59 @@ fn shortcut_id_for_menu_item(menu_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Windows that mount the shell and therefore register the shortcut bindings.
+///
+/// The popover (`main`) and the standalone Messages window both run the same
+/// `@hq/ui` registry as the desktop window, so any of the three is a valid
+/// destination for a View-menu accelerator.
+#[cfg(target_os = "macos")]
+const SHORTCUT_TARGET_LABELS: &[&str] = &[
+    crate::commands::desktop_alt::WINDOW_LABEL,
+    "main",
+    "messages",
+];
+
+/// Which window should run a View-menu accelerator.
+///
+/// macOS menu accelerators are APP-wide: AppKit swallows ⌘N / ⌘/ / ⌘⇧[ ]
+/// wherever the user is and hands them to the menu, so emitting unconditionally
+/// to `desktop-alt` ran the command in a window the user was not looking at —
+/// or nowhere at all when desktop-alt was closed. Prefer the focused window
+/// when it is a shell window; otherwise fall back to desktop-alt (a focused
+/// non-shell window, e.g. recovery, has no binding of its own).
+///
+/// Returns `None` when no shell window exists, so the caller can log rather
+/// than emit into the void.
+#[cfg(target_os = "macos")]
+fn pick_shortcut_target(focused: Option<&str>, open: &[String]) -> Option<String> {
+    let is_open = |label: &str| open.iter().any(|l| l == label);
+    if let Some(label) = focused {
+        if SHORTCUT_TARGET_LABELS.contains(&label) && is_open(label) {
+            return Some(label.to_string());
+        }
+    }
+    SHORTCUT_TARGET_LABELS
+        .iter()
+        .find(|label| is_open(label))
+        .map(|label| (*label).to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
-    if let Err(e) = app.emit_to(
-        crate::commands::desktop_alt::WINDOW_LABEL,
-        EVENT_SHORTCUT_INVOKE,
-        ShortcutInvokePayload { id },
-    ) {
+    let windows = app.webview_windows();
+    let open: Vec<String> = windows.keys().cloned().collect();
+    let focused = windows
+        .iter()
+        .find(|(_, window)| window.is_focused().unwrap_or(false))
+        .map(|(label, _)| label.clone());
+    let Some(target) = pick_shortcut_target(focused.as_deref(), &open) else {
+        log(
+            "updater",
+            &format!("shortcut:invoke dropped ({id}): no shell window open"),
+        );
+        return;
+    };
+    if let Err(e) = app.emit_to(&target, EVENT_SHORTCUT_INVOKE, ShortcutInvokePayload { id }) {
         log("updater", &format!("shortcut:invoke emit failed ({id}): {e}"));
     }
 }
@@ -1804,6 +1850,57 @@ mod tests {
             detected_at: detected_at.to_string(),
             waiting_for_idle_secs: None,
         }
+    }
+
+    /// Regression: macOS View-menu accelerators are APP-wide, so AppKit hands
+    /// ⌘N / ⌘/ / ⌘⇧[ ] to the menu no matter which window has focus. Emitting
+    /// unconditionally to `desktop-alt` ran them in a window the user was not
+    /// looking at — or nowhere at all when desktop-alt was closed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shortcut_target_follows_the_focused_shell_window() {
+        let labels = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = labels(&["desktop-alt", "main", "messages"]);
+
+        // Focus wins over the desktop-alt default.
+        assert_eq!(
+            pick_shortcut_target(Some("messages"), &all).as_deref(),
+            Some("messages")
+        );
+        assert_eq!(
+            pick_shortcut_target(Some("main"), &all).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            pick_shortcut_target(Some("desktop-alt"), &all).as_deref(),
+            Some("desktop-alt")
+        );
+
+        // A focused non-shell window has no bindings; fall back to desktop-alt.
+        assert_eq!(
+            pick_shortcut_target(Some("recovery"), &all).as_deref(),
+            Some("desktop-alt")
+        );
+        assert_eq!(pick_shortcut_target(None, &all).as_deref(), Some("desktop-alt"));
+
+        // desktop-alt closed: never emit into the void when another shell
+        // window is open and focused.
+        let no_alt = labels(&["main", "messages"]);
+        assert_eq!(
+            pick_shortcut_target(Some("main"), &no_alt).as_deref(),
+            Some("main")
+        );
+        assert_eq!(pick_shortcut_target(None, &no_alt).as_deref(), Some("main"));
+
+        // A focused shell window that is somehow not open is not a target.
+        assert_eq!(
+            pick_shortcut_target(Some("desktop-alt"), &no_alt).as_deref(),
+            Some("main")
+        );
+
+        // No shell window at all → the caller logs instead of emitting.
+        assert_eq!(pick_shortcut_target(Some("recovery"), &labels(&["recovery"])), None);
+        assert_eq!(pick_shortcut_target(None, &[]), None);
     }
 
     #[test]

@@ -826,6 +826,10 @@ describe("PrototypeSettingsPanes window opacity", () => {
 
   it("dispatches the inverse transparency to the host when the slider moves", async () => {
     rootEl().dataset.windowTransparency = "35";
+    // The host applies the request detail RAW — a partial payload would make
+    // its normalizeColorTheme(undefined) === "system" delete data-force-theme
+    // and drop the user's forced Light. So the detail must be complete.
+    rootEl().dataset.forceTheme = "light";
     const requests: unknown[] = [];
     const onRequest = (event: Event) =>
       requests.push((event as CustomEvent).detail);
@@ -836,10 +840,13 @@ describe("PrototypeSettingsPanes window opacity", () => {
       slider.value = "80";
       slider.dispatchEvent(new Event("input", { bubbles: true }));
       await tick();
-      expect(requests).toEqual([{ windowTransparency: 20 }]);
+      expect(requests).toEqual([
+        { colorTheme: "light", windowTransparency: 20 },
+      ]);
       expect(host.querySelector(".range-val")?.textContent).toBe("80%");
     } finally {
       window.removeEventListener("hq:appearance-request", onRequest);
+      delete rootEl().dataset.forceTheme;
     }
   });
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    SHELL_FOCUS_FALLBACK,
     formatShortcut,
     listShortcuts,
     type ShortcutBinding,
@@ -10,9 +11,20 @@
     onclose: () => void;
     /** Override for tests; defaults to the live registry. */
     bindings?: ShortcutBinding[] | null;
+    /**
+     * Stable selector for where focus should land on close when the element
+     * that opened the sheet is gone (policy
+     * `indigo-app-wide-modal-focus-return-survives-trigger-unmount`). The
+     * shell-level fallback below is tried last.
+     */
+    returnFocusSelector?: string | null;
   }
 
-  let { onclose, bindings = null }: Props = $props();
+  let {
+    onclose,
+    bindings = null,
+    returnFocusSelector = null,
+  }: Props = $props();
 
   interface CheatSheetGroup {
     group: string;
@@ -32,9 +44,117 @@
   })();
 
   let panelEl = $state<HTMLDivElement | null>(null);
+  let backdropEl = $state<HTMLDivElement | null>(null);
+
+  const FOCUSABLE = [
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",");
+
+  /** Tab-order elements inside the panel, panel itself as the last resort. */
+  function focusables(): HTMLElement[] {
+    if (!panelEl) return [];
+    return [...panelEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+      (el) => !el.hasAttribute("hidden") && el.getAttribute("aria-hidden") !== "true",
+    );
+  }
+
+  /**
+   * Keep Tab inside the sheet. `aria-modal` alone does not constrain Tab in
+   * any engine we ship on, so without this the next Tab walks the (visually
+   * covered) app behind the dialog.
+   */
+  function trapTab(event: KeyboardEvent): void {
+    if (event.key !== "Tab") return;
+    const items = focusables();
+    if (items.length === 0) {
+      // Nothing tabbable: hold focus on the panel rather than leaking out.
+      event.preventDefault();
+      panelEl?.focus();
+      return;
+    }
+    const first = items[0]!;
+    const last = items[items.length - 1]!;
+    const active = document.activeElement as HTMLElement | null;
+    if (event.shiftKey && (active === first || active === panelEl)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    } else if (active && !panelEl?.contains(active)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  /**
+   * Hide everything that is not the dialog from AT and from tab order.
+   *
+   * Walks from the backdrop up to <body>, marking each ancestor's siblings
+   * inert. That keeps the dialog's own subtree live without needing a portal.
+   */
+  function inertBackground(): () => void {
+    const root = backdropEl;
+    if (!root || typeof document === "undefined") return () => {};
+    const touched: HTMLElement[] = [];
+    let node: HTMLElement | null = root;
+    while (node && node.parentElement) {
+      const parent: HTMLElement = node.parentElement;
+      for (const sibling of [...parent.children]) {
+        if (sibling === node) continue;
+        if (!(sibling instanceof HTMLElement)) continue;
+        if (sibling.hasAttribute("inert")) continue;
+        sibling.setAttribute("inert", "");
+        sibling.setAttribute("aria-hidden", "true");
+        touched.push(sibling);
+      }
+      if (parent === document.body) break;
+      node = parent;
+    }
+    return () => {
+      for (const el of touched) {
+        el.removeAttribute("inert");
+        el.removeAttribute("aria-hidden");
+      }
+    };
+  }
+
+  /**
+   * Restore focus to the first still-connected candidate: the element that had
+   * focus when the sheet opened, then the caller's stable selector, then the
+   * shell fallback. The opener can unmount while the sheet is up (switching
+   * views, a rail row disappearing), so a single retained node is not enough.
+   */
+  function restoreFocus(opener: HTMLElement | null): void {
+    if (typeof document === "undefined") return;
+    const candidates: Array<HTMLElement | null> = [opener];
+    if (returnFocusSelector) {
+      candidates.push(document.querySelector<HTMLElement>(returnFocusSelector));
+    }
+    candidates.push(document.querySelector<HTMLElement>(SHELL_FOCUS_FALLBACK));
+    for (const candidate of candidates) {
+      if (!candidate || !candidate.isConnected) continue;
+      candidate.focus();
+      if (document.activeElement === candidate) return;
+    }
+  }
 
   onMount(() => {
+    const opener =
+      typeof document === "undefined"
+        ? null
+        : (document.activeElement as HTMLElement | null);
+    const releaseInert = inertBackground();
     panelEl?.focus();
+    return () => {
+      releaseInert();
+      restoreFocus(opener);
+    };
   });
 </script>
 
@@ -43,6 +163,7 @@
 <div
   class="cheat-backdrop"
   data-testid="shortcut-cheat-sheet"
+  bind:this={backdropEl}
   onclick={(e) => {
     if (e.target === e.currentTarget) onclose();
   }}
@@ -58,7 +179,9 @@
       if (e.key === "Escape") {
         e.preventDefault();
         onclose();
+        return;
       }
+      trapTab(e);
     }}
   >
     <div class="cheat-head">

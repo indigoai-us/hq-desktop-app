@@ -182,6 +182,84 @@ describe("registerShortcuts", () => {
   });
 });
 
+describe("non-US keyboard layouts", () => {
+  // German QWERTZ: the key labelled `]` is AltGr+9 — it reports
+  // `code: "Digit9"` with `key: "]"`. The physical US-`]` position
+  // (`code: "BracketRight"`) is `+` there. Matching on `code` ALONE fired the
+  // shortcut from the unlabelled `+` key and left the labelled `]` dead.
+  it("matches the key the user's layout actually labels", () => {
+    const germanBracket = new KeyboardEvent("keydown", {
+      key: "]",
+      code: "Digit9",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(matchesShortcut("Mod+Shift+]", germanBracket, true)).toBe(true);
+
+    const germanBracketLeft = new KeyboardEvent("keydown", {
+      key: "[",
+      code: "Digit8",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(matchesShortcut("Mod+Shift+[", germanBracketLeft, true)).toBe(true);
+
+    const germanSlash = new KeyboardEvent("keydown", {
+      key: "/",
+      code: "Digit7",
+      metaKey: true,
+    });
+    expect(matchesShortcut("Mod+/", germanSlash, true)).toBe(true);
+  });
+
+  it("still matches the US physical position via code", () => {
+    const usBracket = new KeyboardEvent("keydown", {
+      // WebKit reports the shifted glyph in `key`; `code` carries the truth.
+      key: "}",
+      code: "BracketRight",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(matchesShortcut("Mod+Shift+]", usBracket, true)).toBe(true);
+  });
+
+  it("does not match an unrelated key that merely shares a code family", () => {
+    const digit = new KeyboardEvent("keydown", {
+      key: "9",
+      code: "Digit9",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(matchesShortcut("Mod+Shift+]", digit, true)).toBe(false);
+  });
+});
+
+describe("IME composition", () => {
+  // Mid-composition every keystroke belongs to the input method; `key`/`code`
+  // describe the raw key, so a shortcut would steal it from the IME.
+  it("ignores keydown while composing", () => {
+    const run = vi.fn();
+    register([
+      { id: "palette", keys: "Mod+K", label: "P", group: "g", run },
+    ]);
+    const composing = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "k",
+      metaKey: isMacHere(),
+      ctrlKey: !isMacHere(),
+      isComposing: true,
+    });
+    window.dispatchEvent(composing);
+    expect(run).not.toHaveBeenCalled();
+    expect(composing.defaultPrevented).toBe(false);
+
+    // Same keystroke, composition finished → the binding runs.
+    fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("formatShortcut", () => {
   it("renders mac glyphs in the canonical order", () => {
     expect(formatShortcut("Mod+Shift+]", true)).toBe("⌘⇧]");

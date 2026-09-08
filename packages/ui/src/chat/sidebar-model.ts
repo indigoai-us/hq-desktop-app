@@ -1291,13 +1291,6 @@ export function nextScope(
 }
 
 /**
- * Resolve a scope hotkey:
- *  - Cmd+0 → all
- *  - Cmd+1..Cmd+5 → company at index 0..4
- *  - Cmd+P → personal
- * Returns null when the key does not match.
- */
-/**
  * Rail rows in DISPLAY order — pinned, then each day section, then the
  * collapsed "Last week" rows only when that group is expanded. Feeds the
  * next/previous conversation shortcuts so ⌘⇧] walks the list the user sees.
