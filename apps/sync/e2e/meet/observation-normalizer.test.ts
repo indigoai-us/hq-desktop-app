@@ -5,7 +5,7 @@ import { hashHostIdentity } from './host-collector';
 const clock = { offsetMs: 100, uncertaintyMs: 2 };
 const emissions = [{ atMs: 0, sequence: 0 }, { atMs: 500, sequence: 1 }, { atMs: 1000, sequence: 2 }];
 const observation = (atMs: number, sequence: number | null) => ({ atMs,
-  audioMarker: sequence === null ? null : { sequenceModulo16: sequence },
+  audioMarker: sequence === null ? null : { sequence },
   videoMarker: sequence === null ? null : { sequence } });
 describe('raw observation normalization (unit regressions)', () => {
   it('intersects measured request windows and rejects drift or poor uncertainty', () => {
@@ -25,9 +25,10 @@ describe('raw observation normalization (unit regressions)', () => {
       observations: [observation(20,0), ...[520,1020,1520,2021].map(t => observation(t,null))] });
     expect(samples.at(-1)?.audioGapMs).toBe(2001);
   });
-  it('rejects ambiguous modulo markers, absent emission proof and collection holes', () => {
-    expect(() => normalizeMarkers({ emissions: [...emissions,{ atMs: 8000, sequence: 16 }], sourceClock: clock, receiverClock: clock,
-      observations: [observation(9000,0)] })).toThrow('ambiguous');
+  it('normalizes the first full sequence after ten seconds setup and rejects missing proof or holes', () => {
+    expect(normalizeMarkers({ emissions: Array.from({length:21},(_,sequence)=>({atMs:sequence*500,sequence})), sourceClock: clock, receiverClock: clock,
+      observations: [observation(10100,20)] })[0].audioDelayMs).toBe(100);
+    expect(() => normalizeMarkers({ emissions, sourceClock: clock, receiverClock: clock, observations: [{ ...observation(100,0), audioMarker: { sequenceModulo16: 0 } } as never] })).toThrow('invalid received marker');
     expect(() => normalizeMarkers({ emissions, sourceClock: clock, receiverClock: clock, observations: [observation(20,3)] })).toThrow('unmatched');
     expect(() => normalizeMarkers({ emissions, sourceClock: clock, receiverClock: clock, observations: [observation(20,0), observation(1021,1)] })).toThrow('missing');
   });
@@ -66,4 +67,17 @@ it('normalizes a complete raw diagnostic with independently bound hosts and reje
   expect(result.directions[0].samples.map(s => s.audioDelayMs)).toEqual([20,20,20]);
   endpoints[0].probeNonce = 'f'.repeat(64);
   expect(() => normalizeBoundDiagnostics(diagnostic, boundHosts, expected)).toThrow('mismatch');
+});
+
+it('binds eight fixed-port host listeners through distinct controller tunnels and rejects remapping', () => {
+  const hosts = Array.from({length:8},(_,i) => ({hostId: String(i+1).repeat(64), pid: 100+i, binarySha256:'c'.repeat(64),
+    webdriverUrl:'http://127.0.0.1:4445', sessionId:'native-session', probeNonce:String(i+1).repeat(64)}));
+  const probes = hosts.map((h,i)=>({...h,webdriverUrl:`http://127.0.0.1:${5000+i}`}));
+  const mappings = hosts.map((h,i)=>({hostId:h.hostId,hostLocalWebdriverUrl:h.webdriverUrl,controllerWebdriverUrl:probes[i].webdriverUrl,sessionId:h.sessionId,probeNonce:h.probeNonce}));
+  const expected = Object.fromEntries(hosts.map(h=>[h.hostId,h.binarySha256]));
+  expect(()=>verifySessionBindings(hosts,probes,expected,mappings)).not.toThrow();
+  expect(()=>verifySessionBindings(hosts,probes,expected)).toThrow('mismatch');
+  expect(()=>verifySessionBindings(hosts,probes,expected,mappings.map((m,i)=>i ? m : {...m,hostLocalWebdriverUrl:'http://127.0.0.1:4446'}))).toThrow('mapping mismatch');
+  expect(()=>verifySessionBindings(hosts,probes,expected,mappings.map((m,i)=>i ? m : {...m,controllerWebdriverUrl:probes[1].webdriverUrl}))).toThrow('mismatch');
+  expect(()=>verifySessionBindings(hosts,probes.map((p,i)=>i ? p : {...p,probeNonce:'f'.repeat(64)}),expected,mappings)).toThrow('mismatch');
 });

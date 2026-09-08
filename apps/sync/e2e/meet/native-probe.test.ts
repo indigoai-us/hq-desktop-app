@@ -20,7 +20,7 @@ async function fixture() {
     createAnalyser() { return { fftSize: 2048, frequencyBinCount: 1024,
       getFloatFrequencyData(bins: Float32Array) {
         bins.fill(-Infinity);
-        if (!silent) bins[Math.round((700 + audio * 150) * 2048 / 48000)] = -20;
+        if (!silent) for (let bank = 0; bank < 4; bank++) bins[Math.round((700 + bank * 3000 + ((audio >> (bank * 4)) & 15) * 150) * 2048 / 48000)] = -20;
       } }; }
     createMediaStreamDestination = () => ({ stream });
     decodeAudioData = async () => ({ duration: 10 });
@@ -49,7 +49,7 @@ async function fixture() {
     atob: () => '', AudioContext, RTCPeerConnection: Peer,
     MediaStream: class { constructor(_: unknown) {} },
     document: { createElement: element, head: { append() {} }, body: { append() {} } },
-    navigator: { mediaDevices: { getUserMedia: async () => stream } } };
+    navigator: { mediaDevices: { getUserMedia: async () => { throw new Error('physical capture unavailable'); } } } };
   runInNewContext(readFileSync(new URL('./native-probe.js', import.meta.url), 'utf8'), world);
   const probe = world.__hqMeetProbe;
   await probe.start({ speechBase64: '', screenLines: ['a','b','c','d','e'], durationMs: 30000 });
@@ -61,6 +61,12 @@ async function fixture() {
     sample: async () => (await probe.snapshot()).peers[0] };
 }
 describe('US-012 executable probe regressions (not native evidence)', () => {
+  it('runs generated fixtures without physical devices and does not claim capture permission proof', async () => {
+    const f = await fixture(); const snapshot = await f.probe.snapshot();
+    expect(snapshot.physicalCaptureTested).toBe(false);
+    expect(snapshot.captureSource).toBe('generated-public-fixtures');
+    await f.probe.stop();
+  });
   it('decodes actual pixel input for camera-only directions', async () => {
     const f = await fixture(); const s = await f.sample();
     expect(s.videoMarker).toEqual({ sequence: 1, width: 1280, height: 720, source: 'camera' });
@@ -82,6 +88,12 @@ describe('US-012 executable probe regressions (not native evidence)', () => {
     expect(s.audioGapMs).toBe(2501); expect(s.audioMarker).toBeNull(); expect(s.receivedAudioMarkers).toBe(1); expect(s.receivedVideoMarkers).toBe(2);
     expect(s.rtc[0]).toEqual({ type: 'selected-path', localCandidate: 'relay', remoteCandidate: 'host', rttSeconds: 0.1 });
     expect(JSON.stringify(s)).not.toContain('PRIVATE_ADDRESS'); await f.probe.stop();
+  });
+  it('decodes full audio sequence after multiple former eight-second cycles', async () => {
+    const f = await fixture(); f.set(10100, 20, 20); const s = await f.sample();
+    expect(s.audioMarker.sequence).toBe(20);
+    f.set(10600, 21, 21); expect((await f.sample()).audioMarker.sequence).toBe(21);
+    await f.probe.stop();
   });
   it('stops and removes its API when the collection window expires', async () => {
     const f = await fixture(); f.set(3600001, 1, 1);

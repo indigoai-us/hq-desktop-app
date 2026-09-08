@@ -5,7 +5,8 @@
 (() => {
   'use strict';
   if (globalThis.__hqMeetProbe) throw new Error('probe already installed');
-  let context, microphone, camera, fixtureAudio, screenStream, oscillator, canvas, timer;
+  let context, camera, fixtureAudio, screenStream, canvas, timer;
+  let oscillators = [];
   let surface, mask, watchdog, probeNonce;
   let start = 0, stopped = false, sequence = 0, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
@@ -31,7 +32,10 @@
     c.fillStyle = '#111'; c.font = '14pt Arial';
     globalThis.__hqMeetProbe.screenLines.forEach((line, i) => c.fillText(line, 30, 90 + i * 34));
     // Distinct public frequency marker mixed with the public speech fixture.
-    oscillator.frequency.setValueAtTime(700 + (sequence % 16) * 150, context.currentTime);
+    // Four independent frequency banks encode all 16 sequence bits. Unlike a
+    // single modulo-16 tone this stays unambiguous across a one-hour run.
+    oscillators.forEach((oscillator, bank) => oscillator.frequency.setValueAtTime(
+      700 + bank * 3000 + ((sequence >> (bank * 4)) & 15) * 150, context.currentTime));
     emitted.push({ atMs: now(), sequence, audioContextSeconds: context.currentTime });
     if (emitted.length > 7201) throw new Error('probe emission budget exhausted');
   }
@@ -147,19 +151,22 @@
       audioMarker: null, audioGapMs: atMs - peer.lastAudioProgressMs, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
     if (peer.audio) {
       const bins = new Float32Array(peer.audio.frequencyBinCount); peer.audio.getFloatFrequencyData(bins);
-      let best = -Infinity, marker = -1;
-      for (let n = 0; n < 16; n++) {
-        const bin = Math.round((700 + n * 150) * peer.audio.fftSize / context.sampleRate);
-        const power = Math.max(bins[bin - 1], bins[bin], bins[bin + 1]);
-        if (power > best) { best = power; marker = n; }
+      let marker = 0, levelDb = Infinity, complete = true;
+      for (let bank = 0; bank < 4; bank++) {
+        let best = -Infinity, nibble = -1;
+        for (let n = 0; n < 16; n++) {
+          const bin = Math.round((700 + bank * 3000 + n * 150) * peer.audio.fftSize / context.sampleRate);
+          const power = Math.max(bins[bin - 1], bins[bin], bins[bin + 1]);
+          if (power > best) { best = power; nibble = n; }
+        }
+        if (!(best > -45)) { complete = false; break; }
+        marker |= nibble << (bank * 4); levelDb = Math.min(levelDb, best);
       }
-      if (best > -45) {
-        value.audioMarker = { sequenceModulo16: marker, levelDb: best };
-        // A repeated FFT observation is not new media delivery.
+      if (complete) {
+        value.audioMarker = { sequence: marker, levelDb };
         if (marker !== peer.lastAudioMarker) {
           peer.lastAudioMarker = marker;
           peer.lastAudioProgressMs = atMs;
-
           value.receivedAudioMarkers = ++peer.audioCount;
         }
       }
@@ -222,26 +229,25 @@
       watchdog = setTimeout(() => this.stop(), Math.min(3600000, options.durationMs || 60000) + 180000);
       context = new AudioContext(); await context.resume();
       if (context.state !== 'running') throw new Error('native user gesture required for audio');
-      // Real native permission paths, with no fake-device flags. The microphone is
-      // permission-tested but never sent or persisted: only public speech is sent.
-      microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
-      microphone.getTracks().forEach(track => track.stop());
-      const permissionCamera = await navigator.mediaDevices.getUserMedia({ video: true });
-      permissionCamera.getTracks().forEach(track => track.stop());
+      // This transport fixture generates public media. Physical microphone,
+      // camera capture and their permission prompts are separate acceptance work.
       const destination = context.createMediaStreamDestination();
       const bytes = Uint8Array.from(atob(options.speechBase64), c => c.charCodeAt(0));
       const buffer = await context.decodeAudioData(bytes.buffer);
       if (buffer.duration < 5 || buffer.duration > 120) throw new Error('speech fixture must span 5..120 seconds');
       const speech = context.createBufferSource(); speech.buffer = buffer; speech.loop = true;
       speech.connect(destination); speech.start();
-      oscillator = context.createOscillator(); const gain = context.createGain(); gain.gain.value = 0.08;
-      oscillator.connect(gain); gain.connect(destination); oscillator.start();
+      if (context.sampleRate < 32000) throw new Error('full sequence markers require at least 32 kHz audio');
+      oscillators = Array.from({ length: 4 }, () => {
+        const oscillator = context.createOscillator(), gain = context.createGain(); gain.gain.value = 0.04;
+        oscillator.connect(gain); gain.connect(destination); oscillator.start(); return oscillator;
+      });
       fixtureAudio = destination.stream;
       canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
       canvas.style.width = '640px'; surface.append(canvas);
       camera = canvas.captureStream(15);
       if (options.shareScreen) screenStream = canvas.captureStream(15); render(); timer = setInterval(render, 500);
-      return { provenance: 'native-probe-unattested', wallTimeMs: Date.now(), monotonicMs: performance.now(),
+      return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', wallTimeMs: Date.now(), monotonicMs: performance.now(),
         audioState: context.state, screenTrack: Boolean(screenStream?.getVideoTracks().length) };
     },
     offer(id, configuration) { return connect(id, configuration); },
@@ -259,14 +265,14 @@
     async snapshot() {
       if (!context || stopped) throw new Error('probe is not running');
       if (now() > 3600000) { await this.stop(); throw new Error('probe duration exceeded'); }
-      return { provenance: 'native-probe-unattested', atMs: now(), wallTimeMs: Date.now(),
+      return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', atMs: now(), wallTimeMs: Date.now(),
         emissions: emitted.splice(0), peers: await Promise.all([...peers].map(([id, peer]) => sample(id, peer))) };
     },
     async stop() {
       stopped = true; clearInterval(timer); clearTimeout(watchdog);
       for (const peer of peers.values()) { peer.pc.close(); peer.elements.forEach(element => element.remove()); }
-      for (const stream of [microphone, camera, fixtureAudio, screenStream]) stream?.getTracks().forEach(track => track.stop());
-      oscillator?.stop(); await context?.close(); canvas?.remove(); surface?.remove(); mask?.remove(); peers.clear();
+      for (const stream of [camera, fixtureAudio, screenStream]) stream?.getTracks().forEach(track => track.stop());
+      oscillators.forEach(oscillator => oscillator.stop()); await context?.close(); canvas?.remove(); surface?.remove(); mask?.remove(); peers.clear();
       delete globalThis.__hqMeetProbe;
     },
   };

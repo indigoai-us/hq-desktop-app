@@ -23,7 +23,7 @@ async function main(): Promise<void> {
       return JSON.parse(bytes.toString('utf8'));
     };
     result = normalizeBoundDiagnostics(await boundedJson(config.diagnosticPath),
-      await boundedJson(config.hostObservationsPath), config.expectedBinaries);
+      await boundedJson(config.hostObservationsPath), config.expectedBinaries, config.tunnelMappings);
   } else if (mode === 'host') {
     result = await collectHost(config);
   } else if (mode === 'fixtures') {
