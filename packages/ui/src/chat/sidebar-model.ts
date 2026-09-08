@@ -1291,25 +1291,35 @@ export function nextScope(
 }
 
 /**
- * Resolve a scope hotkey:
- *  - Cmd+0 → all
- *  - Cmd+1..Cmd+5 → company at index 0..4
- *  - Cmd+P → personal
- * Returns null when the key does not match.
+ * Rail rows in DISPLAY order — pinned, then each day section, then the
+ * collapsed "Last week" rows only when that group is expanded. Feeds the
+ * next/previous conversation shortcuts so ⌘⇧] walks the list the user sees.
  */
-export function scopeFromHotkey(
-  key: string,
-  companies: ScopeCompany[],
-): CompanyScope | null {
-  const k = key.toLowerCase();
-  if (k === "0") return "all";
-  if (k === "p") return "personal";
-  if (/^[1-5]$/.test(k)) {
-    const index = Number.parseInt(k, 10) - 1;
-    const company = companies[index];
-    return company ? company.companyUid : null;
-  }
-  return null;
+export function flattenGrouped(
+  grouped: GroupedConversations,
+  includeLastWeek: boolean,
+): ConversationRow[] {
+  const out: ConversationRow[] = [...grouped.pinned];
+  for (const section of grouped.sections) out.push(...section.rows);
+  if (includeLastWeek) out.push(...grouped.lastWeek);
+  return out;
+}
+
+/**
+ * Step through `rows` from `currentId` by `delta`, wrapping at both ends.
+ * Falls back to the first row when the current one is not listed; null when
+ * there is nothing to step to.
+ */
+export function stepConversation(
+  rows: ConversationRow[],
+  currentId: string | null | undefined,
+  delta: 1 | -1,
+): ConversationRow | null {
+  if (rows.length === 0) return null;
+  const index = currentId ? rows.findIndex((row) => row.id === currentId) : -1;
+  if (index < 0) return rows[0];
+  const next = (index + delta + rows.length) % rows.length;
+  return rows[next];
 }
 
 export function scopePillLabel(

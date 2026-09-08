@@ -131,7 +131,41 @@ export function startSessionsStore(): void {
   if (started) return;
   started = true;
   void refresh();
-  timer = setInterval(() => void refresh(), REFRESH_MS);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (!isHidden()) startTimer();
+}
+
+/** Pause the poll while the document is hidden (background window); resume
+ *  with an immediate refresh once it is visible again. */
+function isHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function onVisibilityChange(): void {
+  if (!started) return;
+  if (isHidden()) {
+    stopTimer();
+    return;
+  }
+  void refresh();
+  startTimer();
+}
+
+function startTimer(): void {
+  if (timer) return;
+  timer = setInterval(() => {
+    if (isHidden()) return;
+    void refresh();
+  }, REFRESH_MS);
+}
+
+function stopTimer(): void {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
 }
 
 /**
@@ -139,9 +173,9 @@ export function startSessionsStore(): void {
  * whole session) but exported so tests can reset between runs.
  */
 export function stopSessionsStore(): void {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+  stopTimer();
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
   }
   started = false;
   sessions = [];

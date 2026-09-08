@@ -205,7 +205,9 @@
 </aside>
 
 <style>
+  /* Light is the default root theme (see chat/tokens.css). */
   .files-sidebar {
+    --fs-panel-wash: rgb(224 224 224 / 0.12);
     display: flex;
     flex-direction: column;
     flex: 0 0 220px;
@@ -217,9 +219,15 @@
     overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
-    background: var(--v4-sidebar, var(--v4-chrome));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    /* No backdrop-filter here: the native glass view behind the transparent
+       window already blurs; a second CSS blur only adds compositor cost.
+       Dropping the blur costs contrast, though: --v4-sidebar floors near 0.12
+       alpha in light mode at max transparency. So layer the same wash the chat
+       rail got when it lost its blur (--side-bg 0.18→0.30 light, 0.12→0.20
+       dark) on top of the token, in the token's own hue. */
+    background:
+      linear-gradient(var(--fs-panel-wash), var(--fs-panel-wash)),
+      var(--v4-sidebar, var(--v4-chrome));
     box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
@@ -489,5 +497,19 @@
       -webkit-backdrop-filter: none;
       box-shadow: none;
     }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .files-sidebar {
+      --fs-panel-wash: rgb(24 24 24 / 0.1);
+    }
+  }
+
+  :global(:root[data-force-theme="light"]) .files-sidebar {
+    --fs-panel-wash: rgb(224 224 224 / 0.12);
+  }
+
+  :global(:root[data-force-theme="dark"]) .files-sidebar {
+    --fs-panel-wash: rgb(24 24 24 / 0.1);
   }
 </style>

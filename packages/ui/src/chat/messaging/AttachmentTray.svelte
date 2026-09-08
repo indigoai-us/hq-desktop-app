@@ -147,7 +147,7 @@
           onclick={() => onselect(id)}
         >
           {#if (item.kind === "image" || /\.(png|jpe?g|gif|webp|svg)$/i.test(item.name)) && srcFor(item)}
-            <img src={srcFor(item)} alt="" />
+            <img src={srcFor(item)} alt="" loading="lazy" decoding="async" />
           {:else}
             <span class="att-tray-item-icon"
               >{fileTypeLabel(item.name, item.contentType)}</span

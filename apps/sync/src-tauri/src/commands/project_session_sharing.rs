@@ -202,7 +202,7 @@ fn start_actor(app: &tauri::AppHandle, mut state: Outbox, path: PathBuf, app_id:
                         let error = "Could not save the project sharing queue";
                         if last_error != error {
                             use tauri::Emitter;
-                            let _ = app.emit("project-session:sharing-status", json!({ "sessionId": app_id, "error": error }));
+                            let _ = app.emit_to(crate::commands::desktop_alt::WINDOW_LABEL, "project-session:sharing-status", json!({ "sessionId": app_id, "error": error }));
                             last_error = error.into();
                         }
                         continue;
@@ -212,14 +212,14 @@ fn start_actor(app: &tauri::AppHandle, mut state: Outbox, path: PathBuf, app_id:
                             dirty = false; failures = 0; last_error.clear();
                             let _ = save(&path, &state);
                             use tauri::Emitter;
-                            let _ = app.emit("project-session:sharing-status", json!({ "sessionId": app_id, "error": null }));
+                            let _ = app.emit_to(crate::commands::desktop_alt::WINDOW_LABEL, "project-session:sharing-status", json!({ "sessionId": app_id, "error": null }));
                         },
                         Err(error) => {
                             failures = (failures + 1).min(6);
                             retry_at = tokio::time::Instant::now() + Duration::from_secs(5 * (1u64 << failures));
                             if error != last_error {
                                 use tauri::Emitter;
-                                let _ = app.emit("project-session:sharing-status", json!({ "sessionId": app_id, "error": error }));
+                                let _ = app.emit_to(crate::commands::desktop_alt::WINDOW_LABEL, "project-session:sharing-status", json!({ "sessionId": app_id, "error": error }));
                                 last_error = error;
                             }
                         }

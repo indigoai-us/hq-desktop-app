@@ -39,6 +39,19 @@
   }: Props = $props();
 
   let selectedKey = $state<string | null>(null);
+  /** Channels can accumulate hundreds of files. Render a bounded window and
+   *  grow it on demand (same pattern as LibraryList) so opening the tab does
+   *  not mount every row at once; the total is never hidden. */
+  const RENDER_BATCH = 48;
+  let visibleLimit = $state(RENDER_BATCH);
+  const visibleFiles = $derived(files.slice(0, visibleLimit));
+  const remainingFiles = $derived(
+    Math.max(0, files.length - visibleFiles.length),
+  );
+  $effect(() => {
+    files;
+    visibleLimit = RENDER_BATCH;
+  });
   let preview = $state<ChannelFilePreview | null>(null);
   let previewLoading = $state(false);
   let previewSequence = 0;
@@ -285,7 +298,7 @@
       role="listbox"
       aria-label="Files"
     >
-      {#each files as item (item.key)}
+      {#each visibleFiles as item (item.key)}
         <li role="option" aria-selected={selectedKey === item.key}>
           <button
             type="button"
@@ -350,6 +363,22 @@
         </li>
       {/each}
     </ul>
+    {#if remainingFiles > 0}
+      <div class="files-footer" data-testid="channel-files-show-more">
+        <span>{visibleFiles.length} of {files.length}</span>
+        <button
+          type="button"
+          onclick={() =>
+            (visibleLimit = Math.min(
+              files.length,
+              visibleLimit + RENDER_BATCH,
+            ))}
+          aria-label={`Show ${Math.min(RENDER_BATCH, remainingFiles)} more files`}
+        >
+          Show {Math.min(RENDER_BATCH, remainingFiles)} more
+        </button>
+      </div>
+    {/if}
   {/if}
 
   {#if selected}
@@ -439,6 +468,8 @@
               data-testid="channel-file-preview-image"
               src={preview.url}
               alt={selected.name}
+              loading="lazy"
+              decoding="async"
             />
           {:else if preview?.kind === "pdf"}
             <object
@@ -518,6 +549,33 @@
   .files-list > li {
     margin: 0;
     padding: 0;
+  }
+
+  .files-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 10px 8px 6px;
+    color: var(--t2);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .files-footer button {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .files-footer button:hover {
+    border-bottom-color: var(--t2);
   }
 
   .file-row {

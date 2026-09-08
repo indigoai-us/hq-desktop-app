@@ -739,7 +739,7 @@
             >{kpi.complete}<span class="kpi-slash"> / </span>{kpi.total}</span
           >
           <span class="kpi-bar" data-testid="detail-progress">
-            <span class="kpi-bar-fill" style="width: {kpi.progress.percent}%"
+            <span class="kpi-bar-fill" style="--fill: {kpi.progress.percent / 100}"
             ></span>
           </span>
         </div>
@@ -1519,10 +1519,14 @@
 
   .kpi-bar-fill {
     display: block;
+    width: 100%;
     height: 100%;
     border-radius: inherit;
     background: var(--v4-ok);
-    transition: width 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    /* --fill (0..1) + scaleX keeps the transition on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left center;
+    transition: transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   @media (prefers-reduced-motion: reduce) {

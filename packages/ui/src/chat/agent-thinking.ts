@@ -132,9 +132,12 @@ export interface TickOpts {
 }
 
 /** Advance every row against `now`. Rows older than `expireAfterMs` are
- * removed; remaining rows older than `slowAfterMs` flip to `'slow'`. Always
- * returns a NEW array (the no-stuck-forever guarantee lives here, not in
- * the UI). */
+ * removed; remaining rows older than `slowAfterMs` flip to `'slow'`. Returns
+ * the SAME `entries` reference when nothing changed (no row expired or
+ * flipped phase, including the empty-input case) so callers polling on an
+ * interval can assign the result to `$state` without minting a new identity
+ * every tick. Returns a NEW array only when at least one row changed (the
+ * no-stuck-forever guarantee lives here, not in the UI). */
 export function tick(
   entries: ThinkingEntry[],
   now: number,
@@ -143,16 +146,21 @@ export function tick(
   const slowAfterMs = opts?.slowAfterMs ?? DEFAULT_SLOW_AFTER_MS;
   const expireAfterMs = opts?.expireAfterMs ?? DEFAULT_EXPIRE_AFTER_MS;
   const out: ThinkingEntry[] = [];
+  let changed = false;
   for (const entry of entries) {
     const age = now - entry.startedAt;
-    if (age >= expireAfterMs) continue;
+    if (age >= expireAfterMs) {
+      changed = true;
+      continue;
+    }
     if (age >= slowAfterMs && entry.phase !== 'slow') {
+      changed = true;
       out.push({ ...entry, phase: 'slow' });
     } else {
       out.push(entry);
     }
   }
-  return out;
+  return changed ? out : entries;
 }
 
 /** Drop every row whose `agentUid` is in `agentUids`. Called when a message

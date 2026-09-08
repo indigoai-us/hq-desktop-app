@@ -383,7 +383,7 @@ pub async fn agent_session_start(
     if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
         use tauri::Emitter;
         // Sharing is independent of running the owner's local conversation.
-        let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+        let _ = app.emit_to(crate::commands::desktop_alt::WINDOW_LABEL, "project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
     }
 
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));

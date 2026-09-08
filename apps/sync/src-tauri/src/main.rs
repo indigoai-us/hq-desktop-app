@@ -1208,12 +1208,21 @@ fn main() {
             #[cfg(target_os = "macos")]
             commands::un_notify::register_delegate(app.handle());
 
-            // Mission Control polling loop (US-005). Re-scans the local Claude/
-            // Codex fleet on a configurable interval (HQ_SYNC_SESSIONS_POLL_SECS,
-            // default 5s) and emits the typed `sessions:updated` event so the UI
-            // stays fresh without a manual refresh — same independent-timer
-            // pattern as the share/dm poller above.
+            // Mission Control safety poll (US-005). Since the filesystem watcher
+            // below carries local freshness, this timer is now a slow backstop
+            // (HQ_SYNC_SESSIONS_POLL_SECS, default 90s) for the change no file
+            // records — a `claude`/`codex` process exiting, seen only by the
+            // `pgrep` liveness scan. It emits the typed `sessions:updated` event
+            // on the same independent-timer pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
+
+            // Mission Control event-driven wake (perf). Watches the local Claude/
+            // Codex session stores and the HQ `workspace` ledgers with `notify`,
+            // so an appended transcript refreshes the snapshot in ~300ms instead
+            // of waiting up to a full safety-poll interval. Best-effort: if the
+            // watcher cannot start it logs and the poll above remains the only
+            // refresh path.
+            commands::sessions::watch::setup_sessions_watcher(app.handle().clone());
 
             // Project watch: notices a `prd.json` HQ writes while a session is
             // live, binds the session to it and emits

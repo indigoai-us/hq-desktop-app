@@ -9,11 +9,35 @@
  * unavailable state instead of dead controls.
  */
 
+/**
+ * Window-level DOM contract shared with the desktop host
+ * (`apps/sync/src/lib/appearancePreferences.ts`). packages/ui must not import
+ * from apps/sync, so the names are duplicated here and must stay in sync:
+ * - the host listens for APPEARANCE_REQUEST_EVENT and applies + persists;
+ * - the host dispatches APPEARANCE_CHANGE_EVENT after every apply;
+ * - the host marks `<html data-window-transparency="0..100">` once installed.
+ */
+export const APPEARANCE_REQUEST_EVENT = "hq:appearance-request";
+export const APPEARANCE_CHANGE_EVENT = "hq:appearance-change";
+export const WINDOW_TRANSPARENCY_DATASET_KEY = "windowTransparency";
+
 export const DEFAULT_WINDOW_TRANSPARENCY = 65;
 export const MIN_WINDOW_TRANSPARENCY = 0;
 export const MAX_WINDOW_TRANSPARENCY = 100;
 export const MIN_WINDOW_OPACITY = 0;
 export const MAX_WINDOW_OPACITY = 100;
+
+/**
+ * Floor of the user-facing opacity slider.
+ *
+ * It MUST be able to represent the shipped default. `DEFAULT_WINDOW_TRANSPARENCY`
+ * is 65, i.e. opacity 35 — a 50 floor made the default unrepresentable, so a
+ * fresh install seeded the slider at 50 and the first drag jumped the window.
+ * Derived from the default so the two can never drift apart again.
+ */
+export const MIN_SLIDER_WINDOW_OPACITY =
+  MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY;
+export const MAX_SLIDER_WINDOW_OPACITY = MAX_WINDOW_OPACITY;
 
 export const MIN_DESKTOP_ZOOM = 0.8;
 export const MAX_DESKTOP_ZOOM = 1.6;

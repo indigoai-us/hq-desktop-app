@@ -368,7 +368,7 @@ pub fn setup_project_watch<R: Runtime>(app: AppHandle<R>) {
                 continue;
             };
             for created in scan_once(&hq_root).await {
-                if let Err(e) = app.emit(EVENT_PROJECT_CREATED, &created) {
+                if let Err(e) = app.emit_to(crate::commands::desktop_alt::WINDOW_LABEL, EVENT_PROJECT_CREATED, &created) {
                     log(LOG_TAG, &format!("PROJECT_CREATED_EMIT_FAILED {e}"));
                 }
             }

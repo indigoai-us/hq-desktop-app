@@ -101,7 +101,8 @@ pub struct AppSink(pub AppHandle);
 impl SessionEventSink for AppSink {
     fn emit_event(&self, session_id: &str, seq: u64, received_at_ms: u64, event: &SessionEvent) {
         crate::commands::project_session_sharing::observe(session_id, event);
-        let _ = self.0.emit(
+        let _ = self.0.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
             EVENT_SESSION_EVENT,
             serde_json::json!({
                 "sessionId": session_id,
@@ -113,7 +114,8 @@ impl SessionEventSink for AppSink {
     }
 
     fn emit_phase(&self, session_id: &str, change: PhaseChange) {
-        let _ = self.0.emit(
+        let _ = self.0.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
             EVENT_SESSION_PHASE,
             serde_json::json!({
                 "sessionId": session_id,
@@ -125,7 +127,8 @@ impl SessionEventSink for AppSink {
     }
 
     fn emit_needs_you(&self, session_id: &str, needs: &NeedsYou) {
-        let _ = self.0.emit(
+        let _ = self.0.emit_to(
+            crate::commands::desktop_alt::WINDOW_LABEL,
             EVENT_SESSION_NEEDS_YOU,
             serde_json::json!({
                 "sessionId": session_id,

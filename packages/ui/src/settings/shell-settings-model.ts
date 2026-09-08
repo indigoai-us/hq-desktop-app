@@ -10,7 +10,13 @@ import {
   pendingInviteWorkspaces,
   type Workspace,
 } from "../chat/workspaces.js";
-import type { ColorTheme } from "./appearance-seam.js";
+import {
+  APPEARANCE_REQUEST_EVENT,
+  MAX_SLIDER_WINDOW_OPACITY,
+  MIN_SLIDER_WINDOW_OPACITY,
+  WINDOW_TRANSPARENCY_DATASET_KEY,
+  type ColorTheme,
+} from "./appearance-seam.js";
 import type { SettingsUiSize } from "./settings-prefs.js";
 
 export const THEME_STORAGE_KEY = "hq-work-color-theme";
@@ -213,12 +219,93 @@ export function applyUiSize(
   return next;
 }
 
+/**
+ * The colour theme currently in force, in the HOST's vocabulary.
+ *
+ * `data-force-theme` is the one value both sides agree on: the desktop host
+ * writes it from its persisted preference on install and after every change,
+ * and `applyColorTheme` writes the same attribute on web. Absent means
+ * "system" — matching the host's `normalizeColorTheme`, not this module's
+ * dark-defaulting one. Only when there is no root at all do we fall back to
+ * this module's stored theme.
+ */
+export function currentColorTheme(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+): ColorTheme {
+  if (!root) return readStoredTheme();
+  const forced = root.dataset?.forceTheme;
+  return forced === "light" || forced === "dark" ? forced : "system";
+}
+
+/** Clamp to the user-facing slider range (which must include the default). */
+export function clampSliderOpacity(value: number): number {
+  return Math.min(
+    MAX_SLIDER_WINDOW_OPACITY,
+    Math.max(MIN_SLIDER_WINDOW_OPACITY, Math.round(value)),
+  );
+}
+
+/** True when the desktop host's appearance installer owns the root vars. */
+export function hasAppearanceHost(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+): boolean {
+  return root?.dataset?.[WINDOW_TRANSPARENCY_DATASET_KEY] !== undefined;
+}
+
+/** Slider opacity (MIN_SLIDER_WINDOW_OPACITY..100) currently applied by the host, if any. */
+export function readHostWindowOpacity(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+): number | null {
+  const raw = root?.dataset?.[WINDOW_TRANSPARENCY_DATASET_KEY];
+  if (raw === undefined) return null;
+  const transparency = Number(raw);
+  if (!Number.isFinite(transparency)) return null;
+  return clampSliderOpacity(100 - transparency);
+}
+
+/**
+ * Drives the live window transparency from the Settings opacity slider.
+ *
+ * The real surface alphas (home/tokens.css, chat/tokens.css) derive from
+ * `--hq-window-transparency-factor` + `--hq-window-alpha-{light,dark}`, which
+ * the desktop host writes from its persisted appearance preference. So:
+ *  1. ask the host to apply + persist via APPEARANCE_REQUEST_EVENT (the host
+ *     expresses the value as transparency = 100 - opacity);
+ *  2. when no host is installed (web), write the same vars directly using the
+ *     host's formulas so the slider still does something;
+ *  3. keep `--hq-window-opacity` for anything that still reads it.
+ *
+ * The request detail is a WHOLE `AppearancePreferences`, never a partial. The
+ * host's request listener applies `detail` raw (no merge with its current
+ * preference — only `requestAppearancePreferenceChange` merges), and its
+ * `normalizeColorTheme(undefined)` returns "system", which would delete
+ * `data-force-theme` and reset the native window theme. So a transparency-only
+ * change would silently drop a user's forced Light/Dark on every launch.
+ */
 export function applyWindowOpacity(
   opacity: number,
   root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+  target: EventTarget | null = typeof window === "undefined" ? null : window,
 ): number {
-  const next = Math.min(100, Math.max(50, Math.round(opacity)));
+  const next = clampSliderOpacity(opacity);
+  const transparency = 100 - next;
   root?.style.setProperty("--hq-window-opacity", `${next}%`);
+  target?.dispatchEvent(
+    new CustomEvent(APPEARANCE_REQUEST_EVENT, {
+      detail: { colorTheme: currentColorTheme(root), windowTransparency: transparency },
+    }),
+  );
+  if (root && !hasAppearanceHost(root)) {
+    // Same formulas as apps/sync/src/lib/appearancePreferences.ts.
+    const lightAlpha = Math.max(0.15, 1 - transparency / 100);
+    const darkAlpha = Math.min(1, lightAlpha + 0.13);
+    root.style.setProperty(
+      "--hq-window-transparency-factor",
+      (transparency / 100).toFixed(2),
+    );
+    root.style.setProperty("--hq-window-alpha-light", lightAlpha.toFixed(2));
+    root.style.setProperty("--hq-window-alpha-dark", darkAlpha.toFixed(2));
+  }
   return next;
 }
 

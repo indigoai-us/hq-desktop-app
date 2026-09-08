@@ -2,10 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import type { Workspace } from "../chat/workspaces.js";
 import {
+  DEFAULT_WINDOW_TRANSPARENCY,
+  MAX_WINDOW_OPACITY,
+  MIN_SLIDER_WINDOW_OPACITY,
+} from "./appearance-seam.js";
+import {
   appearanceThemeOptions,
   applyColorTheme,
   applyUiSize,
+  applyWindowOpacity,
   calendarAccountLabel,
+  currentColorTheme,
+  hasAppearanceHost,
+  readHostWindowOpacity,
   companyAvatarWash,
   membershipStatusLabel,
   normalizeColorTheme,
@@ -150,6 +159,101 @@ describe("interface density", () => {
     expect(attrs.get("data-ui-size")).toBe("compact");
     applyUiSize("default", fakeRoot);
     expect(attrs.has("data-ui-size")).toBe(false);
+  });
+});
+
+describe("window opacity", () => {
+  function fakeRoot(dataset: Record<string, string> = {}) {
+    const vars = new Map<string, string>();
+    const root = {
+      dataset,
+      style: {
+        setProperty: (k: string, v: string) => vars.set(k, v),
+      },
+    } as unknown as HTMLElement;
+    return { root, vars };
+  }
+
+  it("asks the host to apply the inverse transparency and keeps the legacy var", () => {
+    const { root, vars } = fakeRoot({ windowTransparency: "35" });
+    const target = new EventTarget();
+    const seen: unknown[] = [];
+    target.addEventListener("hq:appearance-request", (event) =>
+      seen.push((event as CustomEvent).detail),
+    );
+    expect(applyWindowOpacity(72, root, target)).toBe(72);
+    expect(seen).toEqual([{ colorTheme: "system", windowTransparency: 28 }]);
+    expect(vars.get("--hq-window-opacity")).toBe("72%");
+    // Host present → host owns the surface vars; no fallback write.
+    expect(vars.has("--hq-window-transparency-factor")).toBe(false);
+    expect(vars.has("--hq-window-alpha-light")).toBe(false);
+  });
+
+  it("writes the transparency vars itself when no host is installed", () => {
+    const { root, vars } = fakeRoot();
+    const target = new EventTarget();
+    applyWindowOpacity(60, root, target);
+    expect(vars.get("--hq-window-transparency-factor")).toBe("0.40");
+    expect(vars.get("--hq-window-alpha-light")).toBe("0.60");
+    expect(vars.get("--hq-window-alpha-dark")).toBe("0.73");
+    applyWindowOpacity(100, root, target);
+    expect(vars.get("--hq-window-transparency-factor")).toBe("0.00");
+    expect(vars.get("--hq-window-alpha-light")).toBe("1.00");
+    expect(vars.get("--hq-window-alpha-dark")).toBe("1.00");
+  });
+
+  // Regression: the floor must be able to express the shipped default
+  // (DEFAULT_WINDOW_TRANSPARENCY = 65 → opacity 35). A 50 floor made the
+  // default unrepresentable, so a fresh install seeded the slider at 50 and
+  // the first drag visibly jumped the window.
+  it("clamps to a slider range that can express the shipped default", () => {
+    const { root } = fakeRoot();
+    expect(MIN_SLIDER_WINDOW_OPACITY).toBe(
+      MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY,
+    );
+    expect(applyWindowOpacity(35, root, null)).toBe(35);
+    expect(applyWindowOpacity(10, root, null)).toBe(MIN_SLIDER_WINDOW_OPACITY);
+    expect(applyWindowOpacity(140, root, null)).toBe(100);
+  });
+
+  // Regression (CRITICAL): the host's request listener applies `detail` RAW —
+  // it does NOT merge with its current preference, and normalizeColorTheme
+  // (undefined) === "system", which deletes data-force-theme and resets the
+  // native window theme. A partial {windowTransparency} payload therefore reset
+  // a user's forced Light/Dark on every launch.
+  it("carries the current colorTheme so the host's normalize cannot clobber it", () => {
+    for (const theme of ["light", "dark"] as const) {
+      const { root } = fakeRoot({ windowTransparency: "35", forceTheme: theme });
+      const target = new EventTarget();
+      const seen: Array<Record<string, unknown>> = [];
+      target.addEventListener("hq:appearance-request", (event) =>
+        seen.push((event as CustomEvent).detail as Record<string, unknown>),
+      );
+      applyWindowOpacity(72, root, target);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.colorTheme).toBe(theme);
+      expect(seen[0]!.windowTransparency).toBe(28);
+    }
+  });
+
+  it("reports the forced theme in the host's vocabulary (absent === system)", () => {
+    expect(currentColorTheme(fakeRoot({ forceTheme: "light" }).root)).toBe("light");
+    expect(currentColorTheme(fakeRoot({ forceTheme: "dark" }).root)).toBe("dark");
+    // Absent attribute means "system" to the host — NOT this module's
+    // dark-defaulting normalizeColorTheme.
+    expect(currentColorTheme(fakeRoot().root)).toBe("system");
+  });
+
+  it("reads the host marker as slider opacity", () => {
+    expect(hasAppearanceHost(fakeRoot().root)).toBe(false);
+    expect(readHostWindowOpacity(fakeRoot().root)).toBeNull();
+    const { root } = fakeRoot({ windowTransparency: "65" });
+    expect(hasAppearanceHost(root)).toBe(true);
+    // transparency 65 is the shipped default → opacity 35, and the read must
+    // report it verbatim rather than clamping it up to the old 50 floor.
+    expect(readHostWindowOpacity(root)).toBe(35);
+    expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "20" }).root)).toBe(80);
+    expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "nope" }).root)).toBeNull();
   });
 });
 

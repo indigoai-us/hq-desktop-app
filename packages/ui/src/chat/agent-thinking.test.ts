@@ -156,6 +156,27 @@ describe('tick', () => {
     expect(tick([row], 599_999)).toHaveLength(1);
     expect(tick([row], 600_000)).toEqual([]);
   });
+
+  it('returns the same array reference when no row changed', () => {
+    const empty: ThinkingEntry[] = [];
+    expect(tick(empty, 1_000)).toBe(empty);
+
+    const thinking = entry({ agentUid: 'agt_izzy', startedAt: 0, phase: 'thinking' });
+    const slow = entry({ agentUid: 'agt_bob', startedAt: 0, phase: 'slow' });
+    const rows = [thinking, slow];
+    // Neither row crosses a threshold: identity is preserved.
+    expect(tick(rows, 1_000)).toBe(rows);
+    // `slow` already slow, `thinking` not yet past slowAfterMs.
+    expect(tick(rows, 149_999)).toBe(rows);
+  });
+
+  it('returns a new array when a row flips or expires', () => {
+    const thinking = entry({ agentUid: 'agt_izzy', startedAt: 0, phase: 'thinking' });
+    const rows = [thinking];
+    expect(tick(rows, 150_000)).not.toBe(rows);
+    const slowRows = [entry({ agentUid: 'agt_izzy', startedAt: 0, phase: 'slow' })];
+    expect(tick(slowRows, 600_000)).not.toBe(slowRows);
+  });
 });
 
 describe('clearForAgents', () => {

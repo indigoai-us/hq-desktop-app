@@ -37,13 +37,32 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
-    target: "safari13",
+    // tauri.conf.json minimumSystemVersion is macOS 13, whose WKWebView is
+    // Safari 16.4+: no need to down-level class fields, ?? / ?. , top-level
+    // await, etc. to safari13 (smaller, faster output).
+    target: "safari16",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: process.env.TAURI_ENV_DEBUG ? true : "hidden",
     rollupOptions: {
       input: {
         main: resolve(rootDir, "index.html"),
         desktopAlt: resolve(rootDir, "desktop-alt.html"),
+      },
+      output: {
+        // Two HTML entries (main + desktop-alt) share the workspace UI
+        // packages and Svelte runtime; without an explicit chunk each entry
+        // bundled its own copy, doubling parse/compile work.
+        manualChunks(id) {
+          if (
+            /[\\/]node_modules[\\/]svelte[\\/]/.test(id) ||
+            /[\\/]node_modules[\\/]@hq[\\/](ui|core|platform|work)[\\/]/.test(id) ||
+            /[\\/]packages[\\/](ui|core|platform|work)[\\/]/.test(id) ||
+            /[\\/]apps[\\/]work[\\/]/.test(id)
+          ) {
+            return "hq-shared";
+          }
+          return undefined;
+        },
       },
     },
   },

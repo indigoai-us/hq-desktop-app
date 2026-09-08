@@ -46,7 +46,56 @@ let error = $state("");
 let started = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-const REFRESH_MS = 4000;
+const REFRESH_MS = 15000;
+
+// Per-field fingerprints of the last applied payloads. Reassigning `teams` /
+// `questions` / `messages` mints a new array identity that invalidates every
+// derived and re-renders every mounted panel; doing that on every poll even
+// when nothing changed was a periodic main-thread stall. We only write the
+// reactive field whose serialized value actually changed (same pattern as
+// sessions-store, but per field so a new chat message does not also re-render
+// the teams list).
+let teamsKey = "";
+let questionsKey = "";
+let messagesKey = "";
+
+function fingerprint(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    // Non-serializable payload: force a write rather than silently dropping.
+    return `\u0000${Math.random()}`;
+  }
+}
+
+/** Pause the interval while the document is hidden (background window/tab);
+ *  resume with an immediate refresh once it becomes visible again. */
+function isHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function onVisibilityChange(): void {
+  if (!started) return;
+  if (isHidden()) {
+    stopTimer();
+    return;
+  }
+  void refresh();
+  startTimer();
+}
+
+function startTimer(): void {
+  if (timer) return;
+  timer = setInterval(() => {
+    if (isHidden()) return;
+    void refresh();
+  }, REFRESH_MS);
+}
+
+function stopTimer(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
 
 /** Keep `selected` pointing at a team that still exists (default: the first). */
 function reconcileSelection(): void {
@@ -61,23 +110,61 @@ function reconcileSelection(): void {
       : null;
 }
 
+/**
+ * Monotonic request generation. Every `refresh()` claims the next value; any
+ * response that comes back after a newer refresh has started (a team switch, or
+ * simply the next poll) is discarded instead of writing the WRONG team's
+ * messages into the panel. The poll interval is 15s, so a slow backend has a
+ * wide window in which to land stale.
+ */
+let refreshGeneration = 0;
+
 async function refresh(): Promise<void> {
   if (!api) {
     loading = false;
     error = "Mission Control is not available on this platform yet.";
     return;
   }
+  const generation = ++refreshGeneration;
+  const stale = () => generation !== refreshGeneration;
   try {
     const [t, q] = await Promise.all([api.listTeams(), api.listQuestions()]);
-    teams = t ?? [];
-    questions = q ?? [];
+    if (stale()) return;
+    const nextTeams = t ?? [];
+    const nextTeamsKey = fingerprint(nextTeams);
+    if (nextTeamsKey !== teamsKey) {
+      teamsKey = nextTeamsKey;
+      teams = nextTeams;
+    }
+    const nextQuestions = q ?? [];
+    const nextQuestionsKey = fingerprint(nextQuestions);
+    if (nextQuestionsKey !== questionsKey) {
+      questionsKey = nextQuestionsKey;
+      questions = nextQuestions;
+    }
     reconcileSelection();
-    messages = selected
-      ? ((await api.listChat(selected.company, selected.team)) ?? [])
+    // Capture the team this response belongs to: `selected` can change while
+    // the request is in flight.
+    const target = selected ? { ...selected } : null;
+    const nextMessages = target
+      ? ((await api.listChat(target.company, target.team)) ?? [])
       : [];
-    error = "";
-    loading = false;
+    if (
+      stale() ||
+      target?.company !== selected?.company ||
+      target?.team !== selected?.team
+    ) {
+      return;
+    }
+    const nextMessagesKey = fingerprint(nextMessages);
+    if (nextMessagesKey !== messagesKey) {
+      messagesKey = nextMessagesKey;
+      messages = nextMessages;
+    }
+    if (error !== "") error = "";
+    if (loading) loading = false;
   } catch (err) {
+    if (stale()) return;
     console.error("agency refresh failed:", err);
     error = "Could not load agency teams.";
     loading = false;
@@ -89,13 +176,23 @@ export function startAgencyStore(): void {
   if (started) return;
   started = true;
   void refresh();
-  timer = setInterval(() => void refresh(), REFRESH_MS);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (!isHidden()) startTimer();
 }
 
 export function stopAgencyStore(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
+  stopTimer();
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
   started = false;
+  // Invalidate any refresh still in flight so it cannot write after stop.
+  refreshGeneration += 1;
+  teamsKey = "";
+  questionsKey = "";
+  messagesKey = "";
 }
 
 /** Answer a question — writes back to the manager inbox, then refreshes so the

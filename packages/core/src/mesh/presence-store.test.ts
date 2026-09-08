@@ -128,3 +128,78 @@ describe("PresenceStore", () => {
     );
   });
 });
+
+describe("PresenceStore snapshots", () => {
+  const online = (actorUid: string, at = "2026-01-01T00:00:00.000Z") => ({
+    status: "online",
+    actorUid,
+    actorType: "human",
+    at,
+  });
+
+  it("coalesces a burst of mutations into a single snapshot emit", async () => {
+    const store = new PresenceStore();
+    const seen: number[] = [];
+    store.subscribeSnapshot((snap) => {
+      seen.push(snap.get("cmp_x")?.size ?? 0);
+    });
+    store.applyMqtt("hq/cmp_x/presence/prs_a", online("prs_a"));
+    store.applyMqtt("hq/cmp_x/presence/prs_b", online("prs_b"));
+    store.applyMqtt("hq/cmp_x/presence/prs_c", online("prs_c"));
+    // Nothing delivered synchronously.
+    expect(seen).toEqual([]);
+    await Promise.resolve();
+    // One emit carrying the final state of the burst.
+    expect(seen).toEqual([3]);
+  });
+
+  it("emits again for a later mutation after the microtask flushed", async () => {
+    const store = new PresenceStore();
+    let count = 0;
+    store.subscribeSnapshot(() => {
+      count += 1;
+    });
+    store.applyMqtt("hq/cmp_x/presence/prs_a", online("prs_a"));
+    await Promise.resolve();
+    expect(count).toBe(1);
+    store.replaceCompany("cmp_y", [{ actorUid: "prs_z", presence: "online" }]);
+    store.clear();
+    await Promise.resolve();
+    expect(count).toBe(2);
+  });
+
+  it("reuses the inner map for companies that did not change", () => {
+    const store = new PresenceStore();
+    store.applyMqtt("hq/cmp_x/presence/prs_a", online("prs_a"));
+    store.applyMqtt("hq/cmp_y/presence/prs_b", online("prs_b"));
+    const first = store.snapshot();
+    const second = store.snapshot();
+    expect(second).not.toBe(first);
+    expect(second.get("cmp_x")).toBe(first.get("cmp_x"));
+    expect(second.get("cmp_y")).toBe(first.get("cmp_y"));
+
+    // Mutate cmp_x only: its map is rebuilt, cmp_y's is reused.
+    store.applyMqtt(
+      "hq/cmp_x/presence/prs_a",
+      { ...online("prs_a"), status: "offline" },
+    );
+    const third = store.snapshot();
+    expect(third.get("cmp_x")).not.toBe(first.get("cmp_x"));
+    expect(third.get("cmp_x")?.get("prs_a")?.status).toBe("offline");
+    expect(third.get("cmp_y")).toBe(first.get("cmp_y"));
+    // The cached map is a copy — later mutations do not leak into it.
+    expect(first.get("cmp_x")?.get("prs_a")?.status).toBe("online");
+  });
+
+  it("rebuilds the inner map after replaceCompany and drops it after clear", () => {
+    const store = new PresenceStore();
+    store.applyMqtt("hq/cmp_x/presence/prs_a", online("prs_a"));
+    const first = store.snapshot();
+    store.replaceCompany("cmp_x", [{ actorUid: "prs_n", presence: "online" }]);
+    const second = store.snapshot();
+    expect(second.get("cmp_x")).not.toBe(first.get("cmp_x"));
+    expect([...(second.get("cmp_x")?.keys() ?? [])]).toEqual(["prs_n"]);
+    store.clear();
+    expect(store.snapshot().size).toBe(0);
+  });
+});
