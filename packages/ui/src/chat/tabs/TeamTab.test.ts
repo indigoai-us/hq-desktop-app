@@ -215,7 +215,7 @@ function memberTab(): CompanyTabModel {
 }
 
 describe("CompanyTabs", () => {
-  it("switches Chat · Atlas · Team · Integrations · Settings", () => {
+  it("switches Chat · Atlas · Team · Settings", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     let active: CompanyChannelTabId = "chat";
@@ -235,7 +235,6 @@ describe("CompanyTabs", () => {
       "Chat",
       "Atlas",
       "Team",
-      "Integrations",
       "Settings",
     ]);
     flushSync(() =>
