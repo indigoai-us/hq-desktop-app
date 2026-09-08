@@ -44,9 +44,22 @@
      * disabled with the chosen option marked when it reopens after a reply.
      */
     answeredQuestionIds?: ReadonlySet<string>;
+    /**
+     * questionId → the chosen option label (or free-text "Other…" body) derived
+     * from the thread's answer message. Lets a reopened/reloaded card highlight
+     * the picked option and show "You chose: …" without any local click state —
+     * see `decision-answers.ts`. A questionId present here is also treated as
+     * answered even if it is absent from `answeredQuestionIds`.
+     */
+    answeredChoices?: ReadonlyMap<string, string>;
   }
 
-  let { content, ondecision, answeredQuestionIds }: Props = $props();
+  let {
+    content,
+    ondecision,
+    answeredQuestionIds,
+    answeredChoices,
+  }: Props = $props();
 
   // Optimistic local disable after a click, keyed by block index (stable per
   // message). Mirrors LifecycleCard's `localPending`. Value = chosen label
@@ -55,9 +68,24 @@
 
   function decisionAnswered(block: DecisionBlock, index: number): boolean {
     if (index in localChoice) return true;
-    return Boolean(
-      block.questionId && answeredQuestionIds?.has(block.questionId),
-    );
+    const qid = block.questionId;
+    if (!qid) return false;
+    return Boolean(answeredQuestionIds?.has(qid) || answeredChoices?.has(qid));
+  }
+
+  /**
+   * The chosen label for a block: the optimistic local click first, then the
+   * persisted choice derived from the thread answer. Empty string = Other (no
+   * recoverable label); undefined = not answered.
+   */
+  function decisionChoice(
+    block: DecisionBlock,
+    index: number,
+  ): string | undefined {
+    if (index in localChoice) return localChoice[index];
+    return block.questionId
+      ? answeredChoices?.get(block.questionId)
+      : undefined;
   }
 
   function pickDecision(
@@ -365,20 +393,27 @@
       </div>
     {:else if block.kind === "decision"}
       {@const answered = decisionAnswered(block, blockIndex)}
-      {@const chosen = localChoice[blockIndex]}
+      {@const chosen = decisionChoice(block, blockIndex)}
       <div class="rich-decision" data-testid="rich-decision" role="group" aria-label={block.question}>
         <div class="rich-decision-q">{block.question}</div>
-        <div class="rich-decision-options">
+        <div class="rich-decision-options" class:is-answered={answered}>
           {#each block.options as option, i (option.id || i)}
+            {@const isChosen = answered && chosen === option.label}
             <button
               type="button"
               class="rich-decision-btn"
-              class:is-recommended={option.recommended}
-              class:is-chosen={answered && chosen === option.label}
+              class:is-recommended={option.recommended && !answered}
+              class:is-chosen={isChosen}
+              class:is-inactive={answered && !isChosen}
               disabled={answered}
+              aria-pressed={answered ? isChosen : undefined}
               data-testid="rich-decision-option"
+              data-chosen={isChosen ? "true" : undefined}
               onclick={() => pickDecision(block, blockIndex, option)}
             >
+              {#if isChosen}
+                <span class="rich-decision-check" aria-hidden="true">✓</span>
+              {/if}
               <span class="rich-decision-btn-label">{option.label}</span>
               {#if option.recommended}
                 <span class="rich-decision-tag">Recommended</span>
@@ -758,15 +793,43 @@
   }
   .rich-decision-btn:disabled {
     cursor: default;
-    opacity: 0.55;
   }
+  /* Once answered, the unpicked options recede so the choice stands alone. */
+  .rich-decision-btn.is-inactive {
+    opacity: 0.5;
+    border-color: var(--line, var(--pop-border));
+    background: var(--pop-surface, transparent);
+  }
+  /* The picked option: a filled violet chip with a check — deliberately
+     stronger than the RECOMMENDED accent (border-only tint) so "selected" and
+     "recommended" never read as the same state. */
   .rich-decision-btn.is-chosen {
     border-color: var(--vio-ink);
-    background: color-mix(in srgb, var(--vio-ink) 14%, transparent);
+    background: color-mix(in srgb, var(--vio-ink) 22%, transparent);
+    box-shadow: inset 0 0 0 1px var(--vio-ink);
     opacity: 1;
+    font-weight: 600;
+  }
+  .rich-decision-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--vio-ink);
+    color: var(--pop-surface, #fff);
+    font-size: 10px;
+    line-height: 1;
+    font-weight: 700;
+    align-self: center;
   }
   .rich-decision-btn-label {
     font-weight: 500;
+  }
+  .rich-decision-btn.is-chosen .rich-decision-btn-label {
+    font-weight: 600;
   }
   .rich-decision-tag {
     font-size: 11px;
