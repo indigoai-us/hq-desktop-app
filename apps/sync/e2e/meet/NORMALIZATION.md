@@ -26,3 +26,9 @@ Rules use `ip netns exec <namespace> tc ...` exclusively. Constrained settings a
 An exclusive JSONL audit records command execution, applied settings, actual byte-counter progress, fault boundaries and cleanup. Failed application/capture cancels the fault task and removes owned handle `712:` from both interfaces. Cleanup failure rejects the run. `ladder` stores separate audits alongside each scenario. Constrained and reconnect collection now reject missing controllers; no profile name alone claims an applied impairment.
 
 Only command-boundary regression tests have run on the development Mac. Linux namespace execution and real guest traversal are still unverified. Command syntax follows the upstream iproute2 [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) and [network namespace](https://man7.org/linux/man-pages/man8/ip-netns.8.html) manuals.
+
+## Startup and ICE exchange
+
+A suspended AudioContext keeps startup pending for up to 10 seconds while the operator activates the visible audio button. The harness does not change autoplay policy. Timeout or cancellation rejects startup; cleanup is safe before startup and during an outstanding gesture wait.
+
+Offers and answers are exchanged immediately after local descriptions exist. The controller drains and forwards actual ICE candidates in memory, including candidates arriving while gathering remains active. It requires every peer connection to report connected and its data channel open within a bounded 20-second negotiation window. Candidate exchange continues during sampling. Queue budgets and per-command deadlines remain enforced; SDP/candidate bodies are never included in diagnostic artifacts or errors.

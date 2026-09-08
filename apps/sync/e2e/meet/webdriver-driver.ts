@@ -95,17 +95,13 @@ async function collectRaw(options: CollectionOptions, collectionStarted?: () => 
     }
     const configuration: RTCConfiguration = { iceTransportPolicy: profiles[options.profile].iceTransportPolicy,
       iceServers: options.iceServers ?? [] };
-    // Offer/answer and full ICE descriptions live only in this lexical scope.
-    for (let i = 0; i < drivers.length; i++) for (let j = i + 1; j < drivers.length; j++) {
-      const offer = await drivers[i].call('offer', endpoints[j].id, configuration);
-      const answer = await drivers[j].call('answer', endpoints[i].id, configuration, offer);
-      await drivers[i].call('acceptAnswer', endpoints[j].id, answer);
-    }
+    await establishNativeConnections(drivers, endpoints, configuration, signal);
     await drivers[0].call('startFile', endpoints[1].id, fileSizeBytes);
     const start = performance.now();
     collectionStarted?.();
     while (performance.now() - start < options.durationMs) {
       if (signal.aborted) throw new Error('native collection cancelled');
+      await exchangeIce(drivers, endpoints);
       await Promise.all(drivers.map(async (driver, i) => {
         const requestStartedMs = performance.now() - start;
         const snapshot = await driver.call('snapshot');
@@ -150,5 +146,42 @@ export function assertFileTransfer(snapshots: unknown[], sourceId: string, recei
       sent.integrity !== 'sha256-chain-v1' || received.integrity !== 'sha256-chain-v1' ||
       typeof sent.digest !== 'string' || !/^[a-f0-9]{64}$/.test(sent.digest) || sent.digest !== received.digest) {
     throw new Error('file workload incomplete or integrity mismatch');
+  }
+}
+
+export interface ProbeClient { call(method: string, ...args: unknown[]): Promise<unknown> }
+/** Candidate contents remain in memory and never become diagnostic artifacts or errors. */
+export async function exchangeIce(drivers: ProbeClient[], endpoints: Pick<Endpoint, 'id'>[]): Promise<void> {
+  const pairs: Promise<void>[] = [];
+  for (let i = 0; i < drivers.length; i++) for (let j = i + 1; j < drivers.length; j++) pairs.push((async () => {
+    const [forward, reverse] = await Promise.all([drivers[i].call('drainIce', endpoints[j].id), drivers[j].call('drainIce', endpoints[i].id)]);
+    if (!Array.isArray(forward) || !Array.isArray(reverse) || forward.length > 256 || reverse.length > 256) throw new Error('invalid bounded ICE queue');
+    await Promise.all([
+      forward.length ? drivers[j].call('addIce', endpoints[i].id, forward) : Promise.resolve(),
+      reverse.length ? drivers[i].call('addIce', endpoints[j].id, reverse) : Promise.resolve(),
+    ]);
+  })());
+  await Promise.all(pairs);
+}
+/** Exchange SDP immediately, trickle real candidates, and require connected peers/open data channels. */
+export async function establishNativeConnections(drivers: ProbeClient[], endpoints: Pick<Endpoint, 'id'>[], configuration: RTCConfiguration,
+  signal: AbortSignal, clock = { now: () => performance.now(), wait: () => new Promise<void>(resolve => setTimeout(resolve, 100)) }): Promise<void> {
+  const deadline = clock.now() + 20000;
+  const check = () => { if (signal.aborted || clock.now() >= deadline) throw new Error('native ICE connection deadline exceeded or cancelled'); };
+  for (let i = 0; i < drivers.length; i++) for (let j = i + 1; j < drivers.length; j++) {
+    check();
+    const offer = await drivers[i].call('offer', endpoints[j].id, configuration);
+    const answer = await drivers[j].call('answer', endpoints[i].id, configuration, offer);
+    await drivers[i].call('acceptAnswer', endpoints[j].id, answer);
+  }
+  while (true) {
+    check(); await exchangeIce(drivers, endpoints);
+    const observations: Promise<unknown>[] = [];
+    for (let i = 0; i < drivers.length; i++) for (let j = 0; j < drivers.length; j++) if (i !== j) observations.push(drivers[i].call('connection', endpoints[j].id));
+    const states = await Promise.all(observations) as { state?: string; channelState?: string; errors?: unknown[] }[];
+    if (states.some(s => !s || !Array.isArray(s.errors) || s.errors.length || ['failed','closed'].includes(s.state ?? ''))) throw new Error('native ICE connection failed');
+    check();
+    if (states.every(s => s.state === 'connected' && s.channelState === 'open')) return;
+    await clock.wait();
   }
 }

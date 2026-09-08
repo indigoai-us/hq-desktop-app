@@ -7,20 +7,11 @@
   if (globalThis.__hqMeetProbe) throw new Error('probe already installed');
   let context, camera, fixtureAudio, screenStream, canvas, timer;
   let oscillators = [];
-  let surface, mask, watchdog, probeNonce;
+  let surface, mask, watchdog, probeNonce, cancelAudioUnlock;
   let start = 0, stopped = false, sequence = 0, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const candidate = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : 'unknown';
-  const waitGathering = pc => new Promise((resolve, reject) => {
-    if (pc.iceGatheringState === 'complete') return resolve();
-    const timeout = setTimeout(() => { pc.removeEventListener('icegatheringstatechange', changed); reject(new Error('ICE gathering timeout')); }, 10000);
-    const changed = () => {
-      if (pc.iceGatheringState !== 'complete') return;
-      clearTimeout(timeout); pc.removeEventListener('icegatheringstatechange', changed); resolve();
-    };
-    pc.addEventListener('icegatheringstatechange', changed);
-  });
   function render() {
     const c = canvas.getContext('2d');
     sequence = Math.floor(now() / 500) % 65536;
@@ -128,9 +119,14 @@
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || peers.has(id) || peers.size >= 7) throw new Error('invalid peer');
     const pc = new RTCPeerConnection(configuration);
     const peer = { pc, elements: [], errors: [], remoteScreenTrackId: remote?.screenTrackId,
+      iceCandidates: [], iceCandidateCount: 0, remoteCandidateCount: 0,
       audioCount: 0, videoCount: 0, lastAudioProgressMs: now(), samples: [], decodedCanvas: document.createElement('canvas') };
     peer.decodedCanvas.width = 1280; peer.decodedCanvas.height = 720;
     peers.set(id, peer);
+    pc.onicecandidate = event => {
+      if (++peer.iceCandidateCount > 256) { peer.errors.push('ICE candidate budget exceeded'); pc.close(); return; }
+      peer.iceCandidates.push(event.candidate ? event.candidate.toJSON() : null);
+    };
     if (remote) pc.ondatachannel = event => attachFileChannel(peer, event.channel);
     else attachFileChannel(peer, pc.createDataChannel('hq-public-file-v1'));
     pc.ontrack = event => { receive(peer, event).catch(() => peer.errors.push('receiver-playback-failed')); };
@@ -141,7 +137,6 @@
       await pc.setRemoteDescription(remote.description);
       await pc.setLocalDescription(await pc.createAnswer());
     } else await pc.setLocalDescription(await pc.createOffer());
-    await waitGathering(pc);
     return { description: pc.localDescription.toJSON(), screenTrackId: screenStream?.getVideoTracks()[0]?.id };
   }
   async function sample(id, peer) {
@@ -225,10 +220,23 @@
       surface.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:white;color:black;overflow:auto;visibility:visible';
       document.body.append(surface);
       const activate = document.createElement('button'); activate.textContent = 'Enable public fixture audio';
-      activate.onclick = () => { context?.resume(); }; surface.append(activate);
+      surface.append(activate);
       watchdog = setTimeout(() => this.stop(), Math.min(3600000, options.durationMs || 60000) + 180000);
-      context = new AudioContext(); await context.resume();
-      if (context.state !== 'running') throw new Error('native user gesture required for audio');
+      context = new AudioContext();
+      await new Promise((resolve, reject) => {
+        const finish = error => {
+          clearTimeout(unlockTimeout); context.onstatechange = null;
+          activate.onclick = null; cancelAudioUnlock = undefined;
+          if (error) reject(error); else resolve();
+        };
+        const check = () => { if (context.state === 'running') finish(); };
+        const unlockTimeout = setTimeout(() => finish(new Error('native audio gesture timed out')), 10000);
+        cancelAudioUnlock = () => finish(new Error('native audio gesture cancelled'));
+        context.onstatechange = check;
+        activate.onclick = () => { context.resume().then(check, () => {}); };
+        // Resume may remain pending until the real operator activates the button.
+        context.resume().then(check, () => {}); check();
+      });
       // This transport fixture generates public media. Physical microphone,
       // camera capture and their permission prompts are separate acceptance work.
       const destination = context.createMediaStreamDestination();
@@ -257,6 +265,24 @@
       peer.remoteScreenTrackId = answer.screenTrackId;
       await peer.pc.setRemoteDescription(answer.description);
     },
+    drainIce(id) {
+      const peer = peers.get(id); if (!peer) throw new Error('unknown peer');
+      return peer.iceCandidates.splice(0);
+    },
+    async addIce(id, candidates) {
+      const peer = peers.get(id); if (!peer || !Array.isArray(candidates) || candidates.length > 256) throw new Error('invalid remote ICE');
+      peer.remoteCandidateCount += candidates.length;
+      if (peer.remoteCandidateCount > 256) throw new Error('remote ICE budget exceeded');
+      for (const candidate of candidates) {
+        if (candidate !== null && (typeof candidate !== 'object' || typeof candidate.candidate !== 'string' || candidate.candidate.length > 4096)) throw new Error('invalid remote ICE candidate');
+        await peer.pc.addIceCandidate(candidate);
+      }
+    },
+    connection(id) {
+      const peer = peers.get(id); if (!peer) throw new Error('unknown peer');
+      return { state: peer.pc.connectionState, iceState: peer.pc.iceConnectionState,
+        channelState: peer.channel?.readyState, errors: [...peer.errors] };
+    },
     startFile(id, size) {
       const peer = peers.get(id); if (!peer) throw new Error('unknown file peer');
       sendFile(peer, size).catch(() => peer.errors.push('file-transfer-failed'));
@@ -269,10 +295,10 @@
         emissions: emitted.splice(0), peers: await Promise.all([...peers].map(([id, peer]) => sample(id, peer))) };
     },
     async stop() {
-      stopped = true; clearInterval(timer); clearTimeout(watchdog);
+      stopped = true; cancelAudioUnlock?.(); clearInterval(timer); clearTimeout(watchdog);
       for (const peer of peers.values()) { peer.pc.close(); peer.elements.forEach(element => element.remove()); }
-      for (const stream of [camera, fixtureAudio, screenStream]) stream?.getTracks().forEach(track => track.stop());
-      oscillators.forEach(oscillator => oscillator.stop()); await context?.close(); canvas?.remove(); surface?.remove(); mask?.remove(); peers.clear();
+      for (const stream of [camera, fixtureAudio, screenStream]) stream?.getTracks()?.forEach(track => track.stop());
+      oscillators.forEach(oscillator => oscillator.stop()); if (context) await context.close(); canvas?.remove(); surface?.remove(); mask?.remove(); peers.clear();
       delete globalThis.__hqMeetProbe;
     },
   };

@@ -84,7 +84,7 @@ jobs:
           signing-account-name: indigosigning
           certificate-profile-name: indigo-codesign
           files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release
-          files-folder-filter: hq-sync-menubar.exe
+          files-folder-filter: exe
           files-folder-recurse: false
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com

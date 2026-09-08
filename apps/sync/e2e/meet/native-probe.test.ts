@@ -2,7 +2,9 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-async function fixture() {
+async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {}) {
+  let button: any, gesture = false;
+  const timers = new Map<number, () => void>();
   let time = 0, video = 1, audio = 1, silent = false;
   const pcs: any[] = [];
   const track = { id: 'camera', stop() {} };
@@ -14,8 +16,8 @@ async function fixture() {
     readyState: 2, videoWidth: 1280, videoHeight: 720,
     getContext: () => canvasContext, captureStream: () => stream });
   class AudioContext {
-    state = 'running'; currentTime = 0; sampleRate = 48000;
-    resume = async () => {}; close = async () => {};
+    state = options.suspended ? 'suspended' : 'running'; onstatechange?: () => void; currentTime = 0; sampleRate = 48000;
+    resume = async () => { if (!options.suspended || gesture) { this.state = 'running'; this.onstatechange?.(); } }; close = async () => {};
     createMediaStreamSource = node;
     createAnalyser() { return { fftSize: 2048, frequencyBinCount: 1024,
       getFloatFrequencyData(bins: Float32Array) {
@@ -29,13 +31,17 @@ async function fixture() {
     createGain = () => ({ ...node(), gain: { value: 0 } });
   }
   class Peer {
-    iceGatheringState = 'complete'; connectionState = 'connected';
+    iceGatheringState = 'gathering'; connectionState = 'connected'; iceConnectionState = 'connected';
+    onicecandidate: any; receivedCandidates: unknown[] = [];
     localDescription = { toJSON: () => ({ type: 'offer' }) };
     ontrack: any;
     constructor() { pcs.push(this); }
-    createDataChannel = () => ({ label: 'hq-public-file-v1', close() {} });
+    createDataChannel = () => ({ label: 'hq-public-file-v1', readyState: 'open', close() {} });
     addTrack() {} close() {}
-    createOffer = async () => ({}); setLocalDescription = async () => {};
+    createOffer = async () => ({}); setLocalDescription = async () => {
+      for (let i=0;i<16;i++) this.onicecandidate({candidate:{toJSON:()=>({candidate:`candidate:PRIVATE_ADDRESS_${i}`})}});
+    };
+    addIceCandidate = async (candidate: unknown) => { this.receivedCandidates.push(candidate); };
     getStats = async () => new Map<string, any>([
       ['transport', { type: 'transport', selectedCandidatePairId: 'pair' }],
       ['pair', { localCandidateId: 'local', remoteCandidateId: 'remote', currentRoundTripTime: 0.1 }],
@@ -45,20 +51,25 @@ async function fixture() {
     ]);
   }
   const world: any = { performance: { now: () => time }, Date, Float32Array, Uint8Array,
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 2, clearInterval() {},
+    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: () => 2, clearInterval() {},
     atob: () => '', AudioContext, RTCPeerConnection: Peer,
     MediaStream: class { constructor(_: unknown) {} },
-    document: { createElement: element, head: { append() {} }, body: { append() {} } },
+    document: { createElement: (tag: string) => { const el = element(); if(tag==='button') button=el; return el; }, head: { append() {} }, body: { append() {} } },
     navigator: { mediaDevices: { getUserMedia: async () => { throw new Error('physical capture unavailable'); } } } };
   runInNewContext(readFileSync(new URL('./native-probe.js', import.meta.url), 'utf8'), world);
   const probe = world.__hqMeetProbe;
-  await probe.start({ speechBase64: '', screenLines: ['a','b','c','d','e'], durationMs: 30000 });
+  const result = { probe, world, pcs,
+    start: () => probe.start({ speechBase64: '', screenLines: ['a','b','c','d','e'], durationMs: 30000 }),
+    activate: () => { gesture = true; button.onclick(); }, expireAudio: () => timers.get(10000)!(),
+    set(t: number, v: number, a: number, quiet = false) { time = t; video = v; audio = a; silent = quiet; },
+    sample: async () => (await probe.snapshot()).peers[0] };
+  if (options.skipStart || options.suspended) return result;
+  await result.start();
   await probe.offer('remote', {});
   pcs[0].ontrack({ track: { id: 'remote-camera', kind: 'video' } });
   pcs[0].ontrack({ track: { id: 'remote-audio', kind: 'audio' } });
   await new Promise<void>(resolve => setImmediate(resolve));
-  return { probe, world, set(t: number, v: number, a: number, quiet = false) { time = t; video = v; audio = a; silent = quiet; },
-    sample: async () => (await probe.snapshot()).peers[0] };
+  return result;
 }
 describe('US-012 executable probe regressions (not native evidence)', () => {
   it('runs generated fixtures without physical devices and does not claim capture permission proof', async () => {
@@ -100,4 +111,27 @@ describe('US-012 executable probe regressions (not native evidence)', () => {
     await expect(f.probe.snapshot()).rejects.toThrow('duration exceeded');
     expect(f.world.__hqMeetProbe).toBeUndefined();
   });
+});
+
+it('keeps start pending until a real activation and fails a bounded unactivated wait', async () => {
+  const f = await fixture({suspended:true}); let completed = false;
+  const started = f.start().then(()=>{completed=true;});
+  await Promise.resolve(); expect(completed).toBe(false);
+  f.activate(); await started; expect(completed).toBe(true); await f.probe.stop();
+  const g = await fixture({suspended:true}); const denied = g.start();
+  const rejected = expect(denied).rejects.toThrow('gesture timed out'); g.expireAudio(); await rejected; await g.probe.stop();
+});
+it('can stop before start and cancel an outstanding gesture wait', async () => {
+  const f = await fixture({skipStart:true}); await expect(f.probe.stop()).resolves.toBeUndefined();
+  expect(f.world.__hqMeetProbe).toBeUndefined();
+  const g = await fixture({suspended:true}); const pending = g.start();
+  const rejected = expect(pending).rejects.toThrow('gesture cancelled'); await g.probe.stop(); await rejected;
+});
+it('returns SDP while gathering continues and drains actual queued candidates once', async () => {
+  const f = await fixture(); expect(f.pcs[0].iceGatheringState).toBe('gathering');
+  const candidates = f.probe.drainIce('remote'); expect(candidates).toHaveLength(16);
+  expect(f.probe.drainIce('remote')).toEqual([]);
+  await f.probe.addIce('remote',candidates); expect(f.pcs[0].receivedCandidates).toHaveLength(16);
+  expect(f.probe.connection('remote')).toMatchObject({state:'connected',channelState:'open'});
+  expect(JSON.stringify(await f.sample())).not.toContain('PRIVATE_ADDRESS'); await f.probe.stop();
 });
