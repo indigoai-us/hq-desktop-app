@@ -54,6 +54,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const chatSidebar = readRepoFile('../../packages/ui/src/chat/ChatSidebar.svelte');
   const uiDesktopApp = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+  const channelSkeleton = readRepoFile('../../packages/ui/src/shell/ChannelSkeleton.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
   const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
   const overview = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
@@ -170,7 +171,29 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(titleBar).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(titleBar).toContain('@media (prefers-reduced-motion: reduce)');
     expect(desktopApp).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(uiDesktopApp).toContain('@media (prefers-reduced-motion: reduce)');
+
+    // The real property under contract is: every ANIMATION in the shell has a
+    // reduced-motion escape hatch. A missing guard is an accessibility
+    // regression, which is why this suite checks it.
+    //
+    // The shell's `.reply-column { transition: width 150ms }` -- and with it the
+    // only reduced-motion block packages/ui/src/shell/DesktopApp.svelte had --
+    // was deliberately removed in perf/ui-smoothness: animating a flex column's
+    // `width` relayouts and repaints the pane AND its sibling every frame.
+    // Deleting the motion removes the need for the guard, so asserting the guard
+    // string in that file now only proves the slow transition came back.
+    //
+    // So the assertion is re-pointed at the two things that actually hold:
+    //   1. the layout-thrashing width transition must not be reintroduced;
+    //   2. the shell's remaining animation -- the transform-based skeleton
+    //      shimmer -- must still carry its reduced-motion escape hatch.
+    // DesktopApp.svelte's only surviving `transition` is `color 0.12s`, a colour
+    // fade with no movement, which prefers-reduced-motion does not target.
+    expect(uiDesktopApp).not.toMatch(/\.reply-column[^}]*transition:\s*width/);
+    expect(channelSkeleton).toContain('animation: sk-shimmer');
+    expect(channelSkeleton).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation:\s*none/,
+    );
   });
 
   it('collapses wide list-detail while keeping primary actions unshrunk', () => {
