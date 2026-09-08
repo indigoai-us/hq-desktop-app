@@ -10,11 +10,13 @@ const ui = (rel: string) =>
   readFileSync(join(process.cwd(), "../../packages/ui/src", rel), "utf8");
 
 describe("lifecycle company channel", () => {
-  it("DesktopApp keeps the five company tabs and Team/Settings/Atlas/Integrations mounts", () => {
+  it("DesktopApp keeps the four company tabs and Team/Settings/Atlas mounts (no Integrations tab)", () => {
     const app = ui("shell/DesktopApp.svelte");
     expect(app).toContain("CompanyTabs");
     expect(app).toContain("<TeamTab");
-    expect(app).toContain("<IntegrationsTab");
+    // Apps are connected in the HQ console; the desktop never mounts an
+    // integrations surface.
+    expect(app).not.toContain("<IntegrationsTab");
     expect(app).toContain("<SettingsTab");
     expect(app).toContain("<AtlasTab");
     expect(app).toContain("<CompanyHero");
