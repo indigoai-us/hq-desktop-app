@@ -5,7 +5,10 @@ import {
   appearanceThemeOptions,
   applyColorTheme,
   applyUiSize,
+  applyWindowOpacity,
   calendarAccountLabel,
+  hasAppearanceHost,
+  readHostWindowOpacity,
   companyAvatarWash,
   membershipStatusLabel,
   normalizeColorTheme,
@@ -150,6 +153,63 @@ describe("interface density", () => {
     expect(attrs.get("data-ui-size")).toBe("compact");
     applyUiSize("default", fakeRoot);
     expect(attrs.has("data-ui-size")).toBe(false);
+  });
+});
+
+describe("window opacity", () => {
+  function fakeRoot(dataset: Record<string, string> = {}) {
+    const vars = new Map<string, string>();
+    const root = {
+      dataset,
+      style: {
+        setProperty: (k: string, v: string) => vars.set(k, v),
+      },
+    } as unknown as HTMLElement;
+    return { root, vars };
+  }
+
+  it("asks the host to apply the inverse transparency and keeps the legacy var", () => {
+    const { root, vars } = fakeRoot({ windowTransparency: "35" });
+    const target = new EventTarget();
+    const seen: unknown[] = [];
+    target.addEventListener("hq:appearance-request", (event) =>
+      seen.push((event as CustomEvent).detail),
+    );
+    expect(applyWindowOpacity(72, root, target)).toBe(72);
+    expect(seen).toEqual([{ windowTransparency: 28 }]);
+    expect(vars.get("--hq-window-opacity")).toBe("72%");
+    // Host present → host owns the surface vars; no fallback write.
+    expect(vars.has("--hq-window-transparency-factor")).toBe(false);
+    expect(vars.has("--hq-window-alpha-light")).toBe(false);
+  });
+
+  it("writes the transparency vars itself when no host is installed", () => {
+    const { root, vars } = fakeRoot();
+    const target = new EventTarget();
+    applyWindowOpacity(60, root, target);
+    expect(vars.get("--hq-window-transparency-factor")).toBe("0.40");
+    expect(vars.get("--hq-window-alpha-light")).toBe("0.60");
+    expect(vars.get("--hq-window-alpha-dark")).toBe("0.73");
+    applyWindowOpacity(100, root, target);
+    expect(vars.get("--hq-window-transparency-factor")).toBe("0.00");
+    expect(vars.get("--hq-window-alpha-light")).toBe("1.00");
+    expect(vars.get("--hq-window-alpha-dark")).toBe("1.00");
+  });
+
+  it("clamps to the 50..100 slider range", () => {
+    const { root } = fakeRoot();
+    expect(applyWindowOpacity(10, root, null)).toBe(50);
+    expect(applyWindowOpacity(140, root, null)).toBe(100);
+  });
+
+  it("reads the host marker as slider opacity", () => {
+    expect(hasAppearanceHost(fakeRoot().root)).toBe(false);
+    expect(readHostWindowOpacity(fakeRoot().root)).toBeNull();
+    const { root } = fakeRoot({ windowTransparency: "65" });
+    expect(hasAppearanceHost(root)).toBe(true);
+    expect(readHostWindowOpacity(root)).toBe(50);
+    expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "20" }).root)).toBe(80);
+    expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "nope" }).root)).toBeNull();
   });
 });
 

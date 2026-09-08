@@ -10,7 +10,11 @@ import {
   pendingInviteWorkspaces,
   type Workspace,
 } from "../chat/workspaces.js";
-import type { ColorTheme } from "./appearance-seam.js";
+import {
+  APPEARANCE_REQUEST_EVENT,
+  WINDOW_TRANSPARENCY_DATASET_KEY,
+  type ColorTheme,
+} from "./appearance-seam.js";
 import type { SettingsUiSize } from "./settings-prefs.js";
 
 export const THEME_STORAGE_KEY = "hq-work-color-theme";
@@ -213,12 +217,60 @@ export function applyUiSize(
   return next;
 }
 
+/** True when the desktop host's appearance installer owns the root vars. */
+export function hasAppearanceHost(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+): boolean {
+  return root?.dataset?.[WINDOW_TRANSPARENCY_DATASET_KEY] !== undefined;
+}
+
+/** Slider opacity (50..100) currently applied by the host, if any. */
+export function readHostWindowOpacity(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+): number | null {
+  const raw = root?.dataset?.[WINDOW_TRANSPARENCY_DATASET_KEY];
+  if (raw === undefined) return null;
+  const transparency = Number(raw);
+  if (!Number.isFinite(transparency)) return null;
+  return Math.min(100, Math.max(50, Math.round(100 - transparency)));
+}
+
+/**
+ * Drives the live window transparency from the Settings opacity slider.
+ *
+ * The real surface alphas (home/tokens.css, chat/tokens.css) derive from
+ * `--hq-window-transparency-factor` + `--hq-window-alpha-{light,dark}`, which
+ * the desktop host writes from its persisted appearance preference. So:
+ *  1. ask the host to apply + persist via APPEARANCE_REQUEST_EVENT (the host
+ *     expresses the value as transparency = 100 - opacity);
+ *  2. when no host is installed (web), write the same vars directly using the
+ *     host's formulas so the slider still does something;
+ *  3. keep `--hq-window-opacity` for anything that still reads it.
+ */
 export function applyWindowOpacity(
   opacity: number,
   root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+  target: EventTarget | null = typeof window === "undefined" ? null : window,
 ): number {
   const next = Math.min(100, Math.max(50, Math.round(opacity)));
+  const transparency = 100 - next;
   root?.style.setProperty("--hq-window-opacity", `${next}%`);
+  target?.dispatchEvent(
+    new CustomEvent(APPEARANCE_REQUEST_EVENT, {
+      detail: { windowTransparency: transparency },
+    }),
+  );
+  if (root && !hasAppearanceHost(root)) {
+    // Same formulas as apps/sync/src/lib/appearancePreferences.ts.
+    const lightAlpha = Math.max(0.15, 1 - transparency / 100);
+    const darkAlpha = Math.min(1, lightAlpha + 0.13);
+    root.style.setProperty(
+      "--hq-window-transparency-factor",
+      (transparency / 100).toFixed(2),
+    );
+    root.style.setProperty("--hq-window-alpha-light", lightAlpha.toFixed(2));
+    root.style.setProperty("--hq-window-alpha-dark", darkAlpha.toFixed(2));
+  }
   return next;
 }
 

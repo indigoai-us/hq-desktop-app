@@ -37,6 +37,8 @@
     applyUiSize,
     applyWindowOpacity,
     calendarAccountLabel,
+    hasAppearanceHost,
+    readHostWindowOpacity,
     readStoredTheme,
     settingsCompanyLists,
   } from "./shell-settings-model.js";
@@ -53,7 +55,10 @@
     readLiveSyncStatus,
     type LiveSyncStatus,
   } from "./live-sync-status.js";
-  import type { ColorTheme } from "./appearance-seam.js";
+  import {
+    APPEARANCE_CHANGE_EVENT,
+    type ColorTheme,
+  } from "./appearance-seam.js";
   import {
     configureMeetingsApi,
     meetingsStore,
@@ -102,7 +107,15 @@
     refreshAppVersion,
   }: Props = $props();
 
-  let prefs = $state<ShellSettingsPrefs>(readSettingsPrefs(storage));
+  // When the desktop host's appearance installer is present it has already
+  // applied its persisted transparency to <html>; seed the slider from that
+  // instead of the local pref so the two never disagree on first paint.
+  const hostOpacity = readHostWindowOpacity();
+  let prefs = $state<ShellSettingsPrefs>(
+    hostOpacity == null
+      ? readSettingsPrefs(storage)
+      : { ...readSettingsPrefs(storage), windowOpacity: hostOpacity },
+  );
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -1003,8 +1016,24 @@
   });
 
   onMount(() => {
+    // Keep the slider in sync when transparency changes elsewhere (another
+    // window, storage event, native menu) — the host announces every apply.
+    const onAppearanceChange = () => {
+      const next = readHostWindowOpacity();
+      if (next != null && next !== prefs.windowOpacity) {
+        prefs = writeSettingsPrefs({ windowOpacity: next }, storage);
+      }
+    };
+    window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+    return () =>
+      window.removeEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
+  });
+
+  onMount(() => {
     applyUiSize(prefs.uiSize);
-    applyWindowOpacity(prefs.windowOpacity);
+    // With a host present, its persisted value is already live; re-applying
+    // the local pref here would clobber it with a stale copy.
+    if (!hasAppearanceHost()) applyWindowOpacity(prefs.windowOpacity);
     if (!adapter) return;
     void refreshNotifPermission();
     // Re-read after returning from System Settings (v1 SettingsPage pattern).

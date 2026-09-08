@@ -9,6 +9,18 @@
  * unavailable state instead of dead controls.
  */
 
+/**
+ * Window-level DOM contract shared with the desktop host
+ * (`apps/sync/src/lib/appearancePreferences.ts`). packages/ui must not import
+ * from apps/sync, so the names are duplicated here and must stay in sync:
+ * - the host listens for APPEARANCE_REQUEST_EVENT and applies + persists;
+ * - the host dispatches APPEARANCE_CHANGE_EVENT after every apply;
+ * - the host marks `<html data-window-transparency="0..100">` once installed.
+ */
+export const APPEARANCE_REQUEST_EVENT = "hq:appearance-request";
+export const APPEARANCE_CHANGE_EVENT = "hq:appearance-change";
+export const WINDOW_TRANSPARENCY_DATASET_KEY = "windowTransparency";
+
 export const DEFAULT_WINDOW_TRANSPARENCY = 65;
 export const MIN_WINDOW_TRANSPARENCY = 0;
 export const MAX_WINDOW_TRANSPARENCY = 100;
