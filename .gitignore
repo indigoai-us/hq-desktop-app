@@ -13,3 +13,8 @@ apps/sync/.dmgbuild-venv/
 
 # node_modules symlinks (the trailing-slash rule above only matches directories)
 **/node_modules
+
+# Local perf harness output (`pnpm perf`): timestamped run files plus the
+# harness build it serves. The COMMITTED baseline lives at
+# scripts/fixtures/perf-baseline.json — see docs/performance-diagnostics.md.
+perf-results/

@@ -14,6 +14,8 @@
     "test": "turbo run test",
     "coverage": "turbo run coverage",
     "test:scripts": "vitest run scripts/*.test.ts",
+    "perf": "node scripts/perf-run.mjs",
+    "perf:lint": "vitest run scripts/perf-budget-contract.test.ts scripts/perf-stats.test.ts",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "version:app": "tsx scripts/version-app.ts",
