@@ -1,0 +1,129 @@
+name: Meet native test artifacts (no publication)
+
+# Initial validation is restricted to this feature branch and workflow changes.
+# No release, tag, updater, or announcement is created.
+on:
+  push:
+    branches: [codex/hq-meet-desktop-integration]
+    paths: [.github/workflows/meet-native-artifacts.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-test-package:
+    name: Signed Windows x64 test package
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: apps/sync
+        shell: pwsh
+    env:
+      HQ_SYNC_SENTRY_DSN: ""
+      VITE_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require existing company signing configuration
+        env:
+          SIGN_CLIENT: ${{ vars.AZURE_CLIENT_ID }}
+          SIGN_TENANT: ${{ vars.AZURE_TENANT_ID }}
+          SIGN_SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          if (-not $env:SIGN_CLIENT -or -not $env:SIGN_TENANT -or -not $env:SIGN_SUBSCRIPTION) {
+            throw 'Existing Indigo Azure signing configuration is required; unsigned fallback is forbidden.'
+          }
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/sync/src-tauri
+          shared-key: meet-native-test-x64
+      - name: Install locked dependencies and native sidecar
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+          pnpm run sidecar:install
+          if ($LASTEXITCODE -ne 0) { throw 'Sidecar installation failed' }
+          pnpm -C sidecar/recall-sdk-bridge build
+          if ($LASTEXITCODE -ne 0) { throw 'Sidecar build failed' }
+      - name: Write isolated test configuration
+        run: |
+          $config = @{ productName = 'HQ Meet Native Test'; identifier = 'ai.indigo.hq-meet-native-test'; bundle = @{ createUpdaterArtifacts = $false } }
+          $config | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 'src-tauri/tauri.meet-test.generated.json'
+          "HQ_BUILD_COMMIT=${{ github.sha }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Validate harness on Windows
+        run: pnpm exec vitest run --config e2e/meet/vitest.config.ts
+      - name: Build native test executable
+        run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --features meet-native-webdriver --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.meet-test.generated.json
+      - name: Azure login using existing company OIDC configuration
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign the test executable with the existing Indigo certificate profile
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release
+          files-folder-filter: hq-sync-menubar.exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Package the already signed executable
+        run: pnpm tauri bundle --target x86_64-pc-windows-msvc --features meet-native-webdriver --bundles nsis --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.meet-test.generated.json
+      - name: Sign the isolated test installer
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify native signatures and preserve artifact identity
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE 'meet-native-artifacts'
+          New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
+          $exe = Get-Item 'src-tauri/target/x86_64-pc-windows-msvc/release/hq-sync-menubar.exe' -ErrorAction Stop
+          $installers = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one isolated test installer' }
+          $records = @()
+          foreach ($file in @($exe) + $installers) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Indigo') {
+              throw 'Test artifact does not have a valid Indigo Authenticode signature'
+            }
+            Copy-Item -LiteralPath $file.FullName -Destination $root -ErrorAction Stop
+            $records += @{ name=$file.Name; sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); signerThumbprint=$signature.SignerCertificate.Thumbprint }
+          }
+          @{ schema='hq-meet-test-artifact/v1'; commit='${{ github.sha }}'; feature='meet-native-webdriver'; platform='windows'; architecture='x64'; diagnosticOnly=$true; nativeCallCertified=$false; artifacts=$records } | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $root 'manifest.json')
+      - name: Retain test artifacts only
+        uses: actions/upload-artifact@v4
+        with:
+          name: meet-native-windows-x64-${{ github.sha }}
+          path: meet-native-artifacts/
+          if-no-files-found: error
+          retention-days: 7
