@@ -37,11 +37,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::run_cli_provision::{
-    run_cli_provision, CliProvisionError, CliProvisionResult,
-};
+use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
 use crate::commands::vault_client::VaultClient;
 use crate::commands::workspaces::{read_manifest, ManifestLoad};
+use crate::util::logfile::log;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -101,7 +100,8 @@ pub(crate) fn write_company_config(config_path: &Path, config: &CompanyConfig) -
 /// `vault_api_url` is written verbatim into each company's `.hq/config.json`.
 ///
 /// Production wrapper: delegates Path C to the canonical `hq cloud provision`
-/// CLI subprocess via [`run_cli_provision`]. Tests use
+/// CLI subprocess via `run_cli_provision`, behind the per-launch retry
+/// ledger (US-039: no spawn without auth, backoff + cap on exit 1). Tests use
 /// [`provision_missing_companies_with_provisioner`] with a mock to exercise the
 /// Rust-level dispatch logic without spawning the real binary.
 pub async fn provision_missing_companies(
@@ -113,7 +113,14 @@ pub async fn provision_missing_companies(
         hq_root,
         vault,
         vault_api_url,
-        |slug, name, root| async move { run_cli_provision(&slug, name.as_deref(), &root).await },
+        |slug, name, root| async move {
+            crate::commands::provision_retry::guarded_run_cli_provision(
+                &slug,
+                name.as_deref(),
+                &root,
+            )
+            .await
+        },
     )
     .await
 }
@@ -121,7 +128,7 @@ pub async fn provision_missing_companies(
 /// Test seam for [`provision_missing_companies`].
 ///
 /// `provisioner` is the Path C dispatch — in production it wraps
-/// [`run_cli_provision`], which shells out to `hq cloud provision company`.
+/// `run_cli_provision`, which shells out to `hq cloud provision company`.
 /// Tests pass closures that return canned [`CliProvisionResult`] values so the
 /// Rust dispatch logic (Path A/B/C selection, error propagation, partial-result
 /// handling on `CliProvisionError::Sync`) can be exercised without spawning the
@@ -367,6 +374,17 @@ where
                     });
                 }
                 return Err(format!("provision '{folder_name}' via hq CLI: {message}"));
+            }
+            Err(CliProvisionError::Deferred(reason)) => {
+                // US-039: the retry ledger held this attempt back (no auth,
+                // backoff, or cap). The company stays local-only for this
+                // pass and the rest of the sync proceeds; a later pass (or
+                // sign-in) retries it.
+                log(
+                    "provision",
+                    &format!("provision '{folder_name}' deferred this pass: {reason}"),
+                );
+                continue;
             }
             Err(e) => {
                 return Err(format!("provision '{folder_name}' via hq CLI: {e}"));
@@ -791,6 +809,75 @@ mod tests {
         assert!(requests
             .iter()
             .all(|request| !request.url.path().contains("by-slug")));
+    }
+
+    // (e2) US-039: a provisioner that is held back by the retry ledger
+    // (no auth / backoff / cap) must not bail the whole sync. The company is
+    // skipped this pass, nothing is written, and the caller gets Ok.
+    #[tokio::test]
+    async fn test_deferred_provisioner_skips_company_without_bailing() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "arbium";
+        let yaml_path = setup_company(tmp.path(), slug, Some("cloud: true\nname: Arbium\n"));
+        let sha_before = sha256_file(&yaml_path);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({ "available": true })),
+            )
+            .mount(&server)
+            .await;
+        let provisioner = |s: String, _name: Option<String>, _root: PathBuf| async move {
+            Err(CliProvisionError::Deferred(format!("slug={s}: waiting for sign-in")))
+        };
+
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .expect("a deferred attempt is not a sync failure");
+
+        assert!(result.is_empty(), "nothing was provisioned this pass");
+        assert_eq!(sha256_file(&yaml_path), sha_before, "company.yaml was modified");
+        assert!(
+            !tmp.path().join("companies").join(slug).join(".hq").join("config.json").exists(),
+            "no config.json without a real provision"
+        );
+    }
+
+    // (e3) US-039 contrast: a real exit-1 failure still surfaces as an error
+    // (the ledger, not this walker, decides when to retry it).
+    #[tokio::test]
+    async fn test_network_failure_still_propagates() {
+        let tmp = TempDir::new().unwrap();
+        setup_company(tmp.path(), "arbium", Some("cloud: true\n"));
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/check-slug/me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(&serde_json::json!({ "available": true })),
+            )
+            .mount(&server)
+            .await;
+        let provisioner = |_s: String, _name: Option<String>, _root: PathBuf| async move {
+            Err(CliProvisionError::Network("exit 1 (vault)".into()))
+        };
+
+        let err = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exit 1 (vault)"), "{err}");
     }
 
     // (f) manifest cloud_uid → reuse the exact entity by UID and do not invoke

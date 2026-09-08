@@ -45,6 +45,7 @@ pub mod paths;
 pub mod prewarm;
 pub mod process_types;
 pub mod projects_local;
+pub mod provision_retry;
 pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;

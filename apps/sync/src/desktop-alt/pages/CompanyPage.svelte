@@ -268,8 +268,25 @@
     </div>
   </header>
 
+  {#if connectable && !pendingInvite}
+    <!-- US-039: a company whose cloud provisioning never ran or failed (e.g.
+         `hq cloud provision` exited before sign-in) reads as local-only /
+         broken. Say so in plain words next to the Connect action instead of
+         leaving integrations and console surfaces silently dead. -->
+    <p
+      class="company-unconnected-notice"
+      role="status"
+      data-testid="company-unconnected-notice"
+    >
+      {company.displayName} isn't connected to HQ cloud yet.
+      {#if company.state === 'broken' && company.brokenReason}
+        {company.brokenReason}.
+      {/if}
+      Use {company.state === 'broken' ? 'Retry connect' : 'Connect to cloud'} to finish setting it up.
+    </p>
+  {/if}
   {#if actionError}
-    <p class="company-action-error" role="status">{actionError}</p>
+    <p class="company-action-error" role="status" data-testid="company-action-error">{actionError}</p>
   {/if}
   {#if actionNotice}
     <p class="company-action-notice" role="status">{actionNotice}</p>
@@ -414,6 +431,17 @@
     transform: none;
     opacity: 0.58;
     cursor: default;
+  }
+
+  .company-unconnected-notice {
+    margin: -10px 0 0;
+    padding: var(--v4-space-3) var(--v4-space-4);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    line-height: 1.4;
   }
 
   .company-action-error {

@@ -162,6 +162,7 @@ fn report_provision_error(
         CliProvisionError::LocalEnv { .. } => "local-env",
         CliProvisionError::Sync { .. } => "sync",
         CliProvisionError::Other(_) => "other",
+        CliProvisionError::Deferred(_) => "deferred",
     };
     let local_env_kind: Option<&str> = match err {
         CliProvisionError::LocalEnv { kind, .. } => Some(kind),
@@ -463,6 +464,11 @@ pub enum CliProvisionError {
     /// Anything we can't classify — non-zero exit code outside [1,2,3], or
     /// stdout that didn't contain a parseable JSON line, or IO mid-stream.
     Other(String),
+    /// The attempt was not run at all (US-039): no stored auth, an active
+    /// retry backoff, or the per-launch retry budget is spent. Produced by
+    /// `provision_retry::run_guarded`, never by the CLI. Callers skip the
+    /// company for this pass instead of failing the whole sync.
+    Deferred(String),
 }
 
 impl std::fmt::Display for CliProvisionError {
@@ -483,7 +489,15 @@ impl std::fmt::Display for CliProvisionError {
                 write!(f, "initial sync failed after entity provisioned: {message}")
             }
             Self::Other(m) => write!(f, "`hq cloud provision` failed: {m}"),
+            Self::Deferred(m) => write!(f, "provisioning deferred: {m}"),
         }
+    }
+}
+
+impl CliProvisionError {
+    /// True when no CLI attempt ran (see [`CliProvisionError::Deferred`]).
+    pub fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred(_))
     }
 }
 

@@ -1119,6 +1119,8 @@ fn main() {
             // long-stop that must work everywhere, including Linux dev boxes
             // with no realtime MQTT stack at all.
             commands::client_diagnostics::setup_client_diagnostics_poller(app.handle().clone());
+            // US-039: lets a deferred/failed provisioning attempt start its own retry sync.
+            commands::provision_retry::install_app_handle(app.handle().clone());
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
