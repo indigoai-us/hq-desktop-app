@@ -360,6 +360,8 @@ export interface CardActionResult {
   /** US-006/011: agent channel minted on create_agent accept. */
   agentChannelId?: string;
   agentUid?: string;
+  companyChannelId?: string;
+  companyUid?: string;
   navigateTo?: "chat";
   focusCardId?: string;
   /**

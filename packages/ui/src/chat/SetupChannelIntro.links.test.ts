@@ -95,6 +95,12 @@ describe("setup welcome copy model", () => {
 });
 
 describe("SetupChannelIntro welcome experience", () => {
+  it("keeps company setup in the app and makes coding-tool setup optional", async () => {
+    await mountIntro();
+    expect(SETUP_HERO.body).not.toContain("/setup");
+    expect(host.textContent).toContain("Create or choose a company below");
+    expect(host.querySelector('[data-testid="setup-launch-codex"]')?.closest("details")?.open).toBe(false);
+  });
   it("renders the hero, every resource link, the support note, and the launch buttons", async () => {
     await mountIntro();
 

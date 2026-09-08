@@ -150,7 +150,7 @@ export const SETUP_URLS = {
 export const SETUP_HERO = {
   eyebrow: "Welcome to HQ",
   title: "Your team's operating system for AI.",
-  body: "HQ Desktop is the companion app for the HQ team AI operating system — messaging, sync, agents, and shared files in one place. Run /setup once and your workspace is ready for your whole team.",
+  body: "Create or choose a company below. We'll guide you through cloud setup and choosing a plan, then open your team's channel. Already created a company on the website? Sign in with the same account to continue it here.",
 } as const;
 
 export type SetupResourceKind = "guide" | "book" | "training" | "docs";
@@ -227,7 +227,7 @@ export const SETUP_WELCOME_MESSAGES: readonly SetupWelcomeMessage[] = [
   {
     id: "get-started",
     title: "How to get started",
-    body: "Open your HQ folder, run /setup in Claude Code or Codex, then connect your team. The buttons below launch that prompt for you.",
+    body: "Create or choose a company below, follow the setup steps, and open its team channel. Starter is free; paid agents are optional.",
     links: [
       {
         label: SETUP_RESOURCES[0].title,

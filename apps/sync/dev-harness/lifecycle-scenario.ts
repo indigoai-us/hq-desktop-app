@@ -293,11 +293,11 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         },
         {
           id: 'slug',
-          label: 'Handle',
+          label: 'Company address',
           control: 'text',
-          required: true,
-          value: 'ramen-bae',
-          hint: 'ramen-bae is available',
+          required: false,
+          value: '',
+          hint: 'Generated from your company name. You can edit it.',
           description: 'Used for the channel name and vault path.',
         },
       ],
@@ -552,6 +552,8 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     await patchCard(SETUP_CHANNEL_ID, 'card_create_company', {
       state: 'done',
       statusLabel: `Created ${companyName}`,
+      summary: 'Your company is saved. Continue setup in its team channel.',
+      actions: [{ id: 'open_company', label: 'Open company channel', style: 'primary', href: `/v1/notify/channels/${COMPANY_CHANNEL_ID}` }],
       fields: [
         { id: 'name', label: 'Company name', control: 'readonly', value: companyName },
         { id: 'slug', label: 'Handle', control: 'readonly', value: slug || 'ramen-bae' },
@@ -579,10 +581,6 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     await emit('channel:unread-changed', { source: 'lifecycle-scenario' });
     await upsertCompaniesSummary();
     void (async () => {
-      // Let the sidebar reconcile the directory (400ms debounce) so the open
-      // resolves to the real company row (scope → hero + tabs), not a stub.
-      await wait(900);
-      openCompanyChannel();
       await wait(2000);
       await patchCard(COMPANY_CHANNEL_ID, 'card_activate_cloud', {
         state: 'done',
@@ -596,6 +594,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       actionId: 'submit',
       state: 'done',
       companyUid: COMPANY_UID,
+      companyChannelId: COMPANY_CHANNEL_ID,
     };
   }
 
@@ -740,19 +739,12 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       plan = 'starter';
       await patchCard(COMPANY_CHANNEL_ID, cardId, {
         state: 'skipped',
-        statusLabel: 'Staying on Starter',
+        title: 'Your company is ready',
+        statusLabel: 'Starter · Free',
+        summary: 'Start a conversation in your team channel. Upgrade to Workforce later if you want a hosted agent.',
+        fields: [],
+        actions: [],
       });
-      await wait(400);
-      await postCard(
-        COMPANY_CHANNEL_ID,
-        createAgentCard(1, 'blocked', {
-          statusLabel: 'Needs Workforce',
-          reason: 'Fleet agents need the Workforce plan. Upgrade to create Polar.',
-          actions: [
-            { id: 'upgrade', label: 'Upgrade plan', style: 'primary' },
-          ],
-        }),
-      );
       return { cardId, actionId, state: 'skipped' };
     }
     const chosen = values.plan === 'enterprise' ? 'enterprise' : 'workforce';

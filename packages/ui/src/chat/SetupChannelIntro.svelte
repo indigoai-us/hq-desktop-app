@@ -161,6 +161,8 @@
       <h2 class="hero-title">{SETUP_HERO.title}</h2>
       <p class="hero-body">{SETUP_HERO.body}</p>
 
+      <details class="optional-tools">
+      <summary>Optional: connect a coding tool</summary>
       <div class="hero-actions" role="group" aria-label="Open setup">
         {#each LAUNCHES as launch (launch.key)}
           <div class="setup-action">
@@ -183,6 +185,7 @@
           </div>
         {/each}
       </div>
+      </details>
     </div>
   </div>
 
@@ -241,6 +244,9 @@
 </section>
 
 <style>
+  .optional-tools { margin-top: 16px; font-size: 13px; }
+  .optional-tools summary { cursor: pointer; color: inherit; }
+  .optional-tools[open] .hero-actions { margin-top: 12px; }
   .setup-intro {
     flex: 0 0 auto;
     overflow: visible;

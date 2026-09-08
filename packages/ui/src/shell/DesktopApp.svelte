@@ -1174,6 +1174,7 @@
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
+    pendingCardId?: string,
   ): Promise<void> {
     // Apply whenever this row is still selected. Do not require matching
     // timelineSeq — MQTT catch-up / a re-run of the hydrate effect used to
@@ -1183,7 +1184,18 @@
     timelineHydrating = false;
     if (raw == null) return;
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
-    const incoming = messagesForDisplay(raw);
+    let incoming = messagesForDisplay(raw);
+    // An immediate readback can lag the accepted mutation. Preserve its
+    // pending receipt over a stale open card, but accept any newer state.
+    if (pendingCardId && incoming.some((message) => {
+      const envelope = message.systemEvent;
+      return !!envelope && typeof envelope === "object" &&
+        "type" in envelope && envelope.type === "lifecycle_card" &&
+        "cardId" in envelope && envelope.cardId === pendingCardId &&
+        "state" in envelope && envelope.state === "open";
+    })) {
+      incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
+    }
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
   }
@@ -2236,6 +2248,8 @@
         agentChannelId:
           typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
         agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
+        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
         focusCardId:
           typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
         // Entry points: the summary card's create_company action answers with
@@ -2442,7 +2456,7 @@
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
-  function applyCardActionFailure(cardId: string, message: string): void {
+  function applyCardActionFailure(cardId: string, message: string, values?: Record<string, string>): void {
     const row = selectedRow;
     if (!row) return;
     const current =
@@ -2452,8 +2466,9 @@
     commitTimeline(
       row,
       patchLifecycleCardState(current, cardId, {
-        state: "blocked",
+        state: /timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(message) ? "open" : "blocked",
         reason: message,
+        values,
       }),
     );
   }
@@ -2549,22 +2564,33 @@
   }
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
     const result = await submitLifecycleCardAction({
       event,
       store: cardActionKeys,
       run: conversationApi.runCardAction,
-      onFailure: applyCardActionFailure,
+      onFailure: (cardId, message) => applyCardActionFailure(cardId, message, event.values),
     });
-    const agentChannelId =
-      result && typeof result.agentChannelId === "string"
-        ? result.agentChannelId.trim()
-        : "";
-    if (agentChannelId.startsWith("chn_")) {
-      requestChannelOpen(agentChannelId, {
-        title: headerTitle,
-        companyUid: selectedRow?.companyUid ?? null,
+    // The HTTP response settles this interaction; MQTT is supplementary.
+    // Otherwise a missed lifecycle wake leaves localPending stuck forever.
+    if (result && actionRow && selectedRow?.id === actionRow.id) {
+      const state = result.state;
+      if (state === "open" || state === "pending" || state === "done" || state === "skipped" || state === "blocked") {
+        commitTimeline(actionRow, patchLifecycleCardState(liveTimeline, event.cardId, { state, reason: null }));
+      }
+      // Fetch newly created steps even when no live event arrives. Failure
+      // must not turn an already-saved choice into a failed mutation.
+      void fetchTimelineRaw(actionRow)
+        .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
+        .catch(() => {});
+    }
+    const destination = result?.companyChannelId?.trim() || result?.agentChannelId?.trim();
+    if (destination?.startsWith("chn_")) {
+      requestChannelOpen(destination, {
+        title: result?.companyChannelId ? "Company channel" : headerTitle,
+        companyUid: result?.companyUid ?? selectedRow?.companyUid ?? null,
       });
       return;
     }
