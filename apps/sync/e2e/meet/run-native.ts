@@ -6,16 +6,25 @@ import { verifyNativeEvidence } from './native-harness';
 import { collectHost } from './host-collector';
 import { generateFixtures } from './fixture-generator';
 import { runLadder } from './ladder';
+import { normalizeBoundDiagnostics } from './observation-normalizer';
 import { type Profile } from './fixtures';
 
 async function main(): Promise<void> {
   const [mode, configPath, outputPath] = process.argv.slice(2);
-  if (!['collect', 'verify', 'host', 'fixtures', 'ladder'].includes(mode) || !configPath || !outputPath) throw new Error('usage: run-native.ts collect|verify|host|fixtures|ladder config.json output.json');
+  if (!['collect', 'verify', 'host', 'fixtures', 'ladder', 'normalize'].includes(mode) || !configPath || !outputPath) throw new Error('usage: run-native.ts collect|verify|host|fixtures|ladder|normalize config.json output.json');
   const raw = await readFile(configPath, 'utf8');
   if (raw.length > 64_000) throw new Error('configuration exceeds size budget');
   const config = JSON.parse(raw);
   let result: unknown;
-  if (mode === 'host') {
+  if (mode === 'normalize') {
+    const boundedJson = async (file: string) => {
+      const bytes = await readFile(file);
+      if (bytes.length > 32 * 1024 * 1024) throw new Error('observation byte budget exceeded');
+      return JSON.parse(bytes.toString('utf8'));
+    };
+    result = normalizeBoundDiagnostics(await boundedJson(config.diagnosticPath),
+      await boundedJson(config.hostObservationsPath), config.expectedBinaries);
+  } else if (mode === 'host') {
     result = await collectHost(config);
   } else if (mode === 'fixtures') {
     result = await generateFixtures(config.directory, config.fileSizeBytes);
@@ -27,7 +36,11 @@ async function main(): Promise<void> {
     // Secret value never enters the persisted config or output. Resolve through hq secrets exec.
     const iceServers = process.env.HQ_MEET_TEST_ICE_SERVERS ? JSON.parse(process.env.HQ_MEET_TEST_ICE_SERVERS) : undefined;
     result = await collectNativeDiagnostics({ endpoints: config.endpoints, profile: config.profile as Profile,
-      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers });
+      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers,
+      onProbeStarted: config.bindingDirectory ? async binding => {
+        await mkdir(resolve(config.bindingDirectory), { recursive: true });
+        await writeFile(resolve(config.bindingDirectory, `${binding.id}.json`), JSON.stringify(binding), { flag: 'wx', mode: 0o600 });
+      } : undefined });
   } else {
     result = await verifyNativeEvidence({ root: config.evidenceRoot, evidencePath: config.evidencePath,
       signature: await readFile(config.signaturePath), trustedPublicKeyPem: await readFile(config.trustedCollectorPublicKeyPath, 'utf8') });

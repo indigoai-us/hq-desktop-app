@@ -74,7 +74,7 @@ describe('US-012 executable probe regressions (not native evidence)', () => {
     expect(s.rtc.find((r: any) => r.type === 'inbound-rtp').totalSamplesReceived).toBe(120000);
     f.set(3000, 2, 2); const recovered = await f.sample();
     expect(recovered.receivedVideoMarkers).toBe(2); expect(recovered.receivedAudioMarkers).toBe(2);
-    expect(recovered.audioGapMs).toBe(0);
+    expect(recovered.audioGapMs).toBe(3000);
     await f.probe.stop();
   });
   it('observes silence independently and projects candidate type without addresses', async () => {

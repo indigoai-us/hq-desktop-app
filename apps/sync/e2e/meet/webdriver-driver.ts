@@ -1,4 +1,5 @@
 /** Concrete adapter for existing native WebDriver sessions. Never launches a browser. */
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SCREEN_LINES, profiles, sha256, type Profile } from './fixtures';
@@ -7,7 +8,7 @@ export interface Endpoint { id: string; webdriverUrl: string; sessionId: string 
 export interface NativeDiagnostic {
   schema: 'hq-meet-native-diagnostic/v1'; provenance: 'unattested-native-probe';
   profile: Profile; durationMs: number; speechSha256: string; fileSizeBytes: number;
-  endpoints: { id: string; samples: unknown[]; screenshotPngBase64: string }[];
+  endpoints: { id: string; sessionId?: string; webdriverUrl?: string; probeNonce?: string; samples: unknown[]; screenshotPngBase64: string }[];
 }
 export function parseEndpoints(raw: unknown): Endpoint[] {
   if (!Array.isArray(raw) || ![2, 4, 8].includes(raw.length)) throw new Error('attach exactly 2, 4 or 8 native devices');
@@ -57,6 +58,7 @@ class Driver {
 export async function collectNativeDiagnostics(options: {
   endpoints: unknown; profile: Profile; durationMs: number; speechWav: Uint8Array;
   iceServers?: RTCIceServer[]; fileSizeBytes?: number; signal?: AbortSignal;
+  onProbeStarted?: (binding: Endpoint & { probeNonce: string }) => Promise<void>;
 }): Promise<NativeDiagnostic> {
   const endpoints = parseEndpoints(options.endpoints);
   const fileSizeBytes = options.fileSizeBytes ?? 1_000_000;
@@ -69,13 +71,14 @@ export async function collectNativeDiagnostics(options: {
   const timeout = setTimeout(() => controller.abort(), options.durationMs + 180_000);
   const drivers = endpoints.map(endpoint => new Driver(endpoint, signal));
   let collectedBytes = 0;
-  const records = endpoints.map(e => ({ id: e.id, samples: [] as unknown[], screenshotPngBase64: '' }));
+  const records = endpoints.map(e => ({ id: e.id, sessionId: e.sessionId, webdriverUrl: e.webdriverUrl, probeNonce: randomBytes(32).toString('hex'), samples: [] as unknown[], screenshotPngBase64: '' }));
   try {
     const source = await readFile(fileURLToPath(new URL('./native-probe.js', import.meta.url)), 'utf8');
     for (const driver of drivers) {
       await driver.inject(source);
       await driver.command('POST', '/timeouts', { script: 15_000 });
-      await driver.call('start', { durationMs: options.durationMs, shareScreen: driver === drivers[0], screenLines: SCREEN_LINES, speechBase64: Buffer.from(options.speechWav).toString('base64') });
+      await driver.call('start', { durationMs: options.durationMs, probeNonce: records[drivers.indexOf(driver)].probeNonce, shareScreen: driver === drivers[0], screenLines: SCREEN_LINES, speechBase64: Buffer.from(options.speechWav).toString('base64') });
+      await options.onProbeStarted?.({ ...driver.endpoint, probeNonce: records[drivers.indexOf(driver)].probeNonce });
     }
     const configuration: RTCConfiguration = { iceTransportPolicy: profiles[options.profile].iceTransportPolicy,
       iceServers: options.iceServers ?? [] };

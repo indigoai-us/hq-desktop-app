@@ -45,6 +45,7 @@ export function parseMacSignature(verificationOK: boolean, output: string): {
 }
 export interface HostObservation {
   schema: 'hq-meet-host-observation/v1'; provenance: 'native-os-commands'; deviceId: string;
+  hostId: string; sessionBinding?: { webdriverUrl: string; sessionId: string; probeNonce: string };
   platform: 'macos' | 'windows'; osVersion: string; architecture: string; hardwareModel: string;
   logicalCpuCount: number; physicalMemoryBytes: number; pid: number; binarySha256: string;
   signature: { valid: boolean; tool: string; signerId: string | null };
@@ -56,9 +57,10 @@ $ErrorActionPreference = 'Stop'
 $p = Get-Process -Id ([int]$env:HQ_MEET_COLLECT_PID)
 $os = Get-CimInstance Win32_OperatingSystem
 $hw = Get-CimInstance Win32_ComputerSystem
+$uuid = (Get-CimInstance Win32_ComputerSystemProduct).UUID
 $sig = Get-AuthenticodeSignature -LiteralPath $p.Path
 [pscustomobject]@{ executable=$p.Path; cpuSeconds=$p.TotalProcessorTime.TotalSeconds; rssBytes=$p.WorkingSet64;
-osVersion=$os.Version; model=($hw.Manufacturer+' '+$hw.Model); signatureValid=($sig.Status -eq 'Valid');
+hostUuid=$uuid; osVersion=$os.Version; model=($hw.Manufacturer+' '+$hw.Model); signatureValid=($sig.Status -eq 'Valid');
 signerId=$sig.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress
 `;
 const windowsResourceScript = `$ErrorActionPreference = 'Stop'; $p = Get-Process -Id ([int]$env:HQ_MEET_COLLECT_PID);
@@ -70,6 +72,7 @@ async function windowsSample(pid: number, identity = false): Promise<Record<stri
 }
 export async function collectHost(options: {
   deviceId: string; pid: number; executablePath: string; bundlePath?: string; durationMs: number; signal?: AbortSignal;
+  sessionBinding?: { webdriverUrl: string; sessionId: string; probeNonce: string };
 }): Promise<HostObservation> {
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(options.deviceId) || !Number.isSafeInteger(options.pid) || options.pid < 1 ||
       !isAbsolute(options.executablePath) || !Number.isInteger(options.durationMs) || options.durationMs < 1000 || options.durationMs > 3_600_000) throw new Error('invalid native host collection options');
@@ -88,6 +91,7 @@ export async function collectHost(options: {
     const signature = parseMacSignature(verification.ok, details.stderr);
     const minimum = await command('/usr/bin/plutil', ['-extract', 'LSMinimumSystemVersion', 'raw', '-o', '-', join(bundle, 'Contents/Info.plist')]);
     observation = { schema: 'hq-meet-host-observation/v1', provenance: 'native-os-commands', deviceId: options.deviceId,
+      hostId: hashHostIdentity(await required('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']), 'macos'),
       platform: 'macos', osVersion: await required('/usr/bin/sw_vers', ['-productVersion']), architecture: arch(),
       hardwareModel: await required('/usr/sbin/sysctl', ['-n', 'hw.model']), logicalCpuCount: cpus().length,
       physicalMemoryBytes: totalmem(), pid: options.pid, binarySha256: await hashFile(executable),
@@ -98,10 +102,15 @@ export async function collectHost(options: {
     if (typeof first.executable !== 'string' || (await realpath(first.executable)).toLowerCase() !== executable.toLowerCase()) throw new Error('PID does not match intended executable');
     if (typeof first.osVersion !== 'string' || typeof first.model !== 'string') throw new Error('missing Windows host identity');
     observation = { schema: 'hq-meet-host-observation/v1', provenance: 'native-os-commands', deviceId: options.deviceId,
+      hostId: hashHostIdentity(String(first.hostUuid ?? ''), 'windows'),
       platform: 'windows', osVersion: first.osVersion, architecture: arch(), hardwareModel: first.model,
       logicalCpuCount: cpus().length, physicalMemoryBytes: totalmem(), pid: options.pid, binarySha256: await hashFile(executable),
       signature: { valid: first.signatureValid === true, tool: 'Get-AuthenticodeSignature', signerId: typeof first.signerId === 'string' ? first.signerId : null },
       package: { kind: 'executable-install-unverified', minimumOS: null }, resources: [] };
+  }
+  if (options.sessionBinding) {
+    await verifyLocalProbeBinding(options.pid, options.sessionBinding);
+    observation.sessionBinding = { ...options.sessionBinding };
   }
   const start = performance.now();
   let previousCpuSeconds: number | undefined, previousAt = 0;
@@ -131,5 +140,34 @@ export async function collectHost(options: {
     await new Promise<void>(resolve => setTimeout(resolve, 1000));
   } while (performance.now() - start <= options.durationMs);
   if (await hashFile(executable) !== observation.binarySha256) throw new Error('running binary changed during collection');
+  if (options.sessionBinding) await verifyLocalProbeBinding(options.pid, options.sessionBinding);
   return observation;
+}
+
+/** Persist only a digest of the OS hardware UUID, never serials or raw hardware IDs. */
+export function hashHostIdentity(raw: string, os: 'macos' | 'windows'): string {
+  const uuid = (os === 'macos' ? /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(raw)?.[1] : raw)?.trim().toLowerCase();
+  if (!uuid || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(uuid) || /^(0|-)+$/.test(uuid) || /^(f|-)+$/.test(uuid)) throw new Error('missing actual host identity');
+  return createHash('sha256').update(`hq-meet-host-v1:${uuid}`).digest('hex');
+}
+async function verifyLocalProbeBinding(pid: number, binding: { webdriverUrl: string; sessionId: string; probeNonce: string }): Promise<void> {
+  const url = new URL(binding.webdriverUrl);
+  if (url.protocol !== 'http:' || !['127.0.0.1','localhost','[::1]'].includes(url.hostname) || url.pathname !== '/' || url.search || url.hash || url.username || url.password ||
+      !/^[A-Za-z0-9_-]{1,100}$/.test(binding.sessionId) || !/^[a-f0-9]{64}$/.test(binding.probeNonce)) throw new Error('invalid local probe binding');
+  const port = Number(url.port || 80);
+  let owners: number[];
+  if (platform() === 'darwin') {
+    owners = (await required('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])).split(/\s+/).map(Number);
+  } else {
+    const script = `Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess`;
+    owners = (await required('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])).split(/\s+/).map(Number);
+  }
+  // A tunnel/proxy PID is not proof that this app owns the WebDriver session.
+  if (!owners.length || owners.some(owner => owner !== pid)) throw new Error('WebDriver listener does not belong to observed app PID');
+  const response = await fetch(`${url.origin}/session/${binding.sessionId}/execute/sync`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(5000),
+    body: JSON.stringify({ script: 'return globalThis.__hqMeetProbe?.identity();', args: [] }),
+  });
+  const result = await response.json() as { value?: { probeNonce?: string } };
+  if (!response.ok || result.value?.probeNonce !== binding.probeNonce) throw new Error('observed PID/session probe nonce mismatch');
 }

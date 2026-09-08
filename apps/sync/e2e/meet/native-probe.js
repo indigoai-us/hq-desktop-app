@@ -6,7 +6,7 @@
   'use strict';
   if (globalThis.__hqMeetProbe) throw new Error('probe already installed');
   let context, microphone, camera, fixtureAudio, screenStream, oscillator, canvas, timer;
-  let surface, mask, watchdog;
+  let surface, mask, watchdog, probeNonce;
   let start = 0, stopped = false, sequence = 0, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
   const finite = value => typeof value === 'number' && Number.isFinite(value);
@@ -159,7 +159,7 @@
         if (marker !== peer.lastAudioMarker) {
           peer.lastAudioMarker = marker;
           peer.lastAudioProgressMs = atMs;
-          value.audioGapMs = 0;
+
           value.receivedAudioMarkers = ++peer.audioCount;
         }
       }
@@ -202,10 +202,13 @@
   }
   globalThis.__hqMeetProbe = {
     screenLines: [],
+    identity() { return { probeNonce }; },
     async start(options) {
       if (context || stopped) throw new Error('probe lifecycle cannot restart');
       if (!options || typeof options.speechBase64 !== 'string' || options.speechBase64.length > 16000000 ||
           !Array.isArray(options.screenLines) || options.screenLines.length !== 5) throw new Error('public speech/screen fixtures required');
+      if (options.probeNonce !== undefined && !/^[a-f0-9]{64}$/.test(options.probeNonce)) throw new Error('invalid probe nonce');
+      probeNonce = options.probeNonce;
       this.screenLines = options.screenLines;
       start = performance.now();
       mask = document.createElement('style');
