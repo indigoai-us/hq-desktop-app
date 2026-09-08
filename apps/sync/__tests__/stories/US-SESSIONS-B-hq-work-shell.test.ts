@@ -128,13 +128,10 @@ describe('US-SESSIONS-B — the embedded route', () => {
 });
 
 describe('US-SESSIONS-B — the shell registers the destination', () => {
-  it('gates it on inAppSessions exactly like the classic shell', () => {
-    expect(SHELL).toContain('inAppSessionsOn');
-    expect(SHELL).toContain('inAppSessionsOn || import.meta.env.DEV');
-    expect(SHELL).toContain('sessionsEnabled');
-    // Read from the shared adapter's settings seam, not a bespoke invoke.
-    expect(SHELL).toContain('adapter.settings.getSettings()');
-    expect(SHELL).toContain("inAppSessions === true");
+  it('exposes sessions without waiting for a settings lookup or a developer override', () => {
+    expect(SHELL).not.toContain('sessionsEnabled');
+    expect(SHELL).not.toContain('inAppSessions');
+    expect(SHELL).not.toContain('refreshSessionsPreference');
   });
 
   it('registers it under the `sessions` page id and hands it to DesktopApp', () => {
@@ -146,21 +143,17 @@ describe('US-SESSIONS-B — the shell registers the destination', () => {
     expect(SHELL).toContain('{extraPages}');
   });
 
-  it('registers nothing when the flag is off', () => {
-    // The false arm of the gate is an empty registry, so the palette row and
-    // the route both disappear rather than mounting a disabled surface.
-    const gate = SHELL.slice(SHELL.indexOf('const extraPages = $derived'));
-    expect(gate.slice(0, gate.indexOf(');'))).toContain(': {}');
+  it('registers the session destination unconditionally', () => {
+    const registry = SHELL.slice(SHELL.indexOf('const extraPages = $derived'));
+    const declaration = registry.slice(0, registry.indexOf(');'));
+    expect(declaration).toContain('sessions: {');
+    expect(declaration).not.toContain(': {}');
+    expect(declaration).not.toContain('import.meta.env.DEV');
   });
 
-  it('hydrates the preference under the shell request/generation lease', () => {
-    expect(SHELL).toContain('refreshSessionsPreference');
-    expect(SHELL).toContain('void refreshSessionsPreference(request, expectedGeneration)');
-    const fn = SHELL.slice(
-      SHELL.indexOf('async function refreshSessionsPreference'),
-      SHELL.indexOf('async function hydrateSession'),
-    );
-    expect(fn).toContain('if (request !== hydration || generation !== authGeneration || !result.ok) return;');
+  it('still requires a ready authenticated lifecycle for project session actions', () => {
+    expect(SHELL).toContain("if (lifecycle !== 'ready') return null;");
+    expect(SHELL).toContain("if (lifecycle !== 'ready') return;");
   });
 });
 

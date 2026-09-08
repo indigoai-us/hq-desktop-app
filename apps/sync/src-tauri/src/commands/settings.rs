@@ -89,8 +89,8 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
             dock_icon: Some(true),
             // Retired. The desktop workspace is the only UI.
             hq_work_handoff: None,
-            // In-app sessions remain opt-in on existing installs.
-            in_app_sessions: Some(false),
+            // Sessions are generally available, including on existing installs.
+            in_app_sessions: Some(true),
             // Native-notification controls. Master + per-event banners default
             // ON, and OS banners are suppressed while HQ is focused by default
             // (`only_when_unfocused` ON). Read untyped on each native delivery
@@ -212,7 +212,7 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         // Retired. Ignore any leftover hqWorkHandoff so Settings cannot
         // resurrect the classic shell.
         hq_work_handoff: None,
-        in_app_sessions: Some(prefs.in_app_sessions.unwrap_or(false)),
+        in_app_sessions: Some(true),
         // Native-notification controls default ON (banners) with focus
         // suppression ON. Re-read untyped on each native delivery in
         // `native_notify::should_native_notify`, so a toggle takes effect

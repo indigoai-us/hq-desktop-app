@@ -303,8 +303,8 @@ pub struct MenubarPrefs {
     /// strip in `merge_prefs_over_existing`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
-    /// In-app Claude/Codex sessions. Absent defaults off; local development can
-    /// force it on through the existing agent-session feature gate.
+    /// Retired rollout preference, retained for settings wire compatibility.
+    /// Sessions are always available, including when an old install stored false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_app_sessions: Option<bool>,
     /// Master switch for **native** (OS) notification banners. When true

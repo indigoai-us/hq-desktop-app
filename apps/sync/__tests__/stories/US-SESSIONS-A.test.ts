@@ -92,10 +92,9 @@ describe('US-SESSIONS-A — DesktopApp wiring', () => {
     expect(sessionsAt).toBeLessThan(fallbackAt);
   });
 
-  it('gates the palette entry on the inAppSessions flag (dev builds included)', () => {
-    expect(WORK_HOST).toContain('inAppSessions');
-    expect(WORK_HOST).toContain('inAppSessionsOn || import.meta.env.DEV');
-    expect(WORK_HOST).toContain('sessionsEnabled');
+  it('exposes the palette entry on production builds without a machine opt-in', () => {
+    expect(WORK_HOST).not.toContain('inAppSessions');
+    expect(WORK_HOST).not.toContain('sessionsEnabled');
     expect(WORK_HOST).toContain("sessions: {");
     expect(WORK_HOST).toContain('{extraPages}');
     expect(SHARED_APP).toContain('id: `command-go-${id}`');

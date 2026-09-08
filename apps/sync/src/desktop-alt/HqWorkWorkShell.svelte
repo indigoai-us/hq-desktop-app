@@ -112,23 +112,18 @@
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
   let updateWakeSeq = $state(0);
-  let inAppSessionsOn = $state(false);
-  const sessionsEnabled = $derived(inAppSessionsOn || import.meta.env.DEV);
+  // Sessions are generally available, independent of legacy machine preferences.
   type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
-  const extraPages = $derived<HostExtraPages>(
-    sessionsEnabled
-      ? {
-          sessions: {
-            label: 'Sessions',
-            detail: 'Run a Codex or Claude session inside the app',
-            // A unique draft route also resets an already-open empty composer.
-            // Global creation is standalone; project actions bind explicitly.
-            createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
-            component: SessionsExtraPage,
-          },
-        }
-      : {},
-  );
+  const extraPages = $derived<HostExtraPages>({
+    sessions: {
+      label: 'Sessions',
+      detail: 'Run a Codex or Claude session inside the app',
+      // A unique draft route also resets an already-open empty composer.
+      // Global creation is standalone; project actions bind explicitly.
+      createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
+      component: SessionsExtraPage,
+    },
+  });
 
   /**
    * Project channels ↔ sessions. The shared sidebar paints a badge, nested
@@ -153,7 +148,7 @@
   }
 
   const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
-    if (!sessionsEnabled || lifecycle !== 'ready') return null;
+    if (lifecycle !== 'ready') return null;
     const byCompany = projectLinksStore.byCompany;
     const slugByUid = companySlugByUid;
     return (row: ConversationRow, destination) => {
@@ -193,7 +188,7 @@
   });
 
   $effect(() => {
-    if (lifecycle !== 'ready' || !sessionsEnabled) return;
+    if (lifecycle !== 'ready') return;
     const slugs = (companies ?? [])
       .filter((company) => company.kind === 'company' && company.slug !== 'personal')
       .map((company) => company.slug);
@@ -335,19 +330,6 @@
     }
   }
 
-  async function refreshSessionsPreference(
-    request: number,
-    generation = authGeneration,
-  ): Promise<void> {
-    try {
-      const result = await bounded(adapter.settings.getSettings(), 'Settings lookup');
-      if (request !== hydration || generation !== authGeneration || !result.ok) return;
-      inAppSessionsOn = result.value?.inAppSessions === true;
-    } catch {
-      // Best effort: keep the last known machine preference.
-    }
-  }
-
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
     lifecycle = 'loading';
@@ -408,7 +390,6 @@
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
       void refreshWorkspaces(request, expectedGeneration);
-      void refreshSessionsPreference(request, expectedGeneration);
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
