@@ -174,7 +174,7 @@ export type DesktopRoute =
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
   /**
-   * In-app Claude Code sessions (behind the `inAppSessions` flag). Palette-only
+   * In-app agent sessions. Palette-only
    * navigation, like Mission Control: no sidebar row. `id` selects one live
    * session; without it the page shows the list + its empty state.
    */
