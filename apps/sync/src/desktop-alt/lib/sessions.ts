@@ -52,6 +52,8 @@ export interface AgentSession {
   tool: AgentTool;
   /** Where the session is observed (local machine vs. outpost VM). */
   origin: AgentOrigin;
+  /** Provider-native conversation title, when available. */
+  title?: string;
   /** Working directory the session is running in. */
   cwd: string;
   /** Project the session is working on (derived from cwd / HQ metadata). */

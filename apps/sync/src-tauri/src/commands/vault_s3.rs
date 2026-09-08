@@ -46,7 +46,8 @@ pub fn is_allowed_s3_url(url: &str) -> Result<(), String> {
     if trimmed.is_empty() {
         return Err("vault S3 URL is empty".into());
     }
-    let parsed = url::Url::parse(trimmed).map_err(|e| format!("vault S3 URL is unparseable: {e}"))?;
+    let parsed =
+        url::Url::parse(trimmed).map_err(|e| format!("vault S3 URL is unparseable: {e}"))?;
 
     if parsed.scheme() != "https" {
         return Err("vault S3 URL requires https".into());
@@ -208,7 +209,10 @@ mod tests {
     fn vault_get_limit_is_bounded_and_content_length_is_checked_before_reading() {
         assert_eq!(bounded_get_limit(None), MAX_VAULT_GET_BYTES);
         assert_eq!(bounded_get_limit(Some(1024)), 1024);
-        assert_eq!(bounded_get_limit(Some(MAX_VAULT_GET_BYTES + 1)), MAX_VAULT_GET_BYTES);
+        assert_eq!(
+            bounded_get_limit(Some(MAX_VAULT_GET_BYTES + 1)),
+            MAX_VAULT_GET_BYTES
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1025"));
@@ -259,7 +263,10 @@ mod tests {
             "https://not-amazonaws.com/s3.amazonaws.com/x",
             "https://s3.evil.example/x",
         ] {
-            assert!(is_allowed_s3_url(url).is_err(), "must refuse look-alike: {url}");
+            assert!(
+                is_allowed_s3_url(url).is_err(),
+                "must refuse look-alike: {url}"
+            );
         }
     }
 

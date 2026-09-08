@@ -51,12 +51,15 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use futures_util::{stream, StreamExt, TryStreamExt};
 
 use serde::Serialize;
 
 use crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG;
 use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
-use crate::commands::sync::{repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair};
+use crate::commands::sync::{
+    repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair,
+};
 use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::util::logfile::log;
 
@@ -503,7 +506,9 @@ type CloudOutcome = Result<
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
-    let (mut local_companies, manifest_error) = discover_local_companies(&hq_root);
+    let root_for_discovery = hq_root.clone();
+    let (mut local_companies, manifest_error) = tokio::task::spawn_blocking(move || discover_local_companies(&root_for_discovery))
+        .await.map_err(|e| e.to_string())?;
 
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
@@ -568,13 +573,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
             });
         }
 
-        let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
-        for mem in &memberships {
-            if entities.contains_key(&mem.company_uid) {
-                continue;
+        let ids = memberships.iter().map(|mem| mem.company_uid.clone()).collect();
+        let fetched = fetch_workspace_entities(ids, |uid| async {
+            match vault.find_entity_by_uid(&uid).await {
+                Ok(entity) => Ok((uid, entity)),
+                Err(error) => {
+                    let membership = memberships.iter().find(|mem| mem.company_uid == uid)
+                        .map(|mem| mem.display_id()).unwrap_or_else(|| uid.clone());
+                    Err(format!("fetch entity {uid} for membership {membership}: {error}"))
+                }
             }
-            match vault.find_entity_by_uid(&mem.company_uid).await {
-                Ok(Some(e)) => {
+        }).await?;
+        let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
+        for (uid, entity) in fetched {
+            if let Some(e) = entity {
                     // Tombstoned (DELETE /entity/{uid} via hq-console) — the
                     // vault still returns the row but the company is "gone"
                     // from the user's perspective. Drop it so downstream
@@ -590,16 +602,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                         );
                         continue;
                     }
-                    entities.insert(mem.company_uid.clone(), e);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Err(format!(
-                        "fetch entity {} for membership {}: {e}",
-                        mem.company_uid,
-                        mem.display_id()
-                    ));
-                }
+                    entities.insert(uid, e);
             }
         }
 
@@ -671,6 +674,13 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         hq_folder_path,
         manifest_error,
     })
+}
+
+/// Bound fan-out while avoiding one network round trip per membership in series.
+async fn fetch_workspace_entities<T, F, Fut>(ids: Vec<String>, fetch: F) -> Result<Vec<T>, String>
+where F: Fn(String) -> Fut, Fut: std::future::Future<Output = Result<T, String>> {
+    let ids: std::collections::BTreeSet<_> = ids.into_iter().collect();
+    stream::iter(ids).map(fetch).buffer_unordered(8).try_collect().await
 }
 
 #[tauri::command]
@@ -943,10 +953,7 @@ where
 /// needed only to reach `sync::repair_managed_node`, which installs HQ's own
 /// Node when the provision fails purely because the machine has none.
 #[tauri::command]
-pub async fn connect_workspace_to_cloud(
-    app: tauri::AppHandle,
-    slug: String,
-) -> Result<(), String> {
+pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> Result<(), String> {
     log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
         let err = "slug is required".to_string();
@@ -1091,11 +1098,7 @@ mod node_self_repair_tests {
     async fn run(
         provision_outcomes: Vec<Result<CliProvisionResult, CliProvisionError>>,
         repair: ToolchainRepair,
-    ) -> (
-        Result<CliProvisionResult, CliProvisionError>,
-        usize,
-        usize,
-    ) {
+    ) -> (Result<CliProvisionResult, CliProvisionError>, usize, usize) {
         let mut queue = provision_outcomes.into_iter();
         let attempts = Cell::new(0usize);
         let repairs = Cell::new(0usize);
@@ -1133,8 +1136,11 @@ mod node_self_repair_tests {
     /// and the retry completes the Connect the user asked for.
     #[tokio::test]
     async fn node_missing_installs_managed_node_then_retries_exactly_once() {
-        let (out, attempts, repairs) =
-            run(vec![Err(node_missing()), Ok(ok_result())], ToolchainRepair::Repaired).await;
+        let (out, attempts, repairs) = run(
+            vec![Err(node_missing()), Ok(ok_result())],
+            ToolchainRepair::Repaired,
+        )
+        .await;
         assert!(out.is_ok(), "the retry after a successful repair must land");
         assert_eq!(attempts, 2, "exactly one re-spawn");
         assert_eq!(repairs, 1, "exactly one repair attempt");
@@ -1152,10 +1158,16 @@ mod node_self_repair_tests {
         .await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "node-missing",
+                ..
+            })
         ));
         assert_eq!(attempts, 2);
-        assert_eq!(repairs, 1, "the repair is attempted at most once per Connect");
+        assert_eq!(
+            repairs, 1,
+            "the repair is attempted at most once per Connect"
+        );
     }
 
     #[tokio::test]
@@ -1185,7 +1197,10 @@ mod node_self_repair_tests {
             run(vec![Err(node_missing())], ToolchainRepair::Skipped).await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "node-missing",
+                ..
+            })
         ));
         assert_eq!(attempts, 1);
         assert_eq!(repairs, 1);
@@ -1207,7 +1222,10 @@ mod node_self_repair_tests {
         .await;
         assert!(matches!(
             out,
-            Err(CliProvisionError::LocalEnv { kind: "npx-unavailable", .. })
+            Err(CliProvisionError::LocalEnv {
+                kind: "npx-unavailable",
+                ..
+            })
         ));
         assert_eq!(attempts, 1);
         assert_eq!(repairs, 0);
@@ -1265,6 +1283,32 @@ mod tests {
     use crate::commands::workspaces::*;
     use tempfile::TempDir;
     use PERSONAL_VAULT_JOURNAL_SLUG;
+
+    #[tokio::test]
+    async fn workspace_entity_fetch_is_deduplicated_and_concurrent_but_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let ids = (0..20).map(|i| (i % 12).to_string()).collect();
+        let rows = fetch_workspace_entities(ids, |id| async {
+            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(count, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(id)
+        }).await.unwrap();
+        assert_eq!(rows.len(), 12);
+        assert!(peak.load(Ordering::SeqCst) > 1);
+        assert!(peak.load(Ordering::SeqCst) <= 8);
+    }
+
+    #[tokio::test]
+    async fn workspace_entity_failure_is_not_reported_as_complete_membership() {
+        let result = fetch_workspace_entities(vec!["broken".into()], |_| async {
+            Err::<String, _>("network unavailable".to_string())
+        }).await;
+        assert_eq!(result.unwrap_err(), "network unavailable");
+    }
 
     fn person(uid: &str, bucket: Option<&str>) -> EntityInfo {
         EntityInfo {

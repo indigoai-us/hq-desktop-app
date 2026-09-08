@@ -478,9 +478,8 @@ mod bridge_resolution_tests {
         plant_bridge(&contents, &["Resources"]);
         let override_entry = plant_bridge(tmp.path(), &["elsewhere"]);
 
-        let resolved =
-            resolve_bridge_entry_in(&macos_dir, Some(override_entry.to_str().unwrap()))
-                .expect("override resolves");
+        let resolved = resolve_bridge_entry_in(&macos_dir, Some(override_entry.to_str().unwrap()))
+            .expect("override resolves");
         assert_eq!(
             fs::canonicalize(&resolved).unwrap(),
             fs::canonicalize(&override_entry).unwrap()

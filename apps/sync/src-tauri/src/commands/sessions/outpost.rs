@@ -501,6 +501,7 @@ mod tests {
             tool: AgentTool::Claude,
             // Deliberately LOCAL on the wire so we prove the store re-stamps it.
             origin: AgentOrigin::Local,
+            title: "Thing session".to_string(),
             cwd: "/home/outpost/repos/thing".to_string(),
             project: "thing".to_string(),
             company: "indigo".to_string(),

@@ -491,6 +491,10 @@ fn main() {
                 if window.label() == "main" {
                     handle_window_close_requested_hide(true, || {
                         api.prevent_close();
+                        // Cmd-W is an explicit dismissal, same as Esc or the
+                        // popover's close button — release the onboarding
+                        // blur-hide pin so click-away works from here on.
+                        tray::note_popover_dismissed();
                         let _ = window.hide();
                     });
                 }
@@ -532,6 +536,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
             commands::app::bring_main_window_to_front,
+            commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::ai_tools::detect_ai_tools,
@@ -700,6 +705,46 @@ fn main() {
             // per-reader commands the readers exposed in US-002/US-003/US-004
             // (registered here so the frontend store can fall back to a single
             // reader and the polling loop emits `sessions:updated`).
+            // In-app agent sessions (feature-flagged dark by
+            // `agent_session_flags`): the live registry + Claude driver.
+            commands::agent_session::agent_session_preflight,
+            commands::agent_session::provider_auth::agent_provider_login_start,
+            commands::agent_session::provider_auth::agent_provider_login_status,
+            commands::agent_session::provider_auth::agent_provider_login_cancel,
+            commands::agent_session::agent_session_start,
+            commands::agent_session::agent_session_send,
+            commands::agent_session::agent_session_respond_permission,
+            commands::agent_session::agent_session_answer_question,
+            commands::agent_session::agent_session_interrupt,
+            commands::agent_session::agent_session_set_permission_mode,
+            commands::agent_session::agent_session_end,
+            commands::agent_session::agent_session_list,
+            commands::agent_session::agent_session_replay,
+            commands::agent_session::agent_session_history_page,
+            commands::agent_session::agent_session_slash_commands,
+            // Sessions composer `@`-mentions: the company directory + the DM
+            // fan-out that runs after a mentioned message is sent.
+            commands::session_mentions::session_mention_candidates,
+            commands::session_mentions::session_mention_notify,
+            commands::agent_session::agent_session_cli_session_id,
+            commands::agent_session_launch::agent_session_open_in_app,
+            // HQ-native context for the Sessions composer (read-only).
+            commands::hq_context::hq_skill_catalog,
+            commands::hq_context::hq_company_projects,
+            commands::hq_context::hq_recent_meetings,
+            commands::hq_context::hq_signals,
+            commands::hq_context::hq_vault_files,
+            commands::hq_context::hq_reference_text,
+            commands::hq_context::hq_share_to_channel_preflight,
+            commands::session_share_channel::session_share_to_channel,
+            // Project channels ↔ sessions: the join behind the sidebar's
+            // session badges / hover cards and the strip's project pill.
+            commands::session_project_links::session_project_links,
+            commands::project_session_sharing::project_sessions_read,
+            // Open / Share / Deploy on files a session produced.
+            commands::session_artifacts::session_artifact_stat,
+            commands::session_artifacts::session_artifact_open,
+            commands::session_artifacts::session_artifact_share,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,
@@ -900,6 +945,7 @@ fn main() {
                 return Ok(());
             }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            commands::project_session_sharing::start_recovery(app.handle());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
             #[cfg(target_os = "macos")]
@@ -1168,6 +1214,15 @@ fn main() {
             // stays fresh without a manual refresh — same independent-timer
             // pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
+
+            // Project watch: notices a `prd.json` HQ writes while a session is
+            // live, binds the session to it and emits
+            // `agent-session:project-created` so the chat can offer a channel.
+            commands::session_project_links::setup_project_watch(app.handle().clone());
+
+            // Agent CLI children spawned by `hq_desktop_core::stdio` join the
+            // same process registry `terminate_all_for_exit` drains on quit.
+            commands::agent_stdio::install_stdio_process_registrar();
 
             // Outpost sessions subscriber + box status (US-011). Subscribes to
             // the per-person `hq/{personUid}/sessions` realtime topic (reusing the

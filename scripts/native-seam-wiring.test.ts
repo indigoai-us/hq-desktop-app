@@ -346,7 +346,10 @@ const boundaryContracts: BoundaryContract[] = [
     hook: "handle_tray_blur_hide(should_hide, || {",
     startMarker: "if let WindowEvent::Focused(false) = event {",
     endMarker: "// NOTE: on macOS there is no tao tray",
-    afterMarkers: ["let should_hide = !is_modal_open()"],
+    afterMarkers: [
+      "let should_hide = should_hide_popover_on_blur(BlurHideInputs {",
+      "modal_open: is_modal_open()",
+    ],
   },
   {
     label: "foreground raise call",

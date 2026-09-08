@@ -57,6 +57,7 @@ export {
 } from "./chat/boot-timeout.js";
 export * from "./chat/create-flow.js";
 export * from "./chat/channel-create-scope.js";
+export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
 export * from "./chat/portfolio-session.js";

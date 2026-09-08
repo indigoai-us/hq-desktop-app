@@ -450,15 +450,16 @@ const CODEX_DESKTOP_BUNDLES: [&str; 2] = ["Codex.app", "ChatGPT.app"];
 fn codex_desktop_installed() -> bool {
     codex_desktop_installed_in(
         std::path::Path::new("/Applications"),
-        dirs::home_dir().map(|home| home.join("Applications")).as_deref(),
+        dirs::home_dir()
+            .map(|home| home.join("Applications"))
+            .as_deref(),
     )
 }
 
 #[cfg(not(windows))]
 fn codex_desktop_installed_in(system: &Path, user: Option<&Path>) -> bool {
     CODEX_DESKTOP_BUNDLES.iter().any(|bundle| {
-        system.join(bundle).exists()
-            || user.is_some_and(|user_dir| user_dir.join(bundle).exists())
+        system.join(bundle).exists() || user.is_some_and(|user_dir| user_dir.join(bundle).exists())
     })
 }
 

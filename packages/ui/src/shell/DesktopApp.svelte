@@ -24,6 +24,7 @@
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -145,7 +146,7 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -473,6 +474,22 @@
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
+    /** Host-registered full-column destinations keyed by page id. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        detail?: string;
+        /** Optional host-owned create action in the window header. */
+        createAction?: { label: string; param: () => string | null };
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (param: string | null) => void;
+        }>;
+      }
+    >;
+    /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -522,6 +539,8 @@
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    extraPages,
+    rowExtras = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -612,7 +631,10 @@
     | "atlas"
     | "library"
     | "shared-files"
+    | "extra"
   >("conversation");
+  let extraPageId = $state<string | null>(null);
+  let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -791,6 +813,14 @@
       detail: "Open settings",
       action: () => openSettings(),
     });
+    for (const [id, page] of Object.entries(extraPages ?? {})) {
+      nav.push({
+        id: `command-go-${id}`,
+        label: page.label,
+        detail: page.detail ?? page.label,
+        action: () => openExtraPage(id),
+      });
+    }
     if (!isWeb) {
       nav.push({
         id: "command-go-marketplace",
@@ -3623,6 +3653,21 @@
     onOpenSettings?.();
   }
 
+  function openExtraPage(id: string, param: string | null = null): void {
+    if (!extraPages?.[id]) {
+      embeddedNavigationError = `Unknown destination: ${id}`;
+      return;
+    }
+    extraPageId = id;
+    extraPageParam = param;
+    view = "extra";
+    settingsSection = null;
+    meetingFocusRequest = null;
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+  }
+
   function onShellLinkEvent(event: Event): void {
     handleLinkActivate(event, {
       onopenurl,
@@ -3700,6 +3745,9 @@
           displayName: "",
           replyRootEventId: target.replyRootEventId,
         });
+        return;
+      case "extra":
+        openExtraPage(target.page, target.param ?? null);
         return;
       case "unsupported":
         embeddedNavigationError = `${target.reason}: ${target.route}`;
@@ -3904,6 +3952,13 @@
   <V4TitleBar
     {adapter}
     {version}
+    primaryAction={(() => {
+      const entry = Object.entries(extraPages ?? {}).find(([, page]) => page.createAction);
+      if (!entry) return undefined;
+      const [id, page] = entry;
+      const action = page.createAction!;
+      return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
+    })()}
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
@@ -4045,6 +4100,7 @@
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
       {/if}
@@ -4074,6 +4130,18 @@
               meetingFocusRequest = null;
             }}
           />
+        {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
+          {@const Page = extraPages[extraPageId].component}
+          <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
+            {#key `${extraPageId}:${extraPageParam ?? ""}`}
+              <Page
+                param={extraPageParam}
+                onnavigate={(next: string | null) => {
+                  extraPageParam = next;
+                }}
+              />
+            {/key}
+          </div>
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
@@ -4883,6 +4951,15 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .extra-page-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .conversation-boot-error {

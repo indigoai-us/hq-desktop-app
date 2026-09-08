@@ -35,9 +35,7 @@ use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR,
-};
+use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -706,6 +704,53 @@ pub fn register_process(handle: &str, pid: u32) {
     let _ = register_process_gen(handle, pid);
 }
 
+/// Record the Windows Job Object that owns `handle`'s process tree.
+///
+/// The Unix exit drain only needs a pid: the child leads its own process group
+/// and `terminate_pids_for_exit` signals the negated pid, taking the whole
+/// tree. Windows has no process groups, so a bare pid lets the drain terminate
+/// the child and orphan everything it spawned. The job handle is the missing
+/// half, and it has to land on the same registry entry the drain reads.
+///
+/// Children spawned *by this module* get their job through
+/// [`ChildContainment::attach_to_entry`], which is the same field write. This
+/// entry point exists for a child spawned elsewhere — `hq_desktop_core::stdio`
+/// creates its own job at spawn and hands the handle over through the
+/// registrar seam (see `commands::agent_stdio`). Ownership transfers with the
+/// call: `deregister_process` → `close_process_entry` closes it.
+///
+/// When the handle is unknown — it was deregistered between spawn and this
+/// call — the handle is closed here instead of leaked. With
+/// `KILL_ON_JOB_CLOSE` that also tears down the tree, which is the right
+/// outcome for a child nothing is tracking any more.
+#[cfg(target_os = "windows")]
+pub fn register_job_handle(handle: &str, job: isize) {
+    // The registry lock is released before the fallback below: `CloseHandle`
+    // on a KILL_ON_JOB_CLOSE job terminates a process tree, and no teardown
+    // that heavyweight belongs inside this mutex.
+    let attached = {
+        let mut registry = process_registry().lock().unwrap();
+        match registry.active.get_mut(handle) {
+            Some(entry) => {
+                debug_assert!(entry.job_handle.is_none());
+                entry.job_handle = Some(job);
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !attached {
+        log(
+            "process",
+            &format!("register_job_handle: no active entry for {handle}; closing the job"),
+        );
+        unsafe {
+            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn close_process_entry(entry: ProcessEntry) {
     if let Some(job) = entry.job_handle {
@@ -1356,8 +1401,8 @@ unsafe fn query_job_live_pids(job: isize) -> Option<Vec<u32>> {
     };
     const CAP: usize = 512;
     let hjob = job as windows_sys::Win32::Foundation::HANDLE;
-    let bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
-        + CAP * std::mem::size_of::<usize>();
+    let bytes =
+        std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + CAP * std::mem::size_of::<usize>();
     let mut buffer = vec![0u8; bytes];
     let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
     if QueryInformationJobObject(
@@ -3772,9 +3817,7 @@ fn windows_pid_alive(pid: u32) -> Result<bool, String> {
             Ok(process) => process,
             Err(error) if windows_process_open_error_means_exited(&error) => return Ok(false),
             Err(error) => {
-                return Err(format!(
-                    "open HQ process {pid} for exit query: {error}"
-                ));
+                return Err(format!("open HQ process {pid} for exit query: {error}"));
             }
         };
         let mut code = 0u32;
@@ -4728,17 +4771,28 @@ mod windows_spawn_tests {
         let panic = catch_unwind(AssertUnwindSafe(|| {
             let _ = run_process_impl(&handle, &spawn, |_| {});
         }));
-        assert!(panic.is_err(), "the injected fixture panic must reach the test");
+        assert!(
+            panic.is_err(),
+            "the injected fixture panic must reach the test"
+        );
 
         let root = root_pid.load(Ordering::Acquire);
         let descendant = descendant_pid.load(Ordering::Acquire);
         assert_ne!(root, 0, "the fixture root must have been observed");
-        assert_ne!(descendant, 0, "the fixture descendant must have been observed");
-        await_bounded("the panicking fixture root to be reaped", || !pid_alive(root));
+        assert_ne!(
+            descendant, 0,
+            "the fixture descendant must have been observed"
+        );
+        await_bounded("the panicking fixture root to be reaped", || {
+            !pid_alive(root)
+        });
         await_bounded("the panicking fixture descendant to be reaped", || {
             !pid_alive(descendant)
         });
-        assert!(!is_registered(&handle), "a panicking hook must not register a root");
+        assert!(
+            !is_registered(&handle),
+            "a panicking hook must not register a root"
+        );
     }
 }
 
@@ -4759,7 +4813,8 @@ mod registry_exit_order_tests {
 
         // A causeless (None) publication is in flight — mirrors a Cancelled or
         // ForceClear teardown that has begun but not yet completed.
-        let (owns_first, _created_first) = begin_cancellation_publication(&handle, generation, None);
+        let (owns_first, _created_first) =
+            begin_cancellation_publication(&handle, generation, None);
         assert!(owns_first, "the first publisher owns the cycle");
 
         // A racing heartbeat tries to stamp HeartbeatStall while the first actor
@@ -4769,7 +4824,10 @@ mod registry_exit_order_tests {
             generation,
             Some(SyncCancelCause::HeartbeatStall),
         );
-        assert!(!owns_second, "the racing actor does not own the publication");
+        assert!(
+            !owns_second,
+            "the racing actor does not own the publication"
+        );
 
         let cause = {
             let (records, _) = &**cancellation_records();
@@ -6941,8 +6999,8 @@ mod watcher_fault_e2e_tests {
     /// allow-listed token — proof the reader can never copy a path, username, or
     /// product string out of genuine WER output — and that the query is bounded.
     fn assert_reader_is_content_safe_and_bounded() {
-        let xmls =
-            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3))
+            .unwrap_or_default();
         assert!(
             xmls.len() <= WER_MAX_RECORDS,
             "the reader must honour its record cap"
@@ -7005,8 +7063,8 @@ mod watcher_fault_e2e_tests {
         // node.exe 0xC0000409 abort is surfaced as the strong signal without
         // gating the test on WER having logged it on this particular host.
         thread::sleep(Duration::from_secs(2));
-        let xmls =
-            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3))
+            .unwrap_or_default();
         let mut named_node_abort = false;
         for xml in &xmls {
             let Some(record) = parse_application_error_event(xml) else {
@@ -7060,7 +7118,10 @@ mod watcher_fault_e2e_tests {
         assert!(!outcome.provenance.is_bound());
         assert_eq!(outcome.image_token(), "unavailable");
         assert_eq!(outcome.module_token(), "unavailable");
-        assert!(outcome.counters.sweeps >= 1, "at least one sweep must have run");
+        assert!(
+            outcome.counters.sweeps >= 1,
+            "at least one sweep must have run"
+        );
         eprintln!(
             "watcher-fault E2E: deferred read resolved to {} in {}ms (counters {})",
             outcome.provenance_token(),

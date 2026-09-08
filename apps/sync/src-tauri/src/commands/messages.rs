@@ -52,12 +52,12 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_create_payload_with_project,
-    build_ensure_project_channel_payload, build_group_payload,
-    build_reaction_payload, build_reactions_url, EnsureProjectChannelResponse,
-    esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
+    build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
+    build_group_payload, build_reaction_payload, build_reactions_url, esc_seg,
+    invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
-    MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
+    EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
+    UnreadSummary,
 };
 
 /// POST `url` with the bearer + JSON `payload`, parsing the response body into
@@ -509,11 +509,12 @@ pub async fn list_channels(
     let (base, token) = auth_and_base("MESSAGES_CHANNELS").await?;
     let mut url = format!("{base}/v1/notify/channels");
     if include_company_projects.unwrap_or(false) {
-        if let Some(uid) = company_uid.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            url = format!(
-                "{url}?companyUid={}&includeCompanyProjects=1",
-                esc_seg(uid)
-            );
+        if let Some(uid) = company_uid
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            url = format!("{url}?companyUid={}&includeCompanyProjects=1", esc_seg(uid));
         }
     }
     let out: ChannelsResponse = get_json(&url, &token, "MESSAGES_CHANNELS").await?;
@@ -708,13 +709,8 @@ pub async fn create_channel(
 
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_CREATE").await?;
     let url = format!("{base}/v1/notify/channels");
-    let payload = build_create_payload_with_project(
-        trimmed,
-        &scope_norm,
-        company,
-        project,
-        &invites,
-    );
+    let payload =
+        build_create_payload_with_project(trimmed, &scope_norm, company, project, &invites);
     // The server wraps the created channel in an envelope: `{"channel": {…}}`.
     // Decoding into `Channel` directly failed with `missing field channelId` even
     // though the channel WAS created — so the user saw an error, retried, and hit

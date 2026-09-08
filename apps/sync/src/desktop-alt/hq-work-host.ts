@@ -624,6 +624,15 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
         return { kind: 'library', tab: detail };
       }
       break;
+    case 'sessions':
+      // Host-registered destination (@hq/ui `extraPages`). `sessions` opens the
+      // new-session surface; `sessions:<id>` / `sessions/<id>` deep-links one.
+      // The shell gates the page itself, so an unregistered id surfaces its
+      // navigation error rather than a blank column.
+      if (!hasExtraSegments) {
+        return { kind: 'extra', page: 'sessions', param: detail || null };
+      }
+      break;
     case 'settings':
       if (!detail) return { kind: 'settings' };
       if (!hasExtraSegments && isEmbeddedSettingsSection(detail)) {

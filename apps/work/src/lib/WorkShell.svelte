@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount } from "svelte";
+  import { onMount, type Component } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -40,6 +40,7 @@
     type ChatSidebarApi,
     type PackagesEvents,
     type ReplyThreadScope,
+    type RowExtrasResolver,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -152,6 +153,21 @@
           }
         | null,
     ) => void;
+    /** Native host-only full-column surfaces, forwarded to DesktopApp. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        createAction?: { label: string; param: () => string | null };
+        detail?: string;
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (param: string | null) => void;
+        }>;
+      }
+    >;
+    /** Native host decorations for project-channel rows. */
+    rowExtras?: RowExtrasResolver | null;
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
@@ -181,6 +197,8 @@
     onopenurl: hostOpenUrl,
     onembeddednavigationready,
     onactivethreadchange,
+    extraPages,
+    rowExtras = null,
   }: WorkShellProps = $props();
 
   // Only a real desktop host gets the native command bridge. A phone runs a
@@ -703,6 +721,8 @@
       {updateWakeSeq}
       {refreshAppVersion}
       {onactivethreadchange}
+      {extraPages}
+      {rowExtras}
     />
   {/key}
   {#if externalLinkError}
