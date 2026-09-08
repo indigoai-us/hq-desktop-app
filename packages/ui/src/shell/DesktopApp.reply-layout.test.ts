@@ -147,6 +147,33 @@ async function mountShell(
 }
 
 describe("DesktopApp reply-column layout", () => {
+  it("resizes with the keyboard and pointer while preserving room for messages", async () => {
+    await mountShell({ initialReplyRootEventId: "evt_root" });
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Resize thread panel"]')).not.toBeNull());
+    const handle = host.querySelector('[aria-label="Resize thread panel"]') as HTMLElement;
+    const column = handle.parentElement!;
+    const stage = column.parentElement!;
+    vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({ width: 1000 } as DOMRect);
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 500 } as DOMRect);
+    handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await tick();
+    expect(column.style.getPropertyValue("--thread-width")).toBe("520px");
+    handle.setPointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+    handle.releasePointerCapture = vi.fn();
+    handle.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientX: 500, pointerId: 1, bubbles: true }));
+    handle.dispatchEvent(new PointerEvent("pointermove", { clientX: 0, pointerId: 1, bubbles: true }));
+    await tick();
+    expect(column.style.getPropertyValue("--thread-width")).toBe("640px");
+    handle.dispatchEvent(new PointerEvent("pointermove", { clientX: 1000, pointerId: 1, bubbles: true }));
+    await tick();
+    expect(column.style.getPropertyValue("--thread-width")).toBe("280px");
+    handle.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 1, bubbles: true }));
+    handle.dispatchEvent(new PointerEvent("pointermove", { clientX: 0, pointerId: 1, bubbles: true }));
+    await tick();
+    expect(column.style.getPropertyValue("--thread-width")).toBe("280px");
+  });
+
   it("toggles data-reply-open and mounts the sibling column at a wide viewport", async () => {
     await mountShell({ initialReplyRootEventId: null });
     await vi.waitFor(() => {

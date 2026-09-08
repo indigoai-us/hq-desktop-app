@@ -661,6 +661,43 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
+  let threadWidth = $state<number | null>(null);
+  let threadDrag: { x: number; width: number } | null = null;
+
+  function resizeThread(handle: HTMLElement, width: number) {
+    const stageWidth = handle.parentElement?.parentElement?.getBoundingClientRect().width ?? 0;
+    if (!stageWidth) return;
+    const minimum = Math.min(280, stageWidth / 2);
+    const maximum = stageWidth - Math.min(360, stageWidth / 2);
+    threadWidth = Math.round(Math.max(minimum, Math.min(maximum, width)));
+  }
+
+  function startThreadDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    threadDrag = { x: event.clientX, width: handle.parentElement!.getBoundingClientRect().width };
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveThreadDrag(event: PointerEvent) {
+    if (!threadDrag) return;
+    resizeThread(event.currentTarget as HTMLElement, threadDrag.width + threadDrag.x - event.clientX);
+  }
+
+  function stopThreadDrag(event: PointerEvent) {
+    threadDrag = null;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  }
+
+  function resizeThreadKey(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const handle = event.currentTarget as HTMLElement;
+    resizeThread(handle, handle.parentElement!.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 20 : -20));
+    event.preventDefault();
+  }
+
   /**
    * On a phone the channel list is an overlay, so it must start closed —
    * otherwise the first thing the app shows is a list covering the
@@ -4782,8 +4819,26 @@
                   class="reply-column"
                   class:overlay={narrowViewport}
                   data-testid="reply-column"
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => { threadDrag = null; }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
@@ -4905,7 +4960,7 @@
     /* Single-scroll guarantee: the shell clips; only leaf scrollers (the
        channel rail, the conversation thread) may scroll. */
     overflow: hidden;
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }
@@ -5034,7 +5089,7 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
     transition: width 150ms ease;
   }
 
@@ -5054,6 +5109,28 @@
     }
   }
 
+  .reply-column.resizable-thread {
+    flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
+    min-width: min(280px, 50%);
+  }
+
+  .thread-resize-handle {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    z-index: 10;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .thread-resize-handle:hover,
+  .thread-resize-handle:focus-visible {
+    background: var(--line);
+    outline: 1px solid var(--t2);
+  }
+
   .reply-column.overlay {
     position: absolute;
     top: 0;
@@ -5061,7 +5138,7 @@
     bottom: 0;
     width: min(100%, 420px);
     z-index: 5;
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
   }
 
   /* Channel header — ported from the real ChannelView: title left, tabs +

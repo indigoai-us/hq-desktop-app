@@ -78,7 +78,8 @@
    QA remains deterministic even when the host OS is dark. */
 :root,
 :root[data-force-theme='light'] {
-  --v4-ground: rgb(242 242 242 / clamp(0.15, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.015), 1));
+  --v4-reading-surface: #f2f2f2;
+  --v4-ground: var(--v4-reading-surface);
   --v4-raised: rgb(255 255 255 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
   --v4-inset: rgba(0, 0, 0, 0.045);
   --v4-chrome: rgb(232 232 232 / clamp(0.11, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.046), 1));
@@ -113,7 +114,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
+    --v4-reading-surface: #111111;
+  --v4-ground: var(--v4-reading-surface);
     --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
     --v4-inset: rgba(0, 0, 0, 0.32);
     --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
@@ -148,7 +150,8 @@
 
 .dark,
 :root[data-force-theme='dark'] {
-  --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
+  --v4-reading-surface: #111111;
+  --v4-ground: var(--v4-reading-surface);
   --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
   --v4-inset: rgba(0, 0, 0, 0.32);
   --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
