@@ -54,6 +54,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("DesktopApp received attachment flow", () => {
@@ -62,7 +63,15 @@ describe("DesktopApp received attachment flow", () => {
       .spyOn(URL, "createObjectURL")
       .mockReturnValue("blob:received-photo");
     const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
-    const getAttachmentObject = vi.fn(async () => new Response("bytes"));
+    vi.stubGlobal("Image", class {
+      src = "";
+      naturalWidth = 800;
+      naturalHeight = 600;
+      decode = async () => {};
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => callback(new Blob(["thumbnail"], { type: "image/png" })));
+    const getAttachmentObject = vi.fn(async () => new Response("bytes", { headers: { "content-type": "image/png" } }));
     const presignVaultGet = vi.fn(async () =>
       ok({
         results: [{ url: "https://vault.example/received-photo.png" }],
@@ -130,6 +139,7 @@ describe("DesktopApp received attachment flow", () => {
     );
     expect(getAttachmentObject).toHaveBeenCalledWith(
       "https://vault.example/received-photo.png",
+      25 * 1024 * 1024,
     );
     expect(createObjectUrl).toHaveBeenCalled();
 

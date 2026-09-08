@@ -12,6 +12,7 @@
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
@@ -119,6 +120,7 @@
      */
     onuploadfiles?: (files: File[]) => Promise<ChatAttachmentWire[]>;
     /** Presign a vault GET so reply image thumbs can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -162,6 +164,7 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
   }
@@ -177,7 +180,9 @@
     reactions = {},
     ontogglereaction,
     selfDisplayName = null,
+    selfPersonUid = null,
     onuploadfiles = undefined,
+    previewCache,
     onpresign = undefined,
     onopenattachment = undefined,
     onopenartifact = undefined,
@@ -837,6 +842,8 @@
             />
           {/if}
           <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
             attachments={parseMessageAttachments(root)}
             onopen={onopenattachment}
             resolveUrl={resolveAttachmentUrl}
@@ -845,6 +852,8 @@
         </div>
         {#if reactionsFor(rootId).length > 0}
           <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
             messageId={rootId}
             reactions={reactionsFor(rootId)}
             ontoggle={toggle}
@@ -975,6 +984,8 @@
                 <RichMessageContent content={replyRich.rich} ondecision={handleDecision} />
               {/if}
               <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                 attachments={parseMessageAttachments(msg)}
                 onopen={onopenattachment}
                 resolveUrl={resolveAttachmentUrl}
@@ -982,6 +993,8 @@
               />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                   messageId={msg.eventId}
                   reactions={reactionsFor(msg.eventId)}
                   ontoggle={toggle}

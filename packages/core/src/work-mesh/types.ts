@@ -50,6 +50,7 @@ export interface MeshProjectView {
 }
 
 export interface MeshCachedReaction {
+  reactors?: Array<{personUid: string; displayName: string}>;
   emoji: string;
   count: number;
   reactedByMe: boolean;

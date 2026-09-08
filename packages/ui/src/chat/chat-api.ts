@@ -399,6 +399,7 @@ export interface NotificationsApi {
 // ---------------------------------------------------------------------------
 
 export interface ChatWakeEvents {
+  "conversation:read": { id: string };
   /** New message in a channel — ids only; fetch that slice, not the inbox. */
   "channel:new-message": {
     channelId: string;

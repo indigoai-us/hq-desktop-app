@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { flushSync, mount, unmount } from "svelte";
+import { ImagePreviewCache } from "./image-preview-cache";
 import MessageAttachments from "./MessageAttachments.svelte";
 import type { FileAttachmentModel } from "./channelMessageModels";
 
@@ -29,6 +30,8 @@ let component: ReturnType<typeof mount> | null = null;
 
 function mountStrip(props: {
   attachments: FileAttachmentModel[];
+  previewCache?: ImagePreviewCache | null;
+  vaultCompanyUid?: string;
   onopen?: (a: FileAttachmentModel) => void;
   resolveUrl?: (a: FileAttachmentModel) => Promise<string | null>;
   onreleaseurl?: (url: string) => void;
@@ -119,5 +122,46 @@ describe("MessageAttachments inline images", () => {
     await unmount(component!);
     component = null;
     expect(onreleaseurl).toHaveBeenCalledWith("blob:desktop-photo");
+  });
+});
+
+
+describe("cached inline image rendering", () => {
+  function cache(load = vi.fn(async () => new Blob(["png"], { type: "image/png" }))) {
+    return new ImagePreviewCache({
+      account: "alice", load,
+      prepare: async (blob) => ({ blob, width: 320, height: 220 }),
+      createUrl: () => "blob:cached-preview",
+      revokeUrl: vi.fn(),
+    });
+  }
+  it("renders a warm image synchronously on remount, with no placeholder", async () => {
+    const load = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+    const previewCache = cache(load);
+    await previewCache.warm("company", item().vaultPath);
+    mountStrip({ attachments: [item()], previewCache, vaultCompanyUid: "company" });
+    // No tick/settle: the image must exist in the initial render.
+    expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:cached-preview");
+    expect(host.textContent).not.toContain("Loading image");
+    await unmount(component!);
+    component = null;
+    host.remove();
+    mountStrip({ attachments: [item()], previewCache, vaultCompanyUid: "company" });
+    expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:cached-preview");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+  it("replaces a cold placeholder in the same frame and can retry a failure", async () => {
+    const load = vi.fn().mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+    const previewCache = cache(load);
+    mountStrip({ attachments: [item()], previewCache, vaultCompanyUid: "company" });
+    const frame = host.querySelector("[data-testid=attachment-thumb]");
+    expect(frame?.textContent).toContain("Loading image");
+    expect(frame?.textContent).not.toContain("photo.png");
+    await vi.waitFor(() => expect(frame?.textContent).toContain("Retry"));
+    (frame as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(frame?.querySelector("img")).not.toBeNull());
+    expect(host.querySelector("[data-testid=attachment-thumb]")).toBe(frame);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 });

@@ -375,6 +375,8 @@
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
+  let searchButton = $state<HTMLButtonElement | null>(null);
+  let activeSearchIndex = $state(0);
   let searchQuery = $state("");
   let filterOpen = $state(false);
   let scopeMenuOpen = $state(false);
@@ -386,7 +388,6 @@
    * once per idle window instead of on every keystroke. The inputs stay bound
    * to the raw values, so typing/cursor/IME are unaffected.
    */
-  let searchQueryDebounced = $state("");
   let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
@@ -410,15 +411,11 @@
     activeId = selectedId;
   });
 
-  // Debounce the search/history queries (~110ms). Collapses fast keystroke
-  // bursts into a single roster scan. One effect: any keystroke reschedules;
-  // the other is an idempotent no-op when unchanged. (The create modal owns its
-  // own 110ms debounce.)
+  // History searches are debounced; conversation completion stays synchronous
+  // so Enter can never open a result from the previous query.
   $effect(() => {
-    const s = searchQuery;
     const h = historyQuery;
     const timer = setTimeout(() => {
-      searchQueryDebounced = s;
       historyQueryDebounced = h;
     }, 110);
     return () => clearTimeout(timer);
@@ -665,8 +662,34 @@
     }),
   );
   const switcherResults = $derived(
-    filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
+    filterSwitcher(liveSwitcherRows, searchQuery).slice(0, 200),
   );
+  $effect(() => {
+    switcherResults;
+    activeSearchIndex = 0;
+  });
+
+  function closeSearch(): void {
+    searchOpen = false;
+    searchButton?.focus();
+  }
+
+  function searchKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!switcherResults.length) return;
+      activeSearchIndex = (activeSearchIndex + (event.key === "ArrowDown" ? 1 : -1) + switcherResults.length) % switcherResults.length;
+      document.getElementById(`conversation-search-${activeSearchIndex}`)?.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter" && switcherResults[activeSearchIndex]) {
+      event.preventDefault();
+      selectSwitcherRow(switcherResults[activeSearchIndex]);
+    }
+  }
   const historyRows = $derived(
     searchHistory(filteredRows, historyQueryDebounced),
   );
@@ -793,7 +816,7 @@
   }
 
   function selectSwitcherRow(row: SwitcherRow): void {
-    searchOpen = false;
+    closeSearch();
     searchQuery = "";
     jumpToSwitcherRow(row);
   }
@@ -1404,6 +1427,19 @@
         }),
       );
 
+      track(wakes.on("conversation:read", ({ id }) => {
+        const row = allRows.find((row) => row.id === id);
+        if (row?.kind === "dm" && row.personUid) {
+          dmDots = clearDmDot(dmDots, row.personUid);
+          saveDmDots(dmDots, storage);
+          pairUnreads = clearPairUnread(pairUnreads, row.personUid);
+          contacts = contacts.map((contact) => contact.personUid === row.personUid
+            ? { ...contact, unreadCount: 0 } : contact);
+        } else if (row?.channelId) {
+          channels = clearChannelUnread(channels, row.channelId);
+        }
+      }));
+
       // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
       track(
         wakes.on("dm:pair-unreads", (payload) => {
@@ -1788,6 +1824,7 @@
         aria-label="Search or jump to a conversation"
         title="Search or jump to…"
         onclick={openSearch}
+        bind:this={searchButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle
@@ -2392,14 +2429,24 @@
             placeholder="Search or jump to…"
             bind:value={searchQuery}
             aria-label="Search or jump to a conversation"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="conversation-search-results"
+            aria-autocomplete="list"
+            aria-activedescendant={switcherResults.length ? `conversation-search-${activeSearchIndex}` : undefined}
+            onkeydown={searchKeydown}
           />
         </div>
-        <div class="chat-switcher-list" role="list">
-          {#each switcherResults as row (row.id)}
+        <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
+          {#each switcherResults as row, index (row.id)}
             <button
               type="button"
               class="chat-switcher-row"
-              role="listitem"
+              role="option"
+              id={`conversation-search-${index}`}
+              aria-selected={index === activeSearchIndex}
+              class:active={index === activeSearchIndex}
+              tabindex="-1"
               onclick={() => selectSwitcherRow(row)}
             >
               {#if row.kind === "channel"}
@@ -3826,7 +3873,8 @@
     cursor: pointer;
   }
 
-  .chat-switcher-row:hover {
+  .chat-switcher-row:hover,
+  .chat-switcher-row.active {
     background: var(--hover);
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -208,11 +209,27 @@
       });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
-  const notificationsApi = createNotificationsApi(adapter);
   const wakes = hostWakes ?? createChatWakeBus();
+  let localNotificationRows = $state<Record<string, unknown>[]>([]);
+  const notificationsApi = createNotificationsApi(adapter, {
+    localNotifications: () => localNotificationRows,
+    ackLocalNotification: (id) => {
+      localNotificationRows = localNotificationRows.map((row) =>
+        row.id === id ? { ...row, status: "read" } : row,
+      );
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+    readAllLocalNotifications: () => {
+      localNotificationRows = localNotificationRows.map((row) => ({
+        ...row,
+        status: "read",
+      }));
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+  });
   let localNotificationWakeSeq = $state(0);
   const notificationWakeSeq = $derived(
-    hostNotificationWakeSeq ?? localNotificationWakeSeq,
+    (hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq,
   );
   let externalLinkError = $state<string | null>(null);
 
@@ -248,6 +265,10 @@
       { accountId: effectiveTenantAccountId, companyId: "all" },
     ),
   );
+  $effect(() => {
+    void personUid;
+    localNotificationRows = personUid ? readChannelNotifications(conversationCacheStorage) : [];
+  });
   $effect(() => {
     shallow = readShallowCache(personUid);
   });
@@ -435,6 +456,20 @@
   // `channel:updated` narrows to that channel; catch-up has no row identity
   // and can reconcile any project directory entry, so it invalidates broadly.
   onMount(() => subscribeProjectMetaInvalidations(wakes, projectMeta));
+
+  // Channel unread deltas arrive through the desktop poller independently of
+  // the NOTIF store. Bridge that wake into the visible feed immediately.
+  onMount(() =>
+    wakes.on("channel:new-message", (wake) => {
+      if (!personUid) return;
+      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+      const next = addChannelNotification(localNotificationRows, wake, personUid, channel?.name?.trim() || "");
+      if (next === localNotificationRows) return;
+      localNotificationRows = next;
+      saveChannelNotifications(conversationCacheStorage, next);
+      localNotificationWakeSeq += 1;
+    }),
+  );
 
   $effect(() => {
     if (!self) return;
