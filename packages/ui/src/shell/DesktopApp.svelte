@@ -3575,6 +3575,10 @@
       membersOpen = false;
       projectAboutOpen = false;
     }
+    if (dest.kind === "channel") {
+      const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
+      if (row) handleSelect(row);
+    }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {

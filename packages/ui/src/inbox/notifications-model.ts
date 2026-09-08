@@ -24,6 +24,7 @@ export type NotificationDisplayKind =
   | "agent_review_request"
   | "file_shared"
   | "dm_received"
+  | "channel_message"
   | "infra_flag"
   | "generic";
 
@@ -200,6 +201,7 @@ export function mapServerType(
 
   if (t === "dm" || t === "dm_received" || t === "message")
     return "dm_received";
+  if (t === "channel_message") return "channel_message";
 
   if (
     t === "security_alert" ||
@@ -229,6 +231,7 @@ export function typeIconForKind(
     case "file_shared":
       return "file";
     case "dm_received":
+    case "channel_message":
       return "dm";
     case "infra_flag":
       return "flag";
@@ -256,6 +259,7 @@ export function verbForKind(
     case "file_shared":
       return "shared a file";
     case "dm_received":
+    case "channel_message":
       return "sent a message";
     case "infra_flag":
       return "flagged infrastructure";
@@ -638,6 +642,7 @@ export function classifyNotificationsError(
  */
 export type NotificationDestination =
   | { kind: "dm"; personUid: string; title: string }
+  | { kind: "channel"; channelId: string }
   | { kind: "files" }
   | { kind: "none" };
 
@@ -659,6 +664,7 @@ export function notificationDestination(
     item.displayKind === "file_shared" ||
     target === "/files" ||
     target.startsWith("/files/");
+  const channelMatch = target.match(/^\/channels\/(chn_[A-Za-z0-9_-]+)\b/);
 
   if (isDm && uid) {
     return {
@@ -675,6 +681,7 @@ export function notificationDestination(
     };
   }
   if (isShare) return { kind: "files" };
+  if (channelMatch) return { kind: "channel", channelId: channelMatch[1] };
   return { kind: "none" };
 }
 

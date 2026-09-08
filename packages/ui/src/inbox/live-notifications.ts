@@ -18,11 +18,20 @@ export type LiveNotificationType = (typeof LIVE_NOTIFICATION_TYPES)[number];
 
 export const DM_ID_PREFIX = "dm:";
 export const SHARE_ID_PREFIX = "share:";
+export const LOCAL_ID_PREFIX = "local:";
 
 export type NotificationAckTarget =
   | { kind: "store"; id: string }
   | { kind: "inbox"; eventId: string }
-  | { kind: "share"; eventId: string };
+  | { kind: "share"; eventId: string }
+  | { kind: "local"; id: string };
+
+export interface LiveNotificationsOptions {
+  /** Session-local wake rows which have no NOTIF-store counterpart yet. */
+  localNotifications?: () => Record<string, unknown>[];
+  ackLocalNotification?: (id: string) => void;
+  readAllLocalNotifications?: () => void;
+}
 
 export interface InboxEventWire {
   eventId?: unknown;
@@ -87,6 +96,7 @@ export function classifyNotificationAck(id: string): NotificationAckTarget {
   if (trimmed.startsWith(SHARE_ID_PREFIX)) {
     return { kind: "share", eventId: trimmed.slice(SHARE_ID_PREFIX.length) };
   }
+  if (trimmed.startsWith(LOCAL_ID_PREFIX)) return { kind: "local", id: trimmed };
   return { kind: "store", id: trimmed };
 }
 
@@ -205,6 +215,7 @@ export function composeLiveNotifications(args: {
   store?: unknown;
   inbox?: unknown;
   shares?: unknown;
+  local?: Record<string, unknown>[];
   unreadOnly?: boolean;
 }): ComposedNotificationsFeed {
   const store = storeFeed(args.store);
@@ -250,8 +261,11 @@ export function composeLiveNotifications(args: {
     extras.push({ ...mapped, status: "read" });
   }
 
-  const merged = [...bySource.values(), ...extras];
-  const unreadCount = store.unreadCount ?? merged.filter(isUnreadRow).length;
+  const local = args.local ?? [];
+  const merged = [...local, ...bySource.values(), ...extras];
+  const unreadCount = store.unreadCount === null
+    ? merged.filter(isUnreadRow).length
+    : store.unreadCount + local.filter(isUnreadRow).length;
   const notifications = args.unreadOnly ? merged.filter(isUnreadRow) : merged;
 
   return { notifications, unreadCount, nextCursor: store.nextCursor };
@@ -281,6 +295,7 @@ function unwrapMessage(result: AdapterResult<unknown>): string {
  */
 export function createLiveNotificationsApi(
   adapter: PlatformAdapter,
+  options: LiveNotificationsOptions = {},
 ): NotificationsApi {
   const sourceById = new Map<
     string,
@@ -313,6 +328,10 @@ export function createLiveNotificationsApi(
     if (target.kind === "share") {
       const r = await adapter.notifications.ackSharedWithMe([target.eventId]);
       if (!r.ok) throw new Error(unwrapMessage(r));
+      return;
+    }
+    if (target.kind === "local") {
+      options.ackLocalNotification?.(target.id);
       return;
     }
     const store = await adapter.notifications.ack(target.id);
@@ -355,6 +374,7 @@ export function createLiveNotificationsApi(
         store: store.ok ? store.value : null,
         inbox: inbox.ok ? inbox.value : null,
         shares: shares.ok ? shares.value : null,
+        local: options.localNotifications?.() ?? [],
         unreadOnly: Boolean(args.unreadOnly),
       });
       remember(composed.notifications);
@@ -365,11 +385,13 @@ export function createLiveNotificationsApi(
       const ids = [...sourceById.keys()];
       const inboxIds: string[] = [];
       const shareIds: string[] = [];
+      let hasLocal = false;
       for (const id of ids) {
         const remembered = sourceById.get(id);
         const target = remembered?.ack ?? classifyNotificationAck(id);
         if (target.kind === "inbox") inboxIds.push(target.eventId);
         else if (target.kind === "share") shareIds.push(target.eventId);
+        else if (target.kind === "local") hasLocal = true;
         if (remembered?.sourceEventId && remembered.ack.kind === "store") {
           if (remembered.type === "dm") inboxIds.push(remembered.sourceEventId);
           if (remembered.type === "file_share") {
@@ -390,6 +412,7 @@ export function createLiveNotificationsApi(
           adapter.notifications.ackSharedWithMe([...new Set(shareIds)]),
         );
       }
+      if (hasLocal) options.readAllLocalNotifications?.();
       if (extras.length === 0) return;
       const results = await Promise.all(extras);
       for (const result of results) {

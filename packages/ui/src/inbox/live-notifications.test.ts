@@ -218,6 +218,24 @@ describe("live-notifications", () => {
       expect(composed.notifications).toEqual([]);
       expect(composed.unreadCount).toBe(0);
     });
+
+    it("keeps unread channel wake rows alongside the durable store feed", () => {
+      const composed = composeLiveNotifications({
+        store: { notifications: [], unreadCount: 4 },
+        local: [
+          {
+            id: "local:channel:evt_1",
+            type: "channel_message",
+            status: "unread",
+            targetRef: "/channels/chn_1",
+          },
+        ],
+      });
+      expect(composed.notifications).toEqual([
+        expect.objectContaining({ id: "local:channel:evt_1" }),
+      ]);
+      expect(composed.unreadCount).toBe(5);
+    });
   });
 
   describe("createLiveNotificationsApi", () => {
