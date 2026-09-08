@@ -11,6 +11,7 @@
 //! stories (US-002+) populate these records from on-disk Claude/Codex artifacts;
 //! this module owns only the type definitions and the status taxonomy.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -50,6 +51,12 @@ pub mod history;
 /// + a stale-after timeout keep it honest when the box stops reporting.
 pub mod outpost;
 
+/// Event-driven wake (perf) — a `notify` watcher on the local session stores so
+/// a changed transcript refreshes the snapshot in ~300ms instead of waiting for
+/// the safety poll. Impure wiring only; the filter/debounce/root policy is pure
+/// in [`hq_desktop_core::sessions::watch`].
+pub mod watch;
+
 pub use hq_desktop_core::sessions::{
     merge_sessions, plan_poll, resolve_poll_interval, AgentOrigin, AgentSession, AgentTool,
     SessionStatus,
@@ -67,7 +74,7 @@ pub type MissionControlSnapshot =
 pub const EVENT_SESSIONS_UPDATED: &str = "sessions:updated";
 
 /// Diagnostic-log tag for the sessions polling loop.
-const LOG_TAG: &str = "sessions";
+pub(crate) const LOG_TAG: &str = "sessions";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Snapshot assembly (async, real I/O)
@@ -188,8 +195,7 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
         // Launch delay — give the app a moment to finish setup before the first
         // scan (mirrors the share/updater pollers' settle delay).
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let mut last_snapshot: Option<MissionControlSnapshot> = None;
-        emit_snapshot_if_changed(&app, &mut last_snapshot).await;
+        refresh_and_emit(&app).await;
 
         let mut last_emit = Instant::now();
         let mut was_visible = any_window_visible(&app);
@@ -199,7 +205,7 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
             was_visible = visible;
 
             if plan.emit {
-                emit_snapshot_if_changed(&app, &mut last_snapshot).await;
+                refresh_and_emit(&app).await;
                 last_emit = Instant::now();
             }
             tokio::time::sleep(plan.sleep).await;
@@ -219,7 +225,7 @@ pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
 /// so counting it would make this permanently true and the idle gating would
 /// never engage. Only windows a user actually opens (`main` popover,
 /// `desktop-alt`, `messages`, ...) count.
-fn any_window_visible<R: Runtime>(app: &AppHandle<R>) -> bool {
+pub(crate) fn any_window_visible<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.webview_windows()
         .iter()
         .filter(|(label, _)| counts_as_user_window(label))
@@ -236,6 +242,49 @@ const HUD_WINDOW_LABELS: &[&str] = &[
 /// Does a visible window with this label mean a user is looking at the app?
 fn counts_as_user_window(label: &str) -> bool {
     !HUD_WINDOW_LABELS.contains(&label)
+}
+
+/// The last snapshot emitted, shared by the safety poll and the filesystem
+/// watcher.
+///
+/// Both refresh paths must dedup against the *same* baseline: if the watcher
+/// kept its own, a poll tick right after a watcher wake would re-emit an
+/// identical payload (and vice-versa), which is exactly the serialisation + IPC
+/// + Svelte reconciliation waste the dedup exists to avoid.
+///
+/// A tokio mutex (not `std`) because the guard is held across
+/// [`emit_snapshot_if_changed`]'s `.await`; contention is nil (two writers, both
+/// rare) so this is purely about `Send`-ness inside the spawned tasks. It also
+/// serialises the two refresh paths, so a poll tick and a watcher wake can never
+/// interleave and emit the same snapshot twice.
+static LAST_SNAPSHOT: OnceLock<tokio::sync::Mutex<Option<MissionControlSnapshot>>> =
+    OnceLock::new();
+
+fn last_snapshot_slot() -> &'static tokio::sync::Mutex<Option<MissionControlSnapshot>> {
+    LAST_SNAPSHOT.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// The single refresh path: assemble a snapshot and emit it only if it differs
+/// from the last one anyone emitted.
+///
+/// Both the safety-poll timer ([`setup_sessions_poller`]) and the filesystem
+/// watcher ([`watch::setup_sessions_watcher`]) call this, so there is exactly one
+/// definition of "collect and emit" and the unchanged-snapshot skip applies
+/// identically to both.
+///
+/// Note this always runs the *full* [`collect_snapshot_blocking`], including the
+/// `pgrep` liveness fork. On a watcher wake that fork is not strictly needed
+/// (a file changed, not a process list), but keeping it means an event-driven
+/// refresh is exactly as correct as a polled one, and the watcher's ~300ms
+/// debounce bounds it to at most one fork per burst.
+///
+/// Visibility gating lives at the *call sites*, not here: the poll decides via
+/// [`plan_poll`] (which still wants a slow hidden heartbeat), while the watcher
+/// checks [`any_window_visible`] and drops the wake outright — nobody can see a
+/// snapshot pushed to a hidden window.
+pub(crate) async fn refresh_and_emit<R: Runtime>(app: &AppHandle<R>) {
+    let mut last = last_snapshot_slot().lock().await;
+    emit_snapshot_if_changed(app, &mut last).await;
 }
 
 /// Assemble one snapshot and emit it to the frontend as [`EVENT_SESSIONS_UPDATED`].

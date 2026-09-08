@@ -7,6 +7,7 @@ pub mod codex;
 pub mod history;
 pub mod outpost;
 pub mod scan_cache;
+pub mod watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,12 +94,23 @@ pub struct MissionControlSnapshot<HistoryEvent, OutpostStatus> {
     pub outpost: Option<OutpostStatus>,
 }
 
-/// Interactive cadence while a user window is visible. 15s: a full snapshot
-/// walks thousands of session files and forks `pgrep`; 5s was measurably hurting
-/// UI smoothness while the desktop window was open. The poller also skips the
-/// emit when the snapshot is unchanged, and `HQ_SYNC_SESSIONS_POLL_SECS` can
-/// still lower it (floor 2s) for debugging.
-pub const SESSIONS_POLL_INTERVAL_SECS: u64 = 15;
+/// Cadence of the **safety** poll while a user window is visible.
+///
+/// This is no longer the freshness mechanism. Local session changes now arrive
+/// by filesystem event: [`watch`] wires a `notify` watcher onto the Claude,
+/// Codex, and HQ `workspace` stores, so a transcript being appended wakes the
+/// snapshot within ~300ms regardless of this value.
+///
+/// What the timer still covers is the one change that writes no file — a
+/// `claude`/`codex` **process exiting**, which only the `pgrep` liveness scan can
+/// observe — plus re-resolving watch roots that did not exist at startup. That
+/// is a slow-moving concern, so the cadence went 15s → 90s: a full snapshot
+/// walks thousands of session files and forks `pgrep`, and doing that four times
+/// a minute for a signal the watcher already delivers was pure battery cost.
+///
+/// The poller also skips the emit when the snapshot is unchanged, and
+/// `HQ_SYNC_SESSIONS_POLL_SECS` can still lower it (floor 2s) for debugging.
+pub const SESSIONS_POLL_INTERVAL_SECS: u64 = 90;
 pub const SESSIONS_POLL_FLOOR_SECS: u64 = 2;
 
 pub fn resolve_poll_interval(env_value: Option<&str>) -> Duration {
@@ -626,6 +638,19 @@ mod tests {
     }
 
     // ── US-005: poll-interval resolution ────────────────────────────────────
+
+    /// The active cadence was 15s when the poll was the *only* way a local
+    /// session change reached the UI. It is now a safety net behind the
+    /// filesystem watcher (`sessions::watch`), which delivers file changes in
+    /// ~300ms, so the timer only has to catch process exits — hence 90s.
+    #[test]
+    fn active_poll_is_a_slow_safety_net_behind_the_watcher() {
+        assert_eq!(SESSIONS_POLL_INTERVAL_SECS, 90);
+        assert!(
+            SESSIONS_POLL_INTERVAL_SECS < SESSIONS_HIDDEN_POLL_INTERVAL_SECS,
+            "the visible cadence must still be no slower than the hidden heartbeat"
+        );
+    }
 
     #[test]
     fn poll_interval_defaults_when_env_absent() {
