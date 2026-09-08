@@ -124,7 +124,7 @@
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || peers.has(id) || peers.size >= 7) throw new Error('invalid peer');
     const pc = new RTCPeerConnection(configuration);
     const peer = { pc, elements: [], errors: [], remoteScreenTrackId: remote?.screenTrackId,
-      audioCount: 0, videoCount: 0, samples: [], decodedCanvas: document.createElement('canvas') };
+      audioCount: 0, videoCount: 0, lastAudioProgressMs: now(), samples: [], decodedCanvas: document.createElement('canvas') };
     peer.decodedCanvas.width = 1280; peer.decodedCanvas.height = 720;
     peers.set(id, peer);
     if (remote) pc.ondatachannel = event => attachFileChannel(peer, event.channel);
@@ -144,7 +144,7 @@
     const atMs = now();
     const value = { peerId: id, atMs, connectionState: peer.pc.connectionState,
       receivedAudioMarkers: peer.audioCount, receivedVideoMarkers: peer.videoCount,
-      audioMarker: null, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
+      audioMarker: null, audioGapMs: atMs - peer.lastAudioProgressMs, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
     if (peer.audio) {
       const bins = new Float32Array(peer.audio.frequencyBinCount); peer.audio.getFloatFrequencyData(bins);
       let best = -Infinity, marker = -1;
@@ -155,19 +155,30 @@
       }
       if (best > -45) {
         value.audioMarker = { sequenceModulo16: marker, levelDb: best };
-        value.receivedAudioMarkers = ++peer.audioCount;
+        // A repeated FFT observation is not new media delivery.
+        if (marker !== peer.lastAudioMarker) {
+          peer.lastAudioMarker = marker;
+          peer.lastAudioProgressMs = atMs;
+          value.audioGapMs = 0;
+          value.receivedAudioMarkers = ++peer.audioCount;
+        }
       }
     }
-    if (peer.screen && peer.screen.readyState >= 2 && peer.screen.videoWidth === 1280) {
+    const observedVideo = peer.screen || peer.camera;
+    if (observedVideo && observedVideo.readyState >= 2 && observedVideo.videoWidth === 1280) {
       const c = peer.decodedCanvas.getContext('2d', { willReadFrequently: true });
-      c.drawImage(peer.screen, 0, 0, 1280, 720);
+      c.drawImage(observedVideo, 0, 0, 1280, 720);
       let decoded = 0;
       for (let bit = 0; bit < 16; bit++) {
         const pixel = c.getImageData(20 + bit * 24, 20, 1, 1).data;
         if (pixel[0] + pixel[1] + pixel[2] > 384) decoded |= 1 << bit;
       }
-      value.videoMarker = { sequence: decoded, width: peer.screen.videoWidth, height: peer.screen.videoHeight };
-      value.receivedVideoMarkers = ++peer.videoCount;
+      value.videoMarker = { sequence: decoded, width: observedVideo.videoWidth, height: observedVideo.videoHeight,
+        source: peer.screen ? 'screen' : 'camera' };
+      if (decoded !== peer.lastVideoMarker) {
+        peer.lastVideoMarker = decoded;
+        value.receivedVideoMarkers = ++peer.videoCount;
+      }
     }
     const stats = await peer.pc.getStats();
     stats.forEach(s => {
