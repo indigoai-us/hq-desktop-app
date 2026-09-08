@@ -31,13 +31,14 @@ Attach native WebDriver sessions to the intended executables and tunnel each
 session endpoint to loopback. The adapter does not create a Chrome/Edge browser
 session and has no scripted fallback. Windows's existing `e2e-automation` Tauri
 WebView2 binary can exercise the probe, but its bytes differ from the signed
-release. Without separately verified release equivalence it cannot pass the
-native receipt gate. A Mac WKWebView WebDriver attachment/bridge is still required;
-no working Mac driver or signed Mac/Windows run is claimed by this change.
+release. An unsigned binary cannot pass the native receipt gate. Signed packaged test
+builds are accepted with their actual provenance; identical production bytes are
+not required by US-012. Mac WKWebView attachment can use the optional test-only Tauri WebDriver plugin;
+its integration is a separate increment. No signed Mac/Windows run is claimed here.
 
-Create public speech audio from `SPEECH_SCRIPT` in `fixtures.ts` using an installed
-native TTS engine (macOS `say`/`afconvert`, Windows `System.Speech`), recording the
-engine, voice, OS version and resulting WAV SHA-256. The runner requires a 5–120
+Generate public speech audio with the `fixtures` CLI mode below. It uses
+`SPEECH_SCRIPT`, installed macOS Samantha via `say`/`afconvert`, or Windows
+`System.Speech`, recording engine/voice, OS version and the actual WAV SHA-256. The runner requires a 5–120
 second audio file and records its actual digest. Do not use real call audio.
 The probe requests microphone permission, immediately stops that track, and sends
 only the generated public speech plus sequence-coded tones. Camera permission is requested and its track immediately stopped; transmitted
@@ -67,7 +68,8 @@ From the repository root:
 pnpm exec tsx apps/sync/e2e/meet/run-native.ts collect /absolute/collect.json /absolute/artifacts/diagnostic.json
 ```
 
-Run each entry of `scenarios` (2, 4, 8 participants × four profiles). TURN credentials
+The `ladder` CLI mode runs every entry of `scenarios` sequentially (2, 4, 8
+participants × four profiles), preserving each artifact before starting the next. TURN credentials
 come only through `HQ_MEET_TEST_ICE_SERVERS` injected by `hq secrets exec`, using the
 existing authorized test allocation; never put them in the config or logs. The
 probe uses real `RTCPeerConnection`, receive-track audio FFT marker detection,
@@ -120,10 +122,10 @@ finite values, duration coverage, or counters fail closed.
 
 The CLI does not manufacture normalized evidence from arbitrary summaries. The
 remaining host collector integration must independently derive the measurements,
-perform signing/process checks and attest screenshot review. This work provides
-the probe, bounded collector transport, schema and receipt verifier; it does not
-claim that this external collector, Mac attachment, calibrated audio latency or
-network-fault controller has already been deployed or exercised.
+correlate host observations and attest screenshot review. Fixed-command host OS/process/signature collection is implemented in
+`host-collector.ts`; automatic conversion of raw host/probe observations into a
+complete normalized evidence package, Mac attachment, calibrated audio latency and
+the network-fault controller remain separate implementation work.
 
 ## Verify an evidence package
 
@@ -151,3 +153,58 @@ pnpm --dir apps/sync exec vitest run --config e2e/meet/vitest.config.ts
 The second command runs **synthetic validator regressions only**. It does not replace
 signed native Mac/Windows 2→4→8 receipts or US-031's 60-minute mixed-platform gate.
 No signed native receipts were generated as part of authoring this harness.
+
+
+## Host, fixtures and workload commands
+
+All modes use `run-native.ts MODE config.json output.json`; output creation is
+exclusive. These commands do not sign binaries, change permissions, launch apps,
+change network settings or provision resources.
+
+`host` config runs on each actual device alongside its probe:
+
+```json
+{
+  "deviceId": "mac01",
+  "pid": 12345,
+  "executablePath": "/absolute/HQ.app/Contents/MacOS/hq-sync",
+  "bundlePath": "/absolute/HQ.app",
+  "durationMs": 60000
+}
+```
+
+Use the actual PID/path. macOS verifies PID identity, app bundle membership,
+`codesign --verify --deep --strict`, signing team, `sw_vers`, `hw.model`, and
+process CPU/RSS. Windows uses fixed `Get-Process`, CIM and Authenticode commands;
+it reports executable installation/package association as **unverified**, not as
+an inferred installer success. Binary hashes are checked before and after sampling.
+No configurable shell scripts or command lines are executed or recorded. A killed
+or replaced process fails collection. CPU percentages can exceed 100% across cores.
+
+`fixtures` config (directory must not exist):
+
+```json
+{ "directory": "/absolute/test-artifacts/public-v1", "fileSizeBytes": 1000000 }
+```
+
+This writes actual speech WAV, the deterministic public binary file and their
+manifest/digests. Installed voices only; missing speech support fails without
+fetching a model. Use `100000000` bytes for the full transfer workload.
+
+`collect` and `ladder` accept `fileSizeBytes` (1–100,000,000; default 1,000,000).
+The first participant sends the public file to the second through a real ordered
+RTCDataChannel while media runs. A 16-chunk application window bounds in-flight
+payloads (16 KiB each). Receiver verifies every deterministic byte and ordering,
+then computes SHA-256 chaining over previous digest plus each received chunk.
+Source and receiver exchange and compare final chain digests and exact sizes.
+This is explicitly `sha256-chain-v1`, not a claim of a whole-file SHA-256 computed
+by the receiver. Missing completion, mismatched receipts or bytes, reordered chunks
+and channel failure reject collection. Final receiver receipts are retained in
+its diagnostic snapshots. Larger files need a long enough run to finish on the
+configured bandwidth; an incomplete transfer is a failure, never a success label.
+
+`ladder` config extends `collect` with eight endpoints and a new absolute
+`outputDirectory`. The first two endpoints should include Mac and Windows, so every
+ladder rung covers both. It executes twelve collection runs; it does not claim that
+an external network profile has been applied just because the profile was selected.
+Host fault/shaping evidence remains necessary for a verified receipt.

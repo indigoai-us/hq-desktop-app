@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateEvidence, parseEvidence, p95, verifyNativeEvidence, type NativeEvidence } from './native-harness';
 import { fixtureManifest, fileFixture, fileFixtureHash, sha256 } from './fixtures';
-import { parseEndpoints } from './webdriver-driver';
+import { parseResourceSample, parseMacSignature } from './host-collector';
+import { runLadder } from './ladder';
+import { assertFileTransfer, parseEndpoints } from './webdriver-driver';
 
 const ref = (kind: string) => ({ kind, path: `${kind}.json`, sha256: 'a'.repeat(64) });
 function synthetic(): NativeEvidence {
@@ -73,7 +75,7 @@ describe('US-012 synthetic evidence validator (not native certification)', () =>
     const e = synthetic(); e.profile = 'forced-turn';
     expect(evaluateEvidence(e)).toContain('a->b: forced TURN did not select relay');
     e.devices[0].signed = false;
-    expect(evaluateEvidence(e)).toContain('a: signed packaged release-equivalent native runtime required');
+    expect(evaluateEvidence(e)).toContain('a: signed packaged native runtime required');
     e.directions[0].artifacts = [];
     expect(evaluateEvidence(e)).toContain('a->b: missing receiver-audio-markers artifact');
   });
@@ -111,6 +113,49 @@ describe('US-012 synthetic evidence validator (not native certification)', () =>
       await expect(verifyNativeEvidence({ ...options, signature: Buffer.alloc(64) })).rejects.toThrow('signature');
       await writeFile(join(root, 'network-shaping.json'), 'tampered');
       await expect(verifyNativeEvidence(options)).rejects.toThrow('hash mismatch');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('US-012 host and workload rejection (synthetic contract tests)', () => {
+  it('reads actual ps units and rejects absent/non-finite resource values', () => {
+    expect(parseResourceSample(' 12.5 ', ' 4096 ')).toEqual({ cpuPercent: 12.5, rssBytes: 4194304 });
+    expect(() => parseResourceSample('', '4096')).toThrow();
+    expect(() => parseResourceSample('NaN', '4096')).toThrow();
+    expect(() => parseResourceSample('1', '0')).toThrow();
+  });
+  it('never labels an ad-hoc or failed signature as a signed native binary', () => {
+    expect(parseMacSignature(true, 'Signature=adhoc\nTeamIdentifier=not set').valid).toBe(false);
+    expect(parseMacSignature(false, 'Authority=Developer ID\nTeamIdentifier=EXAMPLE').valid).toBe(false);
+    expect(parseMacSignature(true, 'Authority=Developer ID\nTeamIdentifier=EXAMPLE').valid).toBe(true);
+    const e = synthetic(); e.devices[0].releaseEquivalent = false;
+    expect(evaluateEvidence(e)).toEqual([]); // signed test builds are permitted; provenance is retained
+  });
+  it('rejects file completion without matching receiver digest and exact byte count', () => {
+    const file = { bytes: 100, complete: true, integrity: 'sha256-chain-v1', digest: 'd'.repeat(64) };
+    const receivedFile = { ...file };
+    const snapshots = [{ peers: [{ peerId: 'b', errors: [], sentFile: { ...file } }] },
+      { peers: [{ peerId: 'a', errors: [], receivedFile }] }];
+    expect(() => assertFileTransfer(snapshots, 'a', 'b', 100)).not.toThrow();
+    receivedFile.digest = 'e'.repeat(64);
+    expect(() => assertFileTransfer(snapshots, 'a', 'b', 100)).toThrow('integrity');
+    receivedFile.digest = file.digest;
+    receivedFile.complete = false;
+    expect(() => assertFileTransfer(snapshots, 'a', 'b', 100)).toThrow('incomplete');
+  });
+  it('executes all twelve ladder entries sequentially and preserves diagnostic labeling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'meet-ladder-contract-'));
+    try {
+      const calls: number[] = [];
+      const endpoints = Array.from({ length: 8 }, (_, i) => ({ id: `device${i}`, sessionId: `session${i}`, webdriverUrl: `http://127.0.0.1:${4444 + i}` }));
+      const result = await runLadder({ endpoints, speechWav: new Uint8Array(44), outputDirectory: join(root, 'ladder') }, async options => {
+        const count = (options.endpoints as unknown[]).length; calls.push(count);
+        return { schema: 'hq-meet-native-diagnostic/v1', provenance: 'unattested-native-probe',
+          profile: options.profile, durationMs: options.durationMs, speechSha256: 'a'.repeat(64), fileSizeBytes: 100, endpoints: [] };
+      });
+      expect(calls).toEqual([2, 2, 2, 2, 4, 4, 4, 4, 8, 8, 8, 8]);
+      expect(result.provenance).toBe('diagnostic-only'); expect(result.completed).toHaveLength(12);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

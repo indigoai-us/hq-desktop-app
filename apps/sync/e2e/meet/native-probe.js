@@ -56,6 +56,70 @@
       else peer.camera = video;
     }
   }
+  const hex = bytes => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  const chainHash = async (previous, bytes) => {
+    const joined = new Uint8Array(32 + bytes.length); joined.set(previous); joined.set(bytes, 32);
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', joined));
+  };
+  function attachFileChannel(peer, channel) {
+    if (channel.label !== 'hq-public-file-v1' || peer.channel) { channel.close(); return; }
+    peer.channel = channel; channel.binaryType = 'arraybuffer'; peer.pendingChunks = 0;
+    let received = 0, index = 0, expectedSize, hash = new Uint8Array(32), queue = Promise.resolve();
+    channel.onmessage = event => {
+      queue = queue.then(async () => {
+        if (typeof event.data === 'string') {
+          if (event.data.length > 300) throw new Error('file metadata budget');
+          const message = JSON.parse(event.data);
+          if (Number.isInteger(message.ack)) {
+            if (!peer.sentFile || message.ack !== peer.ackedChunks || peer.pendingChunks <= 0) throw new Error('invalid file ack');
+            peer.ackedChunks++; peer.pendingChunks--; return;
+          }
+          if (message.begin !== undefined) {
+            if (expectedSize !== undefined || !Number.isInteger(message.begin) || message.begin < 1 || message.begin > 100000000) throw new Error('file size budget');
+            expectedSize = message.begin; peer.receivedFile = { bytes: 0, integrity: 'sha256-chain-v1', complete: false }; return;
+          }
+          if (message.end !== undefined) {
+            if (received !== expectedSize || message.end !== hex(hash)) throw new Error('file integrity mismatch');
+            peer.receivedFile = { bytes: received, digest: hex(hash), integrity: 'sha256-chain-v1', complete: true };
+            channel.send(JSON.stringify({ complete: hex(hash) })); return;
+          }
+          if (message.complete !== undefined) {
+            if (!peer.sentFile || message.complete !== peer.sentFile.digest || peer.pendingChunks !== 0) throw new Error('file receipt mismatch');
+            peer.sentFile.complete = true; return;
+          }
+          throw new Error('unknown file message');
+        }
+        if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 5 || event.data.byteLength > 16388 || expectedSize === undefined) throw new Error('invalid file chunk');
+        const view = new DataView(event.data), bytes = new Uint8Array(event.data, 4);
+        if (view.getUint32(0) !== index || received + bytes.length > expectedSize) throw new Error('file ordering/size mismatch');
+        for (let i = 0; i < bytes.length; i++) if (bytes[i] !== ((received + i) * 31 + 17 & 255)) throw new Error('public fixture bytes differ');
+        hash = await chainHash(hash, bytes); received += bytes.length;
+        peer.receivedFile.bytes = received; channel.send(JSON.stringify({ ack: index++ }));
+      }).catch(() => { peer.errors.push('file-transfer-integrity-failed'); channel.close(); });
+    };
+  }
+  async function sendFile(peer, size) {
+    if (!Number.isInteger(size) || size < 1 || size > 100000000 || peer.sentFile) throw new Error('invalid file transfer');
+    const begin = performance.now();
+    const waitReady = async () => {
+      while (peer.channel?.readyState !== 'open' || peer.pendingChunks >= 16 || peer.channel.bufferedAmount > 262144) {
+        if (stopped || peer.errors.length || performance.now() - begin > 3600000 || peer.channel?.readyState === 'closed') throw new Error('file transfer unavailable');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    await waitReady(); peer.ackedChunks = 0; peer.sentFile = { bytes: 0, complete: false, integrity: 'sha256-chain-v1' };
+    peer.channel.send(JSON.stringify({ begin: size }));
+    let hash = new Uint8Array(32), index = 0;
+    for (let offset = 0; offset < size;) {
+      await waitReady();
+      const bytes = new Uint8Array(Math.min(16384, size - offset));
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (offset + i) * 31 + 17 & 255;
+      hash = await chainHash(hash, bytes);
+      const packet = new Uint8Array(bytes.length + 4); new DataView(packet.buffer).setUint32(0, index++); packet.set(bytes, 4);
+      peer.pendingChunks++; peer.channel.send(packet.buffer); offset += bytes.length; peer.sentFile.bytes = offset;
+    }
+    peer.sentFile.digest = hex(hash); peer.channel.send(JSON.stringify({ end: hex(hash) }));
+  }
   async function connect(id, configuration, remote) {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || peers.has(id) || peers.size >= 7) throw new Error('invalid peer');
     const pc = new RTCPeerConnection(configuration);
@@ -63,6 +127,8 @@
       audioCount: 0, videoCount: 0, samples: [], decodedCanvas: document.createElement('canvas') };
     peer.decodedCanvas.width = 1280; peer.decodedCanvas.height = 720;
     peers.set(id, peer);
+    if (remote) pc.ondatachannel = event => attachFileChannel(peer, event.channel);
+    else attachFileChannel(peer, pc.createDataChannel('hq-public-file-v1'));
     pc.ontrack = event => { receive(peer, event).catch(() => peer.errors.push('receiver-playback-failed')); };
     fixtureAudio.getTracks().forEach(track => pc.addTrack(track, fixtureAudio));
     camera.getVideoTracks().forEach(track => pc.addTrack(track, camera));
@@ -78,7 +144,7 @@
     const atMs = now();
     const value = { peerId: id, atMs, connectionState: peer.pc.connectionState,
       receivedAudioMarkers: peer.audioCount, receivedVideoMarkers: peer.videoCount,
-      audioMarker: null, videoMarker: null, rtc: [], errors: [...peer.errors] };
+      audioMarker: null, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
     if (peer.audio) {
       const bins = new Float32Array(peer.audio.frequencyBinCount); peer.audio.getFloatFrequencyData(bins);
       let best = -Infinity, marker = -1;
@@ -170,6 +236,11 @@
       const peer = peers.get(id); if (!peer) throw new Error('unknown peer');
       peer.remoteScreenTrackId = answer.screenTrackId;
       await peer.pc.setRemoteDescription(answer.description);
+    },
+    startFile(id, size) {
+      const peer = peers.get(id); if (!peer) throw new Error('unknown file peer');
+      sendFile(peer, size).catch(() => peer.errors.push('file-transfer-failed'));
+      return { started: true, size };
     },
     async snapshot() {
       if (!context || stopped) throw new Error('probe is not running');

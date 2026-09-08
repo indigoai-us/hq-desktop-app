@@ -161,7 +161,7 @@ export function evaluateEvidence(input: unknown): string[] {
     for (const k of kinds) fail(refs.some(a => a.kind === k), `${label}: missing ${k} artifact`);
   };
   for (const d of e.devices) {
-    fail(d.signed && d.packaged && d.releaseEquivalent && !d.permissionPromptsBypassed, `${d.id}: signed packaged release-equivalent native runtime required`);
+    fail(d.signed && d.packaged && !d.permissionPromptsBypassed, `${d.id}: signed packaged native runtime required`);
     fail(d.runtime === (d.platform === 'macos' ? 'WKWebView' : 'WebView2'), `${d.id}: runtime/platform mismatch`);
     fail(/^[0-9a-f]{40}$/.test(d.commit), `${d.id}: full commit required`);
     requireKinds(d.artifacts, ['signature-verification', 'os-hardware', 'process-resources', 'permissions', 'supported-baseline'], d.id);

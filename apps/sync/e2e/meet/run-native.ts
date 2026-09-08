@@ -3,20 +3,31 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { collectNativeDiagnostics } from './webdriver-driver';
 import { verifyNativeEvidence } from './native-harness';
+import { collectHost } from './host-collector';
+import { generateFixtures } from './fixture-generator';
+import { runLadder } from './ladder';
 import { type Profile } from './fixtures';
 
 async function main(): Promise<void> {
   const [mode, configPath, outputPath] = process.argv.slice(2);
-  if (!['collect', 'verify'].includes(mode) || !configPath || !outputPath) throw new Error('usage: run-native.ts collect|verify config.json output.json');
+  if (!['collect', 'verify', 'host', 'fixtures', 'ladder'].includes(mode) || !configPath || !outputPath) throw new Error('usage: run-native.ts collect|verify|host|fixtures|ladder config.json output.json');
   const raw = await readFile(configPath, 'utf8');
   if (raw.length > 64_000) throw new Error('configuration exceeds size budget');
   const config = JSON.parse(raw);
   let result: unknown;
-  if (mode === 'collect') {
+  if (mode === 'host') {
+    result = await collectHost(config);
+  } else if (mode === 'fixtures') {
+    result = await generateFixtures(config.directory, config.fileSizeBytes);
+  } else if (mode === 'ladder') {
+    const iceServers = process.env.HQ_MEET_TEST_ICE_SERVERS ? JSON.parse(process.env.HQ_MEET_TEST_ICE_SERVERS) : undefined;
+    result = await runLadder({ endpoints: config.endpoints, outputDirectory: config.outputDirectory,
+      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers });
+  } else if (mode === 'collect') {
     // Secret value never enters the persisted config or output. Resolve through hq secrets exec.
     const iceServers = process.env.HQ_MEET_TEST_ICE_SERVERS ? JSON.parse(process.env.HQ_MEET_TEST_ICE_SERVERS) : undefined;
     result = await collectNativeDiagnostics({ endpoints: config.endpoints, profile: config.profile as Profile,
-      durationMs: config.durationMs, speechWav: await readFile(config.speechWavPath), iceServers });
+      durationMs: config.durationMs, fileSizeBytes: config.fileSizeBytes, speechWav: await readFile(config.speechWavPath), iceServers });
   } else {
     result = await verifyNativeEvidence({ root: config.evidenceRoot, evidencePath: config.evidencePath,
       signature: await readFile(config.signaturePath), trustedPublicKeyPem: await readFile(config.trustedCollectorPublicKeyPath, 'utf8') });
