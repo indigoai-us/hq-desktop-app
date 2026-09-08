@@ -110,14 +110,26 @@ function reconcileSelection(): void {
       : null;
 }
 
+/**
+ * Monotonic request generation. Every `refresh()` claims the next value; any
+ * response that comes back after a newer refresh has started (a team switch, or
+ * simply the next poll) is discarded instead of writing the WRONG team's
+ * messages into the panel. The poll interval is 15s, so a slow backend has a
+ * wide window in which to land stale.
+ */
+let refreshGeneration = 0;
+
 async function refresh(): Promise<void> {
   if (!api) {
     loading = false;
     error = "Mission Control is not available on this platform yet.";
     return;
   }
+  const generation = ++refreshGeneration;
+  const stale = () => generation !== refreshGeneration;
   try {
     const [t, q] = await Promise.all([api.listTeams(), api.listQuestions()]);
+    if (stale()) return;
     const nextTeams = t ?? [];
     const nextTeamsKey = fingerprint(nextTeams);
     if (nextTeamsKey !== teamsKey) {
@@ -131,9 +143,19 @@ async function refresh(): Promise<void> {
       questions = nextQuestions;
     }
     reconcileSelection();
-    const nextMessages = selected
-      ? ((await api.listChat(selected.company, selected.team)) ?? [])
+    // Capture the team this response belongs to: `selected` can change while
+    // the request is in flight.
+    const target = selected ? { ...selected } : null;
+    const nextMessages = target
+      ? ((await api.listChat(target.company, target.team)) ?? [])
       : [];
+    if (
+      stale() ||
+      target?.company !== selected?.company ||
+      target?.team !== selected?.team
+    ) {
+      return;
+    }
     const nextMessagesKey = fingerprint(nextMessages);
     if (nextMessagesKey !== messagesKey) {
       messagesKey = nextMessagesKey;
@@ -142,6 +164,7 @@ async function refresh(): Promise<void> {
     if (error !== "") error = "";
     if (loading) loading = false;
   } catch (err) {
+    if (stale()) return;
     console.error("agency refresh failed:", err);
     error = "Could not load agency teams.";
     loading = false;
@@ -165,6 +188,8 @@ export function stopAgencyStore(): void {
     document.removeEventListener("visibilitychange", onVisibilityChange);
   }
   started = false;
+  // Invalidate any refresh still in flight so it cannot write after stop.
+  refreshGeneration += 1;
   teamsKey = "";
   questionsKey = "";
   messagesKey = "";

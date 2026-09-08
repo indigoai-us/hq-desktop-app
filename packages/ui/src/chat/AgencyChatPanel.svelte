@@ -37,8 +37,16 @@
 
   /** Within this many px of the bottom still counts as pinned. */
   const STICK_THRESHOLD_PX = 48;
-  // Follow the newest message as the conversation grows — but only while the
-  // reader is pinned to the bottom, so a poll never yanks them out of history.
+  /**
+   * Follow the newest message as the conversation grows — but only while the
+   * reader is pinned to the bottom, so a poll never yanks them out of history.
+   *
+   * Plain `let`, deliberately: it is only ever read inside the scroll effect
+   * below, which declares its own dependencies (`selected`, then
+   * `messages.length`). Making it `$state` would not help — effects flush in
+   * declaration order, so a separate "reset on team switch" effect could only
+   * ever run after the scroll effect had already read the stale value.
+   */
   let stickToBottom = true;
   function onThreadScroll(): void {
     if (!scroller) return;
@@ -46,14 +54,21 @@
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     stickToBottom = distance <= STICK_THRESHOLD_PX;
   }
+  /** Team identity by VALUE: `selected` is a fresh object on every poll, so
+   *  object identity would read as a team switch on every refresh. */
+  let lastThreadKey: string | null = null;
   $effect(() => {
+    // Read `selected` BEFORE `messages` so a team switch is always observed,
+    // even when the new team's message list is identical (the store skips the
+    // `messages` write when the serialized payload is unchanged).
+    const key = selected ? teamKey(selected.company, selected.team) : null;
     void messages.length;
+    const switched = key !== lastThreadKey;
+    lastThreadKey = key;
+    // Switching teams shows a conversation the reader has never scrolled: land
+    // at its bottom. Staying in the same team keeps their scroll position.
+    if (switched) stickToBottom = true;
     if (scroller && stickToBottom) scroller.scrollTop = scroller.scrollHeight;
-  });
-  // Switching teams shows a different conversation: land at its bottom.
-  $effect(() => {
-    void selected;
-    stickToBottom = true;
   });
 
   /** Stable keys: ts + inbox, with an occurrence suffix only for duplicates
