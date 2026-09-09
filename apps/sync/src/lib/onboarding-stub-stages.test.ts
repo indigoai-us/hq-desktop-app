@@ -85,6 +85,9 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('if (finishing || needsAttention) return false;');
     expect(wizard).toContain('if (needsAttention) return;');
     expect(wizard).toContain('disabled={needsAttention || finishing');
+    expect(wizard).toContain(
+      'if (!result.needsAttention) {\n        await journalInstallComplete();\n      }',
+    );
   });
 
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {

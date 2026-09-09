@@ -5448,6 +5448,21 @@ fn dep_is_satisfied(dep: &DepDef) -> bool {
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
+fn finish_orchestrated_dep_install(
+    label: &str,
+    install_result: Result<String, String>,
+    found_after_install: bool,
+) -> Result<(), String> {
+    match install_result {
+        Ok(_) if found_after_install => Ok(()),
+        Ok(_) => Err(format!("{label} was not found after install")),
+        // An installer can leave a managed binary on the current process PATH
+        // while failing to persist it for future shells. Do not turn that
+        // failure into success through the post-install probe.
+        Err(err) => Err(err),
+    }
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     if dep_is_satisfied(dep) {
         return Ok(());
@@ -5467,14 +5482,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if dep_is_satisfied(dep) {
-        return Ok(());
-    }
-
-    match install_result {
-        Ok(_) => Err(format!("{} was not found after install", dep.label)),
-        Err(err) => Err(err),
-    }
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(dep))
 }
 
 #[tauri::command]
@@ -5586,6 +5594,17 @@ pub async fn install_deps(
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
+        let result = finish_orchestrated_dep_install(
+            "Node.js",
+            Err("PATH persistence failed".to_string()),
+            true,
+        );
+
+        assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
 
     #[test]
     fn managed_node_abi_matches_pinned_versions() {

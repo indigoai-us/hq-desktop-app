@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createSetupRunId,
   ERROR_CATEGORIES,
@@ -6,6 +6,7 @@ import {
   normalizeErrorCategory,
   normalizeFailedDependency,
   normalizeFailedStageIds,
+  reuseInFlightOperation,
   setupFailureTelemetryDetails,
   STAGE_ORDER,
 } from './onboarding-setup';
@@ -78,5 +79,27 @@ describe('setup failure telemetry details', () => {
     expect(first).toBe('11111111-1111-4111-8111-111111111111');
     expect(second).toBe('22222222-2222-4222-8222-222222222222');
     expect(first).not.toBe(second);
+  });
+
+  it('reuses unfinished initial-sync work instead of starting a concurrent retry', async () => {
+    let resolveFirst: (() => void) | undefined;
+    const state = { operation: null as Promise<void> | null };
+    const start = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+
+    const first = reuseInFlightOperation(state, start);
+    const retry = reuseInFlightOperation(state, start);
+    expect(retry).toBe(first);
+    await Promise.resolve();
+    expect(start).toHaveBeenCalledOnce();
+
+    resolveFirst?.();
+    await first;
+    await Promise.resolve();
+    expect(state.operation).toBeNull();
   });
 });

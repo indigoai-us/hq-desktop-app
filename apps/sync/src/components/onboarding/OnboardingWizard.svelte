@@ -41,6 +41,7 @@
     createSetupRunId,
     friendlySetupBands,
     normalizeFailedStageIds,
+    reuseInFlightOperation,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
@@ -212,6 +213,7 @@
   let currentRunId = 0;
   let currentSetupRunId = '';
   let setupCancelled = false;
+  const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
   let setupFailures = $state<FailedStageDetail[]>([]);
@@ -821,8 +823,14 @@
         args = { ...args, handle };
       }
       try {
+        const operation =
+          invocation.command === 'start_initial_cloud_sync'
+            ? reuseInFlightOperation(initialCloudSyncOperation, () =>
+                Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+              )
+            : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         await withTimeout(
-          Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+          operation,
           ms,
           () => new StageTimeoutError(id, ms),
           () => {
@@ -979,7 +987,9 @@
       setupFailures = result.failedStages;
       const failedStages = normalizeFailedStageIds(setupFailures.map((stage) => stage.id));
       markSetupStepCompleted();
-      await journalInstallComplete();
+      if (!result.needsAttention) {
+        await journalInstallComplete();
+      }
       setupCompletionMetrics = {
         stageCount: stages.length,
         failedStageCount: setupFailures.length,

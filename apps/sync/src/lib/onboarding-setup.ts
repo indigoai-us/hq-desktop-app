@@ -97,6 +97,26 @@ export function createSetupRunId(randomUuid: () => string = () => crypto.randomU
   return crypto.randomUUID();
 }
 
+export interface InFlightOperation<T> {
+  operation: Promise<T> | null;
+}
+
+/** Reuse unfinished work so a timed-out retry cannot start it twice. */
+export function reuseInFlightOperation<T>(
+  state: InFlightOperation<T>,
+  start: () => Promise<T>,
+): Promise<T> {
+  if (state.operation) return state.operation;
+
+  const operation = Promise.resolve().then(start);
+  state.operation = operation;
+  const clear = () => {
+    if (state.operation === operation) state.operation = null;
+  };
+  void operation.then(clear, clear);
+  return operation;
+}
+
 export const STAGE_LABELS: Record<StageId, string> = {
   content: 'Downloading HQ template',
   deps: 'Installing dependencies',
