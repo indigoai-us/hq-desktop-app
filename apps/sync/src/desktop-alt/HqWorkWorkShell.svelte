@@ -851,6 +851,10 @@
     width: 100%;
     height: 100%;
     margin: 0;
+    /* The document owns WebKit's viewport scrolling. Clipping only the
+       embedded shell leaves native rubber-banding free to move all chrome. */
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   .hq-work-embedded {
