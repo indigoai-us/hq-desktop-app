@@ -76,6 +76,8 @@
     /** Account/company-scoped renderer persistence supplied by the host. */
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
     onback?: () => void;
+    /** Host-owned section navigation so settings subsections share history. */
+    onsectionchange?: (section: ShellSettingsSection) => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
     onopenconsole?: (url?: string) => Promise<void> | void;
@@ -97,6 +99,7 @@
     sessionGeneration = 0,
     storage = typeof window !== "undefined" ? window.localStorage : null,
     onback,
+    onsectionchange,
     onsignout,
     onopenconsole,
     onchangephoto,
@@ -439,7 +442,9 @@
             aria-current={active === section.id ? "page" : undefined}
             data-testid={`settings-nav-${section.id}`}
             onclick={() => {
-              if (section.id !== "sep") active = section.id;
+              if (section.id === "sep") return;
+              if (onsectionchange) onsectionchange(section.id);
+              else active = section.id;
             }}
           >
             <span class="ss-nav-icon">

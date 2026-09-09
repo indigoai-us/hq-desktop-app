@@ -656,6 +656,7 @@
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
+  let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
     meetingId: string;
@@ -673,6 +674,7 @@
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let tab = $state<ChannelTab>("chat");
+  let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
@@ -1000,8 +1002,6 @@
 
   $effect(() => {
     selectedRow?.id;
-    agentSurface = "chat";
-    companyTab = "chat";
     companyTabData = null;
     companyWallpaper = "aurora";
     companyAppearanceName = null;
@@ -2574,7 +2574,7 @@
       onFailure: () => {},
     });
     if (result?.navigateTo === "chat") {
-      companyTab = "chat";
+      pushConversationSurface({ companyTab: "chat" });
       return;
     }
     await loadCompanyTabSurface(companyTab);
@@ -2628,12 +2628,16 @@
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
-    if (id) {
-      openProfileMember = null;
-      openAgentMember = null;
-      openArtifactView = null;
-      openReplyRootId = id;
-    }
+    if (!id || !selectedRow) return;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    pushConversationSurface({
+      replyRootEventId: id,
+      tab: "chat",
+      agentSurface: "chat",
+      companyTab: "chat",
+    });
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -2648,10 +2652,10 @@
   }
 
   function closeReply(): void {
-    openReplyRootId = null;
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    void leaveCurrentDestination();
   }
 
   function queueReplyForRow(
@@ -2668,8 +2672,6 @@
     const row = selectedRow;
     const scope = replyScopeForRow(row);
     if (!id || !row || !scope) return;
-    view = "conversation";
-    tab = "chat";
     replyApplyInFlight = id;
     try {
       const raw = unwrapAdapter(
@@ -2813,6 +2815,9 @@
       meetingFocusRequest = null;
     }
     tab = "chat";
+    companyTab = "chat";
+    agentSurface = "chat";
+    channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -2836,27 +2841,71 @@
 
   function destinationFromConversation(
     row: ConversationRow,
-    replyRootEventId?: string | null,
+    nested?: {
+      replyRootEventId?: string | null;
+      tab?: ChannelTab;
+      companyTab?: CompanyChannelTabId;
+      agentSurface?: AgentChannelTab;
+      fileKey?: string | null;
+    },
   ): NavigationDestination {
+    const replyRootEventId = nested?.replyRootEventId ?? null;
     if (row.channelId) {
+      const nextTab = nested?.tab ?? "chat";
       return {
         kind: "channel",
         channelId: row.channelId,
-        replyRootEventId: replyRootEventId ?? null,
-        tab: "chat",
-        companyTab,
-        agentSurface,
+        replyRootEventId,
+        tab: nextTab,
+        companyTab: nested?.companyTab ?? "chat",
+        agentSurface: nested?.agentSurface ?? "chat",
+        fileKey: nextTab === "files" ? nested?.fileKey ?? null : null,
       };
     }
     if (row.personUid) {
       return {
         kind: "dm",
         personUid: row.personUid,
-        replyRootEventId: replyRootEventId ?? null,
-        agentSurface,
+        replyRootEventId,
+        agentSurface: nested?.agentSurface ?? "chat",
       };
     }
     return { kind: "messages" };
+  }
+
+  function currentConversationNested() {
+    return {
+      replyRootEventId: openReplyRootId,
+      tab,
+      companyTab,
+      agentSurface,
+      fileKey: channelFileKey,
+    };
+  }
+
+  function pushConversationSurface(
+    patch: Partial<{
+      replyRootEventId: string | null;
+      tab: ChannelTab;
+      companyTab: CompanyChannelTabId;
+      agentSurface: AgentChannelTab;
+      fileKey: string | null;
+    }>,
+  ): void {
+    const row = selectedRow;
+    if (!row) return;
+    const nested = { ...currentConversationNested(), ...patch };
+    if (patch.tab && patch.tab !== "chat") nested.replyRootEventId = null;
+    if (patch.tab && patch.tab !== "files") nested.fileKey = null;
+    if (patch.companyTab && patch.companyTab !== "chat") {
+      nested.tab = "chat";
+      nested.replyRootEventId = null;
+      nested.fileKey = null;
+    }
+    if (patch.agentSurface && patch.agentSurface !== "chat") {
+      nested.replyRootEventId = null;
+    }
+    void navigate(destinationFromConversation(row, nested));
   }
 
   function currentShellDestination(): NavigationDestination {
@@ -2874,7 +2923,7 @@
       case "atlas":
         return { kind: "atlas" };
       case "library":
-        return { kind: "library", tab: libraryTab };
+        return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
         return { kind: "shared-files" };
       case "extra":
@@ -2888,7 +2937,10 @@
         return { kind: "messages" };
       default:
         if (selectedRow) {
-          return destinationFromConversation(selectedRow, openReplyRootId);
+          return destinationFromConversation(
+            selectedRow,
+            currentConversationNested(),
+          );
         }
         return { kind: "messages" };
     }
@@ -3052,6 +3104,7 @@
         break;
       case "library":
         libraryTab = next.tab;
+        libraryItemId = next.itemId ?? null;
         view = "library";
         settingsSection = null;
         extraPageId = null;
@@ -3087,18 +3140,30 @@
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
+        libraryItemId = null;
         const row = rowForDestination(next);
-        if (row) {
-          selectConversationRow(row, {
-            replyRootEventId: next.replyRootEventId,
-          });
+        const reply = next.replyRootEventId ?? null;
+        const sameRow = Boolean(row && selectedRow?.id === row.id);
+        if (row && !sameRow) {
+          selectConversationRow(row, { replyRootEventId: reply });
+        } else if (row && sameRow) {
+          if ((openReplyRootId ?? null) !== (reply ?? null)) {
+            if (reply) queueReplyForRow(row, reply);
+            else {
+              openReplyRootId = null;
+              pendingReplyRootId = null;
+              pendingReplyForRowId = null;
+            }
+          }
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
           companyTab = next.companyTab ?? "chat";
           agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
         } else {
           agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = null;
         }
         break;
       }
@@ -3175,7 +3240,11 @@
       selectConversationRow(row, options);
       return;
     }
-    void navigate(destinationFromConversation(row, options?.replyRootEventId));
+    void navigate(
+      destinationFromConversation(row, {
+        replyRootEventId: options?.replyRootEventId ?? null,
+      }),
+    );
   }
 
   function applyConversationDeepLink(
@@ -3338,6 +3407,7 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
+    void navigate({ kind: "messages" });
   }
 
   /**
@@ -3994,7 +4064,9 @@
         (searchRows ?? []).find(
           (row) => row.personUid === dest.personUid && !row.channelId,
         );
-      handleSelect(existing ?? stub);
+      handleSelect(existing ?? stub, {
+        replyRootEventId: dest.replyRootEventId,
+      });
       return;
     }
     if (dest.kind === "files") {
@@ -4004,7 +4076,13 @@
     }
     if (dest.kind === "channel") {
       const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
-      if (row) handleSelect(row);
+      if (row) {
+        handleSelect(row, { replyRootEventId: dest.replyRootEventId });
+      } else {
+        requestChannelOpen(dest.channelId, {
+          replyRootEventId: dest.replyRootEventId ?? null,
+        });
+      }
     }
   }
 
@@ -4383,6 +4461,7 @@
         storage={tenantStorage}
         {version}
         initialSection={settingsSection}
+        onsectionchange={(section) => openSettings(section)}
         onback={closeSettings}
         onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
@@ -4653,7 +4732,7 @@
                       class:active={agentSurface === t.id}
                       aria-current={agentSurface === t.id ? "page" : undefined}
                       data-testid={`agent-tab-${t.id}`}
-                      onclick={() => (agentSurface = t.id)}
+                      onclick={() => pushConversationSurface({ agentSurface: t.id })}
                     >
                       <span>{t.label}</span>
                     </button>
@@ -4684,7 +4763,7 @@
                 {/if}
                 <CompanyTabs
                   active={companyTab}
-                  onselect={(id) => (companyTab = id)}
+                  onselect={(id) => pushConversationSurface({ companyTab: id })}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -4698,7 +4777,7 @@
                       class="project-tab"
                       class:active={tab === t.id}
                       aria-current={tab === t.id ? "page" : undefined}
-                      onclick={() => (tab = t.id)}
+                      onclick={() => pushConversationSurface({ tab: t.id })}
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
@@ -4906,7 +4985,7 @@
               avatarSaving={agentAvatarSaving}
               avatarSaveError={agentAvatarSaveError}
               onsaveavatar={saveOpenAgentAvatar}
-              onclose={() => (agentSurface = "chat")}
+              onclose={() => void leaveCurrentDestination()}
             />
           {:else if isCompanyChannel && companyTab !== "chat"}
             {#if companyTab === "team"}
@@ -5161,16 +5240,21 @@
               onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
-              onOpenInChannel={() => (tab = "chat")}
+              onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
             <ChannelFilesTab
               {files}
               previewContext={channelFilePreviewContext}
+              previewKey={channelFileKey}
               onloadpreview={loadChannelFilePreview}
               onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
+              onselectfile={(item) =>
+                pushConversationSurface({ tab: "files", fileKey: item.key })}
+              onclosepreview={() =>
+                pushConversationSurface({ tab: "files", fileKey: null })}
             />
           {/if}
         {:else if conversationBootTimedOut}
@@ -5193,11 +5277,14 @@
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
+      itemId={libraryItemId}
       {packagesEvents}
       onback={() => {
         void leaveCurrentDestination();
       }}
-      onnavigatetab={(next) => (libraryTab = next)}
+      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      onnavigateitem={(id) =>
+        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
     />
   {/if}
 

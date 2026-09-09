@@ -27,6 +27,11 @@
     onopen?: (item: ChannelFileItemModel) => Promise<unknown>;
     /** Host re-check before rendering or executing a native local-file action. */
     onauthorizeaction?: (item: ChannelFileItemModel) => boolean;
+    /** Controlled preview identity from the shared navigation stack. */
+    previewKey?: string | null;
+    /** Host-owned file preview navigation. */
+    onselectfile?: (item: ChannelFileItemModel) => void;
+    onclosepreview?: () => void;
   }
 
   let {
@@ -36,6 +41,9 @@
     onreveal,
     onopen,
     onauthorizeaction,
+    previewKey = undefined,
+    onselectfile,
+    onclosepreview,
   }: Props = $props();
 
   let selectedKey = $state<string | null>(null);
@@ -200,8 +208,25 @@
   }
 
   function closePreview(): void {
+    if (onclosepreview) {
+      onclosepreview();
+      return;
+    }
     invalidatePreviewSelection();
   }
+
+  $effect(() => {
+    if (previewKey === undefined) return;
+    const next = previewKey;
+    if (next == null) {
+      if (selectedKey !== null) invalidatePreviewSelection();
+      return;
+    }
+    if (selectedKey === next) return;
+    const item = files.find((row) => row.key === next);
+    if (item) void selectFile(item);
+    else invalidatePreviewSelection();
+  });
 
   function nativeActionAllowed(item: ChannelFileItemModel): boolean {
     return (
@@ -295,7 +320,10 @@
             data-testid="channel-file-row"
             data-file-key={item.key}
             data-access={item.accessDenied ? "denied" : "ok"}
-            onclick={() => selectFile(item)}
+            onclick={() => {
+              if (onselectfile) onselectfile(item);
+              else void selectFile(item);
+            }}
           >
             <span class="file-icon" aria-hidden="true">
               {#if item.accessDenied}

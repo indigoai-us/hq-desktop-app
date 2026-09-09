@@ -37,6 +37,7 @@ export type NavigationDestination =
       tab?: ChannelSurfaceTab;
       companyTab?: CompanyChannelTabId;
       agentSurface?: AgentSurfaceTab;
+      fileKey?: string | null;
     }
   | {
       kind: "dm";
@@ -219,15 +220,18 @@ export function canonicalizeDestination(
     case "atlas":
     case "shared-files":
       return { kind: destination.kind };
-    case "channel":
+    case "channel": {
+      const tab = asChannelTab(destination.tab);
       return {
         kind: "channel",
         channelId: requireId(destination.channelId, "channelId"),
         replyRootEventId: trimId(destination.replyRootEventId),
-        tab: asChannelTab(destination.tab),
+        tab,
         companyTab: asCompanyTab(destination.companyTab),
         agentSurface: asAgentSurface(destination.agentSurface),
+        fileKey: tab === "files" ? trimId(destination.fileKey) : null,
       };
+    }
     case "dm":
       return {
         kind: "dm",
@@ -293,6 +297,7 @@ export function canonicalDestinationKey(
         dest.tab,
         dest.companyTab,
         dest.agentSurface,
+        dest.fileKey ?? "",
       ].join(":");
     case "dm":
       return [
@@ -352,7 +357,7 @@ export function destinationLabel(destination: NavigationDestination): string {
     case "channel":
       if (dest.replyRootEventId) return "Thread";
       if (dest.tab === "board") return "Board";
-      if (dest.tab === "files") return "Files";
+      if (dest.tab === "files") return dest.fileKey ? "File preview" : "Files";
       if (dest.companyTab && dest.companyTab !== "chat") {
         return `Company · ${titleCase(dest.companyTab)}`;
       }

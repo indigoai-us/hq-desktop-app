@@ -466,7 +466,10 @@
   // listener + meetings_take_pending_focus cold-mount stash). Unattributed
   // recordings live on the Past tab — switch to it so the selected row exists.
   $effect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest) {
+      focusedMeetingId = null;
+      return;
+    }
     const id = focusRequest.meetingId;
     const matches = (event: MeetingEvent) =>
       meetingMatchesFocusId(

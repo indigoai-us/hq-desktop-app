@@ -29,6 +29,8 @@ import {
   NAVIGATION_INVENTORY_FILES,
   SHARED_SHELL_FILE,
   HQ_WORK_SHELL_FILE,
+  handlerUsesNavigateBoundary,
+  inScopeUserHandler,
   matrixRowsForFile,
 } from "./navigation-handler-matrix.js";
 
@@ -118,6 +120,31 @@ describe("navigation handler coverage matrix", () => {
     expect(matches.length).toBe(HQ_WORK_SHELL_NAVIGATE_COUNT);
   });
 
+  it("fails when an in-scope user handler bypasses navigate()", () => {
+    const sources = new Map<string, string>();
+    const read = (file: string) => {
+      const cached = sources.get(file);
+      if (cached) return cached;
+      const next = readRepo(file);
+      sources.set(file, next);
+      return next;
+    };
+    const shared = read(SHARED_SHELL_FILE);
+    expect(shared).not.toContain("onclick={() => (agentSurface = t.id)}");
+    expect(shared).not.toContain("onselect={(id) => (companyTab = id)}");
+    expect(shared).not.toContain("onclick={() => (tab = t.id)}");
+    expect(shared).not.toContain('onOpenInChannel={() => (tab = "chat")}');
+    expect(shared).not.toContain("onnavigatetab={(next) => (libraryTab = next)}");
+    expect(shared).not.toContain('onclose={() => (agentSurface = "chat")}');
+    for (const row of NAVIGATION_HANDLER_MATRIX) {
+      if (!inScopeUserHandler(row)) continue;
+      expect(
+        handlerUsesNavigateBoundary(read(row.file), row.needle),
+        `${row.id} bypasses navigate(): ${row.needle}`,
+      ).toBe(true);
+    }
+  });
+
   it("validates the active host and documents the legacy DesktopRoute path as out of scope", () => {
     const main = readRepo(DESKTOP_ALT_MAIN_FILE);
     expect(main).toContain("import('./HqWorkWorkShell.svelte')");
@@ -170,8 +197,16 @@ describe("destination equality and labels", () => {
       channelId: "chn_alpha",
       tab: "files",
     };
+    const preview: NavigationDestination = {
+      kind: "channel",
+      channelId: "chn_alpha",
+      tab: "files",
+      fileKey: "projects/demo/readme.md",
+    };
     expect(destinationsEqual(channel, thread)).toBe(false);
     expect(destinationsEqual(channel, files)).toBe(false);
+    expect(destinationsEqual(files, preview)).toBe(false);
+    expect(destinationLabel(preview)).toBe("File preview");
   });
 
   it("returns human labels without cached titles", () => {

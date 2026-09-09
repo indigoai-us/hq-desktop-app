@@ -68,7 +68,7 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 12;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 11;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
@@ -617,8 +617,20 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     id: "notifications-onback",
     file: SHARED_SHELL_FILE,
     needle: "onunreadchange={(n) => (unreadCount = n)}",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "live-session-phase",
+    notes: "Unread badge updates are not navigation.",
+  },
+  {
+    id: "notifications-back",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "void leaveCurrentDestination();\n            }}\n            onunreadchange=",
     destinationKind: "messages",
-    history: "push",
+    history: "replace",
     host: "shared-shell",
     inScope: true,
   },
@@ -661,7 +673,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "agent-surface-tab",
     file: SHARED_SHELL_FILE,
-    needle: "onclick={() => (agentSurface = t.id)}",
+    needle: "onclick={() => pushConversationSurface({ agentSurface: t.id })}",
     destinationKind: "channel",
     history: "push",
     host: "shared-shell",
@@ -670,7 +682,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "agent-surface-close",
     file: SHARED_SHELL_FILE,
-    needle: 'onclose={() => (agentSurface = "chat")}',
+    needle: "onclose={() => void leaveCurrentDestination()}",
     destinationKind: "channel",
     history: "replace",
     host: "shared-shell",
@@ -679,7 +691,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "company-tab-select",
     file: SHARED_SHELL_FILE,
-    needle: "onselect={(id) => (companyTab = id)}",
+    needle: "onselect={(id) => pushConversationSurface({ companyTab: id })}",
     destinationKind: "channel",
     history: "push",
     host: "shared-shell",
@@ -688,7 +700,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "channel-tab-select",
     file: SHARED_SHELL_FILE,
-    needle: "onclick={() => (tab = t.id)}",
+    needle: "onclick={() => pushConversationSurface({ tab: t.id })}",
     destinationKind: "channel",
     history: "push",
     host: "shared-shell",
@@ -697,20 +709,96 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "board-open-in-channel",
     file: SHARED_SHELL_FILE,
-    needle: 'onOpenInChannel={() => (tab = "chat")}',
+    needle: 'onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}',
     destinationKind: "channel",
     history: "replace",
     host: "shared-shell",
     inScope: true,
   },
   {
+    id: "channel-file-preview",
+    file: SHARED_SHELL_FILE,
+    needle: 'pushConversationSurface({ tab: "files", fileKey: item.key })',
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "channel-file-preview-close",
+    file: SHARED_SHELL_FILE,
+    needle: 'pushConversationSurface({ tab: "files", fileKey: null })',
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
     id: "library-overlay",
     file: SHARED_SHELL_FILE,
-    needle: "onnavigatetab={(next) => (libraryTab = next)}",
+    needle: 'onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}',
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },
+  {
+    id: "library-item-select",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "void navigate({ kind: \"library\", tab: libraryTab, itemId: id })",
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "settings-section-select",
+    file: SHARED_SHELL_FILE,
+    needle: "onsectionchange={(section) => openSettings(section)}",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "settings-nav-click",
+    file: "packages/ui/src/settings/ShellSettings.svelte",
+    needle: "if (onsectionchange) onsectionchange(section.id);",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "native-dialog-confirm",
+    file: SHARED_SHELL_FILE,
+    needle: "<ConfirmDialog",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Native confirm dialogs stay outside history.",
+  },
+  {
+    id: "native-dialog-migrate",
+    file: SHARED_SHELL_FILE,
+    needle: "<MigrateSessionDialog",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Native dialogs stay outside history.",
+  },
+  {
+    id: "external-url-open",
+    file: SHARED_SHELL_FILE,
+    needle: "if (/^https?:\\/\\//i.test(url)) onopenurl?.(url);",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "External browser windows stay outside history.",
   },
   {
     id: "mount-location-deep-link",
@@ -1336,4 +1424,85 @@ export function matrixRowById(
 
 export function matrixRowsForFile(file: string): NavigationHandlerRow[] {
   return NAVIGATION_HANDLER_MATRIX.filter((row) => row.file === file);
+}
+
+const NAVIGATE_FAMILY_RE =
+  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
+
+/**
+ * In-scope user handlers that must enter history through navigate() (US-004).
+ * Apply/commit/render/bridge rows are excluded.
+ */
+export function inScopeUserHandler(row: NavigationHandlerRow): boolean {
+  if (!row.inScope || row.history === "none") return false;
+  if (row.nonNavigationReason) return false;
+  const n = row.needle;
+  if (
+    n.includes("function apply") ||
+    n.includes("function resolveDestination") ||
+    n.includes("function commitDestination") ||
+    n.includes("function navigate(") ||
+    n.includes("{#if") ||
+    n.includes("headerVariant") ||
+    n.includes("focusRequest=") ||
+    n.includes("<DesktopApp") ||
+    n.includes("<WorkShell") ||
+    n.includes("<ConfirmDialog") ||
+    n.includes("<MigrateSessionDialog") ||
+    n.includes("component: SessionsExtraPage") ||
+    n.includes("let selectedRow") ||
+    n.includes("isStrictlyRicher") ||
+    n.includes("Never touches") ||
+    n.includes("export class") ||
+    n.includes("navigate(target:") ||
+    n.includes("attach(deliver") ||
+    n.includes("deliverImmediately") ||
+    n.includes("applyDesktopAltRoute") ||
+    n.includes("navigationDestinationFromRoute") ||
+    n.includes("hydrateLiveMessages") ||
+    n.includes("onselectrow=") ||
+    n.includes("{extraPages}") ||
+    n.includes("{onembeddednavigationready}") ||
+    n.includes("window.location.assign") ||
+    n.includes("PROJECT_CHANNEL_LINKED") ||
+    n.includes("import('./HqWorkWorkShell") ||
+    n.includes("const route = $derived") ||
+    n.includes("event.key ===") ||
+    n.includes("createAction:") ||
+    n.includes("param: newSessionParam") ||
+    n.includes("param: historySessionParam") ||
+    n.includes("desktop_alt_consume") ||
+    n.includes("take_pending_setup") ||
+    n.includes("meetings_take_pending") ||
+    n.includes("'messages:open-setup'") ||
+    n.includes("'desktop:navigate'") ||
+    n.includes("'meetings:focus-meeting'") ||
+    n.includes("case '") ||
+    n.includes("if (route.startsWith") ||
+    n.includes("if (onsectionchange)") ||
+    n.includes("if (/^https?") ||
+    n.includes("navigation.attach")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function handlerUsesNavigateBoundary(
+  source: string,
+  needle: string,
+): boolean {
+  const index = source.indexOf(needle);
+  if (index < 0) return false;
+  const start = Math.max(0, index - 240);
+  const end = Math.min(source.length, index + needle.length + 280);
+  if (NAVIGATE_FAMILY_RE.test(source.slice(start, end))) return true;
+  const fn = needle.match(/function ([A-Za-z]+)\(/);
+  if (!fn?.[1]) return false;
+  const fnStart = source.indexOf(`function ${fn[1]}(`);
+  if (fnStart < 0) return false;
+  const rest = source.slice(fnStart);
+  const next = rest.search(/\n  (async )?function /);
+  const body = next === -1 ? rest : rest.slice(0, next);
+  return NAVIGATE_FAMILY_RE.test(body);
 }
