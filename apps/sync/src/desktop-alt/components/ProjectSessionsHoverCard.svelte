@@ -64,6 +64,7 @@
       kind: 'extra',
       page: 'sessions',
       param: historySessionParam(companySlug, link.project, session),
+      companyUid: companySlug,
     });
   }
 
@@ -73,6 +74,7 @@
       kind: 'extra',
       page: 'sessions',
       param: newSessionParam(companySlug, link.project, link.channelId),
+      companyUid: companySlug,
     });
   }
 </script>

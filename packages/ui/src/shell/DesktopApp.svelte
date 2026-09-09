@@ -2647,6 +2647,7 @@
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
+    openReplyRootId = id;
     pushConversationSurface({
       replyRootEventId: id,
       tab: "chat",
@@ -3065,13 +3066,18 @@
       if (extraDenied) return extraDenied;
       return { status: "ready", destination };
     }
-    const scopedDenied = accessOutcome(destination, context.companyUid);
-    if (scopedDenied) return scopedDenied;
     if (destination.kind === "channel" || destination.kind === "dm") {
       const row = rowForDestination(destination);
       if (row) {
-        const rowDenied = accessOutcome(destination, row.companyUid);
-        if (rowDenied) return rowDenied;
+        // Rows already in the rail came from the membership directory.
+        // Only blank after companies has loaded and the uid is gone.
+        if (companyAccess(row.companyUid) === "denied") {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
         return { status: "ready", destination };
       }
       return waitForDestinationRow(destination, context);
@@ -3101,9 +3107,12 @@
         }
         const row = rowForDestination(destination);
         if (row) {
-          const rowDenied = accessOutcome(destination, row.companyUid);
-          if (rowDenied) {
-            resolve(rowDenied);
+          if (companyAccess(row.companyUid) === "denied") {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
             return;
           }
           resolve({ status: "ready", destination });
@@ -3357,15 +3366,33 @@
     }
     navigation.filterAccessible(allowed);
     const current = navigationHistory.current();
-    if (!current) return;
-    const key =
-      current.companyUid ?? destinationCompanyKey(current.destination);
-    if (!key || allowed.has(key)) return;
-    if (navigationUnavailable) return;
+    const shownExtra =
+      extraPageId != null
+        ? {
+            kind: "extra" as const,
+            page: extraPageId,
+            param: extraPageParam,
+          }
+        : null;
+    const shownKey = shownExtra
+      ? extraParamCompanyKey(shownExtra.param) ??
+        (current?.destination.kind === "extra"
+          ? destinationCompanyKey(current.destination)
+          : null) ??
+        current?.companyUid ??
+        null
+      : (current?.companyUid ??
+        (current ? destinationCompanyKey(current.destination) : null));
+    const extraPruned = Boolean(shownExtra && !current);
+    const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
+    if (!extraPruned && !lostCompany) return;
+    if (navigationUnavailable && !extraPruned && !lostCompany) return;
     navigationUnavailable = {
-      destination: current.destination,
+      destination: current?.destination ?? shownExtra ?? { kind: "messages" },
       reason: DESTINATION_UNAVAILABLE,
     };
+    extraPageId = null;
+    extraPageParam = null;
     selectedRow = null;
     liveTimeline = [];
   });
@@ -3382,6 +3409,7 @@
       selectConversationRow(row, options);
       return;
     }
+    if (selectedRow?.id !== row.id) selectedRow = row;
     void navigate(
       destinationFromConversation(row, {
         replyRootEventId: options?.replyRootEventId ?? null,
