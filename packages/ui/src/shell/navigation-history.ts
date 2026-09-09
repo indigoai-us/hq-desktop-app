@@ -462,6 +462,15 @@ export function extraParamCompanyKey(
   }
 }
 
+/** Sessions extras that restore a specific session must carry a company key. */
+export function sessionExtraRequiresCompany(
+  param: string | null | undefined,
+): boolean {
+  const raw = param?.trim() ?? "";
+  if (!raw || raw === "new" || raw.startsWith("new?")) return false;
+  return true;
+}
+
 export function destinationCompanyKey(
   destination: NavigationDestination,
 ): string | null {

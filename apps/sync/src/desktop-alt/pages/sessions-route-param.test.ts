@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   encodeHistorySessionParam,
+  encodeLiveSessionParam,
   encodeSharedSessionParam,
   parseSessionsParam,
   sessionDraftStorageKey,
@@ -13,6 +14,11 @@ describe('parseSessionsParam', () => {
   it('reads a bare param as a session id, and nothing as the empty page', () => {
     expect(parseSessionsParam('abc-123')).toEqual({ kind: 'session', sessionId: 'abc-123' });
     expect(parseSessionsParam('  abc ')).toEqual({ kind: 'session', sessionId: 'abc' });
+    expect(parseSessionsParam('abc-123?company=indigo')).toEqual({
+      kind: 'session',
+      sessionId: 'abc-123',
+      company: 'indigo',
+    });
     expect(parseSessionsParam(null)).toEqual({ kind: 'empty' });
     expect(parseSessionsParam(undefined)).toEqual({ kind: 'empty' });
     expect(parseSessionsParam('   ')).toEqual({ kind: 'empty' });
@@ -101,5 +107,10 @@ describe('parseSessionsParam', () => {
       'history?id=h2&tool=grok&company=indigo',
     );
     expect(encodeSharedSessionParam('s1', 'chn_a')).toBe('shared?id=s1&channel=chn_a');
+    expect(encodeSharedSessionParam('s1', 'chn_a', 'indigo')).toBe(
+      'shared?id=s1&channel=chn_a&company=indigo',
+    );
+    expect(encodeLiveSessionParam('ses_live', 'indigo')).toBe('ses_live?company=indigo');
+    expect(encodeLiveSessionParam('ses_live')).toBe('ses_live');
   });
 });

@@ -137,7 +137,7 @@ describe('spawn a session from a channel, bound to that project', () => {
     expect(param).toContain('draft=');
     expect(SHELL).toContain('param: newSessionParam(company, link.project, link.channelId)');
     expect(EXTRA).toContain('parseSessionsParam(param)');
-    expect(EXTRA).toContain("initialCompany={route.kind === 'new' ? route.company : null}");
+    expect(EXTRA).toContain("initialCompany={route.kind === 'new' ? route.company : route.kind === 'session' ? (route.company ?? null) : null}");
     expect(EXTRA).toContain("initialProject={route.kind === 'new' ? route.project : null}");
     expect(EXTRA).toContain("initialChannelId={route.kind === 'new' ? route.channelId : undefined}");
   });

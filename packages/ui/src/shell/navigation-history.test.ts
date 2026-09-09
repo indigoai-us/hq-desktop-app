@@ -16,6 +16,7 @@ import {
   entriesEqual,
   entryCompanyIsAccessible,
   extraParamCompanyKey,
+  sessionExtraRequiresCompany,
   historyNeighbor,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
@@ -234,6 +235,12 @@ describe("destination equality and labels", () => {
       extraParamCompanyKey("history?id=h&tool=claude&company=cmp_gone"),
     ).toBe("cmp_gone");
     expect(extraParamCompanyKey("ses_live")).toBeNull();
+    expect(extraParamCompanyKey("ses_live?company=cmp_gone")).toBe("cmp_gone");
+    expect(sessionExtraRequiresCompany("ses_live")).toBe(true);
+    expect(sessionExtraRequiresCompany("ses_live?company=cmp_gone")).toBe(true);
+    expect(sessionExtraRequiresCompany("new")).toBe(false);
+    expect(sessionExtraRequiresCompany("new?company=indigo&draft=1")).toBe(false);
+    expect(sessionExtraRequiresCompany(null)).toBe(false);
     expect(
       destinationCompanyKey({
         kind: "extra",

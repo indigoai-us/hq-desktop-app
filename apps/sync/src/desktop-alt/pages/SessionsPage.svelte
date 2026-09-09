@@ -343,7 +343,8 @@
     if (routedId !== next) return;
     const bound =
       (initialHistorySession?.id === next ? initialHistorySession.company : null) ||
-      liveSessionStore.companyOf(next);
+      liveSessionStore.companyOf(next) ||
+      initialCompany;
     if (companyMembershipDenied(bound)) return;
     if (liveSessionStore.isOpen(next)) {
       liveSessionStore.activate(next);

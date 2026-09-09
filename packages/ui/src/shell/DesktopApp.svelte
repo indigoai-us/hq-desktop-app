@@ -155,6 +155,7 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
+    sessionExtraRequiresCompany,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -3062,6 +3063,23 @@
       }
       const extraCompany =
         destination.companyUid ?? extraParamCompanyKey(destination.param);
+      if (
+        destination.page === "sessions" &&
+        sessionExtraRequiresCompany(destination.param) &&
+        !extraCompany
+      ) {
+        if (companies == null) {
+          return {
+            status: "transient-failure",
+            error: "Directory still loading",
+          };
+        }
+        return {
+          status: "unavailable",
+          destination,
+          reason: DESTINATION_UNAVAILABLE,
+        };
+      }
       const extraDenied = accessOutcome(destination, extraCompany);
       if (extraDenied) return extraDenied;
       return { status: "ready", destination };
@@ -3389,8 +3407,21 @@
         (current ? destinationCompanyKey(current.destination) : null));
     const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
     const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
-    if (!extraPruned && !lostCompany) return;
-    if (navigationUnavailable && !extraPruned && !lostCompany) return;
+    const extraUnscoped = Boolean(
+      shownExtra &&
+        shownExtra.page === "sessions" &&
+        sessionExtraRequiresCompany(shownExtra.param) &&
+        !shownKey,
+    );
+    if (!extraPruned && !lostCompany && !extraUnscoped) return;
+    if (
+      navigationUnavailable &&
+      !extraPruned &&
+      !lostCompany &&
+      !extraUnscoped
+    ) {
+      return;
+    }
     navigationUnavailable = {
       destination: current?.destination ?? shownExtra ?? { kind: "messages" },
       reason: DESTINATION_UNAVAILABLE,

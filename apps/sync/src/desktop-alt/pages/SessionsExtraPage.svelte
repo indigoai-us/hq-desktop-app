@@ -13,12 +13,14 @@
   import SessionsPage from './SessionsPage.svelte';
   import SharedSessionPage from './SharedSessionPage.svelte';
   import {
+    encodeLiveSessionParam,
     parseSessionsParam,
     sessionDraftStorageKey,
     sessionNavigateMode,
     sessionRestorePath,
   } from './sessions-route-param';
   import type { AgentSession } from '../lib/sessions';
+  import { liveSessionStore } from '../lib/live-session-store.svelte';
 
   interface Props {
     /** The shell's opaque selection — here, the routed session id. */
@@ -35,7 +37,16 @@
   const draftKey = $derived(sessionDraftStorageKey(param));
 
   function openSession(id: string | null, options?: { replace?: boolean }): void {
-    const next = id || null;
+    let next = id || null;
+    if (next) {
+      const parsed = parseSessionsParam(next);
+      if (parsed.kind === 'session') {
+        next = encodeLiveSessionParam(
+          parsed.sessionId,
+          parsed.company || liveSessionStore.companyOf(parsed.sessionId),
+        );
+      }
+    }
     onnavigate?.(next, { mode: sessionNavigateMode(options) });
   }
   const historySession = $derived<AgentSession | null>(
@@ -69,7 +80,7 @@
 <SessionsPage
   sessionId={route.kind === 'session' || route.kind === 'history' ? route.sessionId : undefined}
   initialHistorySession={historySession}
-  initialCompany={route.kind === 'new' ? route.company : null}
+  initialCompany={route.kind === 'new' ? route.company : route.kind === 'session' ? (route.company ?? null) : null}
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
   restorePath={restorePath === 'open' || restorePath === 'openHistory' ? restorePath : undefined}

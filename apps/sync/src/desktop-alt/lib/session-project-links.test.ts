@@ -27,7 +27,7 @@ it.each(['starting', 'working', 'idle', 'needs-you'])('routes %s sessions to liv
   expect(historySessionParam('indigo', 'launch', {
     sessionId: 'app-owned-id', tool: 'codex', phase,
     startedAt: '2026-09-04T21:55:44Z', title: 'Startup check',
-  })).toBe('app-owned-id');
+  })).toBe('app-owned-id?company=indigo');
 });
 
 const launch: ProjectLink = {

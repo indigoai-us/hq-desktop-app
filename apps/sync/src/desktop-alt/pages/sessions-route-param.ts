@@ -8,7 +8,7 @@
 export type SessionsRoute =
   | { kind: 'shared'; sessionId: string; channelId: string }
   | { kind: 'empty' }
-  | { kind: 'session'; sessionId: string }
+  | { kind: 'session'; sessionId: string; company?: string | null }
   | {
       kind: 'history';
       sessionId: string;
@@ -70,6 +70,18 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
       ...(clean(query.get('channel')) ? { channelId: clean(query.get('channel'))! } : {}),
     };
   }
+  const queryAt = raw.indexOf('?');
+  if (queryAt > 0) {
+    const sessionId = raw.slice(0, queryAt).trim();
+    const company = clean(new URLSearchParams(raw.slice(queryAt + 1)).get('company'));
+    if (sessionId) {
+      return {
+        kind: 'session',
+        sessionId,
+        ...(company ? { company } : {}),
+      };
+    }
+  }
   return { kind: 'session', sessionId: raw };
 }
 
@@ -129,9 +141,27 @@ export function encodeHistorySessionParam(session: {
   return `${HISTORY_SESSION_PREFIX}${query.toString()}`;
 }
 
-export function encodeSharedSessionParam(sessionId: string, channelId: string): string {
-  return `${SHARED_SESSION_PREFIX}${new URLSearchParams({
+export function encodeSharedSessionParam(
+  sessionId: string,
+  channelId: string,
+  company?: string | null,
+): string {
+  const query = new URLSearchParams({
     id: sessionId,
     channel: channelId,
-  }).toString()}`;
+  });
+  if (company?.trim()) query.set('company', company.trim());
+  return `${SHARED_SESSION_PREFIX}${query.toString()}`;
+}
+
+/** Live app-owned session extra param. `?company=` is how the shell ACL keys it. */
+export function encodeLiveSessionParam(
+  sessionId: string,
+  company?: string | null,
+): string {
+  const id = sessionId.trim();
+  const key = company?.trim() ?? '';
+  if (!id) return sessionId;
+  if (!key) return id;
+  return `${id}?${new URLSearchParams({ company: key }).toString()}`;
 }

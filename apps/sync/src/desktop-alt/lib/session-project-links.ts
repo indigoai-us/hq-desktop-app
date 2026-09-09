@@ -16,6 +16,10 @@ import type {
 } from '@hq/ui';
 
 import type { ProjectEntry } from '../../components/sessions/startwork';
+import {
+  encodeLiveSessionParam,
+  encodeSharedSessionParam,
+} from '../pages/sessions-route-param';
 
 /** One session bound to a project (Rust `LinkedSession`). */
 export interface LinkedSession {
@@ -261,12 +265,16 @@ export function historySessionParam(
   session: LinkedSession,
 ): string {
   if (session.sharedChannelId) {
-    return `shared?${new URLSearchParams({ channel: session.sharedChannelId, id: session.sessionId })}`;
+    return encodeSharedSessionParam(
+      session.sessionId,
+      session.sharedChannelId,
+      company,
+    );
   }
   // Live rows retain the app-owned id for replay and event subscriptions.
   // Passing it to the provider-history reader produces an empty transcript:
   // only ended rows have been canonicalized to provider-native ids.
-  if (session.phase !== 'ended') return session.sessionId;
+  if (session.phase !== 'ended') return encodeLiveSessionParam(session.sessionId, company);
   const query = new URLSearchParams();
   query.set('id', session.sessionId);
   query.set('tool', session.tool);

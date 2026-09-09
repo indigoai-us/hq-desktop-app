@@ -270,9 +270,15 @@ describe("US-006: Restore scroll, lifecycle, and tenant isolation", () => {
     expect(shell).toContain("navigation.filterAccessible(allowed)");
     expect(shell).toContain("currentIsShownExtra");
     expect(shell).toContain("shownExtra && !currentIsShownExtra");
+    expect(shell).toContain("sessionExtraRequiresCompany");
+    expect(shell).toContain("extraUnscoped");
     expect(shell).toContain("extraDestination(");
     const host = readRepo("apps/sync/src/desktop-alt/HqWorkWorkShell.svelte");
     expect(host).toContain("companyUid: row.companyUid ?? company");
+    expect(host).toContain("encodeLiveSessionParam(route.sessionId, company)");
+    const extra = readRepo("apps/sync/src/desktop-alt/pages/SessionsExtraPage.svelte");
+    expect(extra).toContain("encodeLiveSessionParam");
+    expect(extra).toContain("liveSessionStore.companyOf");
   });
 
   it("Given unsent drafts, when the account changes, then prior-account drafts are not restorable", () => {

@@ -42,7 +42,11 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam } from './pages/sessions-route-param';
+  import {
+    encodeLiveSessionParam,
+    parseSessionsParam,
+  } from './pages/sessions-route-param';
+  import { liveSessionStore } from './lib/live-session-store.svelte';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { projectLinksStore } from './lib/project-links-store.svelte';
@@ -846,6 +850,32 @@
           // Pending-route bridge only: the shared shell converts `target`
           // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
+            if (
+              target.kind === 'extra' &&
+              target.page === 'sessions' &&
+              !target.companyUid &&
+              target.param
+            ) {
+              const route = parseSessionsParam(target.param);
+              const company =
+                (route.kind === 'session' ? route.company : null) ||
+                (route.kind === 'history' ? route.company : null) ||
+                (route.kind === 'new' ? route.company : null) ||
+                (route.kind === 'session'
+                  ? liveSessionStore.companyOf(route.sessionId)
+                  : null);
+              if (company) {
+                dispatchEmbeddedNavigation({
+                  ...target,
+                  companyUid: company,
+                  param:
+                    route.kind === 'session'
+                      ? encodeLiveSessionParam(route.sessionId, company)
+                      : target.param,
+                });
+                return;
+              }
+            }
             dispatchEmbeddedNavigation(target);
           });
           detachNavigation = detach;
