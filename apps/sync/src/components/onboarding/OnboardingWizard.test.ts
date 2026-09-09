@@ -319,6 +319,63 @@ describe('onboarding launch handoff', () => {
     ).toBe(false);
   });
 
+  it('uses an alert completion icon after required setup failure and keeps the success check for clean setup', async () => {
+    mountWizard();
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).toBeNull();
+  });
+
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
     // Desktop Codex ships inside ChatGPT.app; the detector reports that as
     // codex_desktop, and the Ready screen must offer to launch it rather than

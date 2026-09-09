@@ -1863,7 +1863,15 @@
           class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
           data-g={READY_STEP_INDEX}
         >
-          {@render BigCheck()}
+          {#if needsAttention}
+            <span data-testid="onboarding-completion-warning-indicator" aria-hidden="true">
+              {@render AlertTriangle('completion-status-icon')}
+            </span>
+          {:else}
+            <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
+              {@render BigCheck()}
+            </span>
+          {/if}
         </div>
 
         <div
@@ -2242,11 +2250,7 @@
               data-testid="onboarding-setup-failures"
               aria-label={setupFailureCaution.title}
             >
-              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-                <path d="M10 7v4.5"></path>
-                <circle cx="10" cy="14.2" r=".7"></circle>
-              </svg>
+              {@render AlertTriangle('setup-caution-icon')}
               <div class="setup-caution-copy">
                 <strong>{setupFailureCaution.title}</strong>
                 <span>{setupFailureCaution.body}</span>
@@ -2269,11 +2273,7 @@
               data-testid="onboarding-escape"
               aria-label={readyCaution.title}
             >
-              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-                <path d="M10 7v4.5"></path>
-                <circle cx="10" cy="14.2" r=".7"></circle>
-              </svg>
+              {@render AlertTriangle('setup-caution-icon')}
               <div class="setup-caution-copy">
                 <strong>{readyCaution.title}</strong>
                 <span>{readyCaution.body}</span>
@@ -2546,6 +2546,14 @@
   </svg>
 {/snippet}
 
+{#snippet AlertTriangle(iconClass: string)}
+  <svg class={iconClass} viewBox="0 0 20 20" aria-hidden="true">
+    <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+    <path d="M10 7v4.5"></path>
+    <circle cx="10" cy="14.2" r=".7"></circle>
+  </svg>
+{/snippet}
+
 {#snippet TrustMock()}
   <div class="mockwin">
     <div class="mockbar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><span class="tt">Claude Code</span></div>
@@ -2784,6 +2792,8 @@
   .pbar { fill:none; stroke:#fff; stroke-width:5; stroke-linecap:round; transition:stroke-dashoffset .18s ease; }
   .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:-0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
   .bigcheck { width:84px; height:84px; display:block; }
+  .completion-status-icon { width:84px; height:84px; display:block; fill:rgba(255,255,255,0.18); stroke:#fff; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .completion-status-icon circle { fill:#fff; stroke:none; }
 
   .manual-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }
