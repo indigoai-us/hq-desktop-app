@@ -50,7 +50,12 @@ use winreg::{RegKey, RegValue};
 
 use crate::commands::install_stages::{
     clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
 };
+
+tokio::task_local! {
+    static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
+}
 
 mod which {
     use std::env;
@@ -3743,6 +3748,17 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         Ok(())
     })();
 
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
+    }
     result
 }
 
@@ -5486,8 +5502,16 @@ pub async fn install_deps(
 
         let settled = join_all(ready.into_iter().map(|dep| {
             let app = app.clone();
+            let failure_scope = failure_scope.clone();
             async move {
-                let install_result = install_orchestrated_dep(&app, dep).await;
+                let install_result = match failure_scope {
+                    Some(scope) => {
+                        ACTIVE_ONBOARDING_FAILURE_SCOPE
+                            .scope(scope, install_orchestrated_dep(&app, dep))
+                            .await
+                    }
+                    None => install_orchestrated_dep(&app, dep).await,
+                };
                 result_from_install(dep, install_result)
             }
         }))

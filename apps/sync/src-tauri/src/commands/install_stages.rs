@@ -131,8 +131,16 @@ pub(crate) fn record_onboarding_failure_detail(
     if details.len() == 32 {
         details.clear();
     }
+    let key = onboarding_failure_detail_key(stage, failure_scope);
+    if details
+        .get(&key)
+        .and_then(|detail| detail.failed_dependency.as_deref())
+        == Some("path-write")
+    {
+        return;
+    }
     details.insert(
-        onboarding_failure_detail_key(stage, failure_scope),
+        key,
         OnboardingFailureDetail {
             failed_dependency,
             error_category: error_category.as_str().to_string(),
@@ -894,8 +902,13 @@ mod tests {
             setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
             attempt_count: 2,
         };
+        let path_write_scope = OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 3,
+        };
         clear_onboarding_failure_detail("deps", Some(&first_scope));
         clear_onboarding_failure_detail("deps", Some(&retry_scope));
+        clear_onboarding_failure_detail("deps", Some(&path_write_scope));
         record_onboarding_failure_detail(
             "deps",
             Some(&first_scope),
@@ -907,6 +920,18 @@ mod tests {
             Some(&retry_scope),
             Some("qmd"),
             OnboardingErrorCategory::Timeout,
+        );
+        record_onboarding_failure_detail(
+            "deps",
+            Some(&path_write_scope),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
+        record_onboarding_failure_detail(
+            "deps",
+            Some(&path_write_scope),
+            Some("node"),
+            OnboardingErrorCategory::Unknown,
         );
 
         assert_eq!(
@@ -938,6 +963,17 @@ mod tests {
                 retry_scope.attempt_count,
             ),
             None
+        );
+        assert_eq!(
+            take_onboarding_failure_detail(
+                "deps".to_string(),
+                path_write_scope.setup_run_id,
+                path_write_scope.attempt_count,
+            ),
+            Some(OnboardingFailureDetail {
+                failed_dependency: Some("path-write".to_string()),
+                error_category: "unknown".to_string(),
+            })
         );
     }
 
