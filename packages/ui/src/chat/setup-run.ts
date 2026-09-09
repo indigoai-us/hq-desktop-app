@@ -108,19 +108,24 @@ export type SetupRunQuestion =
 
 /** Why a run stopped early, in a shape the channel can act on. */
 export interface SetupRunFailure {
-  /** `auth`: the coding agent's sign-in is missing or expired — connect again. */
-  kind: "auth" | "other";
+  /**
+   * `auth`: the coding agent's sign-in is missing or expired — connect again.
+   * `limit`: that agent is out of usage for now — pick another or wait.
+   */
+  kind: "auth" | "limit" | "other";
   /** The engine's own words (kept for support; the channel says it plainly). */
   message: string;
 }
 
 const AUTH_FAILURE = /oauth|authenticat|not logged in|sign(ed)?[- ]in|log ?in\b|session expired|token|credential|api key/i;
+const LIMIT_FAILURE = /usage[_ ]limit|rate[_ ]limit|quota|credits|too many requests|spend control/i;
 
 /** Classify an error the engine surfaced (an `error` event or the agent's last words before exiting). */
 export function classifySetupFailure(message: string): SetupRunFailure | null {
   const text = message.trim();
   if (!text) return null;
-  return { kind: AUTH_FAILURE.test(text) ? "auth" : "other", message: text };
+  const kind = LIMIT_FAILURE.test(text) ? "limit" : AUTH_FAILURE.test(text) ? "auth" : "other";
+  return { kind, message: text };
 }
 
 /** Plain copy for the channel when a run stops. */
@@ -128,6 +133,10 @@ export const SETUP_FAILURE_COPY = {
   auth: {
     title: "Setup paused — your coding agent needs to sign in again.",
     agent: "I couldn't continue: the sign-in for your coding agent has expired. Once you're signed in again, run setup and I'll pick up where we left off.",
+  },
+  limit: {
+    title: "Setup paused — that coding agent has hit its usage limit.",
+    agent: "I had to stop: the coding agent I was using has hit its usage limit. Pick another one below, or try again later.",
   },
   other: {
     title: "Setup stopped before finishing",
@@ -721,8 +730,12 @@ export interface SetupRunApi {
    * the Sessions page as before.
    */
   preflight(): Promise<SetupRunReadiness>;
-  /** Start a fresh session and send `prompt` (`/setup`). Resolves to the session id. */
-  start(prompt: string): Promise<string>;
+  /**
+   * Start a fresh session and send `prompt` (`/setup`). Resolves to the
+   * session id. `tool` is the person's own pick (after a stop); otherwise
+   * the host uses what preflight chose.
+   */
+  start(prompt: string, tool?: SetupProviderTool): Promise<string>;
   /** Re-open an existing session by id; false when the engine no longer has it. */
   attach(sessionId: string): Promise<boolean>;
   /** Observe one session; fires with the current snapshot at once, then on every change. */

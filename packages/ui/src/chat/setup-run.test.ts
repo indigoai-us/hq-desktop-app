@@ -302,6 +302,8 @@ describe("interpretSetupRun — finish and stop", () => {
     expect(classifySetupFailure("Please sign in to Claude")?.kind).toBe("auth");
     expect(classifySetupFailure("Not logged in")?.kind).toBe("auth");
     expect(classifySetupFailure("Invalid API key · credential rejected")?.kind).toBe("auth");
+    expect(classifySetupFailure("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage")?.kind).toBe("limit");
+    expect(classifySetupFailure("rate_limit_exceeded: retry later")?.kind).toBe("limit");
     expect(classifySetupFailure("Something else broke")?.kind).toBe("other");
     expect(classifySetupFailure("   ")).toBeNull();
   });

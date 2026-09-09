@@ -191,6 +191,30 @@ describe("DesktopApp native setup run wiring", () => {
     expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-stopped-title"]')).toBeNull();
   });
 
+  it("a usage-limit stop names the reason and offers the other agent right there", async () => {
+    const api = fakeSetupRun();
+    api.providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: true, codexLoggedIn: true }));
+    api.providerLoginStart = vi.fn(async () => ({ state: "waiting" as const }));
+    api.providerLoginStatus = vi.fn(async () => ({ state: "waiting" as const }));
+    api.providerLoginCancel = vi.fn(async () => ({ state: "disconnected" as const }));
+    api.providerInstallUrl = vi.fn(() => "https://claude.ai/download");
+    api.openExternal = vi.fn(async () => undefined);
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    const reason = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.";
+    api.emit({ kind: "turnDone", status: "error", error: reason }, "ended");
+    await settle();
+    const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).map((el) => el.textContent ?? "");
+    expect(messages.some((text) => text.includes("has hit its usage limit"))).toBe(true);
+    const prompt = host.querySelector('[data-testid="setup-agent-prompt"]')!;
+    expect(prompt.querySelector('[data-testid="setup-connect-detail"]')?.textContent).toBe(reason);
+    expect(prompt.textContent).toContain("that coding agent has hit its usage limit");
+    prompt.querySelector<HTMLButtonElement>('[data-testid="setup-connect-claude-run"]')!.click();
+    await settle();
+    expect(api.start).toHaveBeenLastCalledWith("/setup --guided", "claude");
+  });
+
   it("finishing offers Open in Sessions, Claude Code, and Codex under the last message", async () => {
     const api = fakeSetupRun();
     await mountApp(api);

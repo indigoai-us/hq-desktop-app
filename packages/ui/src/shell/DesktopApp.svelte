@@ -46,6 +46,7 @@
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
@@ -4921,16 +4922,20 @@
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
                     {@const agentDone = setupAgent.mode === "done" || Boolean(agentState?.done)}
-                    {@const needsSignIn = setupAgent.failure?.kind === "auth" && setupAgent.providers !== null && !setupAgent.providersReady}
+                    {@const stopFailure = setupAgent.failure}
                     <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
-                      {#if needsSignIn && setupAgent.api && setupAgent.providers}
-                        <!-- The run stopped on an expired sign-in: fix it here, then Run Setup. -->
+                      {#if stopFailure && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped: say why, and offer the agents right
+                             here — sign in to one, or run again with one that is. -->
                         <SetupConnectStep
                           variant="surface"
                           api={setupAgent.api}
                           providers={setupAgent.providers}
-                          lead="Sign in again and I'll pick up where we left off."
+                          lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
+                          detail={stopFailure.message || undefined}
                           onrefresh={() => setupAgent.refreshProviders(true)}
+                          onrun={(tool) => void setupAgent.runAgain(tool)}
+                          runBusy={setupAgent.busy}
                         />
                       {:else}
                       <SetupRunCard

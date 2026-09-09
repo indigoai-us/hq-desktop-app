@@ -19,6 +19,7 @@ import {
   classifySetupFailure,
   setupProvidersReady,
   type SetupProviderStatus,
+  type SetupProviderTool,
   type SetupRunFailure,
   type SetupRunApi,
   type SetupRunPermissionDecision,
@@ -177,7 +178,7 @@ export function withFailureLine(
 export function cachedSetupFailure(turns: SetupAgentTurn[]): SetupRunFailure {
   const last = [...turns].reverse().find((turn) => turn.role === "agent");
   const classified = last ? classifySetupFailure(last.text) : null;
-  return classified?.kind === "auth" ? classified : { kind: "other", message: "" };
+  return classified && classified.kind !== "other" ? classified : { kind: "other", message: "" };
 }
 
 export class SetupAgent {
@@ -259,8 +260,8 @@ export class SetupAgent {
       this.mode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
       this.cachedTurns = loadTranscriptCache(record.sessionId);
       if (record.status === "done") this.finished = true;
-      if (record.status === "ended" && cachedSetupFailure(this.cachedTurns).kind === "auth") {
-        // Find out afresh which agents are signed in: the stop was a sign-in problem.
+      if (record.status === "ended") {
+        // Find out afresh which agents are signed in: the channel offers them.
         this.providersRefreshedForFailure = true;
         void this.refreshProviders(true);
       }
@@ -301,9 +302,9 @@ export class SetupAgent {
       const failure = this.state?.failure ?? null;
       const turns = setupAgentTranscript(snapshot.sessionId, snapshot.events, this.answers, failure);
       if (turns.length > 0) saveTranscriptCache(snapshot.sessionId, turns);
-      // A sign-in problem: find out which agent needs connecting so the
-      // channel can offer it right there instead of a bare Run Setup.
-      if (failure?.kind === "auth" && !this.providersRefreshedForFailure) {
+      // The run stopped: find out afresh which agents are signed in so the
+      // channel can offer them right there instead of a bare Run Setup.
+      if (failure && !this.providersRefreshedForFailure) {
         this.providersRefreshedForFailure = true;
         void this.refreshProviders(true);
       }
@@ -335,7 +336,7 @@ export class SetupAgent {
    * preflight says the Sessions page (Connect / self-heal) must go first —
    * the caller opens it; nothing is duplicated here.
    */
-  async start(): Promise<"started" | "needs-sessions-page" | "busy"> {
+  async start(tool?: SetupProviderTool): Promise<"started" | "needs-sessions-page" | "busy"> {
     const api = this.api;
     if (!api) return "needs-sessions-page";
     if (this.busy) return "busy";
@@ -345,7 +346,7 @@ export class SetupAgent {
       const readiness = await api.preflight();
       if (readiness !== "ready") return "needs-sessions-page";
       this.mode = "starting";
-      const sessionId = await api.start(SETUP_GUIDED_PROMPT);
+      const sessionId = tool ? await api.start(SETUP_GUIDED_PROMPT, tool) : await api.start(SETUP_GUIDED_PROMPT);
       this.finished = false;
       this.providersRefreshedForFailure = false;
       this.sessionId = sessionId;
@@ -389,13 +390,13 @@ export class SetupAgent {
     }
   }
 
-  async runAgain(): Promise<"started" | "needs-sessions-page" | "busy"> {
+  async runAgain(tool?: SetupProviderTool): Promise<"started" | "needs-sessions-page" | "busy"> {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.snapshot = null;
     this.sessionId = null;
     this.mode = "idle";
-    return this.start();
+    return this.start(tool);
   }
 
   private async withRun(action: (api: SetupRunApi, sessionId: string) => Promise<void>): Promise<void> {

@@ -73,11 +73,11 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     return 'ready';
   }
 
-  async function start(prompt: string): Promise<string> {
+  async function start(prompt: string, pick?: SessionTool): Promise<string> {
     const spec: SessionSpec = {
       sessionId: '',
       title: null,
-      tool,
+      tool: pick ?? tool,
       cwd: '',
       company: null,
       project: null,

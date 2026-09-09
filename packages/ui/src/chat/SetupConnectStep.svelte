@@ -17,9 +17,14 @@
     variant?: "hero" | "surface";
     /** Shorter lead for the in-chat version. */
     lead?: string;
+    /** The engine's own words about why the run stopped, kept small. */
+    detail?: string;
+    /** Offered on signed-in rows: run setup with that agent. */
+    onrun?: (tool: SetupProviderTool) => void;
+    runBusy?: boolean;
   }
 
-  let { api, providers, onrefresh, variant = "hero", lead }: Props = $props();
+  let { api, providers, onrefresh, variant = "hero", lead, detail, onrun, runBusy = false }: Props = $props();
 
   const TOOLS: readonly { id: SetupProviderTool; name: string; app: string }[] = [
     { id: "claude", name: "Claude Code", app: "Claude" },
@@ -136,6 +141,9 @@
 
 <div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an agent">
   <p class="lead">{lead ?? "Setup runs through your own coding agent. Connect one to continue — you only need one."}</p>
+  {#if detail}
+    <p class="detail" data-testid="setup-connect-detail">{detail}</p>
+  {/if}
   <ul class="providers">
     {#each TOOLS as tool (tool.id)}
       <li class="provider" data-testid={`setup-connect-${tool.id}`} data-state={connected(tool.id) ? "connected" : available(tool.id) ? "available" : "missing"}>
@@ -145,7 +153,17 @@
             {connected(tool.id) ? "Connected" : available(tool.id) ? "Installed, not signed in" : `Not installed — it comes with the ${tool.app} app`}
           </span>
         </span>
-        {#if connected(tool.id)}
+        {#if connected(tool.id) && onrun}
+          <button
+            type="button"
+            class="launch-btn primary"
+            data-testid={`setup-connect-${tool.id}-run`}
+            disabled={runBusy || busy}
+            onclick={() => onrun?.(tool.id)}
+          >
+            Run Setup with {tool.name}
+          </button>
+        {:else if connected(tool.id)}
           <span class="provider-check" aria-hidden="true">✓</span>
         {:else if available(tool.id)}
           <button
@@ -198,6 +216,16 @@
   .connect--surface .lead,
   .connect--surface .flow {
     color: var(--c-text-2);
+  }
+  .detail {
+    margin: -4px 0 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--c-text-3, rgba(255, 255, 255, 0.7));
+    overflow-wrap: anywhere;
+  }
+  .connect--surface .detail {
+    color: var(--c-text-3);
   }
   .connect--surface .provider {
     border-top-color: var(--c-line);

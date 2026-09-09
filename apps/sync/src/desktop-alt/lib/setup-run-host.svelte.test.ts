@@ -170,6 +170,14 @@ describe('createSetupRunApi', () => {
     expect(liveSessionStore.activeSessionId).toBe(SETUP);
   });
 
+  it('start honours the tool the person picked over what preflight chose', async () => {
+    mockBackend({ list: [summary(SETUP)], preflight: preflight({ codexAvailable: true, codexLoggedIn: true }), commands: ['setup'] });
+    const api = createSetupRunApi();
+    await api.preflight();
+    await api.start('/setup', 'codex');
+    expect(calls('agent_session_start')[0]!.spec).toMatchObject({ tool: 'codex' });
+  });
+
   it('attach re-opens a session the registry still lists and refuses one it does not', async () => {
     const backend = mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
     const api = createSetupRunApi();
