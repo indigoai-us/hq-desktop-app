@@ -863,6 +863,11 @@
     createOpen = true;
   }
 
+  /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
+  export function openCreateChannel(): void {
+    openCreate();
+  }
+
   /** Close the create modal; optionally open the channel it just created. */
   function closeCreate(
     openChannelId?: string,

@@ -45,6 +45,8 @@
     type SetupRosterStatus,
   } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
+  import FirstMoves from "./FirstMoves.svelte";
+  import type { FirstMove, FirstMoveId } from "./first-moves";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -92,6 +94,17 @@
      * company channel instead of #welcome.
      */
     onsetupstarted?: () => void;
+    /**
+     * The self-ticking "first moves" list under the hero (see
+     * `firstMovesFor`). Omitted/empty → nothing renders. The coding-tools
+     * move is performed here (it is the same launch cascade as Advanced);
+     * every other move is the shell's, via `onfirstmove`.
+     */
+    firstMoves?: readonly FirstMove[] | null;
+    /** Perform a move; resolve a plain reason to show inline on failure. */
+    onfirstmove?: (id: FirstMoveId) => Promise<string | null | void>;
+    /** A move performed here (coding-tools) finished; the shell records it. */
+    onfirstmovedone?: (id: FirstMoveId) => void;
   }
 
   let {
@@ -105,7 +118,25 @@
     rosterStatus = null,
     onretryroster,
     onsetupstarted,
+    firstMoves = null,
+    onfirstmove,
+    onfirstmovedone,
   }: Props = $props();
+
+  /** First-moves "Use HQ from your coding tools": the Advanced launch cascade, recorded as done. */
+  async function firstMoveLaunch(key: "claude" | "codex"): Promise<string | null> {
+    if (!canLaunch) return "HQ folder is not ready yet. Run Setup first.";
+    await runLaunch(key);
+    const error = launchErrors[key];
+    if (error) return error;
+    onfirstmovedone?.("coding-tools");
+    return null;
+  }
+
+  async function handleFirstMove(id: FirstMoveId): Promise<string | null | void> {
+    if (id === "coding-tools") return firstMoveLaunch("claude");
+    return onfirstmove?.(id);
+  }
 
   const rosterCompanies = $derived(setupCompanies(companies));
   const hasCompany = $derived(rosterCompanies.length > 0);
@@ -367,63 +398,54 @@
           {/if}
 
           <p data-testid="setup-hosted-agent-guidance">{SETUP_HOSTED_AGENT_NOTE}</p>
+
+          <ul class="resources" aria-label="Learn HQ">
+            {#each SETUP_RESOURCES as resource (resource.id)}
+              <li class="resource">
+                <a
+                  class="resource-link"
+                  href={resource.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid={`setup-resource-${resource.id}`}
+                  onclick={(event) => openResourceLink(event, resource.href)}
+                >
+                  <svg
+                    class="resource-glyph"
+                    viewBox="0 0 16 16"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.25"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    {@html GLYPHS[resource.kind]}
+                  </svg>
+                  <span class="resource-text">
+                    <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
+                    <span class="resource-title">{resource.title}</span>
+                    <span class="resource-desc">{resource.description}</span>
+                  </span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+          <p class="support-note" data-testid="setup-support-note">{SETUP_SUPPORT_NOTE}</p>
         </div>
       </details>
     </div>
   </div>
 
-  <ul class="resources" aria-label="Learn HQ">
-    {#each SETUP_RESOURCES as resource (resource.id)}
-      <li class="resource">
-        <a
-          class="resource-link"
-          href={resource.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          data-testid={`setup-resource-${resource.id}`}
-          onclick={(event) => openResourceLink(event, resource.href)}
-        >
-          <svg
-            class="resource-glyph"
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            {@html GLYPHS[resource.kind]}
-          </svg>
-          <span class="resource-text">
-            <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
-            <span class="resource-title">{resource.title}</span>
-            <span class="resource-desc">{resource.description}</span>
-          </span>
-          <svg
-            class="resource-arrow"
-            viewBox="0 0 16 16"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" />
-          </svg>
-        </a>
-      </li>
-    {/each}
-  </ul>
-
-  <p class="support-note" data-testid="setup-support-note">
-    {SETUP_SUPPORT_NOTE}
-  </p>
+  {#if firstMoves && firstMoves.length > 0}
+    <FirstMoves
+      moves={firstMoves}
+      onmove={handleFirstMove}
+      oncodex={() => firstMoveLaunch("codex")}
+    />
+  {/if}
 </section>
 
 <style>
@@ -451,6 +473,23 @@
     margin: 0;
     line-height: 1.5;
     color: rgba(255, 255, 255, 0.72);
+  }
+  /* Learn-HQ rows live inside the dark hero now: keep them legible on it. */
+  .advanced-body .resources {
+    margin-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .advanced-body .resource-link,
+  .advanced-body .resource-title {
+    color: #ffffff;
+  }
+  .advanced-body .resource-desc,
+  .advanced-body .eyebrow--muted,
+  .advanced-body .support-note {
+    color: rgba(255, 255, 255, 0.66);
+  }
+  .advanced-body .support-note {
+    font-size: 12px;
   }
   .setup-intro {
     flex: 0 0 auto;

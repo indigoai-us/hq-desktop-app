@@ -45,6 +45,13 @@
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import {
+    firstMovesFor,
+    markFirstMoveDone,
+    readFirstMovesDone,
+    type FirstMoveId,
+  } from "../chat/first-moves";
+  import { companyInviteUrl } from "../common/hq-console";
+  import {
     hasRunWelcomeSetup,
     isSetupChannel,
     markWelcomeSetupRun,
@@ -2489,6 +2496,55 @@
     welcomeSetupRun = true;
   }
   const hasRosterCompany = $derived(rosterCompanies.length > 0);
+
+  // --- #welcome first moves ---------------------------------------------------
+  /** The sidebar instance, for host entry points such as "New project channel". */
+  let sidebarRef = $state<{ openCreateChannel: () => void } | null>(null);
+  let firstMovesDone = $state<ReadonlySet<FirstMoveId>>(readFirstMovesDone());
+  const hasProjectChannel = $derived(
+    railRows.some(
+      (row) => row.kind === "channel" && !row.browseOnly && row.channelScope === "project",
+    ),
+  );
+  /** Shown once setup has been run from #welcome (the hero's job comes first). */
+  const firstMoves = $derived(
+    welcomeSetupRun
+      ? firstMovesFor({
+          hasCompany: hasRosterCompany,
+          hasProjectChannel,
+          done: firstMovesDone,
+        })
+      : [],
+  );
+  function recordFirstMoveDone(id: FirstMoveId): void {
+    firstMovesDone = markFirstMoveDone(id);
+  }
+  /** The company a first move acts on: the roster's first company. */
+  const firstMovesCompany = $derived(rosterCompanies[0] ?? null);
+  async function performFirstMove(id: FirstMoveId): Promise<string | null | void> {
+    if (id === "project-channel") {
+      if (!sidebarRef) return "The sidebar is not ready yet.";
+      sidebarRef.openCreateChannel();
+      // Ticks itself when the project channel appears in the rail.
+      return null;
+    }
+    if (id === "invite") {
+      const slug = firstMovesCompany?.slug?.trim() ?? "";
+      if (!slug) return "Pick a company first.";
+      onopenurl?.(companyInviteUrl(slug));
+      recordFirstMoveDone("invite");
+      return null;
+    }
+    if (id === "agent") {
+      const uid = firstMovesCompany?.cloudUid?.trim() ?? "";
+      if (!uid) return "Pick a company first.";
+      const result = await addAgentEntry(uid);
+      if (!result.ok) return result.reason;
+      recordFirstMoveDone("agent");
+      return null;
+    }
+    return null;
+  }
   /** The user explicitly asked for another company this session. */
   let createCompanyRequested = $state(false);
 
@@ -4209,6 +4265,7 @@
       {#if !sidebarCollapsed || phoneViewport}
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
+          bind:this={sidebarRef}
           offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
@@ -4817,6 +4874,9 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
+                    {firstMoves}
+                    onfirstmove={performFirstMove}
+                    onfirstmovedone={recordFirstMoveDone}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
