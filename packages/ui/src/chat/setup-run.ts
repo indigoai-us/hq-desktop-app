@@ -106,6 +106,35 @@ export type SetupRunQuestion =
       text: string;
     };
 
+/** Why a run stopped early, in a shape the channel can act on. */
+export interface SetupRunFailure {
+  /** `auth`: the coding agent's sign-in is missing or expired — connect again. */
+  kind: "auth" | "other";
+  /** The engine's own words (kept for support; the channel says it plainly). */
+  message: string;
+}
+
+const AUTH_FAILURE = /oauth|authenticat|not logged in|sign(ed)?[- ]in|log ?in\b|session expired|token|credential|api key/i;
+
+/** Classify an error the engine surfaced (an `error` event or the agent's last words before exiting). */
+export function classifySetupFailure(message: string): SetupRunFailure | null {
+  const text = message.trim();
+  if (!text) return null;
+  return { kind: AUTH_FAILURE.test(text) ? "auth" : "other", message: text };
+}
+
+/** Plain copy for the channel when a run stops. */
+export const SETUP_FAILURE_COPY = {
+  auth: {
+    title: "Setup paused — your coding agent needs to sign in again.",
+    agent: "I couldn't continue: the sign-in for your coding agent has expired. Sign in again below and I'll pick up where we left off.",
+  },
+  other: {
+    title: "Setup stopped before finishing",
+    agent: "I hit a snag and had to stop. Run Setup to try again.",
+  },
+} as const;
+
 export interface SetupRunState {
   /** Index into `SETUP_RUN_STEPS` of the step in progress (or last finished). */
   step: number;
@@ -119,6 +148,8 @@ export interface SetupRunState {
   done: boolean;
   /** The session stopped (exited / errored / ended phase) before finishing. */
   ended: boolean;
+  /** Why it stopped, when the engine said; null for a clean finish or an unexplained stop. */
+  failure: SetupRunFailure | null;
   /** Short closing line for the done state. */
   summary: string;
 }
@@ -362,6 +393,8 @@ export function interpretSetupRun(
   let done = false;
   let exited = false;
   let errored = false;
+  /** The last error text the engine surfaced (an error event, or a turn that ended in error). */
+  let lastError = "";
 
   /** The latest open request (question/permission) and the latest assistant words. */
   let pendingRequest:
@@ -467,13 +500,21 @@ export function interpretSetupRun(
       }
       case "turnDone": {
         const status = (event as { status?: unknown }).status;
-        if (status === "error") errored = true;
+        if (status === "error") {
+          errored = true;
+          const detail = String((event as { error?: unknown }).error ?? "").trim();
+          if (detail) lastError = detail;
+          else if (lastAssistant) lastError = lastAssistant;
+        }
         if (assistantIsLatest) turnDoneSinceAssistant = true;
         break;
       }
-      case "error":
+      case "error": {
         errored = true;
+        const message = String((event as { message?: unknown }).message ?? "").trim();
+        if (message) lastError = message;
         break;
+      }
       case "exited":
         exited = true;
         break;
@@ -490,6 +531,8 @@ export function interpretSetupRun(
   }
 
   const ended = !done && (exited || phase === "ended" || (errored && phase !== "working"));
+  // An agent that exits right after reporting a problem in prose: that prose is the reason.
+  const failure = ended ? classifySetupFailure(lastError || (errored || exited ? (lastAssistant ?? "") : "")) : null;
 
   let question: SetupRunQuestion | null = null;
   if (!done && !ended) {
@@ -544,6 +587,7 @@ export function interpretSetupRun(
     card: cardShown,
     done,
     ended,
+    failure,
     summary: done ? SETUP_RUN_DONE.summary : "",
   };
 }

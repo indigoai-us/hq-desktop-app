@@ -295,6 +295,37 @@ describe("SetupAgent", () => {
     expect(new SetupAgent(fakeSetupRun()).providersReady).toBe(true);
   });
 
+  it("an expired sign-in stops the run with a plain line, not the engine's error, and asks which agents are ready", async () => {
+    const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false }));
+    const api = fakeSetupRun({ providers });
+    const agent = new SetupAgent(api);
+    await agent.start();
+    api.emit("sess-1", say("Checking tools."));
+    api.emit("sess-1", say("Failed to authenticate: OAuth session expired and could not be refreshed"));
+    api.emit("sess-1", { kind: "turnDone", status: "error", error: null }, "ended");
+    await settle();
+    expect(agent.state?.ended).toBe(true);
+    expect(agent.listening).toBe(false);
+    expect(agent.failure?.kind).toBe("auth");
+    const texts = agent.transcript.map((turn) => turn.text);
+    expect(texts).not.toContain("Failed to authenticate: OAuth session expired and could not be refreshed");
+    expect(texts[texts.length - 1]).toContain("sign-in for your coding agent has expired");
+    expect(providers).toHaveBeenCalledWith(true);
+    expect(agent.providersReady).toBe(false);
+  });
+
+  it("any other stop keeps the words but adds the plain 'run again' line once", async () => {
+    const api = fakeSetupRun();
+    const agent = new SetupAgent(api);
+    await agent.start();
+    api.emit("sess-1", say("Checking tools."));
+    api.emit("sess-1", { kind: "error", message: "Process crashed" }, "ended");
+    await settle();
+    expect(agent.failure).toEqual({ kind: "other", message: "Process crashed" });
+    const texts = agent.transcript.map((turn) => turn.text);
+    expect(texts).toEqual(["Checking tools.", "I hit a snag and had to stop. Run Setup to try again."]);
+  });
+
   it("run again starts a fresh session", async () => {
     saveSetupRunRecord({ sessionId: "sess-done", step: 5, status: "done" });
     const api = fakeSetupRun();

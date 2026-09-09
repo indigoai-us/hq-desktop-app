@@ -13,6 +13,7 @@
    * exactly like the hero's `.launch-btn` / `.quiet-btn`.
    */
   import {
+    SETUP_FAILURE_COPY,
     SETUP_RUN_DONE,
     SETUP_RUN_PERMISSION,
     SETUP_RUN_STEPS,
@@ -216,7 +217,9 @@
       <p class="run-body" data-testid="setup-run-summary">{run?.summary || SETUP_RUN_DONE.summary}</p>
     {/if}
   {:else if stopped && variant !== "steps"}
-    <h3 class="run-title" data-testid="setup-run-stopped-title">{SETUP_RUN_STOPPED.title}</h3>
+    <h3 class="run-title" data-testid="setup-run-stopped-title">
+      {run?.failure ? SETUP_FAILURE_COPY[run.failure.kind].title : SETUP_RUN_STOPPED.title}
+    </h3>
     {#if variant !== "prompt"}
       <p class="run-body">{SETUP_RUN_STOPPED.body}</p>
     {/if}

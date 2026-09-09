@@ -45,6 +45,7 @@
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
+  import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
@@ -4920,7 +4921,18 @@
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
                     {@const agentDone = setupAgent.mode === "done" || Boolean(agentState?.done)}
+                    {@const needsSignIn = setupAgent.failure?.kind === "auth" && setupAgent.providers !== null && !setupAgent.providersReady}
                     <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if needsSignIn && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped on an expired sign-in: fix it here, then Run Setup. -->
+                        <SetupConnectStep
+                          variant="surface"
+                          api={setupAgent.api}
+                          providers={setupAgent.providers}
+                          lead="Sign in again and I'll pick up where we left off."
+                          onrefresh={() => setupAgent.refreshProviders(true)}
+                        />
+                      {:else}
                       <SetupRunCard
                         variant="prompt"
                         mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
@@ -4935,6 +4947,7 @@
                         onrunagain={() => void setupAgent.runAgain()}
                         onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
                       />
+                      {/if}
                       {#if agentDone}
                         <div class="setup-agent-finish" data-testid="setup-agent-finish" role="group" aria-label="Keep going">
                           {#if extraPages?.sessions}

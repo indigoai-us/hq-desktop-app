@@ -164,6 +164,33 @@ describe("DesktopApp native setup run wiring", () => {
     expect(api.answerQuestion).toHaveBeenCalledWith("sess-42", "req-1", [{ questionId: "q1", values: ["Jacob"] }]);
   });
 
+  it("an expired sign-in shows the Connect step under the chat instead of a bare Run Setup", async () => {
+    const api = fakeSetupRun();
+    // Signed in when the run starts; the sign-in has lapsed by the time the agent re-checks.
+    const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false }));
+    api.providers = providers;
+    api.providerLoginStart = vi.fn(async () => ({ state: "waiting" }));
+    api.providerLoginStatus = vi.fn(async () => ({ state: "waiting" }));
+    api.providerLoginCancel = vi.fn(async () => undefined);
+    api.providerInstallUrl = vi.fn(() => "https://claude.ai/download");
+    api.openExternal = vi.fn(async () => undefined);
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "Checking tools." });
+    providers.mockResolvedValue({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false });
+    api.emit({ kind: "error", message: "Failed to refresh OAuth token: conflict" });
+    api.emit({ kind: "exited", code: 1 }, "ended");
+    await settle();
+    const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).map((el) => el.textContent ?? "");
+    expect(messages.some((text) => text.includes("Failed to refresh OAuth token"))).toBe(false);
+    expect(messages.some((text) => text.includes("sign-in for your coding agent has expired"))).toBe(true);
+    const connect = host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-connect-step"]');
+    expect(connect).toBeTruthy();
+    expect(connect?.classList.contains("connect--surface")).toBe(true);
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-stopped-title"]')).toBeNull();
+  });
+
   it("finishing offers Open in Sessions, Claude Code, and Codex under the last message", async () => {
     const api = fakeSetupRun();
     await mountApp(api);

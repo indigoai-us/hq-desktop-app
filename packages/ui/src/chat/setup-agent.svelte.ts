@@ -15,8 +15,10 @@ import {
   loadSetupRunRecord,
   saveSetupRunRecord,
   SETUP_RUN_STEPS,
+  SETUP_FAILURE_COPY,
   setupProvidersReady,
   type SetupProviderStatus,
+  type SetupRunFailure,
   type SetupRunApi,
   type SetupRunPermissionDecision,
   type SetupRunSnapshot,
@@ -117,6 +119,7 @@ export function setupAgentTranscript(
   sessionId: string,
   events: SetupRunSnapshot["events"],
   answers: SetupAgentAnswers = new Map(),
+  failure: SetupRunFailure | null = null,
 ): SetupAgentTurn[] {
   const turns: SetupAgentTurn[] = [];
   events.forEach((event, seq) => {
@@ -143,6 +146,17 @@ export function setupAgentTranscript(
       turns.push({ id: `setup:${sessionId}:${seq}`, role: "user", text, seq });
     }
   });
+  if (failure) {
+    // The engine's raw error is not something to say to a person. Replace
+    // it (or add) with the plain line the channel should show.
+    const friendly = SETUP_FAILURE_COPY[failure.kind].agent;
+    const last = turns[turns.length - 1];
+    if (last && last.role === "agent" && last.text === failure.message) {
+      turns[turns.length - 1] = { ...last, text: friendly };
+    } else if (!last || last.text !== friendly) {
+      turns.push({ id: `setup:${sessionId}:failure`, role: "agent", text: friendly, seq: events.length });
+    }
+  }
   return turns;
 }
 
@@ -153,6 +167,7 @@ export class SetupAgent {
   private hooks: SetupAgentHooks;
   private unsubscribe: (() => void) | null = null;
   private finished = false;
+  private providersRefreshedForFailure = false;
 
   mode = $state<SetupAgentMode>("idle");
   sessionId = $state<string | null>(null);
@@ -175,6 +190,8 @@ export class SetupAgent {
   readonly transcript: SetupAgentTurn[];
   /** A signed-in agent is available, or the host cannot tell (then preflight decides). */
   readonly providersReady: boolean;
+  /** Why the run stopped, once it has; the channel offers the fix (sign in / run again). */
+  readonly failure: SetupRunFailure | null;
 
   constructor(api: SetupRunApi | null, hooks: SetupAgentHooks = {}) {
     this.api = api;
@@ -192,10 +209,13 @@ export class SetupAgent {
       this.mode === "live" && this.state !== null && !this.state.done && !this.state.ended,
     );
     this.transcript = $derived.by(() => {
-      const live = this.snapshot ? setupAgentTranscript(this.snapshot.sessionId, this.snapshot.events, this.answers) : [];
+      const live = this.snapshot
+        ? setupAgentTranscript(this.snapshot.sessionId, this.snapshot.events, this.answers, this.state?.failure ?? null)
+        : [];
       return live.length > 0 ? live : this.cachedTurns;
     });
     this.providersReady = $derived(this.providers === null ? true : setupProvidersReady(this.providers));
+    this.failure = $derived(this.state?.ended ? (this.state.failure ?? null) : null);
     if (!api) return;
     void this.refreshProviders();
     // Coming back to #welcome (or relaunching) lands here with the run
@@ -244,8 +264,15 @@ export class SetupAgent {
       if (snapshot.sessionId !== this.sessionId) return;
       this.snapshot = snapshot;
       this.keepRecord();
-      const turns = setupAgentTranscript(snapshot.sessionId, snapshot.events, this.answers);
+      const failure = this.state?.failure ?? null;
+      const turns = setupAgentTranscript(snapshot.sessionId, snapshot.events, this.answers, failure);
       if (turns.length > 0) saveTranscriptCache(snapshot.sessionId, turns);
+      // A sign-in problem: find out which agent needs connecting so the
+      // channel can offer it right there instead of a bare Run Setup.
+      if (failure?.kind === "auth" && !this.providersRefreshedForFailure) {
+        this.providersRefreshedForFailure = true;
+        void this.refreshProviders(true);
+      }
     });
   }
 
@@ -286,6 +313,7 @@ export class SetupAgent {
       this.mode = "starting";
       const sessionId = await api.start(SETUP_GUIDED_PROMPT);
       this.finished = false;
+      this.providersRefreshedForFailure = false;
       this.sessionId = sessionId;
       this.answers = new Map();
       this.cachedTurns = [];

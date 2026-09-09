@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  classifySetupFailure,
   parseSetupCard,
   SETUP_RUN_DONE,
   SETUP_RUN_SESSION_KEY,
@@ -272,6 +273,37 @@ describe("interpretSetupRun — finish and stop", () => {
 
   it("treats an ended phase with no exit event as ended too", () => {
     expect(interpretSetupRun([say("Checking tools.")], "ended").ended).toBe(true);
+  });
+
+  it("names an expired sign-in as an auth failure, from an error event or the agent's last words", () => {
+    const viaEvent = interpretSetupRun(
+      [say("Checking tools."), { kind: "error", message: "Failed to refresh OAuth token: conflict" }, { kind: "exited", code: 1 }],
+      "ended",
+    );
+    expect(viaEvent.ended).toBe(true);
+    expect(viaEvent.failure).toEqual({ kind: "auth", message: "Failed to refresh OAuth token: conflict" });
+
+    const viaProse = interpretSetupRun(
+      [say("Failed to authenticate: OAuth session expired and could not be refreshed"), { kind: "turnDone", status: "error", error: null }],
+      "ended",
+    );
+    expect(viaProse.failure?.kind).toBe("auth");
+
+    const other = interpretSetupRun([say("Checking tools."), { kind: "error", message: "Process crashed" }, { kind: "exited", code: 1 }], "ended");
+    expect(other.failure).toEqual({ kind: "other", message: "Process crashed" });
+
+    // A clean finish and a quiet stop carry no failure.
+    expect(interpretSetupRun([say("You're all set up.")], "working").failure).toBeNull();
+    expect(interpretSetupRun([say("Checking tools."), { kind: "exited", code: 0 }], "ended").failure?.kind).toBe("other");
+  });
+
+  it("classifySetupFailure tells sign-in trouble from the rest and ignores blank text", () => {
+    expect(classifySetupFailure("OAuth session expired")?.kind).toBe("auth");
+    expect(classifySetupFailure("Please sign in to Claude")?.kind).toBe("auth");
+    expect(classifySetupFailure("Not logged in")?.kind).toBe("auth");
+    expect(classifySetupFailure("Invalid API key · credential rejected")?.kind).toBe("auth");
+    expect(classifySetupFailure("Something else broke")?.kind).toBe("other");
+    expect(classifySetupFailure("   ")).toBeNull();
   });
 });
 

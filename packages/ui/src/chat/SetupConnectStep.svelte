@@ -13,9 +13,13 @@
     providers: SetupProviderStatus;
     /** Ask the host again (after a sign-in or an install). */
     onrefresh: () => Promise<void>;
+    /** `hero`: white on the wallpaper. `surface`: shell tokens, under the chat. */
+    variant?: "hero" | "surface";
+    /** Shorter lead for the in-chat version. */
+    lead?: string;
   }
 
-  let { api, providers, onrefresh }: Props = $props();
+  let { api, providers, onrefresh, variant = "hero", lead }: Props = $props();
 
   const TOOLS: readonly { id: SetupProviderTool; name: string; app: string }[] = [
     { id: "claude", name: "Claude Code", app: "Claude" },
@@ -130,8 +134,8 @@
   });
 </script>
 
-<div class="connect" data-testid="setup-connect-step" aria-label="Connect an agent">
-  <p class="lead">Setup runs through your own coding agent. Connect one to continue — you only need one.</p>
+<div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an agent">
+  <p class="lead">{lead ?? "Setup runs through your own coding agent. Connect one to continue — you only need one."}</p>
   <ul class="providers">
     {#each TOOLS as tool (tool.id)}
       <li class="provider" data-testid={`setup-connect-${tool.id}`} data-state={connected(tool.id) ? "connected" : available(tool.id) ? "available" : "missing"}>
@@ -180,6 +184,44 @@
 </div>
 
 <style>
+  .connect--surface {
+    --c-text: var(--text-1, inherit);
+    --c-text-2: var(--text-2, inherit);
+    --c-text-3: var(--text-3, rgba(127, 127, 127, 0.9));
+    --c-line: var(--border, rgba(127, 127, 127, 0.25));
+    --c-btn-bg: var(--text-1, #111);
+    --c-btn-fg: var(--bg, #fff);
+    --c-error: var(--danger, #d9534f);
+    color: var(--c-text);
+    max-width: 48ch;
+  }
+  .connect--surface .lead,
+  .connect--surface .flow {
+    color: var(--c-text-2);
+  }
+  .connect--surface .provider {
+    border-top-color: var(--c-line);
+  }
+  .connect--surface .provider-state {
+    color: var(--c-text-3);
+  }
+  .connect--surface .launch-btn {
+    border-color: var(--c-line);
+    background: transparent;
+    color: var(--c-text);
+  }
+  .connect--surface .launch-btn.primary {
+    border-color: var(--c-btn-bg);
+    background: var(--c-btn-bg);
+    color: var(--c-btn-fg);
+  }
+  .connect--surface .quiet-btn {
+    color: var(--c-text-2);
+  }
+  .connect--surface .error {
+    color: var(--c-error);
+  }
+
   .connect {
     display: flex;
     flex-direction: column;
