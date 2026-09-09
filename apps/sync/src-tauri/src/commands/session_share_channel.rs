@@ -111,6 +111,7 @@ pub async fn session_share_to_channel(args: ShareArgs) -> Result<ShareResult, St
                 let tool = match provenance.tool.as_str() {
                     "codex" => SessionTool::Codex,
                     "claude" => SessionTool::Claude,
+                    "grok" => SessionTool::Grok,
                     _ => return Err("Unknown transcript provider".into()),
                 };
                 super::agent_session::agent_session_history_page(session_id.clone(), None, Some(tool))
@@ -375,10 +376,7 @@ fn historical_provenance(meta: Option<Provenance>, observed: Option<&hq_desktop_
 }
 
 fn tool_label(tool: SessionTool) -> &'static str {
-    match tool {
-        SessionTool::Claude => "claude",
-        SessionTool::Codex => "codex",
-    }
+    tool.as_str()
 }
 
 /// The subset of `workspace/sessions/<id>/meta.yaml` needed for the header.
@@ -611,6 +609,7 @@ mod tests {
     fn tool_labels_match_the_wire_spelling() {
         assert_eq!(tool_label(SessionTool::Claude), "claude");
         assert_eq!(tool_label(SessionTool::Codex), "codex");
+        assert_eq!(tool_label(SessionTool::Grok), "grok");
     }
 
     #[test]

@@ -683,16 +683,22 @@
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
     if (tool === 'codex' && !preflight.codexAvailable) {
-      return 'Codex is not installed on this machine. Install it, then reopen Sessions.';
+      return 'Codex is not installed. Install it below — HQ sets up the CLI for you.';
     }
     if (tool === 'codex' && !preflight.codexLoggedIn) {
-      return 'Codex is not signed in. Run `codex login` in a terminal, then reopen Sessions.';
+      return 'Codex is not signed in. Connect it below. If the browser does not open, run `codex login` in a terminal.';
+    }
+    if (tool === 'grok' && !preflight.grokAvailable) {
+      return 'Grok is not installed. Install it below — HQ sets up the CLI for you.';
+    }
+    if (tool === 'grok' && !preflight.grokLoggedIn) {
+      return 'Grok is not signed in. Connect it below. If the browser does not open, run `grok login` in a terminal.';
     }
     if (tool === 'claude' && !preflight.claudeAvailable) {
-      return 'Claude Code is not installed on this machine. Install it, then reopen Sessions.';
+      return 'Claude Code is not installed. Install it below — HQ sets up the CLI for you.';
     }
     if (tool === 'claude' && !preflight.claudeLoggedIn) {
-      return 'Claude Code is not signed in. Run `claude login` in a terminal, then reopen Sessions.';
+      return 'Claude Code is not signed in. Connect it below. If the browser does not open, run `claude login` in a terminal.';
     }
     if (!preflight.hooksReady) {
       return (
@@ -703,10 +709,16 @@
     return '';
   });
 
-  const needsProvider = $derived(Boolean(preflight) && (tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn : !preflight?.codexAvailable || !preflight?.codexLoggedIn));
+  const needsProvider = $derived(Boolean(preflight) && (
+    tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn
+    : tool === 'grok' ? !preflight?.grokAvailable || !preflight?.grokLoggedIn
+    : !preflight?.codexAvailable || !preflight?.codexLoggedIn
+  ));
   function providerConnected(provider: SessionToolId) {
     if (preflight) preflight = provider === 'claude'
       ? { ...preflight, claudeAvailable: true, claudeLoggedIn: true }
+      : provider === 'grok'
+        ? { ...preflight, grokAvailable: true, grokLoggedIn: true }
       : { ...preflight, codexAvailable: true, codexLoggedIn: true };
     liveSessionStore.invalidatePreflight();
     chooseTool(provider);
@@ -1249,8 +1261,8 @@
   {#if needsProvider && preflight}
     <div class="provider-connect-scroll">
       <ProviderConnect selected={tool}
-        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable}
-        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn}
+        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable} grokAvailable={preflight.grokAvailable}
+        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn} grokConnected={preflight.grokLoggedIn}
         onconnected={providerConnected} onchoose={chooseTool}
         onrefresh={async () => { liveSessionStore.invalidatePreflight(); preflight = await liveSessionStore.preflight(); }} />
     </div>
@@ -1349,6 +1361,7 @@
       {permissionMode}
       {tool}
       codexAvailable={preflight?.codexAvailable ?? false}
+      grokAvailable={preflight?.grokAvailable ?? false}
       {newSessionPending}
       {modelNote}
       {hqFolder}

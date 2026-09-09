@@ -223,6 +223,7 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('.slashCommands(wanted, forceRefresh)');
     expect(PAGE).toContain('function chooseTool');
     expect(PAGE).toContain('codexAvailable');
+    expect(PAGE).toContain('grokAvailable');
     // `tool` is the page's state, not a hard-coded literal in the spec.
     const spec = PAGE.slice(PAGE.indexOf('function specFrom'));
     expect(spec.slice(0, spec.indexOf('\n  }'))).not.toContain("tool: 'claude'");
@@ -241,8 +242,10 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
 
   it('names the exact remedy for each preflight blocker', () => {
     expect(PAGE).toContain('claude login');
+    expect(PAGE).toContain('grok login');
     expect(PAGE).toContain('claudeAvailable');
     expect(PAGE).toContain('claudeLoggedIn');
+    expect(PAGE).toContain('grokLoggedIn');
     expect(PAGE).toContain('hooksReady');
     // One inline notice above the composer — not a screen that replaces it.
     expect(PAGE).toContain('{notice}');
@@ -1077,7 +1080,7 @@ describe('the "⋯" session menu — open in Claude Code / Codex, share to chann
   });
 
   it('the menu is labelled by the session tool and offers exactly the three actions', () => {
-    expect(MENU).toContain("tool === 'codex' ? 'Open in Codex' : 'Open in Claude Code'");
+    expect(MENU).toContain("tool === 'codex' ? 'Open in Codex' : tool === 'grok' ? 'Open in Grok' : 'Open in Claude Code'");
     expect(MENU).toContain('data-testid="session-menu-open-in-app"');
     expect(MENU).toContain('data-testid="session-menu-share"');
     expect(MENU).toContain('data-testid="session-menu-end"');

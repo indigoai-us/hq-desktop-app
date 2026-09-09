@@ -88,7 +88,7 @@ import type { AgentSession } from './sessions';
 export type SessionPhase = 'starting' | 'idle' | 'working' | 'needsYou' | 'ended';
 
 /** Which agent CLI a session drives (Rust `SessionTool`). */
-export type SessionTool = 'claude' | 'codex';
+export type SessionTool = 'claude' | 'codex' | 'grok';
 
 /** How tool-permission requests are handled (Rust `PermissionMode`). */
 export type PermissionMode = 'prompt' | 'bypassAll';
@@ -191,6 +191,9 @@ export interface Preflight {
   codexAvailable: boolean;
   /** The Codex CLI signs in separately from the ChatGPT desktop app. */
   codexLoggedIn: boolean;
+  grokAvailable: boolean;
+  /** The Grok CLI signs in separately from grok.com in the browser. */
+  grokLoggedIn: boolean;
   companies: PreflightCompany[];
 }
 
@@ -1058,7 +1061,11 @@ async function cliSessionIdOf(sessionId: string, tool: SessionTool): Promise<str
   const latched = await invoke<string | null>('agent_session_cli_session_id', { sessionId });
   if (latched) return latched;
   if (tool === 'claude') return sessionId;
-  throw new Error('Codex has not announced its thread id yet — try again in a moment.');
+  throw new Error(
+    tool === 'grok'
+      ? 'Grok has not announced its session id yet — try again in a moment.'
+      : 'Codex has not announced its thread id yet — try again in a moment.',
+  );
 }
 
 /**
@@ -1084,7 +1091,9 @@ async function openInApp(): Promise<OpenInAppOutcome> {
 
 function startedToolOf(sessionId: string): SessionTool | null {
   for (const event of entries[sessionId]?.events ?? []) {
-    if (event.kind === 'started') return event.tool === 'codex' ? 'codex' : 'claude';
+    if (event.kind === 'started') {
+      if (event.tool === 'codex' || event.tool === 'grok' || event.tool === 'claude') return event.tool;
+    }
   }
   return null;
 }
@@ -1506,6 +1515,20 @@ export const liveSessionStore = {
   providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
   invalidatePreflight: () => { preflightCache = null; },
+  /** Install a sessions CLI in-app (npm, Node first if needed). Streams `install:progress`. */
+  installProvider: async (tool: SessionTool, onLine?: (line: string) => void) => {
+    const unlisten = await listen<{ line?: string }>('install:progress', (event) => {
+      const line = event.payload?.line?.trim();
+      if (line) onLine?.(line);
+    });
+    try {
+      return await invoke<string>('install_session_provider', { tool });
+    } finally {
+      unlisten();
+      preflightCache = null;
+      catalogCache.delete(tool);
+    }
+  },
   slashCommands,
   hqSkillCatalog,
   hqSkillMetadata,

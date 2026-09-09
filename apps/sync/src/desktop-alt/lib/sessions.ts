@@ -33,7 +33,7 @@ export const SESSION_STATUSES = ['running', 'awaiting_input', 'idle', 'ended'] a
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 /** The agent tool that owns the session. */
-export type AgentTool = 'claude' | 'codex';
+export type AgentTool = 'claude' | 'codex' | 'grok';
 
 /** Where the session is observed: this machine (`local`) or the user's outpost VM. */
 export type AgentOrigin = 'local' | 'outpost';
@@ -557,6 +557,7 @@ export const HISTORY_TOOL_FILTERS: ReadonlyArray<{ value: HistoryToolFilter; lab
   { value: 'all', label: 'All' },
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
+  { value: 'grok', label: 'Grok' },
 ];
 
 /**
@@ -569,6 +570,7 @@ export const HISTORY_TOOL_FILTERS: ReadonlyArray<{ value: HistoryToolFilter; lab
 const EVENT_TOOL_MATCHERS: ReadonlyArray<{ tool: AgentTool; test: RegExp }> = [
   { tool: 'codex', test: /\bcodex\b|codex-rollout|rollout/ },
   { tool: 'claude', test: /\bclaude\b|claude-jsonl|claude-code/ },
+  { tool: 'grok', test: /\bgrok\b|xai|x\.ai/ },
 ];
 
 /** Build the lowercased match haystack for an event's tool inference. */

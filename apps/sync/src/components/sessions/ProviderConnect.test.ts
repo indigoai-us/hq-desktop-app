@@ -4,15 +4,15 @@ vi.mock('svelte', async () => {
   // @ts-expect-error Browser entry needed by mounted tests.
   return await import('../../../node_modules/svelte/src/index-client.js');
 });
-const api = vi.hoisted(() => ({ providerLoginStart: vi.fn(), providerLoginStatus: vi.fn(), providerLoginCancel: vi.fn() }));
+const api = vi.hoisted(() => ({ providerLoginStart: vi.fn(), providerLoginStatus: vi.fn(), providerLoginCancel: vi.fn(), installProvider: vi.fn() }));
 vi.mock('../../desktop-alt/lib/live-session-store.svelte', () => ({ liveSessionStore: api }));
 import { mount, unmount, flushSync } from 'svelte';
 import ProviderConnect from './ProviderConnect.svelte';
 let component: ReturnType<typeof mount>;
 const onconnected = vi.fn(), onchoose = vi.fn();
 function render(extra = {}) { component = mount(ProviderConnect, { target: document.body, props: {
-  selected: 'claude', claudeAvailable: true, codexAvailable: true,
-  claudeConnected: false, codexConnected: false, onconnected, onchoose, ...extra,
+  selected: 'claude', claudeAvailable: true, codexAvailable: true, grokAvailable: true,
+  claudeConnected: false, codexConnected: false, grokConnected: false, onconnected, onchoose, ...extra,
 } }); flushSync(); }
 function click(label: string) { const button = [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === label); expect(button).toBeTruthy(); button!.click(); flushSync(); }
 async function settle() { for (let i=0;i<8;i++) { await Promise.resolve(); flushSync(); } }
@@ -48,6 +48,21 @@ describe('provider connection', () => {
     render({codexConnected:true}); click('Use Codex'); await settle();
     expect(onchoose).toHaveBeenCalledWith('codex');
     expect(api.providerLoginStart).not.toHaveBeenCalled();
+  });
+  it('installs a missing CLI in-app instead of dead-ending on a terminal hint', async () => {
+    api.installProvider.mockResolvedValue('ok');
+    const onrefresh = vi.fn().mockResolvedValue(undefined);
+    render({ grokAvailable: false, onrefresh });
+    expect(document.body.textContent).not.toContain('then check again');
+    click('Install Grok');
+    await settle();
+    expect(api.installProvider).toHaveBeenCalledWith('grok', expect.any(Function));
+    expect(onrefresh).toHaveBeenCalled();
+  });
+  it('starts Grok login the same way as Claude and Codex', async () => {
+    render(); click('Connect Grok'); await settle();
+    expect(api.providerLoginStart).toHaveBeenCalledWith('grok');
+    expect(document.body.textContent).toContain('Waiting for browser sign-in');
   });
   it('discards results after navigating away', async () => {
     let resolve!: (v:unknown)=>void;

@@ -318,12 +318,33 @@ describe('the tool pill', () => {
     expect(rows[1]?.textContent).toContain('not installed');
   });
 
+  it('offers Grok but disables it when the CLI is not installed', () => {
+    render({ grokAvailable: false, codexAvailable: true });
+    click(must('session-pill-tool'));
+    const rows = must('session-menu-tool').querySelectorAll<HTMLButtonElement>('.menu-item');
+    expect([...rows].map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Claude'),
+      expect.stringContaining('Codex'),
+      expect.stringContaining('Grok'),
+    ]);
+    expect(rows[2]?.disabled).toBe(true);
+    expect(rows[2]?.textContent).toContain('not installed');
+  });
+
   it('lets Codex be chosen once the preflight finds it', () => {
     const ontool = vi.fn();
     render({ codexAvailable: true, ontool });
     click(must('session-pill-tool'));
     click(must('session-menu-tool').querySelectorAll<HTMLElement>('.menu-item')[1]!);
     expect(ontool).toHaveBeenCalledWith('codex');
+  });
+
+  it('lets Grok be chosen once the preflight finds it', () => {
+    const ontool = vi.fn();
+    render({ grokAvailable: true, ontool });
+    click(must('session-pill-tool'));
+    click(must('session-menu-tool').querySelectorAll<HTMLElement>('.menu-item')[2]!);
+    expect(ontool).toHaveBeenCalledWith('grok');
   });
 });
 

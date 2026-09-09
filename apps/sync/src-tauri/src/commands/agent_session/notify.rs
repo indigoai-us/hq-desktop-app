@@ -74,6 +74,7 @@ pub fn banner_title(tool: SessionTool, company: Option<&str>) -> String {
     let base = match tool {
         SessionTool::Claude => "Claude needs you",
         SessionTool::Codex => "Codex needs you",
+        SessionTool::Grok => "Grok needs you",
     };
     match company.map(str::trim).filter(|c| !c.is_empty()) {
         Some(company) => format!("{base} · {company}"),
@@ -460,6 +461,7 @@ mod tests {
     fn title_names_the_tool_and_company() {
         assert_eq!(banner_title(SessionTool::Claude, None), "Claude needs you");
         assert_eq!(banner_title(SessionTool::Codex, None), "Codex needs you");
+        assert_eq!(banner_title(SessionTool::Grok, None), "Grok needs you");
         assert_eq!(
             banner_title(SessionTool::Claude, Some("indigo")),
             "Claude needs you · indigo"

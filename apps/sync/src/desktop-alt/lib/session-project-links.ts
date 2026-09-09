@@ -23,7 +23,7 @@ export interface LinkedSession {
   /** Present only for someone else's shared, read-only conversation. */
   sharedChannelId?: string;
   sessionId: string;
-  /** `claude` | `codex`. */
+  /** `claude` | `codex` | `grok`. */
   tool: string;
   /** `starting` | `idle` | `working` | `needsYou` | `ended`. */
   phase: string;
@@ -232,7 +232,7 @@ function sessionStatus(phase: string): ConversationRowChild['status'] {
 function sessionLabel(session: LinkedSession): string {
   const title = session.title?.trim();
   if (title) return title;
-  return `${session.tool === 'codex' ? 'Codex' : 'Claude'} session`;
+  return `${session.tool === 'codex' ? 'Codex' : session.tool === 'grok' ? 'Grok' : 'Claude'} session`;
 }
 
 // ---------------------------------------------------------------------------

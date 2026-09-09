@@ -6,7 +6,9 @@ import {
   CODEX_EFFORT_OPTIONS,
   EFFORT_OPTIONS,
   FALLBACK_CODEX_MODELS,
+  FALLBACK_GROK_MODELS,
   FALLBACK_MODELS,
+  GROK_EFFORT_OPTIONS,
   LAST_EFFORT_KEY,
   LAST_MODEL_KEY,
   LAST_TOOL_KEY,
@@ -271,6 +273,7 @@ describe('friendlyModelName — an id is not a name', () => {
   it('title-cases an unknown family and keeps acronyms upper', () => {
     expect(friendlyModelName('claude-newfamily-6-2')).toBe('Newfamily 6.2');
     expect(friendlyModelName('gpt-5')).toBe('GPT 5');
+    expect(friendlyModelName('grok-4.6')).toBe('Grok 4.6');
   });
 
   it('strips a bedrock-style region prefix', () => {
@@ -354,15 +357,17 @@ describe('modelPillLabel — never a raw id, never "Default"', () => {
 });
 
 describe('the tool pill', () => {
-  it('offers exactly Claude and Codex', () => {
-    expect(TOOL_OPTIONS.map((option) => option.value)).toEqual(['claude', 'codex']);
-    expect(TOOL_OPTIONS.map((option) => option.label)).toEqual(['Claude', 'Codex']);
+  it('offers Claude, Codex, and Grok', () => {
+    expect(TOOL_OPTIONS.map((option) => option.value)).toEqual(['claude', 'codex', 'grok']);
+    expect(TOOL_OPTIONS.map((option) => option.label)).toEqual(['Claude', 'Codex', 'Grok']);
   });
 
   it('remembers the last tool under the agreed key', () => {
     expect(LAST_TOOL_KEY).toBe('hq.sessions.lastTool');
     remember(LAST_TOOL_KEY, 'codex');
     expect(readRememberedTool()).toBe('codex');
+    remember(LAST_TOOL_KEY, 'grok');
+    expect(readRememberedTool()).toBe('grok');
   });
 
   it('defaults to the only CLI that always exists', () => {
@@ -473,8 +478,10 @@ describe('the model is remembered per tool', () => {
   it('keys each CLI’s memory under its own name', () => {
     expect(lastModelKey('claude')).toBe('hq.sessions.lastModel.claude');
     expect(lastModelKey('codex')).toBe('hq.sessions.lastModel.codex');
+    expect(lastModelKey('grok')).toBe('hq.sessions.lastModel.grok');
     expect(lastEffortKey('claude')).toBe('hq.sessions.lastEffort.claude');
     expect(lastEffortKey('codex')).toBe('hq.sessions.lastEffort.codex');
+    expect(lastEffortKey('grok')).toBe('hq.sessions.lastEffort.grok');
   });
 
   it('never hands one CLI the other’s choice', () => {
@@ -546,16 +553,24 @@ describe('plausibleModelForTool — the pre-catalog check', () => {
     expect(plausibleModelForTool(id, 'codex')).toBe(true);
   });
 
+  it.each(['grok-4.6', 'grok-4.5', 'grok-4'])('lets Grok carry %s', (id) => {
+    expect(plausibleModelForTool(id, 'grok')).toBe(true);
+  });
+
   it('never lets Claude carry a Codex id, nor Codex a Claude one', () => {
     expect(plausibleModelForTool('gpt-5.6-sol', 'claude')).toBe(false);
     expect(plausibleModelForTool('o3', 'claude')).toBe(false);
     expect(plausibleModelForTool('opus', 'codex')).toBe(false);
     expect(plausibleModelForTool('claude-fable-5-1[1m]', 'codex')).toBe(false);
+    expect(plausibleModelForTool('grok-4.6', 'claude')).toBe(false);
+    expect(plausibleModelForTool('opus', 'grok')).toBe(false);
+    expect(plausibleModelForTool('gpt-5.6-sol', 'grok')).toBe(false);
   });
 
   it('treats Default (no model) as always fine, and an empty id as never', () => {
     expect(plausibleModelForTool(null, 'claude')).toBe(true);
     expect(plausibleModelForTool(null, 'codex')).toBe(true);
+    expect(plausibleModelForTool(null, 'grok')).toBe(true);
     expect(plausibleModelForTool('', 'claude')).toBe(false);
     expect(plausibleModelForTool('   ', 'codex')).toBe(false);
   });
@@ -613,11 +628,14 @@ describe('the fallback catalog is per tool, and is not a catalog', () => {
     expect(readSessionModels([], 'codex')).toEqual(FALLBACK_CODEX_MODELS);
     expect(readSessionModels([], 'claude')).toEqual(FALLBACK_MODELS);
     expect(fallbackModelsFor('codex')).toEqual(FALLBACK_CODEX_MODELS);
+    expect(fallbackModelsFor('grok')).toEqual(FALLBACK_GROK_MODELS);
+    expect(readSessionModels([], 'grok')).toEqual(FALLBACK_GROK_MODELS);
   });
 
   it('recognises its own fallback so nothing is validated against it', () => {
     expect(isFallbackCatalog(readSessionModels([], 'claude'), 'claude')).toBe(true);
     expect(isFallbackCatalog(readSessionModels([], 'codex'), 'codex')).toBe(true);
+    expect(isFallbackCatalog(readSessionModels([], 'grok'), 'grok')).toBe(true);
     expect(isFallbackCatalog(readSessionModels(REAL_CATALOG), 'claude')).toBe(false);
     expect(isFallbackCatalog(readSessionModels(CODEX_CATALOG, 'codex'), 'codex')).toBe(false);
   });
@@ -636,6 +654,14 @@ describe('the effort ladder is per tool', () => {
     expect(CODEX_EFFORT_OPTIONS.find((option) => option.value === 'xhigh')?.label).toBe(
       'Extra high',
     );
+    expect(effortOptionsFor('grok')).toEqual(GROK_EFFORT_OPTIONS);
+    expect(GROK_EFFORT_OPTIONS.map((option) => option.value)).toEqual([
+      null,
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
   });
 
   it('reads the ladder off the catalog when the rows declare one', () => {
@@ -668,6 +694,8 @@ describe('the effort ladder is per tool', () => {
   it('clamps an effort the current ladder lacks to Auto', () => {
     expect(clampEffort('xhigh', effortOptionsFor('claude'))).toBeNull();
     expect(clampEffort('max', effortOptionsFor('codex'))).toBeNull();
+    expect(clampEffort('ultra', effortOptionsFor('grok'))).toBeNull();
+    expect(clampEffort('xhigh', effortOptionsFor('grok'))).toBe('xhigh');
     expect(clampEffort('high', effortOptionsFor('codex'))).toBe('high');
     expect(clampEffort('max', effortOptionsFor('claude'))).toBe('max');
     expect(clampEffort(null, effortOptionsFor('codex'))).toBeNull();

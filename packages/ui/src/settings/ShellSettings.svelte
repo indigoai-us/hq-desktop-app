@@ -15,6 +15,7 @@
   import PageHeader from "../shell/PageHeader.svelte";
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+  import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import { avatarBase64FromFile } from "./avatar-image.js";
   import {
@@ -41,6 +42,7 @@
     | "profile"
     | "companies"
     | "general"
+    | "agents"
     | "appearance"
     | "notifications"
     | "sync"
@@ -53,6 +55,7 @@
       { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
+      { id: "agents", label: "Agents" },
       { id: "appearance", label: "Appearance" },
       { id: "notifications", label: "Notifications" },
       { id: "sync", label: "Sync" },
@@ -403,6 +406,8 @@
       if (section.id === "updates") {
         return adapter?.isAvailable("canSelfUpdate") ?? false;
       }
+      if (section.id === "agents")
+        return Boolean(adapter?.sessions?.preflight);
       return true;
     }),
   );
@@ -657,6 +662,8 @@
           {consoleBase}
           onopenconsole={openConsole}
         />
+      {:else if active === "agents"}
+        <AgentsSettingsPane {adapter} />
       {:else}
         <PrototypeSettingsPanes
           section={active as
