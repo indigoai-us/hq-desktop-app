@@ -1389,7 +1389,7 @@ describe('embedded Work navigation and lifecycle', () => {
       'Session B transcript',
     );
 
-    warmRoute('sessions:history?id=ses_c&tool=claude');
+    warmRoute('sessions:history?id=ses_c&tool=claude&company=indigo');
     await flush(64);
     expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
       'Source C transcript',
