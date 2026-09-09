@@ -2,35 +2,26 @@ export type StageId =
   | 'content'
   | 'deps'
   | 'initial-sync'
-  | 'packages'
   | 'git-init'
   | 'personalize'
-  | 'import'
-  | 'indexing'
-  | 'menubar';
+  | 'indexing';
 
 export const STAGE_ORDER: StageId[] = [
   'content',
   'deps',
   'initial-sync',
-  'packages',
   'git-init',
   'personalize',
-  'import',
   'indexing',
-  'menubar',
 ];
 
 export const STAGE_LABELS: Record<StageId, string> = {
   content: 'Downloading HQ template',
   deps: 'Installing dependencies',
-  'initial-sync': 'Starting initial cloud sync',
-  packages: 'Installing packages',
+  'initial-sync': 'Syncing initial cloud data',
   'git-init': 'Initialising workspace',
   personalize: 'Personalizing',
-  import: 'Importing existing setup',
   indexing: 'Registering for search',
-  menubar: 'Finishing up',
 };
 
 export type StageStatus = 'pending' | 'running' | 'ok' | 'failed';
@@ -162,7 +153,7 @@ export function setupProgressPercent(input: SetupProgressInput): number {
     : base;
   const creep = Math.min(Math.max(0, input.stageCreep), 0.92);
 
-  return Math.round((base + (next - base) * creep) * 100);
+  return Math.min(99, Math.round((base + (next - base) * creep) * 100));
 }
 
 export type FriendlySetupBandStatus = 'pending' | 'active' | 'done';
@@ -216,12 +207,9 @@ export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
   content: 'fetch_and_extract_template',
   deps: 'install_deps',
   'initial-sync': 'start_initial_cloud_sync',
-  packages: 'install_default_packages',
   'git-init': 'git_init',
   personalize: 'personalize_hq',
-  import: 'import_existing_setup',
   indexing: 'register_search_index',
-  menubar: 'install_menubar_app',
 };
 
 export interface StageCommandContext {
@@ -333,7 +321,6 @@ export const STAGE_AUTO_RETRY_LIMITS: Partial<Record<StageId, number>> = {
   content: 2,
   deps: 1,
   'initial-sync': 1,
-  packages: 1,
   indexing: 1,
 };
 

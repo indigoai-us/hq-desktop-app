@@ -82,8 +82,21 @@ export const COMPLETE_SETUP: OnboardingEscape = {
   body: 'Open the HQ folder and run /setup.',
 };
 
-export const SETUP_NEEDS_PASS: OnboardingEscape = {
-  kind: 'folder_not_ready',
-  title: 'Finish setup in your AI tool',
-  body: 'One installer step still needs a pass. Open the HQ folder and run /setup — that’s the rest of the work.',
-};
+export interface SetupFailure {
+  label: string;
+}
+
+export function setupFailureEscape(
+  failedStages: readonly SetupFailure[],
+): OnboardingEscape {
+  const count = failedStages.length;
+  const stageWord = count === 1 ? 'step' : 'steps';
+  const verb = count === 1 ? 'needs' : 'need';
+  const labels = failedStages.map((stage) => stage.label).join(', ');
+
+  return {
+    kind: 'folder_not_ready',
+    title: `${count} installer ${stageWord} ${verb} attention`,
+    body: `Failed: ${labels}. Retry the failed ${stageWord} before opening HQ in your AI tool.`,
+  };
+}

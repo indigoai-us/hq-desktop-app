@@ -264,44 +264,39 @@ pub async fn install_default_packages() -> Result<(), String> {
     }
 }
 
-/// Scaffold top-level personal state expected by HQ.
-#[tauri::command]
-pub fn personalize_hq() -> Result<(), String> {
-    let hq_root = match resolve_hq_path() {
-        Ok(path) => PathBuf::from(path),
-        Err(e) => {
-            crate::util::logfile::log("personalize", &format!("resolve HQ root failed: {e}"));
-            return Ok(());
-        }
-    };
+fn personalize_hq_at(hq_root: &Path) -> Result<(), String> {
     let personal = hq_root.join("personal");
     let settings = personal.join("settings");
     let workers = personal.join("workers");
 
-    if let Err(e) = fs::create_dir_all(&settings) {
-        crate::util::logfile::log("personalize", &format!("create personal/settings: {e}"));
-    }
-    if let Err(e) = fs::create_dir_all(&workers) {
-        crate::util::logfile::log("personalize", &format!("create personal/workers: {e}"));
-    }
+    fs::create_dir_all(&settings)
+        .map_err(|_| "Could not prepare personal settings.".to_string())?;
+    fs::create_dir_all(&workers).map_err(|_| "Could not prepare personal workers.".to_string())?;
 
     let cognito = settings.join("cognito.json");
     if !cognito.exists() {
-        if let Err(e) = fs::write(&cognito, "{}\n") {
-            crate::util::logfile::log("personalize", &format!("write cognito.json: {e}"));
-        }
+        fs::write(&cognito, "{}\n")
+            .map_err(|_| "Could not create personal settings.".to_string())?;
     }
 
     for path in [settings.join(".gitkeep"), workers.join(".gitkeep")] {
         if !path.exists() {
-            if let Err(e) = fs::write(&path, "") {
-                crate::util::logfile::log("personalize", &format!("write {}: {e}", path.display()));
-            }
+            fs::write(&path, "")
+                .map_err(|_| "Could not prepare personal workspace files.".to_string())?;
         }
     }
 
     // TODO: render personal/profile.md once the onboarding wizard collects PersonalizationAnswers.
     Ok(())
+}
+
+/// Scaffold top-level personal state expected by HQ.
+#[tauri::command]
+pub fn personalize_hq() -> Result<(), String> {
+    let hq_root = resolve_hq_path()
+        .map(PathBuf::from)
+        .map_err(|_| "Could not resolve the HQ folder for personalization.".to_string())?;
+    personalize_hq_at(&hq_root)
 }
 
 /// Placeholder for importing an existing setup from legacy installer state.
@@ -542,10 +537,11 @@ pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
     }
 }
 
-/// Start the first personal-vault cloud sync in the background.
+/// Provision and verify the first personal-vault cloud sync.
 ///
-/// Setup only needs to provision and kick off the initial push; the long-lived
-/// tray process owns continuous reconciliation after onboarding completes.
+/// The frontend has the stage's bounded timeout. This command therefore waits
+/// for the provisioning and first-push result instead of reporting success for
+/// a detached task whose outcome is not known yet.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
     let jwt = resolve_jwt().await?;
@@ -553,16 +549,11 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
     let vault = VaultClient::new(&vault_url, &jwt);
     let hq_root = PathBuf::from(resolve_hq_path()?);
 
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
-                .await
-        {
-            crate::util::logfile::log("initial-sync", &format!("personal first-push failed: {e}"));
-        }
-    });
-
-    Ok(())
+    crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
+        .await
+        .map_err(|_| {
+            "Initial cloud sync could not be verified. Please retry this setup step.".to_string()
+        })
 }
 
 #[cfg(test)]
@@ -613,6 +604,31 @@ mod tests {
         git_init_path(dir.path(), None, None).unwrap();
 
         assert!(dir.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn personalize_hq_reports_filesystem_failures() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("personal"), "not a directory").unwrap();
+
+        let result = personalize_hq_at(dir.path());
+
+        assert_eq!(
+            result,
+            Err("Could not prepare personal settings.".to_string())
+        );
+    }
+
+    #[test]
+    fn initial_sync_waits_for_the_provisioning_result() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/install_stages.rs"
+        ));
+
+        assert!(src.contains("ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)"));
+        let detached_spawn = format!("{}.spawn", "tauri::async_runtime");
+        assert!(!src.contains(&detached_spawn));
     }
 
     #[test]
