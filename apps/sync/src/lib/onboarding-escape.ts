@@ -81,22 +81,3 @@ export const COMPLETE_SETUP: OnboardingEscape = {
   title: 'Complete setup in your AI tool',
   body: 'Open the HQ folder and run /setup.',
 };
-
-export interface SetupFailure {
-  label: string;
-}
-
-export function setupFailureEscape(
-  failedStages: readonly SetupFailure[],
-): OnboardingEscape {
-  const count = failedStages.length;
-  const stageWord = count === 1 ? 'step' : 'steps';
-  const verb = count === 1 ? 'needs' : 'need';
-  const labels = failedStages.map((stage) => stage.label).join(', ');
-
-  return {
-    kind: 'folder_not_ready',
-    title: `${count} installer ${stageWord} ${verb} attention`,
-    body: `Failed: ${labels}. Retry the failed ${stageWord} before opening HQ in your AI tool.`,
-  };
-}

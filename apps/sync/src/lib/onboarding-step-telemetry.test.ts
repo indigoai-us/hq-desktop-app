@@ -107,7 +107,7 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
-  it('emits only closed failure labels and a bounded completion stage list', () => {
+  it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',
       occurredAt: '2026-09-09T10:00:00.000Z',
@@ -117,6 +117,7 @@ describe('onboarding step telemetry', () => {
         component: 'deps',
         failedDependency: 'node',
         errorCategory: 'network',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         surface: 'desktop_installer',
         platform: 'windows',
       },
@@ -125,6 +126,7 @@ describe('onboarding step telemetry', () => {
       component: 'deps',
       failedDependency: 'node',
       errorCategory: 'network',
+      setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     });
 
     const nonDepsFailure = desktopPropertiesForOnboardingStep({
@@ -151,11 +153,13 @@ describe('onboarding step telemetry', () => {
         action: 'completed',
         outcome: 'completed_with_failures',
         failedStages: ['content', 'deps', 'deps', 'indexing'] as never,
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         surface: 'desktop_installer',
         platform: 'windows',
       },
     });
     expect(completion.failedStages).toEqual(['content', 'deps', 'indexing']);
+    expect(completion.setupRunId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   });
 
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {

@@ -12,7 +12,6 @@
   import {
     COMPLETE_SETUP,
     escapeForLaunch,
-    setupFailureEscape,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
   import {
@@ -39,7 +38,6 @@
     buildInitialStages,
     buildStagesFromManifest,
     createSetupRunId,
-    friendlySetupBands,
     normalizeFailedStageIds,
     reuseInFlightOperation,
     resumeStartStageFromManifest,
@@ -53,7 +51,6 @@
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
-    type FailedStageDetail,
     type InstallManifest,
     type StageId,
     type StageState,
@@ -216,7 +213,6 @@
   const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
-  let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -243,7 +239,6 @@
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
   let finishError = $state(false);
-  let retryingFailedStages = $state(false);
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
@@ -302,23 +297,18 @@
     stages.find((stage) => stage.status === 'running')?.id ?? null,
   );
   const setupDone = $derived(allSettled(stages));
-  const setupHasFailedStage = $derived(
-    stages.some((stage) => stage.status === 'failed'),
-  );
   const overallPercent = $derived(
     setupProgressPercent({
       settledCount,
       totalStages: STAGE_ORDER.length,
       hasRunningStage: currentStageId !== null,
       stageCreep,
-      allDone: setupDone && !setupHasFailedStage,
+      allDone: setupDone,
     }),
   );
   const ringOffset = $derived(
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
-  const needsAttention = $derived(setupFailures.length > 0);
-  const setupFailureCaution = $derived(setupFailureEscape(setupFailures));
   const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
@@ -336,7 +326,7 @@
   );
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
+    showManualTools || Boolean(launchEscape || detectionFailed),
   );
 
   $effect(() => {
@@ -954,13 +944,10 @@
     });
   }
 
-  async function runSetup(
-    runId: number,
-    stageIds: readonly StageId[] = STAGE_ORDER,
-    advanceWhenComplete = true,
-  ) {
+  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
+    const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
-    for (const id of stageIds) {
+    for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
@@ -984,15 +971,12 @@
     if (isCurrentRun(runId) && !setupCompleted && allSettled(stages)) {
       setupCompleted = true;
       const result = setupCompletionResult(stages);
-      setupFailures = result.failedStages;
-      const failedStages = normalizeFailedStageIds(setupFailures.map((stage) => stage.id));
+      const failedStages = normalizeFailedStageIds(result.failedStages.map((stage) => stage.id));
       markSetupStepCompleted();
-      if (!result.needsAttention) {
-        await journalInstallComplete();
-      }
+      await journalInstallComplete();
       setupCompletionMetrics = {
         stageCount: stages.length,
-        failedStageCount: setupFailures.length,
+        failedStageCount: result.failedStages.length,
         failedStages,
         setupRunId: currentSetupRunId,
         detectedToolCount: aiTools
@@ -1011,15 +995,13 @@
       });
       // Setup is what provisions the person entity; stitch the install session.
       void resolveInstallerPersonUid();
-      if (advanceWhenComplete) {
-        // Consent precedes the optional connector-import step and final handoff.
-        advanceTo(CONSENT_STEP_INDEX, 'completed', {
-          failedStageCount: setupFailures.length,
-          failedStages,
-          setupRunId: currentSetupRunId,
-          outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
-        });
-      }
+      // Consent precedes the optional connector-import step and final handoff.
+      advanceTo(CONSENT_STEP_INDEX, 'completed', {
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
+        outcome: result.failedStages.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+      });
     }
   }
 
@@ -1181,31 +1163,7 @@
       // Missing/corrupt manifests fall back to a fresh run.
     }
     if (!isCurrentRun(runId)) return;
-    const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
-    await runSetup(runId, STAGE_ORDER.slice(startIndex));
-  }
-
-  async function retryFailedSetupStages(): Promise<void> {
-    if (retryingFailedStages || setupFailures.length === 0) return;
-    const failedStageIds = new Set(setupFailures.map((stage) => stage.id));
-    retryingFailedStages = true;
-    setupCompleted = false;
-    stages = stages.map((stage) =>
-      failedStageIds.has(stage.id)
-        ? { ...stage, status: 'pending', error: null }
-        : stage,
-    );
-    const runId = beginSetupRun();
-    unlistenInstallProgress?.();
-    unlistenInstallProgress = null;
-    unlistenContentProgress?.();
-    unlistenContentProgress = null;
-    try {
-      await listenForProgress(runId);
-      await runSetup(runId, [...failedStageIds], false);
-    } finally {
-      retryingFailedStages = false;
-    }
+    await runSetup(runId, startStage);
   }
 
   function cancelSetupRun() {
@@ -1862,15 +1820,9 @@
           class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
           data-g={READY_STEP_INDEX}
         >
-          {#if needsAttention}
-            <span data-testid="onboarding-completion-warning-indicator" aria-hidden="true">
-              {@render AlertTriangle('completion-status-icon')}
-            </span>
-          {:else}
-            <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
-              {@render BigCheck()}
-            </span>
-          {/if}
+          <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
+            {@render BigCheck()}
+          </span>
         </div>
 
         <div
@@ -2024,30 +1976,20 @@
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
           <div class="list" aria-label="Setup checklist">
             {#each stages as stage}
-              <div
-                class:muted={stage.status === 'pending'}
-                class:failed={stage.status === 'failed'}
-                class="li"
-              >
+              <div class:muted={stage.status === 'pending'} class="li">
                 {#if stage.status === 'running'}
                   <span class="st spin" aria-hidden="true"></span>
-                {:else if stage.status === 'ok'}
+                {:else if stage.status === 'ok' || stage.status === 'failed'}
                   <span class="st dotmark" aria-hidden="true">{@render CheckTiny()}</span>
-                {:else if stage.status === 'failed'}
-                  <span class="st dotfail" aria-hidden="true">!</span>
                 {:else}
                   <span class="st dotpend" aria-hidden="true"></span>
                 {/if}
                 <span class="lt">{stage.label}</span>
-                {#if stage.status === 'failed'}
-                  <span class="setup-stage-failed">Needs attention</span>
-                {/if}
               </div>
             {/each}
           </div>
-          <!-- Recovery retries transient failures automatically. Failed stages remain
-               visible here and are named again on the Ready screen, which offers a
-               targeted manual retry. -->
+          <!-- Recovery retries transient failures automatically. Persistent failures
+               are recorded for the setup skill without changing the checklist state. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
@@ -2239,49 +2181,24 @@
           data-testid="onboarding-summary"
           aria-labelledby="onboarding-title-ready"
         >
-          <h2 class="h" id="onboarding-title-ready">
-            {needsAttention ? 'HQ setup needs attention' : 'HQ is ready'}
-          </h2>
-          {#if needsAttention}
-            <div
-              class="setup-caution"
-              role="note"
-              data-testid="onboarding-setup-failures"
-              aria-label={setupFailureCaution.title}
-            >
-              {@render AlertTriangle('setup-caution-icon')}
-              <div class="setup-caution-copy">
-                <strong>{setupFailureCaution.title}</strong>
-                <span>{setupFailureCaution.body}</span>
-                <button
-                  type="button"
-                  data-testid="onboarding-retry-failed-stages"
-                  onclick={() => void retryFailedSetupStages()}
-                  disabled={retryingFailedStages}
-                  aria-busy={retryingFailedStages}
-                >{retryingFailedStages ? 'Retrying failed steps…' : 'Retry failed steps'}</button>
-              </div>
+          <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
+          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
+          <div
+            class="setup-caution"
+            role="note"
+            data-testid="onboarding-escape"
+            aria-label={readyCaution.title}
+          >
+            <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+              <path d="M10 7v4.5"></path>
+              <circle cx="10" cy="14.2" r=".7"></circle>
+            </svg>
+            <div class="setup-caution-copy">
+              <strong>{readyCaution.title}</strong>
+              <span>{readyCaution.body}</span>
             </div>
-          {:else}
-            <p class="body">
-              HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.
-            </p>
-            <div
-              class="setup-caution"
-              role="note"
-              data-testid="onboarding-escape"
-              aria-label={readyCaution.title}
-            >
-              {@render AlertTriangle('setup-caution-icon')}
-              <div class="setup-caution-copy">
-                <strong>{readyCaution.title}</strong>
-                <span>{readyCaution.body}</span>
-              </div>
-            </div>
-          {/if}
-          <p class="inline-note" role="status" data-testid="onboarding-import-not-available">
-            Existing HQ setup import was not run because it is not available in this desktop release.
-          </p>
+          </div>
           {#if detectionFailed && !launchEscape}
             <p class="inline-note" role="status">
               Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
@@ -2545,14 +2462,6 @@
   </svg>
 {/snippet}
 
-{#snippet AlertTriangle(iconClass: string)}
-  <svg class={iconClass} viewBox="0 0 20 20" aria-hidden="true">
-    <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-    <path d="M10 7v4.5"></path>
-    <circle cx="10" cy="14.2" r=".7"></circle>
-  </svg>
-{/snippet}
-
 {#snippet TrustMock()}
   <div class="mockwin">
     <div class="mockbar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><span class="tt">Claude Code</span></div>
@@ -2762,12 +2671,9 @@
   .list { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
   .li { display:flex; align-items:center; gap:10px; color:var(--c-text); font-size:13px; line-height:18px; }
   .li.muted { color:var(--c-muted); }
-  .li.failed { color:var(--c-text); }
   .dotmark { width:14px; height:14px; border-radius:50%; background:var(--check-bg); color:var(--check-fg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
   .dotmark svg { width:8px; height:8px; stroke:var(--check-fg); }
   .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
-  .dotfail { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--c-text); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:700; line-height:1; }
-  .setup-stage-failed { margin-left:auto; color:var(--c-muted); font-size:12px; }
   .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
   @keyframes sp { to{transform:rotate(360deg)} }
 
@@ -2791,8 +2697,6 @@
   .pbar { fill:none; stroke:#fff; stroke-width:5; stroke-linecap:round; transition:stroke-dashoffset .18s ease; }
   .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:-0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
   .bigcheck { width:84px; height:84px; display:block; }
-  .completion-status-icon { width:84px; height:84px; display:block; fill:rgba(255,255,255,0.18); stroke:#fff; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
-  .completion-status-icon circle { fill:#fff; stroke:none; }
 
   .manual-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }

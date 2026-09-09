@@ -275,12 +275,25 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().textContent).toBe('Install Claude Code');
   });
 
-  it('policy: a failed required setup stage still completes and launches the setup handoff', async () => {
+  it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,
       claude_desktop: true,
       any: true,
     };
+    mountWizard(vi.fn(), 4, claudeDesktopOnly);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+    const cleanCompletion = host.querySelector<HTMLElement>(
+      '[data-testid="onboarding-summary"]',
+    )?.innerHTML;
+    expect(cleanCompletion).toBeTruthy();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
     const onfinish = vi.fn();
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -309,24 +322,29 @@ describe('onboarding launch handoff', () => {
       ?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
 
     const summary = host.querySelector('[data-testid="onboarding-summary"]');
     const launchClaude = host.querySelector<HTMLButtonElement>(
       '[data-testid="onboarding-launch-claude"]',
     );
-    expect(summary?.textContent).toContain('Installing dependencies');
-    expect(summary?.textContent).toContain('1 installer step needs attention');
+    expect((summary as HTMLElement | null)?.innerHTML).toBe(cleanCompletion);
+    expect(summary?.textContent).not.toContain('dependency installation failed');
+    expect(summary?.textContent).not.toContain('HQ setup needs attention');
     expect(
       host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
-    ).toBeNull();
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
     expect(launchClaude?.disabled).toBe(false);
     expect(
       host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
     ).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
 
     launchClaude?.click();
     await flush();
@@ -365,7 +383,7 @@ describe('onboarding launch handoff', () => {
       ?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
 
     const download = host.querySelector<HTMLButtonElement>(
       '[data-testid="onboarding-launch-download"]',
@@ -378,7 +396,7 @@ describe('onboarding launch handoff', () => {
     expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
   });
 
-  it('uses an alert completion icon after required setup failure and keeps the success check for clean setup', async () => {
+  it('keeps the success completion indicator after a required setup failure', async () => {
     mountWizard();
     await flush();
 
@@ -425,14 +443,14 @@ describe('onboarding launch handoff', () => {
       ?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
     await vi.advanceTimersByTimeAsync(1_000);
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
 
     expect(
       host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {

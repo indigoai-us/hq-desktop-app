@@ -16,7 +16,6 @@ import {
   setStageStatus,
   setupAutoRetryDelayMs,
   setupCompletionResult,
-  setupNeedsAttention,
   setupProgressPercent,
   setupStageRecoveryAction,
   stageAutoRetryLimit,
@@ -169,18 +168,17 @@ describe('install manifest resume state', () => {
   });
 });
 
-describe('setup attention summary', () => {
-  it('does not ask for attention when required stages all succeed', () => {
+describe('setup failure record', () => {
+  it('has no failed required stages when all stages succeed', () => {
     const stages: StageState[] = buildInitialStages().map((stage) => ({
       ...stage,
       status: 'ok',
     }));
 
-    expect(setupNeedsAttention(stages)).toBe(false);
     expect(failedRequiredStages(stages)).toEqual([]);
   });
 
-  it('reports failed required stages with their labels and messages', () => {
+  it('retains failed required stages with their labels and messages for the journal', () => {
     const stages = setStageStatus(
       buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
       'content',
@@ -188,7 +186,6 @@ describe('setup attention summary', () => {
       'template download failed',
     );
 
-    expect(setupNeedsAttention(stages)).toBe(true);
     expect(failedRequiredStages(stages)).toEqual([
       {
         id: 'content',
@@ -197,7 +194,6 @@ describe('setup attention summary', () => {
       },
     ]);
     expect(setupCompletionResult(stages)).toMatchObject({
-      needsAttention: true,
       failedStages: [
         {
           id: 'content',
@@ -220,7 +216,7 @@ describe('setup attention summary', () => {
     ]);
   });
 
-  it('keeps failed required stages out of a clean completion result', () => {
+  it('keeps failed required stages in the completion telemetry record', () => {
     const stages = setStageStatus(
       buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
       'deps',
@@ -229,7 +225,6 @@ describe('setup attention summary', () => {
     );
 
     expect(setupCompletionResult(stages)).toMatchObject({
-      needsAttention: true,
       failedStages: [
         {
           id: 'deps',
@@ -276,16 +271,16 @@ describe('setup progress percent', () => {
     ).toBe(100);
   });
 
-  it('does not complete the checklist when a settled stage failed', () => {
+  it('completes the seamless checklist when every stage has settled', () => {
     expect(
       setupProgressPercent({
         settledCount: STAGE_ORDER.length,
         totalStages: STAGE_ORDER.length,
         hasRunningStage: false,
         stageCreep: 0,
-        allDone: false,
+        allDone: true,
       }),
-    ).toBe(99);
+    ).toBe(100);
   });
 });
 

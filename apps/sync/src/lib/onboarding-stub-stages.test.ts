@@ -10,7 +10,6 @@ import {
   setupProgressPercent,
   stageTimeoutMs,
 } from './onboarding-setup';
-import { setupFailureEscape } from './onboarding-escape';
 
 describe('honest onboarding stage reporting', () => {
   it('runs only the stages that perform verified onboarding work', () => {
@@ -32,7 +31,7 @@ describe('honest onboarding stage reporting', () => {
     });
   });
 
-  it('keeps a failed required stage out of a clean completion result', () => {
+  it('records a failed required stage without changing completion progress', () => {
     const stages = setStageStatus(
       buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
       'deps',
@@ -41,7 +40,6 @@ describe('honest onboarding stage reporting', () => {
     );
 
     expect(setupCompletionResult(stages)).toMatchObject({
-      needsAttention: true,
       failedStages: [
         {
           id: 'deps',
@@ -56,16 +54,12 @@ describe('honest onboarding stage reporting', () => {
         totalStages: STAGE_ORDER.length,
         hasRunningStage: false,
         stageCreep: 0,
-        allDone: false,
+        allDone: true,
       }),
-    ).toBe(99);
+    ).toBe(100);
   });
 
-  it('names every failed stage, uses an accurate count, and offers retry in the Ready panel', () => {
-    const caution = setupFailureEscape([
-      { label: 'Installing dependencies' },
-      { label: 'Registering for search' },
-    ]);
+  it('keeps recorded setup failures out of the completion screen and always completes the journal', () => {
     const wizard = readFileSync(
       fileURLToPath(
         new URL('../components/onboarding/OnboardingWizard.svelte', import.meta.url),
@@ -73,23 +67,19 @@ describe('honest onboarding stage reporting', () => {
       'utf8',
     );
 
-    expect(caution.title).toBe('2 installer steps need attention');
-    expect(caution.body).toContain('Installing dependencies, Registering for search');
-    expect(caution.body).not.toContain('One installer step');
-    expect(wizard).toContain("'HQ setup needs attention'");
-    expect(wizard).toContain('setupDone && !setupHasFailedStage');
-    expect(wizard).toContain('{#each stages as stage}');
-    expect(wizard).toContain('Needs attention');
-    expect(wizard).toContain('Retry failed steps');
-    expect(wizard).toContain('Existing HQ setup import was not run');
+    expect(wizard).not.toContain('HQ setup needs attention');
+    expect(wizard).not.toContain('onboarding-completion-warning-indicator');
+    expect(wizard).not.toContain('Retry failed steps');
+    expect(wizard).not.toContain('Existing HQ setup import was not run');
+    expect(wizard).not.toContain('needsAttention');
+    expect(wizard).toContain("{:else if stage.status === 'ok' || stage.status === 'failed'}");
+    expect(wizard).toContain(
+      'markSetupStepCompleted();\n      await journalInstallComplete();\n      setupCompletionMetrics',
+    );
+    expect(wizard).not.toContain('if (!result.needsAttention)');
     expect(wizard).toContain('if (finishing) return false;');
-    expect(wizard).not.toContain('if (finishing || needsAttention) return false;');
-    expect(wizard).not.toContain('if (needsAttention) return;');
     expect(wizard).toContain('disabled={finishing ||');
     expect(wizard).toContain('data-testid="onboarding-install-{slot.kind}"\n                    disabled={finishing}');
-    expect(wizard).toContain(
-      'if (!result.needsAttention) {\n        await journalInstallComplete();\n      }',
-    );
   });
 
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {
